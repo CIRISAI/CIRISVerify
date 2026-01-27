@@ -11,7 +11,9 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  # Format check
+  # ==========================================================================
+  # Code Quality
+  # ==========================================================================
   fmt:
     name: Format
     runs-on: ubuntu-latest
@@ -22,7 +24,6 @@ jobs:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
-  # Lint with Clippy
   clippy:
     name: Clippy
     runs-on: ubuntu-latest
@@ -34,7 +35,32 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
-  # Build and test on multiple platforms
+  # ==========================================================================
+  # Security Audit
+  # ==========================================================================
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: rustsec/audit-check@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+  deny:
+    name: Cargo Deny
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          log-level: warn
+          command: check
+          arguments: --all-features
+
+  # ==========================================================================
+  # Tests
+  # ==========================================================================
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
@@ -49,21 +75,183 @@ jobs:
       - name: Build
         run: cargo build --all-features
       - name: Run tests
-        run: cargo test --all-features
+        run: cargo test --all --verbose
 
-  # Security audit
-  security:
-    name: Security Audit
+  # Property-based tests with extended cases
+  proptest:
+    name: Property Tests
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-deny
-        run: cargo install cargo-deny
-      - name: Run cargo-deny
-        run: cargo deny check
+      - uses: Swatinem/rust-cache@v2
+      - name: Run property tests
+        run: cargo test --all --release
+        env:
+          PROPTEST_CASES: 512
 
+  # ==========================================================================
+  # Build Matrix - Native Platforms
+  # ==========================================================================
+  build-native:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Linux x86_64
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: libciris_verify_ffi.so
+
+          # Linux ARM64
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: libciris_verify_ffi.so
+            cross: true
+
+          # macOS x86_64
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: libciris_verify_ffi.dylib
+
+          # macOS ARM64 (Apple Silicon)
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: libciris_verify_ffi.dylib
+
+          # Windows x86_64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: ciris_verify_ffi.dll
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Install cross for ARM64 Linux
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      # Build with cross for ARM64 Linux
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }} -p ciris-verify-ffi
+
+      # Build native
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
+        run: cargo build --release --target ${{ matrix.target }} -p ciris-verify-ffi
+
+      # Upload artifacts
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris-verify-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
+          if-no-files-found: warn
+
+  # ==========================================================================
+  # Build Matrix - Android
+  # ==========================================================================
+  build-android:
+    name: Build (Android ${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            abi: arm64-v8a
+          - target: armv7-linux-androideabi
+            abi: armeabi-v7a
+          - target: x86_64-linux-android
+            abi: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: android-${{ matrix.abi }}
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26b
+          add-to-path: true
+
+      - name: Set NDK environment
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Build for Android
+        run: cargo ndk -t ${{ matrix.abi }} build --release -p ciris-verify-ffi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris-verify-android-${{ matrix.abi }}
+          path: target/${{ matrix.target }}/release/libciris_verify_ffi.so
+          if-no-files-found: warn
+
+  # ==========================================================================
+  # Build Matrix - iOS
+  # ==========================================================================
+  build-ios:
+    name: Build (iOS ${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-ios
+            sdk: iphoneos
+          - target: aarch64-apple-ios-sim
+            sdk: iphonesimulator
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ios-${{ matrix.target }}
+
+      - name: Build for iOS
+        run: cargo build --release --target ${{ matrix.target }} -p ciris-verify-ffi
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris-verify-ios-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/libciris_verify_ffi.a
+          if-no-files-found: warn
+
+  # ==========================================================================
   # Documentation
+  # ==========================================================================
   docs:
     name: Documentation
     runs-on: ubuntu-latest
@@ -76,39 +264,9 @@ jobs:
         env:
           RUSTDOCFLAGS: -D warnings
 
-  # Cross-compilation check for mobile targets
-  cross-compile:
-    name: Cross Compile (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: aarch64-linux-android
-          - os: macos-latest
-            target: aarch64-apple-ios
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@v2
-
-      # Android NDK setup
-      - name: Setup Android NDK
-        if: contains(matrix.target, 'android')
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r26b
-
-      # Cross-compilation (check only, no link)
-      - name: Check compilation
-        run: cargo check --target ${{ matrix.target }} --lib
-
-  # MSRV check
+  # ==========================================================================
+  # MSRV Check
+  # ==========================================================================
   msrv:
     name: MSRV (1.75)
     runs-on: ubuntu-latest
@@ -117,3 +275,25 @@ jobs:
       - uses: dtolnay/rust-toolchain@1.75
       - uses: Swatinem/rust-cache@v2
       - run: cargo check --all-features
+
+  # ==========================================================================
+  # Coverage
+  # ==========================================================================
+  coverage:
+    name: Code Coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+      - name: Generate coverage
+        run: cargo llvm-cov --all-features --workspace --lcov --output-path lcov.info
+      - name: Upload coverage
+        uses: codecov/codecov-action@v4
+        with:
+          files: lcov.info
+          fail_ci_if_error: false

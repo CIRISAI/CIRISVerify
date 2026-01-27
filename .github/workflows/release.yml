@@ -8,37 +8,45 @@ on:
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: write
+
 jobs:
-  build-release:
+  # ==========================================================================
+  # Build Release - Native Platforms
+  # ==========================================================================
+  build-native:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
-          # Desktop targets
+          # Linux x86_64
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: libciris_verify_ffi.so
+
+          # Linux ARM64
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             artifact: libciris_verify_ffi.so
+            cross: true
+
+          # macOS x86_64
           - os: macos-latest
             target: x86_64-apple-darwin
             artifact: libciris_verify_ffi.dylib
+
+          # macOS ARM64 (Apple Silicon)
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact: libciris_verify_ffi.dylib
+
+          # Windows x86_64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: ciris_verify_ffi.dll
-
-          # Mobile targets
-          - os: ubuntu-latest
-            target: aarch64-linux-android
-            artifact: libciris_verify_ffi.so
-          - os: macos-latest
-            target: aarch64-apple-ios
-            artifact: libciris_verify_ffi.a
 
     steps:
       - uses: actions/checkout@v4
@@ -49,35 +57,261 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: ${{ matrix.target }}
+          key: release-${{ matrix.target }}
 
-      # Android NDK
-      - name: Setup Android NDK
-        if: contains(matrix.target, 'android')
-        uses: nttld/setup-ndk@v1
-        with:
-          ndk-version: r26b
+      # Install cross for ARM64 Linux
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
 
-      # Cross-compilation tools for Linux ARM
-      - name: Install cross-compilation tools
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: sudo apt-get install -y gcc-aarch64-linux-gnu
+      # Build with cross for ARM64 Linux
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }} -p ciris-verify-ffi
 
-      - name: Build release
+      # Build native
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
         run: cargo build --release --target ${{ matrix.target }} -p ciris-verify-ffi
 
+      # Strip binaries (Linux/macOS)
+      - name: Strip binary
+        if: runner.os != 'Windows'
+        run: |
+          if [ -f "target/${{ matrix.target }}/release/${{ matrix.artifact }}" ]; then
+            strip "target/${{ matrix.target }}/release/${{ matrix.artifact }}" || true
+          fi
+
+      # Upload artifacts
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ciris-verify-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
+          if-no-files-found: error
 
+  # ==========================================================================
+  # Build Release - Android
+  # ==========================================================================
+  build-android:
+    name: Build (Android ${{ matrix.abi }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-linux-android
+            abi: arm64-v8a
+          - target: armv7-linux-androideabi
+            abi: armeabi-v7a
+          - target: x86_64-linux-android
+            abi: x86_64
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-android-${{ matrix.abi }}
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r26b
+          add-to-path: true
+
+      - name: Set NDK environment
+        run: |
+          echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+          echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk
+
+      - name: Build for Android
+        run: cargo ndk -t ${{ matrix.abi }} build --release -p ciris-verify-ffi
+
+      - name: Strip binary
+        run: |
+          ${{ steps.setup-ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip \
+            target/${{ matrix.target }}/release/libciris_verify_ffi.so || true
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris-verify-android-${{ matrix.abi }}
+          path: target/${{ matrix.target }}/release/libciris_verify_ffi.so
+          if-no-files-found: error
+
+  # ==========================================================================
+  # Build Release - iOS
+  # ==========================================================================
+  build-ios:
+    name: Build (iOS ${{ matrix.target }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-ios
+            sdk: iphoneos
+          - target: aarch64-apple-ios-sim
+            sdk: iphonesimulator
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-ios-${{ matrix.target }}
+
+      - name: Build for iOS
+        run: cargo build --release --target ${{ matrix.target }} -p ciris-verify-ffi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris-verify-ios-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/libciris_verify_ffi.a
+          if-no-files-found: error
+
+  # ==========================================================================
+  # Create XCFramework (iOS)
+  # ==========================================================================
+  xcframework:
+    name: Create XCFramework
+    needs: build-ios
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download iOS artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ciris-verify-ios-*
+          path: ios-libs
+          merge-multiple: false
+
+      - name: Create XCFramework
+        run: |
+          mkdir -p xcframework-build/ios xcframework-build/ios-sim
+
+          # Copy libraries
+          cp ios-libs/ciris-verify-ios-aarch64-apple-ios/libciris_verify_ffi.a xcframework-build/ios/
+          cp ios-libs/ciris-verify-ios-aarch64-apple-ios-sim/libciris_verify_ffi.a xcframework-build/ios-sim/
+
+          # Generate module map
+          cat > xcframework-build/module.modulemap << 'EOF'
+          module CirisVerify {
+              header "ciris_verify.h"
+              export *
+          }
+          EOF
+
+          # Copy to both directories
+          cp xcframework-build/module.modulemap xcframework-build/ios/
+          cp xcframework-build/module.modulemap xcframework-build/ios-sim/
+
+          # Create XCFramework
+          xcodebuild -create-xcframework \
+            -library xcframework-build/ios/libciris_verify_ffi.a \
+            -library xcframework-build/ios-sim/libciris_verify_ffi.a \
+            -output CirisVerify.xcframework
+
+      - name: Upload XCFramework
+        uses: actions/upload-artifact@v4
+        with:
+          name: CirisVerify.xcframework
+          path: CirisVerify.xcframework
+          if-no-files-found: error
+
+  # ==========================================================================
+  # Create Android AAR
+  # ==========================================================================
+  android-aar:
+    name: Create Android AAR
+    needs: build-android
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Android artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ciris-verify-android-*
+          path: android-libs
+          merge-multiple: false
+
+      - name: Create AAR structure
+        run: |
+          mkdir -p aar/jni/arm64-v8a aar/jni/armeabi-v7a aar/jni/x86_64
+
+          # Copy native libraries
+          cp android-libs/ciris-verify-android-arm64-v8a/libciris_verify_ffi.so aar/jni/arm64-v8a/
+          cp android-libs/ciris-verify-android-armeabi-v7a/libciris_verify_ffi.so aar/jni/armeabi-v7a/
+          cp android-libs/ciris-verify-android-x86_64/libciris_verify_ffi.so aar/jni/x86_64/
+
+          # Create AndroidManifest.xml
+          cat > aar/AndroidManifest.xml << 'EOF'
+          <?xml version="1.0" encoding="utf-8"?>
+          <manifest xmlns:android="http://schemas.android.com/apk/res/android"
+              package="ai.ciris.verify">
+              <uses-sdk android:minSdkVersion="21" android:targetSdkVersion="34" />
+          </manifest>
+          EOF
+
+          # Create AAR
+          cd aar && zip -r ../ciris-verify.aar . && cd ..
+
+      - name: Upload AAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris-verify.aar
+          path: ciris-verify.aar
+          if-no-files-found: error
+
+  # ==========================================================================
+  # Generate C Header
+  # ==========================================================================
+  generate-header:
+    name: Generate C Header
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Install cbindgen
+        run: cargo install cbindgen
+
+      - name: Generate header
+        run: |
+          cbindgen --config cbindgen.toml --crate ciris-verify-ffi --output ciris_verify.h || \
+          cbindgen --crate ciris-verify-ffi --output ciris_verify.h --lang c
+
+      - name: Upload header
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris_verify.h
+          path: ciris_verify.h
+          if-no-files-found: warn
+
+  # ==========================================================================
+  # Create Release
+  # ==========================================================================
   create-release:
     name: Create Release
-    needs: build-release
+    needs: [build-native, build-android, build-ios, xcframework, android-aar, generate-header]
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v4
 
@@ -86,15 +320,66 @@ jobs:
         with:
           path: artifacts
 
-      - name: Create checksums
+      - name: Prepare release files
         run: |
-          cd artifacts
-          find . -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.dll" -o -name "*.a" \) -exec sha256sum {} \; > SHA256SUMS
+          mkdir -p release
+
+          # Copy native libraries
+          for dir in artifacts/ciris-verify-x86_64-* artifacts/ciris-verify-aarch64-*; do
+            if [ -d "$dir" ]; then
+              target=$(basename "$dir" | sed 's/ciris-verify-//')
+              mkdir -p "release/$target"
+              cp -r "$dir"/* "release/$target/" || true
+            fi
+          done
+
+          # Copy Android libraries
+          for dir in artifacts/ciris-verify-android-*; do
+            if [ -d "$dir" ]; then
+              abi=$(basename "$dir" | sed 's/ciris-verify-android-//')
+              mkdir -p "release/android/$abi"
+              cp -r "$dir"/* "release/android/$abi/" || true
+            fi
+          done
+
+          # Copy iOS libraries
+          for dir in artifacts/ciris-verify-ios-*; do
+            if [ -d "$dir" ]; then
+              target=$(basename "$dir" | sed 's/ciris-verify-ios-//')
+              mkdir -p "release/ios/$target"
+              cp -r "$dir"/* "release/ios/$target/" || true
+            fi
+          done
+
+          # Copy packages
+          cp -r artifacts/CirisVerify.xcframework release/ || true
+          cp artifacts/ciris-verify.aar/ciris-verify.aar release/ || true
+          cp artifacts/ciris_verify.h/ciris_verify.h release/ || true
+
+          # Create checksums
+          cd release
+          find . -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.dll" -o -name "*.a" -o -name "*.aar" \) \
+            -exec sha256sum {} \; > SHA256SUMS
+
+          # Create archives
+          cd ..
+          tar -czvf ciris-verify-${{ github.ref_name }}-linux-x86_64.tar.gz -C release x86_64-unknown-linux-gnu || true
+          tar -czvf ciris-verify-${{ github.ref_name }}-linux-arm64.tar.gz -C release aarch64-unknown-linux-gnu || true
+          tar -czvf ciris-verify-${{ github.ref_name }}-macos-x86_64.tar.gz -C release x86_64-apple-darwin || true
+          tar -czvf ciris-verify-${{ github.ref_name }}-macos-arm64.tar.gz -C release aarch64-apple-darwin || true
+          tar -czvf ciris-verify-${{ github.ref_name }}-android.tar.gz -C release android || true
+          tar -czvf ciris-verify-${{ github.ref_name }}-ios.tar.gz -C release ios CirisVerify.xcframework || true
+          zip -r ciris-verify-${{ github.ref_name }}-windows-x86_64.zip release/x86_64-pc-windows-msvc || true
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            artifacts/**/*
-            artifacts/SHA256SUMS
+            ciris-verify-*.tar.gz
+            ciris-verify-*.zip
+            release/ciris-verify.aar
+            release/SHA256SUMS
+            release/ciris_verify.h
           generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
