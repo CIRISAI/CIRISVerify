@@ -1,0 +1,101 @@
+[workspace]
+resolver = "2"
+members = [
+    "src/ciris-keyring",
+    "src/ciris-crypto",
+    "src/ciris-verify-core",
+    "src/ciris-verify-ffi",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.75"
+license = "Apache-2.0"
+repository = "https://github.com/cirisai/ciris-verify"
+authors = ["CIRIS L3C <engineering@ciris.ai>"]
+
+[workspace.dependencies]
+# Async runtime (Veilid-compatible)
+tokio = { version = "1.35", features = ["full"] }
+async-trait = "0.1"
+futures = "0.3"
+
+# Serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# Protobuf (Veilid-compatible)
+prost = "0.12"
+prost-types = "0.12"
+tonic = "0.10"
+tonic-build = "0.10"
+
+# Classical cryptography
+p256 = { version = "0.13", features = ["ecdsa", "pem"] }
+ed25519-dalek = { version = "2.1", features = ["rand_core"] }
+signature = "2.2"
+
+# Post-quantum cryptography (evaluate: aws-lc-rs vs ml-dsa)
+# ml-dsa = "0.1"  # RustCrypto - unaudited
+# aws-lc-rs = { version = "1.5", features = ["unstable"] }  # AWS - pending FIPS
+
+# Hashing
+sha2 = "0.10"
+blake3 = "1.5"
+
+# Random
+rand = "0.8"
+rand_core = "0.6"
+
+# Base64
+base64 = "0.21"
+
+# Hex encoding
+hex = "0.4"
+
+# Error handling
+thiserror = "1.0"
+anyhow = "1.0"
+
+# Logging (Veilid-compatible)
+tracing = "0.1"
+tracing-subscriber = "0.3"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# DNS
+trust-dns-resolver = "0.23"
+
+# HTTP client (rustls-only, no OpenSSL dependency)
+reqwest = { version = "0.11", default-features = false, features = ["rustls-tls", "json"] }
+
+# TPM (desktop/server only)
+tss-esapi = "7.4"
+
+# Internal crates
+ciris-keyring = { path = "src/ciris-keyring" }
+ciris-crypto = { path = "src/ciris-crypto" }
+ciris-verify-core = { path = "src/ciris-verify-core" }
+
+# Testing (workspace dev-dependencies)
+proptest = "1.5"
+test-case = "3.3"
+pretty_assertions = "1.4"
+tokio-test = "0.4"
+
+[workspace.lints.rust]
+unsafe_code = "warn"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
+nursery = "warn"
+
+[profile.release]
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

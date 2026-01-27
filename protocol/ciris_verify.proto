@@ -1,0 +1,554 @@
+// CIRISVerify Protocol Definition
+// Version: 2.0.0 (Hybrid Cryptography)
+//
+// This protocol is PUBLIC. Anyone can implement a client.
+// The server implementation is closed-source.
+//
+// CRYPTOGRAPHIC BASELINE:
+// - Classical: Ed25519
+// - Post-Quantum: ML-DSA-65 (FIPS 204)
+// - Signature Mode: HYBRID_REQUIRED (both signatures mandatory)
+//
+// See FSD/FSD-001_CIRISVERIFY_PROTOCOL.md for full specification.
+
+syntax = "proto3";
+
+package ciris.verify.v2;
+
+option go_package = "github.com/cirisai/ciris-verify/proto/v2";
+option java_package = "ai.ciris.verify.v2";
+option java_multiple_files = true;
+
+// =============================================================================
+// SERVICE DEFINITION
+// =============================================================================
+
+// CIRISVerify provides hardware-rooted license verification for the CIRIS ecosystem.
+// It enables CIRISAgent deployments to cryptographically prove their license status.
+service CIRISVerify {
+  // Get the current license status for this deployment
+  rpc GetLicenseStatus(LicenseStatusRequest) returns (LicenseStatusResponse);
+
+  // Check if a specific capability is allowed under current license
+  rpc CheckCapability(CapabilityCheckRequest) returns (CapabilityCheckResponse);
+
+  // Get the current steward public key (for external verification)
+  rpc GetStewardKey(StewardKeyRequest) returns (StewardKeyResponse);
+
+  // Health check
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// =============================================================================
+// LICENSE STATUS
+// =============================================================================
+
+message LicenseStatusRequest {
+  // Unique deployment identifier (hardware-derived if available)
+  string deployment_id = 1;
+
+  // Random nonce to prevent replay attacks (32 bytes recommended)
+  bytes challenge_nonce = 2;
+
+  // Force refresh from remote sources (bypass cache)
+  bool force_refresh = 3;
+}
+
+message LicenseStatusResponse {
+  // Overall license status
+  LicenseStatus status = 1;
+
+  // License details (populated if licensed)
+  LicenseDetails license = 2;
+
+  // CRITICAL: This string MUST be displayed to users
+  string mandatory_disclosure = 3;
+
+  // Hardware attestation proving this response came from the verify module
+  HardwareAttestation attestation = 4;
+
+  // Multi-source validation results
+  SourceValidation validation = 5;
+
+  // Response metadata
+  ResponseMetadata metadata = 6;
+}
+
+enum LicenseStatus {
+  LICENSE_STATUS_UNSPECIFIED = 0;
+
+  // Licensed statuses
+  LICENSED_PROFESSIONAL = 1;      // Full steward-backed professional license
+  LICENSED_COMMUNITY_PLUS = 2;    // Enhanced community with some features
+
+  // Unlicensed statuses
+  UNLICENSED_COMMUNITY = 3;       // Standard CIRISCare community mode
+  UNLICENSED_UNVERIFIED = 4;      // Could not verify (offline grace period)
+
+  // Error statuses - require immediate attention
+  ERROR_BINARY_TAMPERED = 10;     // Integrity check failed - possible attack
+  ERROR_SOURCES_DISAGREE = 11;    // Multi-source mismatch - possible attack
+  ERROR_VERIFICATION_FAILED = 12; // Could not reach any verification source
+  ERROR_LICENSE_REVOKED = 13;     // License explicitly revoked by steward
+  ERROR_LICENSE_EXPIRED = 14;     // License past expiration date
+}
+
+// =============================================================================
+// LICENSE DETAILS
+// =============================================================================
+
+message LicenseDetails {
+  // Unique license identifier (e.g., "CML-2026-0001")
+  string license_id = 1;
+
+  // License type
+  LicenseType license_type = 2;
+
+  // Organization information
+  string organization_name = 3;
+  string organization_id = 4;
+
+  // Validity period (Unix timestamps)
+  int64 issued_at = 5;
+  int64 expires_at = 6;
+  int64 not_before = 7;
+
+  // Granted capabilities
+  repeated string capabilities = 8;
+
+  // Explicitly denied capabilities
+  repeated string capabilities_denied = 9;
+
+  // Maximum autonomy tier allowed
+  AutonomyTier max_autonomy_tier = 10;
+
+  // Deployment constraints
+  DeploymentConstraints constraints = 11;
+
+  // === HYBRID LICENSE JWT (v2.0) ===
+  // Original signed license JWT with dual signatures
+  // Format: header.payload.ed25519_sig.mldsa_sig
+  string license_jwt = 12;
+
+  // PQC signature of license (extracted for convenience)
+  // Full verification requires checking both signatures in JWT
+  bytes license_pqc_signature = 20;
+
+  // PQC algorithm used for license signing
+  PQCAlgorithm license_pqc_algorithm = 21;
+
+  // Signature mode (must be HYBRID_REQUIRED for v2.0 licenses)
+  SignatureMode signature_mode = 22;
+}
+
+enum LicenseType {
+  LICENSE_TYPE_UNSPECIFIED = 0;
+  COMMUNITY = 1;                  // CIRISCare
+  PROFESSIONAL_MEDICAL = 2;       // CIRISMedical
+  PROFESSIONAL_LEGAL = 3;         // CIRISLegal
+  PROFESSIONAL_FINANCIAL = 4;     // CIRISFinancial
+  PROFESSIONAL_FULL = 5;          // All professional modules
+}
+
+enum AutonomyTier {
+  AUTONOMY_TIER_UNSPECIFIED = 0;
+  A0_ADVISORY = 1;                // Advisory only (grammar, formatting)
+  A1_LIMITED = 2;                 // Limited autonomy (static Q&A)
+  A2_MODERATE = 3;                // Moderate autonomy (recommendations with oversight)
+  A3_HIGH = 4;                    // High autonomy (triage, diagnosis support)
+  A4_CRITICAL = 5;                // Critical autonomy (treatment decisions - requires hardware interlock)
+}
+
+message DeploymentConstraints {
+  // Requires human supervisor to be present
+  bool requires_supervisor = 1;
+
+  // Required supervisor credential types (e.g., "PMDC", "GMC", "USMLE")
+  repeated string supervisor_credentials = 2;
+
+  // Maximum hours offline before automatic degradation to community mode
+  int32 offline_grace_hours = 3;
+
+  // Requires hardware attestation for A4 (critical) actions
+  bool requires_hardware_attestation = 4;
+
+  // Geographic restrictions (ISO 3166-1 alpha-2 country codes)
+  repeated string allowed_regions = 5;
+
+  // Facility type restrictions
+  repeated string allowed_facility_types = 6;
+}
+
+// =============================================================================
+// HARDWARE ATTESTATION
+// =============================================================================
+
+message HardwareAttestation {
+  // Type of hardware security module used
+  HardwareType hardware_type = 1;
+
+  // === CLASSICAL SIGNATURE (Hardware-Bound) ===
+  // Classical algorithm used for hardware signature
+  // ECDSA_P256 for mobile/TPM (hardware constraint), ED25519 for SGX/software
+  ClassicalAlgorithm classical_algorithm = 9;
+
+  // Hardware-bound public key (algorithm indicated by classical_algorithm)
+  bytes hardware_public_key = 2;
+
+  // Classical signature over response using hardware key
+  bytes hardware_signature = 3;
+
+  // === POST-QUANTUM SIGNATURE (Required for v2.0) ===
+  // ML-DSA public key (software-generated, stored securely)
+  // Note: Hardware HSMs do not yet support PQC, so this is software-based
+  bytes pqc_public_key = 10;
+
+  // ML-DSA signature over response (payload includes hardware_signature)
+  // BOTH hardware_signature AND pqc_signature must verify
+  bytes pqc_signature = 11;
+
+  // PQC algorithm used (must be ML_DSA_65 or higher)
+  PQCAlgorithm pqc_algorithm = 12;
+
+  // Signature mode (must be HYBRID_REQUIRED for v2.0)
+  SignatureMode signature_mode = 13;
+
+  // Platform-specific attestation data
+  oneof platform_attestation {
+    AndroidAttestation android = 4;
+    IOSAttestation ios = 5;
+    TPMAttestation tpm = 6;
+    SoftwareAttestation software = 7;
+  }
+
+  // Integrity check results
+  IntegrityStatus integrity = 8;
+}
+
+enum HardwareType {
+  HARDWARE_TYPE_UNSPECIFIED = 0;
+  ANDROID_KEYSTORE = 1;           // Android Hardware Keystore
+  ANDROID_STRONGBOX = 2;          // Android StrongBox (tamper-resistant)
+  IOS_SECURE_ENCLAVE = 3;         // Apple Secure Enclave
+  TPM_2_0 = 4;                    // Trusted Platform Module 2.0
+  INTEL_SGX = 5;                  // Intel Software Guard Extensions
+  SOFTWARE_ONLY = 6;              // Software-based (lowest security level)
+}
+
+// =============================================================================
+// POST-QUANTUM CRYPTOGRAPHY (Day-1 Requirement)
+// =============================================================================
+
+// Post-Quantum Cryptography Algorithm Selection
+// Based on NIST FIPS 204 (ML-DSA) finalized August 2024
+// ML-DSA-65 is the MINIMUM required algorithm for CIRISVerify
+enum PQCAlgorithm {
+  PQC_ALGORITHM_UNSPECIFIED = 0;
+
+  // ML-DSA (Dilithium) - FIPS 204
+  ML_DSA_44 = 1;   // Security level 2 (~128-bit classical) - NOT SUFFICIENT
+  ML_DSA_65 = 2;   // Security level 3 (~192-bit classical) - MINIMUM REQUIRED
+  ML_DSA_87 = 3;   // Security level 5 (~256-bit classical)
+
+  // SLH-DSA (SPHINCS+) - FIPS 205 - Stateless hash-based (conservative choice)
+  SLH_DSA_SHA2_128S = 10;  // Small signature, 128-bit security
+  SLH_DSA_SHA2_256S = 11;  // Small signature, 256-bit security
+
+  // Reserved for future NIST standards
+  // FALCON = 20;  // FIPS 206 (in development)
+}
+
+// Signature mode for hybrid cryptography
+enum SignatureMode {
+  SIGNATURE_MODE_UNSPECIFIED = 0;
+  CLASSICAL_ONLY = 1;       // DEPRECATED - not accepted by CIRISVerify 2.0
+  HYBRID_REQUIRED = 2;      // Both classical + ML-DSA required (default)
+  PQC_ONLY = 3;             // Reserved for future post-transition use
+}
+
+// Classical algorithm for hardware-bound signatures
+// Mobile HSMs (Android Keystore, iOS Secure Enclave) only support ECDSA P-256
+// TPM 2.0 supports ECDSA P-256 and RSA; some support Ed25519
+// For cross-platform consistency, ECDSA_P256 is the default
+enum ClassicalAlgorithm {
+  CLASSICAL_ALGORITHM_UNSPECIFIED = 0;
+  ECDSA_P256 = 1;    // secp256r1/prime256v1 - Required for mobile HSMs, default
+  ED25519 = 2;       // Edwards curve 25519 - Used for SGX/software-only
+  ECDSA_P384 = 3;    // secp384r1 - Optional higher security (TPM 2.0)
+}
+
+message IntegrityStatus {
+  // Overall integrity status (single pass/fail - do not expose individual checks)
+  // Rationale: Exposing individual check results allows attackers to enumerate
+  // and bypass each check systematically.
+  bool integrity_valid = 1;
+
+  // Timestamp of last integrity check
+  int64 last_check_timestamp = 6;
+
+  // Generic failure category (does not reveal specific check that failed)
+  // Values: "environment" (emulator/root), "binary" (tampering), "runtime" (hooks/debugger)
+  string failure_category = 10;
+
+  // Number of integrity checks performed (not which ones)
+  int32 checks_performed = 11;
+
+  // DEPRECATED: Individual check fields removed for security
+  // These fields were: debugger_detected, hooks_detected, device_compromised, emulator_detected
+  // Use integrity_valid and failure_category instead
+}
+
+message AndroidAttestation {
+  // Google Play Integrity API token
+  bytes play_integrity_token = 1;
+
+  // SafetyNet attestation response (legacy, deprecated)
+  bytes safetynet_response = 2;
+
+  // Hardware key attestation certificate chain
+  repeated bytes key_attestation_chain = 3;
+}
+
+message IOSAttestation {
+  // App Attest assertion
+  bytes app_attest_assertion = 1;
+
+  // DeviceCheck token
+  bytes device_check_token = 2;
+}
+
+message TPMAttestation {
+  // TPM quote (signed PCR values)
+  bytes tpm_quote = 1;
+
+  // Platform Configuration Register values
+  repeated bytes pcr_values = 2;
+
+  // Attestation Identity Key certificate
+  bytes aik_certificate = 3;
+}
+
+message SoftwareAttestation {
+  // Self-computed binary hash
+  bytes self_hash = 1;
+
+  // Number of obfuscated integrity checks passed
+  int32 integrity_checks_passed = 2;
+
+  // Warning about reduced security guarantees
+  string security_warning = 3;
+}
+
+// =============================================================================
+// MULTI-SOURCE VALIDATION
+// =============================================================================
+
+message SourceValidation {
+  // DNS source 1 (US-based registrar)
+  SourceResult dns_us = 1;
+
+  // DNS source 2 (EU-based registrar)
+  SourceResult dns_eu = 2;
+
+  // HTTPS endpoint
+  SourceResult https_endpoint = 3;
+
+  // Overall validation status
+  ValidationStatus overall_status = 4;
+
+  // === CONSENSUS KEYS (Hybrid) ===
+  // Consensus steward Ed25519 public key (if all sources agree)
+  bytes consensus_steward_key_classical = 5;
+
+  // Consensus steward ML-DSA public key (from HTTPS, validated via DNS fingerprint)
+  bytes consensus_steward_key_pqc = 10;
+
+  // PQC key fingerprint (SHA-256, matched across DNS sources)
+  bytes consensus_pqc_key_fingerprint = 11;
+
+  // Consensus revocation list revision number
+  int64 consensus_revocation_revision = 6;
+}
+
+message SourceResult {
+  // Source identifier (e.g., "dns:ciris-services-1.ai")
+  string source = 1;
+
+  // Was the source reachable?
+  bool reachable = 2;
+
+  // Did it return valid, parseable data?
+  bool valid = 3;
+
+  // === CLASSICAL KEY ===
+  // Steward Ed25519 public key returned by this source
+  bytes steward_key_classical = 4;
+
+  // === PQC KEY (Fingerprint for DNS, Full Key for HTTPS) ===
+  // For DNS sources: SHA-256 fingerprint of ML-DSA key
+  // For HTTPS source: Full ML-DSA public key
+  bytes steward_key_pqc_or_fingerprint = 10;
+
+  // Is field 10 a fingerprint (DNS) or full key (HTTPS)?
+  bool is_pqc_fingerprint = 11;
+
+  // Revocation list revision from this source
+  int64 revocation_revision = 5;
+
+  // Timestamp when this source was checked
+  int64 checked_at = 6;
+
+  // Error message if check failed
+  string error = 7;
+}
+
+enum ValidationStatus {
+  VALIDATION_STATUS_UNSPECIFIED = 0;
+  ALL_SOURCES_AGREE = 1;          // All 3 sources returned matching data
+  PARTIAL_AGREEMENT = 2;          // 2 of 3 sources agree (degraded mode)
+  SOURCES_DISAGREE = 3;           // Sources returned conflicting data (possible attack)
+  NO_SOURCES_REACHABLE = 4;       // Offline - using cached data
+  VALIDATION_ERROR = 5;           // Unexpected error during validation
+}
+
+// =============================================================================
+// CAPABILITY CHECK
+// =============================================================================
+
+message CapabilityCheckRequest {
+  // Capability identifier (e.g., "domain:medical:triage")
+  string capability = 1;
+
+  // Action that requires this capability
+  string action = 2;
+
+  // Autonomy tier required for this action
+  AutonomyTier required_tier = 3;
+}
+
+message CapabilityCheckResponse {
+  // Is this capability allowed under current license?
+  bool allowed = 1;
+
+  // Reason for denial (if not allowed)
+  string denial_reason = 2;
+
+  // Conditions that must be met (if conditionally allowed)
+  repeated string required_conditions = 3;
+
+  // Suggested alternative capability (if denied)
+  string suggested_alternative = 4;
+}
+
+// =============================================================================
+// STEWARD KEY
+// =============================================================================
+
+message StewardKeyRequest {
+  // Force refresh from remote sources
+  bool force_refresh = 1;
+}
+
+message StewardKeyResponse {
+  // === CLASSICAL KEY (Ed25519) ===
+  // Current steward Ed25519 public key
+  bytes steward_key_classical = 1;
+
+  // Classical key identifier
+  string key_id_classical = 2;
+
+  // === POST-QUANTUM KEY (ML-DSA) ===
+  // Current steward ML-DSA public key (~1,952 bytes for ML-DSA-65)
+  bytes steward_key_pqc = 10;
+
+  // PQC key identifier
+  string key_id_pqc = 11;
+
+  // PQC algorithm used
+  PQCAlgorithm pqc_algorithm = 12;
+
+  // SHA-256 fingerprint of PQC key (for DNS validation)
+  bytes pqc_key_fingerprint = 13;
+
+  // === COMMON FIELDS ===
+  // Signature mode (should be HYBRID_REQUIRED)
+  SignatureMode signature_mode = 20;
+
+  // Revocation list revision
+  int64 revocation_revision = 3;
+
+  // Key rotation timestamp (when these keys became active)
+  int64 activated_at = 4;
+
+  // Expected next rotation timestamp
+  int64 next_rotation_at = 5;
+
+  // === RESPONSE INTEGRITY ===
+  // This response is itself signed with both keys
+  bytes response_signature_classical = 30;
+  bytes response_signature_pqc = 31;
+}
+
+// =============================================================================
+// HEALTH CHECK
+// =============================================================================
+
+message HealthCheckRequest {
+  // Include detailed diagnostics
+  bool include_diagnostics = 1;
+}
+
+message HealthCheckResponse {
+  // Is the module healthy?
+  bool healthy = 1;
+
+  // Module version
+  string version = 2;
+
+  // Hardware security status
+  HardwareType hardware_type = 3;
+  bool hardware_available = 4;
+
+  // Network connectivity status
+  bool network_available = 5;
+
+  // Cached license available
+  bool cache_valid = 6;
+
+  // Detailed diagnostics (if requested)
+  map<string, string> diagnostics = 7;
+}
+
+// =============================================================================
+// RESPONSE METADATA
+// =============================================================================
+
+message ResponseMetadata {
+  // Protocol version (e.g., "2.0.0")
+  string protocol_version = 1;
+
+  // Binary version
+  string binary_version = 2;
+
+  // Response generation timestamp
+  int64 timestamp = 3;
+
+  // Recommended cache TTL in seconds
+  int32 cache_ttl = 4;
+
+  // Recommended next check timestamp
+  int64 next_check_at = 5;
+
+  // Request tracking ID
+  string request_id = 6;
+
+  // === CRYPTOGRAPHIC METADATA (v2.0) ===
+  // Signature mode used for this response
+  SignatureMode signature_mode = 10;
+
+  // Classical algorithm used
+  string classical_algorithm = 11;  // e.g., "Ed25519"
+
+  // PQC algorithm used
+  PQCAlgorithm pqc_algorithm = 12;
+}

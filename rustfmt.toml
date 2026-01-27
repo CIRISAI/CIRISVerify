@@ -1,0 +1,33 @@
+# CIRISVerify Rust Formatting Configuration
+# Compatible with Veilid style conventions
+
+edition = "2021"
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Auto"
+use_small_heuristics = "Default"
+
+# Imports
+imports_granularity = "Module"
+group_imports = "StdExternalCrate"
+reorder_imports = true
+reorder_modules = true
+
+# Comments
+wrap_comments = true
+format_code_in_doc_comments = true
+doc_comment_code_block_width = 80
+normalize_comments = true
+normalize_doc_attributes = true
+
+# Formatting
+use_field_init_shorthand = true
+use_try_shorthand = true
+force_multiline_blocks = false
+fn_args_layout = "Tall"
+brace_style = "SameLineWhere"
+
+# Misc
+match_block_trailing_comma = true
+trailing_semicolon = true

@@ -1,0 +1,24 @@
+# CIRISVerify Clippy Configuration
+# Strict settings for security-critical code
+
+# Cognitive complexity threshold
+cognitive-complexity-threshold = 25
+
+# Maximum number of function arguments
+too-many-arguments-threshold = 7
+
+# Type complexity threshold
+type-complexity-threshold = 250
+
+# Allow certain patterns in tests
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+
+# Disallow in non-test code
+allow-print-in-tests = true
+
+# MSRVs
+msrv = "1.75"
+
+# Documentation requirements
+missing-docs-in-crate-items = true

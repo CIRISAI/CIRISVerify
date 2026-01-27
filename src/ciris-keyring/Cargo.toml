@@ -1,0 +1,51 @@
+[package]
+name = "ciris-keyring"
+description = "Cross-platform hardware keyring with signing support for CIRISVerify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = ["software", "keyring-storage"]
+software = []
+android = ["jni"]
+ios = ["objc", "objc-foundation"]
+tpm = ["tss-esapi"]
+keyring-storage = ["dep:keyring"]
+
+[dependencies]
+async-trait.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+serde = { workspace = true, features = ["derive"] }
+p256 = { workspace = true }
+rand_core.workspace = true
+
+# Cross-platform keyring for key storage (macOS Keychain, Windows Credential Manager, Linux Secret Service)
+keyring = { version = "3", optional = true }
+
+# Platform-specific
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.21", optional = true }
+
+[target.'cfg(target_os = "ios")'.dependencies]
+objc = { version = "0.2", optional = true }
+objc-foundation = { version = "0.1", optional = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+tss-esapi = { version = "7.4", optional = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+security-framework = "2.9"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+secret-service = { version = "3.0", features = ["rt-tokio-crypto-rust"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+winapi = { version = "0.3", features = ["wincred"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

@@ -1,0 +1,35 @@
+[package]
+name = "ciris-verify-ffi"
+description = "C FFI interface for CIRISVerify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[lib]
+crate-type = ["cdylib", "staticlib"]
+
+[features]
+default = []
+
+[dependencies]
+ciris-verify-core.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+prost.workspace = true
+tracing.workspace = true
+serde_json.workspace = true
+libc = "0.2"
+
+# For mobile targets
+[target.'cfg(target_os = "android")'.dependencies]
+jni = "0.21"
+android_logger = "0.13"
+log = "0.4"
+
+[target.'cfg(target_os = "ios")'.dependencies]
+oslog = "0.2"
+
+[build-dependencies]
+cbindgen = "0.26"

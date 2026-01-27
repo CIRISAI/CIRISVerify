@@ -1,0 +1,57 @@
+# CIRISVerify Cargo Configuration
+# Cross-compilation settings for all supported platforms
+
+[alias]
+# Convenience aliases
+xtask = "run --package xtask --"
+
+[build]
+# Parallel compilation
+jobs = 8
+
+[target.aarch64-linux-android]
+linker = "aarch64-linux-android-clang"
+
+[target.armv7-linux-androideabi]
+linker = "armv7a-linux-androideabi-clang"
+
+[target.x86_64-linux-android]
+linker = "x86_64-linux-android-clang"
+
+[target.aarch64-apple-ios]
+# Uses default Xcode toolchain
+
+[target.aarch64-apple-ios-sim]
+# Uses default Xcode toolchain
+
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-Wl,-z,relro,-z,now"]
+
+[target.aarch64-unknown-linux-gnu]
+linker = "aarch64-linux-gnu-gcc"
+rustflags = ["-C", "link-arg=-Wl,-z,relro,-z,now"]
+
+[target.x86_64-pc-windows-msvc]
+# Uses default MSVC toolchain
+
+# Development settings
+[env]
+RUST_BACKTRACE = "1"
+
+[profile.dev]
+# Faster incremental builds
+opt-level = 0
+debug = true
+
+[profile.release]
+# Security hardening for release builds
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+strip = false

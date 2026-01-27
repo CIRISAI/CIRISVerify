@@ -1,0 +1,39 @@
+[package]
+name = "ciris-crypto"
+description = "Hybrid cryptography (classical + PQC) for CIRISVerify"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+[features]
+default = ["ecdsa-p256", "ed25519"]
+ecdsa-p256 = ["p256"]
+ed25519 = ["ed25519-dalek"]
+# PQC feature - enable one of these
+pqc-ml-dsa = ["ml-dsa", "rand_chacha"]
+pqc-aws-lc = ["aws-lc-rs"]
+
+[dependencies]
+thiserror.workspace = true
+serde = { workspace = true, features = ["derive"] }
+sha2.workspace = true
+rand_core.workspace = true
+rand_chacha = { version = "0.3", optional = true }
+
+# Classical cryptography
+p256 = { workspace = true, optional = true }
+ed25519-dalek = { workspace = true, optional = true }
+signature.workspace = true
+
+# Post-quantum (choose one via feature flag)
+ml-dsa = { version = "0.1.0-rc.3", optional = true }
+aws-lc-rs = { version = "1.5", features = ["unstable"], optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
+hex = "0.4"
+proptest = { workspace = true }
+pretty_assertions = { workspace = true }

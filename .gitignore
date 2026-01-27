@@ -1,0 +1,20 @@
+# Build artifacts
+/target/
+**/*.rs.bk
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Cargo lock (optional for libraries)
+# Cargo.lock
+
+# Test artifacts
+*.profraw
+*.profdata

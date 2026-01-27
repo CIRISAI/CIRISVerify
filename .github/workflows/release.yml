@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-release:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        include:
+          # Desktop targets
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact: libciris_verify_ffi.so
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact: libciris_verify_ffi.so
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact: libciris_verify_ffi.dylib
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact: libciris_verify_ffi.dylib
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact: ciris_verify_ffi.dll
+
+          # Mobile targets
+          - os: ubuntu-latest
+            target: aarch64-linux-android
+            artifact: libciris_verify_ffi.so
+          - os: macos-latest
+            target: aarch64-apple-ios
+            artifact: libciris_verify_ffi.a
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+
+      # Android NDK
+      - name: Setup Android NDK
+        if: contains(matrix.target, 'android')
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26b
+
+      # Cross-compilation tools for Linux ARM
+      - name: Install cross-compilation tools
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build release
+        run: cargo build --release --target ${{ matrix.target }} -p ciris-verify-ffi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris-verify-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
+
+  create-release:
+    name: Create Release
+    needs: build-release
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create checksums
+        run: |
+          cd artifacts
+          find . -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.dll" -o -name "*.a" \) -exec sha256sum {} \; > SHA256SUMS
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            artifacts/**/*
+            artifacts/SHA256SUMS
+          generate_release_notes: true
