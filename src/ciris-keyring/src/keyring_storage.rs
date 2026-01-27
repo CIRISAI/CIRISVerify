@@ -58,8 +58,8 @@ impl KeyringStorageSigner {
     pub fn new(service: &str, alias: impl Into<String>) -> Result<Self, KeyringError> {
         let alias = alias.into();
 
-        let entry = Entry::new(service, &alias)
-            .map_err(|e| KeyringError::InitializationFailed {
+        let entry =
+            Entry::new(service, &alias).map_err(|e| KeyringError::InitializationFailed {
                 reason: format!("Keyring init failed: {e}"),
             })?;
 
@@ -73,19 +73,20 @@ impl KeyringStorageSigner {
 
     /// Load an existing key from the keyring.
     pub fn load_key(&mut self) -> Result<(), KeyringError> {
-        let key_bytes = self.entry.get_secret()
-            .map_err(|e| match e {
-                keyring::Error::NoEntry => KeyringError::KeyNotFound {
-                    alias: self.alias.clone(),
-                },
-                _ => KeyringError::OperationFailed {
-                    reason: format!("Failed to get key: {e}"),
-                },
-            })?;
+        let key_bytes = self.entry.get_secret().map_err(|e| match e {
+            keyring::Error::NoEntry => KeyringError::KeyNotFound {
+                alias: self.alias.clone(),
+            },
+            _ => KeyringError::OperationFailed {
+                reason: format!("Failed to get key: {e}"),
+            },
+        })?;
 
-        let signing_key = p256::ecdsa::SigningKey::from_bytes((&key_bytes[..]).into())
-            .map_err(|e| KeyringError::InvalidKey {
-                reason: format!("Failed to parse key: {e}"),
+        let signing_key =
+            p256::ecdsa::SigningKey::from_bytes((&key_bytes[..]).into()).map_err(|e| {
+                KeyringError::InvalidKey {
+                    reason: format!("Failed to parse key: {e}"),
+                }
             })?;
 
         self.signing_key = Some(signing_key);
@@ -94,7 +95,8 @@ impl KeyringStorageSigner {
 
     /// Store a key in the keyring.
     pub fn store_key(&self, key_bytes: &[u8]) -> Result<(), KeyringError> {
-        self.entry.set_secret(key_bytes)
+        self.entry
+            .set_secret(key_bytes)
             .map_err(|e| KeyringError::StorageFailed {
                 reason: format!("Failed to store key: {e}"),
             })?;
@@ -117,7 +119,8 @@ impl KeyringStorageSigner {
 
     /// Delete the key from the keyring.
     pub fn delete_stored_key(&self) -> Result<(), KeyringError> {
-        self.entry.delete_credential()
+        self.entry
+            .delete_credential()
             .map_err(|e| KeyringError::OperationFailed {
                 reason: format!("Failed to delete key: {e}"),
             })?;
@@ -138,7 +141,9 @@ impl HardwareSigner for KeyringStorageSigner {
     }
 
     async fn public_key(&self) -> Result<Vec<u8>, KeyringError> {
-        let signing_key = self.signing_key.as_ref()
+        let signing_key = self
+            .signing_key
+            .as_ref()
             .ok_or_else(|| KeyringError::KeyNotFound {
                 alias: self.alias.clone(),
             })?;
@@ -151,7 +156,9 @@ impl HardwareSigner for KeyringStorageSigner {
     async fn sign(&self, data: &[u8]) -> Result<Vec<u8>, KeyringError> {
         use p256::ecdsa::{signature::Signer, Signature};
 
-        let signing_key = self.signing_key.as_ref()
+        let signing_key = self
+            .signing_key
+            .as_ref()
             .ok_or_else(|| KeyringError::KeyNotFound {
                 alias: self.alias.clone(),
             })?;
@@ -162,13 +169,16 @@ impl HardwareSigner for KeyringStorageSigner {
 
     async fn attestation(&self) -> Result<PlatformAttestation, KeyringError> {
         // Keyring storage is software-only, so minimal attestation
-        Ok(PlatformAttestation::Software(crate::types::SoftwareAttestation {
-            key_derivation: "random".into(),
-            storage: format!("keyring:{}", self.service),
-            security_warning: "SOFTWARE_ONLY: OS keyring provides storage-at-rest protection but \
+        Ok(PlatformAttestation::Software(
+            crate::types::SoftwareAttestation {
+                key_derivation: "random".into(),
+                storage: format!("keyring:{}", self.service),
+                security_warning:
+                    "SOFTWARE_ONLY: OS keyring provides storage-at-rest protection but \
                               signing is software-based. Limited to UNLICENSED_COMMUNITY tier."
-                .into(),
-        }))
+                        .into(),
+            },
+        ))
     }
 
     async fn generate_key(&self, _config: &KeyGenConfig) -> Result<(), KeyringError> {
@@ -210,10 +220,7 @@ pub fn create_keyring_signer(
 }
 
 #[cfg(not(feature = "keyring-storage"))]
-pub fn create_keyring_signer(
-    _service: &str,
-    _alias: &str,
-) -> Result<(), KeyringError> {
+pub fn create_keyring_signer(_service: &str, _alias: &str) -> Result<(), KeyringError> {
     Err(KeyringError::NoPlatformSupport)
 }
 

@@ -3,12 +3,12 @@
 //! Used for steward signatures and software-only deployments.
 //! Note: Most mobile hardware HSMs do NOT support Ed25519.
 
-use ed25519_dalek::{SigningKey, VerifyingKey, Signature, Signer, Verifier};
+use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use rand_core::OsRng;
 
 use crate::error::CryptoError;
-use crate::types::ClassicalAlgorithm;
 use crate::hybrid::{ClassicalSigner, ClassicalVerifier};
+use crate::types::ClassicalAlgorithm;
 
 /// Ed25519 signer.
 pub struct Ed25519Signer {
@@ -31,9 +31,10 @@ impl Ed25519Signer {
     /// Returns error if the seed is not exactly 32 bytes.
     pub fn from_seed(seed: &[u8]) -> Result<Self, CryptoError> {
         if seed.len() != 32 {
-            return Err(CryptoError::invalid_private_key(
-                format!("Ed25519 seed must be 32 bytes, got {}", seed.len())
-            ));
+            return Err(CryptoError::invalid_private_key(format!(
+                "Ed25519 seed must be 32 bytes, got {}",
+                seed.len()
+            )));
         }
 
         let mut seed_array = [0u8; 32];
@@ -84,12 +85,18 @@ impl Default for Ed25519Verifier {
 }
 
 impl ClassicalVerifier for Ed25519Verifier {
-    fn verify(&self, public_key: &[u8], data: &[u8], signature: &[u8]) -> Result<bool, CryptoError> {
+    fn verify(
+        &self,
+        public_key: &[u8],
+        data: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, CryptoError> {
         // Parse public key
         if public_key.len() != 32 {
-            return Err(CryptoError::invalid_public_key(
-                format!("Ed25519 public key must be 32 bytes, got {}", public_key.len())
-            ));
+            return Err(CryptoError::invalid_public_key(format!(
+                "Ed25519 public key must be 32 bytes, got {}",
+                public_key.len()
+            )));
         }
 
         let mut pk_bytes = [0u8; 32];
@@ -100,9 +107,10 @@ impl ClassicalVerifier for Ed25519Verifier {
 
         // Parse signature
         if signature.len() != 64 {
-            return Err(CryptoError::invalid_signature(
-                format!("Ed25519 signature must be 64 bytes, got {}", signature.len())
-            ));
+            return Err(CryptoError::invalid_signature(format!(
+                "Ed25519 signature must be 64 bytes, got {}",
+                signature.len()
+            )));
         }
 
         let mut sig_bytes = [0u8; 64];
@@ -145,9 +153,6 @@ mod tests {
         let signer2 = Ed25519Signer::from_seed(&seed).unwrap();
 
         // Same seed should produce same key
-        assert_eq!(
-            signer1.public_key().unwrap(),
-            signer2.public_key().unwrap()
-        );
+        assert_eq!(signer1.public_key().unwrap(), signer2.public_key().unwrap());
     }
 }

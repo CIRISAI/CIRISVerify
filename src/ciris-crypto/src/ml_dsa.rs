@@ -18,7 +18,7 @@ use crate::hybrid::{PqcSigner, PqcVerifier};
 use crate::types::PqcAlgorithm;
 
 #[cfg(feature = "pqc-ml-dsa")]
-use ml_dsa::{MlDsa65, SigningKey, VerifyingKey, Signature};
+use ml_dsa::{MlDsa65, Signature, SigningKey, VerifyingKey};
 
 #[cfg(feature = "pqc-ml-dsa")]
 use ml_dsa::signature::{Signer, Verifier};
@@ -46,7 +46,10 @@ impl MlDsa65Signer {
         use rand_core::OsRng;
         let signing_key = SigningKey::<MlDsa65>::random(&mut OsRng);
         let verifying_key = signing_key.verifying_key();
-        Ok(Self { signing_key, verifying_key })
+        Ok(Self {
+            signing_key,
+            verifying_key,
+        })
     }
 
     /// Create a new signer with a randomly generated key pair.
@@ -83,7 +86,10 @@ impl MlDsa65Signer {
 
         let signing_key = SigningKey::<MlDsa65>::random(&mut rng);
         let verifying_key = signing_key.verifying_key();
-        Ok(Self { signing_key, verifying_key })
+        Ok(Self {
+            signing_key,
+            verifying_key,
+        })
     }
 
     /// Create a signer from seed bytes (stub when feature disabled).
@@ -193,8 +199,16 @@ mod tests {
         let public_key = signer.public_key().unwrap();
 
         // Check sizes
-        assert_eq!(public_key.len(), 1952, "ML-DSA-65 public key should be 1952 bytes");
-        assert_eq!(signature.len(), 3293, "ML-DSA-65 signature should be 3293 bytes");
+        assert_eq!(
+            public_key.len(),
+            1952,
+            "ML-DSA-65 public key should be 1952 bytes"
+        );
+        assert_eq!(
+            signature.len(),
+            3293,
+            "ML-DSA-65 signature should be 3293 bytes"
+        );
 
         // Verify
         let valid = verifier.verify(&public_key, data, &signature).unwrap();
@@ -215,7 +229,7 @@ mod tests {
         let result = verifier.verify(&public_key, data, &signature);
         match result {
             Ok(valid) => assert!(!valid, "Corrupted signature should not verify"),
-            Err(_) => {} // Parsing error is also acceptable
+            Err(_) => {}, // Parsing error is also acceptable
         }
     }
 
@@ -227,7 +241,9 @@ mod tests {
         let signature = signer.sign(b"message 1").unwrap();
         let public_key = signer.public_key().unwrap();
 
-        let valid = verifier.verify(&public_key, b"message 2", &signature).unwrap();
+        let valid = verifier
+            .verify(&public_key, b"message 2", &signature)
+            .unwrap();
         assert!(!valid, "Signature should not verify for different data");
     }
 
@@ -260,6 +276,9 @@ mod tests_disabled {
     #[test]
     fn test_ml_dsa_disabled() {
         let result = MlDsa65Signer::new();
-        assert!(matches!(result, Err(CryptoError::UnsupportedAlgorithm { .. })));
+        assert!(matches!(
+            result,
+            Err(CryptoError::UnsupportedAlgorithm { .. })
+        ));
     }
 }

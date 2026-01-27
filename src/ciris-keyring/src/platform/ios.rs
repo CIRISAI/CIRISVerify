@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
-use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation, IosAttestation};
+use crate::types::{ClassicalAlgorithm, HardwareType, IosAttestation, PlatformAttestation};
 
 /// iOS Secure Enclave signer using hardware-backed keys.
 ///
@@ -117,7 +117,10 @@ impl SecureEnclaveSigner {
 
     /// Generate a new key in the Secure Enclave.
     #[cfg(any(target_os = "ios", target_os = "macos"))]
-    async fn security_framework_generate_key(&self, config: &KeyGenConfig) -> Result<(), KeyringError> {
+    async fn security_framework_generate_key(
+        &self,
+        config: &KeyGenConfig,
+    ) -> Result<(), KeyringError> {
         // Real implementation would:
         // 1. Create access control with:
         //    - kSecAttrAccessibleWhenUnlockedThisDeviceOnly

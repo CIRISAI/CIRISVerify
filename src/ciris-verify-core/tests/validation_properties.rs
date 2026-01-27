@@ -6,9 +6,9 @@
 use proptest::prelude::*;
 use sha2::{Digest, Sha256};
 
-use ciris_verify_core::validation::{ConsensusValidator, SourceData};
-use ciris_verify_core::types::ValidationStatus;
 use ciris_verify_core::revocation::is_revision_stale;
+use ciris_verify_core::types::ValidationStatus;
+use ciris_verify_core::validation::{ConsensusValidator, SourceData};
 
 /// Strategy for 32-byte keys.
 fn key_32_bytes() -> impl Strategy<Value = Vec<u8>> {
@@ -223,7 +223,7 @@ proptest! {
         (key, fp, base_rev) in source_data_strategy()
     ) {
         // Ensure we don't overflow
-        prop_assume!(base_rev >= 1 && base_rev < u64::MAX);
+        prop_assume!((1..u64::MAX).contains(&base_rev));
 
         let source1 = SourceData {
             steward_key_classical: key.clone(),
@@ -345,11 +345,7 @@ fn test_consensus_disagreement_no_key() {
         timestamp: 1737936000,
     };
 
-    let result = ConsensusValidator::compute_consensus(
-        Some(source1),
-        Some(source2),
-        Some(source3),
-    );
+    let result = ConsensusValidator::compute_consensus(Some(source1), Some(source2), Some(source3));
 
     // Disagreement should NOT provide consensus key
     assert!(result.consensus_key_classical.is_none());
@@ -369,11 +365,7 @@ fn test_source_details_tracking() {
     };
 
     // Only dns_us and https available
-    let result = ConsensusValidator::compute_consensus(
-        Some(source.clone()),
-        None,
-        Some(source),
-    );
+    let result = ConsensusValidator::compute_consensus(Some(source.clone()), None, Some(source));
 
     assert!(result.source_details.dns_us_reachable);
     assert!(!result.source_details.dns_eu_reachable);

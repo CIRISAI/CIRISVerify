@@ -34,7 +34,7 @@ pub fn is_device_compromised() -> bool {
     // the user has full control. This is expected and not a problem.
     #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
     {
-        return false;
+        false
     }
 
     #[cfg(not(any(
@@ -66,7 +66,7 @@ pub fn is_emulator() -> bool {
     // On desktop, we optionally detect VMs but don't fail on them
     #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
     {
-        return is_virtual_machine();
+        is_virtual_machine()
     }
 
     #[cfg(not(any(
@@ -165,7 +165,10 @@ fn is_android_emulator() -> bool {
     // Method 1: Check build properties
     let emulator_props = [
         ("ro.hardware", &["goldfish", "ranchu", "vbox86"]),
-        ("ro.product.model", &["sdk", "google_sdk", "Emulator", "Android SDK"]),
+        (
+            "ro.product.model",
+            &["sdk", "google_sdk", "Emulator", "Android SDK"],
+        ),
         ("ro.product.manufacturer", &["Genymotion", "unknown"]),
         ("ro.product.device", &["generic", "generic_x86", "vbox86p"]),
     ];
@@ -354,10 +357,8 @@ fn is_linux_vm() -> bool {
     // Method 2: Check CPU info for hypervisor flag
     if let Ok(mut file) = std::fs::File::open("/proc/cpuinfo") {
         let mut contents = String::new();
-        if file.read_to_string(&mut contents).is_ok() {
-            if contents.contains("hypervisor") {
-                return true;
-            }
+        if file.read_to_string(&mut contents).is_ok() && contents.contains("hypervisor") {
+            return true;
         }
     }
 
@@ -414,26 +415,31 @@ fn is_macos_vm() -> bool {
 // =============================================================================
 
 #[cfg(not(target_os = "android"))]
+#[allow(dead_code)]
 fn is_android_rooted() -> bool {
     false
 }
 
 #[cfg(not(target_os = "android"))]
+#[allow(dead_code)]
 fn is_android_emulator() -> bool {
     false
 }
 
 #[cfg(not(target_os = "ios"))]
+#[allow(dead_code)]
 fn is_ios_jailbroken() -> bool {
     false
 }
 
 #[cfg(not(target_os = "ios"))]
+#[allow(dead_code)]
 fn is_ios_simulator() -> bool {
     false
 }
 
 #[cfg(not(any(target_os = "linux", target_os = "windows", target_os = "macos")))]
+#[allow(dead_code)]
 fn is_virtual_machine() -> bool {
     false
 }

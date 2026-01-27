@@ -1,7 +1,7 @@
 //! Protocol types for CIRISVerify requests and responses.
 
-use serde::{Deserialize, Serialize};
 use ciris_keyring::PlatformAttestation;
+use serde::{Deserialize, Serialize};
 
 use crate::license::{LicenseDetails, LicenseStatus};
 

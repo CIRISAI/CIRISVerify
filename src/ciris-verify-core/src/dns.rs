@@ -83,8 +83,8 @@ impl DnsValidator {
     ///
     /// Returns error if resolver initialization fails.
     pub async fn with_server(dns_server: IpAddr, timeout: Duration) -> Result<Self, VerifyError> {
-        use trust_dns_resolver::config::{NameServerConfig, Protocol};
         use std::net::SocketAddr;
+        use trust_dns_resolver::config::{NameServerConfig, Protocol};
 
         let mut config = ResolverConfig::new();
         config.add_name_server(NameServerConfig {
@@ -119,13 +119,13 @@ impl DnsValidator {
         let query_name = format!("_ciris-verify.{}", host);
         debug!("Querying DNS TXT record: {}", query_name);
 
-        let lookup = self
-            .resolver
-            .txt_lookup(&query_name)
-            .await
-            .map_err(|e| VerifyError::DnsError {
-                message: format!("DNS lookup failed for {}: {}", query_name, e),
-            })?;
+        let lookup =
+            self.resolver
+                .txt_lookup(&query_name)
+                .await
+                .map_err(|e| VerifyError::DnsError {
+                    message: format!("DNS lookup failed for {}: {}", query_name, e),
+                })?;
 
         // Collect all TXT record data
         let mut txt_data = String::new();
@@ -173,7 +173,10 @@ impl DnsValidator {
 
         if version != "ciris2" {
             return Err(VerifyError::DnsError {
-                message: format!("Unsupported protocol version: {} (expected ciris2)", version),
+                message: format!(
+                    "Unsupported protocol version: {} (expected ciris2)",
+                    version
+                ),
             });
         }
 
@@ -295,7 +298,7 @@ pub async fn query_multiple_sources(
                 us_result: Err(err.clone()),
                 eu_result: Err(err),
             };
-        }
+        },
     };
 
     // Query both sources in parallel
@@ -344,7 +347,10 @@ mod tests {
 
         let result = DnsValidator::parse_txt_record(txt);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Unsupported protocol version"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Unsupported protocol version"));
     }
 
     #[test]
@@ -365,6 +371,9 @@ mod tests {
 
         let result = DnsValidator::parse_txt_record(txt);
         assert!(result.is_err());
-        assert!(result.unwrap_err().to_string().contains("Invalid Ed25519 key size"));
+        assert!(result
+            .unwrap_err()
+            .to_string()
+            .contains("Invalid Ed25519 key size"));
     }
 }

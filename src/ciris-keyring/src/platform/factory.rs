@@ -194,7 +194,10 @@ pub fn create_hardware_signer(
     {
         use super::AndroidKeystoreSigner;
         let prefer_strongbox = true; // Always prefer if available
-        return Ok(Box::new(AndroidKeystoreSigner::new(alias, prefer_strongbox)?));
+        return Ok(Box::new(AndroidKeystoreSigner::new(
+            alias,
+            prefer_strongbox,
+        )?));
     }
 
     #[cfg(target_os = "ios")]

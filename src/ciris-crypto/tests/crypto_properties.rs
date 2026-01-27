@@ -3,10 +3,10 @@
 //! These tests verify mathematical invariants of cryptographic operations
 //! using proptest to generate arbitrary inputs.
 
-use proptest::prelude::*;
 use ciris_crypto::constant_time_eq;
-use ciris_crypto::{P256Signer, P256Verifier, Ed25519Signer, Ed25519Verifier};
 use ciris_crypto::{ClassicalSigner, ClassicalVerifier};
+use ciris_crypto::{Ed25519Signer, Ed25519Verifier, P256Signer, P256Verifier};
+use proptest::prelude::*;
 
 /// Strategy for generating binary data of specified size range.
 fn binary_data(min: usize, max: usize) -> impl Strategy<Value = Vec<u8>> {
@@ -154,9 +154,9 @@ proptest! {
 
         // Verification should fail (or return error for invalid signature)
         let result = verifier.verify(&public_key, &data, &tampered_sig);
-        match result {
-            Ok(valid) => prop_assert!(!valid),
-            Err(_) => {} // Invalid signature format is also acceptable
+        // Invalid signature format error is also acceptable
+        if let Ok(valid) = result {
+            prop_assert!(!valid);
         }
     }
 

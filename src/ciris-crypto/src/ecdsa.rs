@@ -4,15 +4,14 @@
 //! the primary classical algorithm for hardware-bound signatures.
 
 use p256::ecdsa::{
-    SigningKey, VerifyingKey,
-    Signature,
     signature::{Signer, Verifier},
+    Signature, SigningKey, VerifyingKey,
 };
 use p256::elliptic_curve::rand_core::OsRng;
 
 use crate::error::CryptoError;
-use crate::types::ClassicalAlgorithm;
 use crate::hybrid::{ClassicalSigner, ClassicalVerifier};
+use crate::types::ClassicalAlgorithm;
 
 /// ECDSA P-256 signer.
 pub struct P256Signer {
@@ -82,7 +81,12 @@ impl Default for P256Verifier {
 }
 
 impl ClassicalVerifier for P256Verifier {
-    fn verify(&self, public_key: &[u8], data: &[u8], signature: &[u8]) -> Result<bool, CryptoError> {
+    fn verify(
+        &self,
+        public_key: &[u8],
+        data: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, CryptoError> {
         // Parse public key
         let vk = VerifyingKey::from_sec1_bytes(public_key)
             .map_err(|e| CryptoError::invalid_public_key(e.to_string()))?;
@@ -138,7 +142,9 @@ mod tests {
         let signature = signer.sign(b"message 1").unwrap();
         let public_key = signer.public_key().unwrap();
 
-        let valid = verifier.verify(&public_key, b"message 2", &signature).unwrap();
+        let valid = verifier
+            .verify(&public_key, b"message 2", &signature)
+            .unwrap();
         assert!(!valid);
     }
 }

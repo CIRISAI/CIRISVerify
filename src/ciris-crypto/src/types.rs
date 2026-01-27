@@ -104,23 +104,18 @@ impl PqcAlgorithm {
 }
 
 /// Signature mode for hybrid cryptography.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[repr(u8)]
 pub enum SignatureMode {
     /// Classical signature only (DEPRECATED - not accepted by CIRISVerify 2.0)
     ClassicalOnly = 1,
 
     /// Both classical and PQC signatures required (DEFAULT)
+    #[default]
     HybridRequired = 2,
 
     /// PQC signature only (reserved for future post-transition)
     PqcOnly = 3,
-}
-
-impl Default for SignatureMode {
-    fn default() -> Self {
-        Self::HybridRequired
-    }
 }
 
 /// Tagged classical signature with algorithm identification.

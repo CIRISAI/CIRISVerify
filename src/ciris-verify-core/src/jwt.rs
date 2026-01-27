@@ -69,6 +69,7 @@ fn base64url_decode(input: &str) -> Result<Vec<u8>, JwtError> {
 }
 
 /// Encode to base64url.
+#[allow(dead_code)]
 fn base64url_encode(data: &[u8]) -> String {
     base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
 }
@@ -113,11 +114,7 @@ impl HybridJwt {
         }
 
         // 2. Build bound payload: signing_input || classical_signature
-        let bound_payload = [
-            self.signing_input.as_bytes(),
-            &self.classical_signature[..],
-        ]
-        .concat();
+        let bound_payload = [self.signing_input.as_bytes(), &self.classical_signature[..]].concat();
 
         // 3. Verify PQC signature over bound payload
         let pqc_valid = pqc_verifier
@@ -298,7 +295,10 @@ mod tests {
         let classical_sig = base64url_encode(&[0u8; 64]);
         let pqc_sig = base64url_encode(&[0u8; 128]);
 
-        format!("{}.{}.{}.{}", header_b64, payload_b64, classical_sig, pqc_sig)
+        format!(
+            "{}.{}.{}.{}",
+            header_b64, payload_b64, classical_sig, pqc_sig
+        )
     }
 
     #[test]

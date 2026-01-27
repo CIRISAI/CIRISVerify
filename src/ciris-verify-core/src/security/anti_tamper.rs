@@ -143,10 +143,9 @@ fn detect_frida() -> bool {
                     let cmdline_path = entry.path().join("cmdline");
                     if let Ok(mut file) = std::fs::File::open(&cmdline_path) {
                         let mut contents = String::new();
-                        if file.read_to_string(&mut contents).is_ok() {
-                            if contents.contains("frida") {
-                                return true;
-                            }
+                        if file.read_to_string(&mut contents).is_ok() && contents.contains("frida")
+                        {
+                            return true;
                         }
                     }
                 }

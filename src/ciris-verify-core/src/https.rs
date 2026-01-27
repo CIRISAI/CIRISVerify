@@ -180,12 +180,13 @@ impl HttpsClient {
             });
         }
 
-        let body = response
-            .json::<StewardKeyResponse>()
-            .await
-            .map_err(|e| VerifyError::HttpsError {
-                message: format!("Failed to parse response: {}", e),
-            })?;
+        let body =
+            response
+                .json::<StewardKeyResponse>()
+                .await
+                .map_err(|e| VerifyError::HttpsError {
+                    message: format!("Failed to parse response: {}", e),
+                })?;
 
         // Verify PQC key fingerprint matches
         self.verify_pqc_fingerprint(&body)?;
@@ -203,7 +204,10 @@ impl HttpsClient {
     ///
     /// Revocation status information.
     #[instrument(skip(self), fields(license_id = %license_id))]
-    pub async fn check_revocation(&self, license_id: &str) -> Result<RevocationResponse, VerifyError> {
+    pub async fn check_revocation(
+        &self,
+        license_id: &str,
+    ) -> Result<RevocationResponse, VerifyError> {
         let url = format!("{}/v1/revocation/{}", self.base_url, license_id);
         debug!("Checking revocation for {}", license_id);
 
@@ -240,7 +244,10 @@ impl HttpsClient {
     ///
     /// Validation result with license details if valid.
     #[instrument(skip(self, license_jwt))]
-    pub async fn validate_license(&self, license_jwt: &str) -> Result<LicenseValidationResponse, VerifyError> {
+    pub async fn validate_license(
+        &self,
+        license_jwt: &str,
+    ) -> Result<LicenseValidationResponse, VerifyError> {
         let url = format!("{}/v1/validate-license", self.base_url);
         debug!("Validating license JWT");
 
@@ -380,11 +387,7 @@ mod tests {
 
     #[test]
     fn test_client_creation() {
-        let result = HttpsClient::new(
-            "https://verify.ciris.ai",
-            Duration::from_secs(30),
-            None,
-        );
+        let result = HttpsClient::new("https://verify.ciris.ai", Duration::from_secs(30), None);
         assert!(result.is_ok());
     }
 
@@ -416,10 +419,11 @@ mod tests {
     #[test]
     fn test_url_normalization() {
         let client = HttpsClient::new(
-            "https://verify.ciris.ai/",  // trailing slash
+            "https://verify.ciris.ai/", // trailing slash
             Duration::from_secs(30),
             None,
-        ).unwrap();
+        )
+        .unwrap();
 
         assert_eq!(client.base_url, "https://verify.ciris.ai");
     }

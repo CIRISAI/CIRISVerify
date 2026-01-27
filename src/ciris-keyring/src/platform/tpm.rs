@@ -35,7 +35,10 @@ impl TpmSigner {
     /// # Errors
     ///
     /// Returns error if TPM is not available.
-    pub fn new(alias: impl Into<String>, persistent_handle: Option<u32>) -> Result<Self, KeyringError> {
+    pub fn new(
+        alias: impl Into<String>,
+        persistent_handle: Option<u32>,
+    ) -> Result<Self, KeyringError> {
         let alias = alias.into();
 
         // Check TPM availability
@@ -60,8 +63,8 @@ impl TpmSigner {
         {
             // Check for /dev/tpm0 or /dev/tpmrm0
             use std::path::Path;
-            let tpm_available = Path::new("/dev/tpm0").exists()
-                || Path::new("/dev/tpmrm0").exists();
+            let tpm_available =
+                Path::new("/dev/tpm0").exists() || Path::new("/dev/tpmrm0").exists();
 
             if !tpm_available {
                 return Ok((false, false));
@@ -95,7 +98,11 @@ impl TpmSigner {
     /// Get TPM quote for attestation.
     ///
     /// Creates a signed quote over PCRs and external data.
-    pub async fn get_quote(&self, nonce: &[u8], pcr_selection: &[u8]) -> Result<TpmQuote, KeyringError> {
+    pub async fn get_quote(
+        &self,
+        nonce: &[u8],
+        pcr_selection: &[u8],
+    ) -> Result<TpmQuote, KeyringError> {
         #[cfg(any(target_os = "linux", target_os = "windows"))]
         {
             // Real implementation would:

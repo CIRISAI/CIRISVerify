@@ -43,7 +43,12 @@
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
-#![warn(clippy::pedantic)]
+#![allow(clippy::pedantic)] // Too strict for production code
+#![allow(clippy::doc_markdown)] // Allow product names without backticks
+#![allow(clippy::missing_errors_doc)] // Error documentation not required
+#![allow(clippy::missing_panics_doc)] // Panic documentation not required
+#![allow(clippy::module_name_repetitions)] // Allow Type in module::Type
+#![allow(clippy::must_use_candidate)] // Not all functions need must_use
 
 pub mod cache;
 pub mod config;
@@ -65,9 +70,8 @@ pub use error::VerifyError;
 pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
 pub use license::{LicenseDetails, LicenseStatus, LicenseType};
 pub use revocation::{RevocationChecker, RevocationStatus};
-pub use security::{IntegrityChecker, IntegrityStatus, constant_time_eq};
+pub use security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
 pub use types::{
-    LicenseStatusRequest, LicenseStatusResponse,
-    CapabilityCheckRequest, CapabilityCheckResponse,
+    CapabilityCheckRequest, CapabilityCheckResponse, LicenseStatusRequest, LicenseStatusResponse,
     MandatoryDisclosure,
 };

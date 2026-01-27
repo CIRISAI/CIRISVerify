@@ -21,10 +21,10 @@
 use std::time::Duration;
 
 use base64::Engine;
-use tracing::{debug, warn, error, instrument};
+use tracing::{debug, error, instrument, warn};
 
-use crate::dns::{DnsTxtRecord, query_multiple_sources};
-use crate::https::{StewardKeyResponse, query_https_source};
+use crate::dns::{query_multiple_sources, DnsTxtRecord};
+use crate::https::{query_https_source, StewardKeyResponse};
 use crate::types::ValidationStatus;
 
 /// Consensus validator for multi-source agreement.
@@ -174,10 +174,7 @@ impl ConsensusValidator {
         }
 
         // Find the largest agreement group
-        let largest_group = agreement_groups
-            .iter()
-            .max_by_key(|g| g.len())
-            .unwrap();
+        let largest_group = agreement_groups.iter().max_by_key(|g| g.len()).unwrap();
 
         let agreement_count = largest_group.len();
         let consensus_data = largest_group[0].1;
@@ -247,9 +244,7 @@ impl ConsensusValidator {
             }
         } else {
             // No majority agreement - critical security issue
-            error!(
-                "SECURITY ALERT: Sources actively disagree! Possible attack detected."
-            );
+            error!("SECURITY ALERT: Sources actively disagree! Possible attack detected.");
 
             ValidationResult {
                 status: ValidationStatus::SourcesDisagree,
@@ -264,16 +259,11 @@ impl ConsensusValidator {
     /// Check if two source data records agree on critical fields.
     fn sources_agree(a: &SourceData, b: &SourceData) -> bool {
         // Must agree on steward key (constant-time comparison)
-        let keys_match = ciris_crypto::constant_time_eq(
-            &a.steward_key_classical,
-            &b.steward_key_classical,
-        );
+        let keys_match =
+            ciris_crypto::constant_time_eq(&a.steward_key_classical, &b.steward_key_classical);
 
         // Must agree on PQC fingerprint
-        let pqc_match = ciris_crypto::constant_time_eq(
-            &a.pqc_fingerprint,
-            &b.pqc_fingerprint,
-        );
+        let pqc_match = ciris_crypto::constant_time_eq(&a.pqc_fingerprint, &b.pqc_fingerprint);
 
         // Revocation revision should match (small difference acceptable for propagation delay)
         let rev_match = a.revocation_revision == b.revocation_revision
@@ -439,9 +429,9 @@ mod tests {
     fn test_all_disagree() {
         let fp = vec![2u8; 32];
 
-        let dns_us = Some(make_source_data(&vec![1u8; 32], &fp, 100));
-        let dns_eu = Some(make_source_data(&vec![2u8; 32], &fp, 100));
-        let https = Some(make_source_data(&vec![3u8; 32], &fp, 100));
+        let dns_us = Some(make_source_data(&[1u8; 32], &fp, 100));
+        let dns_eu = Some(make_source_data(&[2u8; 32], &fp, 100));
+        let https = Some(make_source_data(&[3u8; 32], &fp, 100));
 
         let result = ConsensusValidator::compute_consensus(dns_us, dns_eu, https);
 

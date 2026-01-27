@@ -9,14 +9,12 @@
 //! - Community deployments that don't require professional features
 
 use async_trait::async_trait;
-use p256::ecdsa::{SigningKey, Signature, signature::Signer};
+use p256::ecdsa::{signature::Signer, Signature, SigningKey};
 use p256::elliptic_curve::rand_core::OsRng;
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
-use crate::types::{
-    ClassicalAlgorithm, HardwareType, PlatformAttestation, SoftwareAttestation,
-};
+use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation, SoftwareAttestation};
 
 /// Software-only signer for development and fallback scenarios.
 ///
@@ -187,9 +185,12 @@ impl MutableSoftwareSigner {
             });
         }
 
-        let mut inner = self.inner.write().map_err(|_| KeyringError::PlatformError {
-            message: "Lock poisoned".into(),
-        })?;
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| KeyringError::PlatformError {
+                message: "Lock poisoned".into(),
+            })?;
 
         if inner.signing_key.is_some() && inner.alias == config.alias {
             return Err(KeyringError::KeyAlreadyExists {
@@ -228,7 +229,7 @@ mod tests {
         use p256::ecdsa::signature::Verifier;
 
         let signing_key = SigningKey::random(&mut OsRng);
-        let verifying_key = signing_key.verifying_key().clone();
+        let verifying_key = *signing_key.verifying_key();
 
         let signer = SoftwareSigner::with_key(signing_key, "test".into());
 
@@ -248,7 +249,7 @@ mod tests {
         match attestation {
             PlatformAttestation::Software(sa) => {
                 assert!(sa.security_warning.contains("SOFTWARE_ONLY"));
-            }
+            },
             _ => panic!("Expected SoftwareAttestation"),
         }
     }

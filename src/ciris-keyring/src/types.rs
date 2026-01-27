@@ -10,11 +10,12 @@ use serde::{Deserialize, Serialize};
 /// Mobile HSMs (Android Keystore, iOS Secure Enclave) only support ECDSA P-256.
 /// TPM 2.0 supports ECDSA P-256, RSA, and some implementations support Ed25519.
 /// For cross-platform consistency, ECDSA P-256 is the default.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[repr(u8)]
 pub enum ClassicalAlgorithm {
     /// ECDSA with NIST P-256 curve (secp256r1/prime256v1)
     /// Required for mobile HSMs. Default for cross-platform compatibility.
+    #[default]
     EcdsaP256 = 1,
 
     /// Ed25519 Edwards curve signatures
@@ -26,20 +27,14 @@ pub enum ClassicalAlgorithm {
     EcdsaP384 = 3,
 }
 
-impl Default for ClassicalAlgorithm {
-    fn default() -> Self {
-        Self::EcdsaP256
-    }
-}
-
 impl ClassicalAlgorithm {
     /// Get the signature size in bytes for this algorithm.
     #[must_use]
     pub const fn signature_size(&self) -> usize {
         match self {
-            Self::EcdsaP256 => 64,  // R (32) + S (32)
+            Self::EcdsaP256 => 64, // R (32) + S (32)
             Self::Ed25519 => 64,
-            Self::EcdsaP384 => 96,  // R (48) + S (48)
+            Self::EcdsaP384 => 96, // R (48) + S (48)
         }
     }
 
@@ -47,9 +42,9 @@ impl ClassicalAlgorithm {
     #[must_use]
     pub const fn public_key_size(&self) -> usize {
         match self {
-            Self::EcdsaP256 => 65,  // Uncompressed: 0x04 || X (32) || Y (32)
+            Self::EcdsaP256 => 65, // Uncompressed: 0x04 || X (32) || Y (32)
             Self::Ed25519 => 32,
-            Self::EcdsaP384 => 97,  // Uncompressed: 0x04 || X (48) || Y (48)
+            Self::EcdsaP384 => 97, // Uncompressed: 0x04 || X (48) || Y (48)
         }
     }
 }

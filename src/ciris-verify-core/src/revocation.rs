@@ -20,7 +20,7 @@ use std::collections::HashMap;
 use std::sync::RwLock;
 use std::time::{Duration, Instant};
 
-use tracing::{debug, warn, error, instrument};
+use tracing::{debug, error, instrument, warn};
 
 use crate::https::{HttpsClient, RevocationResponse};
 
@@ -167,7 +167,7 @@ impl RevocationChecker {
                 let status = self.process_response(license_id, response);
                 self.update_cache(license_id, &status);
                 status
-            }
+            },
             Err(e) => {
                 warn!(
                     license_id = %license_id,
@@ -175,13 +175,10 @@ impl RevocationChecker {
                     "Revocation check failed"
                 );
                 // Return unknown status with short TTL
-                let status = RevocationStatus::unknown(
-                    license_id.to_string(),
-                    self.default_ttl,
-                );
+                let status = RevocationStatus::unknown(license_id.to_string(), self.default_ttl);
                 self.update_cache(license_id, &status);
                 status
-            }
+            },
         }
     }
 
@@ -194,10 +191,7 @@ impl RevocationChecker {
     /// # Returns
     ///
     /// Map of license ID to revocation status.
-    pub async fn check_multiple(
-        &self,
-        license_ids: &[&str],
-    ) -> HashMap<String, RevocationStatus> {
+    pub async fn check_multiple(&self, license_ids: &[&str]) -> HashMap<String, RevocationStatus> {
         let futures: Vec<_> = license_ids
             .iter()
             .map(|id| async move {
@@ -360,10 +354,7 @@ mod tests {
 
     #[test]
     fn test_revocation_status_validity() {
-        let status = RevocationStatus::not_revoked(
-            "test-license".into(),
-            Duration::from_secs(60),
-        );
+        let status = RevocationStatus::not_revoked("test-license".into(), Duration::from_secs(60));
 
         assert!(status.is_valid());
         assert!(!status.is_revoked());

@@ -1,5 +1,5 @@
 # CIRISVerify Rust Formatting Configuration
-# Compatible with Veilid style conventions
+# Uses only stable rustfmt features for CI compatibility
 
 edition = "2021"
 max_width = 100
@@ -8,26 +8,13 @@ tab_spaces = 4
 newline_style = "Auto"
 use_small_heuristics = "Default"
 
-# Imports
-imports_granularity = "Module"
-group_imports = "StdExternalCrate"
+# Imports (stable)
 reorder_imports = true
 reorder_modules = true
 
-# Comments
-wrap_comments = true
-format_code_in_doc_comments = true
-doc_comment_code_block_width = 80
-normalize_comments = true
-normalize_doc_attributes = true
-
-# Formatting
+# Formatting (stable)
 use_field_init_shorthand = true
 use_try_shorthand = true
-force_multiline_blocks = false
-fn_args_layout = "Tall"
-brace_style = "SameLineWhere"
 
-# Misc
+# Misc (stable)
 match_block_trailing_comma = true
-trailing_semicolon = true

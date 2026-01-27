@@ -7,7 +7,7 @@ use async_trait::async_trait;
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
-use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation, AndroidAttestation};
+use crate::types::{AndroidAttestation, ClassicalAlgorithm, HardwareType, PlatformAttestation};
 
 /// Android Keystore signer using hardware-backed keys.
 ///

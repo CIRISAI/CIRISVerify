@@ -77,11 +77,7 @@ impl LicenseCache {
     /// * `deployment_id` - Used to derive encryption key
     /// * `cache_dir` - Optional directory for persistent storage
     /// * `default_ttl` - Default TTL for cached entries
-    pub fn new(
-        deployment_id: &str,
-        cache_dir: Option<PathBuf>,
-        default_ttl: Duration,
-    ) -> Self {
+    pub fn new(deployment_id: &str, cache_dir: Option<PathBuf>, default_ttl: Duration) -> Self {
         // Derive encryption key from deployment ID
         let mut hasher = Sha256::new();
         hasher.update(b"ciris-cache-key:");
@@ -133,7 +129,11 @@ impl LicenseCache {
     /// Get a cached license if within grace period.
     ///
     /// Used for offline operation.
-    pub fn get_for_offline(&self, license_id: &str, grace_period: Duration) -> Option<CachedLicense> {
+    pub fn get_for_offline(
+        &self,
+        license_id: &str,
+        grace_period: Duration,
+    ) -> Option<CachedLicense> {
         // Try memory first
         if let Some(entry) = self.get_from_memory(license_id) {
             if entry.within_grace_period(grace_period) {

@@ -4,9 +4,7 @@
 
 use proptest::prelude::*;
 
-use ciris_verify_core::security::{
-    constant_time_eq, IntegrityChecker, IntegrityStatus,
-};
+use ciris_verify_core::security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
 
 // =============================================================================
 // Constant-Time Comparison Properties
@@ -231,13 +229,8 @@ fn test_integrity_checker_with_hash() {
 fn test_security_module_exports() {
     // Verify all expected exports are available
     use ciris_verify_core::security::{
-        constant_time_eq,
-        detect_hooks,
-        is_debugger_attached,
-        is_device_compromised,
-        is_emulator,
-        IntegrityChecker,
-        IntegrityStatus,
+        constant_time_eq, detect_hooks, is_debugger_attached, is_device_compromised, is_emulator,
+        IntegrityChecker, IntegrityStatus,
     };
 
     // These should all compile and be callable

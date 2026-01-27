@@ -27,9 +27,9 @@ use crate::https::HttpsClient;
 use crate::license::{LicenseDetails, LicenseStatus, LicenseType};
 use crate::revocation::RevocationChecker;
 use crate::types::{
-    CapabilityCheckResponse, DisclosureSeverity, LicenseStatusRequest,
-    LicenseStatusResponse, MandatoryDisclosure, ResponseAttestation, ResponseMetadata,
-    ResponseSignature, SourceResult, ValidationResults, ValidationStatus,
+    CapabilityCheckResponse, DisclosureSeverity, LicenseStatusRequest, LicenseStatusResponse,
+    MandatoryDisclosure, ResponseAttestation, ResponseMetadata, ResponseSignature, SourceResult,
+    ValidationResults, ValidationStatus,
 };
 use crate::validation::{ConsensusValidator, ValidationResult};
 
@@ -93,7 +93,7 @@ impl LicenseEngine {
         // Initialize revocation checker
         let revocation_checker = RevocationChecker::new(
             https_client,
-            Duration::from_secs(300), // 5 minute TTL for non-revoked
+            Duration::from_secs(300),  // 5 minute TTL for non-revoked
             Duration::from_secs(3600), // 1 hour TTL for revoked (persistent)
         );
 
@@ -134,11 +134,7 @@ impl LicenseEngine {
             config.cert_pin.clone(),
         );
 
-        let cache = LicenseCache::new(
-            &config.key_alias,
-            None,
-            config.cache_ttl,
-        );
+        let cache = LicenseCache::new(&config.key_alias, None, config.cache_ttl);
 
         let https_client = HttpsClient::new(
             &config.https_endpoint,
@@ -186,11 +182,13 @@ impl LicenseEngine {
         // 1. Binary integrity check
         if !self.integrity_valid {
             error!("Binary integrity check failed - LOCKDOWN");
-            return Ok(self.build_error_response(
-                LicenseStatus::ErrorBinaryTampered,
-                "Binary integrity verification failed. System in lockdown mode.",
-                &request,
-            ).await);
+            return Ok(self
+                .build_error_response(
+                    LicenseStatus::ErrorBinaryTampered,
+                    "Binary integrity verification failed. System in lockdown mode.",
+                    &request,
+                )
+                .await);
         }
 
         // 2. Multi-source validation
@@ -205,64 +203,81 @@ impl LicenseEngine {
         match validation.status {
             ValidationStatus::SourcesDisagree => {
                 error!("SECURITY ALERT: Sources disagree - possible attack");
-                return Ok(self.build_error_response(
-                    LicenseStatus::ErrorSourcesDisagree,
-                    "SECURITY ALERT: Verification sources report conflicting data. \
+                return Ok(self
+                    .build_error_response(
+                        LicenseStatus::ErrorSourcesDisagree,
+                        "SECURITY ALERT: Verification sources report conflicting data. \
                      Possible man-in-the-middle attack detected.",
-                    &request,
-                ).await);
-            }
+                        &request,
+                    )
+                    .await);
+            },
             ValidationStatus::NoSourcesReachable => {
                 warn!("No sources reachable - attempting offline mode");
                 // Try cache with grace period
-                if let Some(cached) = self.cache.get_for_offline(
-                    &request.deployment_id,
-                    self.config.offline_grace,
-                ) {
+                if let Some(cached) = self
+                    .cache
+                    .get_for_offline(&request.deployment_id, self.config.offline_grace)
+                {
                     info!("Using cached license for offline operation");
-                    return Ok(self.build_cached_response(cached, &request, &validation).await);
+                    return Ok(self
+                        .build_cached_response(cached, &request, &validation)
+                        .await);
                 }
 
-                return Ok(self.build_error_response(
-                    LicenseStatus::ErrorVerificationFailed,
-                    "Cannot reach verification servers and no valid cached license. \
+                return Ok(self
+                    .build_error_response(
+                        LicenseStatus::ErrorVerificationFailed,
+                        "Cannot reach verification servers and no valid cached license. \
                      Operating in community mode.",
-                    &request,
-                ).await);
-            }
+                        &request,
+                    )
+                    .await);
+            },
             ValidationStatus::ValidationError => {
                 warn!("Validation error - insufficient sources");
                 // Try cache
                 if let Some(cached) = self.cache.get(&request.deployment_id) {
                     if cached.is_fresh {
-                        return Ok(self.build_cached_response(cached, &request, &validation).await);
+                        return Ok(self
+                            .build_cached_response(cached, &request, &validation)
+                            .await);
                     }
                 }
-            }
+            },
             ValidationStatus::AllSourcesAgree | ValidationStatus::PartialAgreement => {
                 debug!("Source validation passed");
-            }
+            },
         }
 
         // 3. Check revocation status
-        let revocation = self.revocation_checker.check_revocation(&request.deployment_id).await;
+        let revocation = self
+            .revocation_checker
+            .check_revocation(&request.deployment_id)
+            .await;
         if revocation.revoked {
             warn!(
                 reason = ?revocation.reason,
                 "License has been revoked"
             );
-            return Ok(self.build_error_response(
-                LicenseStatus::ErrorLicenseRevoked,
-                &format!(
-                    "License has been revoked: {}",
-                    revocation.reason.unwrap_or_else(|| "No reason provided".to_string())
-                ),
-                &request,
-            ).await);
+            return Ok(self
+                .build_error_response(
+                    LicenseStatus::ErrorLicenseRevoked,
+                    &format!(
+                        "License has been revoked: {}",
+                        revocation
+                            .reason
+                            .unwrap_or_else(|| "No reason provided".to_string())
+                    ),
+                    &request,
+                )
+                .await);
         }
 
         // 4. Get or verify license details
-        let license_details = self.get_license_details(&request.deployment_id, &validation).await;
+        let license_details = self
+            .get_license_details(&request.deployment_id, &validation)
+            .await;
 
         // 5. Apply hardware tier restriction
         let (final_status, final_license) = self.apply_hardware_restriction(license_details);
@@ -273,12 +288,9 @@ impl LicenseEngine {
         }
 
         // 7. Build response with attestation
-        Ok(self.build_success_response(
-            final_status,
-            final_license,
-            &request,
-            &validation,
-        ).await)
+        Ok(self
+            .build_success_response(final_status, final_license, &request, &validation)
+            .await)
     }
 
     /// Check if a specific capability is allowed.
@@ -303,18 +315,22 @@ impl LicenseEngine {
         let allowed = match status.license {
             Some(ref license) => {
                 // Check if capability is granted
-                let has_capability = license.capabilities.iter()
+                let has_capability = license
+                    .capabilities
+                    .iter()
                     .any(|c| c == capability || capability.starts_with(c));
 
                 // Check if denied
-                let is_denied = license.capabilities_denied.iter()
+                let is_denied = license
+                    .capabilities_denied
+                    .iter()
                     .any(|c| c == capability || capability.starts_with(c));
 
                 // Check tier
                 let tier_ok = (license.max_autonomy_tier as u8) >= required_tier;
 
                 has_capability && !is_denied && tier_ok
-            }
+            },
             None => false,
         };
 
@@ -393,7 +409,7 @@ impl LicenseEngine {
                 };
 
                 (status, Some(lic))
-            }
+            },
             None => (LicenseStatus::UnlicensedCommunity, None),
         }
     }
@@ -405,9 +421,7 @@ impl LicenseEngine {
         message: &str,
         request: &LicenseStatusRequest,
     ) -> LicenseStatusResponse {
-        let severity = if status.requires_lockdown() {
-            DisclosureSeverity::Critical
-        } else if status.requires_restricted() {
+        let severity = if status.requires_lockdown() || status.requires_restricted() {
             DisclosureSeverity::Critical
         } else {
             DisclosureSeverity::Warning
@@ -484,12 +498,17 @@ impl LicenseEngine {
 
     /// Build attestation data.
     async fn build_attestation(&self, request: &LicenseStatusRequest) -> ResponseAttestation {
-        let platform = self.hw_signer.attestation().await.unwrap_or_else(|_| {
-            PlatformAttestation::Software(SoftwareAttestation::default())
-        });
+        let platform = self
+            .hw_signer
+            .attestation()
+            .await
+            .unwrap_or_else(|_| PlatformAttestation::Software(SoftwareAttestation::default()));
 
         // Sign the response (simplified - in production, sign the full response)
-        let signature_data = self.hw_signer.sign(&request.challenge_nonce).await
+        let signature_data = self
+            .hw_signer
+            .sign(&request.challenge_nonce)
+            .await
             .unwrap_or_default();
 
         ResponseAttestation {
@@ -511,21 +530,24 @@ impl LicenseEngine {
             dns_us: SourceResult {
                 source: "registry-us.ciris.ai".to_string(),
                 reachable: validation.source_details.dns_us_reachable,
-                valid: validation.source_details.dns_us_reachable && validation.source_details.dns_us_error.is_none(),
+                valid: validation.source_details.dns_us_reachable
+                    && validation.source_details.dns_us_error.is_none(),
                 checked_at: chrono::Utc::now().timestamp(),
                 error: validation.source_details.dns_us_error.clone(),
             },
             dns_eu: SourceResult {
                 source: "registry-eu.ciris.ai".to_string(),
                 reachable: validation.source_details.dns_eu_reachable,
-                valid: validation.source_details.dns_eu_reachable && validation.source_details.dns_eu_error.is_none(),
+                valid: validation.source_details.dns_eu_reachable
+                    && validation.source_details.dns_eu_error.is_none(),
                 checked_at: chrono::Utc::now().timestamp(),
                 error: validation.source_details.dns_eu_error.clone(),
             },
             https: SourceResult {
                 source: "verify.ciris.ai".to_string(),
                 reachable: validation.source_details.https_reachable,
-                valid: validation.source_details.https_reachable && validation.source_details.https_error.is_none(),
+                valid: validation.source_details.https_reachable
+                    && validation.source_details.https_error.is_none(),
                 checked_at: chrono::Utc::now().timestamp(),
                 error: validation.source_details.https_error.clone(),
             },
@@ -573,49 +595,57 @@ impl LicenseEngine {
     }
 
     /// Get disclosure text for status.
-    fn get_disclosure_text(&self, status: &LicenseStatus, license: Option<&LicenseDetails>) -> String {
+    fn get_disclosure_text(
+        &self,
+        status: &LicenseStatus,
+        license: Option<&LicenseDetails>,
+    ) -> String {
         match status {
             LicenseStatus::LicensedProfessional => {
                 if let Some(lic) = license {
                     format!(
                         "Licensed professional agent. Organization: {}. \
                          Capabilities verified. Maximum autonomy tier: {:?}.",
-                        lic.organization_name,
-                        lic.max_autonomy_tier
+                        lic.organization_name, lic.max_autonomy_tier
                     )
                 } else {
                     "Licensed professional agent.".to_string()
                 }
-            }
+            },
             LicenseStatus::LicensedCommunityPlus => {
                 "Community Plus license. Some professional features available.".to_string()
-            }
+            },
             LicenseStatus::UnlicensedCommunity => {
                 "COMMUNITY MODE: This is a general wellness assistant. \
                  Not a licensed professional service. \
-                 Consult qualified professionals for medical, legal, or financial advice.".to_string()
-            }
+                 Consult qualified professionals for medical, legal, or financial advice."
+                    .to_string()
+            },
             LicenseStatus::UnlicensedUnverified => {
                 "UNVERIFIED: License status could not be confirmed. \
-                 Operating in restricted mode.".to_string()
-            }
+                 Operating in restricted mode."
+                    .to_string()
+            },
             LicenseStatus::ErrorBinaryTampered => {
-                "CRITICAL: Binary integrity check failed. System locked down for security.".to_string()
-            }
+                "CRITICAL: Binary integrity check failed. System locked down for security."
+                    .to_string()
+            },
             LicenseStatus::ErrorSourcesDisagree => {
                 "SECURITY ALERT: Verification sources disagree. Possible attack detected. \
-                 System in restricted mode.".to_string()
-            }
+                 System in restricted mode."
+                    .to_string()
+            },
             LicenseStatus::ErrorVerificationFailed => {
                 "Verification failed. Operating in community mode.".to_string()
-            }
+            },
             LicenseStatus::ErrorLicenseRevoked => {
                 "License has been revoked. Operating in community mode.".to_string()
-            }
+            },
             LicenseStatus::ErrorLicenseExpired => {
                 "License has expired. Operating in community mode. \
-                 Contact your organization to renew.".to_string()
-            }
+                 Contact your organization to renew."
+                    .to_string()
+            },
         }
     }
 
@@ -624,10 +654,10 @@ impl LicenseEngine {
         match status {
             LicenseStatus::LicensedProfessional | LicenseStatus::LicensedCommunityPlus => {
                 DisclosureSeverity::Info
-            }
+            },
             LicenseStatus::ErrorBinaryTampered | LicenseStatus::ErrorSourcesDisagree => {
                 DisclosureSeverity::Critical
-            }
+            },
             _ => DisclosureSeverity::Warning,
         }
     }

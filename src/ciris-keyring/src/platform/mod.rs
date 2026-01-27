@@ -18,8 +18,8 @@ pub mod tpm;
 mod factory;
 
 pub use factory::{
-    create_hardware_signer, create_software_signer, detect_hardware_type,
-    MaxTier, PlatformCapabilities,
+    create_hardware_signer, create_software_signer, detect_hardware_type, MaxTier,
+    PlatformCapabilities,
 };
 
 #[cfg(target_os = "android")]

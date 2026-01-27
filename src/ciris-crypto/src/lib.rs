@@ -29,11 +29,10 @@
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
-#![warn(clippy::pedantic)]
 
 mod error;
-mod types;
 mod hybrid;
+mod types;
 
 #[cfg(feature = "ecdsa-p256")]
 mod ecdsa;
@@ -46,12 +45,13 @@ mod ed25519;
 mod ml_dsa;
 
 pub use error::CryptoError;
-pub use types::{
-    CryptoKind, CRYPTO_KIND_CIRIS_V1,
-    ClassicalAlgorithm, PqcAlgorithm, SignatureMode,
-    TaggedClassicalSignature, TaggedPqcSignature, HybridSignature,
+pub use hybrid::{
+    ClassicalSigner, ClassicalVerifier, HybridSigner, HybridVerifier, PqcSigner, PqcVerifier,
 };
-pub use hybrid::{ClassicalSigner, ClassicalVerifier, PqcSigner, PqcVerifier, HybridSigner, HybridVerifier};
+pub use types::{
+    ClassicalAlgorithm, CryptoKind, HybridSignature, PqcAlgorithm, SignatureMode,
+    TaggedClassicalSignature, TaggedPqcSignature, CRYPTO_KIND_CIRIS_V1,
+};
 
 #[cfg(feature = "ecdsa-p256")]
 pub use ecdsa::{P256Signer, P256Verifier};

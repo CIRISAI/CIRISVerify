@@ -49,8 +49,8 @@ use std::ffi::c_void;
 use std::ptr;
 use std::sync::Arc;
 
-use tokio::runtime::Runtime;
 use ciris_verify_core::LicenseEngine;
+use tokio::runtime::Runtime;
 
 /// Opaque handle to the CIRISVerify instance.
 #[repr(C)]
@@ -102,7 +102,7 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
         Err(e) => {
             tracing::error!("Failed to create runtime: {}", e);
             return ptr::null_mut();
-        }
+        },
     };
 
     // Initialize the engine (synchronous)
@@ -111,7 +111,7 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
         Err(e) => {
             tracing::error!("Failed to initialize engine: {}", e);
             return ptr::null_mut();
-        }
+        },
     };
 
     let handle = Box::new(CirisVerifyHandle { runtime, engine });
@@ -146,7 +146,11 @@ pub unsafe extern "C" fn ciris_verify_get_status(
     response_len: *mut usize,
 ) -> i32 {
     // Validate arguments
-    if handle.is_null() || request_data.is_null() || response_data.is_null() || response_len.is_null() {
+    if handle.is_null()
+        || request_data.is_null()
+        || response_data.is_null()
+        || response_len.is_null()
+    {
         return CirisVerifyError::InvalidArgument as i32;
     }
 
@@ -154,21 +158,25 @@ pub unsafe extern "C" fn ciris_verify_get_status(
     let request_bytes = std::slice::from_raw_parts(request_data, request_len);
 
     // Deserialize request
-    let request: ciris_verify_core::LicenseStatusRequest = match serde_json::from_slice(request_bytes) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("Failed to deserialize request: {}", e);
-            return CirisVerifyError::SerializationError as i32;
-        }
-    };
+    let request: ciris_verify_core::LicenseStatusRequest =
+        match serde_json::from_slice(request_bytes) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("Failed to deserialize request: {}", e);
+                return CirisVerifyError::SerializationError as i32;
+            },
+        };
 
     // Execute request
-    let response = match handle.runtime.block_on(handle.engine.get_license_status(request)) {
+    let response = match handle
+        .runtime
+        .block_on(handle.engine.get_license_status(request))
+    {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Request failed: {}", e);
             return CirisVerifyError::RequestFailed as i32;
-        }
+        },
     };
 
     // Serialize response
@@ -177,7 +185,7 @@ pub unsafe extern "C" fn ciris_verify_get_status(
         Err(e) => {
             tracing::error!("Failed to serialize response: {}", e);
             return CirisVerifyError::SerializationError as i32;
-        }
+        },
     };
 
     // Allocate and copy response
@@ -232,14 +240,16 @@ pub unsafe extern "C" fn ciris_verify_check_capability(
         Err(_) => return CirisVerifyError::InvalidArgument as i32,
     };
 
-    let result = match handle.runtime.block_on(
-        handle.engine.check_capability(capability_str, action_str, required_tier as u8)
-    ) {
+    let result = match handle.runtime.block_on(handle.engine.check_capability(
+        capability_str,
+        action_str,
+        required_tier as u8,
+    )) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Capability check failed: {}", e);
             return CirisVerifyError::RequestFailed as i32;
-        }
+        },
     };
 
     *allowed = if result.allowed { 1 } else { 0 };
@@ -282,9 +292,9 @@ pub extern "C" fn ciris_verify_version() -> *const libc::c_char {
 // Android JNI bindings
 #[cfg(target_os = "android")]
 mod android {
-    use jni::JNIEnv;
     use jni::objects::{JClass, JString};
-    use jni::sys::{jlong, jbyteArray, jint};
+    use jni::sys::{jbyteArray, jint, jlong};
+    use jni::JNIEnv;
 
     use super::*;
 

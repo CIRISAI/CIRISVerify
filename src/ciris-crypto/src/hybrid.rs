@@ -8,9 +8,8 @@
 
 use crate::error::CryptoError;
 use crate::types::{
-    CryptoKind, CRYPTO_KIND_CIRIS_V1,
-    ClassicalAlgorithm, PqcAlgorithm, SignatureMode,
-    TaggedClassicalSignature, TaggedPqcSignature, HybridSignature,
+    ClassicalAlgorithm, CryptoKind, HybridSignature, PqcAlgorithm, SignatureMode,
+    TaggedClassicalSignature, TaggedPqcSignature, CRYPTO_KIND_CIRIS_V1,
 };
 
 /// Trait for classical signature operations.
@@ -28,7 +27,8 @@ pub trait ClassicalSigner {
 /// Trait for classical signature verification.
 pub trait ClassicalVerifier {
     /// Verify a signature against a public key.
-    fn verify(&self, public_key: &[u8], data: &[u8], signature: &[u8]) -> Result<bool, CryptoError>;
+    fn verify(&self, public_key: &[u8], data: &[u8], signature: &[u8])
+        -> Result<bool, CryptoError>;
 }
 
 /// Trait for PQC signature operations.
@@ -46,7 +46,8 @@ pub trait PqcSigner {
 /// Trait for PQC signature verification.
 pub trait PqcVerifier {
     /// Verify a signature against a public key.
-    fn verify(&self, public_key: &[u8], data: &[u8], signature: &[u8]) -> Result<bool, CryptoError>;
+    fn verify(&self, public_key: &[u8], data: &[u8], signature: &[u8])
+        -> Result<bool, CryptoError>;
 }
 
 /// Creates hybrid signatures combining classical and PQC.
@@ -82,7 +83,11 @@ where
     }
 
     /// Create a hybrid signer with a custom crypto kind.
-    pub fn with_crypto_kind(classical: C, pqc: P, crypto_kind: CryptoKind) -> Result<Self, CryptoError> {
+    pub fn with_crypto_kind(
+        classical: C,
+        pqc: P,
+        crypto_kind: CryptoKind,
+    ) -> Result<Self, CryptoError> {
         if !pqc.algorithm().meets_minimum_requirement() {
             return Err(CryptoError::InsufficientPqcSecurity {
                 algorithm: pqc.algorithm(),
@@ -208,7 +213,8 @@ where
         }
 
         // Step 2: Rebuild bound payload (data || classical_signature)
-        let mut bound_payload = Vec::with_capacity(data.len() + signature.classical.signature.len());
+        let mut bound_payload =
+            Vec::with_capacity(data.len() + signature.classical.signature.len());
         bound_payload.extend_from_slice(data);
         bound_payload.extend_from_slice(&signature.classical.signature);
 
@@ -233,7 +239,11 @@ where
     ///
     /// WARNING: This should only be used for debugging or when PQC is unavailable.
     /// Production verification MUST use [`verify`].
-    pub fn verify_classical_only(&self, data: &[u8], signature: &HybridSignature) -> Result<bool, CryptoError> {
+    pub fn verify_classical_only(
+        &self,
+        data: &[u8],
+        signature: &HybridSignature,
+    ) -> Result<bool, CryptoError> {
         self.classical.verify(
             &signature.classical.public_key,
             data,
@@ -245,9 +255,14 @@ where
     ///
     /// Note: This verifies the PQC signature over the bound payload,
     /// which requires the classical signature to be present.
-    pub fn verify_pqc_only(&self, data: &[u8], signature: &HybridSignature) -> Result<bool, CryptoError> {
+    pub fn verify_pqc_only(
+        &self,
+        data: &[u8],
+        signature: &HybridSignature,
+    ) -> Result<bool, CryptoError> {
         // Rebuild bound payload
-        let mut bound_payload = Vec::with_capacity(data.len() + signature.classical.signature.len());
+        let mut bound_payload =
+            Vec::with_capacity(data.len() + signature.classical.signature.len());
         bound_payload.extend_from_slice(data);
         bound_payload.extend_from_slice(&signature.classical.signature);
 
@@ -335,7 +350,10 @@ mod tests {
         };
 
         let result = HybridSigner::new(classical, pqc);
-        assert!(matches!(result, Err(CryptoError::InsufficientPqcSecurity { .. })));
+        assert!(matches!(
+            result,
+            Err(CryptoError::InsufficientPqcSecurity { .. })
+        ));
     }
 
     #[test]

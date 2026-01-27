@@ -24,8 +24,8 @@ mod anti_tamper;
 mod platform;
 
 // Re-export from the main security module
-use std::time::{SystemTime, UNIX_EPOCH};
 use sha2::{Digest, Sha256};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use anti_tamper::{detect_hooks, is_debugger_attached};
 pub use platform::{is_device_compromised, is_emulator};
@@ -35,7 +35,7 @@ pub use platform::{is_device_compromised, is_emulator};
 /// Per FSD-001 Section "Integrity Check Opacity", we MUST NOT expose
 /// which specific checks failed. Only a single pass/fail and generic
 /// failure category are provided.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct IntegrityStatus {
     /// Single pass/fail result.
     pub integrity_valid: bool,
@@ -44,16 +44,6 @@ pub struct IntegrityStatus {
     /// Generic failure category (if failed).
     /// One of: "environment", "binary", "runtime", or empty if valid.
     pub failure_category: String,
-}
-
-impl Default for IntegrityStatus {
-    fn default() -> Self {
-        Self {
-            integrity_valid: false,
-            last_check_timestamp: 0,
-            failure_category: String::new(),
-        }
-    }
 }
 
 /// Comprehensive integrity checker.
@@ -144,7 +134,7 @@ impl IntegrityChecker {
                 return true;
                 #[cfg(not(debug_assertions))]
                 return false;
-            }
+            },
         };
 
         match compute_self_hash() {

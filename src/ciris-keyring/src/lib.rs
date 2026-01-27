@@ -42,7 +42,12 @@
 
 #![warn(missing_docs)]
 #![warn(clippy::all)]
-#![warn(clippy::pedantic)]
+#![allow(clippy::pedantic)] // Too strict for production code
+#![allow(clippy::doc_markdown)] // Allow product names without backticks
+#![allow(clippy::missing_errors_doc)] // Error documentation not required
+#![allow(clippy::missing_panics_doc)] // Panic documentation not required
+#![allow(clippy::module_name_repetitions)] // Allow Type in module::Type
+#![allow(clippy::must_use_candidate)] // Not all functions need must_use
 
 mod error;
 mod signer;
@@ -61,17 +66,20 @@ pub mod keyring_storage;
 pub use error::KeyringError;
 pub use signer::{HardwareSigner, KeyGenConfig};
 pub use types::{
-    ClassicalAlgorithm, HardwareType, PlatformAttestation,
-    AndroidAttestation, IosAttestation, TpmAttestation, SoftwareAttestation,
+    AndroidAttestation, ClassicalAlgorithm, HardwareType, IosAttestation, PlatformAttestation,
+    SoftwareAttestation, TpmAttestation,
 };
 
-pub use platform::{create_hardware_signer, create_software_signer, detect_hardware_type, PlatformCapabilities, MaxTier};
+pub use platform::{
+    create_hardware_signer, create_software_signer, detect_hardware_type, MaxTier,
+    PlatformCapabilities,
+};
 
 #[cfg(feature = "keyring-storage")]
 pub use keyring_storage::{create_keyring_signer, KeyringStorageSigner};
 
 #[cfg(feature = "software")]
-pub use software::{SoftwareSigner, MutableSoftwareSigner};
+pub use software::{MutableSoftwareSigner, SoftwareSigner};
 
 /// Get the best available hardware signer for the current platform.
 ///
