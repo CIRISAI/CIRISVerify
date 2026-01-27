@@ -50,6 +50,9 @@ hex.workspace = true
 # Random
 rand.workspace = true
 
+# Platform-specific
+libc = "0.2"
+
 [build-dependencies]
 prost-build = "0.12"
 

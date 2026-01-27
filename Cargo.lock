@@ -488,6 +488,7 @@ dependencies = [
  "ciris-keyring",
  "futures",
  "hex",
+ "libc",
  "pretty_assertions",
  "proptest",
  "prost",

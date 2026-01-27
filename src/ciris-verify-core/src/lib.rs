@@ -54,6 +54,7 @@ pub mod https;
 pub mod jwt;
 pub mod license;
 pub mod revocation;
+pub mod security;
 pub mod types;
 pub mod validation;
 
@@ -64,6 +65,7 @@ pub use error::VerifyError;
 pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
 pub use license::{LicenseDetails, LicenseStatus, LicenseType};
 pub use revocation::{RevocationChecker, RevocationStatus};
+pub use security::{IntegrityChecker, IntegrityStatus, constant_time_eq};
 pub use types::{
     LicenseStatusRequest, LicenseStatusResponse,
     CapabilityCheckRequest, CapabilityCheckResponse,
