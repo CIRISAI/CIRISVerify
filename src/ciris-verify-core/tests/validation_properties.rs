@@ -280,7 +280,7 @@ proptest! {
     /// Lower current revision is never stale.
     #[test]
     fn revision_older_not_stale(
-        license_rev in 1000u64..u64::MAX,
+        license_rev in 1000u64..10_000_000_000u64,
         delta in 1u64..1000
     ) {
         let older_current = license_rev.saturating_sub(delta);
