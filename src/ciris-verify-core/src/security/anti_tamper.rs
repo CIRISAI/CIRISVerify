@@ -194,13 +194,34 @@ fn detect_xposed() -> bool {
 // =============================================================================
 
 /// Check for debugger via sysctl (macOS/iOS).
+///
+/// Uses the `CTL_KERN` / `KERN_PROC` / `KERN_PROC_PID` sysctl to query
+/// the kernel for `P_TRACED` on the current process.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn check_ptrace() -> bool {
     use std::mem;
 
+    // The P_TRACED flag from <sys/proc.h>
+    const P_TRACED: i32 = 0x00000800;
+
+    // We only need the p_flag field which lives at a known offset inside
+    // kinfo_proc.  Rather than reproducing the entire (large, unstable)
+    // struct we allocate a conservatively-sized buffer and read p_flag at
+    // the correct byte offset.
+    //
+    // On both arm64 and x86-64 Darwin the layout is:
+    //   struct kinfo_proc {            // total ≈ 648 bytes
+    //       struct extern_proc kp_proc;
+    //           …
+    //           int p_flag;            // offset 16 in extern_proc → offset 16
+    //           …
+    //   };
+    const KINFO_PROC_SIZE: usize = 648;
+    const P_FLAG_OFFSET: usize = 16;
+
     unsafe {
-        let mut info: libc::kinfo_proc = mem::zeroed();
-        let mut size = mem::size_of::<libc::kinfo_proc>();
+        let mut buf = [0u8; KINFO_PROC_SIZE];
+        let mut size: libc::size_t = KINFO_PROC_SIZE;
 
         let mut mib: [libc::c_int; 4] = [
             libc::CTL_KERN,
@@ -212,15 +233,19 @@ fn check_ptrace() -> bool {
         let result = libc::sysctl(
             mib.as_mut_ptr(),
             4,
-            &mut info as *mut _ as *mut libc::c_void,
+            buf.as_mut_ptr().cast::<libc::c_void>(),
             &mut size,
             std::ptr::null_mut(),
             0,
         );
 
-        if result == 0 {
-            // P_TRACED flag indicates debugger attached
-            return (info.kp_proc.p_flag & libc::P_TRACED) != 0;
+        if result == 0 && size >= P_FLAG_OFFSET + mem::size_of::<i32>() {
+            let p_flag = i32::from_ne_bytes(
+                buf[P_FLAG_OFFSET..P_FLAG_OFFSET + 4]
+                    .try_into()
+                    .unwrap_or([0; 4]),
+            );
+            return (p_flag & P_TRACED) != 0;
         }
     }
 

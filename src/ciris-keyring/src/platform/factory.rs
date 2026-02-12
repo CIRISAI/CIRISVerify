@@ -216,8 +216,10 @@ pub fn create_hardware_signer(
 
     #[cfg(target_os = "macos")]
     {
-        use super::SecureEnclaveSigner;
-        return Ok(Box::new(SecureEnclaveSigner::new(alias)?));
+        if capabilities.has_hardware {
+            use super::TpmSigner;
+            return Ok(Box::new(TpmSigner::new(alias, None)?));
+        }
     }
 
     // Fallback to software signer
