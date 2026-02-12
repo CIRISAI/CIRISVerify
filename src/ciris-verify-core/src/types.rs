@@ -17,6 +17,28 @@ pub struct LicenseStatusRequest {
     /// Force refresh from remote sources (bypass cache).
     #[serde(default)]
     pub force_refresh: bool,
+
+    // === Runtime validation (v1.2.0) ===
+
+    /// Agent binary hash (from registry).
+    #[serde(default)]
+    pub agent_hash: Option<Vec<u8>>,
+
+    /// Template YAML hash (SHA-256).
+    #[serde(default)]
+    pub template_hash: Option<Vec<u8>>,
+
+    /// Currently running identity template name.
+    #[serde(default)]
+    pub running_template: Option<String>,
+
+    /// Currently active action set.
+    #[serde(default)]
+    pub active_actions: Option<Vec<String>>,
+
+    /// Current stewardship tier in use.
+    #[serde(default)]
+    pub current_stewardship_tier: Option<u8>,
 }
 
 impl LicenseStatusRequest {
@@ -53,6 +75,16 @@ pub struct LicenseStatusResponse {
 
     /// Response metadata.
     pub metadata: ResponseMetadata,
+
+    // === Runtime validation (v1.2.0) ===
+
+    /// Runtime validation results.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime_validation: Option<RuntimeValidation>,
+
+    /// Shutdown directive (if emergency or critical violation).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub shutdown_directive: Option<ShutdownDirective>,
 }
 
 /// Mandatory disclosure that MUST be shown to users.
@@ -191,6 +223,96 @@ pub struct CapabilityCheckRequest {
 
     /// Required autonomy tier.
     pub required_tier: u8,
+}
+
+// =============================================================================
+// RUNTIME VALIDATION (v1.2.0)
+// =============================================================================
+
+/// Runtime validation results.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeValidation {
+    /// Whether runtime state passes validation.
+    pub valid: bool,
+
+    /// List of violations found.
+    pub violations: Vec<RuntimeViolation>,
+
+    /// Enforcement action to take.
+    pub enforcement_action: EnforcementAction,
+}
+
+/// A single runtime violation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RuntimeViolation {
+    /// Human-readable violation description.
+    pub description: String,
+
+    /// Violation severity.
+    pub severity: ViolationSeverity,
+
+    /// Field that violated (e.g., "running_template", "active_actions").
+    pub field: String,
+
+    /// Expected value.
+    pub expected: String,
+
+    /// Actual value found.
+    pub actual: String,
+}
+
+/// Directive to shut down the agent.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ShutdownDirective {
+    /// Type of shutdown required.
+    pub shutdown_type: ShutdownType,
+
+    /// Reason for shutdown.
+    pub reason: String,
+
+    /// Deadline in seconds (0 = immediate).
+    pub deadline_seconds: u32,
+
+    /// Incident ID for audit trail.
+    pub incident_id: String,
+
+    /// Authority that issued the directive.
+    pub issued_by: String,
+}
+
+/// Severity of a runtime violation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ViolationSeverity {
+    /// Log and continue.
+    Warning,
+    /// Degrade capabilities.
+    Error,
+    /// Immediate shutdown required.
+    Critical,
+}
+
+/// Enforcement action for runtime violations.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum EnforcementAction {
+    /// No action needed (all valid).
+    None,
+    /// Log warning, continue.
+    Warn,
+    /// Reduce to community mode.
+    Degrade,
+    /// Immediate shutdown required.
+    Shutdown,
+}
+
+/// Type of shutdown.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ShutdownType {
+    /// Graceful shutdown with deadline.
+    Graceful,
+    /// Immediate shutdown.
+    Immediate,
+    /// Emergency kill (SIGTERM + grace + SIGKILL).
+    Emergency,
 }
 
 /// Response for capability check.

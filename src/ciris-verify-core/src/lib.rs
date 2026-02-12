@@ -62,6 +62,7 @@ pub mod revocation;
 pub mod security;
 pub mod types;
 pub mod validation;
+pub mod watchdog;
 
 pub use cache::{CachedLicense, LicenseCache};
 pub use config::VerifyConfig;
@@ -72,6 +73,8 @@ pub use license::{LicenseDetails, LicenseStatus, LicenseType};
 pub use revocation::{RevocationChecker, RevocationStatus};
 pub use security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
 pub use types::{
-    CapabilityCheckRequest, CapabilityCheckResponse, LicenseStatusRequest, LicenseStatusResponse,
-    MandatoryDisclosure,
+    CapabilityCheckRequest, CapabilityCheckResponse, EnforcementAction, LicenseStatusRequest,
+    LicenseStatusResponse, MandatoryDisclosure, RuntimeValidation, RuntimeViolation,
+    ShutdownDirective, ShutdownType, ViolationSeverity,
 };
+pub use watchdog::ShutdownWatchdog;

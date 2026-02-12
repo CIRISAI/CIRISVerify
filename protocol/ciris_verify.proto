@@ -52,6 +52,22 @@ message LicenseStatusRequest {
 
   // Force refresh from remote sources (bypass cache)
   bool force_refresh = 3;
+
+  // === RUNTIME VALIDATION (v1.2.0) ===
+  // Agent binary hash (from registry)
+  bytes agent_hash = 10;
+
+  // Template YAML hash (SHA-256)
+  bytes template_hash = 11;
+
+  // Currently running identity template name
+  string running_template = 12;
+
+  // Currently active action set
+  repeated string active_actions = 13;
+
+  // Current stewardship tier in use
+  int32 current_stewardship_tier = 14;
 }
 
 message LicenseStatusResponse {
@@ -72,6 +88,13 @@ message LicenseStatusResponse {
 
   // Response metadata
   ResponseMetadata metadata = 6;
+
+  // === RUNTIME VALIDATION (v1.2.0) ===
+  // Runtime validation results (violations, enforcement)
+  RuntimeValidation runtime_validation = 7;
+
+  // Shutdown directive (if emergency or critical violation)
+  ShutdownDirective shutdown_directive = 8;
 }
 
 enum LicenseStatus {
@@ -139,6 +162,19 @@ message LicenseDetails {
 
   // Signature mode (must be HYBRID_REQUIRED for v2.0 licenses)
   SignatureMode signature_mode = 22;
+
+  // === IDENTITY TEMPLATE ENFORCEMENT (v1.2.0) ===
+  // Identity template name (echo, scout, sage, datum, ally, default, custom)
+  string identity_template = 30;
+
+  // Stewardship tier (1-5)
+  int32 stewardship_tier = 31;
+
+  // Permitted actions for this template
+  repeated string permitted_actions = 32;
+
+  // SHA-256 hash of the identity template YAML
+  bytes template_hash = 33;
 }
 
 enum LicenseType {
@@ -551,4 +587,81 @@ message ResponseMetadata {
 
   // PQC algorithm used
   PQCAlgorithm pqc_algorithm = 12;
+}
+
+// =============================================================================
+// RUNTIME VALIDATION (v1.2.0)
+// =============================================================================
+
+// Results of runtime identity template validation.
+message RuntimeValidation {
+  // Whether runtime state passes validation
+  bool valid = 1;
+
+  // List of violations found
+  repeated RuntimeViolation violations = 2;
+
+  // Enforcement action to take
+  EnforcementAction enforcement_action = 3;
+}
+
+// A single runtime violation.
+message RuntimeViolation {
+  // Human-readable violation description
+  string description = 1;
+
+  // Violation severity
+  ViolationSeverity severity = 2;
+
+  // Field that violated (e.g., "running_template", "active_actions", "stewardship_tier")
+  string field = 3;
+
+  // Expected value
+  string expected = 4;
+
+  // Actual value found
+  string actual = 5;
+}
+
+// Directive to shut down the agent.
+message ShutdownDirective {
+  // Type of shutdown required
+  ShutdownType shutdown_type = 1;
+
+  // Reason for shutdown
+  string reason = 2;
+
+  // Deadline in seconds (0 = immediate)
+  int32 deadline_seconds = 3;
+
+  // Incident ID for audit trail
+  string incident_id = 4;
+
+  // Authority that issued the directive
+  string issued_by = 5;
+}
+
+// Severity of a runtime violation.
+enum ViolationSeverity {
+  VIOLATION_SEVERITY_UNSPECIFIED = 0;
+  VIOLATION_WARNING = 1;     // Log and continue
+  VIOLATION_ERROR = 2;       // Degrade capabilities
+  VIOLATION_CRITICAL = 3;    // Immediate shutdown required
+}
+
+// Enforcement action for runtime violations.
+enum EnforcementAction {
+  ENFORCEMENT_ACTION_UNSPECIFIED = 0;
+  ENFORCEMENT_NONE = 1;         // No action needed (all valid)
+  ENFORCEMENT_WARN = 2;         // Log warning, continue
+  ENFORCEMENT_DEGRADE = 3;      // Reduce to community mode
+  ENFORCEMENT_SHUTDOWN = 4;     // Immediate shutdown required
+}
+
+// Type of shutdown.
+enum ShutdownType {
+  SHUTDOWN_TYPE_UNSPECIFIED = 0;
+  SHUTDOWN_GRACEFUL = 1;        // Graceful shutdown with deadline
+  SHUTDOWN_IMMEDIATE = 2;       // Immediate shutdown
+  SHUTDOWN_EMERGENCY = 3;       // Emergency kill (SIGKILL after grace)
 }

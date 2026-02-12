@@ -126,6 +126,24 @@ pub struct LicenseDetails {
 
     /// Original signed license JWT.
     pub license_jwt: String,
+
+    // === Identity template enforcement (v1.2.0) ===
+
+    /// Identity template name (echo, scout, sage, datum, ally, default, custom).
+    #[serde(default)]
+    pub identity_template: String,
+
+    /// Stewardship tier (1-5).
+    #[serde(default)]
+    pub stewardship_tier: u8,
+
+    /// Permitted actions for this template.
+    #[serde(default)]
+    pub permitted_actions: Vec<String>,
+
+    /// SHA-256 hash of the identity template YAML.
+    #[serde(default)]
+    pub template_hash: Vec<u8>,
 }
 
 /// Constraints on deployment.

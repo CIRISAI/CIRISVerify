@@ -27,11 +27,13 @@ use crate::https::HttpsClient;
 use crate::license::{LicenseDetails, LicenseStatus, LicenseType};
 use crate::revocation::RevocationChecker;
 use crate::types::{
-    CapabilityCheckResponse, DisclosureSeverity, LicenseStatusRequest, LicenseStatusResponse,
-    MandatoryDisclosure, ResponseAttestation, ResponseMetadata, ResponseSignature, SourceResult,
-    ValidationResults, ValidationStatus,
+    CapabilityCheckResponse, DisclosureSeverity, EnforcementAction, LicenseStatusRequest,
+    LicenseStatusResponse, MandatoryDisclosure, ResponseAttestation, ResponseMetadata,
+    ResponseSignature, RuntimeValidation, RuntimeViolation, ShutdownDirective, ShutdownType,
+    SourceResult, ValidationResults, ValidationStatus, ViolationSeverity,
 };
 use crate::validation::{ConsensusValidator, ValidationResult};
+use crate::watchdog::ShutdownWatchdog;
 
 /// The main license verification engine.
 ///
@@ -49,6 +51,8 @@ pub struct LicenseEngine {
     hw_signer: Arc<dyn HardwareSigner>,
     /// Binary integrity flag (set at startup).
     integrity_valid: bool,
+    /// Shutdown watchdog for enforcing covenant invocations.
+    watchdog: ShutdownWatchdog,
 }
 
 impl LicenseEngine {
@@ -116,6 +120,7 @@ impl LicenseEngine {
             revocation_checker,
             hw_signer: Arc::from(hw_signer),
             integrity_valid,
+            watchdog: ShutdownWatchdog::new(),
         })
     }
 
@@ -155,6 +160,7 @@ impl LicenseEngine {
             revocation_checker,
             hw_signer,
             integrity_valid: true, // Assume valid for testing
+            watchdog: ShutdownWatchdog::new(),
         })
     }
 
@@ -282,15 +288,60 @@ impl LicenseEngine {
         // 5. Apply hardware tier restriction
         let (final_status, final_license) = self.apply_hardware_restriction(license_details);
 
+        // 5a. Verify agent integrity against registry (v1.2.0)
+        let (final_status, final_license) = if request.agent_hash.is_some() {
+            match self.verify_agent_integrity(&request, final_license.as_ref()).await {
+                Ok(()) => (final_status, final_license),
+                Err(msg) => {
+                    warn!("Agent integrity check failed: {}", msg);
+                    // Fail-secure: degrade to community
+                    (LicenseStatus::UnlicensedCommunity, None)
+                }
+            }
+        } else {
+            (final_status, final_license)
+        };
+
+        // 5b. Validate runtime template/actions (v1.2.0)
+        let runtime_validation = if request.running_template.is_some() || request.active_actions.is_some() {
+            Some(self.validate_runtime(&request, final_license.as_ref()))
+        } else {
+            None
+        };
+
+        // 5c. Check for pending shutdown directives
+        let shutdown_directive = self.watchdog.get_pending_directive(&request.deployment_id);
+
+        // 5d. If runtime validation has critical violation, issue shutdown
+        if let Some(ref rv) = runtime_validation {
+            if rv.enforcement_action == EnforcementAction::Shutdown {
+                let directive = ShutdownDirective {
+                    shutdown_type: ShutdownType::Immediate,
+                    reason: "Critical runtime violation detected".to_string(),
+                    deadline_seconds: 30,
+                    incident_id: generate_request_id(),
+                    issued_by: "CIRISVerify".to_string(),
+                };
+                self.watchdog.issue_shutdown(&request.deployment_id, directive);
+            }
+        }
+
         // 6. Cache the result
         if let Some(ref license) = final_license {
             self.cache.put(license);
         }
 
         // 7. Build response with attestation
-        Ok(self
+        let mut response = self
             .build_success_response(final_status, final_license, &request, &validation)
-            .await)
+            .await;
+
+        // Attach runtime validation and shutdown directive
+        response.runtime_validation = runtime_validation;
+        response.shutdown_directive = shutdown_directive
+            .or_else(|| self.watchdog.get_pending_directive(&request.deployment_id));
+
+        Ok(response)
     }
 
     /// Check if a specific capability is allowed.
@@ -361,6 +412,168 @@ impl LicenseEngine {
     // ========================================================================
     // Private helpers
     // ========================================================================
+
+    /// Verify agent integrity against the registry.
+    ///
+    /// Checks that the agent_hash is registered and active, and that the
+    /// template_hash matches what the registry has on file.
+    ///
+    /// Fail-secure: unverified → UnlicensedCommunity
+    async fn verify_agent_integrity(
+        &self,
+        request: &LicenseStatusRequest,
+        license: Option<&LicenseDetails>,
+    ) -> Result<(), String> {
+        let agent_hash = match &request.agent_hash {
+            Some(h) if !h.is_empty() => h,
+            _ => return Ok(()), // No hash provided, skip check
+        };
+
+        // If we have a license with a template_hash, verify it matches the request
+        if let (Some(req_template_hash), Some(lic)) = (&request.template_hash, license) {
+            if !lic.template_hash.is_empty() && !req_template_hash.is_empty() {
+                if lic.template_hash != *req_template_hash {
+                    return Err(format!(
+                        "Template hash mismatch: license has {}, agent reports {}",
+                        hex::encode(&lic.template_hash),
+                        hex::encode(req_template_hash)
+                    ));
+                }
+                debug!("Template hash verified against license");
+            }
+        }
+
+        // TODO: Query CIRISRegistry via HTTPS to verify agent_hash is registered
+        // For now, trust the license details from the existing verification flow.
+        // Full implementation will call:
+        //   GET /v1/agent/{hex_hash} → check status == ACTIVE
+        debug!(
+            agent_hash = hex::encode(agent_hash),
+            "Agent integrity check passed (registry verification pending)"
+        );
+
+        Ok(())
+    }
+
+    /// Validate runtime state against licensed template constraints.
+    ///
+    /// Checks:
+    /// 1. running_template matches licensed identity_template
+    /// 2. active_actions are subset of permitted_actions
+    /// 3. current_stewardship_tier <= licensed stewardship_tier
+    fn validate_runtime(
+        &self,
+        request: &LicenseStatusRequest,
+        license: Option<&LicenseDetails>,
+    ) -> RuntimeValidation {
+        let mut violations = Vec::new();
+
+        let license = match license {
+            Some(l) if !l.identity_template.is_empty() => l,
+            _ => {
+                // No license or no template enforcement — pass
+                return RuntimeValidation {
+                    valid: true,
+                    violations: vec![],
+                    enforcement_action: EnforcementAction::None,
+                };
+            }
+        };
+
+        // Check running template matches
+        if let Some(ref running) = request.running_template {
+            if !running.is_empty() && *running != license.identity_template {
+                violations.push(RuntimeViolation {
+                    description: format!(
+                        "Running template '{}' does not match licensed template '{}'",
+                        running, license.identity_template
+                    ),
+                    severity: ViolationSeverity::Critical,
+                    field: "running_template".to_string(),
+                    expected: license.identity_template.clone(),
+                    actual: running.clone(),
+                });
+            }
+        }
+
+        // Check active actions are subset of permitted
+        if let Some(ref active) = request.active_actions {
+            if !license.permitted_actions.is_empty() {
+                for action in active {
+                    if !license.permitted_actions.contains(action) {
+                        violations.push(RuntimeViolation {
+                            description: format!(
+                                "Action '{}' is not in permitted actions list",
+                                action
+                            ),
+                            severity: ViolationSeverity::Error,
+                            field: "active_actions".to_string(),
+                            expected: format!("one of {:?}", license.permitted_actions),
+                            actual: action.clone(),
+                        });
+                    }
+                }
+            }
+        }
+
+        // Check stewardship tier
+        if let Some(current_tier) = request.current_stewardship_tier {
+            if current_tier > license.stewardship_tier {
+                violations.push(RuntimeViolation {
+                    description: format!(
+                        "Current stewardship tier {} exceeds licensed tier {}",
+                        current_tier, license.stewardship_tier
+                    ),
+                    severity: ViolationSeverity::Error,
+                    field: "stewardship_tier".to_string(),
+                    expected: license.stewardship_tier.to_string(),
+                    actual: current_tier.to_string(),
+                });
+            }
+        }
+
+        // Determine enforcement action based on worst violation severity
+        let enforcement_action = if violations.is_empty() {
+            EnforcementAction::None
+        } else {
+            let worst = violations
+                .iter()
+                .map(|v| &v.severity)
+                .max_by_key(|s| match s {
+                    ViolationSeverity::Warning => 0,
+                    ViolationSeverity::Error => 1,
+                    ViolationSeverity::Critical => 2,
+                })
+                .unwrap_or(&ViolationSeverity::Warning);
+
+            match worst {
+                ViolationSeverity::Warning => EnforcementAction::Warn,
+                ViolationSeverity::Error => EnforcementAction::Degrade,
+                ViolationSeverity::Critical => EnforcementAction::Shutdown,
+            }
+        };
+
+        let valid = violations.is_empty();
+
+        if !valid {
+            warn!(
+                violation_count = violations.len(),
+                enforcement = ?enforcement_action,
+                "Runtime validation found violations"
+            );
+        }
+
+        RuntimeValidation {
+            valid,
+            violations,
+            enforcement_action,
+        }
+    }
+
+    /// Get the shutdown watchdog.
+    pub fn watchdog(&self) -> &ShutdownWatchdog {
+        &self.watchdog
+    }
 
     /// Get license details from validation or cache.
     async fn get_license_details(
@@ -438,6 +651,8 @@ impl LicenseEngine {
             attestation: self.build_attestation(request).await,
             validation: self.build_validation_results_empty(),
             metadata: self.build_metadata(),
+            runtime_validation: None,
+            shutdown_directive: None,
         }
     }
 
@@ -471,6 +686,8 @@ impl LicenseEngine {
             attestation: self.build_attestation(request).await,
             validation: self.build_validation_results(validation),
             metadata: self.build_metadata(),
+            runtime_validation: None,
+            shutdown_directive: None,
         }
     }
 
@@ -493,6 +710,8 @@ impl LicenseEngine {
             attestation: self.build_attestation(request).await,
             validation: self.build_validation_results(validation),
             metadata: self.build_metadata(),
+            runtime_validation: None,
+            shutdown_directive: None,
         }
     }
 
