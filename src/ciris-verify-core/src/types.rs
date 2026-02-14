@@ -19,7 +19,6 @@ pub struct LicenseStatusRequest {
     pub force_refresh: bool,
 
     // === Runtime validation (v1.2.0) ===
-
     /// Agent binary hash (from registry).
     #[serde(default)]
     pub agent_hash: Option<Vec<u8>>,
@@ -77,7 +76,6 @@ pub struct LicenseStatusResponse {
     pub metadata: ResponseMetadata,
 
     // === Runtime validation (v1.2.0) ===
-
     /// Runtime validation results.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub runtime_validation: Option<RuntimeValidation>,

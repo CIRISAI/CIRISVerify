@@ -48,11 +48,22 @@ pub enum EscalationAction {
     /// No action needed — still within deadline.
     None,
     /// Send SIGTERM to the process.
-    Sigterm { pid: u32 },
+    Sigterm {
+        /// Process ID to signal.
+        pid: u32,
+    },
     /// Send SIGKILL to the process (SIGTERM grace expired).
-    Sigkill { pid: u32 },
+    Sigkill {
+        /// Process ID to signal.
+        pid: u32,
+    },
     /// Report failure — could not terminate.
-    ReportFailure { deployment_id: String, reason: String },
+    ReportFailure {
+        /// Deployment that failed to terminate.
+        deployment_id: String,
+        /// Reason for the failure.
+        reason: String,
+    },
 }
 
 /// Shutdown watchdog that tracks pending shutdowns and enforces deadlines.
@@ -198,7 +209,8 @@ impl ShutdownWatchdog {
                             deployment_id.clone(),
                             EscalationAction::ReportFailure {
                                 deployment_id: deployment_id.clone(),
-                                reason: "Emergency shutdown failed — manual intervention required".to_string(),
+                                reason: "Emergency shutdown failed — manual intervention required"
+                                    .to_string(),
                             },
                         ));
                     },
@@ -241,9 +253,7 @@ impl ShutdownWatchdog {
         std::thread::sleep(self.sigterm_grace);
 
         // Check if process still exists
-        let check = Command::new("kill")
-            .args(["-0", &pid.to_string()])
-            .status();
+        let check = Command::new("kill").args(["-0", &pid.to_string()]).status();
 
         match check {
             Ok(s) if s.success() => {

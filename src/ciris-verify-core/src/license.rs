@@ -128,7 +128,6 @@ pub struct LicenseDetails {
     pub license_jwt: String,
 
     // === Identity template enforcement (v1.2.0) ===
-
     /// Identity template name (echo, scout, sage, datum, ally, default, custom).
     #[serde(default)]
     pub identity_template: String,

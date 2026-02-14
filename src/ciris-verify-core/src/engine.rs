@@ -290,24 +290,28 @@ impl LicenseEngine {
 
         // 5a. Verify agent integrity against registry (v1.2.0)
         let (final_status, final_license) = if request.agent_hash.is_some() {
-            match self.verify_agent_integrity(&request, final_license.as_ref()).await {
+            match self
+                .verify_agent_integrity(&request, final_license.as_ref())
+                .await
+            {
                 Ok(()) => (final_status, final_license),
                 Err(msg) => {
                     warn!("Agent integrity check failed: {}", msg);
                     // Fail-secure: degrade to community
                     (LicenseStatus::UnlicensedCommunity, None)
-                }
+                },
             }
         } else {
             (final_status, final_license)
         };
 
         // 5b. Validate runtime template/actions (v1.2.0)
-        let runtime_validation = if request.running_template.is_some() || request.active_actions.is_some() {
-            Some(self.validate_runtime(&request, final_license.as_ref()))
-        } else {
-            None
-        };
+        let runtime_validation =
+            if request.running_template.is_some() || request.active_actions.is_some() {
+                Some(self.validate_runtime(&request, final_license.as_ref()))
+            } else {
+                None
+            };
 
         // 5c. Check for pending shutdown directives
         let shutdown_directive = self.watchdog.get_pending_directive(&request.deployment_id);
@@ -322,7 +326,8 @@ impl LicenseEngine {
                     incident_id: generate_request_id(),
                     issued_by: "CIRISVerify".to_string(),
                 };
-                self.watchdog.issue_shutdown(&request.deployment_id, directive);
+                self.watchdog
+                    .issue_shutdown(&request.deployment_id, directive);
             }
         }
 
@@ -482,7 +487,7 @@ impl LicenseEngine {
                     violations: vec![],
                     enforcement_action: EnforcementAction::None,
                 };
-            }
+            },
         };
 
         // Check running template matches

@@ -7,12 +7,13 @@ use async_trait::async_trait;
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
-use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation, TpmAttestation};
+use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation};
 
 /// TPM 2.0 signer for desktop and server platforms.
 ///
 /// Supports both discrete TPMs and firmware TPMs (fTPM).
 /// Uses ECDSA P-256 for compatibility with mobile platforms.
+#[allow(dead_code)]
 pub struct TpmSigner {
     /// Key handle or persistent handle
     key_handle: u32,
