@@ -83,13 +83,15 @@ impl RevocationStatus {
 
     /// Create an "unknown" status (check failed).
     pub fn unknown(license_id: String, ttl: Duration) -> Self {
-        // Default to NOT revoked when unknown (fail-open for availability)
-        // but with a very short TTL to ensure we retry soon
+        // Fail-secure: treat unknown status as potentially revoked.
+        // This ensures that a failed revocation check does not allow
+        // a revoked license to operate as if it were valid.
+        // Short TTL ensures we retry soon.
         Self {
             license_id,
-            revoked: false,
+            revoked: true,
             revoked_at: None,
-            reason: Some("Revocation check failed - status unknown".into()),
+            reason: Some("Revocation check failed - treating as revoked (fail-secure)".into()),
             checked_at: Instant::now(),
             ttl: ttl.min(Duration::from_secs(60)), // Max 1 minute for unknown
         }
@@ -383,7 +385,8 @@ mod tests {
 
         // Unknown status should have max 1 minute TTL
         assert!(status.ttl <= Duration::from_secs(60));
-        assert!(!status.is_revoked()); // Default to not revoked
+        // Fail-secure: unknown status should be treated as revoked
+        assert!(status.is_revoked());
     }
 
     #[test]

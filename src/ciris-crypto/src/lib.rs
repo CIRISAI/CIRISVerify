@@ -71,17 +71,20 @@ pub use ml_dsa::{MlDsa65Signer, MlDsa65Verifier};
 ///
 /// This function MUST be used for all cryptographic comparisons
 /// (signatures, MACs, hashes) to prevent timing side-channels.
+///
+/// Uses the `subtle` crate's `ConstantTimeEq` trait for the comparison.
+/// The length check still returns early, but length is typically not secret.
+/// For cases where length is secret, callers should pad to equal length.
 #[must_use]
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    use subtle::ConstantTimeEq;
+
     if a.len() != b.len() {
+        // Still early-return on length, but length is typically not secret.
+        // For cases where length is secret, callers should pad to equal length.
         return false;
     }
-
-    let mut result = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-    result == 0
+    a.ct_eq(b).into()
 }
 
 #[cfg(test)]

@@ -172,7 +172,8 @@ pub struct SourceResult {
     /// Timestamp of check.
     pub checked_at: i64,
 
-    /// Error message if failed.
+    /// Error message if failed (internal use only, not serialized in responses).
+    #[serde(skip_serializing)]
     pub error: Option<String>,
 }
 

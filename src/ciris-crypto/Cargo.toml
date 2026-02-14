@@ -22,6 +22,7 @@ serde = { workspace = true, features = ["derive"] }
 sha2.workspace = true
 rand_core.workspace = true
 rand_chacha = { version = "0.3", optional = true }
+subtle = "2.6"
 
 # Classical cryptography
 p256 = { workspace = true, optional = true }

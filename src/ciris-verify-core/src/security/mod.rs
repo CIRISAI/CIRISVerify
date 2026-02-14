@@ -189,21 +189,20 @@ fn compute_self_hash() -> Option<[u8; 32]> {
 /// - Take the same amount of time regardless of input
 /// - Not short-circuit on first mismatch
 /// - Not leak information through timing
+///
+/// Uses the `subtle` crate's `ConstantTimeEq` trait for the comparison.
+/// The length check still returns early, but length is typically not secret.
+/// For cases where length is secret, callers should pad to equal length.
 #[inline(never)]
 pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
+    use subtle::ConstantTimeEq;
+
     if a.len() != b.len() {
+        // Still early-return on length, but length is typically not secret.
+        // For cases where length is secret, callers should pad to equal length.
         return false;
     }
-
-    // XOR all bytes together - any difference sets bits
-    let mut result = 0u8;
-    for (x, y) in a.iter().zip(b.iter()) {
-        result |= x ^ y;
-    }
-
-    // Compare against zero in constant time
-    // This prevents branch prediction attacks
-    result == 0
+    a.ct_eq(b).into()
 }
 
 /// Constant-time selection.

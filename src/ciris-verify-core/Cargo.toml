@@ -50,6 +50,9 @@ hex.workspace = true
 # Random
 rand.workspace = true
 
+# Constant-time comparison
+subtle = "2.6"
+
 # Platform-specific
 libc = "0.2"
 
