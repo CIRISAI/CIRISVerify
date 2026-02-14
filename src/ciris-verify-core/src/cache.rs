@@ -353,6 +353,10 @@ mod tests {
             max_autonomy_tier: AutonomyTier::A3High,
             constraints: DeploymentConstraints::default(),
             license_jwt: "test.jwt.here.sig".to_string(),
+            identity_template: String::new(),
+            stewardship_tier: 0,
+            permitted_actions: vec![],
+            template_hash: vec![],
         }
     }
 

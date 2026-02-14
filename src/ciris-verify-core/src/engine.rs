@@ -359,6 +359,11 @@ impl LicenseEngine {
             deployment_id: self.config.key_alias.clone(),
             challenge_nonce: vec![0u8; 32],
             force_refresh: false,
+            agent_hash: None,
+            template_hash: None,
+            running_template: None,
+            active_actions: None,
+            current_stewardship_tier: None,
         };
 
         let status = self.get_license_status(request).await?;

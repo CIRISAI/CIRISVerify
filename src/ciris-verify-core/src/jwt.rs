@@ -150,6 +150,10 @@ impl HybridJwt {
             max_autonomy_tier: self.payload.max_tier,
             constraints: self.payload.constraints.clone(),
             license_jwt: original_jwt.to_string(),
+            identity_template: String::new(),
+            stewardship_tier: 0,
+            permitted_actions: vec![],
+            template_hash: vec![],
         }
     }
 }

@@ -31,7 +31,8 @@ pub struct PendingShutdown {
     /// The shutdown directive.
     pub directive: ShutdownDirective,
 
-    /// When this shutdown was issued.
+    /// When this shutdown was issued (not serializable — defaults to now on deserialize).
+    #[serde(skip, default = "Instant::now")]
     pub issued_at: Instant,
 
     /// Whether the agent has acknowledged the shutdown.
