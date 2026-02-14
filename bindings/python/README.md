@@ -118,4 +118,4 @@ The client is thread-safe and can be used from multiple threads or async tasks c
 
 ## License
 
-Proprietary - See LICENSE file in the CIRISVerify repository.
+AGPL-3.0-or-later - See LICENSE file in the CIRISVerify repository.

@@ -4,7 +4,7 @@
 
 **Protocol Version**: 2.0.0 | **Cryptographic Baseline**: Ed25519 + ML-DSA-65 (Hybrid)
 
-CIRISVerify is a closed-source binary module that provides cryptographic proof of license status for CIRIS deployments. It ensures that community agents (CIRISCare) cannot masquerade as licensed professional agents (CIRISMedical, CIRISLegal, CIRISFinancial).
+CIRISVerify is an open-source binary module that provides cryptographic proof of license status for CIRIS deployments. It ensures that community agents (CIRISCare) cannot masquerade as licensed professional agents (CIRISMedical, CIRISLegal, CIRISFinancial).
 
 **Post-Quantum Ready**: CIRISVerify launches with hybrid cryptography (classical + ML-DSA) as its day-1 standard, implementing NIST FIPS 204 and meeting NSA CNSA 2.0 requirements.
 
@@ -28,7 +28,7 @@ CIRISVerify provides a **hardware-rooted trust anchor** that:
 ## Architecture
 
 ```
-Multi-Source Validation          CIRISVerify Binary (Closed)          CIRISAgent (Open)
+Multi-Source Validation          CIRISVerify Binary (AGPL-3.0)        CIRISAgent (Open)
 ┌────────────────────┐          ┌──────────────────────────┐          ┌─────────────────┐
 │ DNS (US registrar) │─────────▶│ Hardware Security Module │          │                 │
 │ DNS (EU registrar) │─────────▶│ Multi-Source Validator   │─────────▶│ WiseBus         │
@@ -47,7 +47,7 @@ All 3 MUST agree                │   ML-DSA-65)             │          └─
 | Protocol specification | **Public** | Anyone can implement a client |
 | Protobuf definitions | **Public** | Interoperability |
 | Integration examples | **Public** | Ease of adoption |
-| Binary source code | **Private** | Prevents bypass engineering |
+| Binary source code | **Public (AGPL-3.0)** | Open-source transparency |
 | Hardware key material | **Private** | Security |
 
 ## Repository Structure
@@ -141,18 +141,9 @@ else:
 response.metadata["license_disclosure"] = license_status.mandatory_disclosure
 ```
 
-## Why Closed Source?
+## License
 
-We believe in open source. CIRISAgent, CIRISCare, CIRISMedical, CIRISLens—all open source (AGPL).
-
-CIRISVerify is closed because:
-
-1. **The protocol is public** - Anyone can see exactly what it does
-2. **The behavior is deterministic** - Same inputs produce same outputs
-3. **Open-sourcing would enable bypass** - The security model requires the implementation details remain private
-4. **The steward is accountable** - L3C structure ensures mission alignment
-
-This is similar to how banking apps use closed attestation modules, or how game anti-cheat systems work. The interface is known; the implementation is protected.
+CIRISVerify is licensed under **AGPL-3.0-or-later**, consistent with the rest of the CIRIS ecosystem. See the [LICENSE](LICENSE) file for full terms.
 
 ## Verification
 
@@ -188,12 +179,6 @@ The protocol specification is open for review and feedback:
 1. Read `FSD/FSD-001_CIRISVERIFY_PROTOCOL.md`
 2. Open issues for questions or concerns
 3. Security researchers: Please report vulnerabilities to `security@ciris.ai`
-
-## License
-
-- Protocol specification: Apache 2.0
-- Binary: Proprietary (steward-controlled)
-- Integration examples: Apache 2.0
 
 ## Contact
 

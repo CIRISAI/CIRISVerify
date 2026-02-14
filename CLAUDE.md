@@ -4,9 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-CIRISVerify is the **hardware-rooted license verification module** for the CIRIS ecosystem. It is a **closed-source binary** that provides cryptographic proof of license status, ensuring that community agents (CIRISCare) cannot masquerade as licensed professional agents (CIRISMedical, CIRISLegal, CIRISFinancial).
+CIRISVerify is the **hardware-rooted license verification module** for the CIRIS ecosystem. It is an **open-source (AGPL-3.0) Rust binary** that provides cryptographic proof of license status, ensuring that community agents (CIRISCare) cannot masquerade as licensed professional agents (CIRISMedical, CIRISLegal, CIRISFinancial).
 
-**This repository contains only public protocol documentation and specifications—not the binary source code.**
+**This repository contains the full source code, protocol documentation, and specifications for CIRISVerify.**
 
 ## Repository Structure
 
@@ -95,7 +95,7 @@ This project extends Veilid's `keyring-manager` pattern. To maintain compatibili
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    CIRISVERIFY MODULE (Closed Binary)                    │
+│                    CIRISVERIFY MODULE (Open Source - AGPL-3.0)            │
 │  Hardware Security (TPM/SE) + License Engine + Binary Integrity         │
 │  Hybrid Crypto: Ed25519 (hardware) + ML-DSA-65 (software PQC)           │
 │  Public interface: FFI/gRPC defined in ciris_verify.proto               │

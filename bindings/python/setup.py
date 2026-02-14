@@ -15,7 +15,7 @@ setup(
     author="CIRIS Engineering",
     author_email="engineering@ciris.ai",
     url="https://github.com/CIRISAI/CIRISVerify",
-    license="Proprietary",
+    license="AGPL-3.0-or-later",
     packages=find_packages(),
     python_requires=">=3.10",
     install_requires=[
@@ -31,7 +31,7 @@ setup(
     classifiers=[
         "Development Status :: 4 - Beta",
         "Intended Audience :: Developers",
-        "License :: Other/Proprietary License",
+        "License :: OSI Approved :: GNU Affero General Public License v3 or later (AGPLv3+)",
         "Operating System :: OS Independent",
         "Programming Language :: Python :: 3",
         "Programming Language :: Python :: 3.10",

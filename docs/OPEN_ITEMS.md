@@ -273,7 +273,7 @@ Format: JSON with defined schema, retention requirements, integrity protection.
 **Priority**: HIGH
 **Stakeholders**: All
 
-**Issue**: Closed-source binary requires independent security validation.
+**Issue**: Security-critical binary requires independent security validation.
 
 **Recommendation**: Engage security firm for:
 - Binary reverse engineering assessment

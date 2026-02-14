@@ -18,3 +18,15 @@ Thumbs.db
 # Test artifacts
 *.profraw
 *.profdata
+
+# Secrets and keys
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+*.der
+*.jks
+secrets/
+*.secret

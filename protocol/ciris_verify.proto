@@ -2,7 +2,7 @@
 // Version: 2.0.0 (Hybrid Cryptography)
 //
 // This protocol is PUBLIC. Anyone can implement a client.
-// The server implementation is closed-source.
+// The server implementation is open-source (AGPL-3.0).
 //
 // CRYPTOGRAPHIC BASELINE:
 // - Classical: Ed25519

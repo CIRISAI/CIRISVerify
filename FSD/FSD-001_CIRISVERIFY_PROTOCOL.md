@@ -9,7 +9,7 @@
 
 ## Executive Summary
 
-CIRISVerify is a closed-source binary module that provides hardware-rooted license verification for the CIRIS ecosystem. It enables CIRISAgent deployments to cryptographically prove their license status, ensuring that community agents (CIRISCare) cannot masquerade as licensed professional agents (CIRISMedical, CIRISLegal, CIRISFinancial) even if the open-source code is modified.
+CIRISVerify is an open-source (AGPL-3.0) binary module that provides hardware-rooted license verification for the CIRIS ecosystem. It enables CIRISAgent deployments to cryptographically prove their license status, ensuring that community agents (CIRISCare) cannot masquerade as licensed professional agents (CIRISMedical, CIRISLegal, CIRISFinancial) even if the open-source code is modified.
 
 **The core guarantee**: An agent cannot claim to be licensed without cryptographic proof from a hardware-bound verification module that validates against multiple independent sources.
 
@@ -117,7 +117,7 @@ CIRISVerify is implemented in **Rust** for the following reasons:
                                     │
                                     ▼
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                 CIRIS VERIFY MODULE (Closed Binary)                      │
+│                 CIRIS VERIFY MODULE (Open Source - AGPL-3.0)             │
 │                                                                          │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │
 │  │  Hardware   │  │  Multi-DNS  │  │  Binary     │  │  License    │   │
@@ -225,9 +225,9 @@ The binary returns a `mandatory_disclosure` string that:
 - MUST be displayed to users
 - Accurately reflects the actual license status
 
-#### 5. Public Protocol, Private Implementation
+#### 5. Public Protocol, Open Implementation
 - **Public**: Protocol spec (this document), interface definition (protobuf)
-- **Private**: Implementation source code
+- **Open Source**: Implementation source code (AGPL-3.0)
 - **Verifiable**: Behavior is deterministic and auditable
 
 ## Protocol Specification
@@ -239,7 +239,7 @@ The binary returns a `mandatory_disclosure` string that:
 // Version: 1.0.0
 //
 // This protocol is PUBLIC. Anyone can implement a client.
-// The server implementation is closed-source.
+// The server implementation is open-source (AGPL-3.0).
 
 syntax = "proto3";
 
