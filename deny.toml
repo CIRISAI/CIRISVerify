@@ -14,10 +14,10 @@ targets = [
 all-features = true
 
 [advisories]
-vulnerability = "deny"
-unmaintained = "warn"
-yanked = "warn"
-notice = "warn"
+# Warn about unmaintained crates in workspace deps
+unmaintained = "workspace"
+# Check all deps for unsound code
+unsound = "all"
 ignore = [
     # atty is pulled transitively; no direct dependency
     "RUSTSEC-2021-0145",
@@ -26,7 +26,6 @@ ignore = [
 
 [licenses]
 unlicensed = "deny"
-copyleft = "warn"
 allow = [
     "MIT",
     "Apache-2.0",

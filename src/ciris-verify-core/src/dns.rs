@@ -22,9 +22,9 @@ use std::net::IpAddr;
 use std::time::Duration;
 
 use base64::Engine;
-use tracing::{debug, instrument};
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use hickory_resolver::TokioAsyncResolver;
+use tracing::{debug, instrument};
 
 use crate::error::VerifyError;
 
@@ -83,8 +83,8 @@ impl DnsValidator {
     ///
     /// Returns error if resolver initialization fails.
     pub async fn with_server(dns_server: IpAddr, timeout: Duration) -> Result<Self, VerifyError> {
-        use std::net::SocketAddr;
         use hickory_resolver::config::{NameServerConfig, Protocol};
+        use std::net::SocketAddr;
 
         let mut config = ResolverConfig::new();
         config.add_name_server(NameServerConfig::new(

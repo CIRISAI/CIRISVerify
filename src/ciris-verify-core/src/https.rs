@@ -117,7 +117,7 @@ impl HttpsClient {
     ///
     /// # Arguments
     ///
-    /// * `base_url` - Base URL for the API (e.g., "https://verify.ciris.ai")
+    /// * `base_url` - Base URL for the API (e.g., `https://verify.ciris.ai`)
     /// * `timeout` - Request timeout
     /// * `cert_pin` - Optional certificate fingerprint for pinning (SHA-256, hex-encoded)
     ///

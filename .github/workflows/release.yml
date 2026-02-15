@@ -449,15 +449,20 @@ jobs:
         with:
           files: release/manifest.json
 
-      # Publish hashes to CIRISRegistry (so agents can verify binary integrity)
+      # Publish hashes to CIRISRegistry US + EU (so agents can verify binary integrity)
       - name: Publish hashes to Registry
         if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
         env:
           REGISTRY_ADMIN_TOKEN: ${{ secrets.REGISTRY_ADMIN_TOKEN }}
         run: |
           # Registry stores the manifest so agents can verify downloaded binaries
-          # POST to Registry's verify-hashes endpoint
+          # Publish to both US and EU registries
           curl -sf -X POST "https://us.registry.ciris-services-1.ai/api/v1/verify/publish" \
             -H "Authorization: Bearer ${REGISTRY_ADMIN_TOKEN}" \
             -H "Content-Type: application/json" \
-            -d @release/manifest.json || echo "Registry publish skipped (endpoint not yet available)"
+            -d @release/manifest.json || echo "US Registry publish skipped (endpoint not yet available)"
+
+          curl -sf -X POST "https://eu.registry.ciris-services-2.ai/api/v1/verify/publish" \
+            -H "Authorization: Bearer ${REGISTRY_ADMIN_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d @release/manifest.json || echo "EU Registry publish skipped (endpoint not yet available)"
