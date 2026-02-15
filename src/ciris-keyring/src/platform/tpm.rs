@@ -7,6 +7,8 @@ use async_trait::async_trait;
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
+use crate::types::TpmAttestation;
 use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation};
 
 /// TPM 2.0 signer for desktop and server platforms.
