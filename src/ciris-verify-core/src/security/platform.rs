@@ -163,7 +163,7 @@ fn is_android_emulator() -> bool {
     use std::io::Read;
 
     // Method 1: Check build properties
-    let emulator_props = [
+    let emulator_props: &[(&str, &[&str])] = &[
         ("ro.hardware", &["goldfish", "ranchu", "vbox86"]),
         (
             "ro.product.model",

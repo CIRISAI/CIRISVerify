@@ -238,7 +238,7 @@ where
     /// Verify only the classical component (for partial verification).
     ///
     /// WARNING: This should only be used for debugging or when PQC is unavailable.
-    /// Production verification MUST use [`verify`].
+    /// Production verification MUST use [`HybridVerifier::verify`].
     pub fn verify_classical_only(
         &self,
         data: &[u8],
