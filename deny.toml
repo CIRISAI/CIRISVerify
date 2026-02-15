@@ -14,12 +14,15 @@ targets = [
 all-features = true
 
 [advisories]
-db-path = "~/.cargo/advisory-db"
-db-urls = ["https://github.com/rustsec/advisory-db"]
 vulnerability = "deny"
 unmaintained = "warn"
 yanked = "warn"
 notice = "warn"
+ignore = [
+    # atty is pulled transitively; no direct dependency
+    "RUSTSEC-2021-0145",
+    "RUSTSEC-2024-0375",
+]
 
 [licenses]
 unlicensed = "deny"
@@ -34,6 +37,7 @@ allow = [
     "Zlib",
     "MPL-2.0",
     "Unicode-DFS-2016",
+    "Unicode-3.0",
 ]
 confidence-threshold = 0.8
 

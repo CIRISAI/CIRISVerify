@@ -96,10 +96,10 @@ impl KeyGenConfig {
 ///
 /// ## Platform Implementations
 ///
-/// - Android: [`AndroidKeystoreSigner`] (feature: `android`)
-/// - iOS: [`SecureEnclaveSigner`] (feature: `ios`)
-/// - TPM: [`TpmSigner`] (feature: `tpm`)
-/// - Fallback: [`SoftwareSigner`] (feature: `software`)
+/// - Android: `AndroidKeystoreSigner` (feature: `android`)
+/// - iOS: `SecureEnclaveSigner` (feature: `ios`)
+/// - TPM: `TpmSigner` (feature: `tpm`)
+/// - Fallback: `SoftwareSigner` (feature: `software`)
 ///
 /// ## Example
 ///
@@ -142,7 +142,7 @@ pub trait HardwareSigner: Send + Sync {
     /// Get the public key.
     ///
     /// The public key can be exported and shared.
-    /// Format depends on [`algorithm()`]:
+    /// Format depends on [`HardwareSigner::algorithm()`]:
     /// - ECDSA P-256: 65 bytes (uncompressed SEC1)
     /// - Ed25519: 32 bytes
     ///

@@ -23,8 +23,8 @@ use std::time::Duration;
 
 use base64::Engine;
 use tracing::{debug, instrument};
-use trust_dns_resolver::config::{ResolverConfig, ResolverOpts};
-use trust_dns_resolver::TokioAsyncResolver;
+use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::TokioAsyncResolver;
 
 use crate::error::VerifyError;
 
@@ -84,16 +84,13 @@ impl DnsValidator {
     /// Returns error if resolver initialization fails.
     pub async fn with_server(dns_server: IpAddr, timeout: Duration) -> Result<Self, VerifyError> {
         use std::net::SocketAddr;
-        use trust_dns_resolver::config::{NameServerConfig, Protocol};
+        use hickory_resolver::config::{NameServerConfig, Protocol};
 
         let mut config = ResolverConfig::new();
-        config.add_name_server(NameServerConfig {
-            socket_addr: SocketAddr::new(dns_server, 53),
-            protocol: Protocol::Udp,
-            tls_dns_name: None,
-            trust_negative_responses: true,
-            bind_addr: None,
-        });
+        config.add_name_server(NameServerConfig::new(
+            SocketAddr::new(dns_server, 53),
+            Protocol::Udp,
+        ));
 
         let mut opts = ResolverOpts::default();
         opts.timeout = timeout;

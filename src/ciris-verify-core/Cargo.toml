@@ -37,7 +37,7 @@ tracing.workspace = true
 chrono.workspace = true
 
 # DNS resolution
-trust-dns-resolver.workspace = true
+hickory-resolver.workspace = true
 
 # HTTP client
 reqwest.workspace = true
