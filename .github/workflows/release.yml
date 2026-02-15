@@ -383,3 +383,81 @@ jobs:
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
+
+      # Generate manifest.json with all platform hashes for Portal/Registry
+      - name: Generate distribution manifest
+        run: |
+          python3 -c "
+          import json, hashlib, os, glob
+
+          manifest = {
+              'name': 'ciris-verify',
+              'version': '${{ github.ref_name }}'.lstrip('v'),
+              'built_at': '$(date -u +%Y-%m-%dT%H:%M:%SZ)',
+              'release_url': 'https://github.com/CIRISAI/CIRISVerify/releases/tag/${{ github.ref_name }}',
+              'platforms': {}
+          }
+
+          # Map target dirs to platform names
+          platform_map = {
+              'x86_64-unknown-linux-gnu': 'linux-x86_64',
+              'aarch64-unknown-linux-gnu': 'linux-arm64',
+              'x86_64-apple-darwin': 'darwin-x86_64',
+              'aarch64-apple-darwin': 'darwin-arm64',
+              'x86_64-pc-windows-msvc': 'windows-x86_64',
+          }
+
+          for target_dir, platform in platform_map.items():
+              base = f'release/{target_dir}'
+              if os.path.isdir(base):
+                  manifest['platforms'][platform] = {}
+                  for f in os.listdir(base):
+                      fpath = os.path.join(base, f)
+                      if os.path.isfile(fpath):
+                          h = hashlib.sha256(open(fpath, 'rb').read()).hexdigest()
+                          kind = 'dylib' if f.endswith('.dylib') else 'shared' if f.endswith('.so') else 'dll' if f.endswith('.dll') else 'static'
+                          manifest['platforms'][platform][kind] = {
+                              'file': f, 'sha256': h, 'size': os.path.getsize(fpath)
+                          }
+
+          # Android
+          for abi in ['arm64-v8a', 'armeabi-v7a', 'x86_64']:
+              sopath = f'release/android/{abi}/libciris_verify_ffi.so'
+              if os.path.isfile(sopath):
+                  h = hashlib.sha256(open(sopath, 'rb').read()).hexdigest()
+                  manifest['platforms'][f'android-{abi}'] = {
+                      'shared': {'file': 'libciris_verify_ffi.so', 'sha256': h, 'size': os.path.getsize(sopath)}
+                  }
+
+          # iOS
+          for target in ['aarch64-apple-ios', 'aarch64-apple-ios-sim']:
+              apath = f'release/ios/{target}/libciris_verify_ffi.a'
+              pname = 'ios-arm64' if target == 'aarch64-apple-ios' else 'ios-sim-arm64'
+              if os.path.isfile(apath):
+                  h = hashlib.sha256(open(apath, 'rb').read()).hexdigest()
+                  manifest['platforms'][pname] = {
+                      'static': {'file': 'libciris_verify_ffi.a', 'sha256': h, 'size': os.path.getsize(apath)}
+                  }
+
+          print(json.dumps(manifest, indent=2))
+          with open('release/manifest.json', 'w') as f:
+              json.dump(manifest, f, indent=2)
+          "
+
+      - name: Upload manifest to release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: release/manifest.json
+
+      # Publish hashes to CIRISRegistry (so agents can verify binary integrity)
+      - name: Publish hashes to Registry
+        if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
+        env:
+          REGISTRY_ADMIN_TOKEN: ${{ secrets.REGISTRY_ADMIN_TOKEN }}
+        run: |
+          # Registry stores the manifest so agents can verify downloaded binaries
+          # POST to Registry's verify-hashes endpoint
+          curl -sf -X POST "https://us.registry.ciris-services-1.ai/api/v1/verify/publish" \
+            -H "Authorization: Bearer ${REGISTRY_ADMIN_TOKEN}" \
+            -H "Content-Type: application/json" \
+            -d @release/manifest.json || echo "Registry publish skipped (endpoint not yet available)"
