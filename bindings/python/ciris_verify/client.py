@@ -24,6 +24,7 @@ from .types import (
     DisclosureSeverity,
     LicenseStatusResponse,
     CapabilityCheckResult,
+    FileIntegrityResult,
     HardwareType,
     ValidationStatus,
     SourceDetails,
@@ -238,6 +239,19 @@ class CIRISVerify:
         ]
         self._lib.ciris_verify_check_capability.restype = ctypes.c_int
 
+        # ciris_verify_check_agent_integrity(handle, manifest_data, manifest_len,
+        #   agent_root, spot_check_count, response_data, response_len) -> i32
+        self._lib.ciris_verify_check_agent_integrity.argtypes = [
+            ctypes.c_void_p,                    # handle
+            ctypes.c_char_p,                    # manifest_data (JSON bytes)
+            ctypes.c_size_t,                    # manifest_len
+            ctypes.c_char_p,                    # agent_root (null-terminated path)
+            ctypes.c_uint32,                    # spot_check_count (0 = full)
+            ctypes.POINTER(ctypes.c_char_p),    # response_data (out)
+            ctypes.POINTER(ctypes.c_size_t),    # response_len (out)
+        ]
+        self._lib.ciris_verify_check_agent_integrity.restype = ctypes.c_int
+
         # ciris_verify_free(data)
         self._lib.ciris_verify_free.argtypes = [ctypes.c_char_p]
         self._lib.ciris_verify_free.restype = None
@@ -397,6 +411,8 @@ class CIRISVerify:
                 issuer=lic.get("issuer", "unknown"),
                 holder_name=lic.get("holder_name"),
                 holder_organization=lic.get("organization_name"),
+                responsible_party=lic.get("responsible_party", ""),
+                public_contact_email=lic.get("responsible_party_contact", ""),
             )
         except Exception:
             return None
@@ -510,6 +526,72 @@ class CIRISVerify:
             )
         except asyncio.TimeoutError:
             raise CIRISTimeoutError("check_capability", timeout)
+
+    async def check_agent_integrity(
+        self,
+        manifest_path: str,
+        agent_root: str,
+        spot_check_count: int = 0,
+        timeout: Optional[float] = None,
+    ) -> FileIntegrityResult:
+        """Check agent file integrity (Tripwire-style).
+
+        Validates that CIRISAgent Python files have not been modified
+        since the distribution was built. ANY unauthorized change
+        (except .env, log, audit files) means the agent is compromised.
+
+        Args:
+            manifest_path: Path to the JSON manifest file.
+            agent_root: Root directory of the agent installation.
+            spot_check_count: Number of files to spot-check. 0 = full check.
+            timeout: Operation timeout in seconds.
+
+        Returns:
+            FileIntegrityResult with integrity status.
+            If integrity_valid is False, the agent MUST shut down.
+        """
+        timeout = timeout or self._timeout
+
+        def _check() -> FileIntegrityResult:
+            # Read manifest file
+            with open(manifest_path, "rb") as f:
+                manifest_bytes = f.read()
+
+            response_data = ctypes.c_char_p()
+            response_len = ctypes.c_size_t()
+
+            ret = self._lib.ciris_verify_check_agent_integrity(
+                self._handle,
+                manifest_bytes,
+                len(manifest_bytes),
+                agent_root.encode("utf-8"),
+                spot_check_count,
+                ctypes.byref(response_data),
+                ctypes.byref(response_len),
+            )
+
+            if ret != 0:
+                return FileIntegrityResult(
+                    integrity_valid=False,
+                    failure_reason=f"FFI call failed with code {ret}",
+                )
+
+            try:
+                result_bytes = ctypes.string_at(response_data, response_len.value)
+                result_dict = json.loads(result_bytes)
+                return FileIntegrityResult(**result_dict)
+            finally:
+                if response_data:
+                    self._lib.ciris_verify_free(response_data)
+
+        loop = asyncio.get_event_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(self._executor, _check),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            raise CIRISTimeoutError("check_agent_integrity", timeout)
 
     def get_mandatory_disclosure(self, status: LicenseStatus) -> MandatoryDisclosure:
         """Get mandatory disclosure for a given status.
@@ -662,6 +744,25 @@ class MockCIRISVerify(CIRISVerify):
             capability=capability,
             allowed=allowed,
             reason="Allowed by mock" if allowed else "Not in mock capabilities",
+        )
+
+    async def check_agent_integrity(
+        self,
+        manifest_path: str,
+        agent_root: str,
+        spot_check_count: int = 0,
+        timeout: Optional[float] = None,
+    ) -> FileIntegrityResult:
+        """Mock agent integrity check — always passes."""
+        return FileIntegrityResult(
+            integrity_valid=True,
+            total_files=0,
+            files_checked=0,
+            files_passed=0,
+            files_failed=0,
+            files_missing=0,
+            files_unexpected=0,
+            failure_reason="",
         )
 
     def _default_disclosure(self, status: LicenseStatus) -> str:

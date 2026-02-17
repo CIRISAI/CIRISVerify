@@ -27,6 +27,7 @@ from .types import (
     DisclosureSeverity,
     LicenseStatusResponse,
     CapabilityCheckResult,
+    FileIntegrityResult,
     HardwareType,
     ValidationStatus,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "DisclosureSeverity",
     "LicenseStatusResponse",
     "CapabilityCheckResult",
+    "FileIntegrityResult",
     "HardwareType",
     "ValidationStatus",
     "CIRISVerifyError",

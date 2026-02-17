@@ -1,8 +1,8 @@
 # CIRISVerify Integration Requirements
 
-**Version:** 1.0.0
-**Date:** 2026-01-26
-**Status:** Draft
+**Version:** 1.1.0
+**Date:** 2026-02-17
+**Status:** Active — Infrastructure endpoints configured, multi-source engine implemented
 
 This document analyzes the requirements for CIRISVerify integration with CIRISRegistry, identifying what's implemented, what's missing, and what needs to be prioritized.
 
@@ -14,9 +14,12 @@ CIRISVerify is the hardware-rooted license verification component that enables C
 
 **Key Findings:**
 - 54 gRPC endpoints specified in protocol
-- Core lookup endpoints implemented (stub level)
-- Critical gaps in multi-source validation, DNS protocol, and offline verification
-- Hardware attestation validation not yet implemented
+- Core lookup endpoints implemented (stub level in Registry, functional in CIRISVerify engine)
+- Multi-source validation engine implemented in Rust with real infrastructure endpoints
+- DNS endpoints configured: `us.registry.ciris-services-1.ai`, `eu.registry.ciris-services-1.ai`
+- HTTPS endpoint configured: `api.registry.ciris-services-1.ai`
+- Python SDK (`ciris-verify`) implemented and installed in CIRISAgent
+- Hardware attestation validation: software fallback operational, hardware pending
 
 ---
 
@@ -37,7 +40,7 @@ CIRISVerify is the hardware-rooted license verification component that enables C
 | `GetEmergencyStatus` | Check circuit breaker | Fail-fast on lockdown | Stub |
 | `GetCapabilities` | Feature discovery | Client version compat | Stub |
 
-### 1.2 Multi-Source Validation (Critical - NOT Implemented)
+### 1.2 Multi-Source Validation (Engine Implemented — DNS Publishing Pending)
 
 Per FSD-001, CIRISVerify MUST query multiple sources:
 
@@ -60,23 +63,24 @@ Per FSD-001, CIRISVerify MUST query multiple sources:
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Required Components (NOT Implemented):**
+**Component Status:**
 
-1. **DNS TXT Record Publishing**
+1. **DNS TXT Record Publishing** — Pending (Registry side)
    ```
    <hash_prefix>._agent.registry.ciris.ai TXT "v=1;s=ACTIVE;t=CIRISMEDICAL;sig=..."
    <partner_id>._partner.registry.ciris.ai TXT "v=1;s=ACTIVE;l=PROF_MED;sig=..."
    ```
 
-2. **Multi-Region HTTPS Endpoints**
-   - `registry-us.ciris.ai` (US region)
-   - `registry-eu.ciris.ai` (EU region)
-   - `api.registry.ciris.ai` (Primary API)
+2. **Multi-Region HTTPS Endpoints** — ✅ Configured in CIRISVerify
+   - `us.registry.ciris-services-1.ai` (US region)
+   - `eu.registry.ciris-services-1.ai` (EU region)
+   - `api.registry.ciris-services-1.ai` (Primary API)
 
-3. **Validation Logic**
+3. **Validation Logic** — ✅ Implemented in Rust (`engine.rs`)
    - Minimum 2-of-3 sources must agree for ACTIVE
    - ANY source reporting REVOKED triggers immediate action
    - Disagreement on critical fields triggers SECURITY_ALERT
+   - Consensus algorithm with `build_validation_results()` and `compute_overall_validation()`
 
 ### 1.3 Hardware Attestation (NOT Implemented)
 

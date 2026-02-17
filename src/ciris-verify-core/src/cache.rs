@@ -345,6 +345,8 @@ mod tests {
             license_type: LicenseType::ProfessionalMedical,
             organization_name: "Test Org".to_string(),
             organization_id: "org-123".to_string(),
+            responsible_party: "Dr. Test User".to_string(),
+            responsible_party_contact: "test@example.com".to_string(),
             issued_at: 1737936000,
             expires_at: 1769472000,
             not_before: 1737936000,

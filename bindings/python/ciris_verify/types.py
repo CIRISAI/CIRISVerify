@@ -142,6 +142,8 @@ class LicenseDetails(BaseModel):
     issuer: str = Field(..., description="License issuer identifier")
     holder_name: Optional[str] = Field(default=None, description="License holder name")
     holder_organization: Optional[str] = Field(default=None, description="License holder org")
+    responsible_party: str = Field(default="", description="Name of the human accountable for this deployment")
+    public_contact_email: str = Field(default="", description="Public-facing org contact (defaults to org owner email)")
 
     def has_capability(self, capability: str) -> bool:
         """Check if this license grants a specific capability."""
@@ -224,3 +226,21 @@ class CapabilityCheckResult(BaseModel):
     required_tier: Optional[LicenseTier] = Field(default=None)
     current_tier: Optional[LicenseTier] = Field(default=None)
     requires_separate_module: bool = Field(default=False, description="Needs separate licensed repo")
+
+
+class FileIntegrityResult(BaseModel):
+    """Result of Tripwire-style agent file integrity check.
+
+    ANY failure means the agent distribution has been tampered with
+    and must be shut down immediately.
+    """
+    model_config = ConfigDict(frozen=True)
+
+    integrity_valid: bool = Field(..., description="Whether all checked files passed")
+    total_files: int = Field(default=0, description="Total files in manifest")
+    files_checked: int = Field(default=0, description="Number of files checked")
+    files_passed: int = Field(default=0, description="Files that passed hash check")
+    files_failed: int = Field(default=0, description="Files with hash mismatch")
+    files_missing: int = Field(default=0, description="Files missing from disk")
+    files_unexpected: int = Field(default=0, description="Unexpected files not in manifest")
+    failure_reason: str = Field(default="", description="Opaque failure category")

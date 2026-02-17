@@ -21,6 +21,7 @@
 //! ```
 
 mod anti_tamper;
+pub mod file_integrity;
 mod platform;
 
 // Re-export from the main security module

@@ -142,6 +142,8 @@ impl HybridJwt {
             license_type: self.payload.license_type,
             organization_name: self.payload.org_name.clone(),
             organization_id: self.payload.org_id.clone(),
+            responsible_party: self.payload.responsible_party.clone(),
+            responsible_party_contact: self.payload.responsible_party_contact.clone(),
             issued_at: self.payload.iat,
             expires_at: self.payload.exp,
             not_before: self.payload.nbf,
@@ -202,6 +204,12 @@ pub struct LicensePayload {
     /// Organization ID.
     #[serde(rename = "org_id")]
     pub org_id: String,
+    /// Responsible licensed party name.
+    #[serde(default)]
+    pub responsible_party: String,
+    /// Contact for the responsible party.
+    #[serde(default)]
+    pub responsible_party_contact: String,
     /// Granted capabilities.
     #[serde(default)]
     pub capabilities: Vec<String>,
@@ -286,6 +294,8 @@ mod tests {
             license_type: LicenseType::ProfessionalMedical,
             org_name: "Test Hospital".to_string(),
             org_id: "org-abc123".to_string(),
+            responsible_party: "Dr. Jane Smith".to_string(),
+            responsible_party_contact: "jsmith@testhospital.org".to_string(),
             capabilities: vec!["domain:medical:triage".to_string()],
             capabilities_denied: vec![],
             max_tier: AutonomyTier::A3High,

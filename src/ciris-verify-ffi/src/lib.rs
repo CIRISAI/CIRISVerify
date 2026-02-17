@@ -281,6 +281,103 @@ pub unsafe extern "C" fn ciris_verify_destroy(handle: *mut CirisVerifyHandle) {
     }
 }
 
+/// Check agent file integrity (Tripwire-style).
+///
+/// Validates that CIRISAgent Python files have not been modified since
+/// the distribution was built. ANY unauthorized change triggers a forced
+/// shutdown directive.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `manifest_data` - JSON-encoded file manifest
+/// * `manifest_len` - Length of manifest data
+/// * `agent_root` - Path to agent root directory (null-terminated string)
+/// * `spot_check_count` - Number of files to spot-check (0 = full check)
+/// * `response_data` - Output pointer for JSON response (caller must free with `ciris_verify_free`)
+/// * `response_len` - Output pointer for response length
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+/// Note: success means the check completed, NOT that integrity passed.
+/// Check the `integrity_valid` field in the response.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `manifest_data` must point to valid memory of at least `manifest_len` bytes
+/// - `agent_root` must be a valid null-terminated UTF-8 string
+/// - `response_data` and `response_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_check_agent_integrity(
+    handle: *mut CirisVerifyHandle,
+    manifest_data: *const u8,
+    manifest_len: usize,
+    agent_root: *const libc::c_char,
+    spot_check_count: u32,
+    response_data: *mut *mut u8,
+    response_len: *mut usize,
+) -> i32 {
+    if handle.is_null()
+        || manifest_data.is_null()
+        || agent_root.is_null()
+        || response_data.is_null()
+        || response_len.is_null()
+    {
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let _handle = &*handle;
+    let manifest_bytes = std::slice::from_raw_parts(manifest_data, manifest_len);
+
+    // Parse manifest
+    let manifest: ciris_verify_core::FileManifest = match serde_json::from_slice(manifest_bytes) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("Failed to parse manifest: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        }
+    };
+
+    // Parse agent root path
+    let root_str = match std::ffi::CStr::from_ptr(agent_root).to_str() {
+        Ok(s) => s,
+        Err(_) => return CirisVerifyError::InvalidArgument as i32,
+    };
+    let root_path = std::path::Path::new(root_str);
+
+    // Perform check
+    let result = if spot_check_count == 0 {
+        ciris_verify_core::check_agent_integrity(&manifest, root_path)
+    } else {
+        ciris_verify_core::spot_check_agent_integrity(&manifest, root_path, spot_check_count as usize)
+    };
+
+    // Serialize response
+    let response_bytes = match serde_json::to_vec(&result) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("Failed to serialize integrity result: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        }
+    };
+
+    // Allocate and copy response
+    let len = response_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(response_bytes.as_ptr(), ptr, len);
+
+    *response_data = ptr;
+    *response_len = len;
+
+    CirisVerifyError::Success as i32
+}
+
 /// Get the library version.
 ///
 /// Returns a static string with the version number.

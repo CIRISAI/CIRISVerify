@@ -69,3 +69,4 @@ prost-build = "0.12"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 proptest = { workspace = true }
 pretty_assertions = { workspace = true }
+tempfile = "3"

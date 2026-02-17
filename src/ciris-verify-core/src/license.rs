@@ -103,6 +103,14 @@ pub struct LicenseDetails {
     /// Organization ID.
     pub organization_id: String,
 
+    /// Responsible licensed party name (the human accountable for this deployment).
+    #[serde(default)]
+    pub responsible_party: String,
+
+    /// Contact for the responsible party (email or phone).
+    #[serde(default)]
+    pub responsible_party_contact: String,
+
     /// Issue timestamp (Unix).
     pub issued_at: i64,
 

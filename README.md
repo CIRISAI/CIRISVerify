@@ -50,6 +50,63 @@ All 3 MUST agree                │   ML-DSA-65)             │          └─
 | Binary source code | **Public (AGPL-3.0)** | Open-source transparency |
 | Hardware key material | **Private** | Security |
 
+## Quick Start
+
+### Build from Source
+
+```bash
+# Build the Rust shared library
+cargo build --release
+
+# Copy binary into Python package
+cp target/release/libciris_verify_ffi.dylib bindings/python/ciris_verify/  # macOS
+# cp target/release/libciris_verify_ffi.so bindings/python/ciris_verify/   # Linux
+
+# Install Python bindings
+pip install -e bindings/python/
+
+# Verify
+python -c "from ciris_verify import CIRISVerify, MockCIRISVerify, LicenseStatus; print('OK')"
+```
+
+Or use the build script:
+```bash
+./scripts/build_and_install.sh
+```
+
+### Install from PyPI (Production)
+
+```bash
+pip install ciris-verify
+# Platform-specific wheel includes the correct Rust binary automatically
+```
+
+## Python SDK
+
+```python
+from ciris_verify import CIRISVerify, MockCIRISVerify, LicenseStatus
+import os
+
+# For testing/community mode (no binary needed):
+mock = MockCIRISVerify()
+status = await mock.get_license_status(challenge_nonce=os.urandom(32))
+print(status.status)                    # LicenseStatus.UNLICENSED_COMMUNITY
+print(status.mandatory_disclosure.text) # Required disclosure text
+
+# Check capabilities:
+result = await mock.check_capability("medical:diagnosis")
+print(result.allowed)  # False in community mode
+
+result = await mock.check_capability("standard:telemetry")
+print(result.allowed)  # True — standard ops always allowed
+
+# For production (with Rust binary):
+verifier = CIRISVerify()
+status = await verifier.get_license_status(challenge_nonce=os.urandom(32))
+```
+
+See [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md) for full integration details.
+
 ## Repository Structure
 
 ```
@@ -58,9 +115,19 @@ CIRISVerify/
 │   └── FSD-001_CIRISVERIFY_PROTOCOL.md    # Full specification
 ├── protocol/
 │   └── ciris_verify.proto                  # Public protocol definition
+├── src/
+│   ├── ciris-keyring/                     # Hardware keyring (TPM/SE/Keystore)
+│   ├── ciris-crypto/                      # Hybrid crypto (Ed25519 + ML-DSA-65)
+│   ├── ciris-verify-core/                 # Core verification engine
+│   └── ciris-verify-ffi/                  # C FFI layer
+├── bindings/
+│   └── python/ciris_verify/               # Python SDK (ciris-verify package)
 ├── docs/
-│   ├── integration-guide.md               # How to integrate (TODO)
-│   └── security-model.md                  # Threat model details (TODO)
+│   ├── HOW_IT_WORKS.md                    # How CIRISVerify works
+│   ├── IMPLEMENTATION_ROADMAP.md          # Development roadmap
+│   └── REGISTRY_INTEGRATION_REQUIREMENTS.md # Registry dependencies
+├── scripts/
+│   └── build_and_install.sh               # Build + install helper
 └── README.md                              # This file
 ```
 
@@ -91,9 +158,9 @@ Example for unlicensed community deployment:
 
 To prevent single points of compromise, CIRISVerify validates the steward's public key against three independent sources:
 
-1. **DNS TXT record** at `_ciris-verify.ciris-services-1.ai` (US registrar)
-2. **DNS TXT record** at `_ciris-verify.ciris-services-2.ai` (EU registrar)
-3. **HTTPS endpoint** at `verify.ciris.ai`
+1. **DNS** at `us.registry.ciris-services-1.ai` (US)
+2. **DNS** at `eu.registry.ciris-services-1.ai` (EU)
+3. **HTTPS** at `api.registry.ciris-services-1.ai`
 
 All three must return the same steward public key. If they disagree, `ERROR_SOURCES_DISAGREE` is returned—this may indicate an attack.
 
