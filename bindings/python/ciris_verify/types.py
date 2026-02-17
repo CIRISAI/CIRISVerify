@@ -6,7 +6,7 @@ All types use Pydantic for validation and follow CIRIS typing conventions.
 from enum import IntEnum, Enum
 from typing import Optional, List, Set
 from datetime import datetime
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class LicenseStatus(IntEnum):
@@ -121,17 +121,18 @@ class MandatoryDisclosure(BaseModel):
     Per FSD-001: Agents MUST display this text when interacting with users.
     Failure to display is a violation of the CIRIS ecosystem rules.
     """
+    model_config = ConfigDict(frozen=True)
+
     text: str = Field(..., description="Disclosure text to display")
     severity: DisclosureSeverity = Field(..., description="Severity level")
     locale: str = Field(default="en", description="Locale code")
     legal_jurisdiction: Optional[str] = Field(default=None, description="Applicable jurisdiction")
 
-    class Config:
-        frozen = True
-
 
 class LicenseDetails(BaseModel):
     """Detailed license information when licensed."""
+    model_config = ConfigDict(frozen=True)
+
     license_id: str = Field(..., description="Unique license identifier")
     tier: LicenseTier = Field(..., description="License tier level")
     capabilities: Set[str] = Field(default_factory=set, description="Granted capabilities")
@@ -141,9 +142,6 @@ class LicenseDetails(BaseModel):
     issuer: str = Field(..., description="License issuer identifier")
     holder_name: Optional[str] = Field(default=None, description="License holder name")
     holder_organization: Optional[str] = Field(default=None, description="License holder org")
-
-    class Config:
-        frozen = True
 
     def has_capability(self, capability: str) -> bool:
         """Check if this license grants a specific capability."""
@@ -160,25 +158,23 @@ class LicenseDetails(BaseModel):
 
 class SourceDetails(BaseModel):
     """Details about multi-source validation."""
+    model_config = ConfigDict(frozen=True)
+
     dns_us_reachable: bool = False
     dns_eu_reachable: bool = False
     https_reachable: bool = False
     validation_status: ValidationStatus = ValidationStatus.NO_SOURCES_REACHABLE
     sources_agreeing: int = 0
 
-    class Config:
-        frozen = True
-
 
 class AttestationData(BaseModel):
     """Hardware attestation data."""
+    model_config = ConfigDict(frozen=True)
+
     hardware_type: HardwareType = HardwareType.SOFTWARE_ONLY
     attestation_chain: Optional[bytes] = None
     signature: Optional[bytes] = None
     timestamp: datetime = Field(default_factory=datetime.utcnow)
-
-    class Config:
-        frozen = True
 
 
 class LicenseStatusResponse(BaseModel):
@@ -186,6 +182,8 @@ class LicenseStatusResponse(BaseModel):
 
     This is the primary response type returned by get_license_status().
     """
+    model_config = ConfigDict(frozen=True)
+
     status: LicenseStatus = Field(..., description="Overall license status")
     license: Optional[LicenseDetails] = Field(default=None, description="License details if licensed")
     mandatory_disclosure: MandatoryDisclosure = Field(..., description="Required disclosure")
@@ -195,9 +193,6 @@ class LicenseStatusResponse(BaseModel):
     cached: bool = Field(default=False, description="Whether response came from cache")
     cache_age_seconds: Optional[int] = Field(default=None)
     verification_timestamp: datetime = Field(default_factory=datetime.utcnow)
-
-    class Config:
-        frozen = True
 
     def allows_licensed_operation(self) -> bool:
         """Check if professional licensed operations are allowed."""
@@ -221,12 +216,11 @@ class LicenseStatusResponse(BaseModel):
 
 class CapabilityCheckResult(BaseModel):
     """Result of checking a specific capability."""
+    model_config = ConfigDict(frozen=True)
+
     capability: str = Field(..., description="Capability that was checked")
     allowed: bool = Field(..., description="Whether capability is allowed")
     reason: str = Field(..., description="Reason for allow/deny")
     required_tier: Optional[LicenseTier] = Field(default=None)
     current_tier: Optional[LicenseTier] = Field(default=None)
     requires_separate_module: bool = Field(default=False, description="Needs separate licensed repo")
-
-    class Config:
-        frozen = True

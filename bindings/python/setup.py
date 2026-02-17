@@ -41,6 +41,11 @@ setup(
         "Typing :: Typed",
     ],
     package_data={
-        "ciris_verify": ["py.typed"],
+        "ciris_verify": [
+            "py.typed",
+            "libciris_verify_ffi.so",
+            "libciris_verify_ffi.dylib",
+            "ciris_verify_ffi.dll",
+        ],
     },
 )

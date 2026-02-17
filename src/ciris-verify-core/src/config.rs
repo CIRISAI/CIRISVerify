@@ -26,9 +26,9 @@ pub struct VerifyConfig {
 impl Default for VerifyConfig {
     fn default() -> Self {
         Self {
-            dns_us_host: "registry-us.ciris.ai".into(),
-            dns_eu_host: "registry-eu.ciris.ai".into(),
-            https_endpoint: "https://verify.ciris.ai".into(),
+            dns_us_host: "us.registry.ciris-services-1.ai".into(),
+            dns_eu_host: "eu.registry.ciris-services-1.ai".into(),
+            https_endpoint: "https://api.registry.ciris-services-1.ai".into(),
             cert_pin: None,
             timeout: Duration::from_secs(30),
             cache_ttl: Duration::from_secs(300),

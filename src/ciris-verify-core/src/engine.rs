@@ -757,7 +757,7 @@ impl LicenseEngine {
     fn build_validation_results(&self, validation: &ValidationResult) -> ValidationResults {
         ValidationResults {
             dns_us: SourceResult {
-                source: "registry-us.ciris.ai".to_string(),
+                source: "us.registry.ciris-services-1.ai".to_string(),
                 reachable: validation.source_details.dns_us_reachable,
                 valid: validation.source_details.dns_us_reachable
                     && validation.source_details.dns_us_error.is_none(),
@@ -765,7 +765,7 @@ impl LicenseEngine {
                 error: validation.source_details.dns_us_error.clone(),
             },
             dns_eu: SourceResult {
-                source: "registry-eu.ciris.ai".to_string(),
+                source: "eu.registry.ciris-services-1.ai".to_string(),
                 reachable: validation.source_details.dns_eu_reachable,
                 valid: validation.source_details.dns_eu_reachable
                     && validation.source_details.dns_eu_error.is_none(),
@@ -773,7 +773,7 @@ impl LicenseEngine {
                 error: validation.source_details.dns_eu_error.clone(),
             },
             https: SourceResult {
-                source: "verify.ciris.ai".to_string(),
+                source: "api.registry.ciris-services-1.ai".to_string(),
                 reachable: validation.source_details.https_reachable,
                 valid: validation.source_details.https_reachable
                     && validation.source_details.https_error.is_none(),
@@ -788,21 +788,21 @@ impl LicenseEngine {
     fn build_validation_results_empty(&self) -> ValidationResults {
         ValidationResults {
             dns_us: SourceResult {
-                source: "registry-us.ciris.ai".to_string(),
+                source: "us.registry.ciris-services-1.ai".to_string(),
                 reachable: false,
                 valid: false,
                 checked_at: chrono::Utc::now().timestamp(),
                 error: Some("Not checked".to_string()),
             },
             dns_eu: SourceResult {
-                source: "registry-eu.ciris.ai".to_string(),
+                source: "eu.registry.ciris-services-1.ai".to_string(),
                 reachable: false,
                 valid: false,
                 checked_at: chrono::Utc::now().timestamp(),
                 error: Some("Not checked".to_string()),
             },
             https: SourceResult {
-                source: "verify.ciris.ai".to_string(),
+                source: "api.registry.ciris-services-1.ai".to_string(),
                 reachable: false,
                 valid: false,
                 checked_at: chrono::Utc::now().timestamp(),
@@ -894,14 +894,34 @@ impl LicenseEngine {
 
 /// Verify binary integrity.
 ///
-/// TODO: Implement actual integrity verification.
+/// Performs runtime security checks:
+/// - Debugger detection (ptrace/sysctl/Win32 API)
+/// - Hook detection (Frida, Xposed)
+/// - Environment checks (device compromise, emulator)
+///
+/// Binary self-hash verification is skipped until the hash embedding
+/// pipeline is implemented (requires two-pass build).
 fn verify_binary_integrity() -> bool {
-    // Placeholder - always returns true for now
-    // In production:
-    // 1. Check embedded hash
-    // 2. Detect debugger
-    // 3. Check for hooks
-    true
+    // In debug builds, skip all checks to allow development
+    #[cfg(debug_assertions)]
+    {
+        return true;
+    }
+
+    // Check ALL conditions to prevent timing attacks
+    #[cfg(not(debug_assertions))]
+    {
+        use crate::security::{
+            detect_hooks, is_debugger_attached, is_device_compromised, is_emulator,
+        };
+
+        let debugger_ok = !is_debugger_attached();
+        let hooks_ok = !detect_hooks();
+        let device_ok = !is_device_compromised();
+        let emulator_ok = !is_emulator();
+
+        debugger_ok && hooks_ok && device_ok && emulator_ok
+    }
 }
 
 /// Generate a unique request ID.

@@ -18,7 +18,7 @@ Usage:
         print(disclosure.text)
 """
 
-from .client import CIRISVerify
+from .client import CIRISVerify, MockCIRISVerify
 from .types import (
     LicenseStatus,
     LicenseTier,
@@ -42,6 +42,7 @@ from .exceptions import (
 __version__ = "0.1.0"
 __all__ = [
     "CIRISVerify",
+    "MockCIRISVerify",
     "LicenseStatus",
     "LicenseTier",
     "LicenseDetails",
