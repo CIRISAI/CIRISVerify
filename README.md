@@ -74,11 +74,12 @@ Or use the build script:
 ./scripts/build_and_install.sh
 ```
 
-### Install from PyPI (Production)
+### Install from PyPI (Coming Soon)
 
 ```bash
 pip install ciris-verify
-# Platform-specific wheel includes the correct Rust binary automatically
+# Platform-specific wheel will include the correct Rust binary automatically
+# Supports: Linux x86_64, macOS ARM64, macOS x86_64, Windows x86_64
 ```
 
 ## Python SDK
