@@ -100,12 +100,20 @@ pub use software::{MutableSoftwareSigner, SoftwareSigner};
 pub fn get_platform_signer(alias: &str) -> Result<Box<dyn HardwareSigner>, KeyringError> {
     let caps = detect_hardware_type();
 
+    tracing::info!(
+        hardware_type = ?caps.hardware_type,
+        has_hardware = caps.has_hardware,
+        max_tier = ?caps.max_tier,
+        "Platform signer: detected capabilities"
+    );
+
     if caps.has_hardware {
+        tracing::info!("Platform signer: attempting hardware signer (alias={})", alias);
         create_hardware_signer(alias, false)
     } else {
         tracing::warn!(
-            "Using software-only signer. Hardware binding unavailable. \
-             Deployment will be limited to UNLICENSED_COMMUNITY tier."
+            "Platform signer: no hardware available, using software signer. \
+             Deployment limited to UNLICENSED_COMMUNITY tier."
         );
         create_software_signer(alias)
     }

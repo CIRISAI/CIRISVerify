@@ -71,7 +71,16 @@ impl LicenseEngine {
     ///
     /// Returns error if initialization fails.
     pub fn with_config(config: VerifyConfig) -> Result<Self, VerifyError> {
+        info!(
+            dns_us = %config.dns_us_host,
+            dns_eu = %config.dns_eu_host,
+            https = %config.https_endpoint,
+            key_alias = %config.key_alias,
+            "LicenseEngine: starting initialization"
+        );
+
         // Initialize consensus validator
+        info!("LicenseEngine: creating consensus validator (3-source)");
         let consensus_validator = ConsensusValidator::new(
             config.dns_us_host.clone(),
             config.dns_eu_host.clone(),
@@ -81,6 +90,7 @@ impl LicenseEngine {
         );
 
         // Initialize license cache
+        info!("LicenseEngine: creating license cache (ttl={}s)", config.cache_ttl.as_secs());
         let cache = LicenseCache::new(
             &config.key_alias,
             None, // TODO: Add persistent storage path
@@ -88,6 +98,7 @@ impl LicenseEngine {
         );
 
         // Initialize HTTPS client for revocation
+        info!("LicenseEngine: creating HTTPS client → {}", config.https_endpoint);
         let https_client = HttpsClient::new(
             &config.https_endpoint,
             config.timeout,
@@ -95,6 +106,7 @@ impl LicenseEngine {
         )?;
 
         // Initialize revocation checker
+        info!("LicenseEngine: creating revocation checker");
         let revocation_checker = RevocationChecker::new(
             https_client,
             Duration::from_secs(300),  // 5 minute TTL for non-revoked
@@ -102,15 +114,22 @@ impl LicenseEngine {
         );
 
         // Initialize hardware signer (synchronous)
+        info!("LicenseEngine: initializing platform signer (key_alias={})", config.key_alias);
         let hw_signer = ciris_keyring::get_platform_signer(&config.key_alias)?;
+        info!(
+            hardware_type = ?hw_signer.hardware_type(),
+            algorithm = ?hw_signer.algorithm(),
+            "LicenseEngine: platform signer ready"
+        );
 
         // Check binary integrity at startup
+        info!("LicenseEngine: checking binary integrity");
         let integrity_valid = verify_binary_integrity();
 
         info!(
             hardware_type = ?hw_signer.hardware_type(),
             integrity_valid = integrity_valid,
-            "LicenseEngine initialized"
+            "LicenseEngine: initialization complete"
         );
 
         Ok(Self {
@@ -419,6 +438,26 @@ impl LicenseEngine {
         self.hw_signer.hardware_type()
     }
 
+    /// Sign data using the hardware-bound private key.
+    ///
+    /// This is the vault-style interface: the agent delegates signing to
+    /// CIRISVerify, which uses the hardware security module. The private
+    /// key never leaves the secure hardware.
+    pub async fn sign(&self, data: &[u8]) -> Result<Vec<u8>, VerifyError> {
+        Ok(self.hw_signer.sign(data).await?)
+    }
+
+    /// Get the public key from the hardware-bound keypair.
+    pub async fn public_key(&self) -> Result<Vec<u8>, VerifyError> {
+        Ok(self.hw_signer.public_key().await?)
+    }
+
+    /// Get the algorithm name as a string.
+    #[must_use]
+    pub fn algorithm_name(&self) -> String {
+        format!("{:?}", self.hw_signer.algorithm())
+    }
+
     // ========================================================================
     // Private helpers
     // ========================================================================
@@ -605,7 +644,10 @@ impl LicenseEngine {
     ) -> (LicenseStatus, Option<LicenseDetails>) {
         // SOFTWARE_ONLY caps at UNLICENSED_COMMUNITY
         if self.hw_signer.hardware_type() == HardwareType::SoftwareOnly {
-            warn!("Software-only deployment - capping at community tier");
+            warn!(
+                "Software-only deployment (no hardware security module) — \
+                 capping at UNLICENSED_COMMUNITY tier"
+            );
             return (LicenseStatus::UnlicensedCommunity, None);
         }
 
@@ -824,56 +866,132 @@ impl LicenseEngine {
     }
 
     /// Get disclosure text for status.
+    ///
+    /// Every disclosure tells the FULL story:
+    /// - License state (valid, expired, revoked, missing)
+    /// - Hardware state (HSM, software-only)
+    /// - Who issued it (org, responsible party, contact)
+    /// - When it expires
+    /// - What it allows
     fn get_disclosure_text(
         &self,
         status: &LicenseStatus,
         license: Option<&LicenseDetails>,
     ) -> String {
+        let hw_type = self.hw_signer.hardware_type();
+        let is_sw_only = hw_type == HardwareType::SoftwareOnly;
+
+        // Hardware summary line
+        let hw_line = if is_sw_only {
+            "Hardware: SOFTWARE-ONLY (no HSM/TPM/Secure Enclave). ".to_string()
+        } else {
+            format!("Hardware: {:?}. ", hw_type)
+        };
+
+        // License details block (if we have a license object)
+        let lic_block = if let Some(lic) = license {
+            let org = if lic.organization_name.is_empty() {
+                "Unknown".to_string()
+            } else {
+                lic.organization_name.clone()
+            };
+            let party = if lic.responsible_party.is_empty() {
+                String::new()
+            } else {
+                format!("Responsible party: {}. ", lic.responsible_party)
+            };
+            let contact = if lic.responsible_party_contact.is_empty() {
+                String::new()
+            } else {
+                format!("Contact: {}. ", lic.responsible_party_contact)
+            };
+            let expires = format_timestamp(lic.expires_at);
+            format!(
+                "License: {} (ID: {}). Organization: {}. {party}{contact}\
+                 Type: {:?}. Autonomy tier: {:?}. Expires: {expires}. ",
+                match lic.license_type {
+                    LicenseType::ProfessionalMedical => "Professional Medical",
+                    LicenseType::ProfessionalLegal => "Professional Legal",
+                    LicenseType::ProfessionalFinancial => "Professional Financial",
+                    LicenseType::ProfessionalFull => "Professional Full",
+                    LicenseType::Community => "Community",
+                },
+                lic.license_id,
+                org,
+                lic.license_type,
+                lic.max_autonomy_tier,
+            )
+        } else {
+            "License: NONE. ".to_string()
+        };
+
         match status {
             LicenseStatus::LicensedProfessional => {
-                if let Some(lic) = license {
-                    format!(
-                        "Licensed professional agent. Organization: {}. \
-                         Capabilities verified. Maximum autonomy tier: {:?}.",
-                        lic.organization_name, lic.max_autonomy_tier
-                    )
-                } else {
-                    "Licensed professional agent.".to_string()
-                }
+                format!(
+                    "LICENSED PROFESSIONAL. {lic_block}{hw_line}\
+                     Capabilities verified and active."
+                )
             },
             LicenseStatus::LicensedCommunityPlus => {
-                "Community Plus license. Some professional features available.".to_string()
+                format!(
+                    "COMMUNITY PLUS. {lic_block}{hw_line}\
+                     Some professional features available."
+                )
             },
             LicenseStatus::UnlicensedCommunity => {
-                "COMMUNITY MODE: This is a general wellness assistant. \
-                 Not a licensed professional service. \
-                 Consult qualified professionals for medical, legal, or financial advice."
-                    .to_string()
+                if is_sw_only {
+                    format!(
+                        "COMMUNITY MODE. {lic_block}{hw_line}\
+                         Software-only signer limits deployment to community tier. \
+                         Not a licensed professional service. \
+                         Consult qualified professionals for medical, legal, or financial advice."
+                    )
+                } else {
+                    format!(
+                        "COMMUNITY MODE. {lic_block}{hw_line}\
+                         No valid professional license found. \
+                         Not a licensed professional service. \
+                         Consult qualified professionals for medical, legal, or financial advice."
+                    )
+                }
             },
             LicenseStatus::UnlicensedUnverified => {
-                "UNVERIFIED: License status could not be confirmed. \
-                 Operating in restricted mode."
-                    .to_string()
+                format!(
+                    "UNVERIFIED. {lic_block}{hw_line}\
+                     License status could not be confirmed. Operating in restricted mode."
+                )
             },
             LicenseStatus::ErrorBinaryTampered => {
-                "CRITICAL: Binary integrity check failed. System locked down for security."
-                    .to_string()
+                format!(
+                    "LOCKDOWN — BINARY TAMPERED. {lic_block}{hw_line}\
+                     Binary integrity check failed. System locked down for security."
+                )
             },
             LicenseStatus::ErrorSourcesDisagree => {
-                "SECURITY ALERT: Verification sources disagree. Possible attack detected. \
-                 System in restricted mode."
-                    .to_string()
+                format!(
+                    "SECURITY ALERT — SOURCES DISAGREE. {lic_block}{hw_line}\
+                     Verification sources report conflicting data. \
+                     Possible attack detected. System in restricted mode."
+                )
             },
             LicenseStatus::ErrorVerificationFailed => {
-                "Verification failed. Operating in community mode.".to_string()
+                format!(
+                    "COMMUNITY MODE — VERIFICATION FAILED. {lic_block}{hw_line}\
+                     Cannot reach verification servers and no valid cached license."
+                )
             },
             LicenseStatus::ErrorLicenseRevoked => {
-                "License has been revoked. Operating in community mode.".to_string()
+                format!(
+                    "COMMUNITY MODE — LICENSE REVOKED. {lic_block}{hw_line}\
+                     License has been revoked. Operating in community mode \
+                     until a valid license is restored."
+                )
             },
             LicenseStatus::ErrorLicenseExpired => {
-                "License has expired. Operating in community mode. \
-                 Contact your organization to renew."
-                    .to_string()
+                format!(
+                    "COMMUNITY MODE — LICENSE EXPIRED. {lic_block}{hw_line}\
+                     License has expired. Contact your organization to renew."
+                )
             },
         }
     }

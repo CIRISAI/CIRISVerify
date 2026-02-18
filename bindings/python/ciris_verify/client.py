@@ -252,6 +252,26 @@ class CIRISVerify:
         ]
         self._lib.ciris_verify_check_agent_integrity.restype = ctypes.c_int
 
+        # ciris_verify_sign(handle, data, data_len, sig_data, sig_len) -> i32
+        self._lib.ciris_verify_sign.argtypes = [
+            ctypes.c_void_p,                    # handle
+            ctypes.c_char_p,                    # data
+            ctypes.c_size_t,                    # data_len
+            ctypes.POINTER(ctypes.c_char_p),    # signature_data (out)
+            ctypes.POINTER(ctypes.c_size_t),    # signature_len (out)
+        ]
+        self._lib.ciris_verify_sign.restype = ctypes.c_int
+
+        # ciris_verify_get_public_key(handle, key_data, key_len, algorithm, algorithm_len) -> i32
+        self._lib.ciris_verify_get_public_key.argtypes = [
+            ctypes.c_void_p,                    # handle
+            ctypes.POINTER(ctypes.c_char_p),    # key_data (out)
+            ctypes.POINTER(ctypes.c_size_t),    # key_len (out)
+            ctypes.POINTER(ctypes.c_char_p),    # algorithm (out)
+            ctypes.POINTER(ctypes.c_size_t),    # algorithm_len (out)
+        ]
+        self._lib.ciris_verify_get_public_key.restype = ctypes.c_int
+
         # ciris_verify_free(data)
         self._lib.ciris_verify_free.argtypes = [ctypes.c_char_p]
         self._lib.ciris_verify_free.restype = None
@@ -417,24 +437,28 @@ class CIRISVerify:
         except Exception:
             return None
 
-    def _default_disclosure(self, status: LicenseStatus) -> str:
+    def _default_disclosure(self, status: LicenseStatus, reason: str = "") -> str:
         """Generate default disclosure text based on status."""
         if status.allows_licensed_operation():
             return "This agent is professionally licensed and verified."
         elif status.is_community_mode():
+            reason_text = f"Reason: {reason} " if reason else ""
             return (
-                "NOTICE: This is an unlicensed community agent. "
+                "COMMUNITY MODE: This is an unlicensed community agent. "
                 "Professional capabilities (medical, legal, financial advice) "
-                "are NOT available. Outputs are for informational purposes only."
+                f"are NOT available. {reason_text}"
+                "Outputs are for informational purposes only."
             )
         elif status.requires_restricted():
+            reason_text = f"Reason: {reason} " if reason else ""
             return (
-                "WARNING: License verification encountered issues. "
+                f"WARNING: License verification encountered issues. {reason_text}"
                 "Operating in restricted mode with limited capabilities."
             )
         else:
+            reason_text = f"Reason: {reason} " if reason else ""
             return (
-                "CRITICAL: License verification failed. "
+                f"CRITICAL: License verification failed. {reason_text}"
                 "Agent capabilities are severely restricted."
             )
 
@@ -593,6 +617,113 @@ class CIRISVerify:
         except asyncio.TimeoutError:
             raise CIRISTimeoutError("check_agent_integrity", timeout)
 
+    async def sign(
+        self,
+        data: bytes,
+        timeout: Optional[float] = None,
+    ) -> bytes:
+        """Sign data using the hardware-bound private key.
+
+        This is the vault-style signing interface: the agent delegates
+        signing to CIRISVerify, which uses the hardware security module.
+        The private key never leaves the secure hardware.
+
+        Args:
+            data: Data to sign.
+            timeout: Operation timeout in seconds.
+
+        Returns:
+            Signature bytes (64 bytes for Ed25519/ECDSA P-256).
+
+        Raises:
+            VerificationFailedError: If signing fails.
+            TimeoutError: If operation times out.
+        """
+        timeout = timeout or self._timeout
+
+        def _sign() -> bytes:
+            sig_data = ctypes.c_char_p()
+            sig_len = ctypes.c_size_t()
+
+            ret = self._lib.ciris_verify_sign(
+                self._handle,
+                data,
+                len(data),
+                ctypes.byref(sig_data),
+                ctypes.byref(sig_len),
+            )
+
+            if ret != 0:
+                raise VerificationFailedError(ret, f"Signing failed with code {ret}")
+
+            try:
+                return ctypes.string_at(sig_data, sig_len.value)
+            finally:
+                if sig_data:
+                    self._lib.ciris_verify_free(sig_data)
+
+        loop = asyncio.get_event_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(self._executor, _sign),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            raise CIRISTimeoutError("sign", timeout)
+
+    async def get_public_key(
+        self,
+        timeout: Optional[float] = None,
+    ) -> tuple[bytes, str]:
+        """Get the public key from the hardware-bound keypair.
+
+        Returns:
+            Tuple of (public_key_bytes, algorithm_name).
+            - Ed25519: 32 bytes, "Ed25519"
+            - ECDSA P-256: 65 bytes (uncompressed), "EcdsaP256"
+
+        Raises:
+            VerificationFailedError: If key retrieval fails.
+            TimeoutError: If operation times out.
+        """
+        timeout = timeout or self._timeout
+
+        def _get_key() -> tuple[bytes, str]:
+            key_data = ctypes.c_char_p()
+            key_len = ctypes.c_size_t()
+            algo_data = ctypes.c_char_p()
+            algo_len = ctypes.c_size_t()
+
+            ret = self._lib.ciris_verify_get_public_key(
+                self._handle,
+                ctypes.byref(key_data),
+                ctypes.byref(key_len),
+                ctypes.byref(algo_data),
+                ctypes.byref(algo_len),
+            )
+
+            if ret != 0:
+                raise VerificationFailedError(ret, f"Get public key failed with code {ret}")
+
+            try:
+                key_bytes = ctypes.string_at(key_data, key_len.value)
+                algo_str = ctypes.string_at(algo_data, algo_len.value).decode("utf-8")
+                return key_bytes, algo_str
+            finally:
+                if key_data:
+                    self._lib.ciris_verify_free(key_data)
+                if algo_data:
+                    self._lib.ciris_verify_free(algo_data)
+
+        loop = asyncio.get_event_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(self._executor, _get_key),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            raise CIRISTimeoutError("get_public_key", timeout)
+
     def get_mandatory_disclosure(self, status: LicenseStatus) -> MandatoryDisclosure:
         """Get mandatory disclosure for a given status.
 
@@ -685,11 +816,15 @@ class MockCIRISVerify(CIRISVerify):
                 issuer="mock-issuer",
             )
 
+        mock_reason = (
+            "Using MockCIRISVerify (no real binary). "
+            "Install ciris-verify with hardware support for licensed operation."
+        )
         return LicenseStatusResponse(
             status=self._mock_status,
             license=license_details,
             mandatory_disclosure=MandatoryDisclosure(
-                text="[MOCK] " + self._default_disclosure(self._mock_status),
+                text="[MOCK] " + self._default_disclosure(self._mock_status, reason=mock_reason),
                 severity=severity,
             ),
             hardware_type=self._mock_hardware,
@@ -765,6 +900,41 @@ class MockCIRISVerify(CIRISVerify):
             failure_reason="",
         )
 
-    def _default_disclosure(self, status: LicenseStatus) -> str:
+    async def sign(
+        self,
+        data: bytes,
+        timeout: Optional[float] = None,
+    ) -> bytes:
+        """Mock sign — uses software Ed25519 key for testing.
+
+        Generates a deterministic mock signature. NOT cryptographically
+        secure — for testing only.
+        """
+        # Use a mock Ed25519 signing key
+        if not hasattr(self, "_mock_private_key"):
+            from cryptography.hazmat.primitives.asymmetric import ed25519
+            self._mock_private_key = ed25519.Ed25519PrivateKey.generate()
+            self._mock_public_key = self._mock_private_key.public_key()
+
+        return self._mock_private_key.sign(data)
+
+    async def get_public_key(
+        self,
+        timeout: Optional[float] = None,
+    ) -> tuple[bytes, str]:
+        """Mock get_public_key — returns software Ed25519 key."""
+        if not hasattr(self, "_mock_private_key"):
+            from cryptography.hazmat.primitives.asymmetric import ed25519
+            self._mock_private_key = ed25519.Ed25519PrivateKey.generate()
+            self._mock_public_key = self._mock_private_key.public_key()
+
+        from cryptography.hazmat.primitives import serialization
+        key_bytes = self._mock_public_key.public_bytes(
+            encoding=serialization.Encoding.Raw,
+            format=serialization.PublicFormat.Raw,
+        )
+        return key_bytes, "Ed25519"
+
+    def _default_disclosure(self, status: LicenseStatus, reason: str = "") -> str:
         """Generate default disclosure for mock."""
-        return super()._default_disclosure(status)
+        return super()._default_disclosure(status, reason=reason)

@@ -184,6 +184,13 @@ pub fn create_hardware_signer(
 ) -> Result<Box<dyn HardwareSigner>, KeyringError> {
     let capabilities = detect_hardware_type();
 
+    tracing::info!(
+        hardware_type = ?capabilities.hardware_type,
+        has_hardware = capabilities.has_hardware,
+        require_hardware = require_hardware,
+        "create_hardware_signer: starting"
+    );
+
     if require_hardware && !capabilities.has_hardware {
         return Err(KeyringError::HardwareNotAvailable {
             reason: "Hardware security module required but not available".into(),
@@ -217,8 +224,19 @@ pub fn create_hardware_signer(
     #[cfg(target_os = "macos")]
     {
         if capabilities.has_hardware {
+            // macOS doesn't have a traditional TPM, but try anyway;
+            // if it fails, fall through to software signer.
             use super::TpmSigner;
-            return Ok(Box::new(TpmSigner::new(alias, None)?));
+            match TpmSigner::new(alias, None) {
+                Ok(signer) => return Ok(Box::new(signer)),
+                Err(e) => {
+                    tracing::info!(
+                        "macOS: TPM not available ({}), falling back to software signer",
+                        e
+                    );
+                    // Fall through to software signer below
+                },
+            }
         }
     }
 
@@ -229,6 +247,7 @@ pub fn create_hardware_signer(
         });
     }
 
+    tracing::info!("Using software signer (no hardware security module)");
     Ok(Box::new(SoftwareSigner::new(alias)?))
 }
 
