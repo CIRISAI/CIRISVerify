@@ -333,6 +333,16 @@ class CIRISVerify:
         ]
         self._lib.ciris_verify_get_public_key.restype = ctypes.c_int
 
+        # ciris_verify_export_attestation(handle, challenge, challenge_len, proof_data, proof_len) -> i32
+        self._lib.ciris_verify_export_attestation.argtypes = [
+            ctypes.c_void_p,                    # handle
+            ctypes.c_char_p,                    # challenge (input)
+            ctypes.c_size_t,                    # challenge_len
+            ctypes.POINTER(ctypes.c_void_p),    # proof_data (out)
+            ctypes.POINTER(ctypes.c_size_t),    # proof_len (out)
+        ]
+        self._lib.ciris_verify_export_attestation.restype = ctypes.c_int
+
         # ciris_verify_free(data)
         self._lib.ciris_verify_free.argtypes = [ctypes.c_char_p]
         self._lib.ciris_verify_free.restype = None
@@ -784,6 +794,113 @@ class CIRISVerify:
             )
         except asyncio.TimeoutError:
             raise CIRISTimeoutError("get_public_key", timeout)
+
+    async def export_attestation(
+        self,
+        challenge: bytes,
+        timeout: Optional[float] = None,
+    ) -> dict:
+        """Export a remote attestation proof for third-party verification.
+
+        The proof contains hardware attestation, dual (classical + PQC) signatures
+        over the challenge, and the Merkle root from the transparency log.
+
+        Args:
+            challenge: Verifier-provided challenge nonce (must be >= 32 bytes).
+            timeout: Operation timeout in seconds.
+
+        Returns:
+            Dictionary containing the AttestationProof with:
+            - platform_attestation: Hardware attestation data
+            - classical_public_key: Ed25519/ECDSA public key bytes (hex)
+            - pqc_public_key: ML-DSA-65 public key bytes (hex)
+            - classical_signature: Signature over challenge (hex)
+            - pqc_signature: Signature over challenge||classical_sig (hex)
+            - merkle_root: Current transparency log root (hex)
+            - log_size: Number of entries in transparency log
+            - binary_version: CIRISVerify version
+            - hardware_type: Detected hardware security module
+
+        Raises:
+            ValueError: If challenge is too short.
+            VerificationFailedError: If attestation export fails.
+            TimeoutError: If operation times out.
+        """
+        if len(challenge) < 32:
+            raise ValueError("challenge must be at least 32 bytes")
+
+        timeout = timeout or self._timeout
+
+        def _export() -> dict:
+            proof_data = ctypes.c_void_p()
+            proof_len = ctypes.c_size_t()
+
+            ret = self._lib.ciris_verify_export_attestation(
+                self._handle,
+                challenge,
+                len(challenge),
+                ctypes.byref(proof_data),
+                ctypes.byref(proof_len),
+            )
+
+            if ret != 0:
+                raise VerificationFailedError(ret, f"Attestation export failed with code {ret}")
+
+            try:
+                proof_bytes = ctypes.string_at(proof_data.value, proof_len.value)
+                return json.loads(proof_bytes)
+            finally:
+                if proof_data.value:
+                    self._lib.ciris_verify_free(ctypes.c_char_p(proof_data.value))
+
+        loop = asyncio.get_event_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(self._executor, _export),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            raise CIRISTimeoutError("export_attestation", timeout)
+
+    def export_attestation_sync(
+        self,
+        challenge: bytes,
+    ) -> dict:
+        """Synchronous version of export_attestation for non-async contexts.
+
+        Args:
+            challenge: Verifier-provided challenge nonce (must be >= 32 bytes).
+
+        Returns:
+            Dictionary containing the AttestationProof.
+
+        Raises:
+            ValueError: If challenge is too short.
+            VerificationFailedError: If attestation export fails.
+        """
+        if len(challenge) < 32:
+            raise ValueError("challenge must be at least 32 bytes")
+
+        proof_data = ctypes.c_void_p()
+        proof_len = ctypes.c_size_t()
+
+        ret = self._lib.ciris_verify_export_attestation(
+            self._handle,
+            challenge,
+            len(challenge),
+            ctypes.byref(proof_data),
+            ctypes.byref(proof_len),
+        )
+
+        if ret != 0:
+            raise VerificationFailedError(ret, f"Attestation export failed with code {ret}")
+
+        try:
+            proof_bytes = ctypes.string_at(proof_data.value, proof_len.value)
+            return json.loads(proof_bytes)
+        finally:
+            if proof_data.value:
+                self._lib.ciris_verify_free(ctypes.c_char_p(proof_data.value))
 
     def get_mandatory_disclosure(self, status: LicenseStatus) -> MandatoryDisclosure:
         """Get mandatory disclosure for a given status.

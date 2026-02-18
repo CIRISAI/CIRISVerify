@@ -443,7 +443,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "aws-lc-rs",
  "ed25519-dalek",
@@ -464,7 +464,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "async-trait",
  "core-foundation",
@@ -486,7 +486,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -517,7 +517,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "android_logger",
  "cbindgen",

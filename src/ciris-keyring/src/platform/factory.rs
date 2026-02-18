@@ -1,7 +1,10 @@
 //! Platform detection and signer factory.
 //!
 //! Automatically detects the best available hardware security module
-//! and creates an appropriate signer.
+//! and creates an appropriate signer. Falls back gracefully to software
+//! signing when hardware is unavailable.
+
+use tracing::{debug, error, info, warn};
 
 use crate::error::KeyringError;
 use crate::signer::HardwareSigner;

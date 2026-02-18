@@ -13,6 +13,7 @@ crate-type = ["cdylib", "staticlib"]
 
 [features]
 default = []
+android = ["ciris-verify-core/android"]
 ios = ["ciris-verify-core/ios"]
 
 [dependencies]
