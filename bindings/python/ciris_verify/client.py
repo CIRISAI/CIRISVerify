@@ -351,6 +351,40 @@ class CIRISVerify:
         self._lib.ciris_verify_destroy.argtypes = [ctypes.c_void_p]
         self._lib.ciris_verify_destroy.restype = None
 
+        # ciris_verify_import_key(handle, key_data, key_len) -> i32
+        self._lib.ciris_verify_import_key.argtypes = [
+            ctypes.c_void_p,  # handle
+            ctypes.c_char_p,  # key_data
+            ctypes.c_size_t,  # key_len
+        ]
+        self._lib.ciris_verify_import_key.restype = ctypes.c_int
+
+        # ciris_verify_has_key(handle) -> i32
+        self._lib.ciris_verify_has_key.argtypes = [ctypes.c_void_p]
+        self._lib.ciris_verify_has_key.restype = ctypes.c_int
+
+        # ciris_verify_delete_key(handle) -> i32
+        self._lib.ciris_verify_delete_key.argtypes = [ctypes.c_void_p]
+        self._lib.ciris_verify_delete_key.restype = ctypes.c_int
+
+        # ciris_verify_sign_ed25519(handle, data, data_len, sig_data, sig_len) -> i32
+        self._lib.ciris_verify_sign_ed25519.argtypes = [
+            ctypes.c_void_p,                    # handle
+            ctypes.c_char_p,                    # data
+            ctypes.c_size_t,                    # data_len
+            ctypes.POINTER(ctypes.c_void_p),    # signature_data (out)
+            ctypes.POINTER(ctypes.c_size_t),    # signature_len (out)
+        ]
+        self._lib.ciris_verify_sign_ed25519.restype = ctypes.c_int
+
+        # ciris_verify_get_ed25519_public_key(handle, key_data, key_len) -> i32
+        self._lib.ciris_verify_get_ed25519_public_key.argtypes = [
+            ctypes.c_void_p,                    # handle
+            ctypes.POINTER(ctypes.c_void_p),    # key_data (out)
+            ctypes.POINTER(ctypes.c_size_t),    # key_len (out)
+        ]
+        self._lib.ciris_verify_get_ed25519_public_key.restype = ctypes.c_int
+
         # Initialize handle
         self._handle = self._lib.ciris_verify_init()
         if not self._handle:
@@ -922,6 +956,116 @@ class CIRISVerify:
             text=self._default_disclosure(status),
             severity=severity,
         )
+
+    # ========================================================================
+    # Ed25519 Key Management (Portal-issued keys)
+    # ========================================================================
+
+    def import_key_sync(self, key_bytes: bytes) -> bool:
+        """Import an Ed25519 signing key from Portal.
+
+        This imports a 32-byte Ed25519 seed/private key issued by CIRISPortal.
+        The key is stored in memory and used for agent identity signing.
+
+        Args:
+            key_bytes: 32-byte Ed25519 seed/private key
+
+        Returns:
+            True if key was imported successfully, False otherwise.
+
+        Raises:
+            ValueError: If key_bytes is not 32 bytes.
+        """
+        if len(key_bytes) != 32:
+            raise ValueError(f"Ed25519 key must be 32 bytes, got {len(key_bytes)}")
+
+        ret = self._lib.ciris_verify_import_key(
+            self._handle,
+            key_bytes,
+            len(key_bytes),
+        )
+
+        return ret == 0
+
+    def has_key_sync(self) -> bool:
+        """Check if an Ed25519 signing key is loaded.
+
+        Returns:
+            True if a key is loaded, False otherwise.
+        """
+        ret = self._lib.ciris_verify_has_key(self._handle)
+        return ret == 1
+
+    def delete_key_sync(self) -> bool:
+        """Delete the loaded Ed25519 signing key.
+
+        Returns:
+            True if deletion succeeded, False otherwise.
+        """
+        ret = self._lib.ciris_verify_delete_key(self._handle)
+        return ret == 0
+
+    def sign_ed25519_sync(self, data: bytes) -> bytes:
+        """Sign data using the Portal-issued Ed25519 key.
+
+        This signs with the Ed25519 key imported via import_key_sync(),
+        not the hardware-bound key. Use sign() for hardware signing.
+
+        Args:
+            data: Data to sign.
+
+        Returns:
+            64-byte Ed25519 signature.
+
+        Raises:
+            VerificationFailedError: If no key is loaded or signing fails.
+        """
+        sig_data = ctypes.c_void_p()
+        sig_len = ctypes.c_size_t()
+
+        ret = self._lib.ciris_verify_sign_ed25519(
+            self._handle,
+            data,
+            len(data),
+            ctypes.byref(sig_data),
+            ctypes.byref(sig_len),
+        )
+
+        if ret != 0:
+            raise VerificationFailedError(ret, f"Ed25519 signing failed with code {ret}")
+
+        try:
+            return ctypes.string_at(sig_data.value, sig_len.value)
+        finally:
+            if sig_data.value:
+                self._lib.ciris_verify_free(ctypes.c_char_p(sig_data.value))
+
+    def get_ed25519_public_key_sync(self) -> bytes:
+        """Get the Ed25519 public key from the Portal-issued key.
+
+        Returns:
+            32-byte Ed25519 public key.
+
+        Raises:
+            VerificationFailedError: If no key is loaded.
+        """
+        key_data = ctypes.c_void_p()
+        key_len = ctypes.c_size_t()
+
+        ret = self._lib.ciris_verify_get_ed25519_public_key(
+            self._handle,
+            ctypes.byref(key_data),
+            ctypes.byref(key_len),
+        )
+
+        if ret != 0:
+            raise VerificationFailedError(ret, f"Get Ed25519 public key failed with code {ret}")
+
+        try:
+            return ctypes.string_at(key_data.value, key_len.value)
+        finally:
+            if key_data.value:
+                self._lib.ciris_verify_free(ctypes.c_char_p(key_data.value))
 
 
 class MockCIRISVerify(CIRISVerify):

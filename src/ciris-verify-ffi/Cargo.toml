@@ -18,12 +18,14 @@ ios = ["ciris-verify-core/ios"]
 
 [dependencies]
 ciris-verify-core.workspace = true
+ciris-keyring.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 prost.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 serde_json.workspace = true
 libc = "0.2"
+hex.workspace = true
 
 # For mobile targets
 [target.'cfg(target_os = "android")'.dependencies]

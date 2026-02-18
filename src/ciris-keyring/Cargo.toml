@@ -22,6 +22,7 @@ thiserror.workspace = true
 tracing.workspace = true
 serde = { workspace = true, features = ["derive"] }
 p256 = { workspace = true }
+ed25519-dalek.workspace = true
 rand_core.workspace = true
 
 # Cross-platform keyring for key storage (macOS Keychain, Windows Credential Manager, Linux Secret Service)

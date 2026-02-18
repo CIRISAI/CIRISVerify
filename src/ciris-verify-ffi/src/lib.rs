@@ -46,11 +46,206 @@
 #![allow(clippy::missing_safety_doc)] // FFI functions are inherently unsafe
 
 use std::ffi::c_void;
+use std::path::PathBuf;
 use std::ptr;
 use std::sync::{Arc, Once};
 
+use ciris_keyring::MutableEd25519Signer;
 use ciris_verify_core::LicenseEngine;
 use tokio::runtime::Runtime;
+
+/// Get the default path to the agent signing key file.
+///
+/// Checks multiple locations in priority order:
+/// 1. `$CIRIS_KEY_PATH` environment variable
+/// 2. `./agent_signing.key` (current directory)
+/// 3. `~/.ciris/agent_signing.key` (user home)
+/// 4. `/etc/ciris/agent_signing.key` (system-wide on Unix)
+fn find_agent_signing_key() -> Option<PathBuf> {
+    // Check environment variable first
+    if let Ok(path) = std::env::var("CIRIS_KEY_PATH") {
+        let p = PathBuf::from(path);
+        if p.exists() {
+            tracing::info!("Found agent key at CIRIS_KEY_PATH: {}", p.display());
+            return Some(p);
+        }
+    }
+
+    // Check current directory
+    let cwd = PathBuf::from("agent_signing.key");
+    if cwd.exists() {
+        tracing::info!("Found agent key in current directory: {}", cwd.display());
+        return Some(cwd);
+    }
+
+    // Check user home directory
+    if let Some(home) = dirs_home() {
+        let user_key = home.join(".ciris").join("agent_signing.key");
+        if user_key.exists() {
+            tracing::info!("Found agent key in user home: {}", user_key.display());
+            return Some(user_key);
+        }
+    }
+
+    // Check system-wide location (Unix only)
+    #[cfg(unix)]
+    {
+        let system_key = PathBuf::from("/etc/ciris/agent_signing.key");
+        if system_key.exists() {
+            tracing::info!("Found agent key in /etc/ciris: {}", system_key.display());
+            return Some(system_key);
+        }
+    }
+
+    tracing::debug!("No agent_signing.key found in any standard location");
+    None
+}
+
+/// Get the user's home directory.
+fn dirs_home() -> Option<PathBuf> {
+    #[cfg(unix)]
+    {
+        std::env::var("HOME").ok().map(PathBuf::from)
+    }
+    #[cfg(windows)]
+    {
+        std::env::var("USERPROFILE").ok().map(PathBuf::from)
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        None
+    }
+}
+
+/// Try to auto-import the agent signing key from a file.
+///
+/// Reads the key file and imports it into the Ed25519 signer.
+/// Supports both raw 32-byte keys and base64-encoded keys.
+fn try_auto_import_key(signer: &MutableEd25519Signer, path: &PathBuf) -> bool {
+    tracing::info!("Attempting to auto-import key from: {}", path.display());
+
+    let content = match std::fs::read(path) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!("Failed to read key file {}: {}", path.display(), e);
+            return false;
+        }
+    };
+
+    // Try to parse as raw 32-byte key first
+    if content.len() == 32 {
+        match signer.import_key(&content) {
+            Ok(()) => {
+                tracing::info!("Auto-imported 32-byte raw Ed25519 key");
+                return true;
+            }
+            Err(e) => {
+                tracing::warn!("Failed to import raw key: {}", e);
+            }
+        }
+    }
+
+    // Try to parse as base64 (with optional newlines/whitespace)
+    let cleaned: String = content
+        .iter()
+        .filter_map(|&b| {
+            let c = b as char;
+            if c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' {
+                Some(c)
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if let Ok(decoded) = base64_decode(&cleaned) {
+        if decoded.len() == 32 {
+            match signer.import_key(&decoded) {
+                Ok(()) => {
+                    tracing::info!("Auto-imported base64-encoded Ed25519 key");
+                    return true;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to import base64 key: {}", e);
+                }
+            }
+        } else {
+            tracing::warn!(
+                "Base64 decoded key is {} bytes (expected 32)",
+                decoded.len()
+            );
+        }
+    }
+
+    // Try hex format
+    let hex_str: String = content
+        .iter()
+        .filter_map(|&b| {
+            let c = b as char;
+            if c.is_ascii_hexdigit() {
+                Some(c.to_ascii_lowercase())
+            } else {
+                None
+            }
+        })
+        .collect();
+
+    if hex_str.len() == 64 {
+        if let Ok(decoded) = hex::decode(&hex_str) {
+            match signer.import_key(&decoded) {
+                Ok(()) => {
+                    tracing::info!("Auto-imported hex-encoded Ed25519 key");
+                    return true;
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to import hex key: {}", e);
+                }
+            }
+        }
+    }
+
+    tracing::warn!(
+        "Could not parse key file {} (tried raw, base64, hex formats)",
+        path.display()
+    );
+    false
+}
+
+/// Simple base64 decoder (avoiding additional dependencies).
+fn base64_decode(input: &str) -> Result<Vec<u8>, &'static str> {
+    const ALPHABET: &[u8] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+    fn char_to_val(c: char) -> Result<u8, &'static str> {
+        if let Some(pos) = ALPHABET.iter().position(|&b| b as char == c) {
+            Ok(pos as u8)
+        } else if c == '=' {
+            Ok(0) // Padding
+        } else {
+            Err("Invalid base64 character")
+        }
+    }
+
+    let input = input.trim_end_matches('=');
+    let mut output = Vec::with_capacity(input.len() * 3 / 4);
+
+    let chars: Vec<char> = input.chars().collect();
+    for chunk in chars.chunks(4) {
+        let vals: Result<Vec<u8>, _> = chunk.iter().map(|&c| char_to_val(c)).collect();
+        let vals = vals?;
+
+        if vals.len() >= 2 {
+            output.push((vals[0] << 2) | (vals[1] >> 4));
+        }
+        if vals.len() >= 3 {
+            output.push((vals[1] << 4) | (vals[2] >> 2));
+        }
+        if vals.len() >= 4 {
+            output.push((vals[2] << 6) | vals[3]);
+        }
+    }
+
+    Ok(output)
+}
 
 /// Ensure tracing is initialized exactly once.
 static TRACING_INIT: Once = Once::new();
@@ -60,6 +255,9 @@ static TRACING_INIT: Once = Once::new();
 pub struct CirisVerifyHandle {
     runtime: Runtime,
     engine: Arc<LicenseEngine>,
+    /// Optional Ed25519 signer for Portal-issued keys.
+    /// This is separate from the hardware signer and used for agent identity.
+    ed25519_signer: MutableEd25519Signer,
 }
 
 /// Error codes returned by FFI functions.
@@ -147,8 +345,33 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
         },
     };
 
+    // Create Ed25519 signer for Portal-issued keys
+    let ed25519_signer = MutableEd25519Signer::new("agent_signing");
+    tracing::info!("Ed25519 signer initialized (no key loaded yet)");
+
+    // Auto-migration: try to import agent_signing.key if found
+    if let Some(key_path) = find_agent_signing_key() {
+        if try_auto_import_key(&ed25519_signer, &key_path) {
+            tracing::info!(
+                "Auto-migrated agent key from {}",
+                key_path.display()
+            );
+        } else {
+            tracing::warn!(
+                "Found agent_signing.key at {} but failed to import",
+                key_path.display()
+            );
+        }
+    } else {
+        tracing::debug!("No agent_signing.key found for auto-migration");
+    }
+
     tracing::info!("CIRISVerify FFI init complete — handle ready");
-    let handle = Box::new(CirisVerifyHandle { runtime, engine });
+    let handle = Box::new(CirisVerifyHandle {
+        runtime,
+        engine,
+        ed25519_signer,
+    });
     Box::into_raw(handle)
 }
 
@@ -636,6 +859,249 @@ pub unsafe extern "C" fn ciris_verify_export_attestation(
     *proof_data = ptr;
     *proof_len = len;
 
+    CirisVerifyError::Success as i32
+}
+
+/// Import an Ed25519 signing key from Portal.
+///
+/// This function imports a 32-byte Ed25519 seed/private key issued by CIRISPortal.
+/// The key is stored in memory and used for agent identity signing.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `key_data` - 32-byte Ed25519 seed/private key
+/// * `key_len` - Length of key data (must be 32)
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `key_data` must point to valid memory of at least `key_len` bytes
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_import_key(
+    handle: *mut CirisVerifyHandle,
+    key_data: *const u8,
+    key_len: usize,
+) -> i32 {
+    if handle.is_null() || key_data.is_null() {
+        tracing::error!("import_key: null handle or key_data");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    if key_len != 32 {
+        tracing::error!("import_key: invalid key length {} (expected 32)", key_len);
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+    let key_bytes = std::slice::from_raw_parts(key_data, key_len);
+
+    tracing::info!("Importing Ed25519 key ({} bytes)", key_len);
+
+    match handle.ed25519_signer.import_key(key_bytes) {
+        Ok(()) => {
+            tracing::info!("Ed25519 key imported successfully");
+            CirisVerifyError::Success as i32
+        }
+        Err(e) => {
+            tracing::error!("Failed to import Ed25519 key: {}", e);
+            CirisVerifyError::InvalidArgument as i32
+        }
+    }
+}
+
+/// Check if an Ed25519 signing key is loaded.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+///
+/// # Returns
+///
+/// 1 if a key is loaded, 0 if no key is loaded, negative on error.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_has_key(handle: *mut CirisVerifyHandle) -> i32 {
+    if handle.is_null() {
+        tracing::error!("has_key: null handle");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+    let has_key = handle.ed25519_signer.has_key();
+
+    tracing::debug!("has_key check: {}", has_key);
+
+    if has_key {
+        1
+    } else {
+        0
+    }
+}
+
+/// Delete the Ed25519 signing key.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_delete_key(handle: *mut CirisVerifyHandle) -> i32 {
+    if handle.is_null() {
+        tracing::error!("delete_key: null handle");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+
+    tracing::info!("Deleting Ed25519 key");
+
+    match handle.ed25519_signer.clear_key() {
+        Ok(()) => {
+            tracing::info!("Ed25519 key deleted successfully");
+            CirisVerifyError::Success as i32
+        }
+        Err(e) => {
+            tracing::error!("Failed to delete Ed25519 key: {}", e);
+            CirisVerifyError::InternalError as i32
+        }
+    }
+}
+
+/// Sign data using the imported Ed25519 key.
+///
+/// This signs with the Portal-issued Ed25519 key (if loaded), not the
+/// hardware-bound key. Use `ciris_verify_sign` for hardware signing.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `data` - Data to sign
+/// * `data_len` - Length of data
+/// * `signature_data` - Output pointer for signature (caller must free with `ciris_verify_free`)
+/// * `signature_len` - Output pointer for signature length
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `data` must point to valid memory of at least `data_len` bytes
+/// - `signature_data` and `signature_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_sign_ed25519(
+    handle: *mut CirisVerifyHandle,
+    data: *const u8,
+    data_len: usize,
+    signature_data: *mut *mut u8,
+    signature_len: *mut usize,
+) -> i32 {
+    if handle.is_null()
+        || data.is_null()
+        || signature_data.is_null()
+        || signature_len.is_null()
+    {
+        tracing::error!("sign_ed25519: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+    let data_bytes = std::slice::from_raw_parts(data, data_len);
+
+    tracing::debug!("Signing {} bytes with Ed25519 key", data_len);
+
+    let sig = match handle.ed25519_signer.sign(data_bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("Ed25519 signing failed: {}", e);
+            return CirisVerifyError::RequestFailed as i32;
+        }
+    };
+
+    // Allocate and copy signature
+    let len = sig.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("sign_ed25519: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(sig.as_ptr(), ptr, len);
+
+    *signature_data = ptr;
+    *signature_len = len;
+
+    tracing::debug!("Ed25519 signature generated ({} bytes)", len);
+    CirisVerifyError::Success as i32
+}
+
+/// Get the Ed25519 public key.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `key_data` - Output pointer for public key bytes (caller must free with `ciris_verify_free`)
+/// * `key_len` - Output pointer for key length
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `key_data` and `key_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_get_ed25519_public_key(
+    handle: *mut CirisVerifyHandle,
+    key_data: *mut *mut u8,
+    key_len: *mut usize,
+) -> i32 {
+    if handle.is_null() || key_data.is_null() || key_len.is_null() {
+        tracing::error!("get_ed25519_public_key: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+
+    let pubkey = match handle.ed25519_signer.get_public_key() {
+        Some(pk) => pk,
+        None => {
+            tracing::error!("get_ed25519_public_key: no key loaded");
+            return CirisVerifyError::RequestFailed as i32;
+        }
+    };
+
+    // Allocate and copy public key
+    let len = pubkey.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("get_ed25519_public_key: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(pubkey.as_ptr(), ptr, len);
+
+    *key_data = ptr;
+    *key_len = len;
+
+    tracing::debug!("Ed25519 public key returned ({} bytes)", len);
     CirisVerifyError::Success as i32
 }
 

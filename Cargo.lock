@@ -469,6 +469,7 @@ dependencies = [
  "async-trait",
  "core-foundation",
  "core-foundation-sys",
+ "ed25519-dalek",
  "jni",
  "keyring",
  "p256",
@@ -521,7 +522,9 @@ version = "0.3.0"
 dependencies = [
  "android_logger",
  "cbindgen",
+ "ciris-keyring",
  "ciris-verify-core",
+ "hex",
  "jni",
  "libc",
  "log",

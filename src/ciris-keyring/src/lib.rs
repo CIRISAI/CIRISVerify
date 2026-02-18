@@ -79,7 +79,9 @@ pub use platform::{
 pub use keyring_storage::{create_keyring_signer, KeyringStorageSigner};
 
 #[cfg(feature = "software")]
-pub use software::{MutableSoftwareSigner, SoftwareSigner};
+pub use software::{
+    Ed25519SoftwareSigner, MutableEd25519Signer, MutableSoftwareSigner, SoftwareSigner,
+};
 
 /// Get the best available hardware signer for the current platform.
 ///
