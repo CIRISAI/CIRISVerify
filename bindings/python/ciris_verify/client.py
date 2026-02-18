@@ -220,11 +220,13 @@ class CIRISVerify:
         self._lib.ciris_verify_init.restype = ctypes.c_void_p
 
         # ciris_verify_get_status(handle, request_data, request_len, response_data, response_len) -> i32
+        # NOTE: response_data is JSON text (no null bytes), but use c_void_p for
+        # consistency with other output pointer patterns.
         self._lib.ciris_verify_get_status.argtypes = [
             ctypes.c_void_p,                    # handle
-            ctypes.c_char_p,                    # request_data (JSON bytes)
+            ctypes.c_char_p,                    # request_data (JSON bytes, input)
             ctypes.c_size_t,                    # request_len
-            ctypes.POINTER(ctypes.c_char_p),    # response_data (out)
+            ctypes.POINTER(ctypes.c_void_p),    # response_data (out)
             ctypes.POINTER(ctypes.c_size_t),    # response_len (out)
         ]
         self._lib.ciris_verify_get_status.restype = ctypes.c_int
@@ -243,31 +245,34 @@ class CIRISVerify:
         #   agent_root, spot_check_count, response_data, response_len) -> i32
         self._lib.ciris_verify_check_agent_integrity.argtypes = [
             ctypes.c_void_p,                    # handle
-            ctypes.c_char_p,                    # manifest_data (JSON bytes)
+            ctypes.c_char_p,                    # manifest_data (JSON bytes, input)
             ctypes.c_size_t,                    # manifest_len
-            ctypes.c_char_p,                    # agent_root (null-terminated path)
+            ctypes.c_char_p,                    # agent_root (null-terminated path, input)
             ctypes.c_uint32,                    # spot_check_count (0 = full)
-            ctypes.POINTER(ctypes.c_char_p),    # response_data (out)
+            ctypes.POINTER(ctypes.c_void_p),    # response_data (out)
             ctypes.POINTER(ctypes.c_size_t),    # response_len (out)
         ]
         self._lib.ciris_verify_check_agent_integrity.restype = ctypes.c_int
 
         # ciris_verify_sign(handle, data, data_len, sig_data, sig_len) -> i32
+        # NOTE: Use c_void_p for output sig_data — c_char_p truncates at null bytes.
         self._lib.ciris_verify_sign.argtypes = [
             ctypes.c_void_p,                    # handle
-            ctypes.c_char_p,                    # data
+            ctypes.c_char_p,                    # data (input, null-terminated OK)
             ctypes.c_size_t,                    # data_len
-            ctypes.POINTER(ctypes.c_char_p),    # signature_data (out)
+            ctypes.POINTER(ctypes.c_void_p),    # signature_data (out)
             ctypes.POINTER(ctypes.c_size_t),    # signature_len (out)
         ]
         self._lib.ciris_verify_sign.restype = ctypes.c_int
 
         # ciris_verify_get_public_key(handle, key_data, key_len, algorithm, algorithm_len) -> i32
+        # NOTE: Use c_void_p (not c_char_p) for output data pointers because
+        # c_char_p truncates at null bytes, and public keys contain 0x00 bytes.
         self._lib.ciris_verify_get_public_key.argtypes = [
             ctypes.c_void_p,                    # handle
-            ctypes.POINTER(ctypes.c_char_p),    # key_data (out)
+            ctypes.POINTER(ctypes.c_void_p),    # key_data (out)
             ctypes.POINTER(ctypes.c_size_t),    # key_len (out)
-            ctypes.POINTER(ctypes.c_char_p),    # algorithm (out)
+            ctypes.POINTER(ctypes.c_void_p),    # algorithm (out)
             ctypes.POINTER(ctypes.c_size_t),    # algorithm_len (out)
         ]
         self._lib.ciris_verify_get_public_key.restype = ctypes.c_int
@@ -317,7 +322,7 @@ class CIRISVerify:
         request_bytes = json.dumps(request_obj).encode("utf-8")
 
         # Call FFI
-        response_data = ctypes.c_char_p()
+        response_data = ctypes.c_void_p()
         response_len = ctypes.c_size_t()
 
         result = self._lib.ciris_verify_get_status(
@@ -332,11 +337,11 @@ class CIRISVerify:
             raise VerificationFailedError(result, f"FFI call failed with code {result}")
 
         try:
-            response_bytes = ctypes.string_at(response_data, response_len.value)
+            response_bytes = ctypes.string_at(response_data.value, response_len.value)
             return self._parse_response(response_bytes)
         finally:
-            if response_data:
-                self._lib.ciris_verify_free(response_data)
+            if response_data.value:
+                self._lib.ciris_verify_free(ctypes.c_char_p(response_data.value))
 
     def _parse_response(self, data: bytes) -> LicenseStatusResponse:
         """Parse JSON response from Rust FFI into LicenseStatusResponse."""
@@ -581,7 +586,7 @@ class CIRISVerify:
             with open(manifest_path, "rb") as f:
                 manifest_bytes = f.read()
 
-            response_data = ctypes.c_char_p()
+            response_data = ctypes.c_void_p()
             response_len = ctypes.c_size_t()
 
             ret = self._lib.ciris_verify_check_agent_integrity(
@@ -601,12 +606,12 @@ class CIRISVerify:
                 )
 
             try:
-                result_bytes = ctypes.string_at(response_data, response_len.value)
+                result_bytes = ctypes.string_at(response_data.value, response_len.value)
                 result_dict = json.loads(result_bytes)
                 return FileIntegrityResult(**result_dict)
             finally:
-                if response_data:
-                    self._lib.ciris_verify_free(response_data)
+                if response_data.value:
+                    self._lib.ciris_verify_free(ctypes.c_char_p(response_data.value))
 
         loop = asyncio.get_event_loop()
         try:
@@ -642,7 +647,7 @@ class CIRISVerify:
         timeout = timeout or self._timeout
 
         def _sign() -> bytes:
-            sig_data = ctypes.c_char_p()
+            sig_data = ctypes.c_void_p()
             sig_len = ctypes.c_size_t()
 
             ret = self._lib.ciris_verify_sign(
@@ -657,10 +662,10 @@ class CIRISVerify:
                 raise VerificationFailedError(ret, f"Signing failed with code {ret}")
 
             try:
-                return ctypes.string_at(sig_data, sig_len.value)
+                return ctypes.string_at(sig_data.value, sig_len.value)
             finally:
-                if sig_data:
-                    self._lib.ciris_verify_free(sig_data)
+                if sig_data.value:
+                    self._lib.ciris_verify_free(ctypes.c_char_p(sig_data.value))
 
         loop = asyncio.get_event_loop()
         try:
@@ -689,9 +694,9 @@ class CIRISVerify:
         timeout = timeout or self._timeout
 
         def _get_key() -> tuple[bytes, str]:
-            key_data = ctypes.c_char_p()
+            key_data = ctypes.c_void_p()
             key_len = ctypes.c_size_t()
-            algo_data = ctypes.c_char_p()
+            algo_data = ctypes.c_void_p()
             algo_len = ctypes.c_size_t()
 
             ret = self._lib.ciris_verify_get_public_key(
@@ -706,14 +711,14 @@ class CIRISVerify:
                 raise VerificationFailedError(ret, f"Get public key failed with code {ret}")
 
             try:
-                key_bytes = ctypes.string_at(key_data, key_len.value)
-                algo_str = ctypes.string_at(algo_data, algo_len.value).decode("utf-8")
+                key_bytes = ctypes.string_at(key_data.value, key_len.value)
+                algo_str = ctypes.string_at(algo_data.value, algo_len.value).decode("utf-8")
                 return key_bytes, algo_str
             finally:
-                if key_data:
-                    self._lib.ciris_verify_free(key_data)
-                if algo_data:
-                    self._lib.ciris_verify_free(algo_data)
+                if key_data.value:
+                    self._lib.ciris_verify_free(ctypes.c_char_p(key_data.value))
+                if algo_data.value:
+                    self._lib.ciris_verify_free(ctypes.c_char_p(algo_data.value))
 
         loop = asyncio.get_event_loop()
         try:
