@@ -134,11 +134,23 @@ pub struct ResponseSignature {
     /// Classical algorithm used.
     pub classical_algorithm: String,
 
-    /// PQC signature bytes.
+    /// PQC signature bytes (ML-DSA-65, bound over classical sig).
     pub pqc: Vec<u8>,
 
     /// PQC algorithm used.
     pub pqc_algorithm: String,
+
+    /// PQC public key bytes (for verifiers).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pqc_public_key: Vec<u8>,
+
+    /// Signature mode (should be "HybridRequired" for v2.0).
+    #[serde(default = "default_signature_mode")]
+    pub signature_mode: String,
+}
+
+fn default_signature_mode() -> String {
+    "HybridRequired".to_string()
 }
 
 /// Multi-source validation results.
@@ -312,6 +324,59 @@ pub enum ShutdownType {
     Immediate,
     /// Emergency kill (SIGTERM + grace + SIGKILL).
     Emergency,
+}
+
+// =============================================================================
+// REMOTE ATTESTATION PROOF EXPORT
+// =============================================================================
+
+/// Exportable attestation proof for third-party verification.
+///
+/// Contains all data needed for an external verifier to independently confirm:
+/// 1. Hardware binding (platform attestation)
+/// 2. Cryptographic identity (classical + PQC public keys)
+/// 3. Signature validity (dual bound signatures over challenge)
+/// 4. Audit trail integrity (Merkle root from transparency log)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AttestationProof {
+    /// Platform attestation from hardware security module.
+    pub platform_attestation: PlatformAttestation,
+
+    /// Hardware-bound public key (classical).
+    pub hardware_public_key: Vec<u8>,
+
+    /// Algorithm of the hardware key.
+    pub hardware_algorithm: String,
+
+    /// PQC public key (ML-DSA-65).
+    pub pqc_public_key: Vec<u8>,
+
+    /// PQC algorithm name.
+    pub pqc_algorithm: String,
+
+    /// Challenge nonce provided by verifier.
+    pub challenge: Vec<u8>,
+
+    /// Classical signature over the challenge.
+    pub classical_signature: Vec<u8>,
+
+    /// PQC signature over (challenge || classical_signature) — bound.
+    pub pqc_signature: Vec<u8>,
+
+    /// Merkle root from the transparency log at time of proof.
+    pub merkle_root: [u8; 32],
+
+    /// Number of entries in the transparency log.
+    pub log_entry_count: u64,
+
+    /// Timestamp when proof was generated.
+    pub generated_at: i64,
+
+    /// Binary version of CIRISVerify.
+    pub binary_version: String,
+
+    /// Hardware type description.
+    pub hardware_type: String,
 }
 
 /// Response for capability check.

@@ -18,7 +18,7 @@ use crate::hybrid::{PqcSigner, PqcVerifier};
 use crate::types::PqcAlgorithm;
 
 #[cfg(feature = "pqc-ml-dsa")]
-use ml_dsa::{MlDsa65, Signature, SigningKey, VerifyingKey};
+use ml_dsa::{EncodedVerifyingKey, MlDsa65, Seed, Signature, SigningKey, VerifyingKey};
 
 #[cfg(feature = "pqc-ml-dsa")]
 use ml_dsa::signature::{Signer, Verifier};
@@ -43,13 +43,13 @@ impl MlDsa65Signer {
     /// Returns error if PQC feature is not enabled.
     #[cfg(feature = "pqc-ml-dsa")]
     pub fn new() -> Result<Self, CryptoError> {
-        use rand_core::OsRng;
-        let signing_key = SigningKey::<MlDsa65>::random(&mut OsRng);
-        let verifying_key = signing_key.verifying_key();
-        Ok(Self {
-            signing_key,
-            verifying_key,
-        })
+        use rand_core::{OsRng, RngCore};
+
+        // Generate a random 32-byte seed using the system CSPRNG
+        let mut seed_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut seed_bytes);
+
+        Self::from_seed(&seed_bytes)
     }
 
     /// Create a new signer with a randomly generated key pair.
@@ -78,13 +78,10 @@ impl MlDsa65Signer {
             )));
         }
 
-        // Use a seeded RNG for deterministic generation
-        use rand_core::SeedableRng;
-        let mut rng = rand_chacha::ChaCha20Rng::from_seed(
-            seed.try_into().expect("seed length checked above"),
-        );
+        let seed = Seed::try_from(seed)
+            .map_err(|e| CryptoError::invalid_private_key(format!("Seed construction: {e}")))?;
 
-        let signing_key = SigningKey::<MlDsa65>::random(&mut rng);
+        let signing_key = SigningKey::<MlDsa65>::from_seed(&seed);
         let verifying_key = signing_key.verifying_key();
         Ok(Self {
             signing_key,
@@ -108,7 +105,8 @@ impl PqcSigner for MlDsa65Signer {
 
     #[cfg(feature = "pqc-ml-dsa")]
     fn public_key(&self) -> Result<Vec<u8>, CryptoError> {
-        Ok(self.verifying_key.as_bytes().to_vec())
+        let encoded = self.verifying_key.encode();
+        Ok(encoded.to_vec())
     }
 
     #[cfg(not(feature = "pqc-ml-dsa"))]
@@ -120,8 +118,9 @@ impl PqcSigner for MlDsa65Signer {
 
     #[cfg(feature = "pqc-ml-dsa")]
     fn sign(&self, data: &[u8]) -> Result<Vec<u8>, CryptoError> {
-        let signature = self.signing_key.sign(data);
-        Ok(signature.as_bytes().to_vec())
+        let signature: Signature<MlDsa65> = self.signing_key.sign(data);
+        let encoded = signature.encode();
+        Ok(encoded.to_vec())
     }
 
     #[cfg(not(feature = "pqc-ml-dsa"))]
@@ -157,11 +156,12 @@ impl PqcVerifier for MlDsa65Verifier {
         data: &[u8],
         signature: &[u8],
     ) -> Result<bool, CryptoError> {
-        // Parse public key
-        let vk = VerifyingKey::<MlDsa65>::try_from(public_key)
+        // Parse public key: &[u8] -> EncodedVerifyingKey -> VerifyingKey
+        let encoded_vk = EncodedVerifyingKey::<MlDsa65>::try_from(public_key)
             .map_err(|e| CryptoError::invalid_public_key(format!("ML-DSA-65: {e}")))?;
+        let vk = VerifyingKey::<MlDsa65>::decode(&encoded_vk);
 
-        // Parse signature
+        // Parse signature: &[u8] -> Signature
         let sig = Signature::<MlDsa65>::try_from(signature)
             .map_err(|e| CryptoError::invalid_signature(format!("ML-DSA-65: {e}")))?;
 
@@ -206,8 +206,8 @@ mod tests {
         );
         assert_eq!(
             signature.len(),
-            3293,
-            "ML-DSA-65 signature should be 3293 bytes"
+            3309,
+            "ML-DSA-65 signature should be 3309 bytes"
         );
 
         // Verify

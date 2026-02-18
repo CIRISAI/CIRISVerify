@@ -1,9 +1,10 @@
 # CIRISVerify Implementation Roadmap
 
-**Status**: Active Development (Phase 0-1 Complete, Phase 3-4 In Progress)
+**Status**: Active Development (Phase 0-1 Complete, Phase 3-5 In Progress)
 **Target**: Production-ready v2.0.0
 **Language**: Rust
 **Upstream Alignment**: Veilid patterns for potential contribution
+**Test Suite**: 155 tests passing
 **Last Updated**: 2026-02-17
 
 ---
@@ -48,12 +49,12 @@ When extending Veilid components:
 
 ### Deliverables
 - ✅ Compiling workspace with all crate stubs
-- ✅ CI passing (124 tests)
+- ✅ CI passing (155 tests)
 - ✅ Documented upstream tracking
 
 ---
 
-## Phase 1: Core Cryptography
+## Phase 1: Core Cryptography ✅ COMPLETE
 
 ### 1.1 Classical Algorithms (`ciris-crypto`)
 
@@ -95,15 +96,16 @@ pub trait MlDsaSigner {
 }
 ```
 
-**Crate Options** (evaluate in order):
-1. `aws-lc-rs` - Best audit path, FIPS trajectory
-2. `ml-dsa` (RustCrypto) - Pure Rust, unaudited
-3. `pqcrypto` - FFI to liboqs, audited upstream
+**Crate Selected**: `ml-dsa` 0.1.0-rc.3 (RustCrypto)
+- ✅ Pure Rust, no C FFI dependencies
+- ✅ NIST FIPS 204 compliant
+- ✅ Bound dual signatures operational (PQC covers classical sig)
+- ✅ Integrated into verification engine and FFI layer
 
-**Decision Criteria**:
-- [ ] Benchmark on mobile (ARM64)
-- [ ] Evaluate FIPS certification path
-- [ ] Check no_std compatibility for embedded
+**Decision Criteria** (resolved):
+- [x] Benchmark on mobile (ARM64) — acceptable performance
+- [x] Evaluate FIPS certification path — ml-dsa follows FIPS 204; can migrate to aws-lc-rs if FIPS 140-3 certification needed
+- [x] Check no_std compatibility — not required for current targets
 
 ### 1.3 Hybrid Signature System
 
@@ -189,10 +191,10 @@ impl HybridSigner {
 ```
 
 ### Deliverables
-- `ciris-crypto` crate with all algorithms
-- Comprehensive test vectors (NIST, Wycheproof)
-- Benchmark suite for mobile targets
-- Algorithm selection documentation
+- ✅ `ciris-crypto` crate with ECDSA P-256, Ed25519, ML-DSA-65
+- ✅ Hybrid signature system with bound PQC signatures
+- ✅ 20 crypto tests passing
+- Algorithm selection documented (ml-dsa RustCrypto selected)
 
 ---
 
@@ -396,9 +398,9 @@ impl HardwareSigner for SoftwareSigner {
 
 ---
 
-## Phase 3: Verification Engine
+## Phase 3: Verification Engine 🔧 IN PROGRESS
 
-### 3.1 Multi-Source DNS Validator
+### 3.1 Multi-Source DNS Validator ✅ IMPLEMENTED
 
 ```rust
 pub struct DnsValidator {
@@ -448,7 +450,7 @@ impl DnsValidator {
 }
 ```
 
-### 3.2 License JWT Parser
+### 3.2 License JWT Parser ✅ IMPLEMENTED
 
 ```rust
 /// Parse 4-part hybrid JWT: header.payload.classical_sig.pqc_sig
@@ -499,7 +501,9 @@ impl HybridJwt {
 }
 ```
 
-### 3.3 License Status Engine
+### 3.3 License Status Engine ✅ IMPLEMENTED
+
+Now includes HTTPS-authoritative consensus validator, anti-rollback enforcer, transparency log (Merkle tree), and remote attestation proof export.
 
 ```rust
 pub struct LicenseEngine {
@@ -560,14 +564,19 @@ impl LicenseEngine {
 ```
 
 ### Deliverables
-- `ciris-verify-core` with full verification logic
+- ✅ `ciris-verify-core` with full verification logic (76 tests)
+- ✅ HTTPS-authoritative consensus validator with DNS advisory cross-check
+- ✅ Anti-rollback monotonic revision enforcement
+- ✅ Transparency log with SHA-256 Merkle tree and inclusion proofs
+- ✅ Remote attestation proof export with bound dual signatures
+- ✅ Tripwire file integrity checking (SHA-256 manifest validation)
+- ✅ License cache with encrypted persistence
 - Mock servers for testing
 - Integration tests with real DNS/HTTPS
-- Cache persistence tests
 
 ---
 
-## Phase 4: Interface Layer
+## Phase 4: Interface Layer 🔧 IN PROGRESS
 
 ### 4.1 gRPC Service (`tonic`)
 
@@ -678,14 +687,14 @@ include_guard = "CIRIS_VERIFY_H"
 ```
 
 ### Deliverables
-- gRPC server binary
-- C FFI library + header
-- Python bindings (PyO3)
-- Swift/Kotlin wrapper stubs
+- C FFI library (✅ init, get_status, check_capability, export_attestation, free, destroy)
+- ✅ Python bindings (ciris-verify 0.1.0 on PyPI with platform wheels)
+- gRPC server binary (pending)
+- Swift/Kotlin wrapper stubs (pending)
 
 ---
 
-## Phase 5: Security Hardening
+## Phase 5: Security Hardening 🔧 IN PROGRESS
 
 ### 5.1 Binary Integrity
 
@@ -739,9 +748,15 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 ```
 
 ### Deliverables
-- Security test suite
-- Fuzzing harness (cargo-fuzz)
-- Third-party audit preparation docs
+- ✅ Constant-time comparison utilities
+- ✅ Anti-rollback revision enforcement (persisted, monotonic)
+- ✅ Transparency log with tamper-evident Merkle tree
+- ✅ Tripwire file integrity checking
+- ✅ Binary self-integrity verification
+- ✅ Anti-debugging and platform integrity detection
+- ✅ Formal threat model document (`docs/THREAT_MODEL.md`)
+- Fuzzing harness (cargo-fuzz) (pending)
+- Third-party audit preparation docs (pending)
 
 ---
 
@@ -821,7 +836,7 @@ sign-ml-dsa-65 SHA256SUMS > SHA256SUMS.sig.mldsa65
 - [ ] Network failure scenarios
 
 ### 7.3 Security Audit Prep
-- [ ] Threat model document
+- [x] Threat model document — `docs/THREAT_MODEL.md` (6 attack vectors, mitigation matrix, residual risks)
 - [ ] Code review checklist
 - [ ] Audit scope definition
 
@@ -834,17 +849,17 @@ sign-ml-dsa-65 SHA256SUMS > SHA256SUMS.sig.mldsa65
 
 ## Milestone Summary
 
-| Phase | Key Deliverable |
-|-------|-----------------|
-| 0: Foundation | Compiling workspace, CI |
-| 1: Cryptography | Hybrid signature system |
-| 2: Hardware | Platform signers + attestation |
-| 3: Verification | License engine |
-| 4: Interface | gRPC + FFI |
-| 5: Security | Hardened binary |
-| 6: Builds | Cross-platform releases |
-| 7: Integration | CIRISAgent integration |
-| **Final** | Production v2.0.0 |
+| Phase | Key Deliverable | Status |
+|-------|-----------------|--------|
+| 0: Foundation | Compiling workspace, CI | ✅ Complete |
+| 1: Cryptography | Hybrid signature system (Ed25519 + ML-DSA-65) | ✅ Complete |
+| 2: Hardware | Platform signers + attestation | Planned |
+| 3: Verification | License engine + consensus + transparency | 🔧 In Progress |
+| 4: Interface | FFI + Python bindings | 🔧 In Progress |
+| 5: Security | Hardened binary + threat model + anti-rollback | 🔧 In Progress |
+| 6: Builds | Cross-platform releases | Planned |
+| 7: Integration | CIRISAgent integration | Planned |
+| **Final** | Production v2.0.0 | |
 
 ---
 
@@ -885,7 +900,8 @@ Periodic sync with upstream:
 
 | Decision | Options | Recommendation | Status |
 |----------|---------|----------------|--------|
-| PQC library | aws-lc-rs vs ml-dsa vs pqcrypto | aws-lc-rs (audit path) | **Pending benchmark** |
+| PQC library | aws-lc-rs vs ml-dsa vs pqcrypto | ml-dsa (RustCrypto, pure Rust) | **Decided** — `ml-dsa` 0.1.0-rc.3 |
+| Trust model | HTTPS-authoritative vs equal-weight | HTTPS-authoritative (DNS advisory) | **Decided** — `TrustModel::HttpsAuthoritative` default |
 | Async runtime | tokio vs async-std | tokio (Veilid compat) | **Decided** |
 | Protobuf | prost vs protobuf-rs | prost (Veilid compat) | **Decided** |
 | Android JNI | jni vs ndk-glue | jni (keyring-manager compat) | **Decided** |
@@ -893,5 +909,5 @@ Periodic sync with upstream:
 ---
 
 **Document Owner**: CIRIS Engineering
-**Last Updated**: 2026-01-26
+**Last Updated**: 2026-02-17
 **Review Cycle**: During active development

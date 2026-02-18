@@ -1,6 +1,6 @@
 # CIRISVerify: Open Items and Future Work
 
-**Generated**: 2026-01-25
+**Generated**: 2026-01-25 | **Updated**: 2026-02-17
 **Source**: Multi-stakeholder evaluation (Security, Compliance, Partner, Humanitarian)
 
 This document tracks items identified during evaluation that require business decisions, significant development effort, or external engagement beyond specification updates.
@@ -223,14 +223,14 @@ gRPC remains primary; REST is convenience layer.
 
 **Issue**: No standardized audit log format specified.
 
-**Recommendation**: Define structured audit events for:
-- License verification requests
-- Capability checks
-- Status changes
-- Security events
-- Administrative actions
+**Status**: **PARTIALLY ADDRESSED** — The `TransparencyLog` module (Fix 1) provides:
+- Append-only, chain-linked verification event logging
+- SHA-256 Merkle tree with tamper-evident inclusion proofs
+- Structured `TransparencyEntry` records (index, timestamp, license_id, status, consensus_status, revocation_revision, previous_hash, merkle_root)
+- Persistent file output for durable audit trails
+- Proof chain export for third-party audit
 
-Format: JSON with defined schema, retention requirements, integrity protection.
+**Remaining work**: Define additional structured events for capability checks, administrative actions, and security events. Standardize JSON schema and retention policy.
 
 **Action Owner**: CIRIS Engineering/Security
 
@@ -348,8 +348,8 @@ Format: JSON with defined schema, retention requirements, integrity protection.
 - Third-party security audit (#15)
 
 ### High (Within 6 months)
-- Audit log specification (#12)
-- Official Python SDK (#6)
+- Audit log specification (#12) — **partially addressed** (transparency log with Merkle tree implemented; remaining: event schema standardization)
+- Official Python SDK (#6) — **partially addressed** (ciris-verify 0.1.0 published on PyPI)
 - Field troubleshooting guide (#17)
 
 ### Medium (Within 12 months)

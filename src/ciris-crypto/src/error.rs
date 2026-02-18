@@ -127,4 +127,12 @@ impl CryptoError {
             reason: reason.into(),
         }
     }
+
+    /// Create a key generation failed error.
+    #[must_use]
+    pub fn key_generation_failed(reason: impl Into<String>) -> Self {
+        Self::KeyGenerationFailed {
+            reason: reason.into(),
+        }
+    }
 }

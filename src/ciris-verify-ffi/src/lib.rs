@@ -551,6 +551,83 @@ pub unsafe extern "C" fn ciris_verify_get_public_key(
     CirisVerifyError::Success as i32
 }
 
+/// Export a remote attestation proof for third-party verification.
+///
+/// The proof contains hardware attestation, dual (classical + PQC) signatures
+/// over the challenge, and the Merkle root from the transparency log.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `challenge` - Verifier-provided challenge nonce (must be >= 32 bytes)
+/// * `challenge_len` - Length of challenge
+/// * `proof_data` - Output pointer for JSON-encoded AttestationProof (caller must free with `ciris_verify_free`)
+/// * `proof_len` - Output pointer for proof length
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `challenge` must point to valid memory of at least `challenge_len` bytes
+/// - `proof_data` and `proof_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_export_attestation(
+    handle: *mut CirisVerifyHandle,
+    challenge: *const u8,
+    challenge_len: usize,
+    proof_data: *mut *mut u8,
+    proof_len: *mut usize,
+) -> i32 {
+    if handle.is_null()
+        || challenge.is_null()
+        || proof_data.is_null()
+        || proof_len.is_null()
+    {
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+    let challenge_bytes = std::slice::from_raw_parts(challenge, challenge_len);
+
+    // Export attestation proof
+    let proof = match handle
+        .runtime
+        .block_on(handle.engine.export_attestation_proof(challenge_bytes))
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::error!("Attestation export failed: {}", e);
+            return CirisVerifyError::RequestFailed as i32;
+        },
+    };
+
+    // Serialize to JSON
+    let proof_bytes = match serde_json::to_vec(&proof) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("Failed to serialize attestation proof: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    // Allocate and copy
+    let len = proof_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(proof_bytes.as_ptr(), ptr, len);
+
+    *proof_data = ptr;
+    *proof_len = len;
+
+    CirisVerifyError::Success as i32
+}
+
 /// Get the library version.
 ///
 /// Returns a static string with the version number.

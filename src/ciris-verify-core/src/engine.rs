@@ -18,6 +18,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ciris_keyring::{HardwareSigner, HardwareType, PlatformAttestation, SoftwareAttestation};
+#[cfg(feature = "pqc")]
+use ciris_crypto::{MlDsa65Signer, PqcSigner};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::cache::LicenseCache;
@@ -25,12 +27,13 @@ use crate::config::VerifyConfig;
 use crate::error::VerifyError;
 use crate::https::HttpsClient;
 use crate::license::{LicenseDetails, LicenseStatus, LicenseType};
+use crate::transparency::TransparencyLog;
 use crate::revocation::RevocationChecker;
 use crate::types::{
-    CapabilityCheckResponse, DisclosureSeverity, EnforcementAction, LicenseStatusRequest,
-    LicenseStatusResponse, MandatoryDisclosure, ResponseAttestation, ResponseMetadata,
-    ResponseSignature, RuntimeValidation, RuntimeViolation, ShutdownDirective, ShutdownType,
-    SourceResult, ValidationResults, ValidationStatus, ViolationSeverity,
+    AttestationProof, CapabilityCheckResponse, DisclosureSeverity, EnforcementAction,
+    LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure, ResponseAttestation,
+    ResponseMetadata, ResponseSignature, RuntimeValidation, RuntimeViolation, ShutdownDirective,
+    ShutdownType, SourceResult, ValidationResults, ValidationStatus, ViolationSeverity,
 };
 use crate::validation::{ConsensusValidator, ValidationResult};
 use crate::watchdog::ShutdownWatchdog;
@@ -49,8 +52,13 @@ pub struct LicenseEngine {
     revocation_checker: RevocationChecker,
     /// Hardware signer for attestation.
     hw_signer: Arc<dyn HardwareSigner>,
+    /// ML-DSA-65 PQC signer for hybrid attestation (software-based).
+    #[cfg(feature = "pqc")]
+    pqc_signer: Option<MlDsa65Signer>,
     /// Binary integrity flag (set at startup).
     integrity_valid: bool,
+    /// Transparency log for tamper-evident audit trail.
+    transparency_log: TransparencyLog,
     /// Shutdown watchdog for enforcing covenant invocations.
     watchdog: ShutdownWatchdog,
 }
@@ -80,11 +88,17 @@ impl LicenseEngine {
         );
 
         // Initialize consensus validator
-        info!("LicenseEngine: creating consensus validator (3-source)");
-        let consensus_validator = ConsensusValidator::new(
+        info!(
+            trust_model = ?config.trust_model,
+            additional_https = config.https_endpoints.len(),
+            "LicenseEngine: creating consensus validator"
+        );
+        let consensus_validator = ConsensusValidator::with_trust_model(
             config.dns_us_host.clone(),
             config.dns_eu_host.clone(),
             config.https_endpoint.clone(),
+            config.https_endpoints.clone(),
+            config.trust_model.clone(),
             config.timeout,
             config.cert_pin.clone(),
         );
@@ -122,6 +136,22 @@ impl LicenseEngine {
             "LicenseEngine: platform signer ready"
         );
 
+        // Initialize ML-DSA-65 PQC signer (software-based, always available)
+        #[cfg(feature = "pqc")]
+        let pqc_signer = match MlDsa65Signer::new() {
+            Ok(signer) => {
+                info!(
+                    pqc_public_key_size = signer.public_key().map(|k| k.len()).unwrap_or(0),
+                    "LicenseEngine: ML-DSA-65 PQC signer initialized (software)"
+                );
+                Some(signer)
+            },
+            Err(e) => {
+                warn!("LicenseEngine: ML-DSA-65 PQC signer unavailable: {}", e);
+                None
+            },
+        };
+
         // Check binary integrity at startup
         info!("LicenseEngine: checking binary integrity");
         let integrity_valid = verify_binary_integrity();
@@ -129,6 +159,7 @@ impl LicenseEngine {
         info!(
             hardware_type = ?hw_signer.hardware_type(),
             integrity_valid = integrity_valid,
+            pqc_available = cfg!(feature = "pqc"),
             "LicenseEngine: initialization complete"
         );
 
@@ -138,7 +169,10 @@ impl LicenseEngine {
             cache,
             revocation_checker,
             hw_signer: Arc::from(hw_signer),
+            #[cfg(feature = "pqc")]
+            pqc_signer,
             integrity_valid,
+            transparency_log: TransparencyLog::new(None),
             watchdog: ShutdownWatchdog::new(),
         })
     }
@@ -150,10 +184,12 @@ impl LicenseEngine {
         config: VerifyConfig,
         hw_signer: Arc<dyn HardwareSigner>,
     ) -> Result<Self, VerifyError> {
-        let consensus_validator = ConsensusValidator::new(
+        let consensus_validator = ConsensusValidator::with_trust_model(
             config.dns_us_host.clone(),
             config.dns_eu_host.clone(),
             config.https_endpoint.clone(),
+            config.https_endpoints.clone(),
+            config.trust_model.clone(),
             config.timeout,
             config.cert_pin.clone(),
         );
@@ -172,13 +208,19 @@ impl LicenseEngine {
             Duration::from_secs(3600),
         );
 
+        #[cfg(feature = "pqc")]
+        let pqc_signer = MlDsa65Signer::new().ok();
+
         Ok(Self {
             config,
             consensus_validator,
             cache,
             revocation_checker,
             hw_signer,
+            #[cfg(feature = "pqc")]
+            pqc_signer,
             integrity_valid: true, // Assume valid for testing
+            transparency_log: TransparencyLog::new(None),
             watchdog: ShutdownWatchdog::new(),
         })
     }
@@ -275,6 +317,27 @@ impl LicenseEngine {
             },
         }
 
+        // 2b. Anti-rollback check on revocation revision
+        if let Some(rev) = validation.consensus_revocation_revision {
+            if let Err(e) = self.cache.check_and_update_revision(rev) {
+                error!(
+                    error = %e,
+                    "SECURITY ALERT: Revocation revision rollback detected"
+                );
+                return Ok(self
+                    .build_error_response(
+                        LicenseStatus::ErrorSourcesDisagree,
+                        &format!(
+                            "SECURITY ALERT: Revocation revision rollback detected. {}. \
+                             Possible replay attack.",
+                            e
+                        ),
+                        &request,
+                    )
+                    .await);
+            }
+        }
+
         // 3. Check revocation status
         let revocation = self
             .revocation_checker
@@ -364,6 +427,17 @@ impl LicenseEngine {
         response.runtime_validation = runtime_validation;
         response.shutdown_directive = shutdown_directive
             .or_else(|| self.watchdog.get_pending_directive(&request.deployment_id));
+
+        // 8. Append to transparency log (non-fatal on failure)
+        let rev = validation.consensus_revocation_revision.unwrap_or(0);
+        if let Err(e) = self.transparency_log.append(
+            &request.deployment_id,
+            response.status,
+            validation.status,
+            rev,
+        ) {
+            warn!("Transparency log append failed: {}", e);
+        }
 
         Ok(response)
     }
@@ -456,6 +530,99 @@ impl LicenseEngine {
     #[must_use]
     pub fn algorithm_name(&self) -> String {
         format!("{:?}", self.hw_signer.algorithm())
+    }
+
+    /// Export a remote attestation proof for third-party verification.
+    ///
+    /// The proof contains:
+    /// 1. Platform attestation from HSM
+    /// 2. Classical + PQC public keys
+    /// 3. Bound dual signatures over the challenge
+    /// 4. Merkle root from transparency log
+    ///
+    /// # Arguments
+    ///
+    /// * `challenge` - Verifier-provided challenge nonce (must be >= 32 bytes)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if challenge is too short or signing fails.
+    pub async fn export_attestation_proof(
+        &self,
+        challenge: &[u8],
+    ) -> Result<AttestationProof, VerifyError> {
+        // Validate challenge length
+        if challenge.len() < 32 {
+            return Err(VerifyError::ConfigError {
+                message: format!(
+                    "Challenge must be at least 32 bytes, got {}",
+                    challenge.len()
+                ),
+            });
+        }
+
+        // Get platform attestation
+        let platform_attestation = self
+            .hw_signer
+            .attestation()
+            .await
+            .unwrap_or_else(|_| {
+                ciris_keyring::PlatformAttestation::Software(
+                    ciris_keyring::SoftwareAttestation::default(),
+                )
+            });
+
+        // Get public keys
+        let hardware_public_key = self.hw_signer.public_key().await?;
+        let hardware_algorithm = format!("{:?}", self.hw_signer.algorithm());
+
+        // Step 1: Classical signature over challenge (hardware-bound)
+        let classical_signature = self.hw_signer.sign(challenge).await?;
+
+        // Step 2: PQC signature over (challenge || classical_sig) — bound
+        #[cfg(feature = "pqc")]
+        let (pqc_signature, pqc_public_key, pqc_algorithm) =
+            if let Some(ref pqc) = self.pqc_signer {
+                let mut bound_payload =
+                    Vec::with_capacity(challenge.len() + classical_signature.len());
+                bound_payload.extend_from_slice(challenge);
+                bound_payload.extend_from_slice(&classical_signature);
+
+                let sig = pqc.sign(&bound_payload).map_err(|e| {
+                    VerifyError::SignatureVerificationFailed {
+                        reason: format!("PQC signing failed: {}", e),
+                    }
+                })?;
+                let pk = pqc.public_key().map_err(|e| {
+                    VerifyError::SignatureVerificationFailed {
+                        reason: format!("PQC public key failed: {}", e),
+                    }
+                })?;
+
+                (sig, pk, "ML-DSA-65".to_string())
+            } else {
+                (vec![], vec![], "NONE".to_string())
+            };
+
+        #[cfg(not(feature = "pqc"))]
+        let (pqc_signature, pqc_public_key, pqc_algorithm) =
+            (vec![], vec![], "NONE".to_string());
+
+        Ok(AttestationProof {
+            platform_attestation,
+            hardware_public_key,
+            hardware_algorithm,
+            pqc_public_key,
+            pqc_algorithm,
+            challenge: challenge.to_vec(),
+            classical_signature,
+            pqc_signature,
+            merkle_root: self.transparency_log.merkle_root(),
+            log_entry_count: self.transparency_log.entry_count(),
+            generated_at: chrono::Utc::now().timestamp(),
+            binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            hardware_type: format!("{:?}", self.hw_signer.hardware_type()),
+        })
     }
 
     // ========================================================================
@@ -619,6 +786,11 @@ impl LicenseEngine {
         }
     }
 
+    /// Get the transparency log.
+    pub fn transparency_log(&self) -> &TransparencyLog {
+        &self.transparency_log
+    }
+
     /// Get the shutdown watchdog.
     pub fn watchdog(&self) -> &ShutdownWatchdog {
         &self.watchdog
@@ -767,7 +939,12 @@ impl LicenseEngine {
         }
     }
 
-    /// Build attestation data.
+    /// Build attestation data with hybrid (classical + PQC) signatures.
+    ///
+    /// Signature binding (anti-stripping):
+    /// 1. classical_sig = Sign_ECDSA(challenge_nonce)
+    /// 2. bound_payload = challenge_nonce || classical_sig
+    /// 3. pqc_sig = Sign_ML-DSA-65(bound_payload)
     async fn build_attestation(&self, request: &LicenseStatusRequest) -> ResponseAttestation {
         let platform = self
             .hw_signer
@@ -775,20 +952,69 @@ impl LicenseEngine {
             .await
             .unwrap_or_else(|_| PlatformAttestation::Software(SoftwareAttestation::default()));
 
-        // Sign the response (simplified - in production, sign the full response)
-        let signature_data = self
+        // Step 1: Classical signature over challenge nonce (hardware-bound)
+        let classical_sig = self
             .hw_signer
             .sign(&request.challenge_nonce)
             .await
             .unwrap_or_default();
 
+        // Step 2: PQC signature over bound payload (software, ML-DSA-65)
+        // The PQC signature covers the classical signature to prevent stripping
+        #[cfg(feature = "pqc")]
+        let (pqc_sig, pqc_pubkey, pqc_algorithm, sig_mode) = if let Some(ref pqc) = self.pqc_signer
+        {
+            // Build bound payload: challenge_nonce || classical_sig
+            let mut bound_payload =
+                Vec::with_capacity(request.challenge_nonce.len() + classical_sig.len());
+            bound_payload.extend_from_slice(&request.challenge_nonce);
+            bound_payload.extend_from_slice(&classical_sig);
+
+            match (pqc.sign(&bound_payload), pqc.public_key()) {
+                (Ok(sig), Ok(pk)) => {
+                    debug!(
+                        pqc_sig_size = sig.len(),
+                        pqc_pk_size = pk.len(),
+                        "PQC signature generated (ML-DSA-65, bound over classical)"
+                    );
+                    (sig, pk, "ML-DSA-65".to_string(), "HybridRequired".to_string())
+                },
+                (Err(e), _) | (_, Err(e)) => {
+                    warn!("PQC signature failed: {} — falling back to classical-only", e);
+                    (
+                        vec![],
+                        vec![],
+                        "ML-DSA-65".to_string(),
+                        "ClassicalOnly".to_string(),
+                    )
+                },
+            }
+        } else {
+            (
+                vec![],
+                vec![],
+                "ML-DSA-65".to_string(),
+                "ClassicalOnly".to_string(),
+            )
+        };
+
+        #[cfg(not(feature = "pqc"))]
+        let (pqc_sig, pqc_pubkey, pqc_algorithm, sig_mode) = (
+            vec![],
+            vec![],
+            "NONE".to_string(),
+            "ClassicalOnly".to_string(),
+        );
+
         ResponseAttestation {
             platform,
             signature: ResponseSignature {
-                classical: signature_data,
+                classical: classical_sig,
                 classical_algorithm: format!("{:?}", self.hw_signer.algorithm()),
-                pqc: vec![], // TODO: Add PQC signature
-                pqc_algorithm: "ML-DSA-65".to_string(),
+                pqc: pqc_sig,
+                pqc_algorithm,
+                pqc_public_key: pqc_pubkey,
+                signature_mode: sig_mode,
             },
             integrity_valid: self.integrity_valid,
             timestamp: chrono::Utc::now().timestamp(),

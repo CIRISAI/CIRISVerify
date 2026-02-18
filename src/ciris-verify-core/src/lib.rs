@@ -60,12 +60,13 @@ pub mod jwt;
 pub mod license;
 pub mod revocation;
 pub mod security;
+pub mod transparency;
 pub mod types;
 pub mod validation;
 pub mod watchdog;
 
 pub use cache::{CachedLicense, LicenseCache};
-pub use config::VerifyConfig;
+pub use config::{TrustModel, VerifyConfig};
 pub use engine::LicenseEngine;
 pub use error::VerifyError;
 pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
@@ -77,8 +78,9 @@ pub use security::file_integrity::{
 };
 pub use security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
 pub use types::{
-    CapabilityCheckRequest, CapabilityCheckResponse, EnforcementAction, LicenseStatusRequest,
-    LicenseStatusResponse, MandatoryDisclosure, RuntimeValidation, RuntimeViolation,
-    ShutdownDirective, ShutdownType, ViolationSeverity,
+    AttestationProof, CapabilityCheckRequest, CapabilityCheckResponse, EnforcementAction,
+    LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure, RuntimeValidation,
+    RuntimeViolation, ShutdownDirective, ShutdownType, ViolationSeverity,
 };
+pub use transparency::{TransparencyLog, TransparencyEntry, MerkleProof, ProofChain};
 pub use watchdog::ShutdownWatchdog;

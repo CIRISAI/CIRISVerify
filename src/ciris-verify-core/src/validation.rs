@@ -23,6 +23,7 @@ use std::time::Duration;
 use base64::Engine;
 use tracing::{debug, error, instrument, warn};
 
+use crate::config::TrustModel;
 use crate::dns::{query_multiple_sources, DnsTxtRecord};
 use crate::https::{query_https_source, StewardKeyResponse};
 use crate::types::ValidationStatus;
@@ -33,8 +34,12 @@ pub struct ConsensusValidator {
     dns_us_host: String,
     /// DNS EU host.
     dns_eu_host: String,
-    /// HTTPS endpoint.
+    /// HTTPS endpoint (primary).
     https_endpoint: String,
+    /// Additional HTTPS endpoints at different domains.
+    additional_https_endpoints: Vec<String>,
+    /// Trust model for validation.
+    trust_model: TrustModel,
     /// Request timeout.
     timeout: Duration,
     /// Certificate pin for HTTPS.
@@ -54,6 +59,29 @@ impl ConsensusValidator {
             dns_us_host,
             dns_eu_host,
             https_endpoint,
+            additional_https_endpoints: Vec::new(),
+            trust_model: TrustModel::HttpsAuthoritative,
+            timeout,
+            cert_pin,
+        }
+    }
+
+    /// Create a new consensus validator with full configuration.
+    pub fn with_trust_model(
+        dns_us_host: String,
+        dns_eu_host: String,
+        https_endpoint: String,
+        additional_https_endpoints: Vec<String>,
+        trust_model: TrustModel,
+        timeout: Duration,
+        cert_pin: Option<String>,
+    ) -> Self {
+        Self {
+            dns_us_host,
+            dns_eu_host,
+            https_endpoint,
+            additional_https_endpoints,
+            trust_model,
             timeout,
             cert_pin,
         }
@@ -61,30 +89,70 @@ impl ConsensusValidator {
 
     /// Validate steward key across all sources.
     ///
-    /// Queries all three sources in parallel and computes consensus.
+    /// Dispatches to the appropriate consensus algorithm based on the trust model:
+    /// - `HttpsAuthoritative`: HTTPS is authoritative; DNS is advisory cross-check
+    /// - `EqualWeight`: Legacy 2-of-3 equal-weight consensus
     #[instrument(skip(self))]
     pub async fn validate_steward_key(&self) -> ValidationResult {
-        // Query all sources in parallel
-        let (dns_result, https_result) = tokio::join!(
-            query_multiple_sources(&self.dns_us_host, &self.dns_eu_host, self.timeout),
-            query_https_source(&self.https_endpoint, self.timeout, self.cert_pin.as_deref()),
+        // Query DNS sources
+        let dns_future =
+            query_multiple_sources(&self.dns_us_host, &self.dns_eu_host, self.timeout);
+
+        // Query primary HTTPS source
+        let https_future = query_https_source(
+            &self.https_endpoint,
+            self.timeout,
+            self.cert_pin.as_deref(),
+        );
+
+        // Query additional HTTPS endpoints in parallel
+        let additional_futures: Vec<_> = self
+            .additional_https_endpoints
+            .iter()
+            .map(|ep| query_https_source(ep, self.timeout, self.cert_pin.as_deref()))
+            .collect();
+
+        // Execute all queries in parallel
+        let (dns_result, primary_https_result, additional_results) = tokio::join!(
+            dns_future,
+            https_future,
+            futures::future::join_all(additional_futures),
         );
 
         // Convert results to SourceData
         let dns_us = dns_result.us_result.ok().map(|r| SourceData::from_dns(&r));
         let dns_eu = dns_result.eu_result.ok().map(|r| SourceData::from_dns(&r));
-        let https = https_result.ok().map(|r| SourceData::from_https(&r));
+        let primary_https = primary_https_result
+            .ok()
+            .map(|r| SourceData::from_https(&r));
+
+        let additional_https: Vec<Option<SourceData>> = additional_results
+            .into_iter()
+            .map(|r| r.ok().map(|r| SourceData::from_https(&r)))
+            .collect();
 
         // Log source availability
+        let additional_ok = additional_https.iter().filter(|s| s.is_some()).count();
         debug!(
             dns_us_ok = dns_us.is_some(),
             dns_eu_ok = dns_eu.is_some(),
-            https_ok = https.is_some(),
+            https_ok = primary_https.is_some(),
+            additional_https_ok = additional_ok,
+            trust_model = ?self.trust_model,
             "Source availability"
         );
 
-        // Compute consensus
-        Self::compute_consensus(dns_us, dns_eu, https)
+        match self.trust_model {
+            TrustModel::HttpsAuthoritative => Self::compute_https_authoritative_consensus(
+                dns_us,
+                dns_eu,
+                primary_https,
+                additional_https,
+            ),
+            TrustModel::EqualWeight => {
+                Self::compute_consensus(dns_us, dns_eu, primary_https)
+            },
+        }
     }
 
     /// Compute consensus from multiple source results.
@@ -125,6 +193,7 @@ impl ConsensusValidator {
                 consensus_key_classical: None,
                 consensus_pqc_fingerprint: None,
                 consensus_revocation_revision: None,
+                authoritative_source: None,
                 source_details: SourceDetails {
                     dns_us_reachable: false,
                     dns_eu_reachable: false,
@@ -145,6 +214,7 @@ impl ConsensusValidator {
                 consensus_key_classical: Some(data.steward_key_classical.clone()),
                 consensus_pqc_fingerprint: Some(data.pqc_fingerprint.clone()),
                 consensus_revocation_revision: Some(data.revocation_revision),
+                authoritative_source: None,
                 source_details: SourceDetails {
                     dns_us_reachable: dns_us.is_some(),
                     dns_eu_reachable: dns_eu.is_some(),
@@ -205,6 +275,7 @@ impl ConsensusValidator {
                     consensus_key_classical: Some(consensus_data.steward_key_classical.clone()),
                     consensus_pqc_fingerprint: Some(consensus_data.pqc_fingerprint.clone()),
                     consensus_revocation_revision: Some(consensus_data.revocation_revision),
+                    authoritative_source: None,
                     source_details,
                 }
             } else {
@@ -215,6 +286,7 @@ impl ConsensusValidator {
                     consensus_key_classical: Some(consensus_data.steward_key_classical.clone()),
                     consensus_pqc_fingerprint: Some(consensus_data.pqc_fingerprint.clone()),
                     consensus_revocation_revision: Some(consensus_data.revocation_revision),
+                    authoritative_source: None,
                     source_details,
                 }
             }
@@ -240,6 +312,7 @@ impl ConsensusValidator {
                 consensus_key_classical: Some(consensus_data.steward_key_classical.clone()),
                 consensus_pqc_fingerprint: Some(consensus_data.pqc_fingerprint.clone()),
                 consensus_revocation_revision: Some(consensus_data.revocation_revision),
+                authoritative_source: None,
                 source_details,
             }
         } else {
@@ -251,7 +324,224 @@ impl ConsensusValidator {
                 consensus_key_classical: None,
                 consensus_pqc_fingerprint: None,
                 consensus_revocation_revision: None,
+                authoritative_source: None,
                 source_details,
+            }
+        }
+    }
+
+    /// Compute consensus using HTTPS-authoritative trust model.
+    ///
+    /// HTTPS is the authority when reachable; DNS serves as advisory cross-check.
+    ///
+    /// # Rules
+    ///
+    /// 1. Multiple HTTPS sources must agree (if multiple reachable)
+    /// 2. If HTTPS reachable + DNS disagrees → trust HTTPS, `PartialAgreement` + warning
+    /// 3. If HTTPS unreachable → fall back to DNS-only consensus (degraded)
+    /// 4. If multiple HTTPS sources disagree → `SourcesDisagree` (critical)
+    #[instrument(skip_all)]
+    pub fn compute_https_authoritative_consensus(
+        dns_us: Option<SourceData>,
+        dns_eu: Option<SourceData>,
+        primary_https: Option<SourceData>,
+        additional_https: Vec<Option<SourceData>>,
+    ) -> ValidationResult {
+        // Collect all reachable HTTPS sources
+        let mut https_sources: Vec<&SourceData> = Vec::new();
+        if let Some(ref primary) = primary_https {
+            https_sources.push(primary);
+        }
+        for data in additional_https.iter().flatten() {
+            https_sources.push(data);
+        }
+
+        let source_details = SourceDetails {
+            dns_us_reachable: dns_us.is_some(),
+            dns_eu_reachable: dns_eu.is_some(),
+            https_reachable: !https_sources.is_empty(),
+            dns_us_error: dns_us.is_none().then(|| "Not reachable".into()),
+            dns_eu_error: dns_eu.is_none().then(|| "Not reachable".into()),
+            https_error: if https_sources.is_empty() {
+                Some("Not reachable".into())
+            } else {
+                None
+            },
+        };
+
+        // Case 1: HTTPS sources reachable
+        if !https_sources.is_empty() {
+            // Check HTTPS consensus (all HTTPS must agree)
+            let https_consensus = https_sources[0];
+            let https_all_agree = https_sources
+                .iter()
+                .all(|s| Self::sources_agree(https_consensus, s));
+
+            if !https_all_agree {
+                // Multiple HTTPS disagree — critical security issue
+                error!(
+                    "SECURITY ALERT: Multiple HTTPS endpoints disagree! \
+                     Possible attack on HTTPS infrastructure."
+                );
+                return ValidationResult {
+                    status: ValidationStatus::SourcesDisagree,
+                    consensus_key_classical: None,
+                    consensus_pqc_fingerprint: None,
+                    consensus_revocation_revision: None,
+                    authoritative_source: None,
+                    source_details,
+                };
+            }
+
+            // HTTPS sources agree — they are authoritative
+            let authoritative = "HTTPS".to_string();
+
+            // Cross-check with DNS (advisory only)
+            let dns_sources: Vec<&SourceData> =
+                [dns_us.as_ref(), dns_eu.as_ref()]
+                    .iter()
+                    .filter_map(|s| *s)
+                    .collect();
+
+            let dns_agrees = dns_sources
+                .iter()
+                .all(|d| Self::sources_agree(https_consensus, d));
+
+            if dns_sources.is_empty() {
+                // HTTPS OK, no DNS available
+                warn!("HTTPS authoritative, DNS sources unavailable");
+                ValidationResult {
+                    status: if https_sources.len() > 1 {
+                        ValidationStatus::AllSourcesAgree
+                    } else {
+                        ValidationStatus::PartialAgreement
+                    },
+                    consensus_key_classical: Some(
+                        https_consensus.steward_key_classical.clone(),
+                    ),
+                    consensus_pqc_fingerprint: Some(
+                        https_consensus.pqc_fingerprint.clone(),
+                    ),
+                    consensus_revocation_revision: Some(
+                        https_consensus.revocation_revision,
+                    ),
+                    authoritative_source: Some(authoritative),
+                    source_details,
+                }
+            } else if dns_agrees {
+                // All available sources agree
+                let total = https_sources.len() + dns_sources.len();
+                debug!(
+                    https_count = https_sources.len(),
+                    dns_count = dns_sources.len(),
+                    "All sources agree (HTTPS authoritative)"
+                );
+                ValidationResult {
+                    status: if total >= 3 {
+                        ValidationStatus::AllSourcesAgree
+                    } else {
+                        ValidationStatus::PartialAgreement
+                    },
+                    consensus_key_classical: Some(
+                        https_consensus.steward_key_classical.clone(),
+                    ),
+                    consensus_pqc_fingerprint: Some(
+                        https_consensus.pqc_fingerprint.clone(),
+                    ),
+                    consensus_revocation_revision: Some(
+                        https_consensus.revocation_revision,
+                    ),
+                    authoritative_source: Some(authoritative),
+                    source_details,
+                }
+            } else {
+                // DNS disagrees with HTTPS — trust HTTPS (authoritative)
+                warn!(
+                    "DNS advisory cross-check failed: DNS disagrees with HTTPS. \
+                     Trusting HTTPS as authoritative source."
+                );
+                ValidationResult {
+                    status: ValidationStatus::PartialAgreement,
+                    consensus_key_classical: Some(
+                        https_consensus.steward_key_classical.clone(),
+                    ),
+                    consensus_pqc_fingerprint: Some(
+                        https_consensus.pqc_fingerprint.clone(),
+                    ),
+                    consensus_revocation_revision: Some(
+                        https_consensus.revocation_revision,
+                    ),
+                    authoritative_source: Some(authoritative),
+                    source_details,
+                }
+            }
+        } else {
+            // Case 2: No HTTPS reachable — fall back to DNS consensus (degraded)
+            warn!("HTTPS unreachable — falling back to DNS-only consensus (degraded)");
+
+            let dns_list: Vec<Option<SourceData>> = vec![dns_us.clone(), dns_eu.clone()];
+            let available: Vec<&SourceData> =
+                dns_list.iter().filter_map(|s| s.as_ref()).collect();
+
+            if available.is_empty() {
+                // Nothing reachable at all
+                return ValidationResult {
+                    status: ValidationStatus::NoSourcesReachable,
+                    consensus_key_classical: None,
+                    consensus_pqc_fingerprint: None,
+                    consensus_revocation_revision: None,
+                    authoritative_source: None,
+                    source_details,
+                };
+            }
+
+            if available.len() == 1 {
+                // Only one DNS source
+                return ValidationResult {
+                    status: ValidationStatus::ValidationError,
+                    consensus_key_classical: Some(
+                        available[0].steward_key_classical.clone(),
+                    ),
+                    consensus_pqc_fingerprint: Some(
+                        available[0].pqc_fingerprint.clone(),
+                    ),
+                    consensus_revocation_revision: Some(
+                        available[0].revocation_revision,
+                    ),
+                    authoritative_source: Some("DNS-fallback".to_string()),
+                    source_details,
+                };
+            }
+
+            // Two DNS sources — check agreement
+            if Self::sources_agree(available[0], available[1]) {
+                ValidationResult {
+                    status: ValidationStatus::PartialAgreement,
+                    consensus_key_classical: Some(
+                        available[0].steward_key_classical.clone(),
+                    ),
+                    consensus_pqc_fingerprint: Some(
+                        available[0].pqc_fingerprint.clone(),
+                    ),
+                    consensus_revocation_revision: Some(
+                        available[0].revocation_revision,
+                    ),
+                    authoritative_source: Some("DNS-fallback".to_string()),
+                    source_details,
+                }
+            } else {
+                error!(
+                    "DNS sources disagree and HTTPS unreachable — \
+                     cannot establish trusted consensus"
+                );
+                ValidationResult {
+                    status: ValidationStatus::SourcesDisagree,
+                    consensus_key_classical: None,
+                    consensus_pqc_fingerprint: None,
+                    consensus_revocation_revision: None,
+                    authoritative_source: None,
+                    source_details,
+                }
             }
         }
     }
@@ -332,6 +622,8 @@ pub struct ValidationResult {
     pub consensus_pqc_fingerprint: Option<Vec<u8>>,
     /// Consensus revocation revision (if available).
     pub consensus_revocation_revision: Option<u64>,
+    /// Which source was considered authoritative (if applicable).
+    pub authoritative_source: Option<String>,
     /// Details about each source.
     pub source_details: SourceDetails,
 }
@@ -490,5 +782,128 @@ mod tests {
         let result = ConsensusValidator::compute_consensus(dns_us, dns_eu, https);
 
         assert_eq!(result.status, ValidationStatus::AllSourcesAgree);
+    }
+
+    // ================================================================
+    // HTTPS Authoritative trust model tests
+    // ================================================================
+
+    #[test]
+    fn test_https_authoritative_all_agree() {
+        let key = vec![1u8; 32];
+        let fp = vec![2u8; 32];
+
+        let dns_us = Some(make_source_data(&key, &fp, 100));
+        let dns_eu = Some(make_source_data(&key, &fp, 100));
+        let https = Some(make_source_data(&key, &fp, 100));
+
+        let result = ConsensusValidator::compute_https_authoritative_consensus(
+            dns_us,
+            dns_eu,
+            https,
+            vec![],
+        );
+
+        assert_eq!(result.status, ValidationStatus::AllSourcesAgree);
+        assert!(result.allows_licensed());
+        assert_eq!(result.authoritative_source.as_deref(), Some("HTTPS"));
+    }
+
+    #[test]
+    fn test_https_authoritative_https_disagrees_with_dns() {
+        let key_https = vec![1u8; 32];
+        let key_dns = vec![9u8; 32]; // DNS has different key
+        let fp = vec![2u8; 32];
+
+        let dns_us = Some(make_source_data(&key_dns, &fp, 100));
+        let dns_eu = Some(make_source_data(&key_dns, &fp, 100));
+        let https = Some(make_source_data(&key_https, &fp, 100));
+
+        let result = ConsensusValidator::compute_https_authoritative_consensus(
+            dns_us,
+            dns_eu,
+            https,
+            vec![],
+        );
+
+        // HTTPS is authoritative — trust it, not DNS
+        assert_eq!(result.status, ValidationStatus::PartialAgreement);
+        assert!(result.allows_licensed());
+        assert_eq!(result.authoritative_source.as_deref(), Some("HTTPS"));
+        // Consensus key should be from HTTPS, not DNS
+        assert_eq!(
+            result.consensus_key_classical.as_deref(),
+            Some(key_https.as_slice())
+        );
+    }
+
+    #[test]
+    fn test_https_authoritative_https_unreachable() {
+        let key = vec![1u8; 32];
+        let fp = vec![2u8; 32];
+
+        let dns_us = Some(make_source_data(&key, &fp, 100));
+        let dns_eu = Some(make_source_data(&key, &fp, 100));
+
+        let result = ConsensusValidator::compute_https_authoritative_consensus(
+            dns_us,
+            dns_eu,
+            None, // HTTPS unreachable
+            vec![],
+        );
+
+        // Falls back to DNS consensus
+        assert_eq!(result.status, ValidationStatus::PartialAgreement);
+        assert!(result.allows_licensed());
+        assert_eq!(
+            result.authoritative_source.as_deref(),
+            Some("DNS-fallback")
+        );
+    }
+
+    #[test]
+    fn test_https_authoritative_multiple_https_disagree() {
+        let key1 = vec![1u8; 32];
+        let key2 = vec![9u8; 32];
+        let fp = vec![2u8; 32];
+
+        let dns_us = Some(make_source_data(&key1, &fp, 100));
+        let dns_eu = Some(make_source_data(&key1, &fp, 100));
+        let primary_https = Some(make_source_data(&key1, &fp, 100));
+        let additional = vec![Some(make_source_data(&key2, &fp, 100))]; // Disagrees!
+
+        let result = ConsensusValidator::compute_https_authoritative_consensus(
+            dns_us,
+            dns_eu,
+            primary_https,
+            additional,
+        );
+
+        // Multiple HTTPS disagree = critical
+        assert_eq!(result.status, ValidationStatus::SourcesDisagree);
+        assert!(!result.allows_licensed());
+        assert!(result.is_security_alert());
+    }
+
+    #[test]
+    fn test_equal_weight_backward_compat() {
+        // EqualWeight mode should behave exactly like old compute_consensus
+        let key = vec![1u8; 32];
+        let fp = vec![2u8; 32];
+
+        let dns_us = Some(make_source_data(&key, &fp, 100));
+        let dns_eu = Some(make_source_data(&key, &fp, 100));
+        let https = Some(make_source_data(&key, &fp, 100));
+
+        let result = ConsensusValidator::compute_consensus(
+            dns_us,
+            dns_eu,
+            https,
+        );
+
+        assert_eq!(result.status, ValidationStatus::AllSourcesAgree);
+        assert!(result.allows_licensed());
+        // EqualWeight doesn't set authoritative_source
+        assert!(result.authoritative_source.is_none());
     }
 }

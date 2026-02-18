@@ -14,12 +14,16 @@ CIRISVerify is the **hardware-rooted license verification module** for the CIRIS
 |------|---------|
 | `FSD/FSD-001_CIRISVERIFY_PROTOCOL.md` | Full technical specification (authoritative) |
 | `protocol/ciris_verify.proto` | Public API contract (gRPC/protobuf) |
+| `docs/THREAT_MODEL.md` | Formal threat model (6 attack vectors, mitigations) |
 | `docs/IMPLEMENTATION_ROADMAP.md` | Implementation phases and timeline |
+| `docs/OPEN_ITEMS.md` | Open items and future work tracker |
+| `docs/HOW_IT_WORKS.md` | How CIRISVerify works |
 | `docs/REGISTRY_INTEGRATION_REQUIREMENTS.md` | CIRISRegistry dependency analysis |
 | `src/ciris-keyring/` | Cross-platform hardware keyring (extends Veilid pattern) |
 | `src/ciris-crypto/` | Hybrid cryptography (ECDSA P-256 + ML-DSA-65) |
-| `src/ciris-verify-core/` | Core verification logic |
-| `src/ciris-verify-ffi/` | C FFI and mobile bindings |
+| `src/ciris-verify-core/` | Core verification logic (engine, consensus, transparency log) |
+| `src/ciris-verify-ffi/` | C FFI and mobile bindings (incl. attestation export) |
+| `bindings/python/` | Python SDK (ciris-verify PyPI package) |
 
 ## Build Commands
 
@@ -53,12 +57,15 @@ cargo deny check
 
 | Crate | Status | Notes |
 |-------|--------|-------|
-| `ciris-keyring` | Phase 0 | HardwareSigner trait, SoftwareSigner impl |
-| `ciris-crypto` | Phase 1 | ECDSA P-256, Ed25519, hybrid signer |
-| `ciris-verify-core` | Scaffold | Types defined, engine stub |
-| `ciris-verify-ffi` | Scaffold | C FFI, JNI stubs |
+| `ciris-keyring` | Phase 0 | HardwareSigner trait, SoftwareSigner impl, macOS/desktop tracing |
+| `ciris-crypto` | Phase 1 Complete | ECDSA P-256, Ed25519, ML-DSA-65 (FIPS 204), hybrid signer with bound signatures |
+| `ciris-verify-core` | Phase 3-5 Active | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), Tripwire file integrity, remote attestation export |
+| `ciris-verify-ffi` | Phase 4 Active | C FFI with init/status/capability/attestation-export/destroy |
+| `bindings/python` | Released | ciris-verify 0.1.0 on PyPI with platform wheels |
 
-**ML-DSA-65**: Stub ready, awaiting ml-dsa crate stabilization (currently RC)
+**ML-DSA-65**: Fully implemented using `ml-dsa` 0.1.0-rc.3 (RustCrypto). Bound dual signatures operational.
+
+**155 tests passing** across all crates.
 
 ## Development Workflow
 
@@ -87,11 +94,11 @@ This project extends Veilid's `keyring-manager` pattern. To maintain compatibili
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
-│                    MULTI-SOURCE VALIDATION                               │
-│  DNS US (us.registry.ciris-services-1.ai)                               │
-│  DNS EU (eu.registry.ciris-services-1.ai)                               │
-│  HTTPS API (api.registry.ciris-services-1.ai)                           │
-│  All 3 must agree (2-of-3 minimum for ACTIVE, any REVOKED = revoked)    │
+│                    MULTI-SOURCE VALIDATION (HTTPS-Authoritative)          │
+│  HTTPS endpoints (authoritative, multiple independent domains)           │
+│  DNS US (us.registry.ciris-services-1.ai) — advisory cross-check        │
+│  DNS EU (eu.registry.ciris-services-1.ai) — advisory cross-check        │
+│  HTTPS authoritative when reachable; DNS fallback with 2-of-3 consensus │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
                                     ▼
@@ -99,6 +106,8 @@ This project extends Veilid's `keyring-manager` pattern. To maintain compatibili
 │                    CIRISVERIFY MODULE (Open Source - AGPL-3.0)            │
 │  Hardware Security (TPM/SE) + License Engine + Binary Integrity         │
 │  Hybrid Crypto: Ed25519 (hardware) + ML-DSA-65 (software PQC)           │
+│  Anti-Rollback Enforcer + Transparency Log (Merkle Tree)                │
+│  Remote Attestation Proof Export + Tripwire File Integrity              │
 │  Public interface: FFI/gRPC defined in ciris_verify.proto               │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -129,6 +138,8 @@ This project extends Veilid's `keyring-manager` pattern. To maintain compatibili
 - Certificate pin `verify.ciris.ai` with 90-day rotation
 - Nonces must be 32+ bytes from cryptographic RNG
 - PQC signature must cover classical signature (binding)
+- Revocation revisions must be monotonically non-decreasing (anti-rollback)
+- Transparency log entries are append-only (never modify or delete)
 
 ## Related Projects
 
@@ -141,7 +152,7 @@ This project extends Veilid's `keyring-manager` pattern. To maintain compatibili
 ## Current Registry Gaps (Blocking Production)
 
 See `docs/REGISTRY_INTEGRATION_REQUIREMENTS.md` for details:
-- Multi-source DNS publishing: NOT IMPLEMENTED
-- Hardware attestation validation: NOT IMPLEMENTED
+- Multi-source DNS publishing: NOT IMPLEMENTED (registry-side)
+- Hardware attestation validation: NOT IMPLEMENTED (registry-side)
 - Offline package generation: Stub only
-- Hybrid signature implementation: NOT IMPLEMENTED
+- Hybrid signature implementation: DONE in CIRISVerify, NOT IMPLEMENTED in CIRISRegistry

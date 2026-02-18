@@ -11,6 +11,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+use crate::error::VerifyError;
 use crate::license::LicenseDetails;
 
 /// License cache with encrypted persistence.
@@ -23,6 +24,10 @@ pub struct LicenseCache {
     default_ttl: Duration,
     /// Encryption key (derived from deployment ID).
     encryption_key: [u8; 32],
+    /// Highest-seen revocation revision (anti-rollback).
+    last_seen_revision: RwLock<u64>,
+    /// Revision history for audit trail: (timestamp, revision).
+    revision_history: RwLock<Vec<(i64, u64)>>,
 }
 
 /// A cached license entry.
@@ -69,6 +74,15 @@ struct PersistedEntry {
     last_verified: i64,
 }
 
+/// Serializable revision state for anti-rollback persistence.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct PersistedRevisionState {
+    /// Highest-seen revocation revision.
+    last_seen_revision: u64,
+    /// Revision history: (timestamp, revision).
+    revision_history: Vec<(i64, u64)>,
+}
+
 impl LicenseCache {
     /// Create a new license cache.
     ///
@@ -86,11 +100,17 @@ impl LicenseCache {
 
         let storage = cache_dir.map(|dir| StorageBackend { cache_dir: dir });
 
+        // Load persisted revision state if available
+        let (last_seen_revision, revision_history) =
+            Self::load_revision_state(&storage, &encryption_key);
+
         Self {
             memory: RwLock::new(HashMap::new()),
             storage,
             default_ttl,
             encryption_key,
+            last_seen_revision: RwLock::new(last_seen_revision),
+            revision_history: RwLock::new(revision_history),
         }
     }
 
@@ -204,6 +224,138 @@ impl LicenseCache {
             let _ = std::fs::remove_dir_all(&storage.cache_dir);
             let _ = std::fs::create_dir_all(&storage.cache_dir);
         }
+    }
+
+    /// Check a new revocation revision against the last seen value.
+    ///
+    /// Rejects if the new revision is lower than the last seen (rollback attack).
+    /// Updates the stored revision if the new value is higher or equal.
+    ///
+    /// # Errors
+    ///
+    /// Returns `VerifyError::RollbackDetected` if `new_revision < last_seen`.
+    pub fn check_and_update_revision(&self, new_revision: u64) -> Result<(), VerifyError> {
+        let mut last_seen = self
+            .last_seen_revision
+            .write()
+            .map_err(|_| VerifyError::CacheError {
+                message: "Failed to acquire revision lock".into(),
+            })?;
+
+        if new_revision < *last_seen {
+            return Err(VerifyError::RollbackDetected {
+                current: new_revision,
+                last_seen: *last_seen,
+            });
+        }
+
+        // Update if newer
+        if new_revision > *last_seen {
+            *last_seen = new_revision;
+        }
+
+        // Record in history
+        if let Ok(mut history) = self.revision_history.write() {
+            let ts = current_timestamp();
+            history.push((ts, new_revision));
+
+            // Cap at 1000 entries
+            if history.len() > 1000 {
+                let drain_count = history.len() - 1000;
+                history.drain(..drain_count);
+            }
+        }
+
+        // Persist revision state (non-fatal if this fails)
+        self.persist_revision_state();
+
+        Ok(())
+    }
+
+    /// Get the highest-seen revocation revision.
+    #[must_use]
+    pub fn last_seen_revision(&self) -> u64 {
+        self.last_seen_revision
+            .read()
+            .map(|r| *r)
+            .unwrap_or(0)
+    }
+
+    /// Get the revision history for audit purposes.
+    #[must_use]
+    pub fn revision_history(&self) -> Vec<(i64, u64)> {
+        self.revision_history
+            .read()
+            .map(|h| h.clone())
+            .unwrap_or_default()
+    }
+
+    /// Load persisted revision state from storage.
+    fn load_revision_state(
+        storage: &Option<StorageBackend>,
+        encryption_key: &[u8; 32],
+    ) -> (u64, Vec<(i64, u64)>) {
+        let storage = match storage {
+            Some(s) => s,
+            None => return (0, Vec::new()),
+        };
+
+        let path = storage.cache_dir.join("revision_state.enc");
+        let encrypted = match std::fs::read(&path) {
+            Ok(data) => data,
+            Err(_) => return (0, Vec::new()),
+        };
+
+        // Decrypt using simple XOR (same as cache entries)
+        let decrypted: Vec<u8> = encrypted
+            .iter()
+            .enumerate()
+            .map(|(i, byte)| byte ^ encryption_key[i % 32])
+            .collect();
+
+        match serde_json::from_slice::<PersistedRevisionState>(&decrypted) {
+            Ok(state) => (state.last_seen_revision, state.revision_history),
+            Err(_) => (0, Vec::new()),
+        }
+    }
+
+    /// Persist the current revision state to storage.
+    fn persist_revision_state(&self) {
+        let storage = match &self.storage {
+            Some(s) => s,
+            None => return,
+        };
+
+        if std::fs::create_dir_all(&storage.cache_dir).is_err() {
+            return;
+        }
+
+        let last_seen = self.last_seen_revision.read().map(|r| *r).unwrap_or(0);
+        let history = self
+            .revision_history
+            .read()
+            .map(|h| h.clone())
+            .unwrap_or_default();
+
+        let state = PersistedRevisionState {
+            last_seen_revision: last_seen,
+            revision_history: history,
+        };
+
+        let data = match serde_json::to_vec(&state) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+
+        // Encrypt using simple XOR (same as cache entries)
+        let encrypted: Vec<u8> = data
+            .iter()
+            .enumerate()
+            .map(|(i, byte)| byte ^ self.encryption_key[i % 32])
+            .collect();
+
+        let path = storage.cache_dir.join("revision_state.enc");
+        let _ = std::fs::write(&path, &encrypted);
     }
 
     /// Get entry from memory cache.
@@ -436,5 +588,87 @@ mod tests {
         let decrypted = cache.decrypt(&encrypted).unwrap();
 
         assert_eq!(plaintext.to_vec(), decrypted);
+    }
+
+    #[test]
+    fn test_revision_monotonic_increase() {
+        let cache = LicenseCache::new("test-deploy", None, Duration::from_secs(300));
+
+        // Increasing revisions should be accepted
+        assert!(cache.check_and_update_revision(1).is_ok());
+        assert!(cache.check_and_update_revision(2).is_ok());
+        assert!(cache.check_and_update_revision(5).is_ok());
+        assert!(cache.check_and_update_revision(100).is_ok());
+
+        // Equal revision should be accepted (idempotent)
+        assert!(cache.check_and_update_revision(100).is_ok());
+
+        assert_eq!(cache.last_seen_revision(), 100);
+    }
+
+    #[test]
+    fn test_revision_rollback_detected() {
+        let cache = LicenseCache::new("test-deploy", None, Duration::from_secs(300));
+
+        // Set initial revision
+        assert!(cache.check_and_update_revision(50).is_ok());
+
+        // Rollback attempt should be rejected
+        let err = cache.check_and_update_revision(49).unwrap_err();
+        assert!(
+            err.is_restricted(),
+            "Rollback should trigger restricted mode"
+        );
+
+        match err {
+            VerifyError::RollbackDetected { current, last_seen } => {
+                assert_eq!(current, 49);
+                assert_eq!(last_seen, 50);
+            },
+            other => panic!("Expected RollbackDetected, got {:?}", other),
+        }
+
+        // Last seen should still be 50 (not updated on rollback)
+        assert_eq!(cache.last_seen_revision(), 50);
+    }
+
+    #[test]
+    fn test_revision_history_audit_trail() {
+        let cache = LicenseCache::new("test-deploy", None, Duration::from_secs(300));
+
+        cache.check_and_update_revision(1).unwrap();
+        cache.check_and_update_revision(5).unwrap();
+        cache.check_and_update_revision(10).unwrap();
+
+        let history = cache.revision_history();
+        assert_eq!(history.len(), 3);
+        assert_eq!(history[0].1, 1);
+        assert_eq!(history[1].1, 5);
+        assert_eq!(history[2].1, 10);
+
+        // All timestamps should be reasonable
+        for (ts, _) in &history {
+            assert!(*ts > 0, "Timestamps should be positive");
+        }
+    }
+
+    #[test]
+    fn test_revision_history_capped() {
+        let cache = LicenseCache::new("test-deploy", None, Duration::from_secs(300));
+
+        // Add 1050 entries
+        for i in 1..=1050 {
+            cache.check_and_update_revision(i).unwrap();
+        }
+
+        let history = cache.revision_history();
+        assert!(
+            history.len() <= 1000,
+            "History should be capped at 1000, got {}",
+            history.len()
+        );
+
+        // Should have the most recent entries
+        assert_eq!(history.last().unwrap().1, 1050);
     }
 }

@@ -36,7 +36,18 @@ An unlicensed community agent is like an uninsured driver — it can still drive
 
 ### The DMV Itself — Multi-Source Validation
 
-CIRISVerify doesn't trust a single source. It queries three independent infrastructure endpoints (DNS US, DNS EU, HTTPS API) and requires consensus — like checking a license against both the state database and the federal system. If sources disagree, that's a red flag (possible attack), and the agent is restricted.
+CIRISVerify doesn't trust a single source. It uses an **HTTPS-authoritative, DNS-advisory** trust model:
+
+- **HTTPS endpoints** at independent domains are the authoritative source of truth
+- **DNS sources** (US and EU registrars) provide advisory cross-checks
+- When HTTPS is reachable, it is trusted; if DNS disagrees, HTTPS wins
+- Multiple HTTPS endpoints at different domains provide redundancy
+- If HTTPS is unreachable, DNS consensus (2-of-3) is used as degraded fallback
+- If sources disagree, that's a red flag (possible attack), and the agent is restricted
+
+**Anti-rollback protection**: The system tracks the highest-seen revocation revision and rejects any decrease — preventing replay of old valid licenses after revocation.
+
+**Transparency log**: Every verification event is recorded in an append-only log with a SHA-256 Merkle tree, providing tamper-evident audit trails and cryptographic inclusion proofs.
 
 **Is CIRISVerify sufficient to trust an agent?** No — it proves the agent is *authentic* (necessary). The CIRIS covenant system proves the agent *behaves ethically* (sufficient together). CIRISVerify is the DMV; the covenant is the rules of the road.
 
@@ -45,13 +56,16 @@ CIRISVerify doesn't trust a single source. It queries three independent infrastr
 ```
 Multi-Source Validation          CIRISVerify Binary (AGPL-3.0)        CIRISAgent (Open)
 ┌────────────────────┐          ┌──────────────────────────┐          ┌─────────────────┐
-│ DNS (US registrar) │─────────▶│ Hardware Security Module │          │                 │
-│ DNS (EU registrar) │─────────▶│ Multi-Source Validator   │─────────▶│ WiseBus         │
-│ HTTPS endpoint     │─────────▶│ License Engine           │          │ Capability Gate │
-└────────────────────┘          │ Hybrid Crypto (Ed25519 + │          │                 │
-All 3 MUST agree                │   ML-DSA-65)             │          └─────────────────┘
-(Ed25519 key + PQC              └──────────────────────────┘          DEPENDS on binary
- fingerprint)                   Signs with BOTH classical             MUST show disclosure
+│ HTTPS (primary)    │─────────▶│ Hardware Security Module │          │                 │
+│ HTTPS (redundant)  │─────────▶│ HTTPS-Authoritative      │─────────▶│ WiseBus         │
+│ DNS US (advisory)  │─────────▶│  Consensus Validator     │          │ Capability Gate │
+│ DNS EU (advisory)  │─────────▶│ License Engine           │          │                 │
+└────────────────────┘          │ Anti-Rollback Enforcer   │          └─────────────────┘
+HTTPS authoritative             │ Transparency Log (Merkle)│          DEPENDS on binary
+DNS cross-check                 │ Hybrid Crypto (Ed25519 + │          MUST show disclosure
+                                │   ML-DSA-65)             │
+                                └──────────────────────────┘
+                                Signs with BOTH classical
                                 and post-quantum signatures
 ```
 
@@ -135,12 +149,22 @@ CIRISVerify/
 │   ├── ciris-keyring/                     # Hardware keyring (TPM/SE/Keystore)
 │   ├── ciris-crypto/                      # Hybrid crypto (Ed25519 + ML-DSA-65)
 │   ├── ciris-verify-core/                 # Core verification engine
-│   └── ciris-verify-ffi/                  # C FFI layer
+│   │   └── src/
+│   │       ├── engine.rs                  # License verification engine
+│   │       ├── validation.rs              # HTTPS-authoritative consensus validator
+│   │       ├── transparency.rs            # Merkle tree transparency log
+│   │       ├── cache.rs                   # Encrypted cache + anti-rollback
+│   │       ├── jwt.rs                     # Hybrid JWT (4-part) parser
+│   │       ├── types.rs                   # Protocol types + AttestationProof
+│   │       └── security/                  # Integrity, anti-tamper, Tripwire
+│   └── ciris-verify-ffi/                  # C FFI layer + attestation export
 ├── bindings/
 │   └── python/ciris_verify/               # Python SDK (ciris-verify package)
 ├── docs/
 │   ├── HOW_IT_WORKS.md                    # How CIRISVerify works
+│   ├── THREAT_MODEL.md                    # Formal threat model (6 attack vectors)
 │   ├── IMPLEMENTATION_ROADMAP.md          # Development roadmap
+│   ├── OPEN_ITEMS.md                      # Open items tracker
 │   └── REGISTRY_INTEGRATION_REQUIREMENTS.md # Registry dependencies
 ├── scripts/
 │   └── build_and_install.sh               # Build + install helper
@@ -170,15 +194,25 @@ Example for unlicensed community deployment:
 
 > "CIRISCare community deployment. NOT a licensed professional provider. Cannot provide official certifications or steward-backed advice. For professional medical/legal/financial needs, seek licensed providers. This agent defers to human judgment for significant decisions."
 
-## Multi-Source Validation
+## Multi-Source Validation (HTTPS-Authoritative)
 
-To prevent single points of compromise, CIRISVerify validates the steward's public key against three independent sources:
+CIRISVerify uses an **HTTPS-authoritative, DNS-advisory** trust model to validate the steward's public key:
 
-1. **DNS** at `us.registry.ciris-services-1.ai` (US)
-2. **DNS** at `eu.registry.ciris-services-1.ai` (EU)
-3. **HTTPS** at `api.registry.ciris-services-1.ai`
+**Authoritative sources (HTTPS):**
+- `api.registry.ciris-services-1.ai` (primary)
+- Additional HTTPS endpoints at independent domains (configurable)
 
-All three must return the same steward public key. If they disagree, `ERROR_SOURCES_DISAGREE` is returned—this may indicate an attack.
+**Advisory sources (DNS cross-check):**
+- `us.registry.ciris-services-1.ai` (US registrar)
+- `eu.registry.ciris-services-1.ai` (EU registrar)
+
+**Trust hierarchy:**
+- When HTTPS endpoints are reachable, they are authoritative — DNS disagreement is logged but HTTPS is trusted
+- Multiple HTTPS endpoints must agree with each other (disagreement = `ERROR_SOURCES_DISAGREE`)
+- If all HTTPS endpoints are unreachable, falls back to DNS 2-of-3 consensus (degraded mode)
+- Legacy `EqualWeight` mode preserves the original 2-of-3 behavior for backward compatibility
+
+**Anti-rollback protection:** Every revocation revision is checked against the highest previously seen revision. Any decrease is rejected as a potential replay attack, with full audit trail.
 
 ## Hardware Security & Hybrid Cryptography
 
@@ -197,6 +231,34 @@ CIRISVerify uses platform-specific secure hardware with **hybrid cryptography**:
 2. **ML-DSA-65 signature** from software (provides quantum resistance)
 
 Both signatures **must verify**. This provides defense-in-depth against both classical and quantum attacks.
+
+## Transparency Log
+
+Every verification event is recorded in an append-only transparency log backed by a SHA-256 Merkle tree:
+
+- **Chain-linked entries**: Each entry includes the hash of the previous entry, forming a tamper-evident chain
+- **Merkle inclusion proofs**: Any entry can produce a cryptographic proof of inclusion, verifiable without the full log
+- **Tamper detection**: Modifying any historical entry invalidates the Merkle root and all subsequent chain links
+- **Persistent storage**: Optional append-only file for durable audit trails
+- **Proof chain export**: Export contiguous ranges of entries with their Merkle proofs for third-party audit
+
+## Remote Attestation Export
+
+Third parties can independently verify CIRISVerify's hardware binding without trusting the verifier:
+
+```rust
+// Export cryptographic proof of hardware attestation
+let proof = engine.export_attestation_proof(challenge).await?;
+// proof contains: platform attestation, dual public keys,
+// bound dual signatures, Merkle root, and log entry count
+```
+
+The attestation proof includes:
+- Platform attestation data (TPM quote, SE assertion, etc.)
+- Classical + PQC public keys with algorithm identifiers
+- **Bound dual signatures**: Classical signature over the challenge, PQC signature over `challenge || classical_sig`
+- Current Merkle root from the transparency log
+- Binary version and hardware type metadata
 
 ## Integration
 

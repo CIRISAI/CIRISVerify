@@ -9,7 +9,8 @@ repository.workspace = true
 authors.workspace = true
 
 [features]
-default = []
+default = ["pqc"]
+pqc = ["ciris-crypto/pqc-ml-dsa"]
 
 [dependencies]
 # Internal crates

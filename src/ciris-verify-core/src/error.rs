@@ -73,6 +73,15 @@ pub enum VerifyError {
         message: String,
     },
 
+    /// Rollback attack detected - revocation revision went backward.
+    #[error("Rollback detected: saw revision {current} but previously saw {last_seen}")]
+    RollbackDetected {
+        /// The revision in the current response.
+        current: u64,
+        /// The highest revision previously seen.
+        last_seen: u64,
+    },
+
     /// Configuration error.
     #[error("Configuration error: {message}")]
     ConfigError {
@@ -99,7 +108,7 @@ impl VerifyError {
     /// Check if this error should trigger RESTRICTED mode.
     #[must_use]
     pub fn is_restricted(&self) -> bool {
-        matches!(self, Self::SourcesDisagree)
+        matches!(self, Self::SourcesDisagree | Self::RollbackDetected { .. })
     }
 
     /// Check if this error should degrade to COMMUNITY mode.
