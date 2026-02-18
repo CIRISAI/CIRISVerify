@@ -51,8 +51,8 @@ jobs:
             artifact: libciris_verify_ffi.dylib
             platform_tag: macosx_11_0_arm64
 
-          # macOS x86_64
-          - os: macos-13
+          # macOS x86_64 (cross-compile on ARM64 runner)
+          - os: macos-latest
             target: x86_64-apple-darwin
             artifact: libciris_verify_ffi.dylib
             platform_tag: macosx_10_12_x86_64
