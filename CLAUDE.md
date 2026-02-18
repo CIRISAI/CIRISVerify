@@ -88,8 +88,9 @@ This project extends Veilid's `keyring-manager` pattern. To maintain compatibili
 ```
 ┌─────────────────────────────────────────────────────────────────────────┐
 │                    MULTI-SOURCE VALIDATION                               │
-│  DNS US (registry-us.ciris.ai) + DNS EU (registry-eu.ciris.ai)          │
-│  + HTTPS API (api.registry.ciris.ai)                                    │
+│  DNS US (us.registry.ciris-services-1.ai)                               │
+│  DNS EU (eu.registry.ciris-services-1.ai)                               │
+│  HTTPS API (api.registry.ciris-services-1.ai)                           │
 │  All 3 must agree (2-of-3 minimum for ACTIVE, any REVOKED = revoked)    │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │

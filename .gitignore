@@ -31,3 +31,14 @@ Thumbs.db
 secrets/
 *.secret
 dist/
+
+# Python build artifacts
+__pycache__/
+*.egg-info/
+bindings/python/build/
+bindings/python/.ciris_keys/
+
+# Platform binaries (built by CI, not committed)
+bindings/python/ciris_verify/libciris_verify_ffi.so
+bindings/python/ciris_verify/libciris_verify_ffi.dylib
+bindings/python/ciris_verify/ciris_verify_ffi.dll

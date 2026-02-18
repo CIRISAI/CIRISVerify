@@ -1,29 +1,44 @@
 # CIRISVerify
 
-**Hardware-Rooted License Verification for the CIRIS Ecosystem**
+**The DMV for AI Agents — Identity, Integrity, and Accountability**
 
 **Protocol Version**: 2.0.0 | **Cryptographic Baseline**: Ed25519 + ML-DSA-65 (Hybrid)
 
-CIRISVerify is an open-source binary module that provides cryptographic proof of license status for CIRIS deployments. It ensures that community agents (CIRISCare) cannot masquerade as licensed professional agents (CIRISMedical, CIRISLegal, CIRISFinancial).
+CIRISVerify is the trust anchor for the CIRIS ecosystem. Think of it like the DMV system for AI agents: it issues the driver's license (identity), performs the vehicle inspection (software/hardware integrity), and tracks insurance (who is responsible and under what authority). Without it, any agent could claim to be anything.
 
-**Post-Quantum Ready**: CIRISVerify launches with hybrid cryptography (classical + ML-DSA) as its day-1 standard, implementing NIST FIPS 204 and meeting NSA CNSA 2.0 requirements.
+**Post-Quantum Ready**: Hybrid cryptography (Ed25519 + ML-DSA-65) as day-1 standard, implementing NIST FIPS 204.
 
-## The Problem
+## What CIRISVerify Does (The Driving Analogy)
 
-The CIRIS ecosystem is fully open-source (AGPL). This is intentional—we believe in radical openness. But it creates a specific challenge:
+Every car on the road needs three things to operate legally. Every CIRIS agent needs the same three things:
 
-**How do you prove license status when anyone can modify the code?**
+### 1. Driver's License — Identity & Signing Key
 
-An adversary could fork CIRISCare, modify it to claim "I am licensed CIRISMedical," and perform high-risk medical actions without steward accountability.
+Just like a driver's license proves *who you are*, CIRISVerify holds a hardware-bound Ed25519 signing key that **is** the agent's identity. The key doesn't represent the identity — it *is* the identity. Stored in secure hardware (TPM, Secure Enclave, Android Keystore), it cannot be forged or transferred.
 
-## The Solution
+### 2. Registration & Inspection — Software and Hardware Integrity
 
-CIRISVerify provides a **hardware-rooted trust anchor** that:
+Just like vehicle registration proves your car is roadworthy and the VIN matches the title, CIRISVerify performs two integrity checks:
 
-1. **Cannot be forged** - Responses are signed by keys stored in secure hardware (TPM, Secure Enclave, Android Keystore)
-2. **Cannot be spoofed** - Validates against multiple independent sources (DNS + HTTPS)
-3. **Fails safe** - Any error condition degrades to community mode, never less restrictive
-4. **Is always transparent** - Returns mandatory disclosure strings that MUST be shown to users
+- **Software integrity** (Tripwire): Every file in the CIRISAgent distribution is SHA-256 hashed at build time and stored in a signed manifest in CIRISRegistry. At runtime, CIRISVerify validates files against this manifest. Any modification — even one byte — triggers forced shutdown.
+- **Hardware attestation**: Validates the execution environment via TPM/Secure Enclave/Keystore. Software-only environments are capped at community tier (like driving with a learner's permit).
+
+### 3. Insurance — Accountability and Licensing (HITL)
+
+Just like insurance proves *who is liable* if something goes wrong, CIRISVerify tracks the human-in-the-loop accountability chain:
+
+- **Which organization** deployed this agent
+- **Which licensed human** is responsible for its actions
+- **What capabilities** they are authorized to use (medical, legal, financial)
+- **Mandatory disclosure** that must be shown to every user, accurately describing the agent's license status
+
+An unlicensed community agent is like an uninsured driver — it can still drive (operate), but it cannot perform professional services that require accountability.
+
+### The DMV Itself — Multi-Source Validation
+
+CIRISVerify doesn't trust a single source. It queries three independent infrastructure endpoints (DNS US, DNS EU, HTTPS API) and requires consensus — like checking a license against both the state database and the federal system. If sources disagree, that's a red flag (possible attack), and the agent is restricted.
+
+**Is CIRISVerify sufficient to trust an agent?** No — it proves the agent is *authentic* (necessary). The CIRIS covenant system proves the agent *behaves ethically* (sufficient together). CIRISVerify is the DMV; the covenant is the rules of the road.
 
 ## Architecture
 

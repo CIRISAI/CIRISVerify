@@ -2,25 +2,55 @@
 
 **Last Updated**: 2026-02-17
 
-CIRISVerify is a Rust shared library (`libciris_verify_ffi`) with Python bindings (`ciris-verify`) that provides hardware-rooted license verification for the CIRIS ecosystem. Every CIRISAgent installation includes CIRISVerify to cryptographically verify its license status.
+CIRISVerify is a Rust shared library (`libciris_verify_ffi`) with Python bindings (`ciris-verify`) that serves as the trust anchor for the CIRIS ecosystem. Think of it as the **DMV for AI agents** — it handles identity, integrity, and accountability.
 
 ---
 
-## What It Does
+## The Driving Analogy
 
-CIRISVerify does **four things** (think: driver's license, registration, insurance, driving record):
+Every car on the road needs three things. Every CIRIS agent needs the same three:
 
-1. **Identity & Signing Key** (Driver's License) — Stores a hardware-bound Ed25519 signing key that IS the agent's identity. Proves "I am who I claim to be." The key is the identity; they are the same mechanism.
+| Road Requirement | CIRISVerify Equivalent | What It Proves |
+|-----------------|----------------------|----------------|
+| **Driver's License** | Hardware-bound Ed25519 signing key | **Who the agent is** — identity cannot be forged or transferred |
+| **Registration & Inspection** | Tripwire file integrity + hardware attestation | **The vehicle is sound** — software hasn't been tampered with, hardware environment is genuine |
+| **Insurance** | License JWT with org ID, responsible human, capability grants | **Who is liable** — which human/organization is accountable, what they're authorized to do |
 
-2. **Agent File Integrity** (Vehicle Registration) — Tripwire-style checking of all CIRISAgent Python files against a signed manifest from CIRISRegistry. Every file in the distribution is hashed at build time; CIRISVerify validates at runtime (full check or spot check). **Any file change whatsoever** — except `.env`, log, or audit files — triggers immediate forced shutdown.
+The DMV itself? That's the multi-source validation — CIRISVerify doesn't trust any single source, querying 3 independent endpoints and requiring consensus.
 
-3. **Hardware Attestation + License Accountability** (Insurance) — Validates the execution environment via TPM/Secure Enclave/Keystore AND, if this is a licensed install, identifies **who is responsible**: the organization ID that deployed this agent, the responsible licensed party, and their contact information. Just like insurance proves both that you're covered and who is liable if something goes wrong. Software-only attestation caps at COMMUNITY tier.
+---
 
-4. **Binary Self-Integrity + Multi-Source Validation** (Driving Record) — Validates its own Rust binary hasn't been tampered with, checks revocation status against 3 independent sources, and verifies the license JWT with dual signatures (Ed25519 + ML-DSA-65).
+## What It Does (In Detail)
 
-**Is CIRISVerify sufficient to trust an agent?** No — it proves the agent is *authentic* (necessary). The CIRIS covenant system proves the agent *behaves ethically* (sufficient together). CIRISVerify is the DMV; the covenant is the rules of the road.
+### 1. Driver's License — Identity & Signing Key
 
-It returns a `LicenseStatusResponse` containing:
+CIRISVerify holds a hardware-bound Ed25519 signing key that **is** the agent's identity. The key doesn't represent the identity — it *is* the identity, the same mechanism. Stored in secure hardware (TPM, Secure Enclave, Android Keystore), it cannot be forged, copied, or transferred. Every response the agent produces is signed with this key, proving authenticity.
+
+### 2. Registration & Inspection — Software and Hardware Integrity
+
+**Software integrity (Tripwire):** Every file in the CIRISAgent distribution is SHA-256 hashed at build time and registered in CIRISRegistry as a signed manifest. At runtime, CIRISVerify hashes files on disk and compares. **Any modification whatsoever** — except `.env`, logs, and runtime data — triggers immediate forced shutdown.
+
+**Hardware attestation:** Validates the execution environment via platform-specific secure hardware. Software-only environments are capped at COMMUNITY tier — like driving with a learner's permit.
+
+### 3. Insurance — Accountability and Licensing (HITL)
+
+If this is a licensed install, CIRISVerify identifies **who is responsible**:
+- The **organization ID** that deployed this agent
+- The **responsible licensed human** (the human-in-the-loop)
+- Their **contact information** and **capability grants** (medical, legal, financial)
+- A **mandatory disclosure** that MUST be shown to every user
+
+An unlicensed community agent is like an uninsured driver — it can still operate, but it cannot perform professional services requiring steward accountability.
+
+### 4. The DMV — Multi-Source Validation
+
+CIRISVerify validates against 3 independent sources (DNS US, DNS EU, HTTPS API). All 3 must agree. If they disagree, that's a security alert (possible attack) and the agent enters restricted mode. The license JWT is verified with dual signatures (Ed25519 + ML-DSA-65) — both must pass.
+
+---
+
+## The Response
+
+Every verification returns a `LicenseStatusResponse` containing:
 - **Status code** — What mode the agent should operate in
 - **Mandatory disclosure** — Text that MUST be displayed to users
 - **Capability grants** — What the license allows (if licensed)
