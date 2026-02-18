@@ -8,7 +8,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.85"
 license = "AGPL-3.0-or-later"
@@ -70,9 +70,6 @@ hickory-resolver = "0.24"
 
 # HTTP client (rustls-only, no OpenSSL dependency)
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
-
-# TPM (desktop/server only)
-tss-esapi = "7.4"
 
 # Internal crates
 ciris-keyring = { path = "src/ciris-keyring" }

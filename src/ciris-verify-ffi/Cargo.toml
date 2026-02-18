@@ -13,6 +13,7 @@ crate-type = ["cdylib", "staticlib"]
 
 [features]
 default = []
+ios = ["ciris-verify-core/ios"]
 
 [dependencies]
 ciris-verify-core.workspace = true
@@ -31,6 +32,7 @@ log = "0.4"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 oslog = "0.2"
+log = "0.4"
 
 [build-dependencies]
 cbindgen = "0.26"

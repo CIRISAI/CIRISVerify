@@ -99,7 +99,18 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
         );
     }
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ios")]
+    {
+        TRACING_INIT.call_once(|| {
+            // On iOS, use oslog to write to the unified logging system (Console.app)
+            oslog::OsLogger::new("ai.ciris.verify")
+                .level_filter(log::LevelFilter::Info)
+                .init()
+                .ok();
+        });
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         TRACING_INIT.call_once(|| {
             let filter = tracing_subscriber::EnvFilter::try_from_default_env()

@@ -688,7 +688,7 @@ include_guard = "CIRIS_VERIFY_H"
 
 ### Deliverables
 - C FFI library (✅ init, get_status, check_capability, export_attestation, free, destroy)
-- ✅ Python bindings (ciris-verify 0.1.0 on PyPI with platform wheels)
+- ✅ Python bindings (ciris-verify 0.2.0 on PyPI with platform wheels (iOS XCFramework support))
 - gRPC server binary (pending)
 - Swift/Kotlin wrapper stubs (pending)
 

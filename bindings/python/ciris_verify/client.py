@@ -54,6 +54,10 @@ DEFAULT_BINARY_PATHS = {
         "C:\\Program Files\\CIRIS\\ciris_verify.dll",
         ".\\target\\release\\ciris_verify_ffi.dll",
     ],
+    "iOS": [
+        # iOS framework bundle paths (relative to app bundle)
+        # The actual path is resolved at runtime via _find_ios_framework()
+    ],
 }
 
 # Map Rust LicenseStatus enum variants (serde string serialization) to Python IntEnum
@@ -158,6 +162,46 @@ class CIRISVerify:
         hostname = socket.gethostname()
         return f"deploy-{hashlib.sha256(hostname.encode()).hexdigest()[:16]}"
 
+    @staticmethod
+    def _is_ios() -> bool:
+        """Check if running on iOS."""
+        # Python 3.13+ sets sys.platform to "ios"
+        if hasattr(__import__("sys"), "platform") and __import__("sys").platform == "ios":
+            return True
+        # Fallback: check for iOS-specific environment variable
+        if os.environ.get("CIRIS_IOS_FRAMEWORK_PATH"):
+            return True
+        return False
+
+    @staticmethod
+    def _find_ios_framework() -> Optional[Path]:
+        """Find CIRISVerify framework on iOS."""
+        # Check explicit env var first
+        env_path = os.environ.get("CIRIS_IOS_FRAMEWORK_PATH")
+        if env_path:
+            path = Path(env_path)
+            if path.exists():
+                return path
+
+        # Search app bundle for CIRISVerify.framework
+        # On iOS, frameworks are in {app_bundle}/Frameworks/
+        module_dir = Path(__file__).parent
+        # Walk up to find the app bundle root
+        for parent in module_dir.parents:
+            framework = parent / "Frameworks" / "CIRISVerify.framework" / "CIRISVerify"
+            if framework.exists():
+                return framework
+
+        # Check for .fwork redirect file (Python on iOS pattern)
+        fwork = module_dir / "libciris_verify_ffi.fwork"
+        if fwork.exists():
+            redirect_target = fwork.read_text().strip()
+            redirect_path = module_dir / redirect_target
+            if redirect_path.exists():
+                return redirect_path
+
+        return None
+
     def _find_binary(self, explicit_path: Optional[str]) -> Path:
         """Find CIRISVerify binary."""
         if explicit_path:
@@ -165,6 +209,16 @@ class CIRISVerify:
             if path.exists():
                 return path
             raise BinaryNotFoundError(explicit_path)
+
+        # iOS-specific framework search
+        if self._is_ios():
+            ios_path = self._find_ios_framework()
+            if ios_path:
+                return ios_path
+            raise BinaryNotFoundError(
+                "CIRISVerify.framework not found in app bundle. "
+                "Ensure CIRISVerify.xcframework is linked in Xcode."
+            )
 
         # Search default paths
         system = platform.system()
@@ -194,10 +248,12 @@ class CIRISVerify:
 
                 valid_magic = [
                     b"\x7fELF",           # ELF
-                    b"\xfe\xed\xfa\xce",  # Mach-O 32
-                    b"\xfe\xed\xfa\xcf",  # Mach-O 64
-                    b"\xcf\xfa\xed\xfe",  # Mach-O 64 LE
+                    b"\xfe\xed\xfa\xce",  # Mach-O 32 BE
+                    b"\xfe\xed\xfa\xcf",  # Mach-O 64 BE
+                    b"\xce\xfa\xed\xfe",  # Mach-O 32 LE
+                    b"\xcf\xfa\xed\xfe",  # Mach-O 64 LE (macOS/iOS arm64)
                     b"\xca\xfe\xba\xbe",  # Mach-O Universal
+                    b"!\x0a<arch>",       # Static library (ar archive)
                     b"MZ\x90\x00",        # PE
                     b"MZ\x00\x00",        # PE variant
                 ]

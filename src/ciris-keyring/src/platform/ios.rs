@@ -9,6 +9,30 @@ use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
 use crate::types::{ClassicalAlgorithm, HardwareType, IosAttestation, PlatformAttestation};
 
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+use core_foundation::base::TCFType;
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+use core_foundation::boolean::CFBoolean;
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+use core_foundation::data::CFData;
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+use core_foundation::number::CFNumber;
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+use core_foundation::string::CFString;
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+use core_foundation::dictionary::CFMutableDictionary;
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+use security_framework::access_control::{SecAccessControl, ProtectionMode};
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+use security_framework::key::{SecKey, Algorithm};
+
+// Declare Security framework symbols not exported by security-framework-sys
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+extern "C" {
+    static kSecAttrApplicationTag: core_foundation_sys::string::CFStringRef;
+    static kSecMatchLimitOne: core_foundation_sys::string::CFStringRef;
+}
+
 /// iOS Secure Enclave signer using hardware-backed keys.
 ///
 /// Keys are generated in and never leave the Secure Enclave.
@@ -33,7 +57,6 @@ impl SecureEnclaveSigner {
     pub fn new(key_tag: impl Into<String>) -> Result<Self, KeyringError> {
         let key_tag = key_tag.into();
 
-        // Check if Secure Enclave is available
         if !Self::is_secure_enclave_available()? {
             return Err(KeyringError::HardwareNotAvailable {
                 reason: "Secure Enclave not available on this device".into(),
@@ -50,17 +73,13 @@ impl SecureEnclaveSigner {
     fn is_secure_enclave_available() -> Result<bool, KeyringError> {
         #[cfg(target_os = "ios")]
         {
-            // On iOS, SE is always available on supported devices (iPhone 5S+)
-            // Real implementation would check:
-            // SecAccessControlCreateFlags.privateKeyUsage is available
+            // SE is always available on supported iOS devices (iPhone 5S+)
             Ok(true)
         }
 
         #[cfg(target_os = "macos")]
         {
-            // On macOS, need T2 chip or Apple Silicon
-            // Check using IOKit or Security framework
-            // For now, assume available on Apple Silicon
+            // On macOS, requires T2 chip or Apple Silicon
             Ok(true)
         }
 
@@ -72,75 +91,207 @@ impl SecureEnclaveSigner {
 
     /// Get App Attest key and attestation.
     ///
-    /// Uses DeviceCheck framework for attestation.
-    pub async fn get_app_attest(&self, challenge: &[u8]) -> Result<Vec<u8>, KeyringError> {
+    /// Currently returns an error as App Attest requires the ObjC runtime
+    /// (DCAppAttestService), which will be added in v2.1. The attestation
+    /// field is optional, so this is handled gracefully.
+    pub async fn get_app_attest(&self, _challenge: &[u8]) -> Result<Vec<u8>, KeyringError> {
         #[cfg(any(target_os = "ios", target_os = "macos"))]
         {
-            // Real implementation would:
-            // 1. Use DCAppAttestService.shared
-            // 2. generateKey() to create attestation key
-            // 3. attestKey(keyId, clientDataHash) to get attestation
-            let _ = challenge;
-            todo!("Implement App Attest")
+            Err(KeyringError::NotSupported {
+                operation: "App Attest requires ObjC runtime (DCAppAttestService), deferred to v2.1"
+                    .into(),
+            })
         }
 
         #[cfg(not(any(target_os = "ios", target_os = "macos")))]
         {
-            let _ = challenge;
             Err(KeyringError::NoPlatformSupport)
+        }
+    }
+
+    /// Build the application tag as CFData from the key_tag string.
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    fn application_tag(&self) -> CFData {
+        CFData::from_buffer(self.key_tag.as_bytes())
+    }
+
+    /// Build a keychain query dictionary for finding our private key by tag.
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    fn build_key_query(&self) -> CFMutableDictionary {
+        use security_framework_sys::item::*;
+
+        unsafe {
+            let mut query = CFMutableDictionary::new();
+            query.set(
+                CFString::wrap_under_get_rule(kSecClass).as_CFTypeRef(),
+                CFString::wrap_under_get_rule(kSecClassKey).as_CFTypeRef(),
+            );
+            query.set(
+                CFString::wrap_under_get_rule(kSecAttrKeyType).as_CFTypeRef(),
+                CFString::wrap_under_get_rule(kSecAttrKeyTypeECSECPrimeRandom).as_CFTypeRef(),
+            );
+            query.set(
+                CFString::wrap_under_get_rule(kSecAttrKeyClass).as_CFTypeRef(),
+                CFString::wrap_under_get_rule(kSecAttrKeyClassPrivate).as_CFTypeRef(),
+            );
+            query.set(
+                CFString::wrap_under_get_rule(kSecAttrApplicationTag).as_CFTypeRef(),
+                self.application_tag().as_CFTypeRef(),
+            );
+            query
+        }
+    }
+
+    /// Query the keychain for the private key with matching tag.
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    fn query_private_key(&self) -> Result<SecKey, KeyringError> {
+        use security_framework_sys::item::*;
+        use security_framework_sys::keychain_item::SecItemCopyMatching;
+
+        unsafe {
+            let mut query = self.build_key_query();
+            query.set(
+                CFString::wrap_under_get_rule(kSecReturnRef).as_CFTypeRef(),
+                CFBoolean::true_value().as_CFTypeRef(),
+            );
+            query.set(
+                CFString::wrap_under_get_rule(kSecMatchLimit).as_CFTypeRef(),
+                CFString::wrap_under_get_rule(kSecMatchLimitOne).as_CFTypeRef(),
+            );
+
+            let mut result: core_foundation::base::CFTypeRef = std::ptr::null();
+            let status =
+                SecItemCopyMatching(query.as_concrete_TypeRef(), &mut result);
+
+            if status != 0 || result.is_null() {
+                return Err(KeyringError::KeyNotFound {
+                    alias: self.key_tag.clone(),
+                });
+            }
+
+            Ok(SecKey::wrap_under_create_rule(result as _))
         }
     }
 
     /// Sign data using the Secure Enclave.
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     async fn security_framework_sign(&self, data: &[u8]) -> Result<Vec<u8>, KeyringError> {
-        // Real implementation would:
-        // 1. Query keychain for key with tag
-        // 2. Use SecKeyCreateSignature with:
-        //    - kSecKeyAlgorithmECDSASignatureMessageX962SHA256
-        //    - The data to sign
-        // 3. Return the DER-encoded signature
-        let _ = data;
-        todo!("Implement Security framework signing")
+        let private_key = self.query_private_key()?;
+
+        // ECDSA P-256 with SHA-256 — the SE hashes internally
+        private_key
+            .create_signature(Algorithm::ECDSASignatureMessageX962SHA256, data)
+            .map_err(|e| KeyringError::SigningFailed {
+                reason: format!("Secure Enclave signing failed: {e}"),
+            })
     }
 
     /// Get public key from the Secure Enclave.
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     async fn security_framework_get_public_key(&self) -> Result<Vec<u8>, KeyringError> {
-        // Real implementation would:
-        // 1. Query keychain for key
-        // 2. Use SecKeyCopyPublicKey to get public key
-        // 3. Use SecKeyCopyExternalRepresentation to export
-        // 4. Return uncompressed point format
-        todo!("Implement Security framework public key export")
+        let private_key = self.query_private_key()?;
+
+        let public_key =
+            private_key
+                .public_key()
+                .ok_or_else(|| KeyringError::HardwareError {
+                    reason: "Failed to extract public key from Secure Enclave key".into(),
+                })?;
+
+        let repr =
+            public_key
+                .external_representation()
+                .ok_or_else(|| KeyringError::HardwareError {
+                    reason: "Failed to get external representation of public key".into(),
+                })?;
+
+        // Returns SEC1 uncompressed point: 0x04 || X (32) || Y (32) = 65 bytes
+        Ok(repr.to_vec())
     }
 
     /// Generate a new key in the Secure Enclave.
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     async fn security_framework_generate_key(
         &self,
-        config: &KeyGenConfig,
+        _config: &KeyGenConfig,
     ) -> Result<(), KeyringError> {
-        // Real implementation would:
-        // 1. Create access control with:
-        //    - kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-        //    - .privateKeyUsage (Secure Enclave requirement)
-        //    - .biometryCurrentSet or .userPresence if auth required
-        // 2. Create key attributes:
-        //    - kSecAttrKeyType: kSecAttrKeyTypeECSECPrimeRandom
-        //    - kSecAttrKeySizeInBits: 256
-        //    - kSecAttrTokenID: kSecAttrTokenIDSecureEnclave
-        //    - kSecPrivateKeyAttrs with access control
-        // 3. SecKeyCreateRandomKey
-        let _ = config;
-        todo!("Implement Security framework key generation")
+        use security_framework_sys::access_control::kSecAccessControlPrivateKeyUsage;
+        use security_framework_sys::item::*;
+
+        // Create access control: key usable when device unlocked, this device only,
+        // with private key usage flag (required for Secure Enclave)
+        let access_control = SecAccessControl::create_with_protection(
+            Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
+            kSecAccessControlPrivateKeyUsage,
+        )
+        .map_err(|e| KeyringError::KeyGenerationFailed {
+            reason: format!("Failed to create access control: {e}"),
+        })?;
+
+        unsafe {
+            // Build private key attributes sub-dictionary
+            let mut private_attrs = CFMutableDictionary::new();
+            private_attrs.set(
+                CFString::wrap_under_get_rule(kSecAttrIsPermanent).as_CFTypeRef(),
+                CFBoolean::true_value().as_CFTypeRef(),
+            );
+            private_attrs.set(
+                CFString::wrap_under_get_rule(kSecAttrApplicationTag).as_CFTypeRef(),
+                self.application_tag().as_CFTypeRef(),
+            );
+            private_attrs.set(
+                CFString::wrap_under_get_rule(kSecAttrAccessControl).as_CFTypeRef(),
+                access_control.as_CFTypeRef(),
+            );
+
+            // Build key generation parameters
+            let mut params = CFMutableDictionary::new();
+            params.set(
+                CFString::wrap_under_get_rule(kSecAttrKeyType).as_CFTypeRef(),
+                CFString::wrap_under_get_rule(kSecAttrKeyTypeECSECPrimeRandom).as_CFTypeRef(),
+            );
+            params.set(
+                CFString::wrap_under_get_rule(kSecAttrKeySizeInBits).as_CFTypeRef(),
+                CFNumber::from(256_i32).as_CFTypeRef(),
+            );
+            params.set(
+                CFString::wrap_under_get_rule(kSecAttrTokenID).as_CFTypeRef(),
+                CFString::wrap_under_get_rule(kSecAttrTokenIDSecureEnclave).as_CFTypeRef(),
+            );
+            params.set(
+                CFString::wrap_under_get_rule(kSecPrivateKeyAttrs).as_CFTypeRef(),
+                private_attrs.as_CFTypeRef(),
+            );
+
+            let mut error: core_foundation_sys::error::CFErrorRef = std::ptr::null_mut();
+            let key = security_framework_sys::key::SecKeyCreateRandomKey(
+                params.as_concrete_TypeRef(),
+                &mut error,
+            );
+
+            if key.is_null() {
+                let err_msg = if !error.is_null() {
+                    let cf_error =
+                        core_foundation::error::CFError::wrap_under_create_rule(error);
+                    format!("SecKeyCreateRandomKey failed: {cf_error}")
+                } else {
+                    "SecKeyCreateRandomKey failed for Secure Enclave".to_string()
+                };
+                return Err(KeyringError::KeyGenerationFailed { reason: err_msg });
+            }
+
+            // Key is stored persistently in the keychain via kSecAttrIsPermanent.
+            // Release the returned SecKeyRef — key is retrievable by tag.
+            core_foundation::base::CFRelease(key as _);
+        }
+
+        Ok(())
     }
 }
 
 #[async_trait]
 impl HardwareSigner for SecureEnclaveSigner {
     fn algorithm(&self) -> ClassicalAlgorithm {
-        // Secure Enclave only supports ECDSA P-256
         ClassicalAlgorithm::EcdsaP256
     }
 
@@ -179,7 +330,6 @@ impl HardwareSigner for SecureEnclaveSigner {
     async fn attestation(&self) -> Result<PlatformAttestation, KeyringError> {
         #[cfg(any(target_os = "ios", target_os = "macos"))]
         {
-            // Generate a challenge for App Attest
             use rand_core::{OsRng, RngCore};
             let mut challenge = [0u8; 32];
             OsRng.fill_bytes(&mut challenge);
@@ -189,7 +339,7 @@ impl HardwareSigner for SecureEnclaveSigner {
             Ok(PlatformAttestation::Ios(IosAttestation {
                 secure_enclave: true,
                 app_attest,
-                device_check_token: None, // Optional additional check
+                device_check_token: None,
             }))
         }
 
@@ -212,32 +362,42 @@ impl HardwareSigner for SecureEnclaveSigner {
         }
     }
 
-    async fn key_exists(&self, alias: &str) -> Result<bool, KeyringError> {
+    async fn key_exists(&self, _alias: &str) -> Result<bool, KeyringError> {
         #[cfg(any(target_os = "ios", target_os = "macos"))]
         {
-            // Query keychain with kSecReturnRef = false
-            let _ = alias;
-            todo!("Implement keychain existence check")
+            match self.query_private_key() {
+                Ok(_) => Ok(true),
+                Err(KeyringError::KeyNotFound { .. }) => Ok(false),
+                Err(e) => Err(e),
+            }
         }
 
         #[cfg(not(any(target_os = "ios", target_os = "macos")))]
         {
-            let _ = alias;
             Err(KeyringError::NoPlatformSupport)
         }
     }
 
-    async fn delete_key(&self, alias: &str) -> Result<(), KeyringError> {
+    async fn delete_key(&self, _alias: &str) -> Result<(), KeyringError> {
         #[cfg(any(target_os = "ios", target_os = "macos"))]
         {
-            // Use SecItemDelete
-            let _ = alias;
-            todo!("Implement keychain key deletion")
+            use security_framework_sys::keychain_item::SecItemDelete;
+
+            unsafe {
+                let query = self.build_key_query();
+                let status = SecItemDelete(query.as_concrete_TypeRef());
+                if status != 0 {
+                    return Err(KeyringError::KeyNotFound {
+                        alias: self.key_tag.clone(),
+                    });
+                }
+            }
+
+            Ok(())
         }
 
         #[cfg(not(any(target_os = "ios", target_os = "macos")))]
         {
-            let _ = alias;
             Err(KeyringError::NoPlatformSupport)
         }
     }
@@ -255,7 +415,10 @@ mod tests {
     fn test_ios_signer_algorithm() {
         #[cfg(any(target_os = "ios", target_os = "macos"))]
         {
-            // Would need actual Secure Enclave access to test
+            let signer = SecureEnclaveSigner::new("test_key").expect("SE should be available");
+            assert_eq!(signer.algorithm(), ClassicalAlgorithm::EcdsaP256);
+            assert_eq!(signer.hardware_type(), HardwareType::IosSecureEnclave);
+            assert_eq!(signer.current_alias(), "test_key");
         }
     }
 }

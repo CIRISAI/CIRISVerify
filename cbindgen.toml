@@ -59,9 +59,8 @@ exclude = []
 "CirisVerifyHandle" = "CirisVerifyHandle"
 "CirisVerifyError" = "CirisVerifyError"
 
-# Documentation
-[documentation]
-doc_comment_style = "doxy"
+# Documentation comment style
+documentation_style = "doxy"
 
 # Parse configuration
 [parse]
@@ -69,5 +68,5 @@ parse_deps = false
 include = ["ciris-verify-ffi"]
 extra_bindings = []
 
-[parse.expand]
-crates = ["ciris-verify-ffi"]
+# [parse.expand]
+# crates = ["ciris-verify-ffi"]  # Requires nightly; our FFI is simple enough without expansion

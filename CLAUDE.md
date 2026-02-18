@@ -61,7 +61,7 @@ cargo deny check
 | `ciris-crypto` | Phase 1 Complete | ECDSA P-256, Ed25519, ML-DSA-65 (FIPS 204), hybrid signer with bound signatures |
 | `ciris-verify-core` | Phase 3-5 Active | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), Tripwire file integrity, remote attestation export |
 | `ciris-verify-ffi` | Phase 4 Active | C FFI with init/status/capability/attestation-export/destroy |
-| `bindings/python` | Released | ciris-verify 0.1.0 on PyPI with platform wheels |
+| `bindings/python` | Released | ciris-verify 0.2.0 on PyPI with platform wheels |
 
 **ML-DSA-65**: Fully implemented using `ml-dsa` 0.1.0-rc.3 (RustCrypto). Bound dual signatures operational.
 

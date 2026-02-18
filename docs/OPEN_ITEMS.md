@@ -349,7 +349,7 @@ gRPC remains primary; REST is convenience layer.
 
 ### High (Within 6 months)
 - Audit log specification (#12) — **partially addressed** (transparency log with Merkle tree implemented; remaining: event schema standardization)
-- Official Python SDK (#6) — **partially addressed** (ciris-verify 0.1.0 published on PyPI)
+- Official Python SDK (#6) — **partially addressed** (ciris-verify 0.2.0 published on PyPI)
 - Field troubleshooting guide (#17)
 
 ### Medium (Within 12 months)
