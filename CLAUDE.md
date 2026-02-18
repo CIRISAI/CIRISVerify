@@ -65,7 +65,7 @@ cargo deny check
 
 **ML-DSA-65**: Fully implemented using `ml-dsa` 0.1.0-rc.3 (RustCrypto). Bound dual signatures operational.
 
-**155 tests passing** across all crates.
+**144 tests passing** across all crates.
 
 ## Development Workflow
 

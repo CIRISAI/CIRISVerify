@@ -103,12 +103,12 @@ Or use the build script:
 ./scripts/build_and_install.sh
 ```
 
-### Install from PyPI (Coming Soon)
+### Install from PyPI
 
 ```bash
 pip install ciris-verify
-# Platform-specific wheel will include the correct Rust binary automatically
-# Supports: Linux x86_64, macOS ARM64, macOS x86_64, Windows x86_64
+# Platform-specific wheel includes the correct Rust binary automatically
+# Supports: Linux (x86_64, ARM64), macOS (ARM64, x86_64), Windows (x86_64)
 ```
 
 ## Python SDK
@@ -213,6 +213,46 @@ CIRISVerify uses an **HTTPS-authoritative, DNS-advisory** trust model to validat
 - Legacy `EqualWeight` mode preserves the original 2-of-3 behavior for backward compatibility
 
 **Anti-rollback protection:** Every revocation revision is checked against the highest previously seen revision. Any decrease is rejected as a potential replay attack, with full audit trail.
+
+## Platform Support Matrix
+
+CIRISVerify provides pre-built binaries for the following platforms:
+
+### Desktop & Server
+
+| Platform | Architecture | Target | Binary | Status |
+|----------|--------------|--------|--------|--------|
+| Linux | x86_64 | `x86_64-unknown-linux-gnu` | `libciris_verify_ffi.so` | :white_check_mark: Supported |
+| Linux | ARM64 | `aarch64-unknown-linux-gnu` | `libciris_verify_ffi.so` | :white_check_mark: Supported |
+| macOS | Apple Silicon | `aarch64-apple-darwin` | `libciris_verify_ffi.dylib` | :white_check_mark: Supported |
+| macOS | Intel | `x86_64-apple-darwin` | `libciris_verify_ffi.dylib` | :white_check_mark: Supported |
+| Windows | x86_64 | `x86_64-pc-windows-msvc` | `ciris_verify_ffi.dll` | :white_check_mark: Supported |
+
+### Mobile
+
+| Platform | Architecture | Target | ABI | Status |
+|----------|--------------|--------|-----|--------|
+| Android | ARM64 | `aarch64-linux-android` | arm64-v8a | :white_check_mark: Supported |
+| Android | ARM32 | `armv7-linux-androideabi` | armeabi-v7a | :white_check_mark: Supported |
+| Android | x86_64 | `x86_64-linux-android` | x86_64 | :white_check_mark: Supported |
+| iOS | ARM64 | `aarch64-apple-ios` | - | :white_check_mark: Supported |
+| iOS Simulator | ARM64 | `aarch64-apple-ios-sim` | - | :white_check_mark: Supported |
+
+### Python Wheels (PyPI)
+
+The `ciris-verify` package on PyPI includes platform-specific wheels:
+
+| Platform | Python Versions | Wheel Tag |
+|----------|-----------------|-----------|
+| Linux x86_64 | 3.10-3.13 | `manylinux_2_17_x86_64` |
+| Linux ARM64 | 3.10-3.13 | `manylinux_2_17_aarch64` |
+| macOS ARM64 | 3.10-3.13 | `macosx_11_0_arm64` |
+| macOS x86_64 | 3.10-3.13 | `macosx_10_12_x86_64` |
+| Windows x86_64 | 3.10-3.13 | `win_amd64` |
+
+```bash
+pip install ciris-verify  # Automatically selects correct wheel
+```
 
 ## Hardware Security & Hybrid Cryptography
 
