@@ -245,11 +245,15 @@ impl LicenseEngine {
     ///
     /// # Security
     ///
-    /// This method implements fail-secure behavior:
-    /// - Binary tampering → LOCKDOWN
-    /// - Sources disagree → RESTRICTED (security alert)
+    /// This method implements fail-secure behavior - always degrade, never block:
+    /// - Binary integrity failed → COMMUNITY MODE
+    /// - VM/emulator detected → COMMUNITY MODE
+    /// - Rooted/jailbroken → COMMUNITY MODE
+    /// - Sources disagree → COMMUNITY MODE (with alert)
     /// - Verification failed → COMMUNITY MODE
     /// - License expired/revoked → COMMUNITY MODE
+    ///
+    /// We are 100% open source - nothing should be fully stopped.
     #[instrument(skip(self, request), fields(deployment_id = %request.deployment_id))]
     pub async fn get_license_status(
         &self,
@@ -260,16 +264,11 @@ impl LicenseEngine {
             message: e.to_string(),
         })?;
 
-        // 1. Binary integrity check
+        // 1. Binary integrity check - degrade to COMMUNITY, never LOCKDOWN
+        // We are 100% open source - nothing should be fully stopped
         if !self.integrity_valid {
-            error!("Binary integrity check failed - LOCKDOWN");
-            return Ok(self
-                .build_error_response(
-                    LicenseStatus::ErrorBinaryTampered,
-                    "Binary integrity verification failed. System in lockdown mode.",
-                    &request,
-                )
-                .await);
+            warn!("Binary integrity check failed - degrading to COMMUNITY tier");
+            // Continue with verification but will be capped at COMMUNITY
         }
 
         // 2. Multi-source validation
@@ -833,6 +832,15 @@ impl LicenseEngine {
     ) -> (LicenseStatus, Option<LicenseDetails>) {
         use crate::security::{is_device_compromised, is_emulator};
 
+        // Binary integrity failed caps at UNLICENSED_COMMUNITY (never LOCKDOWN)
+        if !self.integrity_valid {
+            warn!(
+                "Binary integrity check failed — \
+                 capping at UNLICENSED_COMMUNITY tier (debugger or hooks detected)"
+            );
+            return (LicenseStatus::UnlicensedCommunity, None);
+        }
+
         // SOFTWARE_ONLY caps at UNLICENSED_COMMUNITY
         if self.hw_signer.hardware_type() == HardwareType::SoftwareOnly {
             warn!(
@@ -1233,8 +1241,11 @@ impl LicenseEngine {
                 )
             },
             LicenseStatus::UnlicensedCommunity => {
-                // Determine the reason for community mode
-                let reason = if is_sw_only {
+                // Determine the reason for community mode (check most restrictive first)
+                let reason = if !self.integrity_valid {
+                    "Binary integrity check detected debugger or hooks — \
+                     limiting to community tier for security."
+                } else if is_sw_only {
                     "Software-only signer (no hardware security module) limits deployment to community tier."
                 } else if in_vm {
                     "Running in VM/emulator limits deployment to community tier for security."
@@ -1258,9 +1269,13 @@ impl LicenseEngine {
                 )
             },
             LicenseStatus::ErrorBinaryTampered => {
+                // Note: This status should no longer be returned - we degrade to COMMUNITY instead
+                // Kept for backwards compatibility with older clients
                 format!(
-                    "LOCKDOWN — BINARY TAMPERED. {lic_block}{hw_line}\
-                     Binary integrity check failed. System locked down for security."
+                    "COMMUNITY MODE — INTEGRITY CHECK FAILED. {lic_block}{hw_line}{env_line}\
+                     Binary integrity check detected issues (debugger or hooks). \
+                     Operating in community tier. \
+                     Not a licensed professional service."
                 )
             },
             LicenseStatus::ErrorSourcesDisagree => {
