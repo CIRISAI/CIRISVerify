@@ -616,6 +616,9 @@ impl LicenseEngine {
         #[cfg(not(feature = "pqc"))]
         let (pqc_signature, pqc_public_key, pqc_algorithm) = (vec![], vec![], "NONE".to_string());
 
+        // Report VM status for transparency (does NOT block on desktop)
+        let running_in_vm = crate::security::is_emulator();
+
         Ok(AttestationProof {
             platform_attestation,
             hardware_public_key,
@@ -630,6 +633,7 @@ impl LicenseEngine {
             generated_at: chrono::Utc::now().timestamp(),
             binary_version: env!("CARGO_PKG_VERSION").to_string(),
             hardware_type: format!("{:?}", self.hw_signer.hardware_type()),
+            running_in_vm,
         })
     }
 
@@ -1257,7 +1261,12 @@ impl LicenseEngine {
 /// Performs runtime security checks:
 /// - Debugger detection (ptrace/sysctl/Win32 API)
 /// - Hook detection (Frida, Xposed)
-/// - Environment checks (device compromise, emulator)
+/// - Environment checks (device compromise, suspicious emulators)
+///
+/// Note: Desktop VMs (KVM, VMware, cloud instances) are NOT blocked.
+/// Only mobile emulators (Android emulator, iOS simulator) are suspicious.
+/// Desktop VMs are legitimate deployment targets and the user has full
+/// control anyway. VM status is reported in attestation for transparency.
 ///
 /// Binary self-hash verification is skipped until the hash embedding
 /// pipeline is implemented (requires two-pass build).
@@ -1272,13 +1281,14 @@ fn verify_binary_integrity() -> bool {
     #[cfg(not(debug_assertions))]
     {
         use crate::security::{
-            detect_hooks, is_debugger_attached, is_device_compromised, is_emulator,
+            detect_hooks, is_debugger_attached, is_device_compromised, is_suspicious_emulator,
         };
 
         let debugger_ok = !is_debugger_attached();
         let hooks_ok = !detect_hooks();
         let device_ok = !is_device_compromised();
-        let emulator_ok = !is_emulator();
+        // Only block on suspicious emulators (mobile), not desktop VMs
+        let emulator_ok = !is_suspicious_emulator();
 
         debugger_ok && hooks_ok && device_ok && emulator_ok
     }

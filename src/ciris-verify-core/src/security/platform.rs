@@ -49,9 +49,10 @@ pub fn is_device_compromised() -> bool {
     }
 }
 
-/// Check if running in an emulator.
+/// Check if running in an emulator or virtual machine.
 ///
-/// Returns `true` if emulator indicators are found.
+/// Returns `true` if emulator/VM indicators are found.
+/// This is used for attestation reporting, not for blocking.
 pub fn is_emulator() -> bool {
     #[cfg(target_os = "android")]
     {
@@ -63,10 +64,49 @@ pub fn is_emulator() -> bool {
         return is_ios_simulator();
     }
 
-    // On desktop, we optionally detect VMs but don't fail on them
+    // On desktop, detect VMs for attestation reporting
     #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
     {
         is_virtual_machine()
+    }
+
+    #[cfg(not(any(
+        target_os = "android",
+        target_os = "ios",
+        target_os = "linux",
+        target_os = "windows",
+        target_os = "macos"
+    )))]
+    {
+        false
+    }
+}
+
+/// Check if running in a SUSPICIOUS emulator that should block execution.
+///
+/// This distinguishes between:
+/// - Mobile emulators (Android emulator, iOS simulator) → BLOCK (suspicious)
+/// - Desktop VMs (KVM, VMware, cloud instances) → ALLOW (legitimate use)
+///
+/// Desktop VMs are legitimate deployment targets (cloud servers, dev environments).
+/// Mobile emulators are suspicious because real mobile apps run on physical devices.
+pub fn is_suspicious_emulator() -> bool {
+    #[cfg(target_os = "android")]
+    {
+        return is_android_emulator();
+    }
+
+    #[cfg(target_os = "ios")]
+    {
+        return is_ios_simulator();
+    }
+
+    // Desktop VMs are NOT suspicious - they're legitimate deployment targets.
+    // Cloud servers, dev environments, CI/CD all run in VMs.
+    // The user already has full control on desktop anyway.
+    #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
+    {
+        false
     }
 
     #[cfg(not(any(

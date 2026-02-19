@@ -29,7 +29,7 @@ use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub use anti_tamper::{detect_hooks, is_debugger_attached};
-pub use platform::{is_device_compromised, is_emulator};
+pub use platform::{is_device_compromised, is_emulator, is_suspicious_emulator};
 
 /// Opaque integrity status.
 ///
@@ -145,10 +145,14 @@ impl IntegrityChecker {
     }
 
     /// Check execution environment.
+    ///
+    /// Uses `is_suspicious_emulator()` which only blocks on mobile emulators.
+    /// Desktop VMs are allowed since they're legitimate deployment targets.
     fn check_environment(&self) -> bool {
         // Platform-specific environment checks
         let device_ok = !is_device_compromised();
-        let emulator_ok = !is_emulator();
+        // Only block on suspicious emulators (mobile), not desktop VMs
+        let emulator_ok = !is_suspicious_emulator();
 
         device_ok && emulator_ok
     }

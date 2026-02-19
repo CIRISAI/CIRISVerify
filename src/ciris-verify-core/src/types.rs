@@ -377,6 +377,10 @@ pub struct AttestationProof {
 
     /// Hardware type description.
     pub hardware_type: String,
+
+    /// Whether running in a virtual machine (for transparency).
+    /// This does NOT block execution but is reported for verifiers.
+    pub running_in_vm: bool,
 }
 
 /// Response for capability check.
