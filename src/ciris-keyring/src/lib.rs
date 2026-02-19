@@ -110,7 +110,10 @@ pub fn get_platform_signer(alias: &str) -> Result<Box<dyn HardwareSigner>, Keyri
     );
 
     if caps.has_hardware {
-        tracing::info!("Platform signer: attempting hardware signer (alias={})", alias);
+        tracing::info!(
+            "Platform signer: attempting hardware signer (alias={})",
+            alias
+        );
         create_hardware_signer(alias, false)
     } else {
         tracing::warn!(

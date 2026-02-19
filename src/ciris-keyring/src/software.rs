@@ -14,7 +14,9 @@
 //! - `Ed25519SoftwareSigner` - Ed25519 (for Portal-issued keys)
 
 use async_trait::async_trait;
-use ed25519_dalek::{Signature as Ed25519Signature, Signer as Ed25519SignerTrait, SigningKey as Ed25519SigningKey};
+use ed25519_dalek::{
+    Signature as Ed25519Signature, Signer as Ed25519SignerTrait, SigningKey as Ed25519SigningKey,
+};
 use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::rand_core::OsRng;
 
@@ -486,7 +488,10 @@ impl MutableEd25519Signer {
 
     /// Get the public key if loaded.
     pub fn get_public_key(&self) -> Option<Vec<u8>> {
-        self.inner.read().ok().and_then(|inner| inner.get_public_key())
+        self.inner
+            .read()
+            .ok()
+            .and_then(|inner| inner.get_public_key())
     }
 
     /// Sign data with the loaded key.
@@ -495,9 +500,12 @@ impl MutableEd25519Signer {
             message: "Lock poisoned".into(),
         })?;
 
-        let key = inner.signing_key.as_ref().ok_or(KeyringError::KeyNotFound {
-            alias: inner.alias.clone(),
-        })?;
+        let key = inner
+            .signing_key
+            .as_ref()
+            .ok_or(KeyringError::KeyNotFound {
+                alias: inner.alias.clone(),
+            })?;
 
         let signature: Ed25519Signature = key.sign(data);
         Ok(signature.to_bytes().to_vec())
@@ -586,10 +594,9 @@ mod tests {
     async fn test_ed25519_software_signer_from_bytes() {
         // Generate a random 32-byte seed
         let seed: [u8; 32] = [
-            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08,
-            0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10,
-            0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
-            0x19, 0x1a, 0x1b, 0x1c, 0x1d, 0x1e, 0x1f, 0x20,
+            0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e,
+            0x0f, 0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18, 0x19, 0x1a, 0x1b, 0x1c,
+            0x1d, 0x1e, 0x1f, 0x20,
         ];
 
         let signer = Ed25519SoftwareSigner::from_bytes(&seed, "test_ed25519").unwrap();
@@ -611,7 +618,7 @@ mod tests {
         assert_eq!(signature.len(), 64);
 
         // Verify signature using ed25519-dalek
-        use ed25519_dalek::{Verifier, VerifyingKey, Signature as DalekSignature};
+        use ed25519_dalek::{Signature as DalekSignature, Verifier, VerifyingKey};
         let verifying_key = VerifyingKey::from_bytes(&pubkey.try_into().unwrap()).unwrap();
         let dalek_sig = DalekSignature::from_slice(&signature).unwrap();
         assert!(verifying_key.verify(data, &dalek_sig).is_ok());

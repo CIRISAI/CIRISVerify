@@ -66,14 +66,7 @@ pub struct FileManifest {
 
 /// File extensions and patterns exempt from integrity checking.
 const EXEMPT_EXTENSIONS: &[&str] = &[
-    ".env",
-    ".log",
-    ".audit",
-    ".db",
-    ".sqlite",
-    ".sqlite3",
-    ".pyc",
-    ".pyo",
+    ".env", ".log", ".audit", ".db", ".sqlite", ".sqlite3", ".pyc", ".pyo",
 ];
 
 /// Directory names exempt from integrity checking.
@@ -116,9 +109,9 @@ fn is_exempt(relative_path: &str) -> bool {
         if let std::path::Component::Normal(c) = component {
             if let Some(dir_name) = c.to_str() {
                 for exempt in EXEMPT_DIRS {
-                    if exempt.starts_with('*') {
+                    if let Some(suffix) = exempt.strip_prefix('*') {
                         // Wildcard suffix match (e.g., "*.egg-info")
-                        if dir_name.ends_with(&exempt[1..]) {
+                        if dir_name.ends_with(suffix) {
                             return true;
                         }
                     } else if dir_name == *exempt {
@@ -145,7 +138,7 @@ fn hash_file(path: &Path) -> std::io::Result<String> {
 fn verify_manifest_integrity(manifest: &FileManifest) -> bool {
     let mut hasher = Sha256::new();
     // Hash all file hashes in sorted order (BTreeMap is already sorted)
-    for (_path, hash) in &manifest.files {
+    for hash in manifest.files.values() {
         hasher.update(hash.as_bytes());
     }
     let expected = hex::encode(hasher.finalize());
@@ -204,10 +197,10 @@ pub fn check_full(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityRe
                 } else {
                     files_failed += 1;
                 }
-            }
+            },
             Err(_) => {
                 files_missing += 1;
-            }
+            },
         }
     }
 
@@ -279,10 +272,10 @@ pub fn check_spot(manifest: &FileManifest, agent_root: &Path, count: usize) -> F
                 } else {
                     files_failed += 1;
                 }
-            }
+            },
             Err(_) => {
                 files_missing += 1;
-            }
+            },
         }
     }
 
@@ -363,7 +356,7 @@ pub fn generate_manifest(agent_root: &Path, version: &str) -> Result<FileManifes
 
     // Compute manifest hash
     let mut hasher = Sha256::new();
-    for (_path, hash) in &files {
+    for hash in files.values() {
         hasher.update(hash.as_bytes());
     }
     let manifest_hash = hex::encode(hasher.finalize());
@@ -402,8 +395,7 @@ fn collect_files(
         if path.is_dir() {
             collect_files(root, &path, files)?;
         } else if path.is_file() {
-            let hash =
-                hash_file(&path).map_err(|e| format!("Cannot hash {:?}: {}", path, e))?;
+            let hash = hash_file(&path).map_err(|e| format!("Cannot hash {:?}: {}", path, e))?;
             files.insert(relative, hash);
         }
     }
@@ -526,11 +518,7 @@ mod tests {
 
         // Modify exempt files — should NOT affect integrity
         fs::write(dir.path().join(".env"), b"NEW_SECRET=456").unwrap();
-        fs::write(
-            dir.path().join("logs/agent.log"),
-            b"new log data here",
-        )
-        .unwrap();
+        fs::write(dir.path().join("logs/agent.log"), b"new log data here").unwrap();
 
         let result = check_full(&manifest, dir.path());
         assert!(result.integrity_valid);
@@ -555,7 +543,8 @@ mod tests {
         let mut manifest = generate_manifest(dir.path(), "2.0.0").unwrap();
 
         // Tamper with the manifest hash
-        manifest.manifest_hash = "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        manifest.manifest_hash =
+            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
 
         let result = check_full(&manifest, dir.path());
         assert!(!result.integrity_valid);

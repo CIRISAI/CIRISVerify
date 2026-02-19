@@ -171,19 +171,13 @@ impl TransparencyLog {
     /// Get the current Merkle root.
     #[must_use]
     pub fn merkle_root(&self) -> [u8; 32] {
-        self.current_root
-            .read()
-            .map(|r| *r)
-            .unwrap_or([0u8; 32])
+        self.current_root.read().map(|r| *r).unwrap_or([0u8; 32])
     }
 
     /// Get the number of entries in the log.
     #[must_use]
     pub fn entry_count(&self) -> u64 {
-        self.next_index
-            .read()
-            .map(|i| *i)
-            .unwrap_or(0)
+        self.next_index.read().map(|i| *i).unwrap_or(0)
     }
 
     /// Generate a Merkle inclusion proof for an entry.
@@ -222,10 +216,7 @@ impl TransparencyLog {
 
     /// Export all entries.
     pub fn export(&self) -> Vec<TransparencyEntry> {
-        self.entries
-            .read()
-            .map(|e| e.clone())
-            .unwrap_or_default()
+        self.entries.read().map(|e| e.clone()).unwrap_or_default()
     }
 
     /// Export a proof chain for a range of entries.
@@ -238,8 +229,7 @@ impl TransparencyLog {
             return None;
         }
 
-        let chain_entries: Vec<TransparencyEntry> =
-            entries[start_idx..=end_idx].to_vec();
+        let chain_entries: Vec<TransparencyEntry> = entries[start_idx..=end_idx].to_vec();
 
         Some(ProofChain {
             start_index: start,

@@ -95,15 +95,11 @@ impl ConsensusValidator {
     #[instrument(skip(self))]
     pub async fn validate_steward_key(&self) -> ValidationResult {
         // Query DNS sources
-        let dns_future =
-            query_multiple_sources(&self.dns_us_host, &self.dns_eu_host, self.timeout);
+        let dns_future = query_multiple_sources(&self.dns_us_host, &self.dns_eu_host, self.timeout);
 
         // Query primary HTTPS source
-        let https_future = query_https_source(
-            &self.https_endpoint,
-            self.timeout,
-            self.cert_pin.as_deref(),
-        );
+        let https_future =
+            query_https_source(&self.https_endpoint, self.timeout, self.cert_pin.as_deref());
 
         // Query additional HTTPS endpoints in parallel
         let additional_futures: Vec<_> = self
@@ -149,9 +145,7 @@ impl ConsensusValidator {
                 primary_https,
                 additional_https,
             ),
-            TrustModel::EqualWeight => {
-                Self::compute_consensus(dns_us, dns_eu, primary_https)
-            },
+            TrustModel::EqualWeight => Self::compute_consensus(dns_us, dns_eu, primary_https),
         }
     }
 
@@ -397,11 +391,10 @@ impl ConsensusValidator {
             let authoritative = "HTTPS".to_string();
 
             // Cross-check with DNS (advisory only)
-            let dns_sources: Vec<&SourceData> =
-                [dns_us.as_ref(), dns_eu.as_ref()]
-                    .iter()
-                    .filter_map(|s| *s)
-                    .collect();
+            let dns_sources: Vec<&SourceData> = [dns_us.as_ref(), dns_eu.as_ref()]
+                .iter()
+                .filter_map(|s| *s)
+                .collect();
 
             let dns_agrees = dns_sources
                 .iter()
@@ -416,15 +409,9 @@ impl ConsensusValidator {
                     } else {
                         ValidationStatus::PartialAgreement
                     },
-                    consensus_key_classical: Some(
-                        https_consensus.steward_key_classical.clone(),
-                    ),
-                    consensus_pqc_fingerprint: Some(
-                        https_consensus.pqc_fingerprint.clone(),
-                    ),
-                    consensus_revocation_revision: Some(
-                        https_consensus.revocation_revision,
-                    ),
+                    consensus_key_classical: Some(https_consensus.steward_key_classical.clone()),
+                    consensus_pqc_fingerprint: Some(https_consensus.pqc_fingerprint.clone()),
+                    consensus_revocation_revision: Some(https_consensus.revocation_revision),
                     authoritative_source: Some(authoritative),
                     source_details,
                 }
@@ -442,15 +429,9 @@ impl ConsensusValidator {
                     } else {
                         ValidationStatus::PartialAgreement
                     },
-                    consensus_key_classical: Some(
-                        https_consensus.steward_key_classical.clone(),
-                    ),
-                    consensus_pqc_fingerprint: Some(
-                        https_consensus.pqc_fingerprint.clone(),
-                    ),
-                    consensus_revocation_revision: Some(
-                        https_consensus.revocation_revision,
-                    ),
+                    consensus_key_classical: Some(https_consensus.steward_key_classical.clone()),
+                    consensus_pqc_fingerprint: Some(https_consensus.pqc_fingerprint.clone()),
+                    consensus_revocation_revision: Some(https_consensus.revocation_revision),
                     authoritative_source: Some(authoritative),
                     source_details,
                 }
@@ -462,15 +443,9 @@ impl ConsensusValidator {
                 );
                 ValidationResult {
                     status: ValidationStatus::PartialAgreement,
-                    consensus_key_classical: Some(
-                        https_consensus.steward_key_classical.clone(),
-                    ),
-                    consensus_pqc_fingerprint: Some(
-                        https_consensus.pqc_fingerprint.clone(),
-                    ),
-                    consensus_revocation_revision: Some(
-                        https_consensus.revocation_revision,
-                    ),
+                    consensus_key_classical: Some(https_consensus.steward_key_classical.clone()),
+                    consensus_pqc_fingerprint: Some(https_consensus.pqc_fingerprint.clone()),
+                    consensus_revocation_revision: Some(https_consensus.revocation_revision),
                     authoritative_source: Some(authoritative),
                     source_details,
                 }
@@ -480,8 +455,7 @@ impl ConsensusValidator {
             warn!("HTTPS unreachable — falling back to DNS-only consensus (degraded)");
 
             let dns_list: Vec<Option<SourceData>> = vec![dns_us.clone(), dns_eu.clone()];
-            let available: Vec<&SourceData> =
-                dns_list.iter().filter_map(|s| s.as_ref()).collect();
+            let available: Vec<&SourceData> = dns_list.iter().filter_map(|s| s.as_ref()).collect();
 
             if available.is_empty() {
                 // Nothing reachable at all
@@ -499,15 +473,9 @@ impl ConsensusValidator {
                 // Only one DNS source
                 return ValidationResult {
                     status: ValidationStatus::ValidationError,
-                    consensus_key_classical: Some(
-                        available[0].steward_key_classical.clone(),
-                    ),
-                    consensus_pqc_fingerprint: Some(
-                        available[0].pqc_fingerprint.clone(),
-                    ),
-                    consensus_revocation_revision: Some(
-                        available[0].revocation_revision,
-                    ),
+                    consensus_key_classical: Some(available[0].steward_key_classical.clone()),
+                    consensus_pqc_fingerprint: Some(available[0].pqc_fingerprint.clone()),
+                    consensus_revocation_revision: Some(available[0].revocation_revision),
                     authoritative_source: Some("DNS-fallback".to_string()),
                     source_details,
                 };
@@ -517,15 +485,9 @@ impl ConsensusValidator {
             if Self::sources_agree(available[0], available[1]) {
                 ValidationResult {
                     status: ValidationStatus::PartialAgreement,
-                    consensus_key_classical: Some(
-                        available[0].steward_key_classical.clone(),
-                    ),
-                    consensus_pqc_fingerprint: Some(
-                        available[0].pqc_fingerprint.clone(),
-                    ),
-                    consensus_revocation_revision: Some(
-                        available[0].revocation_revision,
-                    ),
+                    consensus_key_classical: Some(available[0].steward_key_classical.clone()),
+                    consensus_pqc_fingerprint: Some(available[0].pqc_fingerprint.clone()),
+                    consensus_revocation_revision: Some(available[0].revocation_revision),
                     authoritative_source: Some("DNS-fallback".to_string()),
                     source_details,
                 }
@@ -855,10 +817,7 @@ mod tests {
         // Falls back to DNS consensus
         assert_eq!(result.status, ValidationStatus::PartialAgreement);
         assert!(result.allows_licensed());
-        assert_eq!(
-            result.authoritative_source.as_deref(),
-            Some("DNS-fallback")
-        );
+        assert_eq!(result.authoritative_source.as_deref(), Some("DNS-fallback"));
     }
 
     #[test]
@@ -895,11 +854,7 @@ mod tests {
         let dns_eu = Some(make_source_data(&key, &fp, 100));
         let https = Some(make_source_data(&key, &fp, 100));
 
-        let result = ConsensusValidator::compute_consensus(
-            dns_us,
-            dns_eu,
-            https,
-        );
+        let result = ConsensusValidator::compute_consensus(dns_us, dns_eu, https);
 
         assert_eq!(result.status, ValidationStatus::AllSourcesAgree);
         assert!(result.allows_licensed());

@@ -4,7 +4,6 @@
 //! and creates an appropriate signer. Falls back gracefully to software
 //! signing when hardware is unavailable.
 
-
 use crate::error::KeyringError;
 use crate::signer::HardwareSigner;
 use crate::software::SoftwareSigner;
@@ -223,14 +222,14 @@ pub fn create_hardware_signer(
                 Ok(signer) => {
                     tracing::info!("Using TPM signer for hardware security");
                     return Ok(Box::new(signer));
-                }
+                },
                 Err(e) => {
                     tracing::warn!(
                         "TPM initialization failed ({}), falling back to software signer",
                         e
                     );
                     // Fall through to software signer below
-                }
+                },
             }
         }
     }

@@ -4,6 +4,9 @@
 //! Falls back to memory cache if filesystem is unavailable.
 //! Uses XChaCha20-Poly1305 AEAD for authenticated encryption.
 
+// Allow deprecated from_slice until chacha20poly1305 upgrades to generic-array 1.x
+#![allow(deprecated)]
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
@@ -245,12 +248,12 @@ impl LicenseCache {
     ///
     /// Returns `VerifyError::RollbackDetected` if `new_revision < last_seen`.
     pub fn check_and_update_revision(&self, new_revision: u64) -> Result<(), VerifyError> {
-        let mut last_seen = self
-            .last_seen_revision
-            .write()
-            .map_err(|_| VerifyError::CacheError {
-                message: "Failed to acquire revision lock".into(),
-            })?;
+        let mut last_seen =
+            self.last_seen_revision
+                .write()
+                .map_err(|_| VerifyError::CacheError {
+                    message: "Failed to acquire revision lock".into(),
+                })?;
 
         if new_revision < *last_seen {
             return Err(VerifyError::RollbackDetected {
@@ -285,10 +288,7 @@ impl LicenseCache {
     /// Get the highest-seen revocation revision.
     #[must_use]
     pub fn last_seen_revision(&self) -> u64 {
-        self.last_seen_revision
-            .read()
-            .map(|r| *r)
-            .unwrap_or(0)
+        self.last_seen_revision.read().map(|r| *r).unwrap_or(0)
     }
 
     /// Get the revision history for audit purposes.
@@ -316,7 +316,7 @@ impl LicenseCache {
             Err(e) => {
                 debug!("Cache: no revision state file ({})", e);
                 return (0, Vec::new());
-            }
+            },
         };
 
         // Decrypt using XChaCha20-Poly1305
@@ -333,15 +333,18 @@ impl LicenseCache {
             Err(e) => {
                 warn!("Cache: failed to create cipher for revision state: {}", e);
                 return (0, Vec::new());
-            }
+            },
         };
 
         let decrypted = match cipher.decrypt(nonce, ciphertext) {
             Ok(d) => d,
             Err(e) => {
-                warn!("Cache: failed to decrypt revision state (possibly tampered): {}", e);
+                warn!(
+                    "Cache: failed to decrypt revision state (possibly tampered): {}",
+                    e
+                );
                 return (0, Vec::new());
-            }
+            },
         };
 
         match serde_json::from_slice::<PersistedRevisionState>(&decrypted) {
@@ -352,11 +355,11 @@ impl LicenseCache {
                     "Cache: loaded revision state"
                 );
                 (state.last_seen_revision, state.revision_history)
-            }
+            },
             Err(e) => {
                 warn!("Cache: failed to parse revision state: {}", e);
                 (0, Vec::new())
-            }
+            },
         }
     }
 
@@ -390,7 +393,7 @@ impl LicenseCache {
             Err(e) => {
                 warn!("Cache: failed to serialize revision state: {}", e);
                 return;
-            }
+            },
         };
 
         // Encrypt using XChaCha20-Poly1305
@@ -399,7 +402,7 @@ impl LicenseCache {
             None => {
                 warn!("Cache: failed to encrypt revision state");
                 return;
-            }
+            },
         };
 
         let path = storage.cache_dir.join("revision_state.enc");
@@ -539,10 +542,13 @@ impl LicenseCache {
         let cipher = XChaCha20Poly1305::new_from_slice(&self.encryption_key).ok()?;
 
         // Decrypt
-        let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|e| {
-            warn!("Cache: decryption failed (possible tampering): {}", e);
-            e
-        }).ok()?;
+        let plaintext = cipher
+            .decrypt(nonce, ciphertext)
+            .map_err(|e| {
+                warn!("Cache: decryption failed (possible tampering): {}", e);
+                e
+            })
+            .ok()?;
 
         trace!(
             ciphertext_len = data.len(),

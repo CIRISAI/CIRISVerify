@@ -227,10 +227,10 @@ mod tests {
         let public_key = signer.public_key().unwrap();
         // Corrupted signature should fail to parse or verify
         let result = verifier.verify(&public_key, data, &signature);
-        match result {
-            Ok(valid) => assert!(!valid, "Corrupted signature should not verify"),
-            Err(_) => {}, // Parsing error is also acceptable
+        if let Ok(valid) = result {
+            assert!(!valid, "Corrupted signature should not verify");
         }
+        // Err(_) is also acceptable — parsing error on corrupted signature
     }
 
     #[test]

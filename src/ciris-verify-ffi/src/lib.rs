@@ -129,7 +129,7 @@ fn try_auto_import_key(signer: &MutableEd25519Signer, path: &PathBuf) -> bool {
         Err(e) => {
             tracing::warn!("Failed to read key file {}: {}", path.display(), e);
             return false;
-        }
+        },
     };
 
     // Try to parse as raw 32-byte key first
@@ -138,10 +138,10 @@ fn try_auto_import_key(signer: &MutableEd25519Signer, path: &PathBuf) -> bool {
             Ok(()) => {
                 tracing::info!("Auto-imported 32-byte raw Ed25519 key");
                 return true;
-            }
+            },
             Err(e) => {
                 tracing::warn!("Failed to import raw key: {}", e);
-            }
+            },
         }
     }
 
@@ -164,10 +164,10 @@ fn try_auto_import_key(signer: &MutableEd25519Signer, path: &PathBuf) -> bool {
                 Ok(()) => {
                     tracing::info!("Auto-imported base64-encoded Ed25519 key");
                     return true;
-                }
+                },
                 Err(e) => {
                     tracing::warn!("Failed to import base64 key: {}", e);
-                }
+                },
             }
         } else {
             tracing::warn!(
@@ -196,10 +196,10 @@ fn try_auto_import_key(signer: &MutableEd25519Signer, path: &PathBuf) -> bool {
                 Ok(()) => {
                     tracing::info!("Auto-imported hex-encoded Ed25519 key");
                     return true;
-                }
+                },
                 Err(e) => {
                     tracing::warn!("Failed to import hex key: {}", e);
-                }
+                },
             }
         }
     }
@@ -323,7 +323,10 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
         });
     }
 
-    tracing::info!("CIRISVerify FFI init starting (v{})", env!("CARGO_PKG_VERSION"));
+    tracing::info!(
+        "CIRISVerify FFI init starting (v{})",
+        env!("CARGO_PKG_VERSION")
+    );
 
     // Create tokio runtime
     tracing::info!("Creating async runtime");
@@ -352,10 +355,7 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
     // Auto-migration: try to import agent_signing.key if found
     if let Some(key_path) = find_agent_signing_key() {
         if try_auto_import_key(&ed25519_signer, &key_path) {
-            tracing::info!(
-                "Auto-migrated agent key from {}",
-                key_path.display()
-            );
+            tracing::info!("Auto-migrated agent key from {}", key_path.display());
         } else {
             tracing::warn!(
                 "Found agent_signing.key at {} but failed to import",
@@ -594,7 +594,7 @@ pub unsafe extern "C" fn ciris_verify_check_agent_integrity(
         Err(e) => {
             tracing::error!("Failed to parse manifest: {}", e);
             return CirisVerifyError::SerializationError as i32;
-        }
+        },
     };
 
     // Parse agent root path
@@ -608,7 +608,11 @@ pub unsafe extern "C" fn ciris_verify_check_agent_integrity(
     let result = if spot_check_count == 0 {
         ciris_verify_core::check_agent_integrity(&manifest, root_path)
     } else {
-        ciris_verify_core::spot_check_agent_integrity(&manifest, root_path, spot_check_count as usize)
+        ciris_verify_core::spot_check_agent_integrity(
+            &manifest,
+            root_path,
+            spot_check_count as usize,
+        )
     };
 
     // Serialize response
@@ -617,7 +621,7 @@ pub unsafe extern "C" fn ciris_verify_check_agent_integrity(
         Err(e) => {
             tracing::error!("Failed to serialize integrity result: {}", e);
             return CirisVerifyError::SerializationError as i32;
-        }
+        },
     };
 
     // Allocate and copy response
@@ -666,11 +670,7 @@ pub unsafe extern "C" fn ciris_verify_sign(
     signature_data: *mut *mut u8,
     signature_len: *mut usize,
 ) -> i32 {
-    if handle.is_null()
-        || data.is_null()
-        || signature_data.is_null()
-        || signature_len.is_null()
-    {
+    if handle.is_null() || data.is_null() || signature_data.is_null() || signature_len.is_null() {
         return CirisVerifyError::InvalidArgument as i32;
     }
 
@@ -678,10 +678,7 @@ pub unsafe extern "C" fn ciris_verify_sign(
     let data_bytes = std::slice::from_raw_parts(data, data_len);
 
     // Sign using the hardware signer
-    let sig = match handle
-        .runtime
-        .block_on(handle.engine.sign(data_bytes))
-    {
+    let sig = match handle.runtime.block_on(handle.engine.sign(data_bytes)) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("Signing failed: {}", e);
@@ -745,10 +742,7 @@ pub unsafe extern "C" fn ciris_verify_get_public_key(
     let handle = &*handle;
 
     // Get public key
-    let pubkey = match handle
-        .runtime
-        .block_on(handle.engine.public_key())
-    {
+    let pubkey = match handle.runtime.block_on(handle.engine.public_key()) {
         Ok(k) => k,
         Err(e) => {
             tracing::error!("Failed to get public key: {}", e);
@@ -815,11 +809,7 @@ pub unsafe extern "C" fn ciris_verify_export_attestation(
     proof_data: *mut *mut u8,
     proof_len: *mut usize,
 ) -> i32 {
-    if handle.is_null()
-        || challenge.is_null()
-        || proof_data.is_null()
-        || proof_len.is_null()
-    {
+    if handle.is_null() || challenge.is_null() || proof_data.is_null() || proof_len.is_null() {
         return CirisVerifyError::InvalidArgument as i32;
     }
 
@@ -906,11 +896,11 @@ pub unsafe extern "C" fn ciris_verify_import_key(
         Ok(()) => {
             tracing::info!("Ed25519 key imported successfully");
             CirisVerifyError::Success as i32
-        }
+        },
         Err(e) => {
             tracing::error!("Failed to import Ed25519 key: {}", e);
             CirisVerifyError::InvalidArgument as i32
-        }
+        },
     }
 }
 
@@ -974,11 +964,11 @@ pub unsafe extern "C" fn ciris_verify_delete_key(handle: *mut CirisVerifyHandle)
         Ok(()) => {
             tracing::info!("Ed25519 key deleted successfully");
             CirisVerifyError::Success as i32
-        }
+        },
         Err(e) => {
             tracing::error!("Failed to delete Ed25519 key: {}", e);
             CirisVerifyError::InternalError as i32
-        }
+        },
     }
 }
 
@@ -1012,11 +1002,7 @@ pub unsafe extern "C" fn ciris_verify_sign_ed25519(
     signature_data: *mut *mut u8,
     signature_len: *mut usize,
 ) -> i32 {
-    if handle.is_null()
-        || data.is_null()
-        || signature_data.is_null()
-        || signature_len.is_null()
-    {
+    if handle.is_null() || data.is_null() || signature_data.is_null() || signature_len.is_null() {
         tracing::error!("sign_ed25519: null arguments");
         return CirisVerifyError::InvalidArgument as i32;
     }
@@ -1031,7 +1017,7 @@ pub unsafe extern "C" fn ciris_verify_sign_ed25519(
         Err(e) => {
             tracing::error!("Ed25519 signing failed: {}", e);
             return CirisVerifyError::RequestFailed as i32;
-        }
+        },
     };
 
     // Allocate and copy signature
@@ -1085,7 +1071,7 @@ pub unsafe extern "C" fn ciris_verify_get_ed25519_public_key(
         None => {
             tracing::error!("get_ed25519_public_key: no key loaded");
             return CirisVerifyError::RequestFailed as i32;
-        }
+        },
     };
 
     // Allocate and copy public key

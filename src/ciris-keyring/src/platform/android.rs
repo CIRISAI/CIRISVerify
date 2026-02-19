@@ -59,7 +59,7 @@ pub unsafe extern "system" fn JNI_OnLoad(
         Err(e) => {
             error!("JNI_OnLoad: failed to create JavaVM wrapper: {}", e);
             return jni::sys::JNI_ERR;
-        }
+        },
     };
 
     if let Err(e) = init_jni(vm) {
@@ -211,11 +211,11 @@ impl AndroidKeystoreSigner {
 
             let keystore = Self::get_keystore(&mut env)?;
 
-            let alias_str = env.new_string(&self.alias).map_err(|e| {
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("JNI string creation failed: {}", e),
-                }
-            })?;
+            let alias_str =
+                env.new_string(&self.alias)
+                    .map_err(|e| KeyringError::HardwareNotAvailable {
+                        reason: format!("JNI string creation failed: {}", e),
+                    })?;
 
             let chain = env
                 .call_method(
@@ -231,10 +231,8 @@ impl AndroidKeystoreSigner {
                     }
                 })?;
 
-            let chain_obj = chain.l().map_err(|e| {
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("Certificate chain conversion failed: {}", e),
-                }
+            let chain_obj = chain.l().map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("Certificate chain conversion failed: {}", e),
             })?;
 
             if chain_obj.is_null() {
@@ -252,25 +250,23 @@ impl AndroidKeystoreSigner {
 
             let mut result = Vec::with_capacity(length);
             for i in 0..length {
-                let cert = env.get_object_array_element(&chain_array, i as i32).map_err(|e| {
-                    KeyringError::HardwareNotAvailable {
+                let cert = env
+                    .get_object_array_element(&chain_array, i as i32)
+                    .map_err(|e| KeyringError::HardwareNotAvailable {
                         reason: format!("Failed to get certificate at index {}: {}", i, e),
-                    }
-                })?;
+                    })?;
 
                 let encoded = env
                     .call_method(&cert, "getEncoded", "()[B", &[])
-                    .map_err(|e| {
-                        KeyringError::HardwareNotAvailable {
-                            reason: format!("getEncoded failed: {}", e),
-                        }
+                    .map_err(|e| KeyringError::HardwareNotAvailable {
+                        reason: format!("getEncoded failed: {}", e),
                     })?;
 
-                let encoded_obj = encoded.l().map_err(|e| {
-                    KeyringError::HardwareNotAvailable {
+                let encoded_obj = encoded
+                    .l()
+                    .map_err(|e| KeyringError::HardwareNotAvailable {
                         reason: format!("Encoded conversion failed: {}", e),
-                    }
-                })?;
+                    })?;
 
                 let encoded_array: JByteArray = encoded_obj.into();
                 let bytes = env.convert_byte_array(encoded_array).map_err(|e| {
@@ -338,11 +334,11 @@ impl AndroidKeystoreSigner {
 
         let keystore = Self::get_keystore(&mut env)?;
 
-        let alias_str = env.new_string(&self.alias).map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI string creation failed: {}", e),
-            }
-        })?;
+        let alias_str =
+            env.new_string(&self.alias)
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI string creation failed: {}", e),
+                })?;
 
         let entry = env
             .call_method(
@@ -358,10 +354,8 @@ impl AndroidKeystoreSigner {
                 }
             })?;
 
-        let entry = entry.l().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("Entry conversion failed: {}", e),
-            }
+        let entry = entry.l().map_err(|e| KeyringError::HardwareNotAvailable {
+            reason: format!("Entry conversion failed: {}", e),
         })?;
 
         if entry.is_null() {
@@ -380,17 +374,17 @@ impl AndroidKeystoreSigner {
                 }
             })?;
 
-        let private_key = private_key.l().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
+        let private_key = private_key
+            .l()
+            .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("PrivateKey conversion failed: {}", e),
-            }
-        })?;
+            })?;
 
-        let algo_str = env.new_string("SHA256withECDSA").map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI string creation failed: {}", e),
-            }
-        })?;
+        let algo_str =
+            env.new_string("SHA256withECDSA")
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI string creation failed: {}", e),
+                })?;
 
         let sig_class = env.find_class("java/security/Signature").map_err(|e| {
             KeyringError::HardwareNotAvailable {
@@ -405,17 +399,15 @@ impl AndroidKeystoreSigner {
                 "(Ljava/lang/String;)Ljava/security/Signature;",
                 &[JValue::Object(&algo_str.into())],
             )
-            .map_err(|e| {
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("Signature.getInstance failed: {}", e),
-                }
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("Signature.getInstance failed: {}", e),
             })?;
 
-        let signature = signature.l().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
+        let signature = signature
+            .l()
+            .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("Signature conversion failed: {}", e),
-            }
-        })?;
+            })?;
 
         env.call_method(
             &signature,
@@ -430,18 +422,21 @@ impl AndroidKeystoreSigner {
             }
         })?;
 
-        let data_array = env.byte_array_from_slice(data).map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("Failed to create byte array: {}", e),
-            }
-        })?;
+        let data_array =
+            env.byte_array_from_slice(data)
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("Failed to create byte array: {}", e),
+                })?;
 
-        env.call_method(&signature, "update", "([B)V", &[JValue::Object(&data_array)])
-            .map_err(|e| {
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("update failed: {}", e),
-                }
-            })?;
+        env.call_method(
+            &signature,
+            "update",
+            "([B)V",
+            &[JValue::Object(&data_array)],
+        )
+        .map_err(|e| KeyringError::HardwareNotAvailable {
+            reason: format!("update failed: {}", e),
+        })?;
 
         let sig_bytes = env
             .call_method(&signature, "sign", "()[B", &[])
@@ -452,18 +447,18 @@ impl AndroidKeystoreSigner {
                 }
             })?;
 
-        let sig_obj = sig_bytes.l().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
+        let sig_obj = sig_bytes
+            .l()
+            .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("Signature bytes conversion failed: {}", e),
-            }
-        })?;
+            })?;
 
         let sig_array: JByteArray = sig_obj.into();
-        let result = env.convert_byte_array(sig_array).map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("Byte array conversion failed: {}", e),
-            }
-        })?;
+        let result =
+            env.convert_byte_array(sig_array)
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("Byte array conversion failed: {}", e),
+                })?;
 
         info!(alias = %self.alias, sig_len = result.len(), "Signature created successfully");
         Ok(result)
@@ -489,11 +484,11 @@ impl AndroidKeystoreSigner {
 
         let keystore = Self::get_keystore(&mut env)?;
 
-        let alias_str = env.new_string(&self.alias).map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI string creation failed: {}", e),
-            }
-        })?;
+        let alias_str =
+            env.new_string(&self.alias)
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI string creation failed: {}", e),
+                })?;
 
         let cert = env
             .call_method(
@@ -509,10 +504,8 @@ impl AndroidKeystoreSigner {
                 }
             })?;
 
-        let cert = cert.l().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("Certificate conversion failed: {}", e),
-            }
+        let cert = cert.l().map_err(|e| KeyringError::HardwareNotAvailable {
+            reason: format!("Certificate conversion failed: {}", e),
         })?;
 
         if cert.is_null() {
@@ -524,31 +517,27 @@ impl AndroidKeystoreSigner {
 
         let public_key = env
             .call_method(&cert, "getPublicKey", "()Ljava/security/PublicKey;", &[])
-            .map_err(|e| {
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("getPublicKey failed: {}", e),
-                }
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("getPublicKey failed: {}", e),
             })?;
 
-        let public_key = public_key.l().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
+        let public_key = public_key
+            .l()
+            .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("PublicKey conversion failed: {}", e),
-            }
-        })?;
+            })?;
 
         let encoded = env
             .call_method(&public_key, "getEncoded", "()[B", &[])
-            .map_err(|e| {
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("getEncoded failed: {}", e),
-                }
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("getEncoded failed: {}", e),
             })?;
 
-        let encoded_obj = encoded.l().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
+        let encoded_obj = encoded
+            .l()
+            .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("Encoded conversion failed: {}", e),
-            }
-        })?;
+            })?;
 
         let encoded_array: JByteArray = encoded_obj.into();
         let result = env.convert_byte_array(encoded_array).map_err(|e| {
@@ -584,59 +573,58 @@ impl AndroidKeystoreSigner {
         })?;
 
         // Create KeyPairGenerator for EC
-        let algo_str = env.new_string("EC").map_err(|e| {
-            KeyringError::HardwareNotAvailable {
+        let algo_str = env
+            .new_string("EC")
+            .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("JNI string creation failed: {}", e),
-            }
-        })?;
+            })?;
 
-        let provider_str = env.new_string("AndroidKeyStore").map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI string creation failed: {}", e),
-            }
-        })?;
+        let provider_str =
+            env.new_string("AndroidKeyStore")
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI string creation failed: {}", e),
+                })?;
 
-        let kpg_class = env.find_class("java/security/KeyPairGenerator").map_err(|e| {
-            KeyringError::HardwareNotAvailable {
+        let kpg_class = env
+            .find_class("java/security/KeyPairGenerator")
+            .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("KeyPairGenerator class not found: {}", e),
-            }
-        })?;
+            })?;
 
         let key_pair_gen = env
             .call_static_method(
                 kpg_class,
                 "getInstance",
                 "(Ljava/lang/String;Ljava/lang/String;)Ljava/security/KeyPairGenerator;",
-                &[JValue::Object(&algo_str.into()), JValue::Object(&provider_str.into())],
+                &[
+                    JValue::Object(&algo_str.into()),
+                    JValue::Object(&provider_str.into()),
+                ],
             )
-            .map_err(|e| {
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("KeyPairGenerator.getInstance failed: {}", e),
-                }
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("KeyPairGenerator.getInstance failed: {}", e),
             })?;
 
-        let key_pair_gen = key_pair_gen.l().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
+        let key_pair_gen = key_pair_gen
+            .l()
+            .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("KeyPairGenerator conversion failed: {}", e),
-            }
-        })?;
+            })?;
 
         // Build KeyGenParameterSpec
-        let alias_str = env.new_string(&self.alias).map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI string creation failed: {}", e),
-            }
-        })?;
+        let alias_str =
+            env.new_string(&self.alias)
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI string creation failed: {}", e),
+                })?;
 
         // PURPOSE_SIGN = 4
         let purposes = 4i32;
 
         let builder_class = env
             .find_class("android/security/keystore/KeyGenParameterSpec$Builder")
-            .map_err(|e| {
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("KeyGenParameterSpec.Builder class not found: {}", e),
-                }
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("KeyGenParameterSpec.Builder class not found: {}", e),
             })?;
 
         let builder = env
@@ -645,10 +633,8 @@ impl AndroidKeystoreSigner {
                 "(Ljava/lang/String;I)V",
                 &[JValue::Object(&alias_str.into()), JValue::Int(purposes)],
             )
-            .map_err(|e| {
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("Builder construction failed: {}", e),
-                }
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("Builder construction failed: {}", e),
             })?;
 
         // Set key size to 256 (P-256)
@@ -658,31 +644,27 @@ impl AndroidKeystoreSigner {
             "(I)Landroid/security/keystore/KeyGenParameterSpec$Builder;",
             &[JValue::Int(256)],
         )
-        .map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("setKeySize failed: {}", e),
-            }
+        .map_err(|e| KeyringError::HardwareNotAvailable {
+            reason: format!("setKeySize failed: {}", e),
         })?;
 
         // Set digests - need to create array separately to avoid borrow issues
-        let sha256_str = env.new_string("SHA-256").map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("String creation failed: {}", e),
-            }
-        })?;
+        let sha256_str =
+            env.new_string("SHA-256")
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("String creation failed: {}", e),
+                })?;
 
-        let string_class = env.find_class("java/lang/String").map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("String class not found: {}", e),
-            }
-        })?;
+        let string_class =
+            env.find_class("java/lang/String")
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("String class not found: {}", e),
+                })?;
 
         let digests_array = env
             .new_object_array(1, string_class, &sha256_str)
-            .map_err(|e| {
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("Digests array creation failed: {}", e),
-                }
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("Digests array creation failed: {}", e),
             })?;
 
         env.call_method(
@@ -691,10 +673,8 @@ impl AndroidKeystoreSigner {
             "([Ljava/lang/String;)Landroid/security/keystore/KeyGenParameterSpec$Builder;",
             &[JValue::Object(&digests_array)],
         )
-        .map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("setDigests failed: {}", e),
-            }
+        .map_err(|e| KeyringError::HardwareNotAvailable {
+            reason: format!("setDigests failed: {}", e),
         })?;
 
         // Set StrongBox if requested
@@ -715,16 +695,12 @@ impl AndroidKeystoreSigner {
                 "()Landroid/security/keystore/KeyGenParameterSpec;",
                 &[],
             )
-            .map_err(|e| {
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("build failed: {}", e),
-                }
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("build failed: {}", e),
             })?;
 
-        let spec = spec.l().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("Spec conversion failed: {}", e),
-            }
+        let spec = spec.l().map_err(|e| KeyringError::HardwareNotAvailable {
+            reason: format!("Spec conversion failed: {}", e),
         })?;
 
         // Initialize generator
@@ -734,20 +710,23 @@ impl AndroidKeystoreSigner {
             "(Ljava/security/spec/AlgorithmParameterSpec;)V",
             &[JValue::Object(&spec)],
         )
-        .map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("initialize failed: {}", e),
-            }
+        .map_err(|e| KeyringError::HardwareNotAvailable {
+            reason: format!("initialize failed: {}", e),
         })?;
 
         // Generate key pair
-        env.call_method(&key_pair_gen, "generateKeyPair", "()Ljava/security/KeyPair;", &[])
-            .map_err(|e| {
-                error!(alias = %self.alias, "generateKeyPair failed: {}", e);
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("generateKeyPair failed: {}", e),
-                }
-            })?;
+        env.call_method(
+            &key_pair_gen,
+            "generateKeyPair",
+            "()Ljava/security/KeyPair;",
+            &[],
+        )
+        .map_err(|e| {
+            error!(alias = %self.alias, "generateKeyPair failed: {}", e);
+            KeyringError::HardwareNotAvailable {
+                reason: format!("generateKeyPair failed: {}", e),
+            }
+        })?;
 
         info!(alias = %self.alias, "Key generated successfully in Android Keystore");
         Ok(())
@@ -757,25 +736,23 @@ impl AndroidKeystoreSigner {
     async fn jni_key_exists(&self, alias: &str) -> Result<bool, KeyringError> {
         debug!(alias = %alias, "jni_key_exists called");
 
-        let vm = get_java_vm().ok_or_else(|| {
-            KeyringError::HardwareNotAvailable {
-                reason: "JNI not initialized".into(),
-            }
+        let vm = get_java_vm().ok_or_else(|| KeyringError::HardwareNotAvailable {
+            reason: "JNI not initialized".into(),
         })?;
 
-        let mut env = vm.attach_current_thread().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI attach failed: {}", e),
-            }
-        })?;
+        let mut env =
+            vm.attach_current_thread()
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI attach failed: {}", e),
+                })?;
 
         let keystore = Self::get_keystore(&mut env)?;
 
-        let alias_str = env.new_string(alias).map_err(|e| {
-            KeyringError::HardwareNotAvailable {
+        let alias_str = env
+            .new_string(alias)
+            .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("JNI string creation failed: {}", e),
-            }
-        })?;
+            })?;
 
         let exists = env
             .call_method(
@@ -784,16 +761,12 @@ impl AndroidKeystoreSigner {
                 "(Ljava/lang/String;)Z",
                 &[JValue::Object(&alias_str.into())],
             )
-            .map_err(|e| {
-                KeyringError::HardwareNotAvailable {
-                    reason: format!("containsAlias failed: {}", e),
-                }
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("containsAlias failed: {}", e),
             })?;
 
-        let result = exists.z().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("Boolean conversion failed: {}", e),
-            }
+        let result = exists.z().map_err(|e| KeyringError::HardwareNotAvailable {
+            reason: format!("Boolean conversion failed: {}", e),
         })?;
 
         debug!(alias = %alias, exists = result, "Key existence check complete");
@@ -804,25 +777,23 @@ impl AndroidKeystoreSigner {
     async fn jni_delete_key(&self, alias: &str) -> Result<(), KeyringError> {
         info!(alias = %alias, "jni_delete_key called");
 
-        let vm = get_java_vm().ok_or_else(|| {
-            KeyringError::HardwareNotAvailable {
-                reason: "JNI not initialized".into(),
-            }
+        let vm = get_java_vm().ok_or_else(|| KeyringError::HardwareNotAvailable {
+            reason: "JNI not initialized".into(),
         })?;
 
-        let mut env = vm.attach_current_thread().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI attach failed: {}", e),
-            }
-        })?;
+        let mut env =
+            vm.attach_current_thread()
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI attach failed: {}", e),
+                })?;
 
         let keystore = Self::get_keystore(&mut env)?;
 
-        let alias_str = env.new_string(alias).map_err(|e| {
-            KeyringError::HardwareNotAvailable {
+        let alias_str = env
+            .new_string(alias)
+            .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("JNI string creation failed: {}", e),
-            }
-        })?;
+            })?;
 
         env.call_method(
             &keystore,
@@ -901,7 +872,7 @@ impl HardwareSigner for AndroidKeystoreSigner {
                 Err(e) => {
                     warn!(alias = %self.alias, error = %e, "Could not get attestation chain");
                     vec![]
-                }
+                },
             };
 
             let play_integrity_token = match self.get_play_integrity_token().await {
@@ -909,7 +880,7 @@ impl HardwareSigner for AndroidKeystoreSigner {
                 Err(e) => {
                     debug!(alias = %self.alias, error = %e, "Play Integrity token not available");
                     None
-                }
+                },
             };
 
             info!(

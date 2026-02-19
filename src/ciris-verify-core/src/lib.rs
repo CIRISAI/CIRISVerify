@@ -77,10 +77,10 @@ pub use security::file_integrity::{
     generate_manifest, load_manifest, FileIntegrityResult, FileManifest,
 };
 pub use security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
+pub use transparency::{MerkleProof, ProofChain, TransparencyEntry, TransparencyLog};
 pub use types::{
     AttestationProof, CapabilityCheckRequest, CapabilityCheckResponse, EnforcementAction,
     LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure, RuntimeValidation,
     RuntimeViolation, ShutdownDirective, ShutdownType, ViolationSeverity,
 };
-pub use transparency::{TransparencyLog, TransparencyEntry, MerkleProof, ProofChain};
 pub use watchdog::ShutdownWatchdog;

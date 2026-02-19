@@ -16,15 +16,15 @@ use core_foundation::boolean::CFBoolean;
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 use core_foundation::data::CFData;
 #[cfg(any(target_os = "ios", target_os = "macos"))]
+use core_foundation::dictionary::CFMutableDictionary;
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 use core_foundation::number::CFNumber;
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 use core_foundation::string::CFString;
 #[cfg(any(target_os = "ios", target_os = "macos"))]
-use core_foundation::dictionary::CFMutableDictionary;
+use security_framework::access_control::{ProtectionMode, SecAccessControl};
 #[cfg(any(target_os = "ios", target_os = "macos"))]
-use security_framework::access_control::{SecAccessControl, ProtectionMode};
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-use security_framework::key::{SecKey, Algorithm};
+use security_framework::key::{Algorithm, SecKey};
 
 // Declare Security framework symbols not exported by security-framework-sys
 #[cfg(any(target_os = "ios", target_os = "macos"))]
@@ -98,8 +98,8 @@ impl SecureEnclaveSigner {
         #[cfg(any(target_os = "ios", target_os = "macos"))]
         {
             Err(KeyringError::NotSupported {
-                operation: "App Attest requires ObjC runtime (DCAppAttestService), deferred to v2.1"
-                    .into(),
+                operation:
+                    "App Attest requires ObjC runtime (DCAppAttestService), deferred to v2.1".into(),
             })
         }
 
@@ -160,8 +160,7 @@ impl SecureEnclaveSigner {
             );
 
             let mut result: core_foundation::base::CFTypeRef = std::ptr::null();
-            let status =
-                SecItemCopyMatching(query.as_concrete_TypeRef(), &mut result);
+            let status = SecItemCopyMatching(query.as_concrete_TypeRef(), &mut result);
 
             if status != 0 || result.is_null() {
                 return Err(KeyringError::KeyNotFound {
@@ -191,12 +190,11 @@ impl SecureEnclaveSigner {
     async fn security_framework_get_public_key(&self) -> Result<Vec<u8>, KeyringError> {
         let private_key = self.query_private_key()?;
 
-        let public_key =
-            private_key
-                .public_key()
-                .ok_or_else(|| KeyringError::HardwareError {
-                    reason: "Failed to extract public key from Secure Enclave key".into(),
-                })?;
+        let public_key = private_key
+            .public_key()
+            .ok_or_else(|| KeyringError::HardwareError {
+                reason: "Failed to extract public key from Secure Enclave key".into(),
+            })?;
 
         let repr =
             public_key
@@ -271,8 +269,7 @@ impl SecureEnclaveSigner {
 
             if key.is_null() {
                 let err_msg = if !error.is_null() {
-                    let cf_error =
-                        core_foundation::error::CFError::wrap_under_create_rule(error);
+                    let cf_error = core_foundation::error::CFError::wrap_under_create_rule(error);
                     format!("SecKeyCreateRandomKey failed: {cf_error}")
                 } else {
                     "SecKeyCreateRandomKey failed for Secure Enclave".to_string()

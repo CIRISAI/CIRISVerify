@@ -93,7 +93,11 @@ impl VerifyConfig {
         #[cfg(target_os = "windows")]
         {
             if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
-                return Some(PathBuf::from(local_app_data).join("CIRISVerify").join("cache"));
+                return Some(
+                    PathBuf::from(local_app_data)
+                        .join("CIRISVerify")
+                        .join("cache"),
+                );
             }
         }
 

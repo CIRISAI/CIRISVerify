@@ -17,9 +17,9 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ciris_keyring::{HardwareSigner, HardwareType, PlatformAttestation, SoftwareAttestation};
 #[cfg(feature = "pqc")]
 use ciris_crypto::{MlDsa65Signer, PqcSigner};
+use ciris_keyring::{HardwareSigner, HardwareType, PlatformAttestation, SoftwareAttestation};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::cache::LicenseCache;
@@ -27,8 +27,8 @@ use crate::config::VerifyConfig;
 use crate::error::VerifyError;
 use crate::https::HttpsClient;
 use crate::license::{LicenseDetails, LicenseStatus, LicenseType};
-use crate::transparency::TransparencyLog;
 use crate::revocation::RevocationChecker;
+use crate::transparency::TransparencyLog;
 use crate::types::{
     AttestationProof, CapabilityCheckResponse, DisclosureSeverity, EnforcementAction,
     LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure, ResponseAttestation,
@@ -116,7 +116,10 @@ impl LicenseEngine {
         );
 
         // Initialize HTTPS client for revocation
-        info!("LicenseEngine: creating HTTPS client → {}", config.https_endpoint);
+        info!(
+            "LicenseEngine: creating HTTPS client → {}",
+            config.https_endpoint
+        );
         let https_client = HttpsClient::new(
             &config.https_endpoint,
             config.timeout,
@@ -132,7 +135,10 @@ impl LicenseEngine {
         );
 
         // Initialize hardware signer (synchronous)
-        info!("LicenseEngine: initializing platform signer (key_alias={})", config.key_alias);
+        info!(
+            "LicenseEngine: initializing platform signer (key_alias={})",
+            config.key_alias
+        );
         let hw_signer = ciris_keyring::get_platform_signer(&config.key_alias)?;
         info!(
             hardware_type = ?hw_signer.hardware_type(),
@@ -198,7 +204,11 @@ impl LicenseEngine {
             config.cert_pin.clone(),
         );
 
-        let cache = LicenseCache::new(&config.key_alias, config.cache_dir.clone(), config.cache_ttl);
+        let cache = LicenseCache::new(
+            &config.key_alias,
+            config.cache_dir.clone(),
+            config.cache_ttl,
+        );
 
         let https_client = HttpsClient::new(
             &config.https_endpoint,
@@ -566,15 +576,11 @@ impl LicenseEngine {
         }
 
         // Get platform attestation
-        let platform_attestation = self
-            .hw_signer
-            .attestation()
-            .await
-            .unwrap_or_else(|_| {
-                ciris_keyring::PlatformAttestation::Software(
-                    ciris_keyring::SoftwareAttestation::default(),
-                )
-            });
+        let platform_attestation = self.hw_signer.attestation().await.unwrap_or_else(|_| {
+            ciris_keyring::PlatformAttestation::Software(
+                ciris_keyring::SoftwareAttestation::default(),
+            )
+        });
 
         // Get public keys
         let hardware_public_key = self.hw_signer.public_key().await?;
@@ -585,32 +591,30 @@ impl LicenseEngine {
 
         // Step 2: PQC signature over (challenge || classical_sig) — bound
         #[cfg(feature = "pqc")]
-        let (pqc_signature, pqc_public_key, pqc_algorithm) =
-            if let Some(ref pqc) = self.pqc_signer {
-                let mut bound_payload =
-                    Vec::with_capacity(challenge.len() + classical_signature.len());
-                bound_payload.extend_from_slice(challenge);
-                bound_payload.extend_from_slice(&classical_signature);
+        let (pqc_signature, pqc_public_key, pqc_algorithm) = if let Some(ref pqc) = self.pqc_signer
+        {
+            let mut bound_payload = Vec::with_capacity(challenge.len() + classical_signature.len());
+            bound_payload.extend_from_slice(challenge);
+            bound_payload.extend_from_slice(&classical_signature);
 
-                let sig = pqc.sign(&bound_payload).map_err(|e| {
-                    VerifyError::SignatureVerificationFailed {
+            let sig =
+                pqc.sign(&bound_payload)
+                    .map_err(|e| VerifyError::SignatureVerificationFailed {
                         reason: format!("PQC signing failed: {}", e),
-                    }
-                })?;
-                let pk = pqc.public_key().map_err(|e| {
-                    VerifyError::SignatureVerificationFailed {
-                        reason: format!("PQC public key failed: {}", e),
-                    }
+                    })?;
+            let pk = pqc
+                .public_key()
+                .map_err(|e| VerifyError::SignatureVerificationFailed {
+                    reason: format!("PQC public key failed: {}", e),
                 })?;
 
-                (sig, pk, "ML-DSA-65".to_string())
-            } else {
-                (vec![], vec![], "NONE".to_string())
-            };
+            (sig, pk, "ML-DSA-65".to_string())
+        } else {
+            (vec![], vec![], "NONE".to_string())
+        };
 
         #[cfg(not(feature = "pqc"))]
-        let (pqc_signature, pqc_public_key, pqc_algorithm) =
-            (vec![], vec![], "NONE".to_string());
+        let (pqc_signature, pqc_public_key, pqc_algorithm) = (vec![], vec![], "NONE".to_string());
 
         Ok(AttestationProof {
             platform_attestation,
@@ -981,10 +985,18 @@ impl LicenseEngine {
                         pqc_pk_size = pk.len(),
                         "PQC signature generated (ML-DSA-65, bound over classical)"
                     );
-                    (sig, pk, "ML-DSA-65".to_string(), "HybridRequired".to_string())
+                    (
+                        sig,
+                        pk,
+                        "ML-DSA-65".to_string(),
+                        "HybridRequired".to_string(),
+                    )
                 },
                 (Err(e), _) | (_, Err(e)) => {
-                    warn!("PQC signature failed: {} — falling back to classical-only", e);
+                    warn!(
+                        "PQC signature failed: {} — falling back to classical-only",
+                        e
+                    );
                     (
                         vec![],
                         vec![],
@@ -1253,7 +1265,7 @@ fn verify_binary_integrity() -> bool {
     // In debug builds, skip all checks to allow development
     #[cfg(debug_assertions)]
     {
-        return true;
+        true
     }
 
     // Check ALL conditions to prevent timing attacks

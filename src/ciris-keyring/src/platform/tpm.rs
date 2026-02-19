@@ -176,11 +176,10 @@ impl TpmSigner {
 
             tracing::debug!("TPM: using device {}", device_path);
 
-            let device_config = DeviceConfig::from_str(device_path).map_err(|e| {
-                KeyringError::HardwareError {
+            let device_config =
+                DeviceConfig::from_str(device_path).map_err(|e| KeyringError::HardwareError {
                     reason: format!("Failed to create device config: {}", e),
-                }
-            })?;
+                })?;
 
             TctiNameConf::Device(device_config)
         };
@@ -372,19 +371,22 @@ impl TpmSigner {
         // Hash the data (TPM signs hashes, not raw data)
         let hash = Sha256::digest(data);
 
-        let digest =
-            Digest::try_from(&hash[..]).map_err(|e| KeyringError::HardwareError {
-                reason: format!("Failed to create digest: {}", e),
-            })?;
+        let digest = Digest::try_from(&hash[..]).map_err(|e| KeyringError::HardwareError {
+            reason: format!("Failed to create digest: {}", e),
+        })?;
 
         // Create a null validation ticket for external data
         let validation = tss_esapi::structures::HashcheckTicket::try_from(
             tss_esapi::tss2_esys::TPMT_TK_HASHCHECK {
                 tag: tss_esapi::constants::tss::TPM2_ST_HASHCHECK,
                 hierarchy: tss_esapi::constants::tss::TPM2_RH_NULL,
-                digest: tss_esapi::tss2_esys::TPM2B_DIGEST { size: 0, buffer: [0; 64] },
-            }
-        ).map_err(|e| KeyringError::HardwareError {
+                digest: tss_esapi::tss2_esys::TPM2B_DIGEST {
+                    size: 0,
+                    buffer: [0; 64],
+                },
+            },
+        )
+        .map_err(|e| KeyringError::HardwareError {
             reason: format!("Failed to create validation ticket: {}", e),
         })?;
 
@@ -430,7 +432,7 @@ impl TpmSigner {
                 sig.extend(&s_bytes[s_bytes.len().saturating_sub(32)..]);
 
                 Ok(sig)
-            }
+            },
             _ => Err(KeyringError::HardwareError {
                 reason: "Unexpected signature type from TPM".into(),
             }),
@@ -469,11 +471,12 @@ impl TpmSigner {
                 reason: "TPM context not initialized".into(),
             })?;
 
-        let (public, _, _) = context.read_public(key_handle).map_err(|e| {
-            KeyringError::HardwareError {
-                reason: format!("Failed to read public key: {}", e),
-            }
-        })?;
+        let (public, _, _) =
+            context
+                .read_public(key_handle)
+                .map_err(|e| KeyringError::HardwareError {
+                    reason: format!("Failed to read public key: {}", e),
+                })?;
 
         // Extract ECC point
         let ecc_point = match public {
@@ -482,7 +485,7 @@ impl TpmSigner {
                 return Err(KeyringError::HardwareError {
                     reason: "Key is not ECC".into(),
                 })
-            }
+            },
         };
 
         // Format as uncompressed point (0x04 || x || y)
@@ -508,12 +511,12 @@ impl TpmSigner {
 
         // Cache the result
         {
-            let mut cache = self
-                .cached_public_key
-                .lock()
-                .map_err(|_| KeyringError::HardwareError {
-                    reason: "Public key cache lock poisoned".into(),
-                })?;
+            let mut cache =
+                self.cached_public_key
+                    .lock()
+                    .map_err(|_| KeyringError::HardwareError {
+                        reason: "Public key cache lock poisoned".into(),
+                    })?;
             *cache = Some(pubkey.clone());
         }
 
@@ -526,20 +529,20 @@ impl TpmSigner {
 
         // Clear any existing key handle
         {
-            let mut handle_guard = self
-                .key_handle
-                .lock()
-                .map_err(|_| KeyringError::HardwareError {
-                    reason: "Key handle lock poisoned".into(),
-                })?;
-
-            if let Some(handle) = handle_guard.take() {
-                let mut context_guard = self
-                    .context
+            let mut handle_guard =
+                self.key_handle
                     .lock()
                     .map_err(|_| KeyringError::HardwareError {
-                        reason: "Context lock poisoned".into(),
+                        reason: "Key handle lock poisoned".into(),
                     })?;
+
+            if let Some(handle) = handle_guard.take() {
+                let mut context_guard =
+                    self.context
+                        .lock()
+                        .map_err(|_| KeyringError::HardwareError {
+                            reason: "Context lock poisoned".into(),
+                        })?;
 
                 if let Some(context) = context_guard.as_mut() {
                     if let Err(e) = context.flush_context(handle.into()) {
@@ -551,12 +554,12 @@ impl TpmSigner {
 
         // Clear cached public key
         {
-            let mut cache = self
-                .cached_public_key
-                .lock()
-                .map_err(|_| KeyringError::HardwareError {
-                    reason: "Public key cache lock poisoned".into(),
-                })?;
+            let mut cache =
+                self.cached_public_key
+                    .lock()
+                    .map_err(|_| KeyringError::HardwareError {
+                        reason: "Public key cache lock poisoned".into(),
+                    })?;
             *cache = None;
         }
 
@@ -570,20 +573,20 @@ impl TpmSigner {
         tracing::info!("TPM: deleting key");
 
         {
-            let mut handle_guard = self
-                .key_handle
-                .lock()
-                .map_err(|_| KeyringError::HardwareError {
-                    reason: "Key handle lock poisoned".into(),
-                })?;
-
-            if let Some(handle) = handle_guard.take() {
-                let mut context_guard = self
-                    .context
+            let mut handle_guard =
+                self.key_handle
                     .lock()
                     .map_err(|_| KeyringError::HardwareError {
-                        reason: "Context lock poisoned".into(),
+                        reason: "Key handle lock poisoned".into(),
                     })?;
+
+            if let Some(handle) = handle_guard.take() {
+                let mut context_guard =
+                    self.context
+                        .lock()
+                        .map_err(|_| KeyringError::HardwareError {
+                            reason: "Context lock poisoned".into(),
+                        })?;
 
                 if let Some(context) = context_guard.as_mut() {
                     if let Err(e) = context.flush_context(handle.into()) {
@@ -594,12 +597,12 @@ impl TpmSigner {
         }
 
         {
-            let mut cache = self
-                .cached_public_key
-                .lock()
-                .map_err(|_| KeyringError::HardwareError {
-                    reason: "Public key cache lock poisoned".into(),
-                })?;
+            let mut cache =
+                self.cached_public_key
+                    .lock()
+                    .map_err(|_| KeyringError::HardwareError {
+                        reason: "Public key cache lock poisoned".into(),
+                    })?;
             *cache = None;
         }
 
@@ -669,7 +672,7 @@ impl HardwareSigner for TpmSigner {
                 tpm_version: "2.0".into(),
                 manufacturer: "Unknown".into(),
                 discrete: self.is_discrete,
-                quote: None,  // TPM quote deferred to v2.1
+                quote: None,   // TPM quote deferred to v2.1
                 ek_cert: None, // EK cert retrieval deferred to v2.1
             }))
         }
