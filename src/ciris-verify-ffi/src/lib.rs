@@ -402,7 +402,10 @@ pub unsafe extern "C" fn ciris_verify_get_status(
     response_data: *mut *mut u8,
     response_len: *mut usize,
 ) -> i32 {
-    tracing::debug!("ciris_verify_get_status called (request_len={})", request_len);
+    tracing::debug!(
+        "ciris_verify_get_status called (request_len={})",
+        request_len
+    );
 
     // Validate arguments
     if handle.is_null()
@@ -484,7 +487,10 @@ pub unsafe extern "C" fn ciris_verify_check_capability(
     required_tier: i32,
     allowed: *mut i32,
 ) -> i32 {
-    tracing::debug!("ciris_verify_check_capability called (tier={})", required_tier);
+    tracing::debug!(
+        "ciris_verify_check_capability called (tier={})",
+        required_tier
+    );
 
     if handle.is_null() || capability.is_null() || action.is_null() || allowed.is_null() {
         tracing::error!("ciris_verify_check_capability: invalid arguments");
@@ -1177,7 +1183,7 @@ mod android {
             Err(e) => {
                 tracing::error!("JNI: failed to get deployment_id string: {}", e);
                 return std::ptr::null_mut();
-            }
+            },
         };
 
         // Get challenge nonce bytes
@@ -1186,7 +1192,7 @@ mod android {
             Err(e) => {
                 tracing::error!("JNI: failed to convert challenge nonce: {}", e);
                 return std::ptr::null_mut();
-            }
+            },
         };
 
         let mut out_len: usize = 0;
@@ -1211,7 +1217,7 @@ mod android {
                 tracing::error!("JNI: failed to create byte array: {}", e);
                 ciris_verify_free(result);
                 return std::ptr::null_mut();
-            }
+            },
         };
 
         ciris_verify_free(result);
@@ -1239,16 +1245,11 @@ mod android {
             Err(e) => {
                 tracing::error!("JNI: failed to convert data: {}", e);
                 return std::ptr::null_mut();
-            }
+            },
         };
 
         let mut out_len: usize = 0;
-        let result = ciris_verify_sign(
-            handle,
-            data_bytes.as_ptr(),
-            data_bytes.len(),
-            &mut out_len,
-        );
+        let result = ciris_verify_sign(handle, data_bytes.as_ptr(), data_bytes.len(), &mut out_len);
 
         if result.is_null() {
             tracing::warn!("JNI: nativeSign returned null");
@@ -1262,7 +1263,7 @@ mod android {
                 tracing::error!("JNI: failed to create signature byte array: {}", e);
                 ciris_verify_free(result as *mut libc::c_void);
                 return std::ptr::null_mut();
-            }
+            },
         };
 
         ciris_verify_free(result as *mut libc::c_void);
@@ -1299,7 +1300,7 @@ mod android {
                 tracing::error!("JNI: failed to create public key byte array: {}", e);
                 ciris_verify_free(result as *mut libc::c_void);
                 return std::ptr::null_mut();
-            }
+            },
         };
 
         ciris_verify_free(result as *mut libc::c_void);
@@ -1327,7 +1328,7 @@ mod android {
             Err(e) => {
                 tracing::error!("JNI: failed to convert challenge: {}", e);
                 return std::ptr::null_mut();
-            }
+            },
         };
 
         let mut out_len: usize = 0;
@@ -1350,7 +1351,7 @@ mod android {
                 tracing::error!("JNI: failed to create attestation byte array: {}", e);
                 ciris_verify_free(result);
                 return std::ptr::null_mut();
-            }
+            },
         };
 
         ciris_verify_free(result);
@@ -1378,7 +1379,7 @@ mod android {
             Err(e) => {
                 tracing::error!("JNI: failed to convert key bytes: {}", e);
                 return -1;
-            }
+            },
         };
 
         ciris_verify_import_key(handle, key_data.as_ptr(), key_data.len())
@@ -1441,16 +1442,12 @@ mod android {
             Err(e) => {
                 tracing::error!("JNI: failed to convert data for Ed25519 sign: {}", e);
                 return std::ptr::null_mut();
-            }
+            },
         };
 
         let mut out_len: usize = 0;
-        let result = ciris_verify_sign_ed25519(
-            handle,
-            data_bytes.as_ptr(),
-            data_bytes.len(),
-            &mut out_len,
-        );
+        let result =
+            ciris_verify_sign_ed25519(handle, data_bytes.as_ptr(), data_bytes.len(), &mut out_len);
 
         if result.is_null() {
             tracing::warn!("JNI: nativeSignEd25519 returned null");
@@ -1464,7 +1461,7 @@ mod android {
                 tracing::error!("JNI: failed to create Ed25519 signature byte array: {}", e);
                 ciris_verify_free(result as *mut libc::c_void);
                 return std::ptr::null_mut();
-            }
+            },
         };
 
         ciris_verify_free(result as *mut libc::c_void);
@@ -1501,7 +1498,7 @@ mod android {
                 tracing::error!("JNI: failed to create Ed25519 public key byte array: {}", e);
                 ciris_verify_free(result as *mut libc::c_void);
                 return std::ptr::null_mut();
-            }
+            },
         };
 
         ciris_verify_free(result as *mut libc::c_void);
@@ -1529,7 +1526,7 @@ mod android {
             Err(e) => {
                 tracing::error!("JNI: failed to create version byte array: {}", e);
                 std::ptr::null_mut()
-            }
+            },
         }
     }
 }

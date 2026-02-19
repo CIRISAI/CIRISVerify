@@ -26,12 +26,20 @@ use tss_esapi::{
         resource_handles::Hierarchy,
     },
     structures::{
-        Digest, EccPoint, EccScheme, HashScheme, KeyDerivationFunctionScheme, Public,
-        PublicBuilder, PublicEccParametersBuilder, SignatureScheme, SymmetricDefinitionObject,
+        Data, Digest, EccPoint, EccScheme, HashScheme, KeyDerivationFunctionScheme,
+        PcrSelectionListBuilder, PcrSlot, Public, PublicBuilder, PublicEccParametersBuilder,
+        SignatureScheme, SymmetricDefinitionObject,
     },
     tcti_ldr::{DeviceConfig, TctiNameConf},
+    traits::Marshall,
     Context,
 };
+
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+use tss_esapi::handles::{NvIndexHandle, TpmHandle};
+
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+use tss_esapi::interface_types::resource_handles::NvAuth;
 
 /// TPM 2.0 signer for desktop and server platforms.
 ///
@@ -143,8 +151,7 @@ impl TpmSigner {
 
     #[cfg(target_os = "linux")]
     fn check_if_discrete_tpm() -> bool {
-        if let Ok(manufacturer) = std::fs::read_to_string("/sys/class/tpm/tpm0/device/description")
-        {
+        if let Some(manufacturer) = Self::get_tpm_manufacturer() {
             let lower = manufacturer.to_lowercase();
             if lower.contains("infineon")
                 || lower.contains("stmicro")
@@ -162,6 +169,26 @@ impl TpmSigner {
     #[cfg(not(target_os = "linux"))]
     fn check_if_discrete_tpm() -> bool {
         false
+    }
+
+    /// Get TPM manufacturer string from sysfs.
+    #[cfg(target_os = "linux")]
+    fn get_tpm_manufacturer() -> Option<String> {
+        // Try description first
+        if let Ok(desc) = std::fs::read_to_string("/sys/class/tpm/tpm0/device/description") {
+            return Some(desc.trim().to_string());
+        }
+        // Fallback to manufacturer ID
+        if let Ok(id) = std::fs::read_to_string("/sys/class/tpm/tpm0/tpm_version_major") {
+            return Some(format!("TPM {}", id.trim()));
+        }
+        None
+    }
+
+    /// Get TPM manufacturer string (non-Linux platforms).
+    #[cfg(not(target_os = "linux"))]
+    fn get_tpm_manufacturer() -> Option<String> {
+        None
     }
 
     #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
@@ -609,17 +636,209 @@ impl TpmSigner {
         tracing::info!("TPM: key deleted successfully");
         Ok(())
     }
+
+    /// Generate a TPM quote over selected PCRs.
+    ///
+    /// This quotes PCRs 0-7 (platform configuration registers) which contain
+    /// measurements of the boot process, firmware, and system configuration.
+    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    fn generate_quote(&self) -> Result<TpmQuote, KeyringError> {
+        use rand_core::{OsRng, RngCore};
+
+        tracing::info!("TPM: generating PCR quote");
+
+        let key_handle = self.ensure_key()?;
+
+        let mut context_guard = self
+            .context
+            .lock()
+            .map_err(|_| KeyringError::HardwareError {
+                reason: "Context lock poisoned".into(),
+            })?;
+
+        let context = context_guard
+            .as_mut()
+            .ok_or_else(|| KeyringError::HardwareError {
+                reason: "TPM context not initialized".into(),
+            })?;
+
+        // Generate a fresh nonce for anti-replay
+        let mut nonce = [0u8; 32];
+        OsRng.fill_bytes(&mut nonce);
+
+        let qualifying_data =
+            Data::try_from(nonce.to_vec()).map_err(|e| KeyringError::HardwareError {
+                reason: format!("Failed to create qualifying data: {}", e),
+            })?;
+
+        // Select PCRs 0-7 (boot measurements) with SHA-256
+        let pcr_selection = PcrSelectionListBuilder::new()
+            .with_selection(
+                HashingAlgorithm::Sha256,
+                &[
+                    PcrSlot::Slot0,
+                    PcrSlot::Slot1,
+                    PcrSlot::Slot2,
+                    PcrSlot::Slot3,
+                    PcrSlot::Slot4,
+                    PcrSlot::Slot5,
+                    PcrSlot::Slot6,
+                    PcrSlot::Slot7,
+                ],
+            )
+            .build()
+            .map_err(|e| KeyringError::HardwareError {
+                reason: format!("Failed to build PCR selection: {}", e),
+            })?;
+
+        // Generate quote using ECDSA with SHA-256
+        let signing_scheme = SignatureScheme::EcDsa {
+            hash_scheme: HashScheme::new(HashingAlgorithm::Sha256),
+        };
+
+        tracing::debug!(
+            pcr_slots = "0-7",
+            hash_alg = "SHA-256",
+            "TPM: requesting quote"
+        );
+
+        let (attest, signature) = context
+            .quote(key_handle, qualifying_data, signing_scheme, pcr_selection)
+            .map_err(|e| {
+                tracing::error!("TPM: quote generation failed: {}", e);
+                KeyringError::HardwareError {
+                    reason: format!("TPM quote failed: {}", e),
+                }
+            })?;
+
+        // Serialize the attestation structure using TPM marshalling
+        let quoted_bytes: Vec<u8> = attest.marshall().map_err(|e| KeyringError::HardwareError {
+            reason: format!("Failed to marshall attestation: {}", e),
+        })?;
+
+        // Extract signature bytes
+        let sig_bytes = Self::extract_ecdsa_signature(&signature)?;
+
+        // PCR selection as bytes (bitmap representation)
+        let pcr_selection_bytes: Vec<u8> = vec![0xFF]; // PCRs 0-7 selected
+
+        tracing::info!(
+            quoted_len = quoted_bytes.len(),
+            sig_len = sig_bytes.len(),
+            "TPM: quote generated successfully"
+        );
+
+        Ok(TpmQuote {
+            quoted: quoted_bytes,
+            signature: sig_bytes,
+            pcr_selection: pcr_selection_bytes,
+            nonce: nonce.to_vec(),
+        })
+    }
+
+    /// Read the Endorsement Key (EK) certificate from TPM NV storage.
+    ///
+    /// EK certificates are provisioned by TPM manufacturers and can be used
+    /// to verify the TPM is genuine. ECC EK cert is at NV index 0x01C0000A.
+    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    fn read_ek_certificate(&self) -> Result<Vec<u8>, KeyringError> {
+        tracing::info!("TPM: reading EK certificate from NV storage");
+
+        let mut context_guard = self
+            .context
+            .lock()
+            .map_err(|_| KeyringError::HardwareError {
+                reason: "Context lock poisoned".into(),
+            })?;
+
+        let context = context_guard
+            .as_mut()
+            .ok_or_else(|| KeyringError::HardwareError {
+                reason: "TPM context not initialized".into(),
+            })?;
+
+        // ECC EK certificate NV index (TCG spec)
+        // RSA would be 0x01C00002, but we use ECC P-256
+        const ECC_EK_CERT_NV_INDEX: u32 = 0x01C0_000A;
+
+        // Create TPM handle for NV index
+        let tpm_handle = TpmHandle::NvIndex(ECC_EK_CERT_NV_INDEX.try_into().map_err(|e| {
+            KeyringError::HardwareError {
+                reason: format!("Invalid NV index: {:?}", e),
+            }
+        })?);
+
+        // Convert TPM handle to ESYS resource handle
+        let object_handle = context.tr_from_tpm_public(tpm_handle).map_err(|e| {
+            tracing::warn!(
+                "TPM: EK cert NV index not found (may not be provisioned): {}",
+                e
+            );
+            KeyringError::HardwareError {
+                reason: format!("EK cert NV index not accessible: {}", e),
+            }
+        })?;
+
+        let nv_index_handle = NvIndexHandle::from(object_handle);
+
+        // Read the NV public to get the size
+        let (nv_public, _name) = context.nv_read_public(nv_index_handle).map_err(|e| {
+            tracing::warn!("TPM: EK cert NV read public failed: {}", e);
+            KeyringError::HardwareError {
+                reason: format!("EK cert NV read public failed: {}", e),
+            }
+        })?;
+
+        let cert_size = nv_public.data_size() as u16;
+        tracing::debug!(cert_size = cert_size, "TPM: EK cert NV size");
+
+        if cert_size == 0 {
+            return Err(KeyringError::HardwareError {
+                reason: "EK certificate NV area is empty".into(),
+            });
+        }
+
+        // Read the certificate data in chunks (max 1024 bytes per read)
+        let mut cert_data = Vec::with_capacity(cert_size as usize);
+        let mut offset = 0u16;
+        const MAX_NV_READ: u16 = 1024;
+
+        while offset < cert_size {
+            let read_size = std::cmp::min(MAX_NV_READ, cert_size.saturating_sub(offset));
+
+            let chunk = context
+                .nv_read(NvAuth::Owner, nv_index_handle, read_size, offset)
+                .map_err(|e| {
+                    tracing::error!("TPM: NV read failed at offset {}: {}", offset, e);
+                    KeyringError::HardwareError {
+                        reason: format!("NV read failed: {}", e),
+                    }
+                })?;
+
+            cert_data.extend_from_slice(&chunk);
+            offset += read_size;
+        }
+
+        tracing::info!(
+            cert_len = cert_data.len(),
+            "TPM: EK certificate read successfully"
+        );
+
+        Ok(cert_data)
+    }
 }
 
-/// TPM quote structure.
-#[derive(Debug, Clone)]
+/// TPM quote structure containing PCR attestation.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct TpmQuote {
-    /// The quoted data (TPMS_ATTEST)
+    /// The quoted data (TPMS_ATTEST serialized)
     pub quoted: Vec<u8>,
-    /// Signature over the quote
+    /// Signature over the quote (ECDSA P-256)
     pub signature: Vec<u8>,
-    /// PCR values included in the quote
-    pub pcr_values: Vec<u8>,
+    /// PCR selection bitmap (which PCRs were quoted)
+    pub pcr_selection: Vec<u8>,
+    /// Nonce used in the quote (for freshness)
+    pub nonce: Vec<u8>,
 }
 
 #[async_trait]
@@ -664,16 +883,41 @@ impl HardwareSigner for TpmSigner {
     async fn attestation(&self) -> Result<PlatformAttestation, KeyringError> {
         #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
         {
-            tracing::debug!("TPM: generating attestation");
+            tracing::debug!("TPM: generating full attestation with quote and EK cert");
 
-            // For now, return basic attestation without TPM quote
-            // (quote generation requires more complex PCR handling)
+            // Get manufacturer from sysfs if available
+            let manufacturer = Self::get_tpm_manufacturer().unwrap_or_else(|| "Unknown".into());
+
+            // Generate TPM quote over PCRs 0-7
+            let quote = match self.generate_quote() {
+                Ok(q) => {
+                    tracing::info!("TPM: quote generated successfully");
+                    Some(serde_json::to_vec(&q).unwrap_or_default())
+                },
+                Err(e) => {
+                    tracing::warn!("TPM: quote generation failed (non-fatal): {}", e);
+                    None
+                },
+            };
+
+            // Read EK certificate from NV storage
+            let ek_cert = match self.read_ek_certificate() {
+                Ok(cert) => {
+                    tracing::info!(cert_len = cert.len(), "TPM: EK cert retrieved");
+                    Some(cert)
+                },
+                Err(e) => {
+                    tracing::warn!("TPM: EK cert read failed (non-fatal): {}", e);
+                    None
+                },
+            };
+
             Ok(PlatformAttestation::Tpm(TpmAttestation {
                 tpm_version: "2.0".into(),
-                manufacturer: "Unknown".into(),
+                manufacturer,
                 discrete: self.is_discrete,
-                quote: None,   // TPM quote deferred to v2.1
-                ek_cert: None, // EK cert retrieval deferred to v2.1
+                quote,
+                ek_cert,
             }))
         }
 

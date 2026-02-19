@@ -2,8 +2,11 @@
 //!
 //! Uses the Security framework to access the Secure Enclave.
 //! Only ECDSA P-256 is supported by the Secure Enclave.
+//!
+//! Also provides App Attest support via DeviceCheck framework (iOS 14+).
 
 use async_trait::async_trait;
+use std::sync::Mutex;
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
@@ -33,6 +36,136 @@ extern "C" {
     static kSecMatchLimitOne: core_foundation_sys::string::CFStringRef;
 }
 
+// DCAppAttestService bindings for iOS App Attest
+#[cfg(target_os = "ios")]
+#[allow(deprecated)] // objc2 deprecated msg_send_id but the replacement isn't stable yet
+mod app_attest {
+    use block2::RcBlock;
+    use objc2::rc::Retained;
+    use objc2::runtime::NSObject;
+    use objc2::{class, msg_send};
+    use objc2_foundation::{NSData, NSError, NSString};
+    use std::sync::{Arc, Mutex};
+
+    /// Wrapper for DCAppAttestService
+    pub struct AppAttestService {
+        inner: Retained<NSObject>,
+    }
+
+    impl AppAttestService {
+        /// Get the shared DCAppAttestService instance.
+        pub fn shared() -> Result<Self, String> {
+            unsafe {
+                // Get DCAppAttestService class
+                let class = class!(DCAppAttestService);
+
+                // Call sharedService class method
+                let service: *mut NSObject = msg_send![class, sharedService];
+
+                if service.is_null() {
+                    return Err("Failed to get DCAppAttestService".to_string());
+                }
+
+                // Retain the service object
+                let retained = Retained::retain(service)
+                    .ok_or_else(|| "Failed to retain DCAppAttestService".to_string())?;
+
+                Ok(Self { inner: retained })
+            }
+        }
+
+        /// Check if App Attest is supported on this device.
+        pub fn is_supported(&self) -> bool {
+            unsafe {
+                let supported: bool = msg_send![&*self.inner, isSupported];
+                supported
+            }
+        }
+
+        /// Generate a new App Attest key synchronously (blocking).
+        /// Returns the key ID on success.
+        pub fn generate_key_sync(&self) -> Result<String, String> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let tx = Arc::new(Mutex::new(Some(tx)));
+
+            unsafe {
+                let tx_clone = tx.clone();
+
+                // Create completion handler block
+                let block = RcBlock::new(move |key_id: *mut NSString, error: *mut NSError| {
+                    let result = if error.is_null() && !key_id.is_null() {
+                        let key_str = (*key_id).to_string();
+                        Ok(key_str)
+                    } else if !error.is_null() {
+                        let desc = (*error).localizedDescription();
+                        Err(desc.to_string())
+                    } else {
+                        Err("Unknown error generating key".to_string())
+                    };
+
+                    if let Some(sender) = tx_clone.lock().unwrap().take() {
+                        let _ = sender.send(result);
+                    }
+                });
+
+                // Call generateKeyWithCompletionHandler:
+                let _: () = msg_send![&*self.inner, generateKeyWithCompletionHandler: &*block];
+            }
+
+            // Wait for completion (with timeout)
+            rx.recv_timeout(std::time::Duration::from_secs(30))
+                .map_err(|e| format!("Key generation timeout: {}", e))?
+        }
+
+        /// Attest a key with a client data hash synchronously (blocking).
+        /// Returns the attestation object on success.
+        pub fn attest_key_sync(
+            &self,
+            key_id: &str,
+            client_data_hash: &[u8],
+        ) -> Result<Vec<u8>, String> {
+            let (tx, rx) = std::sync::mpsc::channel();
+            let tx = Arc::new(Mutex::new(Some(tx)));
+
+            unsafe {
+                let key_ns = NSString::from_str(key_id);
+                let hash_data = NSData::with_bytes(client_data_hash);
+
+                let tx_clone = tx.clone();
+
+                // Create completion handler block
+                let block = RcBlock::new(move |attestation: *mut NSData, error: *mut NSError| {
+                    let result = if error.is_null() && !attestation.is_null() {
+                        let bytes = (*attestation).as_bytes_unchecked();
+                        Ok(bytes.to_vec())
+                    } else if !error.is_null() {
+                        let desc = (*error).localizedDescription();
+                        Err(desc.to_string())
+                    } else {
+                        Err("Unknown error during attestation".to_string())
+                    };
+
+                    if let Some(sender) = tx_clone.lock().unwrap().take() {
+                        let _ = sender.send(result);
+                    }
+                });
+
+                // Call attestKey:clientDataHash:completionHandler:
+                let _: () = msg_send![
+                    &*self.inner,
+                    attestKey: &*key_ns,
+                    clientDataHash: &*hash_data,
+                    completionHandler: &*block
+                ];
+            }
+
+            // Wait for completion (with timeout)
+            rx.recv_timeout(std::time::Duration::from_secs(30))
+                .map_err(|e| format!("Attestation timeout: {}", e))?
+        }
+    }
+}
+
 /// iOS Secure Enclave signer using hardware-backed keys.
 ///
 /// Keys are generated in and never leave the Secure Enclave.
@@ -42,6 +175,9 @@ pub struct SecureEnclaveSigner {
     key_tag: String,
     /// Cached public key
     public_key: Option<Vec<u8>>,
+    /// Cached App Attest key ID (iOS only)
+    #[cfg(target_os = "ios")]
+    app_attest_key_id: Mutex<Option<String>>,
 }
 
 impl SecureEnclaveSigner {
@@ -66,6 +202,8 @@ impl SecureEnclaveSigner {
         Ok(Self {
             key_tag,
             public_key: None,
+            #[cfg(target_os = "ios")]
+            app_attest_key_id: Mutex::new(None),
         })
     }
 
@@ -91,20 +229,121 @@ impl SecureEnclaveSigner {
 
     /// Get App Attest key and attestation.
     ///
-    /// Currently returns an error as App Attest requires the ObjC runtime
-    /// (DCAppAttestService), which will be added in v2.1. The attestation
-    /// field is optional, so this is handled gracefully.
-    pub async fn get_app_attest(&self, _challenge: &[u8]) -> Result<Vec<u8>, KeyringError> {
-        #[cfg(any(target_os = "ios", target_os = "macos"))]
+    /// Uses Apple's DCAppAttestService (iOS 14+) to generate a hardware-backed
+    /// attestation that proves the app is running on a genuine Apple device.
+    ///
+    /// # Arguments
+    /// * `challenge` - A server-provided challenge/nonce (will be hashed with SHA256)
+    ///
+    /// # Returns
+    /// The attestation object bytes (CBOR-encoded Apple attestation statement)
+    pub async fn get_app_attest(&self, challenge: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        #[cfg(target_os = "ios")]
         {
+            use sha2::{Digest, Sha256};
+
+            tracing::info!("iOS: generating App Attest attestation");
+
+            // Hash the challenge first (this part is Send)
+            let client_data_hash: [u8; 32] = Sha256::digest(challenge).into();
+
+            // Clone what we need for the blocking task
+            let cached_key_id = {
+                let guard =
+                    self.app_attest_key_id
+                        .lock()
+                        .map_err(|_| KeyringError::HardwareError {
+                            reason: "App Attest key ID lock poisoned".into(),
+                        })?;
+                guard.clone()
+            };
+
+            // Run ObjC calls on main thread (required for iOS)
+            // Use blocking call since ObjC objects aren't Send
+            let (key_id, attestation) = std::thread::spawn(move || {
+                // Get DCAppAttestService
+                let service = app_attest::AppAttestService::shared().map_err(|e| {
+                    tracing::error!("iOS: DCAppAttestService not available: {}", e);
+                    KeyringError::HardwareNotAvailable {
+                        reason: format!("DCAppAttestService unavailable: {}", e),
+                    }
+                })?;
+
+                // Check if supported
+                if !service.is_supported() {
+                    tracing::warn!("iOS: App Attest not supported on this device");
+                    return Err(KeyringError::HardwareNotAvailable {
+                        reason: "App Attest not supported on this device".into(),
+                    });
+                }
+
+                // Get or generate key ID
+                let key_id = if let Some(id) = cached_key_id {
+                    tracing::debug!("iOS: using cached App Attest key ID");
+                    id
+                } else {
+                    tracing::info!("iOS: generating new App Attest key");
+                    service.generate_key_sync().map_err(|e| {
+                        tracing::error!("iOS: App Attest key generation failed: {}", e);
+                        KeyringError::KeyGenerationFailed {
+                            reason: format!("App Attest key generation failed: {}", e),
+                        }
+                    })?
+                };
+
+                tracing::debug!(
+                    key_id = %key_id,
+                    "iOS: requesting App Attest attestation"
+                );
+
+                // Get attestation
+                let attestation = service
+                    .attest_key_sync(&key_id, &client_data_hash)
+                    .map_err(|e| {
+                        tracing::error!("iOS: App Attest attestation failed: {}", e);
+                        KeyringError::HardwareError {
+                            reason: format!("App Attest attestation failed: {}", e),
+                        }
+                    })?;
+
+                Ok((key_id, attestation))
+            })
+            .join()
+            .map_err(|_| KeyringError::HardwareError {
+                reason: "App Attest thread panicked".into(),
+            })??;
+
+            // Update cached key ID
+            {
+                let mut guard =
+                    self.app_attest_key_id
+                        .lock()
+                        .map_err(|_| KeyringError::HardwareError {
+                            reason: "App Attest key ID lock poisoned".into(),
+                        })?;
+                *guard = Some(key_id);
+            }
+
+            tracing::info!(
+                attestation_len = attestation.len(),
+                "iOS: App Attest attestation generated"
+            );
+
+            Ok(attestation)
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            // App Attest is not available on macOS (only iOS/iPadOS)
+            let _ = challenge;
             Err(KeyringError::NotSupported {
-                operation:
-                    "App Attest requires ObjC runtime (DCAppAttestService), deferred to v2.1".into(),
+                operation: "App Attest is only available on iOS/iPadOS".into(),
             })
         }
 
         #[cfg(not(any(target_os = "ios", target_os = "macos")))]
         {
+            let _ = challenge;
             Err(KeyringError::NoPlatformSupport)
         }
     }
