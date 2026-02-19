@@ -220,7 +220,19 @@ pub fn create_hardware_signer(
     {
         if capabilities.has_hardware {
             use super::TpmSigner;
-            return Ok(Box::new(TpmSigner::new(alias, None)?));
+            match TpmSigner::new(alias, None) {
+                Ok(signer) => {
+                    tracing::info!("Using TPM signer for hardware security");
+                    return Ok(Box::new(signer));
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        "TPM initialization failed ({}), falling back to software signer",
+                        e
+                    );
+                    // Fall through to software signer below
+                }
+            }
         }
     }
 

@@ -478,6 +478,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "serde",
+ "sha2",
  "thiserror 1.0.69",
  "tokio",
  "tracing",
