@@ -402,12 +402,15 @@ pub unsafe extern "C" fn ciris_verify_get_status(
     response_data: *mut *mut u8,
     response_len: *mut usize,
 ) -> i32 {
+    tracing::debug!("ciris_verify_get_status called (request_len={})", request_len);
+
     // Validate arguments
     if handle.is_null()
         || request_data.is_null()
         || response_data.is_null()
         || response_len.is_null()
     {
+        tracing::error!("ciris_verify_get_status: invalid arguments (null pointer)");
         return CirisVerifyError::InvalidArgument as i32;
     }
 
@@ -481,7 +484,10 @@ pub unsafe extern "C" fn ciris_verify_check_capability(
     required_tier: i32,
     allowed: *mut i32,
 ) -> i32 {
+    tracing::debug!("ciris_verify_check_capability called (tier={})", required_tier);
+
     if handle.is_null() || capability.is_null() || action.is_null() || allowed.is_null() {
+        tracing::error!("ciris_verify_check_capability: invalid arguments");
         return CirisVerifyError::InvalidArgument as i32;
     }
 
@@ -533,8 +539,10 @@ pub unsafe extern "C" fn ciris_verify_free(data: *mut c_void) {
 /// After this call, the handle is invalid and must not be used.
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_destroy(handle: *mut CirisVerifyHandle) {
+    tracing::info!("ciris_verify_destroy called");
     if !handle.is_null() {
         drop(Box::from_raw(handle));
+        tracing::info!("CIRISVerify handle destroyed");
     }
 }
 
@@ -576,12 +584,19 @@ pub unsafe extern "C" fn ciris_verify_check_agent_integrity(
     response_data: *mut *mut u8,
     response_len: *mut usize,
 ) -> i32 {
+    tracing::debug!(
+        "ciris_verify_check_agent_integrity called (manifest_len={}, spot_check={})",
+        manifest_len,
+        spot_check_count
+    );
+
     if handle.is_null()
         || manifest_data.is_null()
         || agent_root.is_null()
         || response_data.is_null()
         || response_len.is_null()
     {
+        tracing::error!("ciris_verify_check_agent_integrity: invalid arguments");
         return CirisVerifyError::InvalidArgument as i32;
     }
 
@@ -670,7 +685,10 @@ pub unsafe extern "C" fn ciris_verify_sign(
     signature_data: *mut *mut u8,
     signature_len: *mut usize,
 ) -> i32 {
+    tracing::debug!("ciris_verify_sign called (data_len={})", data_len);
+
     if handle.is_null() || data.is_null() || signature_data.is_null() || signature_len.is_null() {
+        tracing::error!("ciris_verify_sign: invalid arguments");
         return CirisVerifyError::InvalidArgument as i32;
     }
 
@@ -730,12 +748,15 @@ pub unsafe extern "C" fn ciris_verify_get_public_key(
     algorithm: *mut *mut u8,
     algorithm_len: *mut usize,
 ) -> i32 {
+    tracing::debug!("ciris_verify_get_public_key called");
+
     if handle.is_null()
         || key_data.is_null()
         || key_len.is_null()
         || algorithm.is_null()
         || algorithm_len.is_null()
     {
+        tracing::error!("ciris_verify_get_public_key: invalid arguments");
         return CirisVerifyError::InvalidArgument as i32;
     }
 
@@ -809,7 +830,13 @@ pub unsafe extern "C" fn ciris_verify_export_attestation(
     proof_data: *mut *mut u8,
     proof_len: *mut usize,
 ) -> i32 {
+    tracing::debug!(
+        "ciris_verify_export_attestation called (challenge_len={})",
+        challenge_len
+    );
+
     if handle.is_null() || challenge.is_null() || proof_data.is_null() || proof_len.is_null() {
+        tracing::error!("ciris_verify_export_attestation: invalid arguments");
         return CirisVerifyError::InvalidArgument as i32;
     }
 
@@ -1123,8 +1150,386 @@ mod android {
         _class: JClass,
         handle: jlong,
     ) {
+        tracing::debug!("JNI: nativeDestroy called");
         ciris_verify_destroy(handle as *mut CirisVerifyHandle);
     }
 
-    // TODO: Add more JNI bindings
+    /// Get license status (returns JSON string as byte array)
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeGetStatus<'a>(
+        env: JNIEnv<'a>,
+        _class: JClass,
+        handle: jlong,
+        deployment_id: JString,
+        challenge_nonce: jbyteArray,
+    ) -> jbyteArray {
+        tracing::debug!("JNI: nativeGetStatus called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeGetStatus - null handle");
+            return std::ptr::null_mut();
+        }
+
+        // Get deployment ID string
+        let deployment_id: String = match env.get_string(deployment_id) {
+            Ok(s) => s.into(),
+            Err(e) => {
+                tracing::error!("JNI: failed to get deployment_id string: {}", e);
+                return std::ptr::null_mut();
+            }
+        };
+
+        // Get challenge nonce bytes
+        let nonce_bytes = match env.convert_byte_array(challenge_nonce) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("JNI: failed to convert challenge nonce: {}", e);
+                return std::ptr::null_mut();
+            }
+        };
+
+        let mut out_len: usize = 0;
+        let result = ciris_verify_get_status(
+            handle,
+            deployment_id.as_ptr() as *const libc::c_char,
+            nonce_bytes.as_ptr(),
+            nonce_bytes.len(),
+            &mut out_len,
+        );
+
+        if result.is_null() {
+            tracing::warn!("JNI: nativeGetStatus returned null");
+            return std::ptr::null_mut();
+        }
+
+        // Convert to Java byte array
+        let slice = std::slice::from_raw_parts(result as *const u8, out_len);
+        let jarray = match env.byte_array_from_slice(slice) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!("JNI: failed to create byte array: {}", e);
+                ciris_verify_free(result);
+                return std::ptr::null_mut();
+            }
+        };
+
+        ciris_verify_free(result);
+        jarray.into_raw()
+    }
+
+    /// Sign data with hardware-bound key
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeSign<'a>(
+        env: JNIEnv<'a>,
+        _class: JClass,
+        handle: jlong,
+        data: jbyteArray,
+    ) -> jbyteArray {
+        tracing::debug!("JNI: nativeSign called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeSign - null handle");
+            return std::ptr::null_mut();
+        }
+
+        let data_bytes = match env.convert_byte_array(data) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("JNI: failed to convert data: {}", e);
+                return std::ptr::null_mut();
+            }
+        };
+
+        let mut out_len: usize = 0;
+        let result = ciris_verify_sign(
+            handle,
+            data_bytes.as_ptr(),
+            data_bytes.len(),
+            &mut out_len,
+        );
+
+        if result.is_null() {
+            tracing::warn!("JNI: nativeSign returned null");
+            return std::ptr::null_mut();
+        }
+
+        let slice = std::slice::from_raw_parts(result, out_len);
+        let jarray = match env.byte_array_from_slice(slice) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!("JNI: failed to create signature byte array: {}", e);
+                ciris_verify_free(result as *mut libc::c_void);
+                return std::ptr::null_mut();
+            }
+        };
+
+        ciris_verify_free(result as *mut libc::c_void);
+        jarray.into_raw()
+    }
+
+    /// Get public key
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeGetPublicKey<'a>(
+        env: JNIEnv<'a>,
+        _class: JClass,
+        handle: jlong,
+    ) -> jbyteArray {
+        tracing::debug!("JNI: nativeGetPublicKey called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeGetPublicKey - null handle");
+            return std::ptr::null_mut();
+        }
+
+        let mut out_len: usize = 0;
+        let result = ciris_verify_get_public_key(handle, &mut out_len);
+
+        if result.is_null() {
+            tracing::warn!("JNI: nativeGetPublicKey returned null");
+            return std::ptr::null_mut();
+        }
+
+        let slice = std::slice::from_raw_parts(result, out_len);
+        let jarray = match env.byte_array_from_slice(slice) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!("JNI: failed to create public key byte array: {}", e);
+                ciris_verify_free(result as *mut libc::c_void);
+                return std::ptr::null_mut();
+            }
+        };
+
+        ciris_verify_free(result as *mut libc::c_void);
+        jarray.into_raw()
+    }
+
+    /// Export attestation proof (returns JSON as byte array)
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeExportAttestation<'a>(
+        env: JNIEnv<'a>,
+        _class: JClass,
+        handle: jlong,
+        challenge: jbyteArray,
+    ) -> jbyteArray {
+        tracing::debug!("JNI: nativeExportAttestation called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeExportAttestation - null handle");
+            return std::ptr::null_mut();
+        }
+
+        let challenge_bytes = match env.convert_byte_array(challenge) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("JNI: failed to convert challenge: {}", e);
+                return std::ptr::null_mut();
+            }
+        };
+
+        let mut out_len: usize = 0;
+        let result = ciris_verify_export_attestation(
+            handle,
+            challenge_bytes.as_ptr(),
+            challenge_bytes.len(),
+            &mut out_len,
+        );
+
+        if result.is_null() {
+            tracing::warn!("JNI: nativeExportAttestation returned null");
+            return std::ptr::null_mut();
+        }
+
+        let slice = std::slice::from_raw_parts(result as *const u8, out_len);
+        let jarray = match env.byte_array_from_slice(slice) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!("JNI: failed to create attestation byte array: {}", e);
+                ciris_verify_free(result);
+                return std::ptr::null_mut();
+            }
+        };
+
+        ciris_verify_free(result);
+        jarray.into_raw()
+    }
+
+    /// Import Ed25519 key from Portal
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeImportKey(
+        env: JNIEnv,
+        _class: JClass,
+        handle: jlong,
+        key_bytes: jbyteArray,
+    ) -> jint {
+        tracing::debug!("JNI: nativeImportKey called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeImportKey - null handle");
+            return -1;
+        }
+
+        let key_data = match env.convert_byte_array(key_bytes) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("JNI: failed to convert key bytes: {}", e);
+                return -1;
+            }
+        };
+
+        ciris_verify_import_key(handle, key_data.as_ptr(), key_data.len())
+    }
+
+    /// Check if key is loaded
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeHasKey(
+        _env: JNIEnv,
+        _class: JClass,
+        handle: jlong,
+    ) -> jint {
+        tracing::debug!("JNI: nativeHasKey called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeHasKey - null handle");
+            return -1;
+        }
+
+        ciris_verify_has_key(handle)
+    }
+
+    /// Delete the loaded key
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeDeleteKey(
+        _env: JNIEnv,
+        _class: JClass,
+        handle: jlong,
+    ) -> jint {
+        tracing::debug!("JNI: nativeDeleteKey called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeDeleteKey - null handle");
+            return -1;
+        }
+
+        ciris_verify_delete_key(handle)
+    }
+
+    /// Sign with Ed25519 key
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeSignEd25519<'a>(
+        env: JNIEnv<'a>,
+        _class: JClass,
+        handle: jlong,
+        data: jbyteArray,
+    ) -> jbyteArray {
+        tracing::debug!("JNI: nativeSignEd25519 called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeSignEd25519 - null handle");
+            return std::ptr::null_mut();
+        }
+
+        let data_bytes = match env.convert_byte_array(data) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("JNI: failed to convert data for Ed25519 sign: {}", e);
+                return std::ptr::null_mut();
+            }
+        };
+
+        let mut out_len: usize = 0;
+        let result = ciris_verify_sign_ed25519(
+            handle,
+            data_bytes.as_ptr(),
+            data_bytes.len(),
+            &mut out_len,
+        );
+
+        if result.is_null() {
+            tracing::warn!("JNI: nativeSignEd25519 returned null");
+            return std::ptr::null_mut();
+        }
+
+        let slice = std::slice::from_raw_parts(result, out_len);
+        let jarray = match env.byte_array_from_slice(slice) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!("JNI: failed to create Ed25519 signature byte array: {}", e);
+                ciris_verify_free(result as *mut libc::c_void);
+                return std::ptr::null_mut();
+            }
+        };
+
+        ciris_verify_free(result as *mut libc::c_void);
+        jarray.into_raw()
+    }
+
+    /// Get Ed25519 public key
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeGetEd25519PublicKey<'a>(
+        env: JNIEnv<'a>,
+        _class: JClass,
+        handle: jlong,
+    ) -> jbyteArray {
+        tracing::debug!("JNI: nativeGetEd25519PublicKey called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeGetEd25519PublicKey - null handle");
+            return std::ptr::null_mut();
+        }
+
+        let mut out_len: usize = 0;
+        let result = ciris_verify_get_ed25519_public_key(handle, &mut out_len);
+
+        if result.is_null() {
+            tracing::warn!("JNI: nativeGetEd25519PublicKey returned null");
+            return std::ptr::null_mut();
+        }
+
+        let slice = std::slice::from_raw_parts(result, out_len);
+        let jarray = match env.byte_array_from_slice(slice) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!("JNI: failed to create Ed25519 public key byte array: {}", e);
+                ciris_verify_free(result as *mut libc::c_void);
+                return std::ptr::null_mut();
+            }
+        };
+
+        ciris_verify_free(result as *mut libc::c_void);
+        jarray.into_raw()
+    }
+
+    /// Get library version
+    #[no_mangle]
+    pub extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeVersion<'a>(
+        env: JNIEnv<'a>,
+        _class: JClass,
+    ) -> jbyteArray {
+        tracing::debug!("JNI: nativeVersion called");
+
+        let version = ciris_verify_version();
+        if version.is_null() {
+            return std::ptr::null_mut();
+        }
+
+        let version_str = unsafe { std::ffi::CStr::from_ptr(version) };
+        let version_bytes = version_str.to_bytes();
+
+        match env.byte_array_from_slice(version_bytes) {
+            Ok(arr) => arr.into_raw(),
+            Err(e) => {
+                tracing::error!("JNI: failed to create version byte array: {}", e);
+                std::ptr::null_mut()
+            }
+        }
+    }
 }
