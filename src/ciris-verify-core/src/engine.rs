@@ -852,9 +852,7 @@ impl LicenseEngine {
 
         // VM/emulator caps at UNLICENSED_COMMUNITY (reported in attestation)
         if is_emulator() {
-            warn!(
-                "Running in VM/emulator — capping at UNLICENSED_COMMUNITY tier"
-            );
+            warn!("Running in VM/emulator — capping at UNLICENSED_COMMUNITY tier");
             return (LicenseStatus::UnlicensedCommunity, None);
         }
 
