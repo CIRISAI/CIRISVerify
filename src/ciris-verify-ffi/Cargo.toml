@@ -15,6 +15,7 @@ crate-type = ["cdylib", "staticlib"]
 default = []
 android = ["ciris-verify-core/android"]
 ios = ["ciris-verify-core/ios"]
+tpm = ["ciris-verify-core/tpm"]
 
 [dependencies]
 ciris-verify-core.workspace = true

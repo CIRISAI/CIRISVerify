@@ -13,6 +13,7 @@ default = ["pqc"]
 pqc = ["ciris-crypto/pqc-ml-dsa"]
 android = ["ciris-keyring/android"]
 ios = ["ciris-keyring/ios"]
+tpm = ["ciris-keyring/tpm"]
 
 [dependencies]
 # Internal crates
