@@ -146,15 +146,16 @@ impl IntegrityChecker {
 
     /// Check execution environment.
     ///
-    /// Uses `is_suspicious_emulator()` which only blocks on mobile emulators.
-    /// Desktop VMs are allowed since they're legitimate deployment targets.
+    /// Environment checks (emulators, VMs, rooted devices) do NOT block.
+    /// They are reported in attestation and affect license tier (degrade
+    /// to COMMUNITY), but execution is never blocked.
+    ///
+    /// We are 100% open source - nothing should be fully stopped.
     fn check_environment(&self) -> bool {
-        // Platform-specific environment checks
-        let device_ok = !is_device_compromised();
-        // Only block on suspicious emulators (mobile), not desktop VMs
-        let emulator_ok = !is_suspicious_emulator();
-
-        device_ok && emulator_ok
+        // Environment checks no longer block - they affect tier only
+        // Emulators, VMs, rooted devices → degrade to COMMUNITY tier
+        // but always allow execution
+        true
     }
 }
 

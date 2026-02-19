@@ -819,17 +819,41 @@ impl LicenseEngine {
         self.cache.get(deployment_id).map(|c| c.license)
     }
 
-    /// Apply hardware tier restriction.
+    /// Apply hardware and environment tier restrictions.
     ///
-    /// SOFTWARE_ONLY deployments are capped at UNLICENSED_COMMUNITY.
+    /// Fail-secure: degrade to COMMUNITY tier (never block) when:
+    /// - SOFTWARE_ONLY deployment (no hardware security module)
+    /// - Running in VM/emulator
+    /// - Running on rooted/jailbroken device
+    ///
+    /// We are 100% open source - nothing is blocked, just degraded.
     fn apply_hardware_restriction(
         &self,
         license: Option<LicenseDetails>,
     ) -> (LicenseStatus, Option<LicenseDetails>) {
+        use crate::security::{is_device_compromised, is_emulator};
+
         // SOFTWARE_ONLY caps at UNLICENSED_COMMUNITY
         if self.hw_signer.hardware_type() == HardwareType::SoftwareOnly {
             warn!(
                 "Software-only deployment (no hardware security module) — \
+                 capping at UNLICENSED_COMMUNITY tier"
+            );
+            return (LicenseStatus::UnlicensedCommunity, None);
+        }
+
+        // VM/emulator caps at UNLICENSED_COMMUNITY (reported in attestation)
+        if is_emulator() {
+            warn!(
+                "Running in VM/emulator — capping at UNLICENSED_COMMUNITY tier"
+            );
+            return (LicenseStatus::UnlicensedCommunity, None);
+        }
+
+        // Rooted/jailbroken device caps at UNLICENSED_COMMUNITY
+        if is_device_compromised() {
+            warn!(
+                "Running on compromised device (rooted/jailbroken) — \
                  capping at UNLICENSED_COMMUNITY tier"
             );
             return (LicenseStatus::UnlicensedCommunity, None);
@@ -1124,14 +1148,38 @@ impl LicenseEngine {
         status: &LicenseStatus,
         license: Option<&LicenseDetails>,
     ) -> String {
+        use crate::security::{is_device_compromised, is_emulator};
+
         let hw_type = self.hw_signer.hardware_type();
         let is_sw_only = hw_type == HardwareType::SoftwareOnly;
+        let in_vm = is_emulator();
+        let is_compromised = is_device_compromised();
 
         // Hardware summary line
         let hw_line = if is_sw_only {
             "Hardware: SOFTWARE-ONLY (no HSM/TPM/Secure Enclave). ".to_string()
         } else {
             format!("Hardware: {:?}. ", hw_type)
+        };
+
+        // Environment info (VM/emulator/rooted) - explain WHY we detected this
+        let env_line = if in_vm && is_compromised {
+            "Environment: VIRTUAL MACHINE + COMPROMISED DEVICE. \
+             Detected VM indicators (hypervisor CPU flag or virtualization signatures) \
+             and device compromise (root/jailbreak artifacts). "
+                .to_string()
+        } else if in_vm {
+            "Environment: VIRTUAL MACHINE. \
+             Detected VM indicators (hypervisor CPU flag, VMware/KVM/QEMU signatures, \
+             or cloud instance metadata). This is normal for cloud deployments. "
+                .to_string()
+        } else if is_compromised {
+            "Environment: COMPROMISED DEVICE. \
+             Detected root/jailbreak indicators (su binary, Magisk, Cydia, or \
+             other privilege escalation tools). "
+                .to_string()
+        } else {
+            String::new()
         };
 
         // License details block (if we have a license object)
@@ -1185,21 +1233,23 @@ impl LicenseEngine {
                 )
             },
             LicenseStatus::UnlicensedCommunity => {
-                if is_sw_only {
-                    format!(
-                        "COMMUNITY MODE. {lic_block}{hw_line}\
-                         Software-only signer limits deployment to community tier. \
-                         Not a licensed professional service. \
-                         Consult qualified professionals for medical, legal, or financial advice."
-                    )
+                // Determine the reason for community mode
+                let reason = if is_sw_only {
+                    "Software-only signer (no hardware security module) limits deployment to community tier."
+                } else if in_vm {
+                    "Running in VM/emulator limits deployment to community tier for security."
+                } else if is_compromised {
+                    "Running on compromised device (rooted/jailbroken) limits deployment to community tier."
                 } else {
-                    format!(
-                        "COMMUNITY MODE. {lic_block}{hw_line}\
-                         No valid professional license found. \
-                         Not a licensed professional service. \
-                         Consult qualified professionals for medical, legal, or financial advice."
-                    )
-                }
+                    "No valid professional license found."
+                };
+
+                format!(
+                    "COMMUNITY MODE. {lic_block}{hw_line}{env_line}\
+                     {reason} \
+                     Not a licensed professional service. \
+                     Consult qualified professionals for medical, legal, or financial advice."
+                )
             },
             LicenseStatus::UnlicensedUnverified => {
                 format!(
@@ -1261,12 +1311,13 @@ impl LicenseEngine {
 /// Performs runtime security checks:
 /// - Debugger detection (ptrace/sysctl/Win32 API)
 /// - Hook detection (Frida, Xposed)
-/// - Environment checks (device compromise, suspicious emulators)
 ///
-/// Note: Desktop VMs (KVM, VMware, cloud instances) are NOT blocked.
-/// Only mobile emulators (Android emulator, iOS simulator) are suspicious.
-/// Desktop VMs are legitimate deployment targets and the user has full
-/// control anyway. VM status is reported in attestation for transparency.
+/// Note: Environment checks (emulators, VMs, rooted devices) do NOT trigger
+/// LOCKDOWN. They are reported in attestation and affect the license tier
+/// (degrade to COMMUNITY), but execution is never blocked.
+///
+/// We are 100% open source - nothing should be fully stopped, just degraded
+/// to the lowest tier (COMMUNITY).
 ///
 /// Binary self-hash verification is skipped until the hash embedding
 /// pipeline is implemented (requires two-pass build).
@@ -1277,20 +1328,16 @@ fn verify_binary_integrity() -> bool {
         true
     }
 
-    // Check ALL conditions to prevent timing attacks
+    // Check runtime tampering only - NOT environment
+    // Environment checks (VM, emulator, rooted) affect tier, not integrity
     #[cfg(not(debug_assertions))]
     {
-        use crate::security::{
-            detect_hooks, is_debugger_attached, is_device_compromised, is_suspicious_emulator,
-        };
+        use crate::security::{detect_hooks, is_debugger_attached};
 
         let debugger_ok = !is_debugger_attached();
         let hooks_ok = !detect_hooks();
-        let device_ok = !is_device_compromised();
-        // Only block on suspicious emulators (mobile), not desktop VMs
-        let emulator_ok = !is_suspicious_emulator();
 
-        debugger_ok && hooks_ok && device_ok && emulator_ok
+        debugger_ok && hooks_ok
     }
 }
 
