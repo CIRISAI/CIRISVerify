@@ -19,13 +19,11 @@ use windows::{
     core::{PCWSTR, PWSTR},
     Win32::Foundation::NTSTATUS,
     Win32::Security::Cryptography::{
-        BCryptCloseAlgorithmProvider, BCryptOpenAlgorithmProvider,
-        NCryptCreatePersistedKey, NCryptDeleteKey, NCryptExportKey,
-        NCryptFinalizeKey, NCryptFreeObject, NCryptGetProperty, NCryptOpenKey,
-        NCryptOpenStorageProvider, NCryptSignHash,
-        BCRYPT_ECDSA_P256_ALGORITHM, BCRYPT_ECCPUBLIC_BLOB,
-        BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, NCRYPT_FLAGS, NCRYPT_KEY_HANDLE,
-        NCRYPT_PROV_HANDLE, NCRYPT_SILENT_FLAG,
+        BCryptCloseAlgorithmProvider, BCryptOpenAlgorithmProvider, NCryptCreatePersistedKey,
+        NCryptDeleteKey, NCryptExportKey, NCryptFinalizeKey, NCryptFreeObject, NCryptGetProperty,
+        NCryptOpenKey, NCryptOpenStorageProvider, NCryptSignHash, BCRYPT_ECCPUBLIC_BLOB,
+        BCRYPT_ECDSA_P256_ALGORITHM, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, NCRYPT_FLAGS,
+        NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE, NCRYPT_SILENT_FLAG,
     },
 };
 
@@ -61,15 +59,9 @@ impl WindowsTpmSigner {
         let alias = alias.into();
 
         // Log experimental warning
-        tracing::warn!(
-            "=== EXPERIMENTAL FEATURE: Windows TPM via Platform Crypto Provider ==="
-        );
-        tracing::warn!(
-            "This feature is experimental and may not work correctly on all systems."
-        );
-        tracing::warn!(
-            "Please report issues at https://github.com/CIRISAI/CIRISVerify/issues"
-        );
+        tracing::warn!("=== EXPERIMENTAL FEATURE: Windows TPM via Platform Crypto Provider ===");
+        tracing::warn!("This feature is experimental and may not work correctly on all systems.");
+        tracing::warn!("Please report issues at https://github.com/CIRISAI/CIRISVerify/issues");
 
         #[cfg(all(feature = "tpm-windows", target_os = "windows"))]
         {
@@ -118,11 +110,7 @@ impl WindowsTpmSigner {
         let mut provider_handle = NCRYPT_PROV_HANDLE::default();
 
         let status = unsafe {
-            NCryptOpenStorageProvider(
-                &mut provider_handle,
-                PCWSTR(provider_name.as_ptr()),
-                0,
-            )
+            NCryptOpenStorageProvider(&mut provider_handle, PCWSTR(provider_name.as_ptr()), 0)
         };
 
         if status.is_ok() {
@@ -157,19 +145,12 @@ impl WindowsTpmSigner {
         let mut provider_handle = NCRYPT_PROV_HANDLE::default();
 
         let status = unsafe {
-            NCryptOpenStorageProvider(
-                &mut provider_handle,
-                PCWSTR(provider_name.as_ptr()),
-                0,
-            )
+            NCryptOpenStorageProvider(&mut provider_handle, PCWSTR(provider_name.as_ptr()), 0)
         };
 
         if status.is_err() {
             return Err(KeyringError::HardwareError {
-                reason: format!(
-                    "Failed to open Platform Crypto Provider: {:?}",
-                    status
-                ),
+                reason: format!("Failed to open Platform Crypto Provider: {:?}", status),
             });
         }
 
@@ -179,19 +160,21 @@ impl WindowsTpmSigner {
     /// Create an ECDSA P-256 key in the TPM.
     #[cfg(all(feature = "tpm-windows", target_os = "windows"))]
     fn create_key(&self, key_name: &str) -> Result<NCRYPT_KEY_HANDLE, KeyringError> {
-        let provider_guard = self.provider.lock().map_err(|_| KeyringError::HardwareError {
-            reason: "Provider lock poisoned".into(),
-        })?;
+        let provider_guard = self
+            .provider
+            .lock()
+            .map_err(|_| KeyringError::HardwareError {
+                reason: "Provider lock poisoned".into(),
+            })?;
 
-        let provider = provider_guard.as_ref().ok_or_else(|| KeyringError::HardwareError {
-            reason: "Provider not initialized".into(),
-        })?;
+        let provider = provider_guard
+            .as_ref()
+            .ok_or_else(|| KeyringError::HardwareError {
+                reason: "Provider not initialized".into(),
+            })?;
 
         // Key name as wide string
-        let key_name_wide: Vec<u16> = key_name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let key_name_wide: Vec<u16> = key_name.encode_utf16().chain(std::iter::once(0)).collect();
 
         // Algorithm: ECDSA P-256
         let algo_name: Vec<u16> = "ECDSA_P256"
@@ -209,7 +192,7 @@ impl WindowsTpmSigner {
                 &mut key_handle,
                 PCWSTR(algo_name.as_ptr()),
                 PCWSTR(key_name_wide.as_ptr()),
-                0, // dwLegacyKeySpec
+                0,               // dwLegacyKeySpec
                 NCRYPT_FLAGS(0), // dwFlags
             )
         };
@@ -233,25 +216,30 @@ impl WindowsTpmSigner {
             });
         }
 
-        tracing::info!("Windows TPM: ECDSA P-256 key '{}' created successfully", key_name);
+        tracing::info!(
+            "Windows TPM: ECDSA P-256 key '{}' created successfully",
+            key_name
+        );
         Ok(key_handle)
     }
 
     /// Open an existing key by name.
     #[cfg(all(feature = "tpm-windows", target_os = "windows"))]
     fn open_key(&self, key_name: &str) -> Result<NCRYPT_KEY_HANDLE, KeyringError> {
-        let provider_guard = self.provider.lock().map_err(|_| KeyringError::HardwareError {
-            reason: "Provider lock poisoned".into(),
-        })?;
+        let provider_guard = self
+            .provider
+            .lock()
+            .map_err(|_| KeyringError::HardwareError {
+                reason: "Provider lock poisoned".into(),
+            })?;
 
-        let provider = provider_guard.as_ref().ok_or_else(|| KeyringError::HardwareError {
-            reason: "Provider not initialized".into(),
-        })?;
+        let provider = provider_guard
+            .as_ref()
+            .ok_or_else(|| KeyringError::HardwareError {
+                reason: "Provider not initialized".into(),
+            })?;
 
-        let key_name_wide: Vec<u16> = key_name
-            .encode_utf16()
-            .chain(std::iter::once(0))
-            .collect();
+        let key_name_wide: Vec<u16> = key_name.encode_utf16().chain(std::iter::once(0)).collect();
 
         let mut key_handle = NCRYPT_KEY_HANDLE::default();
 
@@ -260,7 +248,7 @@ impl WindowsTpmSigner {
                 *provider,
                 &mut key_handle,
                 PCWSTR(key_name_wide.as_ptr()),
-                0, // dwLegacyKeySpec
+                0,               // dwLegacyKeySpec
                 NCRYPT_FLAGS(0), // dwFlags
             )
         };
@@ -279,9 +267,12 @@ impl WindowsTpmSigner {
     fn ensure_key(&self) -> Result<NCRYPT_KEY_HANDLE, KeyringError> {
         // Check if we already have a key handle
         {
-            let handle_guard = self.key_handle.lock().map_err(|_| KeyringError::HardwareError {
-                reason: "Key handle lock poisoned".into(),
-            })?;
+            let handle_guard = self
+                .key_handle
+                .lock()
+                .map_err(|_| KeyringError::HardwareError {
+                    reason: "Key handle lock poisoned".into(),
+                })?;
             if let Some(handle) = *handle_guard {
                 return Ok(handle);
             }
@@ -293,22 +284,31 @@ impl WindowsTpmSigner {
         match self.open_key(&key_name) {
             Ok(handle) => {
                 tracing::debug!("Windows TPM: Opened existing key '{}'", key_name);
-                let mut handle_guard = self.key_handle.lock().map_err(|_| KeyringError::HardwareError {
-                    reason: "Key handle lock poisoned".into(),
-                })?;
+                let mut handle_guard =
+                    self.key_handle
+                        .lock()
+                        .map_err(|_| KeyringError::HardwareError {
+                            reason: "Key handle lock poisoned".into(),
+                        })?;
                 *handle_guard = Some(handle);
                 return Ok(handle);
-            }
+            },
             Err(_) => {
-                tracing::debug!("Windows TPM: Key '{}' not found, creating new key", key_name);
-            }
+                tracing::debug!(
+                    "Windows TPM: Key '{}' not found, creating new key",
+                    key_name
+                );
+            },
         }
 
         // Create new key
         let handle = self.create_key(&key_name)?;
-        let mut handle_guard = self.key_handle.lock().map_err(|_| KeyringError::HardwareError {
-            reason: "Key handle lock poisoned".into(),
-        })?;
+        let mut handle_guard = self
+            .key_handle
+            .lock()
+            .map_err(|_| KeyringError::HardwareError {
+                reason: "Key handle lock poisoned".into(),
+            })?;
         *handle_guard = Some(handle);
         Ok(handle)
     }
@@ -318,9 +318,12 @@ impl WindowsTpmSigner {
     fn export_public_key(&self, key_handle: NCRYPT_KEY_HANDLE) -> Result<Vec<u8>, KeyringError> {
         // Check cache first
         {
-            let cache = self.cached_public_key.lock().map_err(|_| KeyringError::HardwareError {
-                reason: "Public key cache lock poisoned".into(),
-            })?;
+            let cache = self
+                .cached_public_key
+                .lock()
+                .map_err(|_| KeyringError::HardwareError {
+                    reason: "Public key cache lock poisoned".into(),
+                })?;
             if let Some(ref pk) = *cache {
                 return Ok(pk.clone());
             }
@@ -410,19 +413,29 @@ impl WindowsTpmSigner {
 
         // Cache the result
         {
-            let mut cache = self.cached_public_key.lock().map_err(|_| KeyringError::HardwareError {
-                reason: "Public key cache lock poisoned".into(),
-            })?;
+            let mut cache =
+                self.cached_public_key
+                    .lock()
+                    .map_err(|_| KeyringError::HardwareError {
+                        reason: "Public key cache lock poisoned".into(),
+                    })?;
             *cache = Some(pubkey.clone());
         }
 
-        tracing::debug!(pubkey_len = pubkey.len(), "Windows TPM: public key exported");
+        tracing::debug!(
+            pubkey_len = pubkey.len(),
+            "Windows TPM: public key exported"
+        );
         Ok(pubkey)
     }
 
     /// Sign data using the TPM key.
     #[cfg(all(feature = "tpm-windows", target_os = "windows"))]
-    fn sign_hash(&self, key_handle: NCRYPT_KEY_HANDLE, hash: &[u8]) -> Result<Vec<u8>, KeyringError> {
+    fn sign_hash(
+        &self,
+        key_handle: NCRYPT_KEY_HANDLE,
+        hash: &[u8],
+    ) -> Result<Vec<u8>, KeyringError> {
         // For ECDSA P-256, signature is 64 bytes (r || s, each 32 bytes)
         let mut signature = vec![0u8; 64];
         let mut sig_len: u32 = 64;
@@ -538,9 +551,12 @@ impl HardwareSigner for WindowsTpmSigner {
 
             // Clear existing key handle
             {
-                let mut handle_guard = self.key_handle.lock().map_err(|_| KeyringError::HardwareError {
-                    reason: "Key handle lock poisoned".into(),
-                })?;
+                let mut handle_guard =
+                    self.key_handle
+                        .lock()
+                        .map_err(|_| KeyringError::HardwareError {
+                            reason: "Key handle lock poisoned".into(),
+                        })?;
                 if let Some(handle) = handle_guard.take() {
                     unsafe {
                         let _ = NCryptFreeObject(handle.0);
@@ -550,9 +566,12 @@ impl HardwareSigner for WindowsTpmSigner {
 
             // Clear cached public key
             {
-                let mut cache = self.cached_public_key.lock().map_err(|_| KeyringError::HardwareError {
-                    reason: "Public key cache lock poisoned".into(),
-                })?;
+                let mut cache =
+                    self.cached_public_key
+                        .lock()
+                        .map_err(|_| KeyringError::HardwareError {
+                            reason: "Public key cache lock poisoned".into(),
+                        })?;
                 *cache = None;
             }
 
@@ -572,9 +591,12 @@ impl HardwareSigner for WindowsTpmSigner {
     async fn key_exists(&self, _alias: &str) -> Result<bool, KeyringError> {
         #[cfg(all(feature = "tpm-windows", target_os = "windows"))]
         {
-            let handle_guard = self.key_handle.lock().map_err(|_| KeyringError::HardwareError {
-                reason: "Key handle lock poisoned".into(),
-            })?;
+            let handle_guard = self
+                .key_handle
+                .lock()
+                .map_err(|_| KeyringError::HardwareError {
+                    reason: "Key handle lock poisoned".into(),
+                })?;
             Ok(handle_guard.is_some())
         }
 
@@ -587,9 +609,12 @@ impl HardwareSigner for WindowsTpmSigner {
     async fn delete_key(&self, _alias: &str) -> Result<(), KeyringError> {
         #[cfg(all(feature = "tpm-windows", target_os = "windows"))]
         {
-            let mut handle_guard = self.key_handle.lock().map_err(|_| KeyringError::HardwareError {
-                reason: "Key handle lock poisoned".into(),
-            })?;
+            let mut handle_guard =
+                self.key_handle
+                    .lock()
+                    .map_err(|_| KeyringError::HardwareError {
+                        reason: "Key handle lock poisoned".into(),
+                    })?;
 
             if let Some(handle) = handle_guard.take() {
                 let status = unsafe { NCryptDeleteKey(handle, 0) };
@@ -602,9 +627,12 @@ impl HardwareSigner for WindowsTpmSigner {
 
             // Clear cached public key
             {
-                let mut cache = self.cached_public_key.lock().map_err(|_| KeyringError::HardwareError {
-                    reason: "Public key cache lock poisoned".into(),
-                })?;
+                let mut cache =
+                    self.cached_public_key
+                        .lock()
+                        .map_err(|_| KeyringError::HardwareError {
+                            reason: "Public key cache lock poisoned".into(),
+                        })?;
                 *cache = None;
             }
 
