@@ -14,6 +14,7 @@ software = []
 android = ["jni"]
 ios = ["security-framework"]
 tpm = ["tss-esapi"]
+tpm-windows = ["windows"]  # Experimental: Windows native TPM via Platform Crypto Provider
 keyring-storage = ["dep:keyring"]
 
 [dependencies]
@@ -58,6 +59,11 @@ secret-service = { version = "3.0", features = ["rt-tokio-crypto-rust"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 winapi = { version = "0.3", features = ["wincred"] }
+# Windows NCrypt API for TPM via Platform Crypto Provider (experimental)
+windows = { version = "0.58", features = [
+    "Win32_Security_Cryptography",
+    "Win32_Foundation",
+], optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

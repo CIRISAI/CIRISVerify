@@ -39,13 +39,12 @@ jobs:
             platform_tag: manylinux_2_17_x86_64
             features: tpm
 
-          # Linux ARM64 (no TPM - can't cross-compile with system libs)
-          - os: ubuntu-latest
+          # Linux ARM64 (native runner with TPM support)
+          - os: ubuntu-24.04-arm64
             target: aarch64-unknown-linux-gnu
             artifact: libciris_verify_ffi.so
             platform_tag: manylinux_2_17_aarch64
-            cross: true
-            features: ""
+            features: tpm
 
           # macOS ARM64 (Apple Silicon) - uses Secure Enclave, not TPM
           - os: macos-latest
@@ -61,12 +60,12 @@ jobs:
             platform_tag: macosx_10_12_x86_64
             features: ""
 
-          # Windows x86_64 (with TPM support)
+          # Windows x86_64 (EXPERIMENTAL: native TPM via Platform Crypto Provider)
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: ciris_verify_ffi.dll
             platform_tag: win_amd64
-            features: tpm
+            features: tpm-windows
 
     steps:
       - uses: actions/checkout@v4
@@ -79,29 +78,13 @@ jobs:
         with:
           key: pypi-${{ matrix.target }}
 
-      # Install cross for ARM64 Linux
-      - name: Install cross
-        if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
       # Install TPM development libraries (Linux)
       - name: Install TPM libs (Linux)
-        if: runner.os == 'Linux' && !matrix.cross
+        if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y libtss2-dev
 
       # Build Rust binary
-      - name: Build Rust (cross)
-        if: matrix.cross
-        run: |
-          FEATURES="${{ matrix.features }}"
-          if [ -n "$FEATURES" ]; then
-            cross build --release --target ${{ matrix.target }} -p ciris-verify-ffi --features "$FEATURES"
-          else
-            cross build --release --target ${{ matrix.target }} -p ciris-verify-ffi
-          fi
-
       - name: Build Rust (native)
-        if: ${{ !matrix.cross }}
         shell: bash
         run: |
           FEATURES="${{ matrix.features }}"

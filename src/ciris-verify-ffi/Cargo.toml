@@ -16,6 +16,7 @@ default = []
 android = ["ciris-verify-core/android"]
 ios = ["ciris-verify-core/ios"]
 tpm = ["ciris-verify-core/tpm"]
+tpm-windows = ["ciris-verify-core/tpm-windows"]  # Experimental: Windows native TPM
 
 [dependencies]
 ciris-verify-core.workspace = true

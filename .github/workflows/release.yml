@@ -22,16 +22,17 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64
+          # Linux x86_64 (with TPM support)
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: libciris_verify_ffi.so
+            features: tpm
 
-          # Linux ARM64
-          - os: ubuntu-latest
+          # Linux ARM64 (native runner with TPM support)
+          - os: ubuntu-24.04-arm64
             target: aarch64-unknown-linux-gnu
             artifact: libciris_verify_ffi.so
-            cross: true
+            features: tpm
 
           # macOS x86_64
           - os: macos-latest
@@ -43,10 +44,11 @@ jobs:
             target: aarch64-apple-darwin
             artifact: libciris_verify_ffi.dylib
 
-          # Windows x86_64
+          # Windows x86_64 (EXPERIMENTAL: native TPM via Platform Crypto Provider)
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact: ciris_verify_ffi.dll
+            features: tpm-windows
 
     steps:
       - uses: actions/checkout@v4
@@ -59,20 +61,21 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      # Install cross for ARM64 Linux
-      - name: Install cross
-        if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      # Build with cross for ARM64 Linux
-      - name: Build (cross)
-        if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }} -p ciris-verify-ffi
+      # Install TPM development libraries (Linux)
+      - name: Install TPM libs (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libtss2-dev
 
       # Build native
       - name: Build (native)
-        if: ${{ !matrix.cross }}
-        run: cargo build --release --target ${{ matrix.target }} -p ciris-verify-ffi
+        shell: bash
+        run: |
+          FEATURES="${{ matrix.features }}"
+          if [ -n "$FEATURES" ]; then
+            cargo build --release --target ${{ matrix.target }} -p ciris-verify-ffi --features "$FEATURES"
+          else
+            cargo build --release --target ${{ matrix.target }} -p ciris-verify-ffi
+          fi
 
       # Strip binaries (Linux/macOS)
       - name: Strip binary

@@ -15,6 +15,10 @@ pub mod ios;
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub mod tpm;
 
+// Windows-native TPM via Platform Crypto Provider (experimental)
+#[cfg(all(feature = "tpm-windows", target_os = "windows"))]
+pub mod tpm_windows;
+
 mod factory;
 
 pub use factory::{
@@ -30,3 +34,7 @@ pub use ios::SecureEnclaveSigner;
 
 #[cfg(any(target_os = "linux", target_os = "windows", target_os = "macos"))]
 pub use tpm::TpmSigner;
+
+// Windows-native TPM signer (experimental)
+#[cfg(all(feature = "tpm-windows", target_os = "windows"))]
+pub use tpm_windows::WindowsTpmSigner;
