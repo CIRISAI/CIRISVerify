@@ -325,7 +325,7 @@ fn walk_python_files(
 
         // Get relative path
         let relative = match path.strip_prefix(root) {
-            Ok(r) => r.to_string_lossy().to_string(),
+            Ok(r) => r.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
         };
 
@@ -384,7 +384,7 @@ fn collect_files(
         let path = entry.path();
 
         let relative = match path.strip_prefix(root) {
-            Ok(r) => r.to_string_lossy().to_string(),
+            Ok(r) => r.to_string_lossy().replace('\\', "/"),
             Err(_) => continue,
         };
 
