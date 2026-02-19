@@ -134,7 +134,7 @@ jobs:
         run: cargo install cargo-ndk
 
       - name: Build for Android
-        run: cargo ndk -t ${{ matrix.abi }} build --release -p ciris-verify-ffi
+        run: cargo ndk -t ${{ matrix.abi }} build --release -p ciris-verify-ffi --features android
 
       - name: Strip binary
         run: |
