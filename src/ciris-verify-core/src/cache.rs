@@ -2,17 +2,27 @@
 //!
 //! Provides persistent, encrypted storage for license data with TTL support.
 //! Falls back to memory cache if filesystem is unavailable.
+//! Uses XChaCha20-Poly1305 AEAD for authenticated encryption.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::RwLock;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use chacha20poly1305::{
+    aead::{Aead, KeyInit, OsRng},
+    XChaCha20Poly1305, XNonce,
+};
+use rand::RngCore;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+use tracing::{debug, trace, warn};
 
 use crate::error::VerifyError;
 use crate::license::LicenseDetails;
+
+/// XChaCha20-Poly1305 nonce size (24 bytes)
+const NONCE_SIZE: usize = 24;
 
 /// License cache with encrypted persistence.
 pub struct LicenseCache {
@@ -303,19 +313,50 @@ impl LicenseCache {
         let path = storage.cache_dir.join("revision_state.enc");
         let encrypted = match std::fs::read(&path) {
             Ok(data) => data,
-            Err(_) => return (0, Vec::new()),
+            Err(e) => {
+                debug!("Cache: no revision state file ({})", e);
+                return (0, Vec::new());
+            }
         };
 
-        // Decrypt using simple XOR (same as cache entries)
-        let decrypted: Vec<u8> = encrypted
-            .iter()
-            .enumerate()
-            .map(|(i, byte)| byte ^ encryption_key[i % 32])
-            .collect();
+        // Decrypt using XChaCha20-Poly1305
+        if encrypted.len() < NONCE_SIZE {
+            warn!("Cache: revision state file too small");
+            return (0, Vec::new());
+        }
+
+        let (nonce_bytes, ciphertext) = encrypted.split_at(NONCE_SIZE);
+        let nonce = XNonce::from_slice(nonce_bytes);
+
+        let cipher = match XChaCha20Poly1305::new_from_slice(encryption_key) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("Cache: failed to create cipher for revision state: {}", e);
+                return (0, Vec::new());
+            }
+        };
+
+        let decrypted = match cipher.decrypt(nonce, ciphertext) {
+            Ok(d) => d,
+            Err(e) => {
+                warn!("Cache: failed to decrypt revision state (possibly tampered): {}", e);
+                return (0, Vec::new());
+            }
+        };
 
         match serde_json::from_slice::<PersistedRevisionState>(&decrypted) {
-            Ok(state) => (state.last_seen_revision, state.revision_history),
-            Err(_) => (0, Vec::new()),
+            Ok(state) => {
+                debug!(
+                    last_seen_revision = state.last_seen_revision,
+                    history_len = state.revision_history.len(),
+                    "Cache: loaded revision state"
+                );
+                (state.last_seen_revision, state.revision_history)
+            }
+            Err(e) => {
+                warn!("Cache: failed to parse revision state: {}", e);
+                (0, Vec::new())
+            }
         }
     }
 
@@ -326,7 +367,8 @@ impl LicenseCache {
             None => return,
         };
 
-        if std::fs::create_dir_all(&storage.cache_dir).is_err() {
+        if let Err(e) = std::fs::create_dir_all(&storage.cache_dir) {
+            warn!("Cache: failed to create cache directory: {}", e);
             return;
         }
 
@@ -337,6 +379,7 @@ impl LicenseCache {
             .map(|h| h.clone())
             .unwrap_or_default();
 
+        let history_len = history.len();
         let state = PersistedRevisionState {
             last_seen_revision: last_seen,
             revision_history: history,
@@ -344,18 +387,31 @@ impl LicenseCache {
 
         let data = match serde_json::to_vec(&state) {
             Ok(d) => d,
-            Err(_) => return,
+            Err(e) => {
+                warn!("Cache: failed to serialize revision state: {}", e);
+                return;
+            }
         };
 
-        // Encrypt using simple XOR (same as cache entries)
-        let encrypted: Vec<u8> = data
-            .iter()
-            .enumerate()
-            .map(|(i, byte)| byte ^ self.encryption_key[i % 32])
-            .collect();
+        // Encrypt using XChaCha20-Poly1305
+        let encrypted = match self.encrypt(&data) {
+            Some(e) => e,
+            None => {
+                warn!("Cache: failed to encrypt revision state");
+                return;
+            }
+        };
 
         let path = storage.cache_dir.join("revision_state.enc");
-        let _ = std::fs::write(&path, &encrypted);
+        if let Err(e) = std::fs::write(&path, &encrypted) {
+            warn!("Cache: failed to write revision state: {}", e);
+        } else {
+            debug!(
+                last_seen_revision = last_seen,
+                history_len = history_len,
+                "Cache: persisted revision state"
+            );
+        }
     }
 
     /// Get entry from memory cache.
@@ -434,23 +490,67 @@ impl LicenseCache {
         let _ = std::fs::write(&path, &encrypted);
     }
 
-    /// Encrypt data using XChaCha20-Poly1305 (simulated with XOR for now).
+    /// Encrypt data using XChaCha20-Poly1305 authenticated encryption.
     ///
-    /// TODO: Replace with actual XChaCha20-Poly1305 when adding chacha20poly1305 dep.
+    /// Returns nonce || ciphertext (24 bytes nonce prepended to ciphertext).
     fn encrypt(&self, plaintext: &[u8]) -> Option<Vec<u8>> {
-        // Simple XOR encryption as placeholder
-        // In production, use chacha20poly1305::XChaCha20Poly1305
-        let mut ciphertext = Vec::with_capacity(plaintext.len());
-        for (i, byte) in plaintext.iter().enumerate() {
-            ciphertext.push(byte ^ self.encryption_key[i % 32]);
-        }
-        Some(ciphertext)
+        // Generate random nonce
+        let mut nonce_bytes = [0u8; NONCE_SIZE];
+        OsRng.fill_bytes(&mut nonce_bytes);
+        let nonce = XNonce::from_slice(&nonce_bytes);
+
+        // Create cipher with the key
+        let cipher = XChaCha20Poly1305::new_from_slice(&self.encryption_key).ok()?;
+
+        // Encrypt
+        let ciphertext = cipher.encrypt(nonce, plaintext).ok()?;
+
+        // Prepend nonce to ciphertext
+        let mut result = Vec::with_capacity(NONCE_SIZE + ciphertext.len());
+        result.extend_from_slice(&nonce_bytes);
+        result.extend_from_slice(&ciphertext);
+
+        trace!(
+            plaintext_len = plaintext.len(),
+            ciphertext_len = result.len(),
+            "Cache: encrypted data"
+        );
+
+        Some(result)
     }
 
-    /// Decrypt data.
-    fn decrypt(&self, ciphertext: &[u8]) -> Option<Vec<u8>> {
-        // XOR is symmetric
-        self.encrypt(ciphertext)
+    /// Decrypt data using XChaCha20-Poly1305 authenticated encryption.
+    ///
+    /// Expects nonce || ciphertext format.
+    fn decrypt(&self, data: &[u8]) -> Option<Vec<u8>> {
+        if data.len() < NONCE_SIZE {
+            warn!(
+                data_len = data.len(),
+                "Cache: data too short to contain nonce"
+            );
+            return None;
+        }
+
+        // Split nonce and ciphertext
+        let (nonce_bytes, ciphertext) = data.split_at(NONCE_SIZE);
+        let nonce = XNonce::from_slice(nonce_bytes);
+
+        // Create cipher with the key
+        let cipher = XChaCha20Poly1305::new_from_slice(&self.encryption_key).ok()?;
+
+        // Decrypt
+        let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|e| {
+            warn!("Cache: decryption failed (possible tampering): {}", e);
+            e
+        }).ok()?;
+
+        trace!(
+            ciphertext_len = data.len(),
+            plaintext_len = plaintext.len(),
+            "Cache: decrypted data"
+        );
+
+        Some(plaintext)
     }
 }
 

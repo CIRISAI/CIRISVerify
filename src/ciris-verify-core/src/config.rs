@@ -1,5 +1,6 @@
 //! Configuration for the verification engine.
 
+use std::path::PathBuf;
 use std::time::Duration;
 
 /// Trust model for multi-source validation.
@@ -35,6 +36,9 @@ pub struct VerifyConfig {
     pub offline_grace: Duration,
     /// Key alias for hardware signer.
     pub key_alias: String,
+    /// Directory for persistent cache storage.
+    /// If None, uses XDG cache dir or temp directory.
+    pub cache_dir: Option<PathBuf>,
 }
 
 impl Default for VerifyConfig {
@@ -50,6 +54,50 @@ impl Default for VerifyConfig {
             cache_ttl: Duration::from_secs(300),
             offline_grace: Duration::from_secs(72 * 60 * 60), // 72 hours
             key_alias: "ciris_verify_key".into(),
+            cache_dir: Self::default_cache_dir(),
         }
+    }
+}
+
+impl VerifyConfig {
+    /// Get the default cache directory path.
+    ///
+    /// Uses XDG cache directory on Linux, Application Support on macOS,
+    /// Local AppData on Windows, or falls back to a temp directory.
+    fn default_cache_dir() -> Option<PathBuf> {
+        // Try XDG_CACHE_HOME on Linux/Unix
+        #[cfg(target_os = "linux")]
+        {
+            if let Ok(cache_home) = std::env::var("XDG_CACHE_HOME") {
+                return Some(PathBuf::from(cache_home).join("ciris-verify"));
+            }
+            if let Ok(home) = std::env::var("HOME") {
+                return Some(PathBuf::from(home).join(".cache").join("ciris-verify"));
+            }
+        }
+
+        // Use Application Support on macOS
+        #[cfg(target_os = "macos")]
+        {
+            if let Ok(home) = std::env::var("HOME") {
+                return Some(
+                    PathBuf::from(home)
+                        .join("Library")
+                        .join("Caches")
+                        .join("ai.ciris.verify"),
+                );
+            }
+        }
+
+        // Use Local AppData on Windows
+        #[cfg(target_os = "windows")]
+        {
+            if let Ok(local_app_data) = std::env::var("LOCALAPPDATA") {
+                return Some(PathBuf::from(local_app_data).join("CIRISVerify").join("cache"));
+            }
+        }
+
+        // Fallback to temp directory
+        Some(std::env::temp_dir().join("ciris-verify-cache"))
     }
 }

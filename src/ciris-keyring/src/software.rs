@@ -15,7 +15,7 @@
 
 use async_trait::async_trait;
 use ed25519_dalek::{Signature as Ed25519Signature, Signer as Ed25519SignerTrait, SigningKey as Ed25519SigningKey};
-use p256::ecdsa::{signature::Signer, Signature, SigningKey};
+use p256::ecdsa::{Signature, SigningKey};
 use p256::elliptic_curve::rand_core::OsRng;
 
 use crate::error::KeyringError;

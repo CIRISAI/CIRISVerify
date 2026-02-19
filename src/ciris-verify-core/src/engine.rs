@@ -103,11 +103,15 @@ impl LicenseEngine {
             config.cert_pin.clone(),
         );
 
-        // Initialize license cache
-        info!("LicenseEngine: creating license cache (ttl={}s)", config.cache_ttl.as_secs());
+        // Initialize license cache with persistent storage
+        info!(
+            cache_ttl = config.cache_ttl.as_secs(),
+            cache_dir = ?config.cache_dir,
+            "LicenseEngine: creating license cache"
+        );
         let cache = LicenseCache::new(
             &config.key_alias,
-            None, // TODO: Add persistent storage path
+            config.cache_dir.clone(),
             config.cache_ttl,
         );
 
@@ -194,7 +198,7 @@ impl LicenseEngine {
             config.cert_pin.clone(),
         );
 
-        let cache = LicenseCache::new(&config.key_alias, None, config.cache_ttl);
+        let cache = LicenseCache::new(&config.key_alias, config.cache_dir.clone(), config.cache_ttl);
 
         let https_client = HttpsClient::new(
             &config.https_endpoint,
