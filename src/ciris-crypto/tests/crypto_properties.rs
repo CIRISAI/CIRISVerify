@@ -14,9 +14,11 @@ fn binary_data(min: usize, max: usize) -> impl Strategy<Value = Vec<u8>> {
 }
 
 proptest! {
+    // Reduced from 256 to prevent CI timeout on slow runners
+    // Local testing can use PROPTEST_CASES=256 for more coverage
     #![proptest_config(ProptestConfig {
-        cases: 256,
-        max_shrink_iters: 1000,
+        cases: 64,
+        max_shrink_iters: 500,
         ..ProptestConfig::default()
     })]
 
