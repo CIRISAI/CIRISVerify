@@ -22,8 +22,8 @@ use windows::{
         BCryptCloseAlgorithmProvider, BCryptOpenAlgorithmProvider, NCryptCreatePersistedKey,
         NCryptDeleteKey, NCryptExportKey, NCryptFinalizeKey, NCryptFreeObject, NCryptGetProperty,
         NCryptOpenKey, NCryptOpenStorageProvider, NCryptSignHash, BCRYPT_ECCPUBLIC_BLOB,
-        BCRYPT_ECDSA_P256_ALGORITHM, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, NCRYPT_FLAGS,
-        NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE, NCRYPT_SILENT_FLAG,
+        BCRYPT_ECDSA_P256_ALGORITHM, BCRYPT_OPEN_ALGORITHM_PROVIDER_FLAGS, CERT_KEY_SPEC,
+        NCRYPT_FLAGS, NCRYPT_KEY_HANDLE, NCRYPT_PROV_HANDLE, NCRYPT_SILENT_FLAG,
     },
 };
 
@@ -116,7 +116,7 @@ impl WindowsTpmSigner {
         if status.is_ok() {
             // Clean up
             unsafe {
-                let _ = NCryptFreeObject(provider_handle.0);
+                let _ = NCryptFreeObject(provider_handle);
             }
             tracing::debug!("Windows TPM: Platform Crypto Provider available");
             true
@@ -192,8 +192,8 @@ impl WindowsTpmSigner {
                 &mut key_handle,
                 PCWSTR(algo_name.as_ptr()),
                 PCWSTR(key_name_wide.as_ptr()),
-                0,               // dwLegacyKeySpec
-                NCRYPT_FLAGS(0), // dwFlags
+                CERT_KEY_SPEC(0), // dwLegacyKeySpec
+                NCRYPT_FLAGS(0),  // dwFlags
             )
         };
 
@@ -209,7 +209,7 @@ impl WindowsTpmSigner {
         if status.is_err() {
             // Clean up on failure
             unsafe {
-                let _ = NCryptFreeObject(key_handle.0);
+                let _ = NCryptFreeObject(key_handle);
             }
             return Err(KeyringError::HardwareError {
                 reason: format!("Failed to finalize TPM key: {:?}", status),
@@ -248,8 +248,8 @@ impl WindowsTpmSigner {
                 *provider,
                 &mut key_handle,
                 PCWSTR(key_name_wide.as_ptr()),
-                0,               // dwLegacyKeySpec
-                NCRYPT_FLAGS(0), // dwFlags
+                CERT_KEY_SPEC(0), // dwLegacyKeySpec
+                NCRYPT_FLAGS(0),  // dwFlags
             )
         };
 
@@ -471,7 +471,7 @@ impl Drop for WindowsTpmSigner {
             if let Ok(mut handle_guard) = self.key_handle.lock() {
                 if let Some(handle) = handle_guard.take() {
                     unsafe {
-                        let _ = NCryptFreeObject(handle.0);
+                        let _ = NCryptFreeObject(handle);
                     }
                 }
             }
@@ -480,7 +480,7 @@ impl Drop for WindowsTpmSigner {
             if let Ok(mut provider_guard) = self.provider.lock() {
                 if let Some(provider) = provider_guard.take() {
                     unsafe {
-                        let _ = NCryptFreeObject(provider.0);
+                        let _ = NCryptFreeObject(provider);
                     }
                 }
             }
@@ -559,7 +559,7 @@ impl HardwareSigner for WindowsTpmSigner {
                         })?;
                 if let Some(handle) = handle_guard.take() {
                     unsafe {
-                        let _ = NCryptFreeObject(handle.0);
+                        let _ = NCryptFreeObject(handle);
                     }
                 }
             }
