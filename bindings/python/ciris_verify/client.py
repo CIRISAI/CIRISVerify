@@ -174,6 +174,25 @@ class CIRISVerify:
         return False
 
     @staticmethod
+    def _is_android() -> bool:
+        """Check if running on Android (Chaquopy).
+
+        Android detection via:
+        1. ANDROID_ROOT environment variable (set by Android runtime)
+        2. Chaquopy's Java module availability
+        """
+        # Chaquopy sets ANDROID_ROOT environment variable
+        if os.environ.get("ANDROID_ROOT"):
+            return True
+        # Check for Chaquopy-specific marker
+        try:
+            import java  # noqa: F401
+            return True
+        except ImportError:
+            pass
+        return False
+
+    @staticmethod
     def _find_ios_framework() -> Optional[Path]:
         """Find CIRISVerify framework on iOS."""
         # Check explicit env var first
@@ -202,6 +221,43 @@ class CIRISVerify:
 
         return None
 
+    @staticmethod
+    def _find_android_library() -> Optional[Path]:
+        """Find CIRISVerify library on Android.
+
+        On Android with Chaquopy, native libraries from jniLibs are loaded
+        into the app's native library directory. ctypes.util.find_library()
+        doesn't return filesystem paths on Android, so we need to use the
+        Java context to get nativeLibraryDir.
+        """
+        import logging
+        logger = logging.getLogger(__name__)
+
+        # Use Chaquopy's Java context to get nativeLibraryDir
+        try:
+            from java import jclass
+            context = jclass("com.chaquo.python.Python").getPlatform().getApplication()
+            native_lib_dir = context.getApplicationInfo().nativeLibraryDir
+            logger.info(f"[CIRISVerify] Android nativeLibraryDir: {native_lib_dir}")
+
+            lib_path = Path(native_lib_dir) / "libciris_verify_ffi.so"
+            if lib_path.exists():
+                return lib_path
+        except Exception as e:
+            logger.warning(f"[CIRISVerify] Chaquopy context lookup failed: {e}")
+
+        # Fallback paths for common Android app locations
+        android_paths = [
+            "/data/app/ai.ciris.mobile/lib/arm64/libciris_verify_ffi.so",
+            "/data/data/ai.ciris.mobile/lib/libciris_verify_ffi.so",
+        ]
+        for path_str in android_paths:
+            path = Path(path_str)
+            if path.exists():
+                return path
+
+        return None
+
     def _find_binary(self, explicit_path: Optional[str]) -> Path:
         """Find CIRISVerify binary."""
         if explicit_path:
@@ -218,6 +274,16 @@ class CIRISVerify:
             raise BinaryNotFoundError(
                 "CIRISVerify.framework not found in app bundle. "
                 "Ensure CIRISVerify.xcframework is linked in Xcode."
+            )
+
+        # Android-specific library search (Chaquopy)
+        if self._is_android():
+            android_path = self._find_android_library()
+            if android_path:
+                return android_path
+            raise BinaryNotFoundError(
+                "libciris_verify_ffi.so not found on Android. "
+                "Ensure the native library is included in jniLibs."
             )
 
         # Search default paths
@@ -351,39 +417,50 @@ class CIRISVerify:
         self._lib.ciris_verify_destroy.argtypes = [ctypes.c_void_p]
         self._lib.ciris_verify_destroy.restype = None
 
-        # ciris_verify_import_key(handle, key_data, key_len) -> i32
-        self._lib.ciris_verify_import_key.argtypes = [
-            ctypes.c_void_p,  # handle
-            ctypes.c_char_p,  # key_data
-            ctypes.c_size_t,  # key_len
-        ]
-        self._lib.ciris_verify_import_key.restype = ctypes.c_int
+        # Ed25519 Portal key functions (optional - may not exist in older libraries)
+        # These functions enable agent identity signing with Portal-issued keys.
+        self._has_ed25519_support = False
+        try:
+            # ciris_verify_import_key(handle, key_data, key_len) -> i32
+            self._lib.ciris_verify_import_key.argtypes = [
+                ctypes.c_void_p,  # handle
+                ctypes.c_char_p,  # key_data
+                ctypes.c_size_t,  # key_len
+            ]
+            self._lib.ciris_verify_import_key.restype = ctypes.c_int
 
-        # ciris_verify_has_key(handle) -> i32
-        self._lib.ciris_verify_has_key.argtypes = [ctypes.c_void_p]
-        self._lib.ciris_verify_has_key.restype = ctypes.c_int
+            # ciris_verify_has_key(handle) -> i32
+            self._lib.ciris_verify_has_key.argtypes = [ctypes.c_void_p]
+            self._lib.ciris_verify_has_key.restype = ctypes.c_int
 
-        # ciris_verify_delete_key(handle) -> i32
-        self._lib.ciris_verify_delete_key.argtypes = [ctypes.c_void_p]
-        self._lib.ciris_verify_delete_key.restype = ctypes.c_int
+            # ciris_verify_delete_key(handle) -> i32
+            self._lib.ciris_verify_delete_key.argtypes = [ctypes.c_void_p]
+            self._lib.ciris_verify_delete_key.restype = ctypes.c_int
 
-        # ciris_verify_sign_ed25519(handle, data, data_len, sig_data, sig_len) -> i32
-        self._lib.ciris_verify_sign_ed25519.argtypes = [
-            ctypes.c_void_p,                    # handle
-            ctypes.c_char_p,                    # data
-            ctypes.c_size_t,                    # data_len
-            ctypes.POINTER(ctypes.c_void_p),    # signature_data (out)
-            ctypes.POINTER(ctypes.c_size_t),    # signature_len (out)
-        ]
-        self._lib.ciris_verify_sign_ed25519.restype = ctypes.c_int
+            # ciris_verify_sign_ed25519(handle, data, data_len, sig_data, sig_len) -> i32
+            self._lib.ciris_verify_sign_ed25519.argtypes = [
+                ctypes.c_void_p,                    # handle
+                ctypes.c_char_p,                    # data
+                ctypes.c_size_t,                    # data_len
+                ctypes.POINTER(ctypes.c_void_p),    # signature_data (out)
+                ctypes.POINTER(ctypes.c_size_t),    # signature_len (out)
+            ]
+            self._lib.ciris_verify_sign_ed25519.restype = ctypes.c_int
 
-        # ciris_verify_get_ed25519_public_key(handle, key_data, key_len) -> i32
-        self._lib.ciris_verify_get_ed25519_public_key.argtypes = [
-            ctypes.c_void_p,                    # handle
-            ctypes.POINTER(ctypes.c_void_p),    # key_data (out)
-            ctypes.POINTER(ctypes.c_size_t),    # key_len (out)
-        ]
-        self._lib.ciris_verify_get_ed25519_public_key.restype = ctypes.c_int
+            # ciris_verify_get_ed25519_public_key(handle, key_data, key_len) -> i32
+            self._lib.ciris_verify_get_ed25519_public_key.argtypes = [
+                ctypes.c_void_p,                    # handle
+                ctypes.POINTER(ctypes.c_void_p),    # key_data (out)
+                ctypes.POINTER(ctypes.c_size_t),    # key_len (out)
+            ]
+            self._lib.ciris_verify_get_ed25519_public_key.restype = ctypes.c_int
+
+            self._has_ed25519_support = True
+        except AttributeError:
+            import logging
+            logging.getLogger(__name__).info(
+                "[CIRISVerify] Ed25519 key functions not available in this library version"
+            )
 
         # Initialize handle
         self._handle = self._lib.ciris_verify_init()
@@ -961,6 +1038,15 @@ class CIRISVerify:
     # Ed25519 Key Management (Portal-issued keys)
     # ========================================================================
 
+    @property
+    def has_ed25519_support(self) -> bool:
+        """Check if Ed25519 key functions are available.
+
+        Returns:
+            True if the library supports Ed25519 Portal key operations.
+        """
+        return getattr(self, "_has_ed25519_support", False)
+
     def import_key_sync(self, key_bytes: bytes) -> bool:
         """Import an Ed25519 signing key from Portal.
 
@@ -975,7 +1061,13 @@ class CIRISVerify:
 
         Raises:
             ValueError: If key_bytes is not 32 bytes.
+            NotImplementedError: If Ed25519 support is not available.
         """
+        if not self._has_ed25519_support:
+            raise NotImplementedError(
+                "Ed25519 key functions not available in this library version. "
+                "Update to ciris-verify >= 0.4.0 for Portal key support."
+            )
         if len(key_bytes) != 32:
             raise ValueError(f"Ed25519 key must be 32 bytes, got {len(key_bytes)}")
 
@@ -992,7 +1084,14 @@ class CIRISVerify:
 
         Returns:
             True if a key is loaded, False otherwise.
+
+        Raises:
+            NotImplementedError: If Ed25519 support is not available.
         """
+        if not self._has_ed25519_support:
+            raise NotImplementedError(
+                "Ed25519 key functions not available in this library version."
+            )
         ret = self._lib.ciris_verify_has_key(self._handle)
         return ret == 1
 
@@ -1001,7 +1100,14 @@ class CIRISVerify:
 
         Returns:
             True if deletion succeeded, False otherwise.
+
+        Raises:
+            NotImplementedError: If Ed25519 support is not available.
         """
+        if not self._has_ed25519_support:
+            raise NotImplementedError(
+                "Ed25519 key functions not available in this library version."
+            )
         ret = self._lib.ciris_verify_delete_key(self._handle)
         return ret == 0
 
@@ -1018,8 +1124,13 @@ class CIRISVerify:
             64-byte Ed25519 signature.
 
         Raises:
+            NotImplementedError: If Ed25519 support is not available.
             VerificationFailedError: If no key is loaded or signing fails.
         """
+        if not self._has_ed25519_support:
+            raise NotImplementedError(
+                "Ed25519 key functions not available in this library version."
+            )
         sig_data = ctypes.c_void_p()
         sig_len = ctypes.c_size_t()
 
@@ -1047,8 +1158,13 @@ class CIRISVerify:
             32-byte Ed25519 public key.
 
         Raises:
+            NotImplementedError: If Ed25519 support is not available.
             VerificationFailedError: If no key is loaded.
         """
+        if not self._has_ed25519_support:
+            raise NotImplementedError(
+                "Ed25519 key functions not available in this library version."
+            )
         key_data = ctypes.c_void_p()
         key_len = ctypes.c_size_t()
 
