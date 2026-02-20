@@ -2,7 +2,7 @@
 
 **The DMV for AI Agents — Identity, Integrity, and Accountability**
 
-**Protocol Version**: 2.0.0 | **Cryptographic Baseline**: Ed25519 + ML-DSA-65 (Hybrid)
+**Protocol Version**: 2.1.0 | **Cryptographic Baseline**: Ed25519 + ML-DSA-65 (Hybrid)
 
 CIRISVerify is the trust anchor for the CIRIS ecosystem. Think of it like the DMV system for AI agents: it issues the driver's license (identity), performs the vehicle inspection (software/hardware integrity), and tracks insurance (who is responsible and under what authority). Without it, any agent could claim to be anything.
 
@@ -50,6 +50,89 @@ CIRISVerify doesn't trust a single source. It uses an **HTTPS-authoritative, DNS
 **Transparency log**: Every verification event is recorded in an append-only log with a SHA-256 Merkle tree, providing tamper-evident audit trails and cryptographic inclusion proofs.
 
 **Is CIRISVerify sufficient to trust an agent?** No — it proves the agent is *authentic* (necessary). The CIRIS covenant system proves the agent *behaves ethically* (sufficient together). CIRISVerify is the DMV; the covenant is the rules of the road.
+
+## The Unified Attestation (The Full Background Check)
+
+When you get pulled over, the officer runs a comprehensive check. CIRISVerify does the same thing — a **unified attestation** that verifies everything at once:
+
+### 1. License Authenticity — Key Attestation
+*"Is this license real, not a fake ID?"*
+
+The agent's signing key is checked:
+- **Portal key**: The key was issued by CIRISRegistry (like a DMV-issued license)
+- **Ephemeral key**: Self-generated key (like a learner's permit — limited trust)
+- **Hardware-bound**: Key is stored in secure hardware and cannot be extracted
+- **Signature test**: Agent signs a random challenge to prove possession
+
+### 2. Vehicle Inspection — File Integrity (Full & Spot Checks)
+*"Has this car been modified? Is the VIN legit?"*
+
+CIRISVerify fetches the build manifest from CIRISRegistry and verifies every file:
+
+| Check Type | What It Does | Use Case |
+|------------|--------------|----------|
+| **Full Check** | SHA-256 every file against manifest | Startup, after updates |
+| **Spot Check** | Random sample of N files | Periodic runtime checks |
+
+Any modification — even one byte — is detected. Unexpected files (potential backdoors) are flagged.
+
+### 3. DMV Database — Source Validation
+*"Let me run your plates through the system..."*
+
+Multiple independent sources are queried to validate the agent's license:
+
+| Source | Role | What It Checks |
+|--------|------|----------------|
+| **HTTPS US** | Authoritative | License JWT, revocation status |
+| **HTTPS EU** | Authoritative | Independent verification |
+| **DNS US** | Advisory | Cross-check, fallback |
+| **DNS EU** | Advisory | Cross-check, fallback |
+
+If sources disagree, that's suspicious — like if your license shows up as valid in one state but revoked in another.
+
+### 4. Driving Record — Audit Trail Integrity
+*"Let me check your driving history..."*
+
+The agent's complete audit trail is cryptographically verified:
+
+- **Hash chain**: Every audit entry links to the previous one (like blockchain)
+- **Genesis validity**: The chain started correctly with first registry contact
+- **Signature verification**: Every entry was signed by the Portal key
+- **Tamper detection**: Any modification breaks the chain
+
+```
+Entry 1: previous="genesis" → hash=H1 → signed(H1)
+Entry 2: previous=H1 → hash=H2 → signed(H2)
+Entry 3: previous=H2 → hash=H3 → signed(H3)
+... unbroken chain back to first registry contact
+```
+
+If someone tampered with the audit trail, CIRISVerify detects exactly where.
+
+### Attestation Levels (0-5)
+
+The unified attestation produces a trust level based on how many checks pass:
+
+| Level | Meaning | Checks Passed |
+|-------|---------|---------------|
+| **5** | Full trust | All checks pass |
+| **4** | High trust | Minor issues (DNS advisory disagree) |
+| **3** | Medium trust | Some checks failed |
+| **2** | Low trust | Multiple failures |
+| **1** | Minimal trust | Most checks failed |
+| **0** | No trust | Critical failures (tampered binary, broken audit) |
+
+```python
+# Example unified attestation result
+{
+    "valid": true,
+    "level": 5,
+    "key_attestation": {"key_type": "portal", "hardware_type": "TPM"},
+    "file_integrity": {"full": {"valid": true, "files_checked": 127}},
+    "sources": {"dns_us": true, "dns_eu": true, "https": true},
+    "audit_trail": {"valid": true, "entries_verified": 1847, "genesis_valid": true}
+}
+```
 
 ## Architecture
 

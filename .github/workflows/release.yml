@@ -28,11 +28,12 @@ jobs:
             artifact: libciris_verify_ffi.so
             features: tpm
 
-          # Linux ARM64 (native runner with TPM support)
-          - os: ubuntu-24.04-arm64
+          # Linux ARM64 (cross-compile - native ARM64 runners have limited availability)
+          # Note: TPM support disabled in cross-compile; use self-hosted ARM64 for TPM
+          - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             artifact: libciris_verify_ffi.so
-            features: tpm
+            cross: true
 
           # macOS x86_64
           - os: macos-latest
@@ -61,13 +62,24 @@ jobs:
         with:
           key: release-${{ matrix.target }}
 
-      # Install TPM development libraries (Linux)
+      # Install TPM development libraries (Linux native only, not cross-compile)
       - name: Install TPM libs (Linux)
-        if: runner.os == 'Linux'
+        if: runner.os == 'Linux' && !matrix.cross
         run: sudo apt-get update && sudo apt-get install -y libtss2-dev
+
+      # Install cross for ARM64 cross-compilation
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
+
+      # Build with cross (ARM64 Linux)
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }} -p ciris-verify-ffi
 
       # Build native
       - name: Build (native)
+        if: ${{ !matrix.cross }}
         shell: bash
         run: |
           FEATURES="${{ matrix.features }}"

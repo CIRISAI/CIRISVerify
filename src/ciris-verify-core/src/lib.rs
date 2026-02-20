@@ -50,6 +50,7 @@
 #![allow(clippy::module_name_repetitions)] // Allow Type in module::Type
 #![allow(clippy::must_use_candidate)] // Not all functions need must_use
 
+pub mod audit;
 pub mod cache;
 pub mod config;
 pub mod dns;
@@ -58,10 +59,12 @@ pub mod error;
 pub mod https;
 pub mod jwt;
 pub mod license;
+pub mod registry;
 pub mod revocation;
 pub mod security;
 pub mod transparency;
 pub mod types;
+pub mod unified;
 pub mod validation;
 pub mod watchdog;
 
@@ -84,3 +87,11 @@ pub use types::{
     RuntimeViolation, ShutdownDirective, ShutdownType, ViolationSeverity,
 };
 pub use watchdog::ShutdownWatchdog;
+
+// New unified attestation API
+pub use audit::{AuditEntry, AuditVerificationResult, AuditVerifier};
+pub use registry::{BuildRecord, FileManifest as RegistryManifest, RegistryClient};
+pub use unified::{
+    FullAttestationRequest, FullAttestationResult, IntegrityCheckResult, SourceCheckResult,
+    UnifiedAttestationEngine,
+};
