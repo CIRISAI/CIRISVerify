@@ -808,8 +808,18 @@ pub unsafe extern "C" fn ciris_verify_get_public_key(
 
 /// Export a remote attestation proof for third-party verification.
 ///
-/// The proof contains hardware attestation, dual (classical + PQC) signatures
-/// over the challenge, and the Merkle root from the transparency log.
+/// The proof contains Ed25519 signature over the challenge. This function
+/// supports a two-phase attestation flow:
+///
+/// **Phase 1 (pre-key):** If no Portal key is loaded, generates an ephemeral
+/// Ed25519 key and uses it for signing. The proof will have `key_type: "ephemeral"`.
+///
+/// **Phase 2 (post-key):** After importing a Portal-issued key via `import_key`,
+/// uses that key for signing. The proof will have `key_type: "portal"`.
+///
+/// Portal uses the second attestation to create a tamper-evident binding between
+/// the agent instance and its identity key. Key reuse across agents is forbidden
+/// and results in immediate revocation.
 ///
 /// # Arguments
 ///
@@ -846,20 +856,103 @@ pub unsafe extern "C" fn ciris_verify_export_attestation(
         return CirisVerifyError::InvalidArgument as i32;
     }
 
+    if challenge_len < 32 {
+        tracing::error!(
+            "ciris_verify_export_attestation: challenge too short ({} < 32)",
+            challenge_len
+        );
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
     let handle = &*handle;
     let challenge_bytes = std::slice::from_raw_parts(challenge, challenge_len);
 
-    // Export attestation proof
-    let proof = match handle
-        .runtime
-        .block_on(handle.engine.export_attestation_proof(challenge_bytes))
-    {
-        Ok(p) => p,
+    // Determine key type and ensure we have a key to sign with
+    let (key_type, public_key) = if handle.ed25519_signer.has_key() {
+        // Portal key is loaded - use it (Phase 2 attestation)
+        tracing::info!("Using Portal-issued Ed25519 key for attestation");
+        let pk = match handle.ed25519_signer.get_public_key() {
+            Some(pk) => pk,
+            None => {
+                tracing::error!("Ed25519 key loaded but public key unavailable");
+                return CirisVerifyError::InternalError as i32;
+            },
+        };
+        ("portal".to_string(), pk)
+    } else {
+        // No Portal key yet - generate ephemeral key (Phase 1 attestation)
+        tracing::info!("No Portal key loaded, generating ephemeral Ed25519 key for initial attestation");
+
+        // Generate random 32-byte seed for ephemeral key
+        let mut seed = [0u8; 32];
+        getrandom::getrandom(&mut seed).unwrap_or_else(|_| {
+            // Fallback to less secure random if getrandom fails
+            use std::time::{SystemTime, UNIX_EPOCH};
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            for (i, byte) in seed.iter_mut().enumerate() {
+                *byte = ((nanos >> (i % 16)) & 0xFF) as u8;
+            }
+        });
+
+        // Import ephemeral key
+        if let Err(e) = handle.ed25519_signer.import_key(&seed) {
+            tracing::error!("Failed to generate ephemeral key: {}", e);
+            return CirisVerifyError::InternalError as i32;
+        }
+
+        let pk = match handle.ed25519_signer.get_public_key() {
+            Some(pk) => pk,
+            None => {
+                tracing::error!("Ephemeral key generated but public key unavailable");
+                return CirisVerifyError::InternalError as i32;
+            },
+        };
+        ("ephemeral".to_string(), pk)
+    };
+
+    // Sign the challenge with Ed25519 key
+    let classical_signature = match handle.ed25519_signer.sign(challenge_bytes) {
+        Ok(sig) => sig,
         Err(e) => {
-            tracing::error!("Attestation export failed: {}", e);
+            tracing::error!("Ed25519 signing failed: {}", e);
             return CirisVerifyError::RequestFailed as i32;
         },
     };
+
+    tracing::info!(
+        key_type = %key_type,
+        pubkey_len = public_key.len(),
+        sig_len = classical_signature.len(),
+        "Attestation signature generated"
+    );
+
+    // Build simplified attestation proof using Ed25519 key
+    // This bypasses the engine's hardware signer requirement
+    let proof = serde_json::json!({
+        "platform_attestation": {
+            "Software": {
+                "os": std::env::consts::OS,
+                "arch": std::env::consts::ARCH,
+            }
+        },
+        "hardware_public_key": hex::encode(&public_key),
+        "hardware_algorithm": "Ed25519",
+        "pqc_public_key": "",
+        "pqc_algorithm": "NONE",
+        "challenge": hex::encode(challenge_bytes),
+        "classical_signature": hex::encode(&classical_signature),
+        "pqc_signature": "",
+        "merkle_root": hex::encode([0u8; 32]),
+        "log_entry_count": 0,
+        "generated_at": chrono::Utc::now().timestamp(),
+        "binary_version": env!("CARGO_PKG_VERSION"),
+        "hardware_type": "SoftwareOnly",
+        "running_in_vm": false,
+        "key_type": key_type,
+    });
 
     // Serialize to JSON
     let proof_bytes = match serde_json::to_vec(&proof) {

@@ -28,6 +28,8 @@ tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 serde_json.workspace = true
 libc = "0.2"
 hex.workspace = true
+getrandom = "0.2"
+chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 
 # For mobile targets
 [target.'cfg(target_os = "android")'.dependencies]
