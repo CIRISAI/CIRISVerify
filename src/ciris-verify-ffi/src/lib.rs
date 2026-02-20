@@ -349,21 +349,47 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
     };
 
     // Create Ed25519 signer for Portal-issued keys
+    // Note: MutableEd25519Signer::new() automatically attempts to load persisted keys
     let ed25519_signer = MutableEd25519Signer::new("agent_signing");
-    tracing::info!("Ed25519 signer initialized (no key loaded yet)");
 
-    // Auto-migration: try to import agent_signing.key if found
-    if let Some(key_path) = find_agent_signing_key() {
-        if try_auto_import_key(&ed25519_signer, &key_path) {
-            tracing::info!("Auto-migrated agent key from {}", key_path.display());
-        } else {
-            tracing::warn!(
-                "Found agent_signing.key at {} but failed to import",
+    // Log comprehensive diagnostics for debugging key persistence issues
+    tracing::info!("Ed25519 signer initialized");
+    tracing::info!("{}", ed25519_signer.diagnostics());
+
+    // Check if key was loaded from persistence
+    if ed25519_signer.has_key() {
+        tracing::info!(
+            "✓ Portal key loaded from persistent storage at {:?}",
+            ed25519_signer.current_storage_path()
+        );
+    } else {
+        tracing::info!(
+            "No persisted Portal key found. Key will be stored at {:?} after import.",
+            ed25519_signer.current_storage_path().or_else(|| {
+                // Trigger path calculation if not set
+                let _ = ed25519_signer.diagnostics();
+                ed25519_signer.current_storage_path()
+            })
+        );
+
+        // Legacy auto-migration: try to import agent_signing.key if found in old locations
+        if let Some(key_path) = find_agent_signing_key() {
+            tracing::info!(
+                "Found legacy agent_signing.key at {}, attempting migration...",
                 key_path.display()
             );
+            if try_auto_import_key(&ed25519_signer, &key_path) {
+                tracing::info!(
+                    "✓ Successfully migrated agent key from {} to new storage",
+                    key_path.display()
+                );
+            } else {
+                tracing::warn!(
+                    "Failed to migrate agent_signing.key from {}",
+                    key_path.display()
+                );
+            }
         }
-    } else {
-        tracing::debug!("No agent_signing.key found for auto-migration");
     }
 
     tracing::info!("CIRISVerify FFI init complete — handle ready");
@@ -881,7 +907,9 @@ pub unsafe extern "C" fn ciris_verify_export_attestation(
         ("portal".to_string(), pk)
     } else {
         // No Portal key yet - generate ephemeral key (Phase 1 attestation)
-        tracing::info!("No Portal key loaded, generating ephemeral Ed25519 key for initial attestation");
+        tracing::info!(
+            "No Portal key loaded, generating ephemeral Ed25519 key for initial attestation"
+        );
 
         // Generate random 32-byte seed for ephemeral key
         let mut seed = [0u8; 32];
@@ -1223,6 +1251,60 @@ pub unsafe extern "C" fn ciris_verify_get_ed25519_public_key(
 #[no_mangle]
 pub extern "C" fn ciris_verify_version() -> *const libc::c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const libc::c_char
+}
+
+/// Get diagnostic information about the Ed25519 signer state.
+///
+/// Returns detailed diagnostic info including:
+/// - Key alias
+/// - Whether key is loaded in memory
+/// - Storage path for persistence
+/// - Environment variables affecting storage
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `diag_data` - Output pointer for diagnostic string (caller must free with `ciris_verify_free`)
+/// * `diag_len` - Output pointer for string length
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `diag_data` and `diag_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_get_diagnostics(
+    handle: *mut CirisVerifyHandle,
+    diag_data: *mut *mut u8,
+    diag_len: *mut usize,
+) -> i32 {
+    if handle.is_null() || diag_data.is_null() || diag_len.is_null() {
+        tracing::error!("get_diagnostics: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+    let diagnostics = handle.ed25519_signer.diagnostics();
+    let bytes = diagnostics.as_bytes();
+
+    // Allocate and copy diagnostics string
+    let len = bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("get_diagnostics: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, len);
+
+    *diag_data = ptr;
+    *diag_len = len;
+
+    tracing::debug!("Diagnostics returned ({} bytes)", len);
+    CirisVerifyError::Success as i32
 }
 
 // Android JNI bindings

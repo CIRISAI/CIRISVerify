@@ -437,24 +437,169 @@ impl HardwareSigner for Ed25519SoftwareSigner {
     }
 }
 
-/// Thread-safe mutable Ed25519 software signer.
+/// Thread-safe mutable Ed25519 software signer with optional persistence.
 ///
 /// Wraps `Ed25519SoftwareSigner` with interior mutability for use in
-/// concurrent contexts.
+/// concurrent contexts. Supports persisting keys to filesystem storage.
+///
+/// # Storage Locations (tried in order)
+///
+/// 1. `$CIRIS_KEY_PATH` environment variable (if set)
+/// 2. Android: `$CIRIS_DATA_DIR/{alias}.key` (set by app to Context.getFilesDir())
+/// 3. Linux/macOS: `$XDG_DATA_HOME/ciris-verify/{alias}.key` or `~/.local/share/ciris-verify/{alias}.key`
+/// 4. Windows: `%LOCALAPPDATA%\ciris-verify\{alias}.key`
+/// 5. Fallback: `./{alias}.key` in current directory
+///
+/// # Security Note
+///
+/// Keys are stored in plaintext. On Android, app-private storage provides
+/// isolation. On desktop, consider encrypting the storage directory.
 pub struct MutableEd25519Signer {
     inner: std::sync::RwLock<Ed25519SoftwareSigner>,
+    /// Path to key storage file (set after first persistence attempt)
+    storage_path: std::sync::RwLock<Option<std::path::PathBuf>>,
 }
 
 impl MutableEd25519Signer {
-    /// Create a new mutable Ed25519 signer without a key.
+    /// Create a new mutable Ed25519 signer, attempting to load persisted key.
+    ///
+    /// If a persisted key exists at the storage location, it will be loaded.
+    /// Otherwise, the signer starts with no key loaded.
     pub fn new(alias: impl Into<String>) -> Self {
-        Self {
-            inner: std::sync::RwLock::new(Ed25519SoftwareSigner::new(alias)),
+        let alias = alias.into();
+        tracing::info!(alias = %alias, "MutableEd25519Signer::new - initializing");
+
+        let signer = Self {
+            inner: std::sync::RwLock::new(Ed25519SoftwareSigner::new(alias.clone())),
+            storage_path: std::sync::RwLock::new(None),
+        };
+
+        // Try to load persisted key
+        match signer.try_load_persisted_key() {
+            Ok(true) => {
+                tracing::info!(
+                    alias = %alias,
+                    "Loaded persisted Ed25519 key from storage"
+                );
+            },
+            Ok(false) => {
+                tracing::debug!(
+                    alias = %alias,
+                    "No persisted Ed25519 key found"
+                );
+            },
+            Err(e) => {
+                tracing::warn!(
+                    alias = %alias,
+                    error = %e,
+                    "Failed to load persisted key (will start fresh)"
+                );
+            },
+        }
+
+        signer
+    }
+
+    /// Get the storage path for this signer's key.
+    fn get_storage_path(&self) -> Option<std::path::PathBuf> {
+        let alias = self.alias();
+        let filename = format!("{}.key", alias);
+
+        // 1. Check explicit environment variable
+        if let Ok(path) = std::env::var("CIRIS_KEY_PATH") {
+            let path = std::path::PathBuf::from(path);
+            tracing::debug!(path = %path.display(), "Using CIRIS_KEY_PATH for key storage");
+            return Some(path);
+        }
+
+        // 2. Check CIRIS_DATA_DIR (set by Android app)
+        if let Ok(data_dir) = std::env::var("CIRIS_DATA_DIR") {
+            let path = std::path::PathBuf::from(data_dir).join(&filename);
+            tracing::debug!(path = %path.display(), "Using CIRIS_DATA_DIR for key storage");
+            return Some(path);
+        }
+
+        // 3. Platform-specific data directory
+        #[cfg(target_os = "android")]
+        {
+            // On Android, fall back to current directory if CIRIS_DATA_DIR not set
+            tracing::warn!(
+                "CIRIS_DATA_DIR not set on Android - key persistence may not work. \
+                 Set CIRIS_DATA_DIR to Context.getFilesDir().getAbsolutePath()"
+            );
+            return Some(std::path::PathBuf::from(".").join(&filename));
+        }
+
+        #[cfg(not(target_os = "android"))]
+        {
+            // Desktop platforms: use XDG/AppData directories
+            if let Some(data_dir) = dirs::data_local_dir() {
+                let ciris_dir = data_dir.join("ciris-verify");
+                if let Err(e) = std::fs::create_dir_all(&ciris_dir) {
+                    tracing::warn!(
+                        error = %e,
+                        path = %ciris_dir.display(),
+                        "Failed to create ciris-verify data directory"
+                    );
+                }
+                let path = ciris_dir.join(&filename);
+                tracing::debug!(path = %path.display(), "Using platform data dir for key storage");
+                return Some(path);
+            }
+
+            // Fallback to current directory
+            tracing::warn!("No suitable data directory found - using current directory");
+            Some(std::path::PathBuf::from(".").join(&filename))
         }
     }
 
-    /// Import a key from bytes.
-    pub fn import_key(&self, key_bytes: &[u8]) -> Result<(), KeyringError> {
+    /// Try to load a persisted key from storage.
+    ///
+    /// Returns Ok(true) if key was loaded, Ok(false) if no key exists,
+    /// or Err if loading failed.
+    pub fn try_load_persisted_key(&self) -> Result<bool, KeyringError> {
+        let path = match self.get_storage_path() {
+            Some(p) => p,
+            None => {
+                tracing::debug!("No storage path available for key persistence");
+                return Ok(false);
+            },
+        };
+
+        // Update cached storage path
+        if let Ok(mut sp) = self.storage_path.write() {
+            *sp = Some(path.clone());
+        }
+
+        if !path.exists() {
+            tracing::debug!(path = %path.display(), "No persisted key file found");
+            return Ok(false);
+        }
+
+        tracing::info!(path = %path.display(), "Found persisted key file, loading...");
+
+        let key_bytes = std::fs::read(&path).map_err(|e| {
+            tracing::error!(path = %path.display(), error = %e, "Failed to read key file");
+            KeyringError::StorageFailed {
+                reason: format!("Failed to read key file: {}", e),
+            }
+        })?;
+
+        if key_bytes.len() != 32 {
+            tracing::error!(
+                path = %path.display(),
+                len = key_bytes.len(),
+                "Invalid key file size (expected 32 bytes)"
+            );
+            return Err(KeyringError::InvalidKey {
+                reason: format!(
+                    "Key file has invalid size: {} (expected 32)",
+                    key_bytes.len()
+                ),
+            });
+        }
+
+        // Import the key
         let mut inner = self
             .inner
             .write()
@@ -462,27 +607,236 @@ impl MutableEd25519Signer {
                 message: "Lock poisoned".into(),
             })?;
 
-        inner.import_key(key_bytes)
+        inner.import_key(&key_bytes)?;
+
+        tracing::info!(
+            path = %path.display(),
+            "Successfully loaded persisted Ed25519 key"
+        );
+
+        Ok(true)
     }
 
-    /// Check if a key is loaded.
+    /// Persist the current key to storage.
+    ///
+    /// Returns Ok(true) if persisted, Ok(false) if no key to persist,
+    /// or Err if persistence failed.
+    pub fn persist_key(&self) -> Result<bool, KeyringError> {
+        let path = match self.get_storage_path() {
+            Some(p) => p,
+            None => {
+                tracing::warn!("No storage path available - key will not be persisted");
+                return Ok(false);
+            },
+        };
+
+        // Update cached storage path
+        if let Ok(mut sp) = self.storage_path.write() {
+            *sp = Some(path.clone());
+        }
+
+        let inner = self.inner.read().map_err(|_| KeyringError::PlatformError {
+            message: "Lock poisoned".into(),
+        })?;
+
+        let key = match &inner.signing_key {
+            Some(k) => k,
+            None => {
+                tracing::debug!("No key loaded to persist");
+                return Ok(false);
+            },
+        };
+
+        // Get the seed bytes (private key)
+        let key_bytes = key.to_bytes();
+
+        // Ensure parent directory exists
+        if let Some(parent) = path.parent() {
+            if !parent.exists() {
+                std::fs::create_dir_all(parent).map_err(|e| {
+                    tracing::error!(
+                        path = %parent.display(),
+                        error = %e,
+                        "Failed to create key storage directory"
+                    );
+                    KeyringError::StorageFailed {
+                        reason: format!("Failed to create directory: {}", e),
+                    }
+                })?;
+            }
+        }
+
+        // Write key file with restricted permissions
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600) // rw------- (owner only)
+                .open(&path)
+                .map_err(|e| {
+                    tracing::error!(path = %path.display(), error = %e, "Failed to create key file");
+                    KeyringError::StorageFailed {
+                        reason: format!("Failed to create key file: {}", e),
+                    }
+                })?;
+
+            use std::io::Write;
+            file.write_all(&key_bytes).map_err(|e| {
+                tracing::error!(path = %path.display(), error = %e, "Failed to write key file");
+                KeyringError::StorageFailed {
+                    reason: format!("Failed to write key file: {}", e),
+                }
+            })?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&path, &key_bytes).map_err(|e| {
+                tracing::error!(path = %path.display(), error = %e, "Failed to write key file");
+                KeyringError::StorageFailed {
+                    reason: format!("Failed to write key file: {}", e),
+                }
+            })?;
+        }
+
+        tracing::info!(
+            path = %path.display(),
+            "Persisted Ed25519 key to storage"
+        );
+
+        Ok(true)
+    }
+
+    /// Delete the persisted key from storage.
+    pub fn delete_persisted_key(&self) -> Result<bool, KeyringError> {
+        let path = self
+            .storage_path
+            .read()
+            .ok()
+            .and_then(|p| p.clone())
+            .or_else(|| self.get_storage_path());
+
+        let path = match path {
+            Some(p) => p,
+            None => return Ok(false),
+        };
+
+        if !path.exists() {
+            tracing::debug!(path = %path.display(), "No persisted key file to delete");
+            return Ok(false);
+        }
+
+        std::fs::remove_file(&path).map_err(|e| {
+            tracing::error!(path = %path.display(), error = %e, "Failed to delete key file");
+            KeyringError::StorageFailed {
+                reason: format!("Failed to delete key file: {}", e),
+            }
+        })?;
+
+        tracing::info!(path = %path.display(), "Deleted persisted key file");
+        Ok(true)
+    }
+
+    /// Get the current storage path (if any).
+    pub fn current_storage_path(&self) -> Option<std::path::PathBuf> {
+        self.storage_path.read().ok().and_then(|p| p.clone())
+    }
+
+    /// Import a key from bytes and persist to storage.
+    ///
+    /// This is the primary method for importing Portal-issued keys.
+    /// The key is stored both in memory and persisted to disk.
+    pub fn import_key(&self, key_bytes: &[u8]) -> Result<(), KeyringError> {
+        tracing::info!(
+            key_len = key_bytes.len(),
+            "MutableEd25519Signer::import_key - importing key"
+        );
+
+        // First import to memory
+        {
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|_| KeyringError::PlatformError {
+                    message: "Lock poisoned".into(),
+                })?;
+
+            inner.import_key(key_bytes)?;
+        }
+
+        tracing::info!("Key imported to memory, attempting to persist...");
+
+        // Then persist to storage
+        match self.persist_key() {
+            Ok(true) => {
+                tracing::info!("Key successfully persisted to storage");
+            },
+            Ok(false) => {
+                tracing::warn!(
+                    "Key imported to memory but NOT persisted (no storage path). \
+                     Key will be lost when process exits!"
+                );
+            },
+            Err(e) => {
+                tracing::error!(
+                    error = %e,
+                    "Key imported to memory but persistence FAILED. \
+                     Key will be lost when process exits!"
+                );
+                // Don't fail the import - key is still in memory
+            },
+        }
+
+        Ok(())
+    }
+
+    /// Check if a key is loaded (in memory).
     pub fn has_key(&self) -> bool {
-        self.inner
+        let has = self
+            .inner
             .read()
             .map(|inner| inner.has_key())
-            .unwrap_or(false)
+            .unwrap_or(false);
+
+        tracing::debug!(has_key = has, "MutableEd25519Signer::has_key check");
+        has
     }
 
-    /// Clear the loaded key.
+    /// Clear the loaded key from memory and optionally delete from storage.
     pub fn clear_key(&self) -> Result<(), KeyringError> {
-        let mut inner = self
-            .inner
-            .write()
-            .map_err(|_| KeyringError::PlatformError {
-                message: "Lock poisoned".into(),
-            })?;
+        tracing::info!("MutableEd25519Signer::clear_key - clearing key");
 
-        inner.clear_key();
+        // Clear from memory
+        {
+            let mut inner = self
+                .inner
+                .write()
+                .map_err(|_| KeyringError::PlatformError {
+                    message: "Lock poisoned".into(),
+                })?;
+
+            inner.clear_key();
+        }
+
+        // Delete from storage
+        match self.delete_persisted_key() {
+            Ok(true) => {
+                tracing::info!("Key cleared from memory and deleted from storage");
+            },
+            Ok(false) => {
+                tracing::debug!("Key cleared from memory (no persisted key to delete)");
+            },
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    "Key cleared from memory but failed to delete from storage"
+                );
+            },
+        }
+
         Ok(())
     }
 
@@ -517,6 +871,27 @@ impl MutableEd25519Signer {
             .read()
             .map(|inner| inner.alias.clone())
             .unwrap_or_default()
+    }
+
+    /// Get diagnostic information about the signer state.
+    pub fn diagnostics(&self) -> String {
+        let has_key = self.has_key();
+        let storage_path = self.current_storage_path();
+        let alias = self.alias();
+
+        format!(
+            "MutableEd25519Signer diagnostics:\n\
+             - alias: {}\n\
+             - has_key (memory): {}\n\
+             - storage_path: {:?}\n\
+             - CIRIS_KEY_PATH: {:?}\n\
+             - CIRIS_DATA_DIR: {:?}",
+            alias,
+            has_key,
+            storage_path,
+            std::env::var("CIRIS_KEY_PATH").ok(),
+            std::env::var("CIRIS_DATA_DIR").ok(),
+        )
     }
 }
 

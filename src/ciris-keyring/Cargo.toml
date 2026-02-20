@@ -26,6 +26,9 @@ p256 = { workspace = true }
 ed25519-dalek.workspace = true
 rand_core.workspace = true
 
+# Cross-platform data directories for key persistence
+dirs = "5"
+
 # Cross-platform keyring for key storage (macOS Keychain, Windows Credential Manager, Linux Secret Service)
 keyring = { version = "3", optional = true }
 
