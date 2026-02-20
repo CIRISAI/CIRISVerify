@@ -53,7 +53,7 @@ enum Commands {
         dns_eu: String,
 
         /// HTTPS endpoint
-        #[arg(long, default_value = "https://registry.ciris.ai")]
+        #[arg(long, default_value = "https://api.registry.ciris-services-1.ai")]
         https: String,
 
         /// Request timeout in seconds
