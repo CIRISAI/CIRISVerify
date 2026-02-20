@@ -16,6 +16,10 @@ ios = ["ciris-keyring/ios"]
 tpm = ["ciris-keyring/tpm"]
 tpm-windows = ["ciris-keyring/tpm-windows"]  # Experimental: Windows native TPM
 
+[[bin]]
+name = "ciris-verify"
+path = "src/bin/ciris_verify.rs"
+
 [dependencies]
 # Internal crates
 ciris-keyring.workspace = true
@@ -25,6 +29,9 @@ ciris-crypto.workspace = true
 tokio.workspace = true
 async-trait.workspace = true
 futures.workspace = true
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
@@ -37,6 +44,7 @@ anyhow.workspace = true
 
 # Logging
 tracing.workspace = true
+tracing-subscriber.workspace = true
 
 # Time
 chrono.workspace = true
