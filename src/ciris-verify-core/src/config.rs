@@ -50,7 +50,7 @@ impl Default for VerifyConfig {
             https_endpoints: Vec::new(),
             trust_model: TrustModel::HttpsAuthoritative,
             cert_pin: None,
-            timeout: Duration::from_secs(30),
+            timeout: Duration::from_secs(10), // Must be < Python's 30s timeout
             cache_ttl: Duration::from_secs(300),
             offline_grace: Duration::from_secs(72 * 60 * 60), // 72 hours
             key_alias: "ciris_verify_key".into(),

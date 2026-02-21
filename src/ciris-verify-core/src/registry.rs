@@ -73,7 +73,7 @@ impl RegistryClient {
     pub fn new(base_url: &str, timeout: Duration) -> Result<Self, VerifyError> {
         let client = Client::builder()
             .timeout(timeout)
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(Duration::from_secs(5))  // Quick fail on unreachable hosts
             .user_agent(format!("CIRISVerify/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| VerifyError::HttpsError {

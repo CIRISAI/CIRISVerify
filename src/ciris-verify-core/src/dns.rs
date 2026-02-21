@@ -75,7 +75,7 @@ impl DnsValidator {
     pub async fn new(timeout: Duration) -> Result<Self, VerifyError> {
         let mut opts = ResolverOpts::default();
         opts.timeout = timeout;
-        opts.attempts = 3;
+        opts.attempts = 2; // Reduced for faster timeout
         opts.use_hosts_file = false;
 
         let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), opts);
@@ -105,7 +105,7 @@ impl DnsValidator {
 
         let mut opts = ResolverOpts::default();
         opts.timeout = timeout;
-        opts.attempts = 3;
+        opts.attempts = 2; // Reduced for faster timeout
         opts.use_hosts_file = false;
 
         let resolver = TokioAsyncResolver::tokio(config, opts);
