@@ -69,6 +69,10 @@ pub struct DnsTxtRecord {
 impl DnsValidator {
     /// Create a new DNS validator with default system resolver.
     ///
+    /// On Android, uses Google's public DNS (8.8.8.8) because Android doesn't have
+    /// /etc/resolv.conf and hickory-dns can't discover system DNS servers.
+    /// See: https://github.com/hickory-dns/hickory-dns/issues/652
+    ///
     /// # Errors
     ///
     /// Returns error if resolver initialization fails.
@@ -78,7 +82,17 @@ impl DnsValidator {
         opts.attempts = 2; // Reduced for faster timeout
         opts.use_hosts_file = false;
 
-        let resolver = TokioAsyncResolver::tokio(ResolverConfig::default(), opts);
+        // On Android, ResolverConfig::default() fails because there's no /etc/resolv.conf.
+        // Use Google's public DNS servers instead.
+        #[cfg(target_os = "android")]
+        let config = {
+            info!("Android: using Google public DNS (8.8.8.8) - no /etc/resolv.conf");
+            ResolverConfig::google()
+        };
+        #[cfg(not(target_os = "android"))]
+        let config = ResolverConfig::default();
+
+        let resolver = TokioAsyncResolver::tokio(config, opts);
 
         Ok(Self { resolver, timeout })
     }
