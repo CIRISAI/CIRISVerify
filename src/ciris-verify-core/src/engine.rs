@@ -272,10 +272,14 @@ impl LicenseEngine {
         }
 
         // 2. Multi-source validation
+        info!("Starting multi-source validation (DNS + HTTPS)...");
         let validation = self.consensus_validator.validate_steward_key().await;
 
-        debug!(
+        info!(
             validation_status = ?validation.status,
+            dns_us = validation.source_details.dns_us_reachable,
+            dns_eu = validation.source_details.dns_eu_reachable,
+            https = validation.source_details.https_reachable,
             "Multi-source validation complete"
         );
 

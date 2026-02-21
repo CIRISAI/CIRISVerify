@@ -24,9 +24,20 @@ use std::time::Duration;
 use base64::Engine;
 use hickory_resolver::config::{ResolverConfig, ResolverOpts};
 use hickory_resolver::TokioAsyncResolver;
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::error::VerifyError;
+
+/// DNS transport mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DnsTransport {
+    /// Standard UDP DNS (port 53) - may be blocked on mobile networks.
+    #[default]
+    Udp,
+    /// DNS-over-HTTPS (DoH) - works everywhere HTTPS works.
+    /// Uses Cloudflare 1.1.1.1 as the resolver.
+    DnsOverHttps,
+}
 
 /// DNS validator for multi-source verification.
 ///
@@ -100,6 +111,52 @@ impl DnsValidator {
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
         Ok(Self { resolver, timeout })
+    }
+
+    /// Create a DNS validator using DNS-over-HTTPS (DoH).
+    ///
+    /// This works on all platforms including mobile where UDP port 53 may be blocked.
+    /// Uses Cloudflare's 1.1.1.1 DoH resolver.
+    ///
+    /// # Arguments
+    ///
+    /// * `timeout` - Query timeout
+    ///
+    /// # Errors
+    ///
+    /// Returns error if resolver initialization fails.
+    pub async fn with_doh(timeout: Duration) -> Result<Self, VerifyError> {
+        info!("Creating DNS-over-HTTPS resolver (Cloudflare 1.1.1.1)");
+
+        let mut opts = ResolverOpts::default();
+        opts.timeout = timeout;
+        opts.attempts = 2; // Fewer attempts for DoH (already reliable)
+        opts.use_hosts_file = false;
+
+        // Use Cloudflare's DoH endpoint
+        let resolver = TokioAsyncResolver::tokio(ResolverConfig::cloudflare_https(), opts);
+
+        Ok(Self { resolver, timeout })
+    }
+
+    /// Create a DNS validator with the specified transport mode.
+    ///
+    /// # Arguments
+    ///
+    /// * `transport` - DNS transport mode (UDP or DoH)
+    /// * `timeout` - Query timeout
+    ///
+    /// # Errors
+    ///
+    /// Returns error if resolver initialization fails.
+    pub async fn with_transport(
+        transport: DnsTransport,
+        timeout: Duration,
+    ) -> Result<Self, VerifyError> {
+        match transport {
+            DnsTransport::Udp => Self::new(timeout).await,
+            DnsTransport::DnsOverHttps => Self::with_doh(timeout).await,
+        }
     }
 
     /// Query a DNS TXT record for steward key information.
@@ -287,10 +344,30 @@ pub async fn query_multiple_sources(
     eu_host: &str,
     timeout: Duration,
 ) -> MultiDnsResult {
-    let validator = match DnsValidator::new(timeout).await {
+    // Use default transport (DoH on mobile, UDP on desktop)
+    query_multiple_sources_with_transport(us_host, eu_host, timeout, default_dns_transport()).await
+}
+
+/// Query multiple DNS sources with explicit transport mode.
+#[instrument(skip_all, fields(us_host = %us_host, eu_host = %eu_host, transport = ?transport))]
+pub async fn query_multiple_sources_with_transport(
+    us_host: &str,
+    eu_host: &str,
+    timeout: Duration,
+    transport: DnsTransport,
+) -> MultiDnsResult {
+    info!(
+        transport = ?transport,
+        us_host = %us_host,
+        eu_host = %eu_host,
+        "Starting DNS queries"
+    );
+
+    let validator = match DnsValidator::with_transport(transport, timeout).await {
         Ok(v) => v,
         Err(e) => {
             let err = format!("Failed to create DNS validator: {}", e);
+            warn!("DNS validator creation failed: {}", err);
             return MultiDnsResult {
                 us_result: Err(err.clone()),
                 eu_result: Err(err),
@@ -298,15 +375,43 @@ pub async fn query_multiple_sources(
         },
     };
 
+    info!("DNS validator created, querying both sources...");
+
     // Query both sources in parallel
     let (us_result, eu_result) = tokio::join!(
         validator.query_steward_record(us_host),
         validator.query_steward_record(eu_host),
     );
 
+    info!(
+        us_ok = us_result.is_ok(),
+        eu_ok = eu_result.is_ok(),
+        "DNS queries complete"
+    );
+
     MultiDnsResult {
         us_result: us_result.map_err(|e| e.to_string()),
         eu_result: eu_result.map_err(|e| e.to_string()),
+    }
+}
+
+/// Get the default DNS transport for the current platform.
+///
+/// - Android/iOS: DNS-over-HTTPS (mobile networks often block UDP:53)
+/// - Desktop: Standard UDP DNS
+pub fn default_dns_transport() -> DnsTransport {
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    {
+        info!("Mobile platform detected, using DNS-over-HTTPS");
+        DnsTransport::DnsOverHttps
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        // On desktop, try DoH first as it's more reliable
+        // TODO: Make this configurable
+        info!("Desktop platform, using DNS-over-HTTPS for reliability");
+        DnsTransport::DnsOverHttps
     }
 }
 

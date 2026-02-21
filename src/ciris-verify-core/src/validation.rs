@@ -21,7 +21,7 @@
 use std::time::Duration;
 
 use base64::Engine;
-use tracing::{debug, error, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::config::TrustModel;
 use crate::dns::{query_multiple_sources, DnsTxtRecord};
@@ -94,18 +94,72 @@ impl ConsensusValidator {
     /// - `EqualWeight`: Legacy 2-of-3 equal-weight consensus
     #[instrument(skip(self))]
     pub async fn validate_steward_key(&self) -> ValidationResult {
-        // Query DNS sources
-        let dns_future = query_multiple_sources(&self.dns_us_host, &self.dns_eu_host, self.timeout);
+        info!(
+            dns_us = %self.dns_us_host,
+            dns_eu = %self.dns_eu_host,
+            https = %self.https_endpoint,
+            timeout_secs = self.timeout.as_secs(),
+            "Starting parallel DNS + HTTPS queries..."
+        );
 
-        // Query primary HTTPS source
-        let https_future =
-            query_https_source(&self.https_endpoint, self.timeout, self.cert_pin.as_deref());
+        // Query DNS sources with timeout wrapper
+        let dns_future = async {
+            info!("DNS query starting...");
+            let result = tokio::time::timeout(
+                self.timeout,
+                query_multiple_sources(&self.dns_us_host, &self.dns_eu_host, self.timeout),
+            )
+            .await;
+            match &result {
+                Ok(r) => info!(
+                    dns_us_ok = r.us_result.is_ok(),
+                    dns_eu_ok = r.eu_result.is_ok(),
+                    "DNS query complete"
+                ),
+                Err(_) => warn!("DNS query timed out after {:?}", self.timeout),
+            }
+            result
+        };
+
+        // Query primary HTTPS source with timeout wrapper
+        let https_future = async {
+            info!(endpoint = %self.https_endpoint, "HTTPS query starting...");
+            let result = tokio::time::timeout(
+                self.timeout,
+                query_https_source(&self.https_endpoint, self.timeout, self.cert_pin.as_deref()),
+            )
+            .await;
+            match &result {
+                Ok(Ok(_)) => info!("HTTPS query complete (success)"),
+                Ok(Err(e)) => warn!("HTTPS query failed: {}", e),
+                Err(_) => warn!("HTTPS query timed out after {:?}", self.timeout),
+            }
+            result
+        };
 
         // Query additional HTTPS endpoints in parallel
         let additional_futures: Vec<_> = self
             .additional_https_endpoints
             .iter()
-            .map(|ep| query_https_source(ep, self.timeout, self.cert_pin.as_deref()))
+            .map(|ep| {
+                let ep = ep.clone();
+                let timeout = self.timeout;
+                let cert_pin = self.cert_pin.clone();
+                async move {
+                    info!(endpoint = %ep, "Additional HTTPS query starting...");
+                    let result = tokio::time::timeout(
+                        timeout,
+                        query_https_source(&ep, timeout, cert_pin.as_deref()),
+                    )
+                    .await;
+                    match &result {
+                        Ok(Ok(_)) => info!(endpoint = %ep, "Additional HTTPS complete"),
+                        Ok(Err(e)) => warn!(endpoint = %ep, "Additional HTTPS failed: {}", e),
+                        Err(_) => warn!(endpoint = %ep, "Additional HTTPS timed out"),
+                    }
+                    result
+                }
+            })
             .collect();
 
         // Execute all queries in parallel
@@ -115,16 +169,28 @@ impl ConsensusValidator {
             futures::future::join_all(additional_futures),
         );
 
-        // Convert results to SourceData
-        let dns_us = dns_result.us_result.ok().map(|r| SourceData::from_dns(&r));
-        let dns_eu = dns_result.eu_result.ok().map(|r| SourceData::from_dns(&r));
+        info!("All network queries complete, processing results...");
+
+        // Convert results to SourceData (unwrap timeout wrapper first)
+        let (dns_us, dns_eu) = match dns_result.ok() {
+            Some(r) => (
+                r.us_result.ok().map(|r| SourceData::from_dns(&r)),
+                r.eu_result.ok().map(|r| SourceData::from_dns(&r)),
+            ),
+            None => (None, None), // DNS timed out
+        };
         let primary_https = primary_https_result
-            .ok()
+            .ok() // unwrap timeout
+            .and_then(|r| r.ok()) // unwrap query result
             .map(|r| SourceData::from_https(&r));
 
         let additional_https: Vec<Option<SourceData>> = additional_results
             .into_iter()
-            .map(|r| r.ok().map(|r| SourceData::from_https(&r)))
+            .map(|r| {
+                r.ok() // unwrap timeout
+                    .and_then(|r| r.ok()) // unwrap query result
+                    .map(|r| SourceData::from_https(&r))
+            })
             .collect();
 
         // Log source availability
