@@ -19,10 +19,12 @@
 //!
 //! ## Security Properties
 //!
-//! - **Opaque failure**: Never reveals which function failed
+//! - **Opaque individual results**: Never reveals WHICH function failed (prevents targeted bypass)
+//! - **Clear overall status**: Reports verified/tampered/unavailable to client
 //! - **Constant-time**: All hash comparisons use `constant_time_eq()`
 //! - **Bound signatures**: PQC covers (manifest || classical_sig)
 //! - **ASLR-safe**: Offsets relative to runtime code base
+//! - **Fail-secure degradation**: Per threat model Section 7, failures → MORE restrictive modes
 
 use std::collections::BTreeMap;
 
@@ -184,6 +186,133 @@ struct CanonicalManifest<'a> {
 }
 
 // =============================================================================
+// Signature Verification
+// =============================================================================
+
+/// Steward public key for manifest signature verification.
+///
+/// These keys are embedded at compile time and used to verify that function
+/// manifests were signed by the trusted steward key pair.
+pub struct StewardPublicKey {
+    /// Ed25519 public key (32 bytes).
+    pub ed25519: &'static [u8; 32],
+    /// ML-DSA-65 public key (1952 bytes).
+    pub ml_dsa_65: &'static [u8],
+}
+
+/// Status of function integrity verification.
+///
+/// Per threat model Section 7, failures degrade to MORE restrictive modes.
+/// The client (CIRISAgent) decides what action to take based on this status.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FunctionIntegrityStatus {
+    /// All functions verified successfully.
+    Verified,
+    /// Network/registry unavailable - could not fetch manifest.
+    Unavailable {
+        /// Description of why the manifest is unavailable.
+        reason: String,
+    },
+    /// Manifest signature failed verification.
+    SignatureInvalid,
+    /// One or more function hashes don't match (binary tampered).
+    Tampered,
+    /// No manifest found for this version/target.
+    NotFound,
+    /// Verification not yet attempted.
+    Pending,
+}
+
+impl std::fmt::Display for FunctionIntegrityStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Verified => write!(f, "verified"),
+            Self::Unavailable { reason } => write!(f, "unavailable:{}", reason),
+            Self::SignatureInvalid => write!(f, "signature_invalid"),
+            Self::Tampered => write!(f, "tampered"),
+            Self::NotFound => write!(f, "not_found"),
+            Self::Pending => write!(f, "pending"),
+        }
+    }
+}
+
+impl Default for FunctionIntegrityStatus {
+    fn default() -> Self {
+        Self::Pending
+    }
+}
+
+/// Verify the hybrid signature on a function manifest.
+///
+/// Both the classical (Ed25519) and post-quantum (ML-DSA-65) signatures
+/// must verify for the manifest to be trusted. The PQC signature is bound
+/// to the classical signature (covers canonical_manifest || classical_sig).
+///
+/// # Arguments
+///
+/// * `manifest` - The function manifest to verify
+/// * `steward_pubkey` - The steward's public key pair
+///
+/// # Returns
+///
+/// `Ok(true)` if both signatures verify, `Ok(false)` if either fails,
+/// or an error if verification cannot be performed.
+pub fn verify_manifest_signature(
+    manifest: &FunctionManifest,
+    steward_pubkey: &StewardPublicKey,
+) -> Result<bool, crate::error::VerifyError> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use ciris_crypto::{ClassicalVerifier, Ed25519Verifier, MlDsa65Verifier, PqcVerifier};
+
+    // Get canonical bytes (excludes signature field)
+    let canonical = manifest.canonical_bytes();
+
+    // Decode classical signature
+    let classical_sig_bytes = STANDARD
+        .decode(&manifest.signature.classical)
+        .map_err(|e| crate::error::VerifyError::IntegrityError {
+            message: format!("Invalid classical signature base64: {}", e),
+        })?;
+
+    // Verify Ed25519 signature
+    let ed25519_verifier = Ed25519Verifier::new();
+    let classical_valid = ed25519_verifier
+        .verify(steward_pubkey.ed25519, &canonical, &classical_sig_bytes)
+        .map_err(|e| crate::error::VerifyError::IntegrityError {
+            message: format!("Ed25519 verification error: {}", e),
+        })?;
+
+    if !classical_valid {
+        return Ok(false); // Classical signature failed
+    }
+
+    // Decode PQC signature
+    let pqc_sig_bytes = STANDARD.decode(&manifest.signature.pqc).map_err(|e| {
+        crate::error::VerifyError::IntegrityError {
+            message: format!("Invalid PQC signature base64: {}", e),
+        }
+    })?;
+
+    // PQC signature covers (canonical || classical_sig) - bound signature
+    let mut bound_data = canonical.clone();
+    bound_data.extend_from_slice(&classical_sig_bytes);
+
+    // Verify ML-DSA-65 signature
+    let mldsa_verifier = MlDsa65Verifier::new();
+    let pqc_valid = mldsa_verifier
+        .verify(steward_pubkey.ml_dsa_65, &bound_data, &pqc_sig_bytes)
+        .map_err(|e| crate::error::VerifyError::IntegrityError {
+            message: format!("ML-DSA-65 verification error: {}", e),
+        })?;
+
+    if !pqc_valid {
+        return Ok(false); // PQC signature failed
+    }
+
+    Ok(true) // Both signatures verified
+}
+
+// =============================================================================
 // Runtime Verification (platform-specific)
 // =============================================================================
 
@@ -218,7 +347,7 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
                 verified_at: timestamp,
                 failure_reason: "missing".to_string(),
             };
-        }
+        },
     };
 
     // Verify each function (constant-time accumulation)
@@ -280,7 +409,7 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
                 verified_at: timestamp,
                 failure_reason: "missing".to_string(),
             };
-        }
+        },
     };
 
     // Verify each function (constant-time accumulation)
@@ -339,7 +468,7 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
                 verified_at: timestamp,
                 failure_reason: "missing".to_string(),
             };
-        }
+        },
     };
 
     // Verify each function

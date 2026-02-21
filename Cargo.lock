@@ -647,8 +647,10 @@ dependencies = [
  "android_logger",
  "cbindgen",
  "chrono",
+ "ciris-crypto",
  "ciris-keyring",
  "ciris-verify-core",
+ "ctor",
  "getrandom 0.2.17",
  "hex",
  "jni",
@@ -657,6 +659,7 @@ dependencies = [
  "oslog",
  "prost",
  "serde_json",
+ "sha2",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -833,6 +836,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c7722afd27468475c9b6063dc03a57ef2ca833816981619f8ebe64d38d207eef"
 dependencies = [
  "hybrid-array",
+]
+
+[[package]]
+name = "ctor"
+version = "0.2.9"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "32a2785755761f3ddc1492979ce1e48d2c00d09311c39e4466429188f3dd6501"
+dependencies = [
+ "quote",
+ "syn 2.0.114",
 ]
 
 [[package]]

@@ -169,17 +169,12 @@ impl HttpsClient {
             "HTTPS: Fetching steward key..."
         );
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| {
-                warn!(url = %url, error = %e, "HTTPS request failed");
-                VerifyError::HttpsError {
-                    message: format!("Request to {} failed: {}", url, e),
-                }
-            })?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            warn!(url = %url, error = %e, "HTTPS request failed");
+            VerifyError::HttpsError {
+                message: format!("Request to {} failed: {}", url, e),
+            }
+        })?;
 
         let status = response.status();
         info!(
@@ -195,16 +190,12 @@ impl HttpsClient {
             });
         }
 
-        let body =
-            response
-                .json::<StewardKeyResponse>()
-                .await
-                .map_err(|e| {
-                    warn!(url = %url, error = %e, "HTTPS: Failed to parse JSON response");
-                    VerifyError::HttpsError {
-                        message: format!("Failed to parse response from {}: {}", url, e),
-                    }
-                })?;
+        let body = response.json::<StewardKeyResponse>().await.map_err(|e| {
+            warn!(url = %url, error = %e, "HTTPS: Failed to parse JSON response");
+            VerifyError::HttpsError {
+                message: format!("Failed to parse response from {}: {}", url, e),
+            }
+        })?;
 
         info!(
             url = %url,

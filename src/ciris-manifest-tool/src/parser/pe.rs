@@ -27,8 +27,7 @@ pub fn parse_pe(
 
     let code_section_offset = text_section.pointer_to_raw_data as u64;
     let code_section_size = text_section.size_of_raw_data as u64;
-    let code_section_vaddr =
-        text_section.virtual_address as u64 + pe.image_base as u64;
+    let code_section_vaddr = text_section.virtual_address as u64 + pe.image_base as u64;
 
     // Extract functions from export table
     let mut functions = Vec::new();

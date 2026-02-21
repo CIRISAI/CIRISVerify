@@ -132,7 +132,7 @@ pub fn detect_elf_target(elf: &Elf) -> String {
             // Check for Android by looking for specific sections or notes
             // For now, assume Linux unless we can detect Android
             "unknown-linux-gnu"
-        }
+        },
         _ => "unknown-linux-gnu",
     };
 

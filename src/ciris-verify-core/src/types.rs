@@ -83,6 +83,17 @@ pub struct LicenseStatusResponse {
     /// Shutdown directive (if emergency or critical violation).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub shutdown_directive: Option<ShutdownDirective>,
+
+    // === Function integrity (v0.6.0) ===
+    /// Function-level integrity verification status.
+    ///
+    /// Indicates whether the FFI functions match their build-time hashes.
+    /// Per threat model AV-2, the status does not reveal WHICH function failed.
+    ///
+    /// Values: "verified", "tampered", "unavailable:{reason}",
+    ///         "signature_invalid", "not_found", "pending"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub function_integrity: Option<String>,
 }
 
 /// Mandatory disclosure that MUST be shown to users.
@@ -187,6 +198,16 @@ pub struct SourceResult {
     /// Error message if failed (internal use only, not serialized in responses).
     #[serde(skip_serializing)]
     pub error: Option<String>,
+
+    /// User-visible error category for debugging (serialized to client).
+    /// Examples: "timeout", "dns_resolution", "tls_handshake", "connection_refused"
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_category: Option<String>,
+
+    /// User-visible error details for debugging (serialized to client).
+    /// Contains sanitized error message without sensitive internals.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error_details: Option<String>,
 }
 
 /// Overall validation status.

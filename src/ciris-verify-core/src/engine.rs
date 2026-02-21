@@ -923,6 +923,7 @@ impl LicenseEngine {
             metadata: self.build_metadata(),
             runtime_validation: None,
             shutdown_directive: None,
+            function_integrity: None, // Set by FFI layer
         }
     }
 
@@ -958,6 +959,7 @@ impl LicenseEngine {
             metadata: self.build_metadata(),
             runtime_validation: None,
             shutdown_directive: None,
+            function_integrity: None, // Set by FFI layer
         }
     }
 
@@ -982,6 +984,7 @@ impl LicenseEngine {
             metadata: self.build_metadata(),
             runtime_validation: None,
             shutdown_directive: None,
+            function_integrity: None, // Set by FFI layer
         }
     }
 
@@ -1075,8 +1078,74 @@ impl LicenseEngine {
         }
     }
 
+    /// Categorize and sanitize error messages for client visibility.
+    ///
+    /// Returns (error_category, error_details) where:
+    /// - error_category: Short category like "timeout", "dns_resolution", "tls_error"
+    /// - error_details: Sanitized message suitable for client display
+    fn categorize_error(error: &Option<String>) -> (Option<String>, Option<String>) {
+        let Some(err) = error else {
+            return (None, None);
+        };
+
+        let err_lower = err.to_lowercase();
+
+        // Categorize based on error message content
+        let category = if err_lower.contains("timeout") || err_lower.contains("timed out") {
+            "timeout"
+        } else if err_lower.contains("dns")
+            || err_lower.contains("resolve")
+            || err_lower.contains("no such host")
+        {
+            "dns_resolution"
+        } else if err_lower.contains("tls")
+            || err_lower.contains("ssl")
+            || err_lower.contains("certificate")
+        {
+            "tls_error"
+        } else if err_lower.contains("connection refused") || err_lower.contains("connrefused") {
+            "connection_refused"
+        } else if err_lower.contains("connection reset") || err_lower.contains("connreset") {
+            "connection_reset"
+        } else if err_lower.contains("network") || err_lower.contains("unreachable") {
+            "network_unreachable"
+        } else if err_lower.contains("404") || err_lower.contains("not found") {
+            "not_found"
+        } else if err_lower.contains("401")
+            || err_lower.contains("403")
+            || err_lower.contains("unauthorized")
+            || err_lower.contains("forbidden")
+        {
+            "auth_error"
+        } else if err_lower.contains("500")
+            || err_lower.contains("502")
+            || err_lower.contains("503")
+            || err_lower.contains("504")
+        {
+            "server_error"
+        } else {
+            "unknown"
+        };
+
+        // Sanitize details - remove potential sensitive info but keep diagnostic value
+        let details = if err.len() > 200 {
+            format!("{}...", &err[..200])
+        } else {
+            err.clone()
+        };
+
+        (Some(category.to_string()), Some(details))
+    }
+
     /// Build validation results.
     fn build_validation_results(&self, validation: &ValidationResult) -> ValidationResults {
+        let (dns_us_cat, dns_us_details) =
+            Self::categorize_error(&validation.source_details.dns_us_error);
+        let (dns_eu_cat, dns_eu_details) =
+            Self::categorize_error(&validation.source_details.dns_eu_error);
+        let (https_cat, https_details) =
+            Self::categorize_error(&validation.source_details.https_error);
+
         ValidationResults {
             dns_us: SourceResult {
                 source: "us.registry.ciris-services-1.ai".to_string(),
@@ -1085,6 +1154,8 @@ impl LicenseEngine {
                     && validation.source_details.dns_us_error.is_none(),
                 checked_at: chrono::Utc::now().timestamp(),
                 error: validation.source_details.dns_us_error.clone(),
+                error_category: dns_us_cat,
+                error_details: dns_us_details,
             },
             dns_eu: SourceResult {
                 source: "eu.registry.ciris-services-1.ai".to_string(),
@@ -1093,6 +1164,8 @@ impl LicenseEngine {
                     && validation.source_details.dns_eu_error.is_none(),
                 checked_at: chrono::Utc::now().timestamp(),
                 error: validation.source_details.dns_eu_error.clone(),
+                error_category: dns_eu_cat,
+                error_details: dns_eu_details,
             },
             https: SourceResult {
                 source: "api.registry.ciris-services-1.ai".to_string(),
@@ -1101,6 +1174,8 @@ impl LicenseEngine {
                     && validation.source_details.https_error.is_none(),
                 checked_at: chrono::Utc::now().timestamp(),
                 error: validation.source_details.https_error.clone(),
+                error_category: https_cat,
+                error_details: https_details,
             },
             overall: validation.status,
         }
@@ -1115,6 +1190,8 @@ impl LicenseEngine {
                 valid: false,
                 checked_at: chrono::Utc::now().timestamp(),
                 error: Some("Not checked".to_string()),
+                error_category: Some("not_checked".to_string()),
+                error_details: Some("Validation not performed".to_string()),
             },
             dns_eu: SourceResult {
                 source: "eu.registry.ciris-services-1.ai".to_string(),
@@ -1122,6 +1199,8 @@ impl LicenseEngine {
                 valid: false,
                 checked_at: chrono::Utc::now().timestamp(),
                 error: Some("Not checked".to_string()),
+                error_category: Some("not_checked".to_string()),
+                error_details: Some("Validation not performed".to_string()),
             },
             https: SourceResult {
                 source: "api.registry.ciris-services-1.ai".to_string(),
@@ -1129,6 +1208,8 @@ impl LicenseEngine {
                 valid: false,
                 checked_at: chrono::Utc::now().timestamp(),
                 error: Some("Not checked".to_string()),
+                error_category: Some("not_checked".to_string()),
+                error_details: Some("Validation not performed".to_string()),
             },
             overall: ValidationStatus::ValidationError,
         }

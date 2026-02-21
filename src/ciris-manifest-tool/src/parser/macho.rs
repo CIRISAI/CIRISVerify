@@ -23,7 +23,7 @@ pub fn parse_macho(
             } else {
                 Err(ParseError::UnsupportedFormat)
             }
-        }
+        },
     }
 }
 
@@ -138,7 +138,7 @@ pub fn detect_macho_target(mach: &Mach) -> String {
             } else {
                 return "unknown-apple-darwin".to_string();
             }
-        }
+        },
     };
 
     let arch = match cputype {

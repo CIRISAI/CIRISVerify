@@ -60,8 +60,7 @@ impl ParsedBinary {
     pub fn function_bytes(&self, func: &FunctionInfo) -> Option<&[u8]> {
         // Function offset is relative to code section vaddr
         // We need to convert to file offset
-        let file_offset =
-            self.code_section_offset + (func.offset - self.code_section_vaddr);
+        let file_offset = self.code_section_offset + (func.offset - self.code_section_vaddr);
         let start = file_offset as usize;
         let end = start + func.size as usize;
 

@@ -21,6 +21,7 @@ tpm-windows = ["ciris-verify-core/tpm-windows"]  # Experimental: Windows native 
 [dependencies]
 ciris-verify-core.workspace = true
 ciris-keyring.workspace = true
+ciris-crypto.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 prost.workspace = true
 tracing.workspace = true
@@ -30,6 +31,10 @@ libc = "0.2"
 hex.workspace = true
 getrandom = "0.2"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+sha2.workspace = true
+
+# Constructor for early initialization (macOS/iOS)
+ctor = "0.2"
 
 # For mobile targets
 [target.'cfg(target_os = "android")'.dependencies]

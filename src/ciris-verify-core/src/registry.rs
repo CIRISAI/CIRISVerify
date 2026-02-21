@@ -289,6 +289,65 @@ impl RegistryClient {
 
         Ok(manifest)
     }
+
+    /// Fetch the function-level integrity manifest for a specific target.
+    ///
+    /// Used for runtime function integrity verification. The manifest contains
+    /// SHA-256 hashes of all FFI export functions, allowing verification that
+    /// the code hasn't been tampered with since build time.
+    ///
+    /// # Arguments
+    ///
+    /// * `version` - CIRISVerify version (e.g., "0.5.5")
+    /// * `target` - Target triple (e.g., "x86_64-unknown-linux-gnu")
+    #[instrument(skip(self), fields(version = %version, target = %target))]
+    pub async fn get_function_manifest(
+        &self,
+        version: &str,
+        target: &str,
+    ) -> Result<crate::security::function_integrity::FunctionManifest, VerifyError> {
+        let url = format!(
+            "{}/v1/verify/function-manifest/{}/{}",
+            self.base_url, version, target
+        );
+        debug!("Fetching function manifest from {}", url);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Function manifest request failed: {}", e),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(VerifyError::HttpsError {
+                message: format!(
+                    "Function manifest HTTP error: {} (version={}, target={})",
+                    response.status(),
+                    version,
+                    target
+                ),
+            });
+        }
+
+        let manifest = response
+            .json::<crate::security::function_integrity::FunctionManifest>()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Failed to parse function manifest: {}", e),
+            })?;
+
+        info!(
+            version = %manifest.binary_version,
+            target = %manifest.target,
+            function_count = manifest.functions.len(),
+            "Fetched function manifest from registry"
+        );
+
+        Ok(manifest)
+    }
 }
 
 /// Compute SHA-256 hash of the currently running binary.

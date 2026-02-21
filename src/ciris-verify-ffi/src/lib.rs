@@ -45,6 +45,8 @@
 
 #![allow(clippy::missing_safety_doc)] // FFI functions are inherently unsafe
 
+mod constructor;
+
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::ptr;
@@ -461,7 +463,7 @@ pub unsafe extern "C" fn ciris_verify_get_status(
         };
 
     // Execute request
-    let response = match handle
+    let mut response = match handle
         .runtime
         .block_on(handle.engine.get_license_status(request))
     {
@@ -471,6 +473,9 @@ pub unsafe extern "C" fn ciris_verify_get_status(
             return CirisVerifyError::RequestFailed as i32;
         },
     };
+
+    // Add function integrity status (v0.6.0)
+    response.function_integrity = Some(constructor::get_function_integrity_status().to_string());
 
     // Serialize response
     let response_bytes = match serde_json::to_vec(&response) {

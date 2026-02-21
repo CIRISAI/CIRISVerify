@@ -130,19 +130,14 @@ fn main() -> anyhow::Result<()> {
                     let detected = parser::detect_target(&binary)?;
                     eprintln!("  Target (detected): {}", detected);
                     detected
-                }
+                },
             };
 
             eprintln!("  Version: {}", version);
             eprintln!("  Filter: {}", filter);
 
             // Generate manifest
-            let manifest = manifest::generate_manifest(
-                &binary,
-                &target,
-                &version,
-                Some(&filter),
-            )?;
+            let manifest = manifest::generate_manifest(&binary, &target, &version, Some(&filter))?;
 
             eprintln!("  Functions: {}", manifest.functions.len());
             eprintln!("  Manifest hash: {}", manifest.manifest_hash);
@@ -165,12 +160,12 @@ fn main() -> anyhow::Result<()> {
             eprintln!("\nManifest generated successfully.");
             eprintln!("\nNOTE: This manifest is UNSIGNED. For production use,");
             eprintln!("sign with the steward key via the CI pipeline.");
-        }
+        },
 
         Commands::DetectTarget { binary } => {
             let target = parser::detect_target(&binary)?;
             println!("{}", target);
-        }
+        },
 
         Commands::ListFunctions { binary, filter } => {
             let parsed = parser::parse_binary(&binary, filter.as_deref())?;
@@ -180,14 +175,11 @@ fn main() -> anyhow::Result<()> {
             println!("{}", "-".repeat(84));
 
             for func in &parsed.functions {
-                println!(
-                    "{:<60} 0x{:08x} {:>12}",
-                    func.name, func.offset, func.size
-                );
+                println!("{:<60} 0x{:08x} {:>12}", func.name, func.offset, func.size);
             }
 
             println!("\nTotal: {} functions", parsed.functions.len());
-        }
+        },
     }
 
     Ok(())
