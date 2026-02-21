@@ -8,7 +8,7 @@ use sha2::{Digest, Sha256};
 
 use ciris_verify_core::revocation::is_revision_stale;
 use ciris_verify_core::types::ValidationStatus;
-use ciris_verify_core::validation::{ConsensusValidator, SourceData};
+use ciris_verify_core::validation::{ConsensusValidator, SourceData, SourceErrorDetails};
 
 /// Strategy for 32-byte keys.
 fn key_32_bytes() -> impl Strategy<Value = Vec<u8>> {
@@ -69,6 +69,7 @@ proptest! {
             Some(source.clone()),
             Some(source.clone()),
             Some(source.clone()),
+            SourceErrorDetails::default(),
         );
 
         prop_assert_eq!(result.status, ValidationStatus::AllSourcesAgree);
@@ -103,6 +104,7 @@ proptest! {
             Some(source1.clone()),
             Some(source1.clone()),
             Some(source2),
+            SourceErrorDetails::default(),
         );
 
         prop_assert_eq!(result.status, ValidationStatus::PartialAgreement);
@@ -146,6 +148,7 @@ proptest! {
             Some(source1),
             Some(source2),
             Some(source3),
+            SourceErrorDetails::default(),
         );
 
         prop_assert_eq!(result.status, ValidationStatus::SourcesDisagree);
@@ -156,7 +159,12 @@ proptest! {
     /// No sources produces NoSourcesReachable.
     #[test]
     fn consensus_no_sources(_seed in any::<u64>()) {
-        let result = ConsensusValidator::compute_consensus(None, None, None);
+        let result = ConsensusValidator::compute_consensus(
+            None,
+            None,
+            None,
+            SourceErrorDetails::default(),
+        );
 
         prop_assert_eq!(result.status, ValidationStatus::NoSourcesReachable);
         prop_assert!(!result.allows_licensed());
@@ -173,9 +181,24 @@ proptest! {
         };
 
         // Test each position
-        let result1 = ConsensusValidator::compute_consensus(Some(source.clone()), None, None);
-        let result2 = ConsensusValidator::compute_consensus(None, Some(source.clone()), None);
-        let result3 = ConsensusValidator::compute_consensus(None, None, Some(source));
+        let result1 = ConsensusValidator::compute_consensus(
+            Some(source.clone()),
+            None,
+            None,
+            SourceErrorDetails::default(),
+        );
+        let result2 = ConsensusValidator::compute_consensus(
+            None,
+            Some(source.clone()),
+            None,
+            SourceErrorDetails::default(),
+        );
+        let result3 = ConsensusValidator::compute_consensus(
+            None,
+            None,
+            Some(source),
+            SourceErrorDetails::default(),
+        );
 
         prop_assert_eq!(result1.status, ValidationStatus::ValidationError);
         prop_assert_eq!(result2.status, ValidationStatus::ValidationError);
@@ -197,16 +220,19 @@ proptest! {
             Some(source.clone()),
             Some(source.clone()),
             None,
+            SourceErrorDetails::default(),
         );
         let result2 = ConsensusValidator::compute_consensus(
             Some(source.clone()),
             None,
             Some(source.clone()),
+            SourceErrorDetails::default(),
         );
         let result3 = ConsensusValidator::compute_consensus(
             None,
             Some(source.clone()),
             Some(source),
+            SourceErrorDetails::default(),
         );
 
         prop_assert_eq!(result1.status, ValidationStatus::PartialAgreement);
@@ -252,6 +278,7 @@ proptest! {
             Some(source1),
             Some(source2),
             Some(source3),
+            SourceErrorDetails::default(),
         );
 
         // Should still agree despite ±1 revision difference
@@ -311,6 +338,7 @@ fn test_consensus_preserves_key_on_agreement() {
         Some(source.clone()),
         Some(source.clone()),
         Some(source),
+        SourceErrorDetails::default(),
     );
 
     // Consensus should preserve the agreed-upon key
@@ -347,7 +375,12 @@ fn test_consensus_disagreement_no_key() {
         timestamp: 1737936000,
     };
 
-    let result = ConsensusValidator::compute_consensus(Some(source1), Some(source2), Some(source3));
+    let result = ConsensusValidator::compute_consensus(
+        Some(source1),
+        Some(source2),
+        Some(source3),
+        SourceErrorDetails::default(),
+    );
 
     // Disagreement should NOT provide consensus key
     assert!(result.consensus_key_classical.is_none());
@@ -367,7 +400,12 @@ fn test_source_details_tracking() {
     };
 
     // Only dns_us and https available
-    let result = ConsensusValidator::compute_consensus(Some(source.clone()), None, Some(source));
+    let result = ConsensusValidator::compute_consensus(
+        Some(source.clone()),
+        None,
+        Some(source),
+        SourceErrorDetails::default(),
+    );
 
     assert!(result.source_details.dns_us_reachable);
     assert!(!result.source_details.dns_eu_reachable);

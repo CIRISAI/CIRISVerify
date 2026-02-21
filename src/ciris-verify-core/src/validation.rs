@@ -171,18 +171,27 @@ impl ConsensusValidator {
 
         info!("All network queries complete, processing results...");
 
-        // Convert results to SourceData (unwrap timeout wrapper first)
-        let (dns_us, dns_eu) = match dns_result.ok() {
-            Some(r) => (
-                r.us_result.ok().map(|r| SourceData::from_dns(&r)),
-                r.eu_result.ok().map(|r| SourceData::from_dns(&r)),
-            ),
-            None => (None, None), // DNS timed out
+        // Convert results to SourceData, preserving actual error messages
+        let (dns_us, dns_eu, dns_us_error, dns_eu_error) = match dns_result {
+            Ok(r) => {
+                let us_data = r.us_result.as_ref().ok().map(SourceData::from_dns);
+                let eu_data = r.eu_result.as_ref().ok().map(SourceData::from_dns);
+                let us_err = r.us_result.err();
+                let eu_err = r.eu_result.err();
+                (us_data, eu_data, us_err, eu_err)
+            },
+            Err(_) => {
+                // DNS query timed out at the wrapper level
+                let timeout_err = Some("DNS query timeout".to_string());
+                (None, None, timeout_err.clone(), timeout_err)
+            },
         };
-        let primary_https = primary_https_result
-            .ok() // unwrap timeout
-            .and_then(|r| r.ok()) // unwrap query result
-            .map(|r| SourceData::from_https(&r));
+
+        let (primary_https, https_error) = match primary_https_result {
+            Ok(Ok(r)) => (Some(SourceData::from_https(&r)), None),
+            Ok(Err(e)) => (None, Some(format!("{}", e))),
+            Err(_) => (None, Some("HTTPS query timeout".to_string())),
+        };
 
         let additional_https: Vec<Option<SourceData>> = additional_results
             .into_iter()
@@ -193,16 +202,26 @@ impl ConsensusValidator {
             })
             .collect();
 
-        // Log source availability
+        // Log source availability with actual errors
         let additional_ok = additional_https.iter().filter(|s| s.is_some()).count();
         debug!(
             dns_us_ok = dns_us.is_some(),
             dns_eu_ok = dns_eu.is_some(),
             https_ok = primary_https.is_some(),
             additional_https_ok = additional_ok,
+            dns_us_error = ?dns_us_error,
+            dns_eu_error = ?dns_eu_error,
+            https_error = ?https_error,
             trust_model = ?self.trust_model,
             "Source availability"
         );
+
+        // Build error details struct to pass to consensus functions
+        let error_details = SourceErrorDetails {
+            dns_us_error,
+            dns_eu_error,
+            https_error,
+        };
 
         match self.trust_model {
             TrustModel::HttpsAuthoritative => Self::compute_https_authoritative_consensus(
@@ -210,8 +229,11 @@ impl ConsensusValidator {
                 dns_eu,
                 primary_https,
                 additional_https,
+                error_details,
             ),
-            TrustModel::EqualWeight => Self::compute_consensus(dns_us, dns_eu, primary_https),
+            TrustModel::EqualWeight => {
+                Self::compute_consensus(dns_us, dns_eu, primary_https, error_details)
+            },
         }
     }
 
@@ -228,6 +250,7 @@ impl ConsensusValidator {
         dns_us: Option<SourceData>,
         dns_eu: Option<SourceData>,
         https: Option<SourceData>,
+        errors: SourceErrorDetails,
     ) -> ValidationResult {
         let sources: Vec<(&str, Option<&SourceData>)> = vec![
             ("dns_us", dns_us.as_ref()),
@@ -258,9 +281,9 @@ impl ConsensusValidator {
                     dns_us_reachable: false,
                     dns_eu_reachable: false,
                     https_reachable: false,
-                    dns_us_error: dns_us.is_none().then(|| "Not reachable".into()),
-                    dns_eu_error: dns_eu.is_none().then(|| "Not reachable".into()),
-                    https_error: https.is_none().then(|| "Not reachable".into()),
+                    dns_us_error: errors.dns_us_error.or(Some("Not reachable".into())),
+                    dns_eu_error: errors.dns_eu_error.or(Some("Not reachable".into())),
+                    https_error: errors.https_error.or(Some("Not reachable".into())),
                 },
             };
         }
@@ -279,9 +302,9 @@ impl ConsensusValidator {
                     dns_us_reachable: dns_us.is_some(),
                     dns_eu_reachable: dns_eu.is_some(),
                     https_reachable: https.is_some(),
-                    dns_us_error: dns_us.is_none().then(|| "Not reachable".into()),
-                    dns_eu_error: dns_eu.is_none().then(|| "Not reachable".into()),
-                    https_error: https.is_none().then(|| "Not reachable".into()),
+                    dns_us_error: errors.dns_us_error,
+                    dns_eu_error: errors.dns_eu_error,
+                    https_error: errors.https_error,
                 },
             };
         }
@@ -315,14 +338,14 @@ impl ConsensusValidator {
             "Consensus analysis"
         );
 
-        // Build source details
+        // Build source details (preserve errors for sources that failed)
         let source_details = SourceDetails {
             dns_us_reachable: dns_us.is_some(),
             dns_eu_reachable: dns_eu.is_some(),
             https_reachable: https.is_some(),
-            dns_us_error: None,
-            dns_eu_error: None,
-            https_error: None,
+            dns_us_error: errors.dns_us_error,
+            dns_eu_error: errors.dns_eu_error,
+            https_error: errors.https_error,
         };
 
         // Determine status based on agreement
@@ -406,6 +429,7 @@ impl ConsensusValidator {
         dns_eu: Option<SourceData>,
         primary_https: Option<SourceData>,
         additional_https: Vec<Option<SourceData>>,
+        errors: SourceErrorDetails,
     ) -> ValidationResult {
         // Collect all reachable HTTPS sources
         let mut https_sources: Vec<&SourceData> = Vec::new();
@@ -420,10 +444,10 @@ impl ConsensusValidator {
             dns_us_reachable: dns_us.is_some(),
             dns_eu_reachable: dns_eu.is_some(),
             https_reachable: !https_sources.is_empty(),
-            dns_us_error: dns_us.is_none().then(|| "Not reachable".into()),
-            dns_eu_error: dns_eu.is_none().then(|| "Not reachable".into()),
+            dns_us_error: errors.dns_us_error.clone(),
+            dns_eu_error: errors.dns_eu_error.clone(),
             https_error: if https_sources.is_empty() {
-                Some("Not reachable".into())
+                errors.https_error.clone().or(Some("Not reachable".into()))
             } else {
                 None
             },
@@ -673,6 +697,17 @@ pub struct SourceDetails {
     pub https_error: Option<String>,
 }
 
+/// Error details from network queries, passed to consensus functions.
+#[derive(Debug, Clone, Default)]
+pub struct SourceErrorDetails {
+    /// DNS US error message (if failed).
+    pub dns_us_error: Option<String>,
+    /// DNS EU error message (if failed).
+    pub dns_eu_error: Option<String>,
+    /// HTTPS error message (if failed).
+    pub https_error: Option<String>,
+}
+
 impl ValidationResult {
     /// Check if this result allows licensed operation.
     pub fn allows_licensed(&self) -> bool {
@@ -720,7 +755,12 @@ mod tests {
         let dns_eu = Some(make_source_data(&key, &fp, 100));
         let https = Some(make_source_data(&key, &fp, 100));
 
-        let result = ConsensusValidator::compute_consensus(dns_us, dns_eu, https);
+        let result = ConsensusValidator::compute_consensus(
+            dns_us,
+            dns_eu,
+            https,
+            SourceErrorDetails::default(),
+        );
 
         assert_eq!(result.status, ValidationStatus::AllSourcesAgree);
         assert!(result.consensus_key_classical.is_some());
@@ -738,7 +778,12 @@ mod tests {
         let dns_eu = Some(make_source_data(&key1, &fp, 100));
         let https = Some(make_source_data(&key2, &fp, 100)); // Disagrees
 
-        let result = ConsensusValidator::compute_consensus(dns_us, dns_eu, https);
+        let result = ConsensusValidator::compute_consensus(
+            dns_us,
+            dns_eu,
+            https,
+            SourceErrorDetails::default(),
+        );
 
         assert_eq!(result.status, ValidationStatus::PartialAgreement);
         assert!(result.allows_licensed());
@@ -753,7 +798,12 @@ mod tests {
         let dns_eu = Some(make_source_data(&[2u8; 32], &fp, 100));
         let https = Some(make_source_data(&[3u8; 32], &fp, 100));
 
-        let result = ConsensusValidator::compute_consensus(dns_us, dns_eu, https);
+        let result = ConsensusValidator::compute_consensus(
+            dns_us,
+            dns_eu,
+            https,
+            SourceErrorDetails::default(),
+        );
 
         assert_eq!(result.status, ValidationStatus::SourcesDisagree);
         assert!(!result.allows_licensed());
@@ -762,11 +812,25 @@ mod tests {
 
     #[test]
     fn test_no_sources_reachable() {
-        let result = ConsensusValidator::compute_consensus(None, None, None);
+        let errors = SourceErrorDetails {
+            dns_us_error: Some("timeout".to_string()),
+            dns_eu_error: Some("tls_error".to_string()),
+            https_error: Some("connection_refused".to_string()),
+        };
+        let result = ConsensusValidator::compute_consensus(None, None, None, errors);
 
         assert_eq!(result.status, ValidationStatus::NoSourcesReachable);
         assert!(!result.allows_licensed());
         assert!(!result.is_security_alert());
+        // Verify errors are preserved
+        assert_eq!(
+            result.source_details.dns_us_error,
+            Some("timeout".to_string())
+        );
+        assert_eq!(
+            result.source_details.https_error,
+            Some("connection_refused".to_string())
+        );
     }
 
     #[test]
@@ -775,8 +839,13 @@ mod tests {
         let fp = vec![2u8; 32];
 
         let dns_us = Some(make_source_data(&key, &fp, 100));
+        let errors = SourceErrorDetails {
+            dns_us_error: None,
+            dns_eu_error: Some("dns_resolution".to_string()),
+            https_error: Some("timeout".to_string()),
+        };
 
-        let result = ConsensusValidator::compute_consensus(dns_us, None, None);
+        let result = ConsensusValidator::compute_consensus(dns_us, None, None, errors);
 
         assert_eq!(result.status, ValidationStatus::ValidationError);
         assert!(!result.allows_licensed());
@@ -790,7 +859,12 @@ mod tests {
         let dns_us = Some(make_source_data(&key, &fp, 100));
         let https = Some(make_source_data(&key, &fp, 100));
 
-        let result = ConsensusValidator::compute_consensus(dns_us, None, https);
+        let result = ConsensusValidator::compute_consensus(
+            dns_us,
+            None,
+            https,
+            SourceErrorDetails::default(),
+        );
 
         assert_eq!(result.status, ValidationStatus::PartialAgreement);
         assert!(result.allows_licensed());
@@ -807,7 +881,12 @@ mod tests {
         let dns_eu = Some(make_source_data(&key, &fp, 101));
         let https = Some(make_source_data(&key, &fp, 100));
 
-        let result = ConsensusValidator::compute_consensus(dns_us, dns_eu, https);
+        let result = ConsensusValidator::compute_consensus(
+            dns_us,
+            dns_eu,
+            https,
+            SourceErrorDetails::default(),
+        );
 
         assert_eq!(result.status, ValidationStatus::AllSourcesAgree);
     }
@@ -830,6 +909,7 @@ mod tests {
             dns_eu,
             https,
             vec![],
+            SourceErrorDetails::default(),
         );
 
         assert_eq!(result.status, ValidationStatus::AllSourcesAgree);
@@ -852,6 +932,7 @@ mod tests {
             dns_eu,
             https,
             vec![],
+            SourceErrorDetails::default(),
         );
 
         // HTTPS is authoritative — trust it, not DNS
@@ -872,18 +953,29 @@ mod tests {
 
         let dns_us = Some(make_source_data(&key, &fp, 100));
         let dns_eu = Some(make_source_data(&key, &fp, 100));
+        let errors = SourceErrorDetails {
+            dns_us_error: None,
+            dns_eu_error: None,
+            https_error: Some("TLS handshake failed".to_string()),
+        };
 
         let result = ConsensusValidator::compute_https_authoritative_consensus(
             dns_us,
             dns_eu,
             None, // HTTPS unreachable
             vec![],
+            errors,
         );
 
         // Falls back to DNS consensus
         assert_eq!(result.status, ValidationStatus::PartialAgreement);
         assert!(result.allows_licensed());
         assert_eq!(result.authoritative_source.as_deref(), Some("DNS-fallback"));
+        // Verify HTTPS error is preserved
+        assert_eq!(
+            result.source_details.https_error,
+            Some("TLS handshake failed".to_string())
+        );
     }
 
     #[test]
@@ -902,6 +994,7 @@ mod tests {
             dns_eu,
             primary_https,
             additional,
+            SourceErrorDetails::default(),
         );
 
         // Multiple HTTPS disagree = critical
@@ -920,7 +1013,12 @@ mod tests {
         let dns_eu = Some(make_source_data(&key, &fp, 100));
         let https = Some(make_source_data(&key, &fp, 100));
 
-        let result = ConsensusValidator::compute_consensus(dns_us, dns_eu, https);
+        let result = ConsensusValidator::compute_consensus(
+            dns_us,
+            dns_eu,
+            https,
+            SourceErrorDetails::default(),
+        );
 
         assert_eq!(result.status, ValidationStatus::AllSourcesAgree);
         assert!(result.allows_licensed());
