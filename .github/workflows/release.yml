@@ -464,20 +464,58 @@ jobs:
         with:
           files: release/manifest.json
 
-      # Publish hashes to CIRISRegistry US + EU (so agents can verify binary integrity)
-      - name: Publish hashes to Registry
+      # Publish binary manifest to CIRISRegistry (so agents can verify binary integrity)
+      - name: Register binary manifest with Registry
         if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
         env:
           REGISTRY_ADMIN_TOKEN: ${{ secrets.REGISTRY_ADMIN_TOKEN }}
         run: |
-          # Registry stores the manifest so agents can verify downloaded binaries
-          # Publish to both US and EU registries
-          curl -sf -X POST "https://us.registry.ciris-services-1.ai/api/v1/verify/publish" \
-            -H "Authorization: Bearer ${REGISTRY_ADMIN_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d @release/manifest.json || echo "US Registry publish skipped (endpoint not yet available)"
+          # Build the binary manifest payload for Registry API
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"  # Strip leading 'v'
 
-          curl -sf -X POST "https://eu.registry.ciris-services-2.ai/api/v1/verify/publish" \
+          # Extract platform hashes from manifest.json
+          python3 -c "
+          import json, sys
+
+          with open('release/manifest.json') as f:
+              m = json.load(f)
+
+          # Convert to Registry API format
+          binaries = {}
+          for platform, libs in m.get('platforms', {}).items():
+              for lib_type, info in libs.items():
+                  # Map platform names to Rust target triples
+                  target_map = {
+                      'linux-x86_64': 'x86_64-unknown-linux-gnu',
+                      'linux-arm64': 'aarch64-unknown-linux-gnu',
+                      'darwin-x86_64': 'x86_64-apple-darwin',
+                      'darwin-arm64': 'aarch64-apple-darwin',
+                      'windows-x86_64': 'x86_64-pc-windows-msvc',
+                      'android-arm64-v8a': 'aarch64-linux-android',
+                      'android-armeabi-v7a': 'armv7-linux-androideabi',
+                      'android-x86_64': 'x86_64-linux-android',
+                      'ios-arm64': 'aarch64-apple-ios',
+                      'ios-sim-arm64': 'aarch64-apple-ios-sim',
+                  }
+                  target = target_map.get(platform, platform)
+                  binaries[target] = f\"sha256:{info['sha256']}\"
+
+          payload = {
+              'version': '${VERSION}',
+              'binaries': binaries,
+              'generated_at': m.get('built_at', '')
+          }
+
+          print(json.dumps(payload, indent=2))
+          with open('registry-payload.json', 'w') as f:
+              json.dump(payload, f)
+          "
+
+          # Register with CIRISRegistry (primary endpoint)
+          curl -sf -X POST "https://api.registry.ciris-services-1.ai/v1/verify/binary-manifest" \
             -H "Authorization: Bearer ${REGISTRY_ADMIN_TOKEN}" \
             -H "Content-Type: application/json" \
-            -d @release/manifest.json || echo "EU Registry publish skipped (endpoint not yet available)"
+            -d @registry-payload.json \
+            && echo "Binary manifest registered successfully" \
+            || echo "Warning: Failed to register binary manifest (endpoint may not be deployed yet)"
