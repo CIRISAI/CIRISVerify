@@ -190,13 +190,32 @@ See `docs/REGISTRY_INTEGRATION_REQUIREMENTS.md` for details:
 
 ## CI/Testing Notes
 
-**Proptest Conflict**: External test files with proptest can hang when run via `cargo test --all`.
-The CI workflow splits lib tests from external tests:
-```yaml
-# Fast: run lib tests with --lib
-cargo test --all --lib
+**Test Runner**: CI uses [cargo-nextest](https://nexte.st/) for reliable parallel test execution:
+```bash
+# Install nextest
+cargo install cargo-nextest
 
-# Slower: run external proptest files individually
-cargo test -p ciris-crypto --test crypto_properties
-cargo test -p ciris-verify-core --test security_properties
+# Run all tests (recommended)
+cargo nextest run --all
+
+# Run with reduced proptest cases for faster local iteration
+PROPTEST_CASES=16 cargo nextest run --all
+```
+
+**Why nextest?** Standard `cargo test` can hang when proptest external test files run in parallel.
+nextest handles parallel execution properly and detects/terminates hung tests.
+
+**Test Structure**: External tests are consolidated per crate to avoid compilation overhead:
+```
+src/ciris-verify-core/tests/
+  it/
+    main.rs       # mod security; mod validation;
+    security.rs   # security property tests
+    validation.rs # validation property tests
+```
+See: https://matklad.github.io/2021/02/27/delete-cargo-integration-tests.html
+
+**Fallback**: If nextest isn't available, use `--lib` to avoid hang:
+```bash
+cargo test --all --lib  # Fast, lib tests only
 ```

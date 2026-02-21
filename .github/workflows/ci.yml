@@ -63,7 +63,7 @@ jobs:
           arguments: ""
 
   # ==========================================================================
-  # Tests
+  # Tests (using cargo-nextest for reliable parallel execution)
   # ==========================================================================
   test:
     name: Test (${{ matrix.os }})
@@ -77,34 +77,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
       - name: Build
         run: cargo build
-      - name: Run unit tests
-        # Run lib tests across all crates (fast, no hang issues)
-        run: cargo test --all --lib --verbose
-      - name: Run external tests (serial)
-        # External test files (tests/*.rs) must run separately to avoid hang
-        # when combined with lib tests due to proptest runtime interaction
-        run: |
-          cargo test -p ciris-crypto --test crypto_properties
-          cargo test -p ciris-verify-core --test security_properties
-          cargo test -p ciris-verify-core --test validation_properties
-
-  # Property-based tests with extended cases (run serially to avoid hang)
-  proptest:
-    name: Property Tests
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Run property tests
-        # Run external test files serially to avoid proptest runtime hang
-        run: |
-          cargo test -p ciris-crypto --test crypto_properties -- --test-threads=2
-          cargo test -p ciris-verify-core --test security_properties -- --test-threads=2
-          cargo test -p ciris-verify-core --test validation_properties -- --test-threads=2
+      - name: Run all tests with nextest
+        # nextest handles parallel execution properly and detects hung tests
+        run: cargo nextest run --all
         env:
           PROPTEST_CASES: 64
 
