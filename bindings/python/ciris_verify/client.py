@@ -576,6 +576,13 @@ class CIRISVerify:
                 dns_eu.get("valid", False),
                 https_src.get("valid", False),
             ]),
+            # Error details (added in v0.6.6)
+            dns_us_error=dns_us.get("error_details") or dns_us.get("error"),
+            dns_us_error_category=dns_us.get("error_category"),
+            dns_eu_error=dns_eu.get("error_details") or dns_eu.get("error"),
+            dns_eu_error_category=dns_eu.get("error_category"),
+            https_error=https_src.get("error_details") or https_src.get("error"),
+            https_error_category=https_src.get("error_category"),
         )
 
         # Parse license details if present

@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ciris-verify"
-version = "0.6.5"
+version = "0.6.6"
 description = "Python bindings for CIRISVerify hardware-rooted license verification"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
