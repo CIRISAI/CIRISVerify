@@ -101,7 +101,7 @@ Content-Type: application/json
     "merkle_root": "<hex 32-byte Merkle root of transparency log>",
     "log_entry_count": 42,
     "generated_at": "2026-02-18T12:00:00Z",
-    "binary_version": "0.2.0",
+    "binary_version": "0.5.3",
     "hardware_type": "TPM_2_0"
   },
   "agent_hash": "a1b2c3d4...64-char SHA-256 hex of agent build...",

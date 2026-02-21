@@ -19,6 +19,8 @@ CIRISVerify is the **hardware-rooted license verification module** for the CIRIS
 | `docs/OPEN_ITEMS.md` | Open items and future work tracker |
 | `docs/HOW_IT_WORKS.md` | How CIRISVerify works |
 | `docs/REGISTRY_INTEGRATION_REQUIREMENTS.md` | CIRISRegistry dependency analysis |
+| `docs/REGISTRY_BINARY_MANIFEST.md` | Binary manifest spec for registry team |
+| `docs/PORTAL_DEVICE_AUTH_INTEGRATION.md` | Portal device auth integration guide |
 | `src/ciris-keyring/` | Cross-platform hardware keyring (extends Veilid pattern) |
 | `src/ciris-crypto/` | Hybrid cryptography (ECDSA P-256 + ML-DSA-65) |
 | `src/ciris-verify-core/` | Core verification logic (engine, consensus, transparency log) |
@@ -59,13 +61,13 @@ cargo deny check
 |-------|--------|-------|
 | `ciris-keyring` | Phase 0 | HardwareSigner trait, SoftwareSigner impl, macOS/desktop tracing |
 | `ciris-crypto` | Phase 1 Complete | ECDSA P-256, Ed25519, ML-DSA-65 (FIPS 204), hybrid signer with bound signatures |
-| `ciris-verify-core` | Phase 3-5 Active | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), Tripwire file integrity, remote attestation export |
-| `ciris-verify-ffi` | Phase 4 Active | C FFI with init/status/capability/attestation-export/destroy |
-| `bindings/python` | Released | ciris-verify 0.2.0 on PyPI with platform wheels |
+| `ciris-verify-core` | Phase 3-5 Active | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), Tripwire file integrity, remote attestation export, Level 2 binary self-verification |
+| `ciris-verify-ffi` | Phase 4 Active | C FFI with init/status/capability/attestation-export/run-attestation/destroy, JNI bindings |
+| `bindings/python` | Released | ciris-verify 0.5.3 on PyPI with platform wheels |
 
 **ML-DSA-65**: Fully implemented using `ml-dsa` 0.1.0-rc.3 (RustCrypto). Bound dual signatures operational.
 
-**144 tests passing** across all crates.
+**155+ tests passing** across all crates (123 lib tests + property tests).
 
 ## Development Workflow
 
@@ -149,6 +151,34 @@ This project extends Veilid's `keyring-manager` pattern. To maintain compatibili
 | `../CIRISAgent` | Primary consumer of verification |
 | `../CIRISPortal` | License management portal |
 
+## CLI Usage
+
+```bash
+# Build CLI
+cargo build --release -p ciris-verify-core
+
+# Run full verification
+./target/release/ciris_verify run
+
+# Run binary self-check (Level 2)
+./target/release/ciris_verify self-check
+
+# Run with custom registry
+./target/release/ciris_verify run --registry https://api.registry.ciris-services-1.ai
+```
+
+## Attestation Levels
+
+| Level | Name | What it Proves |
+|-------|------|----------------|
+| 1 | Hardware | TPM/Secure Enclave key valid |
+| 2 | Binary Self-Check | THIS binary hash matches registry manifest |
+| 3 | Registry Consensus | 2/3 geo-distributed sources agree |
+| 4 | License Validity | Signature valid, not expired/revoked |
+| 5 | Agent Integrity | Tripwire file hashes match |
+
+**CRITICAL**: If Level 2 fails, Levels 3-5 are UNVERIFIED (yellow). A compromised binary could lie about higher levels.
+
 ## Current Registry Gaps (Blocking Production)
 
 See `docs/REGISTRY_INTEGRATION_REQUIREMENTS.md` for details:
@@ -156,3 +186,17 @@ See `docs/REGISTRY_INTEGRATION_REQUIREMENTS.md` for details:
 - Hardware attestation validation: NOT IMPLEMENTED (registry-side)
 - Offline package generation: Stub only
 - Hybrid signature implementation: DONE in CIRISVerify, NOT IMPLEMENTED in CIRISRegistry
+- Binary manifest endpoint: IMPLEMENTED (see `docs/REGISTRY_BINARY_MANIFEST.md`)
+
+## CI/Testing Notes
+
+**Proptest Conflict**: External test files with proptest can hang when run via `cargo test --all`.
+The CI workflow splits lib tests from external tests:
+```yaml
+# Fast: run lib tests with --lib
+cargo test --all --lib
+
+# Slower: run external proptest files individually
+cargo test -p ciris-crypto --test crypto_properties
+cargo test -p ciris-verify-core --test security_properties
+```
