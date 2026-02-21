@@ -51,6 +51,8 @@ use std::ptr;
 use std::sync::{Arc, Once};
 
 use ciris_keyring::MutableEd25519Signer;
+use ciris_verify_core::config::VerifyConfig;
+use ciris_verify_core::unified::{FullAttestationRequest, FullAttestationResult, UnifiedAttestationEngine};
 use ciris_verify_core::LicenseEngine;
 use tokio::runtime::Runtime;
 
@@ -1307,6 +1309,162 @@ pub unsafe extern "C" fn ciris_verify_get_diagnostics(
     CirisVerifyError::Success as i32
 }
 
+/// Run unified attestation combining all verification checks.
+///
+/// This is the main entry point for comprehensive agent verification:
+/// - Source validation (DNS US, DNS EU, HTTPS)
+/// - File integrity (full + spot check against registry manifest)
+/// - Audit trail integrity (hash chain + signatures)
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `request_json` - JSON-encoded FullAttestationRequest
+/// * `request_len` - Length of request JSON
+/// * `result_json` - Output pointer for JSON-encoded FullAttestationResult (caller must free with `ciris_verify_free`)
+/// * `result_len` - Output pointer for result length
+///
+/// # Request JSON Format
+///
+/// ```json
+/// {
+///   "challenge": [/* 32+ bytes as array */],
+///   "agent_version": "1.0.0",        // optional
+///   "agent_root": "/path/to/agent",  // optional
+///   "spot_check_count": 10,          // optional, default 0
+///   "audit_entries": [...],          // optional
+///   "portal_key_id": "key-id",       // optional
+///   "skip_registry": false,          // optional
+///   "skip_file_integrity": false,    // optional
+///   "skip_audit": false              // optional
+/// }
+/// ```
+///
+/// # Result JSON Format
+///
+/// ```json
+/// {
+///   "valid": true,
+///   "level": 5,
+///   "checks_passed": 4,
+///   "checks_total": 4,
+///   "sources": { "dns_us_valid": true, ... },
+///   "file_integrity": { ... },
+///   "audit_trail": { ... },
+///   "diagnostics": "...",
+///   "errors": [],
+///   "timestamp": 1234567890
+/// }
+/// ```
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `request_json` must point to valid UTF-8 JSON of at least `request_len` bytes
+/// - `result_json` and `result_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_run_attestation(
+    handle: *mut CirisVerifyHandle,
+    request_json: *const u8,
+    request_len: usize,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    tracing::debug!(
+        "ciris_verify_run_attestation called (request_len={})",
+        request_len
+    );
+
+    if handle.is_null() || request_json.is_null() || result_json.is_null() || result_len.is_null() {
+        tracing::error!("ciris_verify_run_attestation: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+    let request_bytes = std::slice::from_raw_parts(request_json, request_len);
+
+    // Parse request JSON
+    let request_str = match std::str::from_utf8(request_bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("ciris_verify_run_attestation: invalid UTF-8: {}", e);
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+    };
+
+    let request: FullAttestationRequest = match serde_json::from_str(request_str) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("ciris_verify_run_attestation: invalid JSON: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        }
+    };
+
+    // Validate challenge
+    if request.challenge.len() < 32 {
+        tracing::error!(
+            "ciris_verify_run_attestation: challenge too short ({} < 32)",
+            request.challenge.len()
+        );
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    // Create attestation engine with default config
+    let config = VerifyConfig::default();
+    let engine = match UnifiedAttestationEngine::new(config) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::error!("ciris_verify_run_attestation: failed to create engine: {}", e);
+            return CirisVerifyError::InitializationFailed as i32;
+        }
+    };
+
+    // Run attestation
+    let result: FullAttestationResult = match handle.runtime.block_on(engine.run_attestation(request)) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("ciris_verify_run_attestation: attestation failed: {}", e);
+            return CirisVerifyError::RequestFailed as i32;
+        }
+    };
+
+    tracing::info!(
+        valid = result.valid,
+        level = result.level,
+        checks_passed = result.checks_passed,
+        checks_total = result.checks_total,
+        "Unified attestation complete"
+    );
+
+    // Serialize result to JSON
+    let result_bytes = match serde_json::to_vec(&result) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("ciris_verify_run_attestation: failed to serialize result: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        }
+    };
+
+    // Allocate and copy
+    let len = result_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("ciris_verify_run_attestation: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, len);
+
+    *result_json = ptr;
+    *result_len = len;
+
+    CirisVerifyError::Success as i32
+}
+
 // Android JNI bindings
 #[cfg(target_os = "android")]
 mod android {
@@ -1593,6 +1751,67 @@ mod android {
         };
 
         ciris_verify_free(proof_data as *mut libc::c_void);
+        jarray
+    }
+
+    /// Run unified attestation (returns JSON as byte array)
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeRunAttestation<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+        request_json: JByteArray<'local>,
+    ) -> JByteArray<'local> {
+        tracing::debug!("JNI: nativeRunAttestation called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeRunAttestation - null handle");
+            return JByteArray::default();
+        }
+
+        let request_bytes = match env.convert_byte_array(&request_json) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("JNI: failed to convert request JSON: {}", e);
+                return JByteArray::default();
+            },
+        };
+
+        let mut result_data: *mut u8 = std::ptr::null_mut();
+        let mut result_len: usize = 0;
+
+        let result = ciris_verify_run_attestation(
+            handle,
+            request_bytes.as_ptr(),
+            request_bytes.len(),
+            &mut result_data,
+            &mut result_len,
+        );
+
+        if result != CirisVerifyError::Success as i32 {
+            tracing::warn!("JNI: nativeRunAttestation failed with code {}", result);
+            return JByteArray::default();
+        }
+
+        if result_data.is_null() {
+            tracing::warn!("JNI: nativeRunAttestation returned null result");
+            return JByteArray::default();
+        }
+
+        let slice = std::slice::from_raw_parts(result_data, result_len);
+        let jarray = match env.byte_array_from_slice(slice) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!("JNI: failed to create attestation result byte array: {}", e);
+                ciris_verify_free(result_data as *mut libc::c_void);
+                return JByteArray::default();
+            },
+        };
+
+        ciris_verify_free(result_data as *mut libc::c_void);
         jarray
     }
 
