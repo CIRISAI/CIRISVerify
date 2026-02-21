@@ -54,6 +54,12 @@ use std::sync::{Arc, Once};
 
 use ciris_keyring::MutableEd25519Signer;
 use ciris_verify_core::config::VerifyConfig;
+use ciris_verify_core::license::LicenseStatus;
+use ciris_verify_core::types::{
+    DisclosureSeverity, LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure,
+    ResponseAttestation, ResponseMetadata, ResponseSignature, SourceResult, ValidationResults,
+    ValidationStatus,
+};
 use ciris_verify_core::unified::{
     FullAttestationRequest, FullAttestationResult, UnifiedAttestationEngine,
 };
@@ -407,6 +413,94 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
     Box::into_raw(handle)
 }
 
+/// Build a timeout response when the hard timeout fires.
+///
+/// Returns a valid LicenseStatusResponse with error details so the client
+/// knows what happened instead of just getting a Python-level timeout.
+fn build_timeout_response(_request: &LicenseStatusRequest) -> LicenseStatusResponse {
+    use ciris_keyring::{PlatformAttestation, SoftwareAttestation};
+
+    let now = chrono::Utc::now().timestamp();
+
+    LicenseStatusResponse {
+        status: LicenseStatus::ErrorVerificationFailed,
+        license: None,
+        mandatory_disclosure: MandatoryDisclosure {
+            text: "License verification timed out. Network operations blocked for 15+ seconds. \
+                   Operating in COMMUNITY MODE with restricted capabilities."
+                .to_string(),
+            severity: DisclosureSeverity::Warning,
+            locale: "en".to_string(),
+        },
+        attestation: ResponseAttestation {
+            platform: PlatformAttestation::Software(SoftwareAttestation {
+                key_derivation: "none".to_string(),
+                storage: "none".to_string(),
+                security_warning: "Timeout - no attestation available".to_string(),
+            }),
+            signature: ResponseSignature {
+                classical: Vec::new(),
+                classical_algorithm: "none".to_string(),
+                pqc: Vec::new(),
+                pqc_algorithm: "none".to_string(),
+                pqc_public_key: Vec::new(),
+                signature_mode: "Unavailable".to_string(),
+            },
+            integrity_valid: false,
+            timestamp: now,
+        },
+        validation: ValidationResults {
+            dns_us: SourceResult {
+                source: "us.registry.ciris-services-1.ai".to_string(),
+                reachable: false,
+                valid: false,
+                checked_at: now,
+                error: Some("Hard timeout: network stack blocked".to_string()),
+                error_category: Some("hard_timeout".to_string()),
+                error_details: Some(
+                    "FFI layer 15s timeout fired - network operations blocked indefinitely"
+                        .to_string(),
+                ),
+            },
+            dns_eu: SourceResult {
+                source: "eu.registry.ciris-services-1.ai".to_string(),
+                reachable: false,
+                valid: false,
+                checked_at: now,
+                error: Some("Hard timeout: network stack blocked".to_string()),
+                error_category: Some("hard_timeout".to_string()),
+                error_details: Some(
+                    "FFI layer 15s timeout fired - network operations blocked indefinitely"
+                        .to_string(),
+                ),
+            },
+            https: SourceResult {
+                source: "api.registry.ciris-services-1.ai".to_string(),
+                reachable: false,
+                valid: false,
+                checked_at: now,
+                error: Some("Hard timeout: network stack blocked".to_string()),
+                error_category: Some("hard_timeout".to_string()),
+                error_details: Some(
+                    "FFI layer 15s timeout fired - network operations blocked indefinitely"
+                        .to_string(),
+                ),
+            },
+            overall: ValidationStatus::NoSourcesReachable,
+        },
+        metadata: ResponseMetadata {
+            protocol_version: "2.0.0".to_string(),
+            binary_version: env!("CARGO_PKG_VERSION").to_string(),
+            timestamp: now,
+            cache_ttl: 60, // Short TTL - retry soon
+            request_id: format!("timeout-{}", now),
+        },
+        runtime_validation: None,
+        shutdown_directive: None,
+        function_integrity: None, // Will be filled in by caller
+    }
+}
+
 /// Get the current license status.
 ///
 /// # Arguments
@@ -462,15 +556,34 @@ pub unsafe extern "C" fn ciris_verify_get_status(
             },
         };
 
-    // Execute request
-    let mut response = match handle
-        .runtime
-        .block_on(handle.engine.get_license_status(request))
-    {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("Request failed: {}", e);
+    // Execute request with HARD 15s timeout - guarantees return before Python's 30s
+    // This catches any network stack blocking that tokio can't interrupt
+    tracing::info!("FFI: Starting get_license_status with 15s hard timeout");
+    let start = std::time::Instant::now();
+
+    let mut response = match handle.runtime.block_on(async {
+        tokio::time::timeout(
+            std::time::Duration::from_secs(15),
+            handle.engine.get_license_status(request.clone()),
+        )
+        .await
+    }) {
+        Ok(Ok(r)) => {
+            tracing::info!("FFI: get_license_status completed in {:?}", start.elapsed());
+            r
+        },
+        Ok(Err(e)) => {
+            tracing::error!("FFI: Request failed after {:?}: {}", start.elapsed(), e);
             return CirisVerifyError::RequestFailed as i32;
+        },
+        Err(_) => {
+            // Hard timeout fired - return a timeout response with error details
+            tracing::error!(
+                "FFI: HARD TIMEOUT after {:?} - network stack blocked",
+                start.elapsed()
+            );
+            // Build a timeout response so Python gets something useful
+            build_timeout_response(&request)
         },
     };
 
