@@ -89,6 +89,13 @@ pub enum VerifyError {
         message: String,
     },
 
+    /// Integrity check error (for binary self-verification).
+    #[error("Integrity check error: {message}")]
+    IntegrityError {
+        /// Error message.
+        message: String,
+    },
+
     /// Cryptographic error.
     #[error("Crypto error: {0}")]
     CryptoError(#[from] ciris_crypto::CryptoError),

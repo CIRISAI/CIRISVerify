@@ -52,7 +52,9 @@ use std::sync::{Arc, Once};
 
 use ciris_keyring::MutableEd25519Signer;
 use ciris_verify_core::config::VerifyConfig;
-use ciris_verify_core::unified::{FullAttestationRequest, FullAttestationResult, UnifiedAttestationEngine};
+use ciris_verify_core::unified::{
+    FullAttestationRequest, FullAttestationResult, UnifiedAttestationEngine,
+};
 use ciris_verify_core::LicenseEngine;
 use tokio::runtime::Runtime;
 
@@ -1393,7 +1395,7 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
         Err(e) => {
             tracing::error!("ciris_verify_run_attestation: invalid UTF-8: {}", e);
             return CirisVerifyError::InvalidArgument as i32;
-        }
+        },
     };
 
     let request: FullAttestationRequest = match serde_json::from_str(request_str) {
@@ -1401,7 +1403,7 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
         Err(e) => {
             tracing::error!("ciris_verify_run_attestation: invalid JSON: {}", e);
             return CirisVerifyError::SerializationError as i32;
-        }
+        },
     };
 
     // Validate challenge
@@ -1418,19 +1420,23 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
     let engine = match UnifiedAttestationEngine::new(config) {
         Ok(e) => e,
         Err(e) => {
-            tracing::error!("ciris_verify_run_attestation: failed to create engine: {}", e);
+            tracing::error!(
+                "ciris_verify_run_attestation: failed to create engine: {}",
+                e
+            );
             return CirisVerifyError::InitializationFailed as i32;
-        }
+        },
     };
 
     // Run attestation
-    let result: FullAttestationResult = match handle.runtime.block_on(engine.run_attestation(request)) {
-        Ok(r) => r,
-        Err(e) => {
-            tracing::error!("ciris_verify_run_attestation: attestation failed: {}", e);
-            return CirisVerifyError::RequestFailed as i32;
-        }
-    };
+    let result: FullAttestationResult =
+        match handle.runtime.block_on(engine.run_attestation(request)) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("ciris_verify_run_attestation: attestation failed: {}", e);
+                return CirisVerifyError::RequestFailed as i32;
+            },
+        };
 
     tracing::info!(
         valid = result.valid,
@@ -1444,9 +1450,12 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
     let result_bytes = match serde_json::to_vec(&result) {
         Ok(b) => b,
         Err(e) => {
-            tracing::error!("ciris_verify_run_attestation: failed to serialize result: {}", e);
+            tracing::error!(
+                "ciris_verify_run_attestation: failed to serialize result: {}",
+                e
+            );
             return CirisVerifyError::SerializationError as i32;
-        }
+        },
     };
 
     // Allocate and copy
@@ -1756,9 +1765,7 @@ mod android {
 
     /// Run unified attestation (returns JSON as byte array)
     #[no_mangle]
-    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeRunAttestation<
-        'local,
-    >(
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeRunAttestation<'local>(
         mut env: JNIEnv<'local>,
         _class: JClass<'local>,
         handle: jlong,

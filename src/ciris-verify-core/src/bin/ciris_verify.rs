@@ -5,9 +5,10 @@
 
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
 use ciris_verify_core::config::TrustModel;
+use ciris_verify_core::registry::{compute_self_hash, current_target, RegistryClient};
 use ciris_verify_core::validation::ConsensusValidator;
+use clap::{Parser, Subcommand};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -74,6 +75,13 @@ enum Commands {
         #[arg(long)]
         agent_root: Option<String>,
     },
+
+    /// Level 4: Verify this binary's integrity against registry
+    SelfCheck {
+        /// Registry API endpoint
+        #[arg(long, default_value = "https://api.registry.ciris-services-1.ai")]
+        registry: String,
+    },
 }
 
 fn print_banner() {
@@ -101,36 +109,76 @@ WHAT IS CIRISVERIFY?
 CIRISVerify is the cryptographic verification layer that ensures CIRIS agents
 are legitimate. Like a DMV verifying a driver's license, CIRISVerify checks:
 
-  1. SOURCE VALIDATION (DNS/HTTPS)
-     Verifies license data from multiple independent sources using a
-     consensus algorithm. HTTPS is authoritative; DNS provides cross-checks.
+  1. BINARY SELF-VERIFICATION
+     Verifies CIRISVerify itself hasn't been tampered with by checking its
+     hash against a registry-hosted manifest. "Who watches the watchmen?"
 
-  2. KEY ATTESTATION
-     Verifies the agent has valid cryptographic credentials, ideally
-     backed by hardware security (TPM, Secure Enclave, StrongBox).
+  2. SOURCE VALIDATION (DNS/HTTPS)
+     Verifies data from multiple independent sources using a consensus
+     algorithm. HTTPS is authoritative; DNS provides cross-checks.
 
   3. FILE INTEGRITY
      Verifies agent binaries match the signed manifest from CIRISRegistry,
      detecting tampering or unauthorized modifications.
 
-  4. AUDIT TRAIL
-     Verifies the agent's cryptographic audit log has an unbroken hash
-     chain from genesis, ensuring history hasn't been altered.
+  4. KEY ATTESTATION + AUDIT TRAIL
+     Verifies the agent has valid hardware-backed credentials and an
+     unbroken cryptographic audit log from genesis.
 
-ATTESTATION LEVELS
-==================
+ATTESTATION LEVELS (1-5)
+========================
 
-  Level 5: Full hardware attestation with all checks passing
-  Level 4: Hardware keys with partial source validation
-  Level 3: Software-only keys with file integrity verified
-  Level 2: Basic validation, some checks unavailable
-  Level 1: Minimal validation, degraded mode
-  Level 0: Verification failed or unavailable
+  The "DMV for AI Agents" - Progressive Trust Verification
+
+  CRITICAL: If ANY level fails, ALL higher levels show YELLOW (unverified).
+  A compromised verifier binary could report "all green" regardless of state.
+
+  Level 1: LIBRARY LOADED (green if you see this output)
+     CIRISVerify binary loaded and functional
+     If this fails, you see nothing - the binary didn't run
+
+  Level 2: BINARY SELF-VERIFICATION (recursive!)
+     SHA-256 of THIS binary verified against registry manifest
+     "Who watches the watchmen?" - proves the verifier itself is authentic
+     RECURSIVE: Fetches manifest via Level 3, but if Level 2 fails,
+                Level 3-5 results are MEANINGLESS (yellow/unverified)
+
+  Level 3: REGISTRY CROSS-VALIDATION
+     DNS (US/EU) + HTTPS registry queries (2/3 agreement)
+     Multi-source consensus prevents single point of compromise
+     HTTPS is authoritative, DNS is advisory
+
+  Level 4: AGENT FILE INTEGRITY
+     SHA-256 of agent files against registry-hosted manifest
+     Tripwire-style tamper detection (spot-check or full)
+     Detects code modifications or injected backdoors
+
+  Level 5: PORTAL KEY + AUDIT TRAIL
+     Ed25519 key from CIRISPortal + unbroken hash chain
+     Full provenance - key legitimately issued, every action signed
+
+TRUST BOUNDARIES
+================
+
+  Binary self-verification does NOT protect against a compromised registry.
+  An attacker controlling the registry could update both binary and manifest.
+
+  Mitigations:
+  - Level 3 multi-source cross-validation (2/3 geographically distributed)
+  - Initial provisioning via trusted app stores:
+    * Android: Google Play Store
+    * iOS: Apple App Store
+    * Python: PyPI (pip install ciris-verify)
+    * Linux: Official package repositories
+
+  The initial provisioning moment is the weakest point in any trust chain.
+  This is true of all trust systems (TLS CAs, PGP web of trust, etc.).
 
 USAGE
 =====
 
-  ciris-verify sources    Check DNS and HTTPS source validation
+  ciris-verify sources    Check DNS and HTTPS source validation (Level 3)
+  ciris-verify self-check Verify this binary's integrity (Level 2)
   ciris-verify info       Show system capabilities
   ciris-verify attest     Run full attestation (requires agent context)
 
@@ -217,12 +265,21 @@ async fn run_source_check(dns_us: &str, dns_eu: &str, https: &str, timeout_secs:
         };
 
         println!("Source Status:");
-        println!("  DNS US:  {} {}", dns_us_status,
-            result.source_details.dns_us_error.as_deref().unwrap_or(""));
-        println!("  DNS EU:  {} {}",dns_eu_status,
-            result.source_details.dns_eu_error.as_deref().unwrap_or(""));
-        println!("  HTTPS:   {} {}",https_status,
-            result.source_details.https_error.as_deref().unwrap_or(""));
+        println!(
+            "  DNS US:  {} {}",
+            dns_us_status,
+            result.source_details.dns_us_error.as_deref().unwrap_or("")
+        );
+        println!(
+            "  DNS EU:  {} {}",
+            dns_eu_status,
+            result.source_details.dns_eu_error.as_deref().unwrap_or("")
+        );
+        println!(
+            "  HTTPS:   {} {}",
+            https_status,
+            result.source_details.https_error.as_deref().unwrap_or("")
+        );
         println!();
 
         // Overall status
@@ -246,10 +303,22 @@ async fn run_source_check(dns_us: &str, dns_eu: &str, https: &str, timeout_secs:
         // Consensus data
         if result.consensus_key_classical.is_some() {
             println!("Consensus Data:");
-            println!("  Classical Key: Present ({} bytes)",
-                result.consensus_key_classical.as_ref().map(|k| k.len()).unwrap_or(0));
-            println!("  PQC Fingerprint: {}",
-                if result.consensus_pqc_fingerprint.is_some() { "Present" } else { "Not available" });
+            println!(
+                "  Classical Key: Present ({} bytes)",
+                result
+                    .consensus_key_classical
+                    .as_ref()
+                    .map(|k| k.len())
+                    .unwrap_or(0)
+            );
+            println!(
+                "  PQC Fingerprint: {}",
+                if result.consensus_pqc_fingerprint.is_some() {
+                    "Present"
+                } else {
+                    "Not available"
+                }
+            );
             if let Some(rev) = result.consensus_revocation_revision {
                 println!("  Revocation Revision: {}", rev);
             }
@@ -271,6 +340,152 @@ async fn run_source_check(dns_us: &str, dns_eu: &str, https: &str, timeout_secs:
         if result.is_degraded() {
             println!("  \x1b[33m[WARN]\x1b[0m Operating in degraded mode");
         }
+    }
+}
+
+async fn run_self_check(registry_url: &str, json: bool) {
+    if !json {
+        println!("\nBINARY SELF-VERIFICATION (Level 2)");
+        println!("===================================\n");
+        println!("This verifies the CIRISVerify binary itself hasn't been tampered with.");
+        println!("It computes a SHA-256 hash of the running executable and compares it");
+        println!("against the registry-hosted manifest.\n");
+    }
+
+    // Compute self hash
+    let self_hash = match compute_self_hash() {
+        Ok(hash) => hash,
+        Err(e) => {
+            if json {
+                println!(r#"{{"status":"error","message":"{}"}}"#, e);
+            } else {
+                println!(
+                    "\x1b[31m[ERROR]\x1b[0m Failed to compute binary hash: {}",
+                    e
+                );
+            }
+            return;
+        },
+    };
+
+    let target = current_target();
+
+    if !json {
+        println!("Binary Information:");
+        println!("  Target: {}", target);
+        println!("  Version: {}", VERSION);
+        println!("  SHA-256: {}", &self_hash[..16].to_uppercase());
+        println!("           {}...", &self_hash[16..32].to_uppercase());
+        println!();
+    }
+
+    // Try to fetch manifest from registry
+    println!("Fetching manifest from registry...");
+    let client = match RegistryClient::new(registry_url, Duration::from_secs(10)) {
+        Ok(c) => c,
+        Err(e) => {
+            if json {
+                println!(
+                    r#"{{"status":"error","message":"Registry client error: {}"}}"#,
+                    e
+                );
+            } else {
+                println!("\x1b[31m[ERROR]\x1b[0m Registry client error: {}", e);
+                println!();
+                println!("IMPORTANT: Binary self-verification requires the registry to");
+                println!("implement: GET /v1/verify/binary-manifest/{{version}}");
+                println!();
+                println!("TRUST BOUNDARY NOTE:");
+                println!("  Self-verification protects against tampered binaries but NOT");
+                println!("  against a compromised registry. Initial provisioning via a");
+                println!("  trusted distribution channel (Google Play, Apple App Store,");
+                println!("  PyPI, package managers) is crucial for establishing the");
+                println!("  initial trust chain.");
+            }
+            return;
+        },
+    };
+
+    match client.get_binary_manifest(VERSION).await {
+        Ok(manifest) => match manifest.binaries.get(target) {
+            Some(expected_hash) => {
+                let expected = expected_hash
+                    .strip_prefix("sha256:")
+                    .unwrap_or(expected_hash);
+
+                let matches = self_hash.eq_ignore_ascii_case(expected);
+
+                if json {
+                    let output = serde_json::json!({
+                        "status": if matches { "pass" } else { "fail" },
+                        "target": target,
+                        "version": VERSION,
+                        "actual_hash": self_hash,
+                        "expected_hash": expected,
+                        "matches": matches
+                    });
+                    println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                } else if matches {
+                    println!("\x1b[32m[PASS]\x1b[0m Binary hash matches registry manifest");
+                    println!();
+                    println!("Level 2 verification PASSED. This binary is authentic.");
+                } else {
+                    println!("\x1b[31m[FAIL]\x1b[0m Binary hash does NOT match registry manifest!");
+                    println!();
+                    println!("  Expected: {}", expected);
+                    println!("  Actual:   {}", self_hash);
+                    println!();
+                    println!("WARNING: This binary may have been tampered with.");
+                    println!("All subsequent attestation levels are UNVERIFIED.");
+                }
+            },
+            None => {
+                if json {
+                    println!(
+                        r#"{{"status":"error","message":"No hash for target '{}' in manifest"}}"#,
+                        target
+                    );
+                } else {
+                    println!(
+                        "\x1b[33m[WARN]\x1b[0m No binary hash for target '{}' in manifest",
+                        target
+                    );
+                    println!();
+                    println!("Available targets in manifest:");
+                    for t in manifest.binaries.keys() {
+                        println!("  - {}", t);
+                    }
+                }
+            },
+        },
+        Err(e) => {
+            if json {
+                println!(r#"{{"status":"error","message":"{}"}}"#, e);
+            } else {
+                println!(
+                    "\x1b[33m[WARN]\x1b[0m Could not fetch binary manifest: {}",
+                    e
+                );
+                println!();
+                println!("The registry may not have implemented the binary manifest route yet.");
+                println!("Route required: GET /v1/verify/binary-manifest/{}", VERSION);
+                println!();
+                println!("Your binary hash (for manual verification):");
+                println!("  {}", self_hash);
+                println!();
+                println!("TRUST BOUNDARY NOTE:");
+                println!("  Binary self-verification does NOT protect against a compromised");
+                println!("  registry (an attacker could update both binary and manifest).");
+                println!("  The Level 3 multi-source cross-validation (2/3 agreement across");
+                println!("  geographically distributed sources) mitigates registry compromise.");
+                println!();
+                println!("  Initial provisioning via a trusted distribution channel is crucial:");
+                println!("  - Android: Google Play Store");
+                println!("  - iOS: Apple App Store");
+                println!("  - Python: PyPI (pip install ciris-verify)");
+                println!("  - Linux: Official package repositories");
+            }
+        },
     }
 }
 
@@ -362,17 +577,25 @@ async fn main() {
     }
 
     match cli.command {
-        Some(Commands::Sources { dns_us, dns_eu, https, timeout }) => {
+        Some(Commands::Sources {
+            dns_us,
+            dns_eu,
+            https,
+            timeout,
+        }) => {
             if !json_output {
                 print_banner();
             }
             run_source_check(&dns_us, &dns_eu, &https, timeout, json_output).await;
-        }
+        },
         Some(Commands::Info) => {
             print_banner();
             show_system_info();
-        }
-        Some(Commands::Attest { version, agent_root }) => {
+        },
+        Some(Commands::Attest {
+            version,
+            agent_root,
+        }) => {
             print_banner();
             println!("\nFULL ATTESTATION");
             println!("================\n");
@@ -392,8 +615,14 @@ async fn main() {
                 println!("For standalone source validation, use:");
                 println!("  ciris-verify sources");
             } else {
-                println!("Agent Version: {}", version.as_deref().unwrap_or("not specified"));
-                println!("Agent Root: {}", agent_root.as_deref().unwrap_or("not specified"));
+                println!(
+                    "Agent Version: {}",
+                    version.as_deref().unwrap_or("not specified")
+                );
+                println!(
+                    "Agent Root: {}",
+                    agent_root.as_deref().unwrap_or("not specified")
+                );
                 println!();
                 println!("Full attestation with file integrity checking is not yet");
                 println!("implemented in the CLI. Use the library API or Python bindings.");
@@ -401,11 +630,15 @@ async fn main() {
                 println!("For now, you can run source validation:");
                 println!("  ciris-verify sources");
             }
-        }
+        },
+        Some(Commands::SelfCheck { registry }) => {
+            print_banner();
+            run_self_check(&registry, json_output).await;
+        },
         None => {
             // No command - show help
             print_banner();
             print_explanation();
-        }
+        },
     }
 }

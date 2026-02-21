@@ -90,7 +90,10 @@ pub use watchdog::ShutdownWatchdog;
 
 // New unified attestation API
 pub use audit::{AuditEntry, AuditVerificationResult, AuditVerifier};
-pub use registry::{BuildRecord, FileManifest as RegistryManifest, RegistryClient};
+pub use registry::{
+    compute_self_hash, current_target, verify_self_against_manifest, BinaryManifest, BuildRecord,
+    FileManifest as RegistryManifest, RegistryClient,
+};
 pub use unified::{
     FullAttestationRequest, FullAttestationResult, IntegrityCheckResult, SourceCheckResult,
     UnifiedAttestationEngine,

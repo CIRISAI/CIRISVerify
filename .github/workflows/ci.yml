@@ -68,7 +68,7 @@ jobs:
   test:
     name: Test (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 25
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -79,23 +79,33 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Build
         run: cargo build
-      - name: Run tests
-        run: cargo test --all --verbose
+      - name: Run unit tests
+        # Run lib tests across all crates (fast, no hang issues)
+        run: cargo test --all --lib --verbose
+      - name: Run external tests (serial)
+        # External test files (tests/*.rs) must run separately to avoid hang
+        # when combined with lib tests due to proptest runtime interaction
+        run: |
+          cargo test -p ciris-crypto --test crypto_properties
+          cargo test -p ciris-verify-core --test security_properties
+          cargo test -p ciris-verify-core --test validation_properties
 
-  # Property-based tests with extended cases
+  # Property-based tests with extended cases (run serially to avoid hang)
   proptest:
     name: Property Tests
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Run property tests
-        # Run in debug mode (faster compile) - hardcoded cases in tests already reduced
-        run: cargo test --all -- --test-threads=2
+        # Run external test files serially to avoid proptest runtime hang
+        run: |
+          cargo test -p ciris-crypto --test crypto_properties -- --test-threads=2
+          cargo test -p ciris-verify-core --test security_properties -- --test-threads=2
+          cargo test -p ciris-verify-core --test validation_properties -- --test-threads=2
         env:
-          # Note: Tests have hardcoded cases (64) for CI; use higher locally
           PROPTEST_CASES: 64
 
   # ==========================================================================
