@@ -354,7 +354,11 @@ pub struct MultiDnsResult {
     pub eu_result: Result<DnsTxtRecord, String>,
 }
 
-/// Query multiple DNS sources in parallel.
+/// Query multiple DNS sources in parallel with automatic fallback.
+///
+/// Tries the primary transport first, then falls back to the secondary
+/// transport for any failed queries. This handles cases where DoH is
+/// blocked but UDP works, or vice versa.
 ///
 /// # Arguments
 ///
@@ -371,8 +375,53 @@ pub async fn query_multiple_sources(
     eu_host: &str,
     timeout: Duration,
 ) -> MultiDnsResult {
-    // Use default transport (DoH on mobile, UDP on desktop)
-    query_multiple_sources_with_transport(us_host, eu_host, timeout, default_dns_transport()).await
+    let primary = default_dns_transport();
+    let fallback = match primary {
+        DnsTransport::DnsOverHttps => DnsTransport::Udp,
+        DnsTransport::Udp => DnsTransport::DnsOverHttps,
+    };
+
+    // Try primary transport first
+    info!(transport = ?primary, "Trying primary DNS transport");
+    let mut result =
+        query_multiple_sources_with_transport(us_host, eu_host, timeout, primary).await;
+
+    // Check if we need fallback
+    let us_failed = result.us_result.is_err();
+    let eu_failed = result.eu_result.is_err();
+
+    if us_failed || eu_failed {
+        info!(
+            us_failed = us_failed,
+            eu_failed = eu_failed,
+            fallback_transport = ?fallback,
+            "Primary DNS failed, trying fallback transport"
+        );
+
+        // Create fallback validator
+        if let Ok(fallback_validator) = DnsValidator::with_transport(fallback, timeout).await {
+            // Retry failed queries with fallback transport
+            if us_failed {
+                info!(host = %us_host, "Retrying US source with fallback");
+                if let Ok(record) = fallback_validator.query_steward_record(us_host).await {
+                    info!(host = %us_host, "US fallback succeeded");
+                    result.us_result = Ok(record);
+                }
+            }
+
+            if eu_failed {
+                info!(host = %eu_host, "Retrying EU source with fallback");
+                if let Ok(record) = fallback_validator.query_steward_record(eu_host).await {
+                    info!(host = %eu_host, "EU fallback succeeded");
+                    result.eu_result = Ok(record);
+                }
+            }
+        } else {
+            warn!("Failed to create fallback DNS validator");
+        }
+    }
+
+    result
 }
 
 /// Query multiple DNS sources with explicit transport mode.
