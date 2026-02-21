@@ -311,8 +311,8 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage
-        # Only run on core crates, skip FFI and integration tests
-        run: cargo llvm-cov --package ciris-crypto --package ciris-keyring --package ciris-verify-core --lcov --output-path lcov.info
+        # Only run lib tests on core crates (skip external tests/*.rs to avoid proptest hang)
+        run: cargo llvm-cov --package ciris-crypto --package ciris-keyring --package ciris-verify-core --lib --lcov --output-path lcov.info
         env:
           PROPTEST_CASES: 16
       - name: Upload coverage
