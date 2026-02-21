@@ -556,18 +556,42 @@ pub unsafe extern "C" fn ciris_verify_get_status(
             },
         };
 
-    // Execute request with HARD 15s timeout - guarantees return before Python's 30s
-    // This catches any network stack blocking that tokio can't interrupt
-    tracing::info!("FFI: Starting get_license_status with 15s hard timeout");
+    // Execute request with THREAD-BASED 15s timeout
+    // tokio::time::timeout can't interrupt blocking syscalls, so we use a real thread timeout
+    tracing::info!("FFI: Starting get_license_status with 15s THREAD-BASED timeout");
     let start = std::time::Instant::now();
 
-    let mut response = match handle.runtime.block_on(async {
-        tokio::time::timeout(
-            std::time::Duration::from_secs(15),
-            handle.engine.get_license_status(request.clone()),
-        )
-        .await
-    }) {
+    // Channel to receive result from worker thread
+    let (tx, rx) = std::sync::mpsc::channel();
+
+    // Clone what we need for the thread
+    let request_clone = request.clone();
+
+    // Convert pointer to usize for thread safety - SAFETY:
+    // 1. The handle outlives this function call (it's from ciris_verify_init)
+    // 2. We only read from it (no mutation)
+    // 3. If timeout fires, worker thread continues but result is dropped
+    // 4. The handle contains thread-safe internals (Runtime, Engine)
+    let handle_addr = handle as *const CirisVerifyHandle as usize;
+
+    // Spawn worker thread
+    std::thread::spawn(move || {
+        // SAFETY: handle_addr was valid when we captured it, and the handle
+        // outlives this FFI call. We reconstruct the pointer here.
+        let handle = unsafe { &*(handle_addr as *const CirisVerifyHandle) };
+
+        tracing::info!("FFI worker thread: starting engine call");
+        let result = handle
+            .runtime
+            .block_on(async { handle.engine.get_license_status(request_clone).await });
+        tracing::info!("FFI worker thread: engine call complete");
+
+        // Send result - if receiver is gone (timeout), this just fails silently
+        let _ = tx.send(result);
+    });
+
+    // Wait for result with timeout
+    let mut response = match rx.recv_timeout(std::time::Duration::from_secs(15)) {
         Ok(Ok(r)) => {
             tracing::info!("FFI: get_license_status completed in {:?}", start.elapsed());
             r
@@ -576,13 +600,17 @@ pub unsafe extern "C" fn ciris_verify_get_status(
             tracing::error!("FFI: Request failed after {:?}: {}", start.elapsed(), e);
             return CirisVerifyError::RequestFailed as i32;
         },
-        Err(_) => {
-            // Hard timeout fired - return a timeout response with error details
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            // THREAD-BASED timeout fired - the worker thread is abandoned
             tracing::error!(
-                "FFI: HARD TIMEOUT after {:?} - network stack blocked",
+                "FFI: THREAD TIMEOUT after {:?} - worker thread abandoned",
                 start.elapsed()
             );
-            // Build a timeout response so Python gets something useful
+            build_timeout_response(&request)
+        },
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+            // Worker thread panicked or dropped sender
+            tracing::error!("FFI: Worker thread died unexpectedly");
             build_timeout_response(&request)
         },
     };

@@ -40,7 +40,7 @@ from .exceptions import (
     CommunicationError,
 )
 
-__version__ = "0.6.2"
+__version__ = "0.6.3"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
