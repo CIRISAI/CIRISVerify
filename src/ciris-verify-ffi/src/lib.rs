@@ -341,7 +341,24 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
     );
 
     // Create tokio runtime
+    // On Android, we MUST use current_thread runtime because:
+    // 1. JNI threads have special characteristics
+    // 2. Multi-threaded runtime spawns worker threads that aren't JNI-attached
+    // 3. Those worker threads hang when trying to do I/O operations
     tracing::info!("Creating async runtime");
+    #[cfg(target_os = "android")]
+    let runtime = match tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!("Failed to create tokio runtime: {}", e);
+            return ptr::null_mut();
+        },
+    };
+    #[cfg(not(target_os = "android"))]
     let runtime = match Runtime::new() {
         Ok(rt) => rt,
         Err(e) => {
@@ -557,62 +574,95 @@ pub unsafe extern "C" fn ciris_verify_get_status(
         };
 
     // Execute request with THREAD-BASED 15s timeout
-    // tokio::time::timeout can't interrupt blocking syscalls, so we use a real thread timeout
-    tracing::info!("FFI: Starting get_license_status with 15s THREAD-BASED timeout");
+    // Timeout handling differs by platform:
+    // - Android: Run directly on JNI thread with tokio timeout (worker threads hang)
+    // - Other platforms: Use worker thread for hard timeout (can interrupt blocking syscalls)
+    tracing::info!("FFI: Starting get_license_status with 15s timeout");
     let start = std::time::Instant::now();
 
-    // Channel to receive result from worker thread
-    let (tx, rx) = std::sync::mpsc::channel();
+    #[cfg(target_os = "android")]
+    let mut response = {
+        // On Android, run directly on the JNI thread using tokio's async timeout.
+        // This works because we're using current_thread runtime and staying on the JNI thread.
+        tracing::info!("FFI (Android): Running on JNI thread with tokio timeout");
+        let result = handle.runtime.block_on(async {
+            tokio::time::timeout(
+                std::time::Duration::from_secs(15),
+                handle.engine.get_license_status(request.clone()),
+            )
+            .await
+        });
 
-    // Clone what we need for the thread
-    let request_clone = request.clone();
+        match result {
+            Ok(Ok(r)) => {
+                tracing::info!("FFI: get_license_status completed in {:?}", start.elapsed());
+                r
+            },
+            Ok(Err(e)) => {
+                tracing::error!("FFI: Request failed after {:?}: {}", start.elapsed(), e);
+                return CirisVerifyError::RequestFailed as i32;
+            },
+            Err(_timeout) => {
+                tracing::error!("FFI: Timeout after {:?}", start.elapsed());
+                build_timeout_response(&request)
+            },
+        }
+    };
 
-    // Convert pointer to usize for thread safety - SAFETY:
-    // 1. The handle outlives this function call (it's from ciris_verify_init)
-    // 2. We only read from it (no mutation)
-    // 3. If timeout fires, worker thread continues but result is dropped
-    // 4. The handle contains thread-safe internals (Runtime, Engine)
-    let handle_addr = handle as *const CirisVerifyHandle as usize;
+    #[cfg(not(target_os = "android"))]
+    let mut response = {
+        // On non-Android platforms, use worker thread for hard timeout.
+        // tokio::time::timeout can't interrupt blocking syscalls, so we use a real thread timeout.
+        let (tx, rx) = std::sync::mpsc::channel();
+        let request_clone = request.clone();
 
-    // Spawn worker thread
-    std::thread::spawn(move || {
-        // SAFETY: handle_addr was valid when we captured it, and the handle
-        // outlives this FFI call. We reconstruct the pointer here.
-        let handle = unsafe { &*(handle_addr as *const CirisVerifyHandle) };
+        // Convert pointer to usize for thread safety - SAFETY:
+        // 1. The handle outlives this function call (it's from ciris_verify_init)
+        // 2. We only read from it (no mutation)
+        // 3. If timeout fires, worker thread continues but result is dropped
+        // 4. The handle contains thread-safe internals (Runtime, Engine)
+        let handle_addr = handle as *const CirisVerifyHandle as usize;
 
-        tracing::info!("FFI worker thread: starting engine call");
-        let result = handle
-            .runtime
-            .block_on(async { handle.engine.get_license_status(request_clone).await });
-        tracing::info!("FFI worker thread: engine call complete");
+        // Spawn worker thread
+        std::thread::spawn(move || {
+            // SAFETY: handle_addr was valid when we captured it, and the handle
+            // outlives this FFI call. We reconstruct the pointer here.
+            let handle = unsafe { &*(handle_addr as *const CirisVerifyHandle) };
 
-        // Send result - if receiver is gone (timeout), this just fails silently
-        let _ = tx.send(result);
-    });
+            tracing::info!("FFI worker thread: starting engine call");
+            let result = handle
+                .runtime
+                .block_on(async { handle.engine.get_license_status(request_clone).await });
+            tracing::info!("FFI worker thread: engine call complete");
 
-    // Wait for result with timeout
-    let mut response = match rx.recv_timeout(std::time::Duration::from_secs(15)) {
-        Ok(Ok(r)) => {
-            tracing::info!("FFI: get_license_status completed in {:?}", start.elapsed());
-            r
-        },
-        Ok(Err(e)) => {
-            tracing::error!("FFI: Request failed after {:?}: {}", start.elapsed(), e);
-            return CirisVerifyError::RequestFailed as i32;
-        },
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-            // THREAD-BASED timeout fired - the worker thread is abandoned
-            tracing::error!(
-                "FFI: THREAD TIMEOUT after {:?} - worker thread abandoned",
-                start.elapsed()
-            );
-            build_timeout_response(&request)
-        },
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
-            // Worker thread panicked or dropped sender
-            tracing::error!("FFI: Worker thread died unexpectedly");
-            build_timeout_response(&request)
-        },
+            // Send result - if receiver is gone (timeout), this just fails silently
+            let _ = tx.send(result);
+        });
+
+        // Wait for result with timeout
+        match rx.recv_timeout(std::time::Duration::from_secs(15)) {
+            Ok(Ok(r)) => {
+                tracing::info!("FFI: get_license_status completed in {:?}", start.elapsed());
+                r
+            },
+            Ok(Err(e)) => {
+                tracing::error!("FFI: Request failed after {:?}: {}", start.elapsed(), e);
+                return CirisVerifyError::RequestFailed as i32;
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                // THREAD-BASED timeout fired - the worker thread is abandoned
+                tracing::error!(
+                    "FFI: THREAD TIMEOUT after {:?} - worker thread abandoned",
+                    start.elapsed()
+                );
+                build_timeout_response(&request)
+            },
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                // Worker thread panicked or dropped sender
+                tracing::error!("FFI: Worker thread died unexpectedly");
+                build_timeout_response(&request)
+            },
+        }
     };
 
     // Add function integrity status (v0.6.0)
