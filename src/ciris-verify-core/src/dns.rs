@@ -171,15 +171,28 @@ impl DnsValidator {
     #[instrument(skip(self), fields(host = %host))]
     pub async fn query_steward_record(&self, host: &str) -> Result<DnsTxtRecord, VerifyError> {
         let query_name = format!("_ciris-verify.{}", host);
-        debug!("Querying DNS TXT record: {}", query_name);
+        info!(
+            query_name = %query_name,
+            host = %host,
+            "DNS: Querying TXT record..."
+        );
 
-        let lookup =
-            self.resolver
-                .txt_lookup(&query_name)
-                .await
-                .map_err(|e| VerifyError::DnsError {
-                    message: format!("DNS lookup failed for {}: {}", query_name, e),
-                })?;
+        let lookup = self.resolver.txt_lookup(&query_name).await.map_err(|e| {
+            warn!(
+                query_name = %query_name,
+                error = %e,
+                "DNS: Lookup failed"
+            );
+            VerifyError::DnsError {
+                message: format!("DNS lookup failed for {}: {}", query_name, e),
+            }
+        })?;
+
+        info!(
+            query_name = %query_name,
+            record_count = lookup.iter().count(),
+            "DNS: Lookup succeeded"
+        );
 
         // Collect all TXT record data
         let mut txt_data = String::new();
@@ -192,13 +205,27 @@ impl DnsValidator {
         }
 
         if txt_data.is_empty() {
+            warn!(query_name = %query_name, "DNS: Empty TXT record");
             return Err(VerifyError::DnsError {
                 message: format!("Empty TXT record at {}", query_name),
             });
         }
 
-        debug!("Received TXT record: {}", txt_data);
-        Self::parse_txt_record(&txt_data)
+        info!(
+            query_name = %query_name,
+            txt_length = txt_data.len(),
+            "DNS: Parsing TXT record..."
+        );
+        debug!("DNS TXT data: {}", txt_data);
+
+        let record = Self::parse_txt_record(&txt_data)?;
+        info!(
+            query_name = %query_name,
+            version = %record.version,
+            revision = record.revocation_revision,
+            "DNS: TXT record parsed successfully"
+        );
+        Ok(record)
     }
 
     /// Parse a CIRIS TXT record string.

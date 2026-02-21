@@ -15,7 +15,7 @@ use base64::Engine;
 use reqwest::{Client, ClientBuilder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::error::VerifyError;
 
@@ -163,20 +163,35 @@ impl HttpsClient {
     #[instrument(skip(self))]
     pub async fn get_steward_key(&self) -> Result<StewardKeyResponse, VerifyError> {
         let url = format!("{}/v1/steward-key", self.base_url);
-        debug!("Fetching steward key from {}", url);
+        info!(
+            url = %url,
+            user_agent = %format!("CIRISVerify/{}", env!("CARGO_PKG_VERSION")),
+            "HTTPS: Fetching steward key..."
+        );
 
         let response = self
             .client
             .get(&url)
             .send()
             .await
-            .map_err(|e| VerifyError::HttpsError {
-                message: format!("Request failed: {}", e),
+            .map_err(|e| {
+                warn!(url = %url, error = %e, "HTTPS request failed");
+                VerifyError::HttpsError {
+                    message: format!("Request to {} failed: {}", url, e),
+                }
             })?;
 
-        if !response.status().is_success() {
+        let status = response.status();
+        info!(
+            url = %url,
+            status = %status,
+            "HTTPS: Response received"
+        );
+
+        if !status.is_success() {
+            warn!(url = %url, status = %status, "HTTPS: Non-success status");
             return Err(VerifyError::HttpsError {
-                message: format!("HTTP error: {}", response.status()),
+                message: format!("HTTP {} from {}", status, url),
             });
         }
 
@@ -184,9 +199,20 @@ impl HttpsClient {
             response
                 .json::<StewardKeyResponse>()
                 .await
-                .map_err(|e| VerifyError::HttpsError {
-                    message: format!("Failed to parse response: {}", e),
+                .map_err(|e| {
+                    warn!(url = %url, error = %e, "HTTPS: Failed to parse JSON response");
+                    VerifyError::HttpsError {
+                        message: format!("Failed to parse response from {}: {}", url, e),
+                    }
                 })?;
+
+        info!(
+            url = %url,
+            classical_algo = %body.classical.algorithm,
+            pqc_algo = %body.pqc.algorithm,
+            revision = body.revision,
+            "HTTPS: Steward key received successfully"
+        );
 
         // Verify PQC key fingerprint matches
         self.verify_pqc_fingerprint(&body)?;

@@ -1,0 +1,51 @@
+[package]
+name = "ciris-manifest-tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Function-level integrity manifest generator for CIRISVerify"
+
+[[bin]]
+name = "ciris-manifest-tool"
+path = "src/main.rs"
+
+[dependencies]
+# Binary parsing (ELF, Mach-O, PE)
+goblin.workspace = true
+
+# CLI
+clap.workspace = true
+
+# Cryptography
+ciris-crypto.workspace = true
+
+# Core types
+ciris-verify-core.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Hashing
+sha2.workspace = true
+
+# Encoding
+base64.workspace = true
+hex.workspace = true
+
+# Time
+chrono.workspace = true
+
+# Error handling
+thiserror.workspace = true
+anyhow.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true

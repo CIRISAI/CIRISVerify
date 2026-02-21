@@ -330,6 +330,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-manifest-tool
+
       - name: Download all artifacts
         uses: actions/download-artifact@v4
         with:
@@ -463,6 +469,66 @@ jobs:
         uses: softprops/action-gh-release@v1
         with:
           files: release/manifest.json
+
+      # Generate and upload function manifests for runtime verification
+      - name: Build manifest tool
+        run: cargo build --release -p ciris-manifest-tool
+
+      - name: Generate function manifests
+        run: |
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+
+          mkdir -p function-manifests
+
+          # Map artifact paths to targets
+          declare -A TARGET_MAP=(
+            ["release/x86_64-unknown-linux-gnu/libciris_verify_ffi.so"]="x86_64-unknown-linux-gnu"
+            ["release/aarch64-unknown-linux-gnu/libciris_verify_ffi.so"]="aarch64-unknown-linux-gnu"
+            ["release/x86_64-apple-darwin/libciris_verify_ffi.dylib"]="x86_64-apple-darwin"
+            ["release/aarch64-apple-darwin/libciris_verify_ffi.dylib"]="aarch64-apple-darwin"
+            ["release/x86_64-pc-windows-msvc/ciris_verify_ffi.dll"]="x86_64-pc-windows-msvc"
+            ["release/android/arm64-v8a/libciris_verify_ffi.so"]="aarch64-linux-android"
+            ["release/android/armeabi-v7a/libciris_verify_ffi.so"]="armv7-linux-androideabi"
+            ["release/android/x86_64/libciris_verify_ffi.so"]="x86_64-linux-android"
+          )
+
+          for binary_path in "${!TARGET_MAP[@]}"; do
+            if [ -f "$binary_path" ]; then
+              target="${TARGET_MAP[$binary_path]}"
+              echo "Generating function manifest for $target..."
+
+              ./target/release/ciris-manifest-tool generate \
+                --binary "$binary_path" \
+                --target "$target" \
+                --version "$VERSION" \
+                --output "function-manifests/${target}.json" \
+                || echo "Warning: Failed to generate manifest for $target"
+            fi
+          done
+
+          echo "Generated manifests:"
+          ls -la function-manifests/
+
+      - name: Upload function manifests to Registry
+        if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
+        env:
+          REGISTRY_ADMIN_TOKEN: ${{ secrets.REGISTRY_ADMIN_TOKEN }}
+        run: |
+          for manifest in function-manifests/*.json; do
+            if [ -f "$manifest" ]; then
+              target=$(basename "$manifest" .json)
+              echo "Uploading function manifest for $target..."
+
+              curl -sf -X POST \
+                "https://api.registry.ciris-services-1.ai/v1/verify/function-manifest" \
+                -H "Authorization: Bearer ${REGISTRY_ADMIN_TOKEN}" \
+                -H "Content-Type: application/json" \
+                -d @"$manifest" \
+                && echo "  -> Success" \
+                || echo "  -> Warning: Upload failed (endpoint may require signing)"
+            fi
+          done
 
       # Publish binary manifest to CIRISRegistry (so agents can verify binary integrity)
       - name: Register binary manifest with Registry

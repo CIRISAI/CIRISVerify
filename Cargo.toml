@@ -5,6 +5,7 @@ members = [
     "src/ciris-crypto",
     "src/ciris-verify-core",
     "src/ciris-verify-ffi",
+    "src/ciris-manifest-tool",
 ]
 
 [workspace.package]
@@ -75,6 +76,15 @@ reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"
 ciris-keyring = { path = "src/ciris-keyring" }
 ciris-crypto = { path = "src/ciris-crypto" }
 ciris-verify-core = { path = "src/ciris-verify-core" }
+
+# Binary parsing (ELF, Mach-O, PE)
+goblin = "0.8"
+
+# CLI
+clap = { version = "4.5", features = ["derive"] }
+
+# Constructor for early initialization
+ctor = "0.2"
 
 # Testing (workspace dev-dependencies)
 proptest = "1.5"
