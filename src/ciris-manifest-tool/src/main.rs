@@ -1,4 +1,4 @@
-//! ciris-manifest-tool - Function manifest generator for CIRISVerify.
+//! ciris-manifest-tool - Function manifest generator for `CIRISVerify`.
 //!
 //! Generates signed manifests of function hashes for runtime integrity verification.
 //!
@@ -30,7 +30,7 @@ use clap::{Parser, Subcommand};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Function manifest generator for CIRISVerify.
+/// Function manifest generator for `CIRISVerify`.
 ///
 /// Generates signed manifests of function hashes that can be verified at runtime
 /// to detect function-level tampering.
@@ -63,7 +63,7 @@ enum Commands {
         #[arg(long, default_value = VERSION)]
         version: String,
 
-        /// Function name prefix filter (e.g., "ciris_verify_")
+        /// Function name prefix filter (e.g., "`ciris_verify`_")
         #[arg(short, long, default_value = "ciris_verify_")]
         filter: String,
 
@@ -124,17 +124,16 @@ fn main() -> anyhow::Result<()> {
             eprintln!("  Binary: {}", binary.display());
 
             // Detect or use provided target
-            let target = match target {
-                Some(t) => t,
-                None => {
-                    let detected = parser::detect_target(&binary)?;
-                    eprintln!("  Target (detected): {}", detected);
-                    detected
-                },
+            let target = if let Some(t) = target {
+                t
+            } else {
+                let detected = parser::detect_target(&binary)?;
+                eprintln!("  Target (detected): {detected}");
+                detected
             };
 
-            eprintln!("  Version: {}", version);
-            eprintln!("  Filter: {}", filter);
+            eprintln!("  Version: {version}");
+            eprintln!("  Filter: {filter}");
 
             // Generate manifest
             let manifest = manifest::generate_manifest(&binary, &target, &version, Some(&filter))?;
@@ -154,7 +153,7 @@ fn main() -> anyhow::Result<()> {
                 std::fs::write(&output_path, &json)?;
                 eprintln!("  Output: {}", output_path.display());
             } else {
-                println!("{}", json);
+                println!("{json}");
             }
 
             eprintln!("\nManifest generated successfully.");
@@ -164,7 +163,7 @@ fn main() -> anyhow::Result<()> {
 
         Commands::DetectTarget { binary } => {
             let target = parser::detect_target(&binary)?;
-            println!("{}", target);
+            println!("{target}");
         },
 
         Commands::ListFunctions { binary, filter } => {

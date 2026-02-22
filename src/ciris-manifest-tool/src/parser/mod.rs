@@ -24,6 +24,7 @@ pub struct FunctionInfo {
 
 /// Error during binary parsing.
 #[derive(Debug, Error)]
+#[allow(dead_code)]
 pub enum ParseError {
     #[error("Failed to read file: {0}")]
     IoError(#[from] std::io::Error),
@@ -50,6 +51,7 @@ pub struct ParsedBinary {
     /// Offset of the code section in the file.
     pub code_section_offset: u64,
     /// Size of the code section.
+    #[allow(dead_code)]
     pub code_section_size: u64,
     /// Virtual address base of the code section.
     pub code_section_vaddr: u64,
@@ -57,6 +59,7 @@ pub struct ParsedBinary {
 
 impl ParsedBinary {
     /// Get the bytes of a function.
+    #[allow(clippy::cast_possible_truncation)]
     pub fn function_bytes(&self, func: &FunctionInfo) -> Option<&[u8]> {
         // Function offset is relative to code section vaddr
         // We need to convert to file offset
@@ -77,7 +80,7 @@ impl ParsedBinary {
 /// # Arguments
 ///
 /// * `path` - Path to the binary file
-/// * `filter_prefix` - Optional prefix to filter function names (e.g., "ciris_verify_")
+/// * `filter_prefix` - Optional prefix to filter function names (e.g., "`ciris_verify`_")
 ///
 /// # Returns
 ///

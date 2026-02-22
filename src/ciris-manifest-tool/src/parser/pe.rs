@@ -25,17 +25,16 @@ pub fn parse_pe(
         })
         .ok_or(ParseError::NoCodeSection)?;
 
-    let code_section_offset = text_section.pointer_to_raw_data as u64;
-    let code_section_size = text_section.size_of_raw_data as u64;
-    let code_section_vaddr = text_section.virtual_address as u64 + pe.image_base as u64;
+    let code_section_offset = u64::from(text_section.pointer_to_raw_data);
+    let code_section_size = u64::from(text_section.size_of_raw_data);
+    let code_section_vaddr = u64::from(text_section.virtual_address) + pe.image_base as u64;
 
     // Extract functions from export table
     let mut functions = Vec::new();
 
     for export in &pe.exports {
-        let name = match export.name {
-            Some(n) => n,
-            None => continue,
+        let Some(name) = export.name else {
+            continue;
         };
 
         // Apply filter if specified
@@ -53,8 +52,8 @@ pub fn parse_pe(
         let addr = rva as u64 + pe.image_base as u64;
 
         // Check if in .text section
-        let section_start = text_section.virtual_address as u64 + pe.image_base as u64;
-        let section_end = section_start + text_section.virtual_size as u64;
+        let section_start = u64::from(text_section.virtual_address) + pe.image_base as u64;
+        let section_end = section_start + u64::from(text_section.virtual_size);
 
         if addr >= section_start && addr < section_end {
             functions.push(FunctionInfo {
@@ -96,5 +95,5 @@ pub fn detect_pe_target(pe: &PE) -> String {
         _ => "unknown",
     };
 
-    format!("{}-pc-windows-msvc", arch)
+    format!("{arch}-pc-windows-msvc")
 }

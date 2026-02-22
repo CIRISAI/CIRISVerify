@@ -43,7 +43,7 @@ fn parse_single_macho(
             for (section, _) in segment.sections()? {
                 let sectname = section.name().unwrap_or("");
                 if sectname == "__text" {
-                    code_section_offset = section.offset as u64;
+                    code_section_offset = u64::from(section.offset);
                     code_section_size = section.size;
                     code_section_vaddr = section.addr;
                     break;
@@ -60,10 +60,9 @@ fn parse_single_macho(
     let mut functions = Vec::new();
 
     if let Some(ref symbols) = macho.symbols {
-        for sym_result in symbols.iter() {
-            let (name, nlist) = match sym_result {
-                Ok(s) => s,
-                Err(_) => continue,
+        for sym_result in symbols {
+            let Ok((name, nlist)) = sym_result else {
+                continue;
             };
 
             // Skip undefined and debug symbols
@@ -149,5 +148,5 @@ pub fn detect_macho_target(mach: &Mach) -> String {
 
     // Can't easily distinguish macOS vs iOS from the binary alone
     // The CI should provide this via --target flag
-    format!("{}-apple-darwin", arch)
+    format!("{arch}-apple-darwin")
 }

@@ -17,8 +17,7 @@ pub fn parse_elf(
         .find(|sh| {
             elf.shdr_strtab
                 .get_at(sh.sh_name)
-                .map(|name| name == ".text")
-                .unwrap_or(false)
+                .is_some_and(|name| name == ".text")
         })
         .ok_or(ParseError::NoCodeSection)?;
 
@@ -127,14 +126,9 @@ pub fn detect_elf_target(elf: &Elf) -> String {
     };
 
     // Detect OS from ELF OS/ABI
-    let os = match elf.header.e_ident[goblin::elf::header::EI_OSABI] {
-        goblin::elf::header::ELFOSABI_LINUX | goblin::elf::header::ELFOSABI_NONE => {
-            // Check for Android by looking for specific sections or notes
-            // For now, assume Linux unless we can detect Android
-            "unknown-linux-gnu"
-        },
-        _ => "unknown-linux-gnu",
-    };
+    // TODO: Check for Android by looking for specific sections or notes
+    // For now, assume Linux for all ELF binaries
+    let os = "unknown-linux-gnu";
 
-    format!("{}-{}", arch, os)
+    format!("{arch}-{os}")
 }
