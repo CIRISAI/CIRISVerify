@@ -269,6 +269,7 @@ pub fn get_license_status_blocking(
         runtime_validation: None,
         shutdown_directive: None,
         function_integrity: None,
+        binary_integrity: None, // Android sync path - no self-verification
     }
 }
 
