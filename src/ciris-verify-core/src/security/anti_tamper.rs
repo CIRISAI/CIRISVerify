@@ -55,22 +55,16 @@ pub fn detect_hooks() -> bool {
 // =============================================================================
 
 /// Check if ptrace is attached (Linux/Android).
+///
+/// Uses /proc/self/status to check TracerPid. This is safer than PTRACE_TRACEME
+/// which can cause hangs with test runners like nextest that fork child processes.
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn check_ptrace() -> bool {
     use std::io::Read;
 
-    // Method 1: Try to ptrace ourselves
-    // If a debugger is attached, ptrace(PTRACE_TRACEME) will fail
-    unsafe {
-        let result = libc::ptrace(libc::PTRACE_TRACEME, 0, 0, 0);
-        if result == -1 {
-            return true;
-        }
-        // Detach from ourselves
-        libc::ptrace(libc::PTRACE_DETACH, 0, 0, 0);
-    }
-
-    // Method 2: Check /proc/self/status for TracerPid
+    // Check /proc/self/status for TracerPid (safe, non-invasive)
+    // TracerPid: 0 means not being traced
+    // TracerPid: <pid> means being traced by that process
     if let Ok(mut file) = std::fs::File::open("/proc/self/status") {
         let mut contents = String::new();
         if file.read_to_string(&mut contents).is_ok() {
@@ -128,10 +122,12 @@ fn check_proc_status() -> bool {
 #[cfg(any(target_os = "linux", target_os = "android"))]
 fn detect_frida() -> bool {
     use std::io::Read;
-    use std::net::TcpStream;
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
 
-    // Method 1: Check for Frida's default port
-    if TcpStream::connect("127.0.0.1:27042").is_ok() {
+    // Method 1: Check for Frida's default port (with timeout to prevent hang)
+    let addr: SocketAddr = "127.0.0.1:27042".parse().unwrap();
+    if TcpStream::connect_timeout(&addr, Duration::from_millis(50)).is_ok() {
         return true;
     }
 
@@ -260,10 +256,12 @@ fn check_proc_status() -> bool {
 
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn detect_frida() -> bool {
-    use std::net::TcpStream;
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
 
-    // Check for Frida's default port
-    if TcpStream::connect("127.0.0.1:27042").is_ok() {
+    // Check for Frida's default port (with timeout to prevent hang)
+    let addr: SocketAddr = "127.0.0.1:27042".parse().unwrap();
+    if TcpStream::connect_timeout(&addr, Duration::from_millis(50)).is_ok() {
         return true;
     }
 
@@ -299,10 +297,12 @@ fn check_proc_status() -> bool {
 
 #[cfg(target_os = "windows")]
 fn detect_frida() -> bool {
-    use std::net::TcpStream;
+    use std::net::{SocketAddr, TcpStream};
+    use std::time::Duration;
 
-    // Check for Frida's default port
-    TcpStream::connect("127.0.0.1:27042").is_ok()
+    // Check for Frida's default port (with timeout to prevent hang)
+    let addr: SocketAddr = "127.0.0.1:27042".parse().unwrap();
+    TcpStream::connect_timeout(&addr, Duration::from_millis(50)).is_ok()
 }
 
 // =============================================================================
