@@ -348,6 +348,67 @@ impl RegistryClient {
 
         Ok(manifest)
     }
+
+    /// List available target triples for function manifests.
+    ///
+    /// # Arguments
+    ///
+    /// * `version` - CIRISVerify version (e.g., "0.6.17")
+    ///
+    /// # Returns
+    ///
+    /// List of target triples that have function manifests available.
+    #[instrument(skip(self), fields(version = %version))]
+    pub async fn list_function_manifest_targets(
+        &self,
+        version: &str,
+    ) -> Result<FunctionManifestTargets, VerifyError> {
+        let url = format!("{}/v1/verify/function-manifests/{}", self.base_url, version);
+        debug!("Listing function manifest targets from {}", url);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Function manifest targets request failed: {}", e),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(VerifyError::HttpsError {
+                message: format!(
+                    "Function manifest targets HTTP error: {} (version={})",
+                    response.status(),
+                    version
+                ),
+            });
+        }
+
+        let targets = response
+            .json::<FunctionManifestTargets>()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Failed to parse function manifest targets: {}", e),
+            })?;
+
+        info!(
+            version = %targets.version,
+            target_count = targets.targets.len(),
+            "Listed function manifest targets from registry"
+        );
+
+        Ok(targets)
+    }
+}
+
+/// Response from listing function manifest targets.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionManifestTargets {
+    /// Version queried.
+    pub version: String,
+    /// Available target triples.
+    pub targets: Vec<String>,
 }
 
 /// Compute SHA-256 hash of the currently running binary.

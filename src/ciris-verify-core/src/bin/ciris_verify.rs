@@ -1094,31 +1094,48 @@ async fn run_list_manifests(version: &str, registry_url: &str, json: bool) {
         Err(_) => "Not found".to_string(),
     };
 
-    // Check function manifest
+    // Check function manifest for current target
     let function_status = match client.get_function_manifest(version, target).await {
         Ok(m) => format!("Available ({} functions)", m.functions.len()),
-        Err(_) => "Not found".to_string(),
+        Err(_) => "Not found for this target".to_string(),
+    };
+
+    // List all available function manifest targets
+    let available_targets = match client.list_function_manifest_targets(version).await {
+        Ok(t) => t.targets,
+        Err(_) => vec![],
     };
 
     if json {
         let output = serde_json::json!({
             "version": version,
-            "target": target,
+            "current_target": target,
             "manifests": {
                 "binary": binary_status,
                 "file": file_status,
                 "function": function_status,
-            }
+            },
+            "available_function_targets": available_targets,
         });
         println!("{}", serde_json::to_string_pretty(&output).unwrap());
     } else {
         println!("Version: {}", version);
-        println!("Target: {}", target);
+        println!("Current Target: {}", target);
         println!();
         println!("Manifest Status:");
         println!("  Binary Manifest:   {}", binary_status);
         println!("  File Manifest:     {}", file_status);
         println!("  Function Manifest: {}", function_status);
+
+        if !available_targets.is_empty() {
+            println!();
+            println!("Available Function Manifest Targets:");
+            for t in &available_targets {
+                let marker = if t == target { " (current)" } else { "" };
+                println!("  - {}{}", t, marker);
+            }
+        }
+
         println!();
         println!("Registry Routes:");
         println!("  Binary:   GET /v1/verify/binary-manifest/{}", version);
@@ -1127,6 +1144,7 @@ async fn run_list_manifests(version: &str, registry_url: &str, json: bool) {
             "  Function: GET /v1/verify/function-manifest/{}/{}",
             version, target
         );
+        println!("  Targets:  GET /v1/verify/function-manifests/{}", version);
     }
 }
 
