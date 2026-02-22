@@ -5,16 +5,17 @@
 //! 2. Worker threads aren't JNI-attached
 //!
 //! This module provides a completely synchronous code path using ureq
-//! with native-tls for HTTP requests, bypassing tokio entirely.
+//! with rustls for HTTP requests, bypassing tokio entirely.
 //!
 //! DNS TXT records are resolved via DNS-over-HTTPS (Google DNS) since
 //! hickory-dns requires tokio and std::net only supports A/AAAA records.
 //!
-//! TLS is handled by native-tls which uses Android's BoringSSL and system
-//! certificate store - no manual rustls configuration needed.
+//! TLS uses rustls with bundled Mozilla CA certificates (webpki-roots)
+//! since native-certs can't access Android's system cert store.
 
 #![cfg(target_os = "android")]
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use ciris_keyring::{PlatformAttestation, SoftwareAttestation};
@@ -25,7 +26,7 @@ use ciris_verify_core::types::{
     ValidationStatus,
 };
 use serde::Deserialize;
-use tracing::{info, warn};
+use tracing::{info, warn, error};
 
 /// Registry API base URL
 const REGISTRY_URL: &str = "https://api.registry.ciris-services-1.ai";
@@ -37,25 +38,74 @@ const DOH_ENDPOINT: &str = "https://dns.google/resolve";
 const DNS_US_HOSTNAME: &str = "us.registry.ciris-services-1.ai";
 const DNS_EU_HOSTNAME: &str = "eu.registry.ciris-services-1.ai";
 
-/// Perform license verification using blocking I/O (no tokio).
-///
-/// This is the Android-specific code path that bypasses tokio entirely.
-/// Uses native-tls which leverages Android's BoringSSL and system cert store.
-pub fn get_license_status_blocking(
-    _request: &LicenseStatusRequest,
-    timeout: Duration,
-) -> LicenseStatusResponse {
-    info!("Android sync: Starting blocking license verification (native-tls)");
-    let start = std::time::Instant::now();
+/// Create a TLS-enabled ureq agent with bundled Mozilla CA certificates.
+/// Returns None if TLS initialization fails (graceful degradation).
+fn create_tls_agent(timeout: Duration) -> Option<ureq::Agent> {
+    // Wrap in catch_unwind to prevent crashes from propagating
+    let result = std::panic::catch_unwind(|| {
+        // Build root certificate store from bundled Mozilla certs
+        let root_store = rustls::RootCertStore::from_iter(
+            webpki_roots::TLS_SERVER_ROOTS.iter().cloned()
+        );
 
-    // Create blocking HTTP client with ureq + native-tls
-    // native-tls uses Android's BoringSSL and system certificate store automatically
-    let agent = ureq::AgentBuilder::new()
+        let tls_config = rustls::ClientConfig::builder()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(5))
+            .timeout_read(timeout)
+            .timeout_write(Duration::from_secs(5))
+            .user_agent(&format!("CIRISVerify/{}", env!("CARGO_PKG_VERSION")))
+            .tls_config(Arc::new(tls_config))
+            .build();
+
+        agent
+    });
+
+    match result {
+        Ok(agent) => {
+            info!("Android sync: TLS agent created successfully");
+            Some(agent)
+        }
+        Err(e) => {
+            error!("Android sync: TLS initialization panicked: {:?}", e);
+            None
+        }
+    }
+}
+
+/// Create a basic ureq agent without custom TLS config (uses defaults).
+fn create_basic_agent(timeout: Duration) -> ureq::Agent {
+    ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(5))
         .timeout_read(timeout)
         .timeout_write(Duration::from_secs(5))
         .user_agent(&format!("CIRISVerify/{}", env!("CARGO_PKG_VERSION")))
-        .build();
+        .build()
+}
+
+/// Perform license verification using blocking I/O (no tokio).
+///
+/// This is the Android-specific code path that bypasses tokio entirely.
+/// Uses rustls with bundled Mozilla CA certificates.
+pub fn get_license_status_blocking(
+    _request: &LicenseStatusRequest,
+    timeout: Duration,
+) -> LicenseStatusResponse {
+    info!("Android sync: Starting blocking license verification");
+    let start = std::time::Instant::now();
+
+    // Try to create TLS-enabled agent, fall back to basic agent if it fails
+    let (agent, tls_mode) = match create_tls_agent(timeout) {
+        Some(agent) => (agent, "webpki-roots"),
+        None => {
+            warn!("Android sync: TLS agent creation failed, using default TLS");
+            (create_basic_agent(timeout), "default")
+        }
+    };
+
+    info!("Android sync: Using TLS mode: {}", tls_mode);
 
     let now = chrono::Utc::now().timestamp();
 
@@ -157,7 +207,7 @@ pub fn get_license_status_blocking(
             platform: PlatformAttestation::Software(SoftwareAttestation {
                 key_derivation: "none".to_string(),
                 storage: "android-sync".to_string(),
-                security_warning: "Android sync path - native-tls + DoH".to_string(),
+                security_warning: format!("Android sync path - {} + DoH", tls_mode),
             }),
             signature: ResponseSignature {
                 classical: Vec::new(),

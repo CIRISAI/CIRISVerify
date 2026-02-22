@@ -42,9 +42,12 @@ ctor = "0.2"
 jni = "0.21"
 android_logger = "0.13"
 log = "0.4"
-# Blocking HTTP client with native-tls (uses Android's BoringSSL)
-# native-tls works on Android because it uses the system's TLS stack
-ureq = { version = "2.9", default-features = false, features = ["native-tls", "json"] }
+# Blocking HTTP client with rustls (ring backend works on Android)
+ureq = { version = "2.9", default-features = false, features = ["tls", "json"] }
+# Bundled Mozilla CA certs (native-certs doesn't work on Android)
+webpki-roots = { workspace = true }
+# Force ring backend for rustls (aws-lc-rs has Android issues)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 oslog = "0.2"
