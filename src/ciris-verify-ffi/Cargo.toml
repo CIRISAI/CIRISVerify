@@ -42,11 +42,9 @@ ctor = "0.2"
 jni = "0.21"
 android_logger = "0.13"
 log = "0.4"
-# Blocking HTTP client - tokio async I/O doesn't work on Android JNI threads
-ureq = { workspace = true }
-# Bundled Mozilla CA certs (native-certs doesn't work on Android)
-webpki-roots = { workspace = true }
-rustls = "0.23"
+# Blocking HTTP client with native-tls (uses Android's BoringSSL)
+# native-tls works on Android because it uses the system's TLS stack
+ureq = { version = "2.9", default-features = false, features = ["native-tls", "json"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 oslog = "0.2"

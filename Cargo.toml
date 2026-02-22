@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.6.13"
+version = "0.6.14"
 edition = "2021"
 rust-version = "1.85"
 license = "AGPL-3.0-or-later"
@@ -76,9 +76,9 @@ hickory-resolver = { version = "0.24", features = ["dns-over-https-rustls", "tok
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
 
 # Blocking HTTP client for Android (tokio async I/O doesn't work on JNI threads)
-# Uses rustls with bundled Mozilla certs (native-certs doesn't work on Android)
-ureq = { version = "2.9", default-features = false, features = ["tls", "json"] }
-# Bundled Mozilla CA certificates for Android (native-certs doesn't work)
+# Uses rustls with native-certs on desktop, native-tls on Android
+ureq = { version = "2.9", default-features = false, features = ["json"] }
+# Bundled Mozilla CA certificates (fallback)
 webpki-roots = "0.26"
 
 # Internal crates

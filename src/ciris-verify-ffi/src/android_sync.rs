@@ -5,14 +5,16 @@
 //! 2. Worker threads aren't JNI-attached
 //!
 //! This module provides a completely synchronous code path using ureq
-//! for HTTP requests, bypassing tokio entirely.
+//! with native-tls for HTTP requests, bypassing tokio entirely.
 //!
 //! DNS TXT records are resolved via DNS-over-HTTPS (Google DNS) since
 //! hickory-dns requires tokio and std::net only supports A/AAAA records.
+//!
+//! TLS is handled by native-tls which uses Android's BoringSSL and system
+//! certificate store - no manual rustls configuration needed.
 
 #![cfg(target_os = "android")]
 
-use std::sync::Arc;
 use std::time::Duration;
 
 use ciris_keyring::{PlatformAttestation, SoftwareAttestation};
@@ -22,7 +24,6 @@ use ciris_verify_core::types::{
     ResponseAttestation, ResponseMetadata, ResponseSignature, SourceResult, ValidationResults,
     ValidationStatus,
 };
-use rustls::ClientConfig;
 use serde::Deserialize;
 use tracing::{info, warn};
 
@@ -36,43 +37,24 @@ const DOH_ENDPOINT: &str = "https://dns.google/resolve";
 const DNS_US_HOSTNAME: &str = "us.registry.ciris-services-1.ai";
 const DNS_EU_HOSTNAME: &str = "eu.registry.ciris-services-1.ai";
 
-/// Create a rustls ClientConfig using bundled Mozilla CA certificates.
-///
-/// This is required on Android because native-certs doesn't work
-/// (can't access the system certificate store from native code).
-fn create_tls_config() -> Arc<ClientConfig> {
-    // Use rustls 0.23 API: RootCertStore::from_iter()
-    let root_store = rustls::RootCertStore::from_iter(
-        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
-    );
-
-    let config = ClientConfig::builder()
-        .with_root_certificates(root_store)
-        .with_no_client_auth();
-
-    Arc::new(config)
-}
-
 /// Perform license verification using blocking I/O (no tokio).
 ///
 /// This is the Android-specific code path that bypasses tokio entirely.
+/// Uses native-tls which leverages Android's BoringSSL and system cert store.
 pub fn get_license_status_blocking(
     _request: &LicenseStatusRequest,
     timeout: Duration,
 ) -> LicenseStatusResponse {
-    info!("Android sync: Starting blocking license verification");
+    info!("Android sync: Starting blocking license verification (native-tls)");
     let start = std::time::Instant::now();
 
-    // Create TLS config with bundled Mozilla certs (native-certs doesn't work on Android)
-    let tls_config = create_tls_config();
-
-    // Create blocking HTTP client with ureq + rustls
+    // Create blocking HTTP client with ureq + native-tls
+    // native-tls uses Android's BoringSSL and system certificate store automatically
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(5))
         .timeout_read(timeout)
         .timeout_write(Duration::from_secs(5))
         .user_agent(&format!("CIRISVerify/{}", env!("CARGO_PKG_VERSION")))
-        .tls_config(tls_config)
         .build();
 
     let now = chrono::Utc::now().timestamp();
@@ -175,7 +157,7 @@ pub fn get_license_status_blocking(
             platform: PlatformAttestation::Software(SoftwareAttestation {
                 key_derivation: "none".to_string(),
                 storage: "android-sync".to_string(),
-                security_warning: "Android sync path - blocking I/O with DoH".to_string(),
+                security_warning: "Android sync path - native-tls + DoH".to_string(),
             }),
             signature: ResponseSignature {
                 classical: Vec::new(),
