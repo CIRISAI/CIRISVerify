@@ -41,9 +41,10 @@ const DNS_EU_HOSTNAME: &str = "eu.registry.ciris-services-1.ai";
 /// This is required on Android because native-certs doesn't work
 /// (can't access the system certificate store from native code).
 fn create_tls_config() -> Arc<ClientConfig> {
-    let root_store = rustls::RootCertStore {
-        roots: webpki_roots::TLS_SERVER_ROOTS.to_vec(),
-    };
+    // Use rustls 0.23 API: RootCertStore::from_iter()
+    let root_store = rustls::RootCertStore::from_iter(
+        webpki_roots::TLS_SERVER_ROOTS.iter().cloned(),
+    );
 
     let config = ClientConfig::builder()
         .with_root_certificates(root_store)
