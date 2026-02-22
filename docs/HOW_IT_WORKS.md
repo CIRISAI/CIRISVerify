@@ -1,6 +1,6 @@
 # How CIRISVerify Works
 
-**Last Updated**: 2026-02-17
+**Last Updated**: 2026-02-22 (v0.6.17)
 
 CIRISVerify is a Rust shared library (`libciris_verify_ffi`) with Python bindings (`ciris-verify`) that serves as the trust anchor for the CIRIS ecosystem. Think of it as the **DMV for AI agents** — it handles identity, integrity, and accountability.
 
@@ -104,6 +104,202 @@ Every verification returns a `LicenseStatusResponse` containing:
 │  - Mandatory disclosure display                              │
 │  - Agent tier determination                                  │
 └─────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Command-Line Interface
+
+CIRISVerify includes a standalone CLI (`ciris-verify`) for diagnostics and verification:
+
+### Available Commands
+
+| Command | Description | Attestation Level |
+|---------|-------------|-------------------|
+| `ciris-verify` | Show help and explanation | — |
+| `ciris-verify info` | Show system capabilities | — |
+| `ciris-verify sources` | Check DNS/HTTPS validation | Level 3 |
+| `ciris-verify self-check` | Verify binary integrity | Level 2 |
+| `ciris-verify function-check` | Verify FFI function integrity | Runtime |
+| `ciris-verify agent-files` | Verify agent file integrity | Level 4 |
+| `ciris-verify audit-trail` | Verify audit log integrity | Level 5 |
+| `ciris-verify list-manifests` | List available registry manifests | — |
+
+### Attestation Levels
+
+CIRISVerify implements progressive trust verification across 5 levels:
+
+| Level | Name | Verification | CLI Command |
+|-------|------|--------------|-------------|
+| 1 | Library Loaded | Binary executes successfully | (implicit) |
+| 2 | Binary Self-Verification | SHA-256 of THIS binary vs registry | `self-check` |
+| 3 | Registry Cross-Validation | 2/3 consensus from DNS US/EU + HTTPS | `sources` |
+| 4 | Agent File Integrity | SHA-256 of agent files vs manifest | `agent-files` |
+| 5 | Portal Key + Audit Trail | Ed25519 signatures + hash chain | `audit-trail` |
+
+**Critical**: If ANY level fails, ALL higher levels are UNVERIFIED. A compromised Level 2 binary could report "all green" regardless of actual state.
+
+### Example Usage
+
+```bash
+# Show system info and capabilities
+ciris-verify info
+
+# Check multi-source validation (Level 3)
+ciris-verify sources --timeout 15
+
+# Verify binary integrity (Level 2)
+ciris-verify self-check
+
+# List available manifests for this version
+ciris-verify list-manifests
+
+# Verify FFI function integrity
+ciris-verify function-check --show-details
+
+# Verify agent files (Level 4)
+ciris-verify agent-files --version 2.0.0 --agent-root /path/to/agent
+
+# Verify audit trail (Level 5)
+ciris-verify audit-trail --db-path /path/to/ciris_audit.db
+
+# JSON output for automation
+ciris-verify sources --format json
+```
+
+---
+
+## Registry Manifests
+
+CIRISRegistry hosts three types of manifests used for verification:
+
+### 1. Binary Manifest (Level 2)
+
+SHA-256 hashes of CIRISVerify binaries for each platform target.
+
+**Route**: `GET /v1/verify/binary-manifest/{version}`
+
+```json
+{
+  "version": "0.6.17",
+  "binaries": {
+    "x86_64-unknown-linux-gnu": "sha256:abc123...",
+    "aarch64-apple-darwin": "sha256:def456...",
+    "x86_64-pc-windows-msvc": "sha256:ghi789...",
+    "aarch64-linux-android": "sha256:jkl012..."
+  },
+  "generated_at": "2026-02-22T00:00:00Z"
+}
+```
+
+### 2. File Manifest (Level 4)
+
+SHA-256 hashes of all CIRISAgent files for Tripwire-style verification.
+
+**Route**: `GET /v1/builds/{version}`
+
+```json
+{
+  "build_id": "uuid-here",
+  "version": "2.0.0",
+  "file_manifest_json": {
+    "version": "2.0.0",
+    "files": {
+      "ciris_engine/__init__.py": "sha256:...",
+      "ciris_engine/main.py": "sha256:..."
+    }
+  },
+  "file_manifest_count": 150,
+  "file_manifest_hash": "sha256:..."
+}
+```
+
+### 3. Function Manifest (Runtime)
+
+SHA-256 hashes of FFI export functions at the bytecode level, with hybrid signatures.
+
+**Route**: `GET /v1/verify/function-manifest/{version}/{target}`
+
+```json
+{
+  "version": "1.0.0",
+  "target": "x86_64-unknown-linux-gnu",
+  "binary_hash": "sha256:...",
+  "binary_version": "0.6.17",
+  "generated_at": "2026-02-22T00:00:00Z",
+  "functions": {
+    "ciris_verify_init": {
+      "name": "ciris_verify_init",
+      "offset": 12345,
+      "size": 256,
+      "hash": "sha256:..."
+    }
+  },
+  "manifest_hash": "sha256:...",
+  "signature": {
+    "classical": "base64-ed25519-sig",
+    "classical_algorithm": "Ed25519",
+    "pqc": "base64-mldsa65-sig",
+    "pqc_algorithm": "ML-DSA-65",
+    "key_id": "steward-key-1"
+  }
+}
+```
+
+**Security Properties**:
+- Hybrid signatures (Ed25519 + ML-DSA-65) for post-quantum security
+- PQC signature covers (manifest || classical_sig) - bound signature pattern
+- Opaque failure reporting (never reveals WHICH function failed)
+- Constant-time hash comparison
+
+---
+
+## Audit Trail Verification
+
+CIRISVerify validates the cryptographic integrity of an agent's audit log (Level 5).
+
+### Hash Chain Structure
+
+Each audit entry contains:
+- `sequence_number` — Monotonically increasing
+- `previous_hash` — SHA-256 of previous entry (or "genesis" for first)
+- `entry_hash` — SHA-256 of this entry's canonical form
+- `signature` — Ed25519 signature over entry_hash
+- `signing_key_id` — Key identifier (should be Portal key)
+
+### Verification Checks
+
+| Check | Description |
+|-------|-------------|
+| Genesis validity | First entry has `previous_hash = "genesis"` |
+| Hash chain | Each entry's `previous_hash` matches prior `entry_hash` |
+| Entry hashes | Computed hash matches stored `entry_hash` |
+| Signatures | Ed25519 signature verifies (if present) |
+| Portal key | Signing key is the expected Portal-issued key |
+
+### Supported Formats
+
+| Format | Path | Command |
+|--------|------|---------|
+| SQLite | `ciris_audit.db` | `--db-path` |
+| JSONL | `audit_logs.jsonl` | `--jsonl-path` |
+
+### Verification Modes
+
+| Mode | Description | Use Case |
+|------|-------------|----------|
+| Full | Verify entire chain | Startup, audits |
+| Spot check | Random sample | Runtime monitoring |
+
+```bash
+# Full verification from SQLite
+ciris-verify audit-trail --db-path ./ciris_audit.db
+
+# Spot check from JSONL
+ciris-verify audit-trail --jsonl-path ./audit_logs.jsonl --spot-check --sample-size 100
+
+# With Portal key verification
+ciris-verify audit-trail --db-path ./ciris_audit.db --portal-key-id "portal-key-abc123"
 ```
 
 ---
@@ -360,12 +556,28 @@ CIRISVerify/
 │   ├── ciris-crypto/           # Hybrid crypto (Ed25519 + ML-DSA-65)
 │   ├── ciris-verify-core/      # Core verification engine
 │   │   └── src/
+│   │       ├── bin/
+│   │       │   └── ciris_verify.rs  # CLI binary
 │   │       ├── engine.rs       # License engine + multi-source validation
+│   │       ├── registry.rs     # Registry client for manifests
+│   │       ├── audit.rs        # Audit trail verification
 │   │       ├── config.rs       # Infrastructure endpoints
 │   │       ├── types.rs        # Rust types
-│   │       └── security/       # Binary integrity checks
-│   └── ciris-verify-ffi/       # C FFI layer
-│       └── src/lib.rs          # FFI functions called by Python
+│   │       └── security/
+│   │           ├── mod.rs           # Security module
+│   │           ├── file_integrity.rs    # Tripwire file checks
+│   │           ├── function_integrity.rs # FFI function verification
+│   │           ├── anti_tamper.rs       # Anti-tamper detection
+│   │           └── platform.rs          # Platform detection
+│   ├── ciris-verify-ffi/       # C FFI layer
+│   │   └── src/
+│   │       ├── lib.rs          # FFI functions called by Python
+│   │       ├── android_sync.rs # Android-specific sync I/O
+│   │       └── constructor.rs  # Library constructors
+│   └── ciris-manifest-tool/    # Manifest generation tool
+│       └── src/
+│           ├── main.rs         # CLI for generating manifests
+│           └── parser/         # Binary parsers (ELF, Mach-O, PE)
 ├── bindings/
 │   └── python/
 │       └── ciris_verify/
@@ -375,8 +587,25 @@ CIRISVerify/
 │           └── exceptions.py   # Error types
 ├── protocol/
 │   └── ciris_verify.proto      # Public API contract (gRPC/protobuf)
+├── docs/
+│   ├── HOW_IT_WORKS.md         # This document
+│   ├── THREAT_MODEL.md         # Security threat analysis
+│   ├── REGISTRY_BINARY_MANIFEST.md    # Binary manifest spec
+│   └── REGISTRY_FUNCTION_MANIFEST_API.md  # Function manifest spec
 ├── FSD/
 │   └── FSD-001_CIRISVERIFY_PROTOCOL.md  # Full specification
 └── scripts/
     └── build_and_install.sh    # Build + install helper
+```
+
+### CLI Binary
+
+After building, the CLI is available at:
+```bash
+# Linux/macOS
+./target/release/ciris-verify
+
+# Or install globally
+cargo install --path src/ciris-verify-core
+ciris-verify --help
 ```
