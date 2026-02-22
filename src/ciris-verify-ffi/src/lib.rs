@@ -47,6 +47,9 @@
 
 mod constructor;
 
+#[cfg(target_os = "android")]
+mod android_sync;
+
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::ptr;
@@ -582,31 +585,16 @@ pub unsafe extern "C" fn ciris_verify_get_status(
 
     #[cfg(target_os = "android")]
     let mut response = {
-        // On Android, run directly on the JNI thread using tokio's async timeout.
-        // This works because we're using current_thread runtime and staying on the JNI thread.
-        tracing::info!("FFI (Android): Running on JNI thread with tokio timeout");
-        let result = handle.runtime.block_on(async {
-            tokio::time::timeout(
-                std::time::Duration::from_secs(15),
-                handle.engine.get_license_status(request.clone()),
-            )
-            .await
-        });
-
-        match result {
-            Ok(Ok(r)) => {
-                tracing::info!("FFI: get_license_status completed in {:?}", start.elapsed());
-                r
-            },
-            Ok(Err(e)) => {
-                tracing::error!("FFI: Request failed after {:?}: {}", start.elapsed(), e);
-                return CirisVerifyError::RequestFailed as i32;
-            },
-            Err(_timeout) => {
-                tracing::error!("FFI: Timeout after {:?}", start.elapsed());
-                build_timeout_response(&request)
-            },
-        }
+        // On Android, bypass tokio entirely and use blocking I/O.
+        // Tokio's async I/O doesn't work on Android JNI threads because the
+        // event loop/epoll doesn't poll correctly in the JNI context.
+        tracing::info!("FFI (Android): Using blocking I/O (ureq) - bypassing tokio");
+        let result = android_sync::get_license_status_blocking(
+            &request,
+            std::time::Duration::from_secs(10),
+        );
+        tracing::info!("FFI (Android): Blocking call completed in {:?}", start.elapsed());
+        result
     };
 
     #[cfg(not(target_os = "android"))]

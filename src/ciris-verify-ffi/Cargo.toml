@@ -41,6 +41,8 @@ ctor = "0.2"
 jni = "0.21"
 android_logger = "0.13"
 log = "0.4"
+# Blocking HTTP client - tokio async I/O doesn't work on Android JNI threads
+ureq = { workspace = true }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 oslog = "0.2"

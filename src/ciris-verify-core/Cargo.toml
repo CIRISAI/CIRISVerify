@@ -72,6 +72,10 @@ subtle = "2.6"
 # Platform-specific
 libc = "0.2"
 
+# Blocking HTTP client for Android (tokio async I/O broken on JNI threads)
+[target.'cfg(target_os = "android")'.dependencies]
+ureq = { workspace = true }
+
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.52", features = [
     "Win32_System_Threading",
