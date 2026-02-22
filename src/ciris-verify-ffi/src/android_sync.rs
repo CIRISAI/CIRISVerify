@@ -142,7 +142,7 @@ pub fn get_license_status_blocking(
     // Determine overall validation status
     let sources_reachable = dns_us_reachable || dns_eu_reachable || https_reachable;
     let validation_status = if https_reachable && (dns_us_valid || dns_eu_valid) {
-        ValidationStatus::FullAgreement
+        ValidationStatus::AllSourcesAgree
     } else if https_reachable || dns_us_valid || dns_eu_valid {
         ValidationStatus::PartialAgreement
     } else if sources_reachable {
