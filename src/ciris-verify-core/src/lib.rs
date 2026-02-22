@@ -88,8 +88,12 @@ pub use types::{
 };
 pub use watchdog::ShutdownWatchdog;
 
-// New unified attestation API
-pub use audit::{AuditEntry, AuditVerificationResult, AuditVerifier};
+// Audit trail verification
+pub use audit::{
+    AuditEntry, AuditVerificationResult, AuditVerifier, ChainSummary,
+    read_audit_from_sqlite, read_audit_from_jsonl,
+    verify_audit_database, verify_audit_jsonl, verify_audit_full, verify_audit_json,
+};
 pub use registry::{
     compute_self_hash, current_target, verify_self_against_manifest, BinaryManifest, BuildRecord,
     FileManifest as RegistryManifest, RegistryClient,

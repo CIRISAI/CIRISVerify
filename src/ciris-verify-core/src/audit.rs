@@ -2,10 +2,18 @@
 //!
 //! Verifies the cryptographic integrity of CIRISAgent's audit log,
 //! ensuring the hash chain is intact from genesis to present.
+//!
+//! Supports reading from:
+//! - SQLite database (`ciris_audit.db`)
+//! - JSONL file (`audit_logs.jsonl`)
+//! - In-memory entry arrays
 
+use std::path::Path;
+
+use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::error::VerifyError;
 
@@ -403,6 +411,253 @@ pub fn verify_audit_json(
 
     let verifier = AuditVerifier::new(portal_key_id);
     Ok(verifier.verify_entries(&entries, true))
+}
+
+/// Read audit entries from a SQLite database.
+///
+/// # Arguments
+///
+/// * `db_path` - Path to ciris_audit.db
+///
+/// # Returns
+///
+/// Vector of audit entries in sequence order
+#[instrument(skip_all, fields(path = %db_path.as_ref().display()))]
+pub fn read_audit_from_sqlite<P: AsRef<Path>>(
+    db_path: P,
+) -> Result<Vec<AuditEntry>, VerifyError> {
+    let path = db_path.as_ref();
+
+    if !path.exists() {
+        return Err(VerifyError::ConfigError {
+            message: format!("Audit database not found: {}", path.display()),
+        });
+    }
+
+    info!("Opening audit database: {}", path.display());
+
+    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| VerifyError::ConfigError {
+            message: format!("Failed to open audit database: {}", e),
+        })?;
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT event_id, event_timestamp, event_type, originator_id,
+                    COALESCE(event_payload, '{}') as event_payload,
+                    sequence_number, previous_hash, entry_hash,
+                    COALESCE(signature, '') as signature,
+                    signing_key_id
+             FROM audit_log
+             ORDER BY sequence_number ASC",
+        )
+        .map_err(|e| VerifyError::ConfigError {
+            message: format!("Failed to prepare SQL statement: {}", e),
+        })?;
+
+    let entries = stmt
+        .query_map([], |row| {
+            Ok(AuditEntry {
+                event_id: row.get(0)?,
+                event_timestamp: row.get(1)?,
+                event_type: row.get(2)?,
+                originator_id: row.get(3)?,
+                event_payload: row.get(4)?,
+                sequence_number: row.get::<_, i64>(5)? as u64,
+                previous_hash: row.get(6)?,
+                entry_hash: row.get(7)?,
+                signature: row.get(8)?,
+                signing_key_id: row.get(9)?,
+            })
+        })
+        .map_err(|e| VerifyError::ConfigError {
+            message: format!("Failed to query audit entries: {}", e),
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| VerifyError::ConfigError {
+            message: format!("Failed to read audit entry: {}", e),
+        })?;
+
+    info!("Read {} audit entries from database", entries.len());
+    Ok(entries)
+}
+
+/// Read audit entries from a JSONL file.
+///
+/// # Arguments
+///
+/// * `jsonl_path` - Path to audit_logs.jsonl
+///
+/// # Returns
+///
+/// Vector of audit entries
+#[instrument(skip_all, fields(path = %jsonl_path.as_ref().display()))]
+pub fn read_audit_from_jsonl<P: AsRef<Path>>(
+    jsonl_path: P,
+) -> Result<Vec<AuditEntry>, VerifyError> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+
+    let path = jsonl_path.as_ref();
+
+    if !path.exists() {
+        return Err(VerifyError::ConfigError {
+            message: format!("Audit JSONL file not found: {}", path.display()),
+        });
+    }
+
+    info!("Opening audit JSONL file: {}", path.display());
+
+    let file = File::open(path).map_err(|e| VerifyError::ConfigError {
+        message: format!("Failed to open JSONL file: {}", e),
+    })?;
+
+    let reader = BufReader::new(file);
+    let mut entries = Vec::new();
+    let mut line_num = 0;
+
+    for line in reader.lines() {
+        line_num += 1;
+        let line = line.map_err(|e| VerifyError::ConfigError {
+            message: format!("Failed to read line {}: {}", line_num, e),
+        })?;
+
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        let entry: AuditEntry = serde_json::from_str(&line).map_err(|e| {
+            VerifyError::ConfigError {
+                message: format!("Failed to parse line {}: {}", line_num, e),
+            }
+        })?;
+
+        entries.push(entry);
+    }
+
+    // Sort by sequence number
+    entries.sort_by_key(|e| e.sequence_number);
+
+    info!("Read {} audit entries from JSONL file", entries.len());
+    Ok(entries)
+}
+
+/// Verify audit trail from SQLite database.
+///
+/// This is the main entry point for external audit verification.
+///
+/// # Arguments
+///
+/// * `db_path` - Path to ciris_audit.db
+/// * `portal_key_id` - Expected Portal key ID (optional)
+/// * `verify_signatures` - Whether to verify cryptographic signatures
+///
+/// # Returns
+///
+/// Verification result with chain integrity status
+#[instrument(skip_all, fields(path = %db_path.as_ref().display()))]
+pub fn verify_audit_database<P: AsRef<Path>>(
+    db_path: P,
+    portal_key_id: Option<String>,
+    verify_signatures: bool,
+) -> Result<AuditVerificationResult, VerifyError> {
+    let entries = read_audit_from_sqlite(db_path)?;
+    let verifier = AuditVerifier::new(portal_key_id);
+    Ok(verifier.verify_entries(&entries, verify_signatures))
+}
+
+/// Verify audit trail from JSONL file.
+///
+/// # Arguments
+///
+/// * `jsonl_path` - Path to audit_logs.jsonl
+/// * `portal_key_id` - Expected Portal key ID (optional)
+/// * `verify_signatures` - Whether to verify cryptographic signatures
+///
+/// # Returns
+///
+/// Verification result with chain integrity status
+#[instrument(skip_all, fields(path = %jsonl_path.as_ref().display()))]
+pub fn verify_audit_jsonl<P: AsRef<Path>>(
+    jsonl_path: P,
+    portal_key_id: Option<String>,
+    verify_signatures: bool,
+) -> Result<AuditVerificationResult, VerifyError> {
+    let entries = read_audit_from_jsonl(jsonl_path)?;
+    let verifier = AuditVerifier::new(portal_key_id);
+    Ok(verifier.verify_entries(&entries, verify_signatures))
+}
+
+/// Verify audit trail from both SQLite and JSONL, cross-checking consistency.
+///
+/// # Arguments
+///
+/// * `db_path` - Path to ciris_audit.db
+/// * `jsonl_path` - Path to audit_logs.jsonl (optional)
+/// * `portal_key_id` - Expected Portal key ID (optional)
+///
+/// # Returns
+///
+/// Combined verification result
+#[instrument(skip_all)]
+pub fn verify_audit_full<P: AsRef<Path>>(
+    db_path: P,
+    jsonl_path: Option<P>,
+    portal_key_id: Option<String>,
+) -> Result<AuditVerificationResult, VerifyError> {
+    let start = std::time::Instant::now();
+
+    // Verify SQLite database
+    let db_result = verify_audit_database(&db_path, portal_key_id.clone(), true)?;
+
+    // If JSONL path provided, cross-check
+    if let Some(jsonl) = jsonl_path {
+        let jsonl_result = verify_audit_jsonl(jsonl, portal_key_id, true)?;
+
+        // Compare entry counts and final hashes
+        let mut errors = db_result.errors.clone();
+
+        if db_result.total_entries != jsonl_result.total_entries {
+            errors.push(format!(
+                "Entry count mismatch: SQLite={}, JSONL={}",
+                db_result.total_entries, jsonl_result.total_entries
+            ));
+        }
+
+        if let (Some(db_summary), Some(jsonl_summary)) =
+            (&db_result.chain_summary, &jsonl_result.chain_summary)
+        {
+            if db_summary.current_hash != jsonl_summary.current_hash {
+                errors.push(format!(
+                    "Final hash mismatch: SQLite={}, JSONL={}",
+                    db_summary.current_hash, jsonl_summary.current_hash
+                ));
+            }
+        }
+
+        let valid = db_result.valid && jsonl_result.valid &&
+            errors.len() == db_result.errors.len();
+
+        return Ok(AuditVerificationResult {
+            valid,
+            total_entries: db_result.total_entries,
+            entries_verified: db_result.entries_verified + jsonl_result.entries_verified,
+            hash_chain_valid: db_result.hash_chain_valid && jsonl_result.hash_chain_valid,
+            signatures_valid: db_result.signatures_valid && jsonl_result.signatures_valid,
+            genesis_valid: db_result.genesis_valid && jsonl_result.genesis_valid,
+            portal_key_used: db_result.portal_key_used && jsonl_result.portal_key_used,
+            first_tampered_sequence: db_result.first_tampered_sequence
+                .or(jsonl_result.first_tampered_sequence),
+            errors,
+            verification_time_ms: start.elapsed().as_millis() as u64,
+            chain_summary: db_result.chain_summary,
+        });
+    }
+
+    Ok(AuditVerificationResult {
+        verification_time_ms: start.elapsed().as_millis() as u64,
+        ..db_result
+    })
 }
 
 #[cfg(test)]

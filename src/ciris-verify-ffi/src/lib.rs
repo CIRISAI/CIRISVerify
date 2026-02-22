@@ -1658,6 +1658,174 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
     CirisVerifyError::Success as i32
 }
 
+/// Verify audit trail from SQLite database and/or JSONL file.
+///
+/// This function reads the agent's audit trail and verifies:
+/// - Hash chain integrity (each entry links to previous)
+/// - Hash validity (each entry's hash matches computed hash)
+/// - Genesis validity (first entry has "genesis" as previous_hash)
+/// - Signature presence (optional full verification)
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init` (can be null for standalone verification)
+/// * `db_path` - Path to ciris_audit.db SQLite database (null-terminated C string)
+/// * `jsonl_path` - Path to audit_logs.jsonl (null-terminated C string, can be null)
+/// * `portal_key_id` - Expected Portal key ID (null-terminated C string, can be null)
+/// * `result_json` - Output pointer for JSON-encoded AuditVerificationResult
+/// * `result_len` - Output pointer for result length
+///
+/// # Result JSON Format
+///
+/// ```json
+/// {
+///   "valid": true,
+///   "total_entries": 1234,
+///   "entries_verified": 1234,
+///   "hash_chain_valid": true,
+///   "signatures_valid": true,
+///   "genesis_valid": true,
+///   "portal_key_used": true,
+///   "first_tampered_sequence": null,
+///   "errors": [],
+///   "verification_time_ms": 42,
+///   "chain_summary": {
+///     "sequence_range": [1, 1234],
+///     "current_sequence": 1234,
+///     "current_hash": "abc123...",
+///     "oldest_entry": "2025-01-01T00:00:00Z",
+///     "newest_entry": "2025-01-15T12:00:00Z"
+///   }
+/// }
+/// ```
+///
+/// # Returns
+///
+/// 0 on success (even if audit is invalid - check result JSON), negative error code on failure.
+///
+/// # Safety
+///
+/// - `db_path` must be a valid null-terminated UTF-8 string
+/// - `result_json` and `result_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_audit_trail(
+    _handle: *mut CirisVerifyHandle,
+    db_path: *const libc::c_char,
+    jsonl_path: *const libc::c_char,
+    portal_key_id: *const libc::c_char,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_audit_trail called");
+
+    if db_path.is_null() || result_json.is_null() || result_len.is_null() {
+        tracing::error!("ciris_verify_audit_trail: invalid arguments (db_path or result pointers null)");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    // Parse db_path
+    let db_path_str = match std::ffi::CStr::from_ptr(db_path).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("ciris_verify_audit_trail: invalid db_path UTF-8: {}", e);
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    // Parse optional jsonl_path
+    let jsonl_path_opt = if jsonl_path.is_null() {
+        None
+    } else {
+        match std::ffi::CStr::from_ptr(jsonl_path).to_str() {
+            Ok(s) if !s.is_empty() => Some(s.to_string()),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::error!("ciris_verify_audit_trail: invalid jsonl_path UTF-8: {}", e);
+                return CirisVerifyError::InvalidArgument as i32;
+            },
+        }
+    };
+
+    // Parse optional portal_key_id
+    let portal_key_opt = if portal_key_id.is_null() {
+        None
+    } else {
+        match std::ffi::CStr::from_ptr(portal_key_id).to_str() {
+            Ok(s) if !s.is_empty() => Some(s.to_string()),
+            Ok(_) => None,
+            Err(e) => {
+                tracing::error!("ciris_verify_audit_trail: invalid portal_key_id UTF-8: {}", e);
+                return CirisVerifyError::InvalidArgument as i32;
+            },
+        }
+    };
+
+    tracing::info!(
+        "Verifying audit trail: db={}, jsonl={:?}, portal_key={:?}",
+        db_path_str,
+        jsonl_path_opt,
+        portal_key_opt
+    );
+
+    // Perform verification
+    let result = if let Some(ref jsonl) = jsonl_path_opt {
+        ciris_verify_core::verify_audit_full(db_path_str, Some(jsonl.as_str()), portal_key_opt)
+    } else {
+        ciris_verify_core::verify_audit_database(db_path_str, portal_key_opt, true)
+    };
+
+    let verification_result = match result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("ciris_verify_audit_trail: verification failed: {}", e);
+            // Return an error result instead of failing
+            ciris_verify_core::AuditVerificationResult {
+                valid: false,
+                total_entries: 0,
+                entries_verified: 0,
+                hash_chain_valid: false,
+                signatures_valid: false,
+                genesis_valid: false,
+                portal_key_used: false,
+                first_tampered_sequence: None,
+                errors: vec![format!("Verification error: {}", e)],
+                verification_time_ms: 0,
+                chain_summary: None,
+            }
+        },
+    };
+
+    // Serialize result to JSON
+    let result_bytes = match serde_json::to_vec(&verification_result) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("ciris_verify_audit_trail: JSON serialization failed: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    // Allocate and copy result
+    let len = result_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("ciris_verify_audit_trail: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, len);
+
+    *result_json = ptr;
+    *result_len = len;
+
+    tracing::info!(
+        "Audit verification complete: valid={}, entries={}",
+        verification_result.valid,
+        verification_result.total_entries
+    );
+
+    CirisVerifyError::Success as i32
+}
+
 // Android JNI bindings
 #[cfg(target_os = "android")]
 mod android {
