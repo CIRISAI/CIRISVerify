@@ -26,7 +26,7 @@ use ciris_verify_core::types::{
     ValidationStatus,
 };
 use serde::Deserialize;
-use tracing::{info, warn, error};
+use tracing::{error, info, warn};
 
 /// Registry API base URL
 const REGISTRY_URL: &str = "https://api.registry.ciris-services-1.ai";
@@ -44,9 +44,8 @@ fn create_tls_agent(timeout: Duration) -> Option<ureq::Agent> {
     // Wrap in catch_unwind to prevent crashes from propagating
     let result = std::panic::catch_unwind(|| {
         // Build root certificate store from bundled Mozilla certs
-        let root_store = rustls::RootCertStore::from_iter(
-            webpki_roots::TLS_SERVER_ROOTS.iter().cloned()
-        );
+        let root_store =
+            rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
         let tls_config = rustls::ClientConfig::builder()
             .with_root_certificates(root_store)
@@ -67,11 +66,11 @@ fn create_tls_agent(timeout: Duration) -> Option<ureq::Agent> {
         Ok(agent) => {
             info!("Android sync: TLS agent created successfully");
             Some(agent)
-        }
+        },
         Err(e) => {
             error!("Android sync: TLS initialization panicked: {:?}", e);
             None
-        }
+        },
     }
 }
 
@@ -102,7 +101,7 @@ pub fn get_license_status_blocking(
         None => {
             warn!("Android sync: TLS agent creation failed, using default TLS");
             (create_basic_agent(timeout), "default")
-        }
+        },
     };
 
     info!("Android sync: Using TLS mode: {}", tls_mode);
@@ -115,40 +114,50 @@ pub fn get_license_status_blocking(
     let dns_eu_result = query_dns_txt_doh(&agent, DNS_EU_HOSTNAME);
 
     // Process DNS US result
-    let (dns_us_reachable, dns_us_valid, dns_us_error, dns_us_error_category) =
-        match &dns_us_result {
-            Ok(txt_records) => {
-                info!(
-                    "Android sync: DNS US returned {} TXT records in {:?}",
-                    txt_records.len(),
-                    start.elapsed()
-                );
-                // For now, just verify we got records - actual validation would check content
-                let valid = !txt_records.is_empty();
-                (true, valid, None, None)
-            }
-            Err(e) => {
-                warn!("Android sync: DNS US DoH query failed: {}", e);
-                (false, false, Some(e.to_string()), Some("doh_error".to_string()))
-            }
-        };
+    let (dns_us_reachable, dns_us_valid, dns_us_error, dns_us_error_category) = match &dns_us_result
+    {
+        Ok(txt_records) => {
+            info!(
+                "Android sync: DNS US returned {} TXT records in {:?}",
+                txt_records.len(),
+                start.elapsed()
+            );
+            // For now, just verify we got records - actual validation would check content
+            let valid = !txt_records.is_empty();
+            (true, valid, None, None)
+        },
+        Err(e) => {
+            warn!("Android sync: DNS US DoH query failed: {}", e);
+            (
+                false,
+                false,
+                Some(e.to_string()),
+                Some("doh_error".to_string()),
+            )
+        },
+    };
 
     // Process DNS EU result
-    let (dns_eu_reachable, dns_eu_valid, dns_eu_error, dns_eu_error_category) =
-        match &dns_eu_result {
-            Ok(txt_records) => {
-                info!(
-                    "Android sync: DNS EU returned {} TXT records",
-                    txt_records.len()
-                );
-                let valid = !txt_records.is_empty();
-                (true, valid, None, None)
-            }
-            Err(e) => {
-                warn!("Android sync: DNS EU DoH query failed: {}", e);
-                (false, false, Some(e.to_string()), Some("doh_error".to_string()))
-            }
-        };
+    let (dns_eu_reachable, dns_eu_valid, dns_eu_error, dns_eu_error_category) = match &dns_eu_result
+    {
+        Ok(txt_records) => {
+            info!(
+                "Android sync: DNS EU returned {} TXT records",
+                txt_records.len()
+            );
+            let valid = !txt_records.is_empty();
+            (true, valid, None, None)
+        },
+        Err(e) => {
+            warn!("Android sync: DNS EU DoH query failed: {}", e);
+            (
+                false,
+                false,
+                Some(e.to_string()),
+                Some("doh_error".to_string()),
+            )
+        },
+    };
 
     // Try to fetch steward key from HTTPS endpoint
     info!("Android sync: Fetching steward key from HTTPS");
@@ -161,7 +170,7 @@ pub fn get_license_status_blocking(
                 start.elapsed()
             );
             (true, None, None)
-        }
+        },
         Err(e) => {
             let (category, details) = categorize_ureq_error(e);
             warn!(
@@ -169,7 +178,7 @@ pub fn get_license_status_blocking(
                 details, category
             );
             (false, Some(details), Some(category))
-        }
+        },
     };
 
     // Determine overall validation status
@@ -337,7 +346,7 @@ impl std::fmt::Display for DohError {
                     _ => "UNKNOWN",
                 };
                 write!(f, "DNS error: {} ({})", status_name, code)
-            }
+            },
         }
     }
 }
@@ -372,7 +381,7 @@ fn categorize_ureq_error(error: &ureq::Error) -> (String, String) {
     match error {
         ureq::Error::Status(code, _response) => {
             (format!("http_{}", code), format!("HTTP status {}", code))
-        }
+        },
         ureq::Error::Transport(transport) => {
             let kind = transport.kind();
             let message = transport.message().unwrap_or("unknown");
@@ -394,6 +403,6 @@ fn categorize_ureq_error(error: &ureq::Error) -> (String, String) {
             };
 
             (category.to_string(), message.to_string())
-        }
+        },
     }
 }

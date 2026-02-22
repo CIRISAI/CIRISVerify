@@ -13,7 +13,7 @@ use std::path::Path;
 use rusqlite::{Connection, OpenFlags};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use tracing::{debug, error, info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::error::VerifyError;
 
@@ -423,9 +423,7 @@ pub fn verify_audit_json(
 ///
 /// Vector of audit entries in sequence order
 #[instrument(skip_all, fields(path = %db_path.as_ref().display()))]
-pub fn read_audit_from_sqlite<P: AsRef<Path>>(
-    db_path: P,
-) -> Result<Vec<AuditEntry>, VerifyError> {
+pub fn read_audit_from_sqlite<P: AsRef<Path>>(db_path: P) -> Result<Vec<AuditEntry>, VerifyError> {
     let path = db_path.as_ref();
 
     if !path.exists() {
@@ -436,9 +434,11 @@ pub fn read_audit_from_sqlite<P: AsRef<Path>>(
 
     info!("Opening audit database: {}", path.display());
 
-    let conn = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
-        .map_err(|e| VerifyError::ConfigError {
-            message: format!("Failed to open audit database: {}", e),
+    let conn =
+        Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).map_err(|e| {
+            VerifyError::ConfigError {
+                message: format!("Failed to open audit database: {}", e),
+            }
         })?;
 
     let mut stmt = conn
@@ -514,10 +514,9 @@ pub fn read_audit_from_jsonl<P: AsRef<Path>>(
 
     let reader = BufReader::new(file);
     let mut entries = Vec::new();
-    let mut line_num = 0;
 
-    for line in reader.lines() {
-        line_num += 1;
+    for (idx, line) in reader.lines().enumerate() {
+        let line_num = idx + 1;
         let line = line.map_err(|e| VerifyError::ConfigError {
             message: format!("Failed to read line {}: {}", line_num, e),
         })?;
@@ -526,11 +525,10 @@ pub fn read_audit_from_jsonl<P: AsRef<Path>>(
             continue;
         }
 
-        let entry: AuditEntry = serde_json::from_str(&line).map_err(|e| {
-            VerifyError::ConfigError {
+        let entry: AuditEntry =
+            serde_json::from_str(&line).map_err(|e| VerifyError::ConfigError {
                 message: format!("Failed to parse line {}: {}", line_num, e),
-            }
-        })?;
+            })?;
 
         entries.push(entry);
     }
@@ -635,8 +633,7 @@ pub fn verify_audit_full<P: AsRef<Path>>(
             }
         }
 
-        let valid = db_result.valid && jsonl_result.valid &&
-            errors.len() == db_result.errors.len();
+        let valid = db_result.valid && jsonl_result.valid && errors.len() == db_result.errors.len();
 
         return Ok(AuditVerificationResult {
             valid,
@@ -646,7 +643,8 @@ pub fn verify_audit_full<P: AsRef<Path>>(
             signatures_valid: db_result.signatures_valid && jsonl_result.signatures_valid,
             genesis_valid: db_result.genesis_valid && jsonl_result.genesis_valid,
             portal_key_used: db_result.portal_key_used && jsonl_result.portal_key_used,
-            first_tampered_sequence: db_result.first_tampered_sequence
+            first_tampered_sequence: db_result
+                .first_tampered_sequence
                 .or(jsonl_result.first_tampered_sequence),
             errors,
             verification_time_ms: start.elapsed().as_millis() as u64,

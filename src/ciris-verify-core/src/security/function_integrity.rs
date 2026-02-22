@@ -105,7 +105,7 @@ pub struct ManifestSignature {
 /// Per FSD-001 Section "Integrity Check Opacity", we MUST NOT expose
 /// which specific function failed. Only a single pass/fail and generic
 /// failure category are provided.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct FunctionIntegrityResult {
     /// Overall pass/fail.
     pub integrity_valid: bool,
@@ -122,18 +122,6 @@ pub struct FunctionIntegrityResult {
     /// Opaque failure reason (does NOT reveal which function failed).
     /// One of: "", "signature", "mismatch", "missing", "manifest"
     pub failure_reason: String,
-}
-
-impl Default for FunctionIntegrityResult {
-    fn default() -> Self {
-        Self {
-            integrity_valid: false,
-            functions_checked: 0,
-            functions_passed: 0,
-            verified_at: 0,
-            failure_reason: String::new(),
-        }
-    }
 }
 
 impl FunctionManifest {
@@ -204,7 +192,7 @@ pub struct StewardPublicKey {
 ///
 /// Per threat model Section 7, failures degrade to MORE restrictive modes.
 /// The client (CIRISAgent) decides what action to take based on this status.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub enum FunctionIntegrityStatus {
     /// All functions verified successfully.
     Verified,
@@ -220,6 +208,7 @@ pub enum FunctionIntegrityStatus {
     /// No manifest found for this version/target.
     NotFound,
     /// Verification not yet attempted.
+    #[default]
     Pending,
 }
 
@@ -233,12 +222,6 @@ impl std::fmt::Display for FunctionIntegrityStatus {
             Self::NotFound => write!(f, "not_found"),
             Self::Pending => write!(f, "pending"),
         }
-    }
-}
-
-impl Default for FunctionIntegrityStatus {
-    fn default() -> Self {
-        Self::Pending
     }
 }
 

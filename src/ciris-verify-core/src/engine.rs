@@ -177,8 +177,7 @@ impl LicenseEngine {
             "LicenseEngine: creating registry client → {}",
             config.https_endpoint
         );
-        let registry_client =
-            RegistryClient::new(&config.https_endpoint, config.timeout).ok();
+        let registry_client = RegistryClient::new(&config.https_endpoint, config.timeout).ok();
 
         info!(
             hardware_type = ?hw_signer.hardware_type(),
@@ -242,8 +241,7 @@ impl LicenseEngine {
         #[cfg(feature = "pqc")]
         let pqc_signer = MlDsa65Signer::new().ok();
 
-        let registry_client =
-            RegistryClient::new(&config.https_endpoint, config.timeout).ok();
+        let registry_client = RegistryClient::new(&config.https_endpoint, config.timeout).ok();
 
         Ok(Self {
             config,

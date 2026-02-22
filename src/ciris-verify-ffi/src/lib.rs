@@ -590,11 +590,12 @@ pub unsafe extern "C" fn ciris_verify_get_status(
         // Tokio's async I/O doesn't work on Android JNI threads because the
         // event loop/epoll doesn't poll correctly in the JNI context.
         tracing::info!("FFI (Android): Using blocking I/O (ureq) - bypassing tokio");
-        let result = android_sync::get_license_status_blocking(
-            &request,
-            std::time::Duration::from_secs(10),
+        let result =
+            android_sync::get_license_status_blocking(&request, std::time::Duration::from_secs(10));
+        tracing::info!(
+            "FFI (Android): Blocking call completed in {:?}",
+            start.elapsed()
         );
-        tracing::info!("FFI (Android): Blocking call completed in {:?}", start.elapsed());
         result
     };
 
@@ -1720,7 +1721,9 @@ pub unsafe extern "C" fn ciris_verify_audit_trail(
     tracing::debug!("ciris_verify_audit_trail called");
 
     if db_path.is_null() || result_json.is_null() || result_len.is_null() {
-        tracing::error!("ciris_verify_audit_trail: invalid arguments (db_path or result pointers null)");
+        tracing::error!(
+            "ciris_verify_audit_trail: invalid arguments (db_path or result pointers null)"
+        );
         return CirisVerifyError::InvalidArgument as i32;
     }
 
@@ -1755,7 +1758,10 @@ pub unsafe extern "C" fn ciris_verify_audit_trail(
             Ok(s) if !s.is_empty() => Some(s.to_string()),
             Ok(_) => None,
             Err(e) => {
-                tracing::error!("ciris_verify_audit_trail: invalid portal_key_id UTF-8: {}", e);
+                tracing::error!(
+                    "ciris_verify_audit_trail: invalid portal_key_id UTF-8: {}",
+                    e
+                );
                 return CirisVerifyError::InvalidArgument as i32;
             },
         }

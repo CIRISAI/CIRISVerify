@@ -90,9 +90,9 @@ pub use watchdog::ShutdownWatchdog;
 
 // Audit trail verification
 pub use audit::{
-    AuditEntry, AuditVerificationResult, AuditVerifier, ChainSummary,
-    read_audit_from_sqlite, read_audit_from_jsonl,
-    verify_audit_database, verify_audit_jsonl, verify_audit_full, verify_audit_json,
+    read_audit_from_jsonl, read_audit_from_sqlite, verify_audit_database, verify_audit_full,
+    verify_audit_json, verify_audit_jsonl, AuditEntry, AuditVerificationResult, AuditVerifier,
+    ChainSummary,
 };
 pub use registry::{
     compute_self_hash, current_target, verify_self_against_manifest, BinaryManifest, BuildRecord,

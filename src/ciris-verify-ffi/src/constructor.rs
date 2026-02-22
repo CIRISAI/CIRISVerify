@@ -23,6 +23,9 @@
 //! | Tampered | Refuse to operate |
 //! | NotFound | First release? Client decides |
 
+// Placeholder code - constructors will be enabled in a future release
+#![allow(dead_code)]
+
 use std::sync::OnceLock;
 use std::time::Duration;
 
@@ -107,7 +110,7 @@ fn run_verification() -> FunctionIntegrityStatus {
             },
         };
 
-        let manifest = match registry.get_function_manifest(version, &target).await {
+        let manifest = match registry.get_function_manifest(version, target).await {
             Ok(m) => m,
             Err(ciris_verify_core::error::VerifyError::HttpsError { message }) => {
                 // Could be network timeout, 404, etc.
