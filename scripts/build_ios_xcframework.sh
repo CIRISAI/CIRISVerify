@@ -23,8 +23,12 @@ FRAMEWORK_NAME="CIRISVerify"
 FFI_CRATE="ciris-verify-ffi"
 LIBRARY_NAME="libciris_verify_ffi"
 
+# Read version from workspace Cargo.toml
+VERSION=$(grep '^version = ' "${PROJECT_DIR}/Cargo.toml" | head -1 | sed 's/.*"\(.*\)".*/\1/')
+
 echo "=== CIRISVerify iOS XCFramework Builder ==="
 echo "Project: ${PROJECT_DIR}"
+echo "Version: ${VERSION}"
 echo "Output:  ${OUTPUT_DIR}"
 echo ""
 
@@ -117,7 +121,7 @@ create_framework() {
     <key>CFBundlePackageType</key>
     <string>FMWK</string>
     <key>CFBundleShortVersionString</key>
-    <string>0.2.0</string>
+    <string>${VERSION}</string>
     <key>CFBundleVersion</key>
     <string>1</string>
     <key>MinimumOSVersion</key>
@@ -148,9 +152,16 @@ echo "Output: ${OUTPUT_DIR}"
 echo ""
 echo "Contents:"
 find "${OUTPUT_DIR}" -type f | sort | head -20
+# Copy Swift bindings alongside XCFramework
+SWIFT_DIR="$(dirname "${OUTPUT_DIR}")/swift"
+mkdir -p "${SWIFT_DIR}"
+cp "${PROJECT_DIR}/bindings/swift/CIRISVerify.swift" "${SWIFT_DIR}/"
+cp "${PROJECT_DIR}/bindings/swift/CIRISVerify-Bridging-Header.h" "${SWIFT_DIR}/"
+echo "Swift bindings: ${SWIFT_DIR}/"
 echo ""
 echo "To use in your iOS project:"
 echo "  1. Add ${FRAMEWORK_NAME}.xcframework to your Xcode project"
-echo "  2. Add to framework search paths"
-echo "  3. Link against Security.framework (for Secure Enclave)"
-echo "  4. Add keychain-access-groups entitlement"
+echo "  2. Add CIRISVerify.swift and CIRISVerify-Bridging-Header.h from ${SWIFT_DIR}/"
+echo "  3. Set the bridging header in Build Settings > Objective-C Bridging Header"
+echo "  4. Link against Security.framework (for Secure Enclave)"
+echo "  5. Add keychain-access-groups entitlement"

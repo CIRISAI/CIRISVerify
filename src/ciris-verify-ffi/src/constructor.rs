@@ -171,8 +171,11 @@ fn detect_target() -> &'static str {
     #[cfg(all(target_arch = "x86_64", target_os = "android"))]
     return "x86_64-linux-android";
 
-    #[cfg(all(target_arch = "aarch64", target_os = "ios"))]
+    #[cfg(all(target_arch = "aarch64", target_os = "ios", not(target_abi = "sim")))]
     return "aarch64-apple-ios";
+
+    #[cfg(all(target_arch = "aarch64", target_os = "ios", target_abi = "sim"))]
+    return "aarch64-apple-ios-sim";
 
     // Fallback for unknown targets
     #[cfg(not(any(
@@ -184,7 +187,8 @@ fn detect_target() -> &'static str {
         all(target_arch = "aarch64", target_os = "android"),
         all(target_arch = "arm", target_os = "android"),
         all(target_arch = "x86_64", target_os = "android"),
-        all(target_arch = "aarch64", target_os = "ios"),
+        all(target_arch = "aarch64", target_os = "ios", not(target_abi = "sim")),
+        all(target_arch = "aarch64", target_os = "ios", target_abi = "sim"),
     )))]
     return "unknown";
 }
