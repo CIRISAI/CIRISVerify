@@ -44,6 +44,9 @@ android_logger = "0.13"
 log = "0.4"
 # Blocking HTTP client - tokio async I/O doesn't work on Android JNI threads
 ureq = { workspace = true }
+# Bundled Mozilla CA certs (native-certs doesn't work on Android)
+webpki-roots = { workspace = true }
+rustls = "0.23"
 
 [target.'cfg(target_os = "ios")'.dependencies]
 oslog = "0.2"
