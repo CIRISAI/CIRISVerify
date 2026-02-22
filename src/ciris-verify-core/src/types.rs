@@ -94,6 +94,50 @@ pub struct LicenseStatusResponse {
     ///         "signature_invalid", "not_found", "pending"
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub function_integrity: Option<String>,
+
+    // === Binary integrity (v0.6.17) ===
+    /// Binary-level self-verification status.
+    ///
+    /// Indicates whether the CIRISVerify binary matches its registry manifest.
+    /// This is the "who watches the watchmen" check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub binary_integrity: Option<BinaryIntegrityStatus>,
+}
+
+/// Binary integrity verification status (v0.6.17).
+///
+/// Reports whether the running CIRISVerify binary matches its registry manifest.
+/// This provides "self-verification" capability - the binary can prove it hasn't
+/// been tampered with since it was built and published.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinaryIntegrityStatus {
+    /// Overall verification status.
+    /// Values: "verified", "tampered", "unavailable", "not_found", "pending"
+    pub status: String,
+
+    /// CIRISVerify binary version.
+    pub version: String,
+
+    /// Target platform (e.g., "x86_64-unknown-linux-gnu").
+    pub target: String,
+
+    /// Computed hash of the running binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub actual_hash: Option<String>,
+
+    /// Expected hash from registry manifest.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_hash: Option<String>,
+
+    /// Whether the hashes match.
+    pub matches: bool,
+
+    /// Error message if verification failed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+
+    /// Timestamp of verification (Unix seconds).
+    pub verified_at: i64,
 }
 
 /// Mandatory disclosure that MUST be shown to users.

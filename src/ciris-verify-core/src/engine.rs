@@ -27,13 +27,15 @@ use crate::config::VerifyConfig;
 use crate::error::VerifyError;
 use crate::https::HttpsClient;
 use crate::license::{LicenseDetails, LicenseStatus, LicenseType};
+use crate::registry::{self, RegistryClient};
 use crate::revocation::RevocationChecker;
 use crate::transparency::TransparencyLog;
 use crate::types::{
-    AttestationProof, CapabilityCheckResponse, DisclosureSeverity, EnforcementAction,
-    LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure, ResponseAttestation,
-    ResponseMetadata, ResponseSignature, RuntimeValidation, RuntimeViolation, ShutdownDirective,
-    ShutdownType, SourceResult, ValidationResults, ValidationStatus, ViolationSeverity,
+    AttestationProof, BinaryIntegrityStatus, CapabilityCheckResponse, DisclosureSeverity,
+    EnforcementAction, LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure,
+    ResponseAttestation, ResponseMetadata, ResponseSignature, RuntimeValidation, RuntimeViolation,
+    ShutdownDirective, ShutdownType, SourceResult, ValidationResults, ValidationStatus,
+    ViolationSeverity,
 };
 use crate::validation::{ConsensusValidator, ValidationResult};
 use crate::watchdog::ShutdownWatchdog;
@@ -61,6 +63,10 @@ pub struct LicenseEngine {
     transparency_log: TransparencyLog,
     /// Shutdown watchdog for enforcing covenant invocations.
     watchdog: ShutdownWatchdog,
+    /// Registry client for fetching manifests.
+    registry_client: Option<RegistryClient>,
+    /// Cached binary integrity verification result.
+    binary_integrity_cache: std::sync::RwLock<Option<BinaryIntegrityStatus>>,
 }
 
 impl LicenseEngine {
@@ -166,10 +172,19 @@ impl LicenseEngine {
         info!("LicenseEngine: checking binary integrity");
         let integrity_valid = verify_binary_integrity();
 
+        // Initialize registry client for manifest fetching
+        info!(
+            "LicenseEngine: creating registry client → {}",
+            config.https_endpoint
+        );
+        let registry_client =
+            RegistryClient::new(&config.https_endpoint, config.timeout).ok();
+
         info!(
             hardware_type = ?hw_signer.hardware_type(),
             integrity_valid = integrity_valid,
             pqc_available = cfg!(feature = "pqc"),
+            registry_available = registry_client.is_some(),
             "LicenseEngine: initialization complete"
         );
 
@@ -184,6 +199,8 @@ impl LicenseEngine {
             integrity_valid,
             transparency_log: TransparencyLog::new(None),
             watchdog: ShutdownWatchdog::new(),
+            registry_client,
+            binary_integrity_cache: std::sync::RwLock::new(None),
         })
     }
 
@@ -225,6 +242,9 @@ impl LicenseEngine {
         #[cfg(feature = "pqc")]
         let pqc_signer = MlDsa65Signer::new().ok();
 
+        let registry_client =
+            RegistryClient::new(&config.https_endpoint, config.timeout).ok();
+
         Ok(Self {
             config,
             consensus_validator,
@@ -236,6 +256,8 @@ impl LicenseEngine {
             integrity_valid: true, // Assume valid for testing
             transparency_log: TransparencyLog::new(None),
             watchdog: ShutdownWatchdog::new(),
+            registry_client,
+            binary_integrity_cache: std::sync::RwLock::new(None),
         })
     }
 
@@ -435,17 +457,26 @@ impl LicenseEngine {
             self.cache.put(license);
         }
 
-        // 7. Build response with attestation
+        // 7. Binary self-verification against registry
+        let binary_integrity = self.verify_binary_integrity_from_registry().await;
+        info!(
+            binary_status = %binary_integrity.status,
+            binary_matches = binary_integrity.matches,
+            "Binary self-verification complete"
+        );
+
+        // 8. Build response with attestation
         let mut response = self
             .build_success_response(final_status, final_license, &request, &validation)
             .await;
 
-        // Attach runtime validation and shutdown directive
+        // Attach runtime validation, shutdown directive, and binary integrity
         response.runtime_validation = runtime_validation;
         response.shutdown_directive = shutdown_directive
             .or_else(|| self.watchdog.get_pending_directive(&request.deployment_id));
+        response.binary_integrity = Some(binary_integrity);
 
-        // 8. Append to transparency log (non-fatal on failure)
+        // 9. Append to transparency log (non-fatal on failure)
         let rev = validation.consensus_revocation_revision.unwrap_or(0);
         if let Err(e) = self.transparency_log.append(
             &request.deployment_id,
@@ -643,6 +674,132 @@ impl LicenseEngine {
     // ========================================================================
     // Private helpers
     // ========================================================================
+
+    /// Verify binary integrity against registry manifest.
+    ///
+    /// Fetches the binary manifest from the registry and verifies that the
+    /// running CIRISVerify binary matches the expected hash for this target.
+    /// Results are cached to avoid repeated network calls.
+    ///
+    /// This is the "who watches the watchmen" check - self-verification.
+    async fn verify_binary_integrity_from_registry(&self) -> BinaryIntegrityStatus {
+        let version = env!("CARGO_PKG_VERSION");
+        let target = registry::current_target();
+        let now = chrono::Utc::now().timestamp();
+
+        // Check cache first
+        if let Ok(cache) = self.binary_integrity_cache.read() {
+            if let Some(ref cached) = *cache {
+                // Use cached result if less than 5 minutes old
+                if now - cached.verified_at < 300 {
+                    return cached.clone();
+                }
+            }
+        }
+
+        // Compute self hash
+        let actual_hash = match registry::compute_self_hash() {
+            Ok(h) => h,
+            Err(e) => {
+                let status = BinaryIntegrityStatus {
+                    status: "unavailable".to_string(),
+                    version: version.to_string(),
+                    target: target.to_string(),
+                    actual_hash: None,
+                    expected_hash: None,
+                    matches: false,
+                    error: Some(format!("Failed to compute self hash: {}", e)),
+                    verified_at: now,
+                };
+                self.cache_binary_integrity(&status);
+                return status;
+            },
+        };
+
+        // Fetch manifest from registry
+        let Some(ref client) = self.registry_client else {
+            let status = BinaryIntegrityStatus {
+                status: "unavailable".to_string(),
+                version: version.to_string(),
+                target: target.to_string(),
+                actual_hash: Some(actual_hash),
+                expected_hash: None,
+                matches: false,
+                error: Some("Registry client not available".to_string()),
+                verified_at: now,
+            };
+            self.cache_binary_integrity(&status);
+            return status;
+        };
+
+        let manifest = match client.get_binary_manifest(version).await {
+            Ok(m) => m,
+            Err(e) => {
+                let status = BinaryIntegrityStatus {
+                    status: "unavailable".to_string(),
+                    version: version.to_string(),
+                    target: target.to_string(),
+                    actual_hash: Some(actual_hash),
+                    expected_hash: None,
+                    matches: false,
+                    error: Some(format!("Failed to fetch manifest: {}", e)),
+                    verified_at: now,
+                };
+                self.cache_binary_integrity(&status);
+                return status;
+            },
+        };
+
+        // Get expected hash for our target
+        let expected_hash = match manifest.binaries.get(target) {
+            Some(h) => h.strip_prefix("sha256:").unwrap_or(h).to_string(),
+            None => {
+                let status = BinaryIntegrityStatus {
+                    status: "not_found".to_string(),
+                    version: version.to_string(),
+                    target: target.to_string(),
+                    actual_hash: Some(actual_hash),
+                    expected_hash: None,
+                    matches: false,
+                    error: Some(format!("No manifest entry for target '{}'", target)),
+                    verified_at: now,
+                };
+                self.cache_binary_integrity(&status);
+                return status;
+            },
+        };
+
+        // Constant-time comparison
+        use subtle::ConstantTimeEq;
+        let actual_bytes = hex::decode(&actual_hash).unwrap_or_default();
+        let expected_bytes = hex::decode(&expected_hash).unwrap_or_default();
+        let matches: bool = actual_bytes.ct_eq(&expected_bytes).into();
+
+        let status = BinaryIntegrityStatus {
+            status: if matches { "verified" } else { "tampered" }.to_string(),
+            version: version.to_string(),
+            target: target.to_string(),
+            actual_hash: Some(actual_hash),
+            expected_hash: Some(expected_hash),
+            matches,
+            error: if matches {
+                None
+            } else {
+                Some("Binary hash does not match registry manifest".to_string())
+            },
+            verified_at: now,
+        };
+
+        self.cache_binary_integrity(&status);
+        status
+    }
+
+    /// Cache binary integrity status.
+    fn cache_binary_integrity(&self, status: &BinaryIntegrityStatus) {
+        if let Ok(mut cache) = self.binary_integrity_cache.write() {
+            *cache = Some(status.clone());
+        }
+    }
 
     /// Verify agent integrity against the registry.
     ///
@@ -924,6 +1081,7 @@ impl LicenseEngine {
             runtime_validation: None,
             shutdown_directive: None,
             function_integrity: None, // Set by FFI layer
+            binary_integrity: None,   // Set by caller for error responses
         }
     }
 
@@ -960,6 +1118,7 @@ impl LicenseEngine {
             runtime_validation: None,
             shutdown_directive: None,
             function_integrity: None, // Set by FFI layer
+            binary_integrity: None,   // Set by caller
         }
     }
 
@@ -985,6 +1144,7 @@ impl LicenseEngine {
             runtime_validation: None,
             shutdown_directive: None,
             function_integrity: None, // Set by FFI layer
+            binary_integrity: None,   // Set by caller
         }
     }
 

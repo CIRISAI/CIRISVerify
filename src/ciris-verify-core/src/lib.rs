@@ -82,9 +82,9 @@ pub use security::file_integrity::{
 pub use security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
 pub use transparency::{MerkleProof, ProofChain, TransparencyEntry, TransparencyLog};
 pub use types::{
-    AttestationProof, CapabilityCheckRequest, CapabilityCheckResponse, EnforcementAction,
-    LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure, RuntimeValidation,
-    RuntimeViolation, ShutdownDirective, ShutdownType, ViolationSeverity,
+    AttestationProof, BinaryIntegrityStatus, CapabilityCheckRequest, CapabilityCheckResponse,
+    EnforcementAction, LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure,
+    RuntimeValidation, RuntimeViolation, ShutdownDirective, ShutdownType, ViolationSeverity,
 };
 pub use watchdog::ShutdownWatchdog;
 

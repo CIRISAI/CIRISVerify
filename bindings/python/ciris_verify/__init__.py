@@ -28,6 +28,7 @@ from .types import (
     LicenseStatusResponse,
     CapabilityCheckResult,
     FileIntegrityResult,
+    BinaryIntegrityStatus,
     HardwareType,
     ValidationStatus,
 )
@@ -40,7 +41,7 @@ from .exceptions import (
     CommunicationError,
 )
 
-__version__ = "0.6.16"
+__version__ = "0.6.17"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
@@ -52,6 +53,7 @@ __all__ = [
     "LicenseStatusResponse",
     "CapabilityCheckResult",
     "FileIntegrityResult",
+    "BinaryIntegrityStatus",
     "HardwareType",
     "ValidationStatus",
     "CIRISVerifyError",
