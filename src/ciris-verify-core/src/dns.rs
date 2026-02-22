@@ -71,7 +71,7 @@ impl DnsValidator {
     ///
     /// On Android, uses Google's public DNS (8.8.8.8) because Android doesn't have
     /// /etc/resolv.conf and hickory-dns can't discover system DNS servers.
-    /// See: https://github.com/hickory-dns/hickory-dns/issues/652
+    /// See: <https://github.com/hickory-dns/hickory-dns/issues/652>
     ///
     /// # Errors
     ///
