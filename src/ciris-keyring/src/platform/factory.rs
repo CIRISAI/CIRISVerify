@@ -237,14 +237,15 @@ pub fn create_hardware_signer(
     #[cfg(target_os = "macos")]
     {
         if capabilities.has_hardware {
-            // macOS doesn't have a traditional TPM, but try anyway;
-            // if it fails, fall through to software signer.
-            use super::TpmSigner;
-            match TpmSigner::new(alias, None) {
-                Ok(signer) => return Ok(Box::new(signer)),
+            use super::SecureEnclaveSigner;
+            match SecureEnclaveSigner::new(alias) {
+                Ok(signer) => {
+                    tracing::info!("Using Secure Enclave signer on macOS");
+                    return Ok(Box::new(signer));
+                },
                 Err(e) => {
-                    tracing::info!(
-                        "macOS: TPM not available ({}), falling back to software signer",
+                    tracing::warn!(
+                        "macOS: Secure Enclave not available ({}), falling back to software signer",
                         e
                     );
                     // Fall through to software signer below

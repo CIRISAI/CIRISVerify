@@ -1,11 +1,13 @@
-//! iOS Secure Enclave hardware signer implementation.
+//! Secure Enclave hardware signer implementation (iOS + macOS).
 //!
 //! Uses the Security framework to access the Secure Enclave.
 //! Only ECDSA P-256 is supported by the Secure Enclave.
+//! Requires iOS 10+ or macOS 10.13+ with T2 chip or Apple Silicon.
 //!
-//! Also provides App Attest support via DeviceCheck framework (iOS 14+).
+//! Also provides App Attest support via DeviceCheck framework (iOS 14+ only).
 
 use async_trait::async_trait;
+#[cfg(target_os = "ios")]
 use std::sync::Mutex;
 
 use crate::error::KeyringError;
