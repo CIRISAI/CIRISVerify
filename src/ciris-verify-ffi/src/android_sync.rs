@@ -17,8 +17,9 @@ use ciris_verify_core::types::{
     ValidationStatus,
 };
 use ciris_verify_core::license::LicenseStatus;
-use ciris_keyring::PlatformAttestation;
-use tracing::{info, warn, error};
+use ciris_keyring::{PlatformAttestation, SoftwareAttestation};
+use serde::Deserialize;
+use tracing::{info, warn};
 
 /// Registry API base URL
 const REGISTRY_URL: &str = "https://api.registry.ciris-services-1.ai";
@@ -77,9 +78,11 @@ pub fn get_license_status_blocking(
             locale: "en".to_string(),
         },
         attestation: ResponseAttestation {
-            platform: PlatformAttestation::Software {
-                device_id: request.deployment_id.clone(),
-            },
+            platform: PlatformAttestation::Software(SoftwareAttestation {
+                key_derivation: "none".to_string(),
+                storage: "android-sync".to_string(),
+                security_warning: "Android sync path - blocking I/O".to_string(),
+            }),
             signature: ResponseSignature {
                 classical: Vec::new(),
                 classical_algorithm: "none".to_string(),
