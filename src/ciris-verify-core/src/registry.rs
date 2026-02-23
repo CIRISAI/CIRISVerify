@@ -569,6 +569,12 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
         message: format!("Cannot determine executable path: {}", e),
     })?;
 
+    tracing::info!(
+        "compute_self_hash: exe_path={:?}, exists={}",
+        exe_path,
+        exe_path.exists()
+    );
+
     let mut file = File::open(&exe_path).map_err(|e| VerifyError::IntegrityError {
         message: format!("Cannot open executable for hashing: {}", e),
     })?;

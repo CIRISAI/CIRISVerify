@@ -11,7 +11,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tracing::{debug, info, instrument, warn};
+use tracing::{info, instrument, warn};
 
 use crate::audit::{AuditEntry, AuditVerificationResult, AuditVerifier};
 use crate::config::VerifyConfig;
@@ -580,7 +580,7 @@ impl UnifiedAttestationEngine {
             },
         };
 
-        debug!(
+        info!(
             "Self-verification: version={}, target={}, hash={}",
             version, target, &binary_hash[..16]
         );
@@ -610,39 +610,50 @@ impl UnifiedAttestationEngine {
         let (binary_result, function_result) = tokio::join!(
             // Binary hash verification
             async {
+                info!("Binary manifest check: fetching for version={}", version);
                 match client.get_binary_manifest(version).await {
                     Ok(manifest) => {
+                        info!(
+                            "Binary manifest check: got manifest with {} targets: {:?}",
+                            manifest.binaries.len(),
+                            manifest.binaries.keys().collect::<Vec<_>>()
+                        );
                         if let Some(expected) = manifest.binaries.get(target) {
                             // Strip "sha256:" prefix if present
                             let expected_clean = expected.strip_prefix("sha256:").unwrap_or(expected);
                             let matches = binary_hash_clone == expected_clean;
-                            if !matches {
-                                warn!(
-                                    "Binary hash mismatch: expected={}, actual={}",
-                                    &expected_clean[..16],
-                                    &binary_hash_clone[..16]
-                                );
-                            }
+                            info!(
+                                "Binary manifest check: target={}, expected={}, actual={}, matches={}",
+                                target,
+                                &expected_clean[..std::cmp::min(16, expected_clean.len())],
+                                &binary_hash_clone[..std::cmp::min(16, binary_hash_clone.len())],
+                                matches
+                            );
                             matches
                         } else {
-                            warn!("No binary hash for target {} in manifest", target);
+                            warn!(
+                                "Binary manifest check: no hash for target={}, available={:?}",
+                                target,
+                                manifest.binaries.keys().collect::<Vec<_>>()
+                            );
                             false
                         }
                     },
                     Err(e) => {
-                        debug!("Binary manifest not available: {}", e);
+                        warn!("Binary manifest check: fetch failed: {}", e);
                         false
                     },
                 }
             },
             // Function integrity verification
             async {
+                info!("Function manifest check: fetching for version={}, target={}", version, target);
                 match client.get_function_manifest(version, target).await {
                     Ok(manifest) => {
                         let result = function_integrity::verify_functions(&manifest);
                         info!(
-                            "Function integrity: {}/{} passed",
-                            result.functions_passed, result.functions_checked
+                            "Function manifest check: {}/{} passed, valid={}",
+                            result.functions_passed, result.functions_checked, result.integrity_valid
                         );
                         (
                             result.integrity_valid,
@@ -651,7 +662,7 @@ impl UnifiedAttestationEngine {
                         )
                     },
                     Err(e) => {
-                        debug!("Function manifest not available: {}", e);
+                        warn!("Function manifest check: fetch failed: {}", e);
                         (false, 0, 0)
                     },
                 }
