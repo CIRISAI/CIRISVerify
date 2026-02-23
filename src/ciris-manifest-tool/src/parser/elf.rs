@@ -58,7 +58,9 @@ pub fn parse_elf(
         {
             functions.push(FunctionInfo {
                 name: name.to_string(),
-                offset: sym.st_value,
+                // Convert virtual address to offset from code section base
+                // Runtime verification adds this offset to the code base address
+                offset: sym.st_value - code_section_vaddr,
                 size: sym.st_size,
             });
         }
@@ -95,7 +97,8 @@ pub fn parse_elf(
         {
             functions.push(FunctionInfo {
                 name: name.to_string(),
-                offset: sym.st_value,
+                // Convert virtual address to offset from code section base
+                offset: sym.st_value - code_section_vaddr,
                 size: sym.st_size,
             });
         }

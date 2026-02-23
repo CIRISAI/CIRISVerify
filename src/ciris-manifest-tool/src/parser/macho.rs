@@ -92,7 +92,8 @@ fn parse_single_macho(
             {
                 functions.push(FunctionInfo {
                     name: clean_name.to_string(),
-                    offset: nlist.n_value,
+                    // Convert virtual address to offset from code section base
+                    offset: nlist.n_value - code_section_vaddr,
                     size: 0, // Will be computed below
                 });
             }
@@ -103,11 +104,13 @@ fn parse_single_macho(
     functions.sort_by_key(|f| f.offset);
 
     // Compute sizes based on gaps between functions
+    // Since offsets are now relative to code section base, the boundary
+    // is just the code section size
     for i in 0..functions.len() {
         let end = if i + 1 < functions.len() {
             functions[i + 1].offset
         } else {
-            code_section_vaddr + code_section_size
+            code_section_size
         };
         functions[i].size = end - functions[i].offset;
     }

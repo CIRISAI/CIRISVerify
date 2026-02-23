@@ -61,9 +61,9 @@ impl ParsedBinary {
     /// Get the bytes of a function.
     #[allow(clippy::cast_possible_truncation)]
     pub fn function_bytes(&self, func: &FunctionInfo) -> Option<&[u8]> {
-        // Function offset is relative to code section vaddr
-        // We need to convert to file offset
-        let file_offset = self.code_section_offset + (func.offset - self.code_section_vaddr);
+        // Function offset is relative to code section base (not virtual address)
+        // File offset = code_section_offset + relative_offset
+        let file_offset = self.code_section_offset + func.offset;
         let start = file_offset as usize;
         let end = start + func.size as usize;
 

@@ -342,6 +342,8 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     );
 
     // Log first few function entries for debugging
+    // NOTE: offsets should be small (relative to code section), not large virtual addresses
+    // If offsets are > 0x100000 (1MB), likely manifest was generated with wrong offset format
     for (i, (name, entry)) in manifest.functions.iter().take(3).enumerate() {
         tracing::info!(
             "verify_functions: sample[{}] name={}, offset=0x{:x}, size={}, hash={}",
@@ -351,6 +353,13 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
             entry.size,
             &entry.hash[..std::cmp::min(20, entry.hash.len())]
         );
+        // Warn if offset looks like a virtual address instead of relative offset
+        if entry.offset > 0x100000 {
+            tracing::warn!(
+                "verify_functions: WARNING - offset 0x{:x} is unusually large (>1MB), may be virtual address instead of relative offset",
+                entry.offset
+            );
+        }
     }
 
     // Get code base address - use platform-specific function
@@ -462,6 +471,25 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         manifest.binary_hash,
         manifest.functions.len()
     );
+
+    // Log first few function entries for debugging
+    // NOTE: offsets should be small (relative to code section), not large virtual addresses
+    for (i, (name, entry)) in manifest.functions.iter().take(3).enumerate() {
+        tracing::info!(
+            "verify_functions: sample[{}] name={}, offset=0x{:x}, size={}, hash={}",
+            i,
+            name,
+            entry.offset,
+            entry.size,
+            &entry.hash[..std::cmp::min(20, entry.hash.len())]
+        );
+        if entry.offset > 0x100000 {
+            tracing::warn!(
+                "verify_functions: WARNING - offset 0x{:x} is unusually large (>1MB), may be virtual address instead of relative offset",
+                entry.offset
+            );
+        }
+    }
 
     // Get code base address
     let code_base = match get_code_base_macos() {
