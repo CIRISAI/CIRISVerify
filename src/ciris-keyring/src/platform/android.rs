@@ -1306,11 +1306,11 @@ impl HardwareWrappedEd25519Signer {
             reason: "JNI not initialized".into(),
         })?;
 
-        let mut env = vm.attach_current_thread().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI attach failed: {}", e),
-            }
-        })?;
+        let mut env =
+            vm.attach_current_thread()
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI attach failed: {}", e),
+                })?;
 
         let keystore = AndroidKeystoreSigner::get_keystore(&mut env)?;
 
@@ -1348,24 +1348,24 @@ impl HardwareWrappedEd25519Signer {
             reason: "JNI not initialized".into(),
         })?;
 
-        let mut env = vm.attach_current_thread().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI attach failed: {}", e),
-            }
-        })?;
+        let mut env =
+            vm.attach_current_thread()
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI attach failed: {}", e),
+                })?;
 
         // Create KeyGenerator for AES
-        let algo_str = env.new_string("AES").map_err(|e| {
-            KeyringError::HardwareNotAvailable {
+        let algo_str = env
+            .new_string("AES")
+            .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("JNI string creation failed: {}", e),
-            }
-        })?;
+            })?;
 
-        let provider_str = env.new_string("AndroidKeyStore").map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI string creation failed: {}", e),
-            }
-        })?;
+        let provider_str =
+            env.new_string("AndroidKeyStore")
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI string creation failed: {}", e),
+                })?;
 
         let kg_class = env.find_class("javax/crypto/KeyGenerator").map_err(|e| {
             KeyringError::HardwareNotAvailable {
@@ -1387,9 +1387,11 @@ impl HardwareWrappedEd25519Signer {
                 reason: format!("KeyGenerator.getInstance failed: {}", e),
             })?;
 
-        let key_gen = key_gen.l().map_err(|e| KeyringError::HardwareNotAvailable {
-            reason: format!("KeyGenerator conversion failed: {}", e),
-        })?;
+        let key_gen = key_gen
+            .l()
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("KeyGenerator conversion failed: {}", e),
+            })?;
 
         // Build KeyGenParameterSpec
         // PURPOSE_ENCRYPT | PURPOSE_DECRYPT = 1 | 2 = 3
@@ -1429,17 +1431,17 @@ impl HardwareWrappedEd25519Signer {
         })?;
 
         // Set block modes - GCM
-        let gcm_str = env.new_string("GCM").map_err(|e| {
-            KeyringError::HardwareNotAvailable {
+        let gcm_str = env
+            .new_string("GCM")
+            .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("String creation failed: {}", e),
-            }
-        })?;
+            })?;
 
-        let string_class = env.find_class("java/lang/String").map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("String class not found: {}", e),
-            }
-        })?;
+        let string_class =
+            env.find_class("java/lang/String")
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("String class not found: {}", e),
+                })?;
 
         let block_modes_array = env
             .new_object_array(1, string_class, &gcm_str)
@@ -1458,18 +1460,18 @@ impl HardwareWrappedEd25519Signer {
         })?;
 
         // Set encryption paddings - NONE for GCM
-        let none_str = env.new_string("NoPadding").map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("String creation failed: {}", e),
-            }
-        })?;
+        let none_str =
+            env.new_string("NoPadding")
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("String creation failed: {}", e),
+                })?;
 
         // Need to find String class again since previous was moved
-        let string_class2 = env.find_class("java/lang/String").map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("String class not found: {}", e),
-            }
-        })?;
+        let string_class2 =
+            env.find_class("java/lang/String")
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("String class not found: {}", e),
+                })?;
 
         let paddings_array = env
             .new_object_array(1, string_class2, &none_str)
@@ -1552,11 +1554,11 @@ impl HardwareWrappedEd25519Signer {
             reason: "JNI not initialized".into(),
         })?;
 
-        let mut env = vm.attach_current_thread().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI attach failed: {}", e),
-            }
-        })?;
+        let mut env =
+            vm.attach_current_thread()
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI attach failed: {}", e),
+                })?;
 
         // Get the AES key from Keystore
         let keystore = AndroidKeystoreSigner::get_keystore(&mut env)?;
@@ -1589,19 +1591,16 @@ impl HardwareWrappedEd25519Signer {
         }
 
         let secret_key = env
-            .call_method(
-                &entry,
-                "getSecretKey",
-                "()Ljavax/crypto/SecretKey;",
-                &[],
-            )
+            .call_method(&entry, "getSecretKey", "()Ljavax/crypto/SecretKey;", &[])
             .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("getSecretKey failed: {}", e),
             })?;
 
-        let secret_key = secret_key.l().map_err(|e| KeyringError::HardwareNotAvailable {
-            reason: format!("SecretKey conversion failed: {}", e),
-        })?;
+        let secret_key = secret_key
+            .l()
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("SecretKey conversion failed: {}", e),
+            })?;
 
         // Create Cipher instance
         let transformation = env.new_string("AES/GCM/NoPadding").map_err(|e| {
@@ -1654,11 +1653,11 @@ impl HardwareWrappedEd25519Signer {
         })?;
 
         let iv_array: JByteArray = iv_obj.into();
-        let iv_bytes = env.convert_byte_array(iv_array).map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("IV byte array conversion failed: {}", e),
-            }
-        })?;
+        let iv_bytes =
+            env.convert_byte_array(iv_array)
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("IV byte array conversion failed: {}", e),
+                })?;
 
         // Encrypt the plaintext
         let plaintext_array = env.byte_array_from_slice(plaintext).map_err(|e| {
@@ -1678,9 +1677,11 @@ impl HardwareWrappedEd25519Signer {
                 reason: format!("doFinal failed: {}", e),
             })?;
 
-        let ciphertext_obj = ciphertext.l().map_err(|e| KeyringError::HardwareNotAvailable {
-            reason: format!("Ciphertext conversion failed: {}", e),
-        })?;
+        let ciphertext_obj = ciphertext
+            .l()
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("Ciphertext conversion failed: {}", e),
+            })?;
 
         let ciphertext_array: JByteArray = ciphertext_obj.into();
         let ciphertext_bytes = env.convert_byte_array(ciphertext_array).map_err(|e| {
@@ -1727,11 +1728,11 @@ impl HardwareWrappedEd25519Signer {
             reason: "JNI not initialized".into(),
         })?;
 
-        let mut env = vm.attach_current_thread().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI attach failed: {}", e),
-            }
-        })?;
+        let mut env =
+            vm.attach_current_thread()
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI attach failed: {}", e),
+                })?;
 
         // Split IV and ciphertext
         let (iv_bytes, ciphertext_bytes) = encrypted.split_at(AES_GCM_NONCE_SIZE);
@@ -1767,19 +1768,16 @@ impl HardwareWrappedEd25519Signer {
         }
 
         let secret_key = env
-            .call_method(
-                &entry,
-                "getSecretKey",
-                "()Ljavax/crypto/SecretKey;",
-                &[],
-            )
+            .call_method(&entry, "getSecretKey", "()Ljavax/crypto/SecretKey;", &[])
             .map_err(|e| KeyringError::HardwareNotAvailable {
                 reason: format!("getSecretKey failed: {}", e),
             })?;
 
-        let secret_key = secret_key.l().map_err(|e| KeyringError::HardwareNotAvailable {
-            reason: format!("SecretKey conversion failed: {}", e),
-        })?;
+        let secret_key = secret_key
+            .l()
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("SecretKey conversion failed: {}", e),
+            })?;
 
         // Create GCMParameterSpec with the IV
         let gcm_spec_class = env
@@ -1872,9 +1870,11 @@ impl HardwareWrappedEd25519Signer {
                 }
             })?;
 
-        let plaintext_obj = plaintext.l().map_err(|e| KeyringError::HardwareNotAvailable {
-            reason: format!("Plaintext conversion failed: {}", e),
-        })?;
+        let plaintext_obj = plaintext
+            .l()
+            .map_err(|e| KeyringError::HardwareNotAvailable {
+                reason: format!("Plaintext conversion failed: {}", e),
+            })?;
 
         let plaintext_array: JByteArray = plaintext_obj.into();
         let result = env.convert_byte_array(plaintext_array).map_err(|e| {
@@ -1898,11 +1898,11 @@ impl HardwareWrappedEd25519Signer {
             reason: "JNI not initialized".into(),
         })?;
 
-        let mut env = vm.attach_current_thread().map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("JNI attach failed: {}", e),
-            }
-        })?;
+        let mut env =
+            vm.attach_current_thread()
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("JNI attach failed: {}", e),
+                })?;
 
         let keystore = AndroidKeystoreSigner::get_keystore(&mut env)?;
 
@@ -1950,11 +1950,8 @@ mod tests {
     fn test_hardware_wrapped_ed25519_creation() {
         #[cfg(target_os = "android")]
         {
-            let signer = HardwareWrappedEd25519Signer::new(
-                "test_ed25519",
-                "/tmp/ciris_test",
-                false,
-            );
+            let signer =
+                HardwareWrappedEd25519Signer::new("test_ed25519", "/tmp/ciris_test", false);
             assert!(signer.is_ok());
         }
     }

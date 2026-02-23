@@ -933,12 +933,12 @@ impl MutableEd25519Signer {
                         );
                         // Also keep in software signer for backwards compatibility
                         // (but the encrypted version on disk is the source of truth)
-                        let mut inner = self
-                            .inner
-                            .write()
-                            .map_err(|_| KeyringError::PlatformError {
-                                message: "Lock poisoned".into(),
-                            })?;
+                        let mut inner =
+                            self.inner
+                                .write()
+                                .map_err(|_| KeyringError::PlatformError {
+                                    message: "Lock poisoned".into(),
+                                })?;
                         inner.import_key(key_bytes)?;
                         return Ok(());
                     },
@@ -1005,7 +1005,11 @@ impl MutableEd25519Signer {
                 {
                     if let Ok(exists) = rt.block_on(hw.key_exists()) {
                         if exists {
-                            tracing::debug!(has_key = true, hardware_backed = true, "MutableEd25519Signer::has_key check");
+                            tracing::debug!(
+                                has_key = true,
+                                hardware_backed = true,
+                                "MutableEd25519Signer::has_key check"
+                            );
                             return true;
                         }
                     }
@@ -1019,7 +1023,11 @@ impl MutableEd25519Signer {
             .map(|inner| inner.has_key())
             .unwrap_or(false);
 
-        tracing::debug!(has_key = has, hardware_backed = false, "MutableEd25519Signer::has_key check");
+        tracing::debug!(
+            has_key = has,
+            hardware_backed = false,
+            "MutableEd25519Signer::has_key check"
+        );
         has
     }
 

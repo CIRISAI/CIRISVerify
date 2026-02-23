@@ -310,10 +310,8 @@ impl UnifiedAttestationEngine {
         let (self_verification, validation, file_integrity_result) = tokio::join!(
             // 0. Self-verification (Level 1: recursive check - "who watches the watchmen")
             self.run_self_verification(),
-
             // 1. Source validation (always run)
             self.consensus_validator.validate_steward_key(),
-
             // 2. File integrity (if requested and params available)
             async {
                 if should_run_file_integrity {
@@ -352,13 +350,22 @@ impl UnifiedAttestationEngine {
         ));
         diagnostics.push_str(&format!(
             "  Binary: {} (registry={})\n",
-            if self_verification.binary_valid { "✓ OK" } else { "✗ FAIL" },
-            if self_verification.registry_reachable { "reachable" } else { "UNREACHABLE" }
+            if self_verification.binary_valid {
+                "✓ OK"
+            } else {
+                "✗ FAIL"
+            },
+            if self_verification.registry_reachable {
+                "reachable"
+            } else {
+                "UNREACHABLE"
+            }
         ));
         if !self_verification.binary_valid {
             diagnostics.push_str(&format!(
                 "    └─ Computed hash: {}...\n",
-                &self_verification.binary_hash[..std::cmp::min(32, self_verification.binary_hash.len())]
+                &self_verification.binary_hash
+                    [..std::cmp::min(32, self_verification.binary_hash.len())]
             ));
             if let Some(ref expected) = self_verification.expected_hash {
                 diagnostics.push_str(&format!(
@@ -366,12 +373,18 @@ impl UnifiedAttestationEngine {
                     &expected[..std::cmp::min(32, expected.len())]
                 ));
             } else {
-                diagnostics.push_str("    └─ Expected hash: NOT IN REGISTRY (target may not be registered)\n");
+                diagnostics.push_str(
+                    "    └─ Expected hash: NOT IN REGISTRY (target may not be registered)\n",
+                );
             }
         }
         diagnostics.push_str(&format!(
             "  Functions: {} ({}/{} passed)\n",
-            if self_verification.functions_valid { "✓ OK" } else { "✗ FAIL" },
+            if self_verification.functions_valid {
+                "✓ OK"
+            } else {
+                "✗ FAIL"
+            },
             self_verification.functions_passed,
             self_verification.functions_checked
         ));
@@ -381,7 +394,7 @@ impl UnifiedAttestationEngine {
         if let Some(ref err) = self_verification.error {
             diagnostics.push_str(&format!("    └─ Error: {}\n", err));
         }
-        diagnostics.push_str("\n");
+        diagnostics.push('\n');
 
         if !self_verification.valid {
             if let Some(ref err) = self_verification.error {
@@ -406,7 +419,11 @@ impl UnifiedAttestationEngine {
         diagnostics.push_str("=== SOURCE VALIDATION ===\n");
         diagnostics.push_str(&format!(
             "  DNS US: {} (reachable={})\n",
-            if sources.dns_us_valid { "✓ OK" } else { "✗ FAIL" },
+            if sources.dns_us_valid {
+                "✓ OK"
+            } else {
+                "✗ FAIL"
+            },
             sources.dns_us_reachable
         ));
         if let Some(ref err) = sources.dns_us_error {
@@ -414,7 +431,11 @@ impl UnifiedAttestationEngine {
         }
         diagnostics.push_str(&format!(
             "  DNS EU: {} (reachable={})\n",
-            if sources.dns_eu_valid { "✓ OK" } else { "✗ FAIL" },
+            if sources.dns_eu_valid {
+                "✓ OK"
+            } else {
+                "✗ FAIL"
+            },
             sources.dns_eu_reachable
         ));
         if let Some(ref err) = sources.dns_eu_error {
@@ -422,7 +443,11 @@ impl UnifiedAttestationEngine {
         }
         diagnostics.push_str(&format!(
             "  HTTPS:  {} (reachable={})\n",
-            if sources.https_valid { "✓ OK" } else { "✗ FAIL" },
+            if sources.https_valid {
+                "✓ OK"
+            } else {
+                "✗ FAIL"
+            },
             sources.https_reachable
         ));
         if let Some(ref err) = sources.https_error {
@@ -449,7 +474,11 @@ impl UnifiedAttestationEngine {
 
                     diagnostics.push_str(&format!(
                         "  Registry: {} (manifest v{})\n",
-                        if result.registry_reachable { "reachable" } else { "UNREACHABLE" },
+                        if result.registry_reachable {
+                            "reachable"
+                        } else {
+                            "UNREACHABLE"
+                        },
                         result.manifest_version.as_deref().unwrap_or("unknown")
                     ));
 
@@ -457,19 +486,25 @@ impl UnifiedAttestationEngine {
                         diagnostics.push_str(&format!(
                             "  Full check: {} ({}/{} files passed)\n",
                             if full.valid { "✓ OK" } else { "✗ FAIL" },
-                            full.files_passed, full.total_files
+                            full.files_passed,
+                            full.total_files
                         ));
                         diagnostics.push_str(&format!(
                             "    └─ Checked: {}, Passed: {}, Failed: {}, Missing: {}, Unexpected: {}\n",
                             full.files_checked, full.files_passed, full.files_failed, full.files_missing, full.files_unexpected
                         ));
                         if full.files_checked == 0 && full.total_files > 0 {
-                            diagnostics.push_str("    └─ ⚠️  MANIFEST HASH MISMATCH - no files were checked!\n");
+                            diagnostics.push_str(
+                                "    └─ ⚠️  MANIFEST HASH MISMATCH - no files were checked!\n",
+                            );
                             diagnostics.push_str("    └─ This means: computed hash of file hashes ≠ stored manifest_hash\n");
                             diagnostics.push_str("    └─ Likely cause: registry computes manifest_hash differently\n");
                         }
                         if !full.failure_reason.is_empty() {
-                            diagnostics.push_str(&format!("    └─ Failure reason: {}\n", full.failure_reason));
+                            diagnostics.push_str(&format!(
+                                "    └─ Failure reason: {}\n",
+                                full.failure_reason
+                            ));
                         }
                         if full.partial_check {
                             diagnostics.push_str(&format!(
@@ -483,10 +518,11 @@ impl UnifiedAttestationEngine {
                         diagnostics.push_str(&format!(
                             "  Spot check: {} ({}/{} files passed)\n",
                             if spot.valid { "✓ OK" } else { "✗ FAIL" },
-                            spot.files_passed, spot.files_checked
+                            spot.files_passed,
+                            spot.files_checked
                         ));
                     }
-                    diagnostics.push_str("\n");
+                    diagnostics.push('\n');
                     Some(result)
                 },
                 Err(e) => {
@@ -523,11 +559,19 @@ impl UnifiedAttestationEngine {
                 ));
                 diagnostics.push_str(&format!(
                     "  Hash chain: {}\n",
-                    if result.hash_chain_valid { "✓ valid" } else { "✗ BROKEN" }
+                    if result.hash_chain_valid {
+                        "✓ valid"
+                    } else {
+                        "✗ BROKEN"
+                    }
                 ));
                 diagnostics.push_str(&format!(
                     "  Genesis: {}\n",
-                    if result.genesis_valid { "✓ valid" } else { "✗ INVALID" }
+                    if result.genesis_valid {
+                        "✓ valid"
+                    } else {
+                        "✗ INVALID"
+                    }
                 ));
                 if result.portal_key_used {
                     diagnostics.push_str("  Portal key: ✓ used for signing\n");
@@ -541,7 +585,7 @@ impl UnifiedAttestationEngine {
                         errors.push(format!("Audit: {}", err));
                     }
                 }
-                diagnostics.push_str("\n");
+                diagnostics.push('\n');
 
                 Some(result)
             } else {
@@ -622,17 +666,21 @@ impl UnifiedAttestationEngine {
                     &b.file_manifest_hash[..std::cmp::min(16, b.file_manifest_hash.len())]
                 );
                 b
-            }
+            },
             Err(e) => {
                 warn!("run_file_integrity: failed to fetch build: {}", e);
                 return Err(e);
-            }
+            },
         };
 
         // Convert registry manifest to file_integrity manifest
         // Convert HashMap to BTreeMap for deterministic ordering
-        let files_btree: BTreeMap<String, String> =
-            build.file_manifest_json.files().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+        let files_btree: BTreeMap<String, String> = build
+            .file_manifest_json
+            .files()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
 
         info!(
             "run_file_integrity: registry returned {} files, file_manifest_hash='{}'",
@@ -654,7 +702,12 @@ impl UnifiedAttestationEngine {
 
         // Log first 3 file paths from manifest
         let sample_paths: Vec<_> = manifest.files.keys().take(3).collect();
-        let sample_hashes: Vec<_> = manifest.files.values().take(3).map(|h| &h[..std::cmp::min(16, h.len())]).collect();
+        let sample_hashes: Vec<_> = manifest
+            .files
+            .values()
+            .take(3)
+            .map(|h| &h[..std::cmp::min(16, h.len())])
+            .collect();
         info!(
             "run_file_integrity: constructed manifest with {} files, hash='{}'\n  sample paths: {:?}\n  sample hashes: {:?}",
             manifest.files.len(),
@@ -727,7 +780,9 @@ impl UnifiedAttestationEngine {
 
         info!(
             "Self-verification: version={}, target={}, hash={}",
-            version, target, &binary_hash[..16]
+            version,
+            target,
+            &binary_hash[..16]
         );
 
         // Try to fetch binary manifest from registry
@@ -758,7 +813,8 @@ impl UnifiedAttestationEngine {
                 info!("Binary manifest check: fetching for version={}", version);
                 match client.get_binary_manifest(version).await {
                     Ok(manifest) => {
-                        let available_targets: Vec<String> = manifest.binaries.keys().cloned().collect();
+                        let available_targets: Vec<String> =
+                            manifest.binaries.keys().cloned().collect();
                         info!(
                             "Binary manifest check: got manifest with {} targets: {:?}",
                             manifest.binaries.len(),
@@ -766,7 +822,8 @@ impl UnifiedAttestationEngine {
                         );
                         if let Some(expected) = manifest.binaries.get(target) {
                             // Strip "sha256:" prefix if present
-                            let expected_clean = expected.strip_prefix("sha256:").unwrap_or(expected);
+                            let expected_clean =
+                                expected.strip_prefix("sha256:").unwrap_or(expected);
                             let matches = binary_hash_clone == expected_clean;
                             info!(
                                 "Binary manifest check: target={}, expected={}, actual={}, matches={}",
@@ -792,13 +849,18 @@ impl UnifiedAttestationEngine {
             },
             // Function integrity verification
             async {
-                info!("Function manifest check: fetching for version={}, target={}", version, target);
+                info!(
+                    "Function manifest check: fetching for version={}, target={}",
+                    version, target
+                );
                 match client.get_function_manifest(version, target).await {
                     Ok(manifest) => {
                         let result = function_integrity::verify_functions(&manifest);
                         info!(
                             "Function manifest check: {}/{} passed, valid={}",
-                            result.functions_passed, result.functions_checked, result.integrity_valid
+                            result.functions_passed,
+                            result.functions_checked,
+                            result.integrity_valid
                         );
                         (
                             result.integrity_valid,

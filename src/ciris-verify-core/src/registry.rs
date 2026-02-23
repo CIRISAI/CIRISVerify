@@ -686,7 +686,7 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
             Some(path) => {
                 tracing::info!("compute_self_hash (Android): found .so at {:?}", path);
                 path
-            }
+            },
             None => {
                 tracing::warn!(
                     "compute_self_hash (Android): could not find libciris_verify_ffi.so, falling back to current_exe()"
@@ -694,7 +694,7 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
                 std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
                     message: format!("Cannot determine executable path: {}", e),
                 })?
-            }
+            },
         }
     };
 
@@ -749,7 +749,7 @@ fn find_library_path(lib_name: &str) -> Option<std::path::PathBuf> {
         Err(e) => {
             tracing::warn!("find_library_path: cannot open /proc/self/maps: {}", e);
             return None;
-        }
+        },
     };
 
     let reader = BufReader::new(maps_file);
@@ -769,18 +769,17 @@ fn find_library_path(lib_name: &str) -> Option<std::path::PathBuf> {
             if parts.len() >= 6 {
                 let full_path = parts[5..].join(" ");
                 if full_path.contains(lib_name) {
-                    tracing::info!(
-                        "find_library_path: found {} at {}",
-                        lib_name,
-                        full_path
-                    );
+                    tracing::info!("find_library_path: found {} at {}", lib_name, full_path);
                     return Some(std::path::PathBuf::from(full_path));
                 }
             }
         }
     }
 
-    tracing::warn!("find_library_path: {} not found in /proc/self/maps", lib_name);
+    tracing::warn!(
+        "find_library_path: {} not found in /proc/self/maps",
+        lib_name
+    );
     None
 }
 

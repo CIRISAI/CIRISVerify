@@ -77,9 +77,9 @@ pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
 pub use license::{LicenseDetails, LicenseStatus, LicenseType};
 pub use revocation::{RevocationChecker, RevocationStatus};
 pub use security::file_integrity::{
-    check_available as check_available_agent_integrity,
-    check_full as check_agent_integrity, check_spot as spot_check_agent_integrity,
-    generate_manifest, load_manifest, FileIntegrityResult, FileManifest,
+    check_available as check_available_agent_integrity, check_full as check_agent_integrity,
+    check_spot as spot_check_agent_integrity, generate_manifest, load_manifest,
+    FileIntegrityResult, FileManifest,
 };
 pub use security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
 pub use transparency::{MerkleProof, ProofChain, TransparencyEntry, TransparencyLog};

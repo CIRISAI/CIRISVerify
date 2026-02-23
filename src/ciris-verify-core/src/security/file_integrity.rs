@@ -177,7 +177,10 @@ fn verify_manifest_integrity(manifest: &FileManifest) -> bool {
     let computed = hex::encode(hasher.finalize());
 
     // Strip "sha256:" prefix from stored hash if present
-    let stored_clean = manifest.manifest_hash.strip_prefix("sha256:").unwrap_or(&manifest.manifest_hash);
+    let stored_clean = manifest
+        .manifest_hash
+        .strip_prefix("sha256:")
+        .unwrap_or(&manifest.manifest_hash);
 
     let matches = super::constant_time_eq(computed.as_bytes(), stored_clean.as_bytes());
 
@@ -398,13 +401,23 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
 
     // Log if agent_root exists and list first few entries
     if !agent_root.exists() {
-        tracing::error!("check_available: agent_root does NOT exist: {:?}", agent_root);
+        tracing::error!(
+            "check_available: agent_root does NOT exist: {:?}",
+            agent_root
+        );
     } else {
         tracing::info!("check_available: agent_root exists: {:?}", agent_root);
         // Try to list first few entries
         if let Ok(entries) = std::fs::read_dir(agent_root) {
-            let first_entries: Vec<_> = entries.take(5).filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
-            tracing::info!("check_available: agent_root contains (first 5): {:?}", first_entries);
+            let first_entries: Vec<_> = entries
+                .take(5)
+                .filter_map(|e| e.ok())
+                .map(|e| e.file_name())
+                .collect();
+            tracing::info!(
+                "check_available: agent_root contains (first 5): {:?}",
+                first_entries
+            );
         }
     }
 
@@ -473,11 +486,11 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
                     files_failed += 1;
                     tracing::warn!("check_available: hash mismatch for {:?}", relative_path);
                 }
-            }
+            },
             Err(_) => {
                 // File exists but can't be read - treat as failure
                 files_failed += 1;
-            }
+            },
         }
     }
 

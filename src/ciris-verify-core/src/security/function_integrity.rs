@@ -330,7 +330,7 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         Some(base) => {
             tracing::info!("verify_functions: using code base 0x{:x}", base);
             base
-        }
+        },
         None => {
             tracing::error!("verify_functions: could not determine code base address");
             return FunctionIntegrityResult {
@@ -606,14 +606,17 @@ fn get_code_base_android() -> Option<usize> {
     }
 
     const LIB_NAME: &str = "libciris_verify_ffi.so";
-    tracing::info!("get_code_base_android: searching for {} in /proc/self/maps", LIB_NAME);
+    tracing::info!(
+        "get_code_base_android: searching for {} in /proc/self/maps",
+        LIB_NAME
+    );
 
     let maps_file = match File::open("/proc/self/maps") {
         Ok(f) => f,
         Err(e) => {
             tracing::error!("get_code_base_android: cannot open /proc/self/maps: {}", e);
             return None;
-        }
+        },
     };
 
     let reader = BufReader::new(maps_file);
@@ -633,7 +636,8 @@ fn get_code_base_android() -> Option<usize> {
                 if let Ok(base) = usize::from_str_radix(addr_str, 16) {
                     tracing::info!(
                         "get_code_base_android: found {} at base=0x{:x}",
-                        LIB_NAME, base
+                        LIB_NAME,
+                        base
                     );
                     BASE.store(base, Ordering::Relaxed);
                     FOUND.store(true, Ordering::Relaxed);

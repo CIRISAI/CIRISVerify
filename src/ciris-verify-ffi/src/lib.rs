@@ -324,10 +324,15 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
                 use std::os::raw::c_char;
                 const ANDROID_LOG_INFO: i32 = 4;
                 extern "C" {
-                    fn __android_log_write(prio: i32, tag: *const c_char, text: *const c_char) -> i32;
+                    fn __android_log_write(
+                        prio: i32,
+                        tag: *const c_char,
+                        text: *const c_char,
+                    ) -> i32;
                 }
                 let tag = CString::new("CIRISVerify").unwrap();
-                let msg = CString::new("=== CIRISVerify FFI init starting (v0.7.16-log) ===").unwrap();
+                let msg =
+                    CString::new("=== CIRISVerify FFI init starting (v0.7.16-log) ===").unwrap();
                 unsafe {
                     __android_log_write(ANDROID_LOG_INFO, tag.as_ptr(), msg.as_ptr());
                 }
@@ -346,7 +351,9 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
                     _ctx: tracing_subscriber::layer::Context<'_, S>,
                 ) {
                     // Format the event
-                    let mut visitor = LogVisitor { message: String::new() };
+                    let mut visitor = LogVisitor {
+                        message: String::new(),
+                    };
                     event.record(&mut visitor);
 
                     let level = event.metadata().level();
@@ -369,14 +376,19 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
             }
 
             impl tracing::field::Visit for LogVisitor {
-                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
                     if field.name() == "message" {
                         self.message = format!("{:?}", value);
                     } else {
                         if !self.message.is_empty() {
                             self.message.push_str(", ");
                         }
-                        self.message.push_str(&format!("{}={:?}", field.name(), value));
+                        self.message
+                            .push_str(&format!("{}={:?}", field.name(), value));
                     }
                 }
             }
@@ -1024,7 +1036,7 @@ pub unsafe extern "C" fn ciris_verify_check_agent_integrity_available(
         Err(e) => {
             tracing::error!("Failed to parse manifest: {}", e);
             return CirisVerifyError::SerializationError as i32;
-        }
+        },
     };
 
     // Parse agent root path
@@ -1047,7 +1059,7 @@ pub unsafe extern "C" fn ciris_verify_check_agent_integrity_available(
         Err(e) => {
             tracing::error!("Failed to serialize integrity result: {}", e);
             return CirisVerifyError::SerializationError as i32;
-        }
+        },
     };
 
     // Allocate and copy response
@@ -1825,7 +1837,7 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
             Some(pk) => {
                 let fingerprint = ciris_verify_core::registry::compute_ed25519_fingerprint(&pk);
                 (fingerprint, hex::encode(&pk))
-            }
+            },
             None => (String::new(), String::new()),
         }
     } else {
@@ -1846,12 +1858,17 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
 
     result.key_attestation = Some(ciris_verify_core::unified::KeyAttestationResult {
         key_type: key_type.to_string(),
-        hardware_type: if hardware_backed { "HardwareBacked" } else { "Software" }.to_string(),
+        hardware_type: if hardware_backed {
+            "HardwareBacked"
+        } else {
+            "Software"
+        }
+        .to_string(),
         has_valid_signature: has_key,
         binary_version: env!("CARGO_PKG_VERSION").to_string(),
-        running_in_vm: false, // TODO: detect VM
+        running_in_vm: false,               // TODO: detect VM
         classical_signature: String::new(), // Filled during actual attestation signing
-        pqc_available: false, // TODO: check PQC signer
+        pqc_available: false,               // TODO: check PQC signer
         hardware_backed,
         storage_mode: storage_mode.clone(),
         ed25519_fingerprint: ed25519_fingerprint.clone(),
@@ -1866,10 +1883,22 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
          Ed25519 fingerprint: {}\n\
          Public key: {}...\n\n",
         key_type,
-        if hardware_backed { "hardware-backed" } else { "software" },
+        if hardware_backed {
+            "hardware-backed"
+        } else {
+            "software"
+        },
         storage_mode,
-        if ed25519_fingerprint.is_empty() { "N/A" } else { &ed25519_fingerprint },
-        if public_key_hex.len() >= 16 { &public_key_hex[..16] } else { &public_key_hex }
+        if ed25519_fingerprint.is_empty() {
+            "N/A"
+        } else {
+            &ed25519_fingerprint
+        },
+        if public_key_hex.len() >= 16 {
+            &public_key_hex[..16]
+        } else {
+            &public_key_hex
+        }
     );
     result.diagnostics = format!("{}{}", key_diag, result.diagnostics);
 
@@ -2146,7 +2175,7 @@ pub unsafe extern "C" fn ciris_verify_get_integrity_nonce(
         Err(e) => {
             tracing::error!("Failed to get integrity nonce: {}", e);
             return CirisVerifyError::RequestFailed as i32;
-        }
+        },
     };
 
     // Serialize to JSON
@@ -2155,7 +2184,7 @@ pub unsafe extern "C" fn ciris_verify_get_integrity_nonce(
         Err(e) => {
             tracing::error!("Failed to serialize nonce: {}", e);
             return CirisVerifyError::SerializationError as i32;
-        }
+        },
     };
 
     // Allocate and copy
@@ -2254,7 +2283,10 @@ pub unsafe extern "C" fn ciris_verify_verify_integrity_token(
         Err(_) => return CirisVerifyError::InvalidArgument as i32,
     };
 
-    tracing::info!("Verifying Play Integrity token (nonce={}...)", &nonce_str[..nonce_str.len().min(16)]);
+    tracing::info!(
+        "Verifying Play Integrity token (nonce={}...)",
+        &nonce_str[..nonce_str.len().min(16)]
+    );
 
     // Create registry client and verify token
     let result = handle.runtime.block_on(async {
@@ -2270,7 +2302,7 @@ pub unsafe extern "C" fn ciris_verify_verify_integrity_token(
         Err(e) => {
             tracing::error!("Failed to verify integrity token: {}", e);
             return CirisVerifyError::RequestFailed as i32;
-        }
+        },
     };
 
     tracing::info!("Play Integrity verification: {}", response.summary());
@@ -2281,7 +2313,7 @@ pub unsafe extern "C" fn ciris_verify_verify_integrity_token(
         Err(e) => {
             tracing::error!("Failed to serialize verification result: {}", e);
             return CirisVerifyError::SerializationError as i32;
-        }
+        },
     };
 
     // Allocate and copy
@@ -2883,7 +2915,7 @@ mod android {
                 tracing::error!("JNI: nonce response is not valid UTF-8: {}", e);
                 ciris_verify_free(nonce_data as *mut libc::c_void);
                 return JString::default();
-            }
+            },
         };
 
         let jstring = match env.new_string(json_str) {
@@ -2892,7 +2924,7 @@ mod android {
                 tracing::error!("JNI: failed to create nonce string: {}", e);
                 ciris_verify_free(nonce_data as *mut libc::c_void);
                 return JString::default();
-            }
+            },
         };
 
         ciris_verify_free(nonce_data as *mut libc::c_void);
@@ -2924,7 +2956,7 @@ mod android {
             Err(e) => {
                 tracing::error!("JNI: failed to get token string: {}", e);
                 return JString::default();
-            }
+            },
         };
 
         // Get nonce string
@@ -2933,7 +2965,7 @@ mod android {
             Err(e) => {
                 tracing::error!("JNI: failed to get nonce string: {}", e);
                 return JString::default();
-            }
+            },
         };
 
         // Convert to C strings
@@ -2942,7 +2974,7 @@ mod android {
             Err(e) => {
                 tracing::error!("JNI: failed to create token CString: {}", e);
                 return JString::default();
-            }
+            },
         };
 
         let nonce_cstr = match std::ffi::CString::new(nonce_str) {
@@ -2950,7 +2982,7 @@ mod android {
             Err(e) => {
                 tracing::error!("JNI: failed to create nonce CString: {}", e);
                 return JString::default();
-            }
+            },
         };
 
         let mut result_data: *mut u8 = std::ptr::null_mut();
@@ -2984,7 +3016,7 @@ mod android {
                 tracing::error!("JNI: integrity result is not valid UTF-8: {}", e);
                 ciris_verify_free(result_data as *mut libc::c_void);
                 return JString::default();
-            }
+            },
         };
 
         let jstring = match env.new_string(json_str) {
@@ -2993,7 +3025,7 @@ mod android {
                 tracing::error!("JNI: failed to create integrity result string: {}", e);
                 ciris_verify_free(result_data as *mut libc::c_void);
                 return JString::default();
-            }
+            },
         };
 
         ciris_verify_free(result_data as *mut libc::c_void);
