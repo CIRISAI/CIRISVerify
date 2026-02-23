@@ -145,9 +145,17 @@ fn verify_manifest_integrity(manifest: &FileManifest) -> bool {
     for hash in manifest.files.values() {
         hasher.update(hash.as_bytes());
     }
-    let expected = hex::encode(hasher.finalize());
-    // Use constant-time comparison
-    super::constant_time_eq(expected.as_bytes(), manifest.manifest_hash.as_bytes())
+    let computed = hex::encode(hasher.finalize());
+    let matches = super::constant_time_eq(computed.as_bytes(), manifest.manifest_hash.as_bytes());
+
+    tracing::info!(
+        "verify_manifest_integrity: computed={}, stored={}, matches={}",
+        &computed[..std::cmp::min(16, computed.len())],
+        &manifest.manifest_hash[..std::cmp::min(16, manifest.manifest_hash.len())],
+        matches
+    );
+
+    matches
 }
 
 /// Load a manifest from a JSON file.

@@ -305,14 +305,31 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
     // Initialize logging for the platform (exactly once)
     #[cfg(target_os = "android")]
     {
-        // Initialize android_logger for the log crate
-        android_logger::init_once(
-            android_logger::Config::default()
-                .with_max_level(log::LevelFilter::Debug)
-                .with_tag("CIRISVerify"),
-        );
-        // Bridge tracing events to the log crate (which goes to android_logger → logcat)
-        tracing_log::LogTracer::init().ok();
+        use std::sync::Once;
+        static ANDROID_LOGGING_INIT: Once = Once::new();
+
+        ANDROID_LOGGING_INIT.call_once(|| {
+            // Initialize android_logger for the log crate
+            android_logger::init_once(
+                android_logger::Config::default()
+                    .with_max_level(log::LevelFilter::Debug)
+                    .with_tag("CIRISVerify"),
+            );
+
+            // Set up tracing subscriber that outputs to stderr (which goes to logcat on Android)
+            // Use fmt subscriber with full formatting for visibility
+            let subscriber = tracing_subscriber::fmt()
+                .with_max_level(tracing::Level::DEBUG)
+                .with_target(true)
+                .with_thread_ids(false)
+                .with_file(false)
+                .with_line_number(false)
+                .with_ansi(false) // No ANSI colors in logcat
+                .compact()
+                .finish();
+
+            tracing::subscriber::set_global_default(subscriber).ok();
+        });
     }
 
     #[cfg(target_os = "ios")]

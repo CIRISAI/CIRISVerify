@@ -501,6 +501,11 @@ impl UnifiedAttestationEngine {
         spot_count: usize,
         partial_check: bool,
     ) -> Result<IntegrityCheckResult, VerifyError> {
+        info!(
+            "run_file_integrity: version={}, agent_root={}, partial={}",
+            version, agent_root, partial_check
+        );
+
         // Fetch manifest from registry
         let client = self
             .registry_client
@@ -509,7 +514,21 @@ impl UnifiedAttestationEngine {
                 message: "Registry client not available".into(),
             })?;
 
-        let build = client.get_build_by_version(version).await?;
+        info!("run_file_integrity: fetching build from registry");
+        let build = match client.get_build_by_version(version).await {
+            Ok(b) => {
+                info!(
+                    "run_file_integrity: got build, files={}, manifest_hash={}",
+                    b.file_manifest_json.files().len(),
+                    &b.file_manifest_hash[..std::cmp::min(16, b.file_manifest_hash.len())]
+                );
+                b
+            }
+            Err(e) => {
+                warn!("run_file_integrity: failed to fetch build: {}", e);
+                return Err(e);
+            }
+        };
 
         // Convert registry manifest to file_integrity manifest
         // Convert HashMap to BTreeMap for deterministic ordering
@@ -523,7 +542,20 @@ impl UnifiedAttestationEngine {
             manifest_hash: build.file_manifest_hash.clone(),
         };
 
+        // Log first 3 file paths from manifest
+        let sample_paths: Vec<_> = manifest.files.keys().take(3).collect();
+        info!(
+            "run_file_integrity: manifest has {} files, sample paths: {:?}",
+            manifest.files.len(),
+            sample_paths
+        );
+
         let agent_path = Path::new(agent_root);
+        info!(
+            "run_file_integrity: agent_path={:?}, exists={}",
+            agent_path,
+            agent_path.exists()
+        );
 
         // Run full or partial check based on mode
         let full_result = if partial_check {
