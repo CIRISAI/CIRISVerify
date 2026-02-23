@@ -488,6 +488,21 @@ class CIRISVerify:
         except AttributeError:
             self._has_audit_trail_support = False
 
+        # ciris_verify_run_attestation (optional - added in 0.6.17)
+        # Full unified attestation running all 5 levels
+        try:
+            self._lib.ciris_verify_run_attestation.argtypes = [
+                ctypes.c_void_p,                    # handle
+                ctypes.c_char_p,                    # request_json (input)
+                ctypes.c_size_t,                    # request_len
+                ctypes.POINTER(ctypes.c_void_p),    # result_json (out)
+                ctypes.POINTER(ctypes.c_size_t),    # result_len (out)
+            ]
+            self._lib.ciris_verify_run_attestation.restype = ctypes.c_int
+            self._has_run_attestation_support = True
+        except AttributeError:
+            self._has_run_attestation_support = False
+
         # Initialize handle
         self._handle = self._lib.ciris_verify_init()
         if not self._handle:
@@ -1192,6 +1207,211 @@ class CIRISVerify:
             if result_data.value:
                 self._lib.ciris_verify_free(ctypes.c_char_p(result_data.value))
 
+    # ========================================================================
+    # Full Unified Attestation
+    # ========================================================================
+
+    @property
+    def has_run_attestation_support(self) -> bool:
+        """Check if full unified attestation is available.
+
+        Returns:
+            True if the library supports run_attestation.
+        """
+        return getattr(self, "_has_run_attestation_support", False)
+
+    async def run_attestation(
+        self,
+        challenge: bytes,
+        agent_version: Optional[str] = None,
+        agent_root: Optional[str] = None,
+        spot_check_count: int = 0,
+        audit_entries: Optional[list] = None,
+        portal_key_id: Optional[str] = None,
+        skip_registry: bool = False,
+        skip_file_integrity: bool = False,
+        skip_audit: bool = False,
+        timeout: Optional[float] = None,
+    ) -> dict:
+        """Run full unified attestation with all 5 verification levels.
+
+        This is the comprehensive attestation function that runs:
+        - Level 1: Library loaded verification
+        - Level 2: Binary self-verification (hash against registry)
+        - Level 3: Registry cross-validation (multi-source consensus)
+        - Level 4: Agent file integrity (Tripwire-style)
+        - Level 5: Portal key + audit trail verification
+
+        Args:
+            challenge: Verifier-provided challenge nonce (>= 32 bytes).
+            agent_version: Agent version to verify against registry (e.g., "2.0.0").
+            agent_root: Agent root directory for file integrity checks.
+            spot_check_count: Number of files for spot check (0 = skip spot check).
+            audit_entries: Audit entries for verification (list of dicts).
+            portal_key_id: Portal key ID for audit signature verification.
+            skip_registry: Skip registry manifest fetch (offline operation).
+            skip_file_integrity: Skip file integrity checks.
+            skip_audit: Skip audit trail verification.
+            timeout: Operation timeout in seconds.
+
+        Returns:
+            Dictionary containing FullAttestationResult with:
+            - valid: Overall attestation validity (bool)
+            - level: Attestation level achieved (0-5)
+            - key_attestation: Key attestation result (dict or None)
+            - file_integrity: File integrity result (dict or None)
+            - sources: Source validation results (dict)
+            - audit_trail: Audit verification result (dict or None)
+            - checks_passed: Number of checks passed (int)
+            - checks_total: Total checks run (int)
+            - diagnostics: Diagnostic information (str)
+            - errors: List of error messages (list)
+
+        Raises:
+            RuntimeError: If run_attestation is not available.
+            ValueError: If challenge is too short.
+            VerificationFailedError: If attestation fails to run.
+            TimeoutError: If operation times out.
+        """
+        if not self.has_run_attestation_support:
+            raise RuntimeError("run_attestation not available in this library version (requires >= 0.6.17)")
+
+        if len(challenge) < 32:
+            raise ValueError("challenge must be at least 32 bytes")
+
+        timeout = timeout or self._timeout
+
+        def _run() -> dict:
+            # Build request JSON
+            request_obj = {
+                "challenge": list(challenge),
+            }
+            if agent_version is not None:
+                request_obj["agent_version"] = agent_version
+            if agent_root is not None:
+                request_obj["agent_root"] = agent_root
+            if spot_check_count > 0:
+                request_obj["spot_check_count"] = spot_check_count
+            if audit_entries is not None:
+                request_obj["audit_entries"] = audit_entries
+            if portal_key_id is not None:
+                request_obj["portal_key_id"] = portal_key_id
+            request_obj["skip_registry"] = skip_registry
+            request_obj["skip_file_integrity"] = skip_file_integrity
+            request_obj["skip_audit"] = skip_audit
+
+            request_bytes = json.dumps(request_obj).encode("utf-8")
+
+            result_data = ctypes.c_void_p()
+            result_len = ctypes.c_size_t()
+
+            ret = self._lib.ciris_verify_run_attestation(
+                self._handle,
+                request_bytes,
+                len(request_bytes),
+                ctypes.byref(result_data),
+                ctypes.byref(result_len),
+            )
+
+            if ret != 0:
+                raise VerificationFailedError(ret, f"run_attestation failed with code {ret}")
+
+            try:
+                result_bytes = ctypes.string_at(result_data.value, result_len.value)
+                return json.loads(result_bytes)
+            finally:
+                if result_data.value:
+                    self._lib.ciris_verify_free(ctypes.c_char_p(result_data.value))
+
+        loop = asyncio.get_event_loop()
+        try:
+            return await asyncio.wait_for(
+                loop.run_in_executor(self._executor, _run),
+                timeout=timeout,
+            )
+        except asyncio.TimeoutError:
+            raise CIRISTimeoutError("run_attestation", timeout)
+
+    def run_attestation_sync(
+        self,
+        challenge: bytes,
+        agent_version: Optional[str] = None,
+        agent_root: Optional[str] = None,
+        spot_check_count: int = 0,
+        audit_entries: Optional[list] = None,
+        portal_key_id: Optional[str] = None,
+        skip_registry: bool = False,
+        skip_file_integrity: bool = False,
+        skip_audit: bool = False,
+    ) -> dict:
+        """Synchronous version of run_attestation.
+
+        Args:
+            challenge: Verifier-provided challenge nonce (>= 32 bytes).
+            agent_version: Agent version to verify against registry.
+            agent_root: Agent root directory for file integrity checks.
+            spot_check_count: Number of files for spot check (0 = skip).
+            audit_entries: Audit entries for verification.
+            portal_key_id: Portal key ID for audit signature verification.
+            skip_registry: Skip registry manifest fetch.
+            skip_file_integrity: Skip file integrity checks.
+            skip_audit: Skip audit trail verification.
+
+        Returns:
+            Dictionary containing FullAttestationResult.
+
+        Raises:
+            RuntimeError: If run_attestation is not available.
+            ValueError: If challenge is too short.
+            VerificationFailedError: If attestation fails.
+        """
+        if not self.has_run_attestation_support:
+            raise RuntimeError("run_attestation not available in this library version (requires >= 0.6.17)")
+
+        if len(challenge) < 32:
+            raise ValueError("challenge must be at least 32 bytes")
+
+        # Build request JSON
+        request_obj = {
+            "challenge": list(challenge),
+        }
+        if agent_version is not None:
+            request_obj["agent_version"] = agent_version
+        if agent_root is not None:
+            request_obj["agent_root"] = agent_root
+        if spot_check_count > 0:
+            request_obj["spot_check_count"] = spot_check_count
+        if audit_entries is not None:
+            request_obj["audit_entries"] = audit_entries
+        if portal_key_id is not None:
+            request_obj["portal_key_id"] = portal_key_id
+        request_obj["skip_registry"] = skip_registry
+        request_obj["skip_file_integrity"] = skip_file_integrity
+        request_obj["skip_audit"] = skip_audit
+
+        request_bytes = json.dumps(request_obj).encode("utf-8")
+
+        result_data = ctypes.c_void_p()
+        result_len = ctypes.c_size_t()
+
+        ret = self._lib.ciris_verify_run_attestation(
+            self._handle,
+            request_bytes,
+            len(request_bytes),
+            ctypes.byref(result_data),
+            ctypes.byref(result_len),
+        )
+
+        if ret != 0:
+            raise VerificationFailedError(ret, f"run_attestation failed with code {ret}")
+
+        try:
+            result_bytes = ctypes.string_at(result_data.value, result_len.value)
+            return json.loads(result_bytes)
+        finally:
+            if result_data.value:
+                self._lib.ciris_verify_free(ctypes.c_char_p(result_data.value))
+
     def get_mandatory_disclosure(self, status: LicenseStatus) -> MandatoryDisclosure:
         """Get mandatory disclosure for a given status.
 
@@ -1588,6 +1808,81 @@ class MockCIRISVerify(CIRISVerify):
             format=serialization.PublicFormat.Raw,
         )
         return key_bytes, "Ed25519"
+
+    @property
+    def has_run_attestation_support(self) -> bool:
+        """Mock always supports run_attestation."""
+        return True
+
+    async def run_attestation(
+        self,
+        challenge: bytes,
+        agent_version: Optional[str] = None,
+        agent_root: Optional[str] = None,
+        spot_check_count: int = 0,
+        audit_entries: Optional[list] = None,
+        portal_key_id: Optional[str] = None,
+        skip_registry: bool = False,
+        skip_file_integrity: bool = False,
+        skip_audit: bool = False,
+        timeout: Optional[float] = None,
+    ) -> dict:
+        """Mock run_attestation — returns successful attestation."""
+        if len(challenge) < 32:
+            raise ValueError("challenge must be at least 32 bytes")
+
+        return {
+            "valid": True,
+            "level": 3,  # Registry cross-validation level
+            "key_attestation": {
+                "valid": True,
+                "hardware_type": "Software",
+            },
+            "file_integrity": None,  # Skipped in mock
+            "sources": {
+                "dns_us": {"reachable": True, "valid": True},
+                "dns_eu": {"reachable": True, "valid": True},
+                "https": {"reachable": True, "valid": True},
+            },
+            "audit_trail": None,  # Skipped in mock
+            "checks_passed": 3,
+            "checks_total": 3,
+            "diagnostics": "[MOCK] Using MockCIRISVerify",
+            "errors": [],
+        }
+
+    def run_attestation_sync(
+        self,
+        challenge: bytes,
+        agent_version: Optional[str] = None,
+        agent_root: Optional[str] = None,
+        spot_check_count: int = 0,
+        audit_entries: Optional[list] = None,
+        portal_key_id: Optional[str] = None,
+        skip_registry: bool = False,
+        skip_file_integrity: bool = False,
+        skip_audit: bool = False,
+    ) -> dict:
+        """Synchronous mock run_attestation."""
+        if len(challenge) < 32:
+            raise ValueError("challenge must be at least 32 bytes")
+
+        return {
+            "valid": True,
+            "level": 3,
+            "key_attestation": {"valid": True, "hardware_type": "Software"},
+            "file_integrity": None,
+            "sources": {
+                "dns_us": {"reachable": True, "valid": True},
+                "dns_eu": {"reachable": True, "valid": True},
+                "https": {"reachable": True, "valid": True},
+            },
+            "audit_trail": None,
+            "checks_passed": 3,
+            "checks_total": 3,
+            "diagnostics": "[MOCK] Using MockCIRISVerify",
+            "errors": [],
+        }
 
     def _default_disclosure(self, status: LicenseStatus, reason: str = "") -> str:
         """Generate default disclosure for mock."""
