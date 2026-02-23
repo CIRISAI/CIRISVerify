@@ -608,3 +608,145 @@ jobs:
             -d @registry-payload.json \
             && echo "Binary manifest registered successfully" \
             || echo "Warning: Failed to register binary manifest (endpoint may not be deployed yet)"
+
+  # ==========================================================================
+  # Publish Python Wheels to PyPI
+  # Uses the SAME FFI binaries that are registered in the manifest
+  # ==========================================================================
+  publish-pypi:
+    name: Publish PyPI (${{ matrix.platform }})
+    needs: [build-native, create-release]
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: manylinux_x86_64
+            artifact: ciris-verify-x86_64-unknown-linux-gnu
+            lib_name: libciris_verify_ffi.so
+
+          - os: ubuntu-latest
+            platform: manylinux_aarch64
+            artifact: ciris-verify-aarch64-unknown-linux-gnu
+            lib_name: libciris_verify_ffi.so
+
+          - os: macos-latest
+            platform: macosx_x86_64
+            artifact: ciris-verify-x86_64-apple-darwin
+            lib_name: libciris_verify_ffi.dylib
+
+          - os: macos-latest
+            platform: macosx_arm64
+            artifact: ciris-verify-aarch64-apple-darwin
+            lib_name: libciris_verify_ffi.dylib
+
+          - os: windows-latest
+            platform: win_amd64
+            artifact: ciris-verify-x86_64-pc-windows-msvc
+            lib_name: ciris_verify_ffi.dll
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download FFI artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ffi-lib
+
+      - name: Build wheel
+        shell: bash
+        run: |
+          cd bindings/python
+
+          # Install build dependencies
+          pip install build wheel setuptools
+
+          # Copy the CI-built FFI library into the package
+          cp ../../ffi-lib/${{ matrix.lib_name }} ciris_verify/
+
+          # Build the wheel
+          python -m build --wheel
+
+          # Rename wheel to platform-specific tag
+          cd dist
+          WHEEL=$(ls *.whl)
+          # Extract version from wheel name
+          VERSION=$(echo $WHEEL | sed -E 's/ciris_verify-([0-9.]+)-.*/\1/')
+
+          # Determine Python tag and platform tag
+          case "${{ matrix.platform }}" in
+            manylinux_x86_64)
+              NEW_NAME="ciris_verify-${VERSION}-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+              ;;
+            manylinux_aarch64)
+              NEW_NAME="ciris_verify-${VERSION}-py3-none-manylinux_2_17_aarch64.manylinux2014_aarch64.whl"
+              ;;
+            macosx_x86_64)
+              NEW_NAME="ciris_verify-${VERSION}-py3-none-macosx_10_12_x86_64.whl"
+              ;;
+            macosx_arm64)
+              NEW_NAME="ciris_verify-${VERSION}-py3-none-macosx_11_0_arm64.whl"
+              ;;
+            win_amd64)
+              NEW_NAME="ciris_verify-${VERSION}-py3-none-win_amd64.whl"
+              ;;
+          esac
+
+          mv "$WHEEL" "$NEW_NAME"
+          echo "Built wheel: $NEW_NAME"
+          ls -la
+
+      - name: Upload wheel artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wheel-${{ matrix.platform }}
+          path: bindings/python/dist/*.whl
+
+  # ==========================================================================
+  # Upload All Wheels to PyPI
+  # ==========================================================================
+  pypi-upload:
+    name: Upload to PyPI
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') && !contains(github.ref_name, '-alpha') }}
+    environment:
+      name: pypi
+      url: https://pypi.org/project/ciris-verify/
+    permissions:
+      id-token: write  # For trusted publishing
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Download all wheel artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: wheel-*
+          path: wheels
+          merge-multiple: true
+
+      - name: Build source distribution
+        run: |
+          cd bindings/python
+          pip install build
+          python -m build --sdist
+          cp dist/*.tar.gz ../../wheels/
+
+      - name: List wheels
+        run: ls -la wheels/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: wheels/
+          skip-existing: true
