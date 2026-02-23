@@ -438,6 +438,105 @@ impl RegistryClient {
 
         Ok(targets)
     }
+
+    // =========================================================================
+    // Play Integrity (Google Android HW Attestation)
+    // =========================================================================
+
+    /// Get a nonce for Play Integrity verification.
+    ///
+    /// The Android app uses this nonce when calling the Play Integrity API.
+    /// Nonces expire after 5 minutes and are single-use.
+    #[instrument(skip(self))]
+    pub async fn get_integrity_nonce(
+        &self,
+    ) -> Result<crate::play_integrity::IntegrityNonce, VerifyError> {
+        let url = format!("{}/v1/integrity/nonce", self.base_url);
+        debug!("Fetching Play Integrity nonce from {}", url);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Play Integrity nonce request failed: {}", e),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(VerifyError::HttpsError {
+                message: format!("Play Integrity nonce HTTP error: {}", response.status()),
+            });
+        }
+
+        response
+            .json::<crate::play_integrity::IntegrityNonce>()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Failed to parse integrity nonce: {}", e),
+            })
+    }
+
+    /// Verify a Play Integrity token from Android.
+    ///
+    /// The token is decrypted by Google's servers (via registry) and
+    /// returns device/app integrity verdicts.
+    ///
+    /// # Arguments
+    ///
+    /// * `integrity_token` - Encrypted token from Play Integrity API
+    /// * `nonce` - The nonce used when requesting the token
+    #[instrument(skip(self, integrity_token))]
+    pub async fn verify_integrity_token(
+        &self,
+        integrity_token: &str,
+        nonce: &str,
+    ) -> Result<crate::play_integrity::IntegrityVerifyResponse, VerifyError> {
+        let url = format!("{}/v1/integrity/verify", self.base_url);
+        debug!("Verifying Play Integrity token at {}", url);
+
+        let request = crate::play_integrity::IntegrityVerifyRequest {
+            integrity_token: integrity_token.to_string(),
+            nonce: nonce.to_string(),
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Play Integrity verify request failed: {}", e),
+            })?;
+
+        if response.status().as_u16() == 503 {
+            return Err(VerifyError::HttpsError {
+                message: "Play Integrity not configured on registry".to_string(),
+            });
+        }
+
+        if !response.status().is_success() {
+            return Err(VerifyError::HttpsError {
+                message: format!("Play Integrity verify HTTP error: {}", response.status()),
+            });
+        }
+
+        let result = response
+            .json::<crate::play_integrity::IntegrityVerifyResponse>()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Failed to parse integrity response: {}", e),
+            })?;
+
+        info!(
+            verified = result.verified,
+            summary = %result.summary(),
+            "Play Integrity verification complete"
+        );
+
+        Ok(result)
+    }
 }
 
 /// Response from listing function manifest targets.

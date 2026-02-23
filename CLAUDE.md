@@ -64,7 +64,7 @@ cargo deny check
 | `ciris-crypto` | Phase 1 Complete | ECDSA P-256, Ed25519, ML-DSA-65 (FIPS 204), hybrid signer with bound signatures |
 | `ciris-verify-core` | Phase 3-5 Active | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), Tripwire file integrity, remote attestation export, Level 2 binary self-verification |
 | `ciris-verify-ffi` | Phase 4 Active | C FFI (17 functions), JNI bindings (Android Level 5), Swift wrapper (iOS Level 5) |
-| `bindings/python` | Released | ciris-verify 0.5.3 on PyPI with platform wheels |
+| `bindings/python` | Released | ciris-verify 0.7.x on PyPI with platform wheels |
 | `bindings/swift` | Released | CIRISVerify.swift wrapper + bridging header, XCFramework build script |
 
 **ML-DSA-65**: Fully implemented using `ml-dsa` 0.1.0-rc.3 (RustCrypto). Bound dual signatures operational.
@@ -162,8 +162,11 @@ cargo build --release -p ciris-verify-core
 # Run full verification
 ./target/release/ciris_verify run
 
-# Run binary self-check (Level 2)
+# Run Level 1 self-check (binary + function integrity)
 ./target/release/ciris_verify self-check
+
+# Validate sources agreement (Level 3)
+./target/release/ciris_verify validate-sources
 
 # Run with custom registry
 ./target/release/ciris_verify run --registry https://api.registry.ciris-services-1.ai
@@ -173,13 +176,37 @@ cargo build --release -p ciris-verify-core
 
 | Level | Name | What it Proves |
 |-------|------|----------------|
-| 1 | Hardware | TPM/Secure Enclave key valid |
-| 2 | Binary Self-Check | THIS binary hash matches registry manifest |
+| 1 | Self-Verification | THIS CIRISVerify binary + functions match registry manifest ("who watches the watchmen") |
+| 2 | Hardware | TPM/Secure Enclave key valid |
 | 3 | Registry Consensus | 2/3 geo-distributed sources agree |
 | 4 | License Validity | Signature valid, not expired/revoked |
 | 5 | Agent Integrity | Tripwire file hashes match |
 
-**CRITICAL**: If Level 2 fails, Levels 3-5 are UNVERIFIED (yellow). A compromised binary could lie about higher levels.
+**CRITICAL**: If Level 1 fails, ALL other levels are UNVERIFIED (yellow). A compromised CIRISVerify binary could lie about everything else.
+
+## Registry API Integration
+
+**Working Endpoints** (https://api.registry.ciris-services-1.ai):
+- `GET /v1/builds/{version}` - Returns BuildRecordResponse with file manifest
+- `GET /v1/builds/hash/{hash}` - Lookup build by binary hash
+- `GET /v1/verify/function-manifest/{version}/{target}` - Function-level manifest
+- `GET /v1/integrity/nonce` - Play Integrity challenge nonce
+- `POST /v1/integrity/verify` - Verify Play Integrity token
+
+**FileManifest Format**: Registry returns both flat (`{"path": "hash"}`) and structured (`{"version": "...", "files": {...}}`) formats. The `FileManifest` enum in `registry.rs` handles both via `#[serde(untagged)]`.
+
+## Play Integrity (Google Android HW Attestation)
+
+**ADVISORY trust layer** - adds confidence but NOT required for verification. Located in `src/ciris-verify-core/src/play_integrity.rs`.
+
+Flow:
+1. CIRISVerify calls `get_integrity_nonce()` to get challenge from registry
+2. Android app passes nonce to Google Play Integrity API
+3. Play Integrity returns encrypted token
+4. CIRISVerify calls `verify_integrity_token()` with token + nonce
+5. Registry decrypts via Google API and returns verdict
+
+Trust Model: A compromised Google account or Play Integrity service doesn't compromise core verification.
 
 ## Current Registry Gaps (Blocking Production)
 

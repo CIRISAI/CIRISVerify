@@ -59,6 +59,7 @@ pub mod error;
 pub mod https;
 pub mod jwt;
 pub mod license;
+pub mod play_integrity;
 pub mod registry;
 pub mod revocation;
 pub mod security;
