@@ -2702,7 +2702,7 @@ mod android {
     // Play Integrity API (Google Android Hardware Attestation)
     // =========================================================================
 
-    /// Get Play Integrity nonce from registry (returns JSON as byte array)
+    /// Get Play Integrity nonce from registry (returns JSON string)
     #[no_mangle]
     pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeGetIntegrityNonce<
         'local,
@@ -2710,13 +2710,13 @@ mod android {
         mut env: JNIEnv<'local>,
         _class: JClass<'local>,
         handle: jlong,
-    ) -> JByteArray<'local> {
+    ) -> JString<'local> {
         tracing::debug!("JNI: nativeGetIntegrityNonce called");
 
         let handle = handle as *mut CirisVerifyHandle;
         if handle.is_null() {
             tracing::error!("JNI: nativeGetIntegrityNonce - null handle");
-            return JByteArray::default();
+            return JString::default();
         }
 
         let mut nonce_data: *mut u8 = std::ptr::null_mut();
@@ -2726,29 +2726,38 @@ mod android {
 
         if result != CirisVerifyError::Success as i32 {
             tracing::warn!("JNI: nativeGetIntegrityNonce failed with code {}", result);
-            return JByteArray::default();
+            return JString::default();
         }
 
         if nonce_data.is_null() {
             tracing::warn!("JNI: nativeGetIntegrityNonce returned null");
-            return JByteArray::default();
+            return JString::default();
         }
 
         let slice = std::slice::from_raw_parts(nonce_data, nonce_len);
-        let jarray = match env.byte_array_from_slice(slice) {
-            Ok(arr) => arr,
+        let json_str = match std::str::from_utf8(slice) {
+            Ok(s) => s,
             Err(e) => {
-                tracing::error!("JNI: failed to create nonce byte array: {}", e);
+                tracing::error!("JNI: nonce response is not valid UTF-8: {}", e);
                 ciris_verify_free(nonce_data as *mut libc::c_void);
-                return JByteArray::default();
-            },
+                return JString::default();
+            }
+        };
+
+        let jstring = match env.new_string(json_str) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("JNI: failed to create nonce string: {}", e);
+                ciris_verify_free(nonce_data as *mut libc::c_void);
+                return JString::default();
+            }
         };
 
         ciris_verify_free(nonce_data as *mut libc::c_void);
-        jarray
+        jstring
     }
 
-    /// Verify Play Integrity token (returns JSON as byte array)
+    /// Verify Play Integrity token (returns JSON string)
     #[no_mangle]
     pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeVerifyIntegrityToken<
         'local,
@@ -2758,13 +2767,13 @@ mod android {
         handle: jlong,
         token: JString<'local>,
         nonce: JString<'local>,
-    ) -> JByteArray<'local> {
+    ) -> JString<'local> {
         tracing::debug!("JNI: nativeVerifyIntegrityToken called");
 
         let handle = handle as *mut CirisVerifyHandle;
         if handle.is_null() {
             tracing::error!("JNI: nativeVerifyIntegrityToken - null handle");
-            return JByteArray::default();
+            return JString::default();
         }
 
         // Get token string
@@ -2772,8 +2781,8 @@ mod android {
             Ok(s) => s.into(),
             Err(e) => {
                 tracing::error!("JNI: failed to get token string: {}", e);
-                return JByteArray::default();
-            },
+                return JString::default();
+            }
         };
 
         // Get nonce string
@@ -2781,8 +2790,8 @@ mod android {
             Ok(s) => s.into(),
             Err(e) => {
                 tracing::error!("JNI: failed to get nonce string: {}", e);
-                return JByteArray::default();
-            },
+                return JString::default();
+            }
         };
 
         // Convert to C strings
@@ -2790,16 +2799,16 @@ mod android {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("JNI: failed to create token CString: {}", e);
-                return JByteArray::default();
-            },
+                return JString::default();
+            }
         };
 
         let nonce_cstr = match std::ffi::CString::new(nonce_str) {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("JNI: failed to create nonce CString: {}", e);
-                return JByteArray::default();
-            },
+                return JString::default();
+            }
         };
 
         let mut result_data: *mut u8 = std::ptr::null_mut();
@@ -2818,25 +2827,34 @@ mod android {
                 "JNI: nativeVerifyIntegrityToken failed with code {}",
                 result
             );
-            return JByteArray::default();
+            return JString::default();
         }
 
         if result_data.is_null() {
             tracing::warn!("JNI: nativeVerifyIntegrityToken returned null");
-            return JByteArray::default();
+            return JString::default();
         }
 
         let slice = std::slice::from_raw_parts(result_data, result_len);
-        let jarray = match env.byte_array_from_slice(slice) {
-            Ok(arr) => arr,
+        let json_str = match std::str::from_utf8(slice) {
+            Ok(s) => s,
             Err(e) => {
-                tracing::error!("JNI: failed to create integrity result byte array: {}", e);
+                tracing::error!("JNI: integrity result is not valid UTF-8: {}", e);
                 ciris_verify_free(result_data as *mut libc::c_void);
-                return JByteArray::default();
-            },
+                return JString::default();
+            }
+        };
+
+        let jstring = match env.new_string(json_str) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("JNI: failed to create integrity result string: {}", e);
+                ciris_verify_free(result_data as *mut libc::c_void);
+                return JString::default();
+            }
         };
 
         ciris_verify_free(result_data as *mut libc::c_void);
-        jarray
+        jstring
     }
 }
