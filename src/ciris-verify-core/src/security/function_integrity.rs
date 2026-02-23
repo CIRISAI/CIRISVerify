@@ -122,6 +122,19 @@ pub struct FunctionIntegrityResult {
     /// Opaque failure reason (does NOT reveal which function failed).
     /// One of: "", "signature", "mismatch", "missing", "manifest"
     pub failure_reason: String,
+
+    // === Diagnostic fields (for debugging, not security-sensitive) ===
+    /// Binary hash from the manifest (for comparison with actual).
+    #[serde(default)]
+    pub manifest_binary_hash: String,
+
+    /// Target from the manifest.
+    #[serde(default)]
+    pub manifest_target: String,
+
+    /// Code base address found (hex string, e.g., "0x7f1234567000").
+    #[serde(default)]
+    pub code_base: String,
 }
 
 impl FunctionManifest {
@@ -319,6 +332,27 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
 
     let timestamp = current_timestamp();
 
+    // Log manifest details for diagnostics
+    tracing::info!(
+        "verify_functions: manifest version={}, target={}, binary_hash={}, functions={}",
+        manifest.binary_version,
+        manifest.target,
+        manifest.binary_hash,
+        manifest.functions.len()
+    );
+
+    // Log first few function entries for debugging
+    for (i, (name, entry)) in manifest.functions.iter().take(3).enumerate() {
+        tracing::info!(
+            "verify_functions: sample[{}] name={}, offset=0x{:x}, size={}, hash={}",
+            i,
+            name,
+            entry.offset,
+            entry.size,
+            &entry.hash[..std::cmp::min(20, entry.hash.len())]
+        );
+    }
+
     // Get code base address - use platform-specific function
     #[cfg(target_os = "android")]
     let code_base_opt = get_code_base_android();
@@ -328,17 +362,20 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
 
     let code_base = match code_base_opt {
         Some(base) => {
-            tracing::info!("verify_functions: using code base 0x{:x}", base);
+            tracing::info!("verify_functions: code_base=0x{:x}", base);
             base
         },
         None => {
-            tracing::error!("verify_functions: could not determine code base address");
+            tracing::error!("verify_functions: FAILED - could not determine code base address");
             return FunctionIntegrityResult {
                 integrity_valid: false,
                 functions_checked: 0,
                 functions_passed: 0,
                 verified_at: timestamp,
                 failure_reason: "missing".to_string(),
+                manifest_binary_hash: manifest.binary_hash.clone(),
+                manifest_target: manifest.target.clone(),
+                code_base: "not_found".to_string(),
             };
         },
     };
@@ -346,12 +383,18 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     // Verify each function (constant-time accumulation)
     let mut all_valid = true;
     let mut functions_passed = 0usize;
+    let mut first_mismatch_logged = false;
 
-    for entry in manifest.functions.values() {
+    for (name, entry) in &manifest.functions {
         // Safety: We trust the manifest offsets for our own binary
         let func_bytes = unsafe {
             let ptr = (code_base + entry.offset as usize) as *const u8;
             if ptr.is_null() {
+                tracing::warn!(
+                    "verify_functions: null pointer for {} at offset 0x{:x}",
+                    name,
+                    entry.offset
+                );
                 all_valid = false;
                 continue;
             }
@@ -368,8 +411,26 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         all_valid &= matches;
         if matches {
             functions_passed += 1;
+        } else if !first_mismatch_logged {
+            // Log first mismatch for debugging (security: only log one to avoid enumeration)
+            tracing::warn!(
+                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, expected={}, actual={}",
+                name,
+                entry.offset,
+                entry.size,
+                entry.hash,
+                actual_hash
+            );
+            first_mismatch_logged = true;
         }
     }
+
+    tracing::info!(
+        "verify_functions: RESULT {}/{} passed, valid={}",
+        functions_passed,
+        manifest.functions.len(),
+        all_valid
+    );
 
     FunctionIntegrityResult {
         integrity_valid: all_valid,
@@ -381,6 +442,9 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         } else {
             "mismatch".to_string()
         },
+        manifest_binary_hash: manifest.binary_hash.clone(),
+        manifest_target: manifest.target.clone(),
+        code_base: format!("0x{:x}", code_base),
     }
 }
 
@@ -391,16 +455,31 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
 
     let timestamp = current_timestamp();
 
+    tracing::info!(
+        "verify_functions: manifest version={}, target={}, binary_hash={}, functions={}",
+        manifest.binary_version,
+        manifest.target,
+        manifest.binary_hash,
+        manifest.functions.len()
+    );
+
     // Get code base address
     let code_base = match get_code_base_macos() {
-        Some(base) => base,
+        Some(base) => {
+            tracing::info!("verify_functions: code_base=0x{:x}", base);
+            base
+        },
         None => {
+            tracing::error!("verify_functions: FAILED - could not determine code base address");
             return FunctionIntegrityResult {
                 integrity_valid: false,
                 functions_checked: 0,
                 functions_passed: 0,
                 verified_at: timestamp,
                 failure_reason: "missing".to_string(),
+                manifest_binary_hash: manifest.binary_hash.clone(),
+                manifest_target: manifest.target.clone(),
+                code_base: "not_found".to_string(),
             };
         },
     };
@@ -430,6 +509,13 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         }
     }
 
+    tracing::info!(
+        "verify_functions: RESULT {}/{} passed, valid={}",
+        functions_passed,
+        manifest.functions.len(),
+        all_valid
+    );
+
     FunctionIntegrityResult {
         integrity_valid: all_valid,
         functions_checked: manifest.functions.len(),
@@ -440,6 +526,9 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         } else {
             "mismatch".to_string()
         },
+        manifest_binary_hash: manifest.binary_hash.clone(),
+        manifest_target: manifest.target.clone(),
+        code_base: format!("0x{:x}", code_base),
     }
 }
 
@@ -450,16 +539,31 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
 
     let timestamp = current_timestamp();
 
+    tracing::info!(
+        "verify_functions: manifest version={}, target={}, binary_hash={}, functions={}",
+        manifest.binary_version,
+        manifest.target,
+        manifest.binary_hash,
+        manifest.functions.len()
+    );
+
     // Get code base address
     let code_base = match get_code_base_windows() {
-        Some(base) => base,
+        Some(base) => {
+            tracing::info!("verify_functions: code_base=0x{:x}", base);
+            base
+        },
         None => {
+            tracing::error!("verify_functions: FAILED - could not determine code base address");
             return FunctionIntegrityResult {
                 integrity_valid: false,
                 functions_checked: 0,
                 functions_passed: 0,
                 verified_at: timestamp,
                 failure_reason: "missing".to_string(),
+                manifest_binary_hash: manifest.binary_hash.clone(),
+                manifest_target: manifest.target.clone(),
+                code_base: "not_found".to_string(),
             };
         },
     };
@@ -489,6 +593,13 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         }
     }
 
+    tracing::info!(
+        "verify_functions: RESULT {}/{} passed, valid={}",
+        functions_passed,
+        manifest.functions.len(),
+        all_valid
+    );
+
     FunctionIntegrityResult {
         integrity_valid: all_valid,
         functions_checked: manifest.functions.len(),
@@ -499,6 +610,9 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         } else {
             "mismatch".to_string()
         },
+        manifest_binary_hash: manifest.binary_hash.clone(),
+        manifest_target: manifest.target.clone(),
+        code_base: format!("0x{:x}", code_base),
     }
 }
 
@@ -510,14 +624,18 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     target_os = "ios",
     target_os = "windows"
 )))]
-pub fn verify_functions(_manifest: &FunctionManifest) -> FunctionIntegrityResult {
+pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult {
     // Unsupported platform - return failure
+    tracing::warn!("verify_functions: unsupported platform");
     FunctionIntegrityResult {
         integrity_valid: false,
         functions_checked: 0,
         functions_passed: 0,
         verified_at: current_timestamp(),
-        failure_reason: "missing".to_string(),
+        failure_reason: "unsupported_platform".to_string(),
+        manifest_binary_hash: manifest.binary_hash.clone(),
+        manifest_target: manifest.target.clone(),
+        code_base: "unsupported".to_string(),
     }
 }
 

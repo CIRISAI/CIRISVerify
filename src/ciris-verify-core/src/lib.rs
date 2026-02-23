@@ -102,6 +102,6 @@ pub use registry::{
     RegistryClient,
 };
 pub use unified::{
-    FullAttestationRequest, FullAttestationResult, IntegrityCheckResult, SourceCheckResult,
-    UnifiedAttestationEngine,
+    FullAttestationRequest, FullAttestationResult, IntegrityCheckResult, PythonIntegrityResult,
+    PythonModuleHashes, SourceCheckResult, UnifiedAttestationEngine,
 };

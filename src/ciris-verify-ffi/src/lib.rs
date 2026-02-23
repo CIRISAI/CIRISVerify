@@ -1873,6 +1873,7 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
         storage_mode: storage_mode.clone(),
         ed25519_fingerprint: ed25519_fingerprint.clone(),
         mldsa_fingerprint: None,
+        registry_key_status: result.registry_key_status.clone(),
     });
 
     // Prepend key attestation info to diagnostics

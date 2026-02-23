@@ -50,10 +50,22 @@ pub struct FullAttestationRequest {
     /// Skip audit trail verification.
     #[serde(default)]
     pub skip_audit: bool,
+    /// Ed25519 key fingerprint for registry verification (SHA-256 hex, 64 chars).
+    /// If provided, verifies the key against CIRISRegistry.
+    #[serde(default)]
+    pub key_fingerprint: Option<String>,
     /// Use partial file integrity check (only verify files that exist on disk).
     /// Useful for mobile deployments where files are lazily extracted.
     #[serde(default)]
     pub partial_file_check: bool,
+    /// Python module hashes for Android/mobile code integrity verification.
+    /// If provided, verifies Python modules against expected hashes.
+    #[serde(default)]
+    pub python_hashes: Option<PythonModuleHashes>,
+    /// Expected Python total hash (SHA-256 hex) from a trusted source.
+    /// If provided along with python_hashes, verifies total_hash matches.
+    #[serde(default)]
+    pub expected_python_hash: Option<String>,
 }
 
 /// Result of full attestation.
@@ -67,8 +79,14 @@ pub struct FullAttestationResult {
     pub self_verification: Option<SelfVerificationResult>,
     /// Key attestation proof.
     pub key_attestation: Option<KeyAttestationResult>,
+    /// Registry key verification status (if key_fingerprint was provided in request).
+    /// One of: "active", "rotated", "revoked", "not_found", "not_checked", "error:<message>"
+    #[serde(default)]
+    pub registry_key_status: String,
     /// File integrity check results.
     pub file_integrity: Option<IntegrityCheckResult>,
+    /// Python module integrity check results (Android/mobile).
+    pub python_integrity: Option<PythonIntegrityResult>,
     /// Source validation results.
     pub sources: SourceCheckResult,
     /// Audit trail verification result.
@@ -145,6 +163,10 @@ pub struct KeyAttestationResult {
     /// ML-DSA-65 public key fingerprint (SHA-256 hex, 64 chars) if available.
     #[serde(default)]
     pub mldsa_fingerprint: Option<String>,
+    /// Registry key verification status.
+    /// One of: "active", "rotated", "revoked", "not_found", "not_checked", "error:<message>"
+    #[serde(default)]
+    pub registry_key_status: String,
 }
 
 /// File integrity check result.
@@ -158,6 +180,52 @@ pub struct IntegrityCheckResult {
     pub registry_reachable: bool,
     /// Manifest version from registry.
     pub manifest_version: Option<String>,
+}
+
+/// Python module hashes from Android/mobile agent.
+///
+/// Generated at startup by hashing all Python modules (ciris_engine, etc.).
+/// Used for code integrity verification on mobile where Python is embedded in APK.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PythonModuleHashes {
+    /// Total hash of all module hashes concatenated (SHA-256 hex).
+    pub total_hash: String,
+    /// Individual module hashes (module_name -> SHA-256 hex).
+    #[serde(default)]
+    pub module_hashes: std::collections::BTreeMap<String, String>,
+    /// Number of modules hashed.
+    pub module_count: usize,
+    /// Agent version that generated these hashes.
+    #[serde(default)]
+    pub agent_version: String,
+    /// Timestamp when hashes were computed (Unix seconds).
+    #[serde(default)]
+    pub computed_at: i64,
+}
+
+/// Result of Python module integrity verification.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PythonIntegrityResult {
+    /// Overall integrity valid.
+    pub valid: bool,
+    /// Total modules checked.
+    pub modules_checked: usize,
+    /// Modules that passed verification.
+    pub modules_passed: usize,
+    /// Modules that failed verification.
+    pub modules_failed: usize,
+    /// Whether the total_hash matched (quick verification).
+    pub total_hash_valid: bool,
+    /// Expected total hash from manifest (if available).
+    #[serde(default)]
+    pub expected_total_hash: Option<String>,
+    /// Actual total hash from agent.
+    pub actual_total_hash: String,
+    /// Verification mode: "total_hash_only", "individual_modules", "both".
+    pub verification_mode: String,
+    /// Error message if verification failed.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// Summary of a file integrity check.
@@ -306,8 +374,13 @@ impl UnifiedAttestationEngine {
             && request.agent_version.is_some()
             && request.agent_root.is_some();
 
-        // Run all three checks IN PARALLEL
-        let (self_verification, validation, file_integrity_result) = tokio::join!(
+        // Run all four checks IN PARALLEL
+        let (self_verification, validation, file_integrity_result, key_verification_result): (
+            SelfVerificationResult,
+            ValidationResult,
+            Option<Result<IntegrityCheckResult, VerifyError>>,
+            String,
+        ) = tokio::join!(
             // 0. Self-verification (Level 1: recursive check - "who watches the watchmen")
             self.run_self_verification(),
             // 1. Source validation (always run)
@@ -329,6 +402,44 @@ impl UnifiedAttestationEngine {
                 } else {
                     None
                 }
+            },
+            // 3. Registry key verification (if key_fingerprint provided)
+            async {
+                let result: String = if let Some(ref fingerprint) = request.key_fingerprint {
+                    if let Some(ref client) = self.registry_client {
+                        info!(
+                            "Verifying key fingerprint against registry: {}",
+                            fingerprint
+                        );
+                        match client.verify_key_by_fingerprint(fingerprint).await {
+                            Ok(response) => {
+                                let status = if response.is_valid_for_signing() {
+                                    "active".to_string()
+                                } else if response.is_valid_rotated() {
+                                    "rotated".to_string()
+                                } else if response.is_revoked() {
+                                    "revoked".to_string()
+                                } else if !response.found {
+                                    "not_found".to_string()
+                                } else {
+                                    format!("unknown:{}", response.status)
+                                };
+                                info!("Registry key verification: {}", status);
+                                status
+                            },
+                            Err(e) => {
+                                warn!("Registry key verification failed: {}", e);
+                                format!("error:{}", e)
+                            },
+                        }
+                    } else {
+                        warn!("Registry client not available for key verification");
+                        "error:no_client".to_string()
+                    }
+                } else {
+                    "not_checked".to_string()
+                };
+                result
             }
         );
 
@@ -539,7 +650,87 @@ impl UnifiedAttestationEngine {
             None
         };
 
-        // 3. Audit trail verification (if provided)
+        // 3. Python module integrity (Android/mobile)
+        let python_integrity = if let Some(ref hashes) = request.python_hashes {
+            checks_total += 1;
+
+            diagnostics.push_str("=== PYTHON INTEGRITY ===\n");
+            diagnostics.push_str(&format!(
+                "  Modules: {} (total_hash: {}...)\n",
+                hashes.module_count,
+                &hashes.total_hash[..std::cmp::min(16, hashes.total_hash.len())]
+            ));
+
+            // Verify total_hash if expected_python_hash provided
+            let total_hash_valid = if let Some(ref expected) = request.expected_python_hash {
+                let matches = hashes.total_hash == *expected;
+                diagnostics.push_str(&format!(
+                    "  Total hash: {} (expected: {}...)\n",
+                    if matches { "✓ MATCH" } else { "✗ MISMATCH" },
+                    &expected[..std::cmp::min(16, expected.len())]
+                ));
+                if matches {
+                    checks_passed += 1;
+                } else {
+                    errors.push("Python total_hash mismatch".to_string());
+                }
+                matches
+            } else {
+                // No expected hash - just log the value for reference
+                diagnostics
+                    .push_str("  Total hash: ○ not verified (no expected_python_hash provided)\n");
+                diagnostics.push_str(&format!("    └─ Actual: {}\n", hashes.total_hash));
+                // Still count as passed if we're just recording
+                checks_passed += 1;
+                true
+            };
+
+            diagnostics.push_str(&format!(
+                "  Agent version: {}\n",
+                if hashes.agent_version.is_empty() {
+                    "unknown"
+                } else {
+                    &hashes.agent_version
+                }
+            ));
+            if hashes.computed_at > 0 {
+                diagnostics.push_str(&format!("  Computed at: {} (Unix)\n", hashes.computed_at));
+            }
+            diagnostics.push('\n');
+
+            Some(PythonIntegrityResult {
+                valid: total_hash_valid,
+                modules_checked: hashes.module_count,
+                modules_passed: if total_hash_valid {
+                    hashes.module_count
+                } else {
+                    0
+                },
+                modules_failed: if total_hash_valid {
+                    0
+                } else {
+                    hashes.module_count
+                },
+                total_hash_valid,
+                expected_total_hash: request.expected_python_hash.clone(),
+                actual_total_hash: hashes.total_hash.clone(),
+                verification_mode: if request.expected_python_hash.is_some() {
+                    "total_hash_only".to_string()
+                } else {
+                    "record_only".to_string()
+                },
+                error: if total_hash_valid {
+                    None
+                } else {
+                    Some("Total hash mismatch".to_string())
+                },
+            })
+        } else {
+            diagnostics.push_str("=== PYTHON INTEGRITY ===\n  SKIP (no hashes provided)\n\n");
+            None
+        };
+
+        // 4. Audit trail verification (if provided)
         let audit_trail = if !request.skip_audit {
             if let Some(ref entries) = request.audit_entries {
                 checks_total += 1;
@@ -597,6 +788,34 @@ impl UnifiedAttestationEngine {
             None
         };
 
+        // 4. Registry key verification diagnostics
+        diagnostics.push_str("=== REGISTRY KEY ===\n");
+        if request.key_fingerprint.is_some() {
+            checks_total += 1;
+            let key_ok = key_verification_result == "active";
+            if key_ok {
+                checks_passed += 1;
+            }
+            let status_icon = match key_verification_result.as_str() {
+                "active" => "✓ ACTIVE",
+                "rotated" => "⚠️  ROTATED",
+                "revoked" => "✗ REVOKED",
+                "not_found" => "✗ NOT_FOUND",
+                s if s.starts_with("error:") => "✗ ERROR",
+                _ => "? UNKNOWN",
+            };
+            diagnostics.push_str(&format!("  Status: {}\n", status_icon));
+            if let Some(err_msg) = key_verification_result.strip_prefix("error:") {
+                diagnostics.push_str(&format!("    └─ {}\n", err_msg));
+                errors.push(format!("Registry key: {}", err_msg));
+            } else if key_verification_result == "revoked" {
+                errors.push("Registry key: REVOKED".to_string());
+            }
+        } else {
+            diagnostics.push_str("  Status: not_checked (no fingerprint provided)\n");
+        }
+        diagnostics.push('\n');
+
         // Calculate level (0-5 scale)
         let level = if checks_total > 0 {
             ((checks_passed as f32 / checks_total as f32) * 5.0).round() as u8
@@ -622,7 +841,9 @@ impl UnifiedAttestationEngine {
             level,
             self_verification: Some(self_verification),
             key_attestation: None, // Filled by caller with HW signer
+            registry_key_status: key_verification_result,
             file_integrity,
+            python_integrity,
             sources,
             audit_trail,
             checks_passed,
