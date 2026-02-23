@@ -1833,6 +1833,220 @@ pub unsafe extern "C" fn ciris_verify_audit_trail(
     CirisVerifyError::Success as i32
 }
 
+// =============================================================================
+// Play Integrity API (Google Android Hardware Attestation)
+// =============================================================================
+
+/// Get a Play Integrity nonce from the registry.
+///
+/// This nonce should be passed to the Google Play Integrity API to request
+/// an integrity token. The nonce is valid for a limited time (check expires_at).
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `nonce_json` - Output pointer for JSON-encoded IntegrityNonce (caller must free with `ciris_verify_free`)
+/// * `nonce_len` - Output pointer for nonce length
+///
+/// # Result JSON Format
+///
+/// ```json
+/// {
+///   "nonce": "base64-url-encoded-nonce",
+///   "expires_at": "2025-01-15T12:00:00Z"
+/// }
+/// ```
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `nonce_json` and `nonce_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_get_integrity_nonce(
+    handle: *mut CirisVerifyHandle,
+    nonce_json: *mut *mut u8,
+    nonce_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_get_integrity_nonce called");
+
+    if handle.is_null() || nonce_json.is_null() || nonce_len.is_null() {
+        tracing::error!("ciris_verify_get_integrity_nonce: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+
+    // Create registry client and fetch nonce
+    let result = handle.runtime.block_on(async {
+        let client = ciris_verify_core::RegistryClient::new(
+            "https://api.registry.ciris-services-1.ai",
+            std::time::Duration::from_secs(10),
+        )?;
+        client.get_integrity_nonce().await
+    });
+
+    let nonce = match result {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!("Failed to get integrity nonce: {}", e);
+            return CirisVerifyError::RequestFailed as i32;
+        }
+    };
+
+    // Serialize to JSON
+    let nonce_bytes = match serde_json::to_vec(&nonce) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("Failed to serialize nonce: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        }
+    };
+
+    // Allocate and copy
+    let len = nonce_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(nonce_bytes.as_ptr(), ptr, len);
+
+    *nonce_json = ptr;
+    *nonce_len = len;
+
+    tracing::info!("Play Integrity nonce retrieved successfully");
+    CirisVerifyError::Success as i32
+}
+
+/// Verify a Play Integrity token with the registry.
+///
+/// After receiving an integrity token from Google Play Integrity API,
+/// call this function to verify it. The registry will decrypt the token
+/// via Google's API and return the device/app integrity verdict.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `token` - The encrypted integrity token from Play Integrity API (null-terminated)
+/// * `nonce` - The nonce used when requesting the token (null-terminated)
+/// * `result_json` - Output pointer for JSON-encoded IntegrityVerifyResponse (caller must free with `ciris_verify_free`)
+/// * `result_len` - Output pointer for result length
+///
+/// # Result JSON Format
+///
+/// ```json
+/// {
+///   "verified": true,
+///   "device_integrity": {
+///     "meets_strong_integrity": true,
+///     "meets_device_integrity": true,
+///     "meets_basic_integrity": true,
+///     "verdicts": ["MEETS_STRONG_INTEGRITY", "MEETS_DEVICE_INTEGRITY"]
+///   },
+///   "app_integrity": {
+///     "verdict": "PLAY_RECOGNIZED",
+///     "package_name": "ai.ciris.mobile",
+///     "version_code": 1
+///   },
+///   "account_details": {
+///     "licensing_verdict": "LICENSED"
+///   },
+///   "error": null
+/// }
+/// ```
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `token` and `nonce` must be valid null-terminated UTF-8 strings
+/// - `result_json` and `result_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_verify_integrity_token(
+    handle: *mut CirisVerifyHandle,
+    token: *const libc::c_char,
+    nonce: *const libc::c_char,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_verify_integrity_token called");
+
+    if handle.is_null()
+        || token.is_null()
+        || nonce.is_null()
+        || result_json.is_null()
+        || result_len.is_null()
+    {
+        tracing::error!("ciris_verify_verify_integrity_token: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+
+    // Parse token string
+    let token_str = match std::ffi::CStr::from_ptr(token).to_str() {
+        Ok(s) => s,
+        Err(_) => return CirisVerifyError::InvalidArgument as i32,
+    };
+
+    // Parse nonce string
+    let nonce_str = match std::ffi::CStr::from_ptr(nonce).to_str() {
+        Ok(s) => s,
+        Err(_) => return CirisVerifyError::InvalidArgument as i32,
+    };
+
+    tracing::info!("Verifying Play Integrity token (nonce={}...)", &nonce_str[..nonce_str.len().min(16)]);
+
+    // Create registry client and verify token
+    let result = handle.runtime.block_on(async {
+        let client = ciris_verify_core::RegistryClient::new(
+            "https://api.registry.ciris-services-1.ai",
+            std::time::Duration::from_secs(15),
+        )?;
+        client.verify_integrity_token(token_str, nonce_str).await
+    });
+
+    let response = match result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("Failed to verify integrity token: {}", e);
+            return CirisVerifyError::RequestFailed as i32;
+        }
+    };
+
+    tracing::info!("Play Integrity verification: {}", response.summary());
+
+    // Serialize to JSON
+    let result_bytes = match serde_json::to_vec(&response) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("Failed to serialize verification result: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        }
+    };
+
+    // Allocate and copy
+    let len = result_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, len);
+
+    *result_json = ptr;
+    *result_len = len;
+
+    CirisVerifyError::Success as i32
+}
+
 // Android JNI bindings
 #[cfg(target_os = "android")]
 mod android {
@@ -2372,5 +2586,147 @@ mod android {
                 JByteArray::default()
             },
         }
+    }
+
+    // =========================================================================
+    // Play Integrity API (Google Android Hardware Attestation)
+    // =========================================================================
+
+    /// Get Play Integrity nonce from registry (returns JSON as byte array)
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeGetIntegrityNonce<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+    ) -> JByteArray<'local> {
+        tracing::debug!("JNI: nativeGetIntegrityNonce called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeGetIntegrityNonce - null handle");
+            return JByteArray::default();
+        }
+
+        let mut nonce_data: *mut u8 = std::ptr::null_mut();
+        let mut nonce_len: usize = 0;
+
+        let result = ciris_verify_get_integrity_nonce(handle, &mut nonce_data, &mut nonce_len);
+
+        if result != CirisVerifyError::Success as i32 {
+            tracing::warn!("JNI: nativeGetIntegrityNonce failed with code {}", result);
+            return JByteArray::default();
+        }
+
+        if nonce_data.is_null() {
+            tracing::warn!("JNI: nativeGetIntegrityNonce returned null");
+            return JByteArray::default();
+        }
+
+        let slice = std::slice::from_raw_parts(nonce_data, nonce_len);
+        let jarray = match env.byte_array_from_slice(slice) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!("JNI: failed to create nonce byte array: {}", e);
+                ciris_verify_free(nonce_data as *mut libc::c_void);
+                return JByteArray::default();
+            },
+        };
+
+        ciris_verify_free(nonce_data as *mut libc::c_void);
+        jarray
+    }
+
+    /// Verify Play Integrity token (returns JSON as byte array)
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeVerifyIntegrityToken<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+        token: JString<'local>,
+        nonce: JString<'local>,
+    ) -> JByteArray<'local> {
+        tracing::debug!("JNI: nativeVerifyIntegrityToken called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeVerifyIntegrityToken - null handle");
+            return JByteArray::default();
+        }
+
+        // Get token string
+        let token_str: String = match env.get_string(&token) {
+            Ok(s) => s.into(),
+            Err(e) => {
+                tracing::error!("JNI: failed to get token string: {}", e);
+                return JByteArray::default();
+            },
+        };
+
+        // Get nonce string
+        let nonce_str: String = match env.get_string(&nonce) {
+            Ok(s) => s.into(),
+            Err(e) => {
+                tracing::error!("JNI: failed to get nonce string: {}", e);
+                return JByteArray::default();
+            },
+        };
+
+        // Convert to C strings
+        let token_cstr = match std::ffi::CString::new(token_str) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("JNI: failed to create token CString: {}", e);
+                return JByteArray::default();
+            },
+        };
+
+        let nonce_cstr = match std::ffi::CString::new(nonce_str) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("JNI: failed to create nonce CString: {}", e);
+                return JByteArray::default();
+            },
+        };
+
+        let mut result_data: *mut u8 = std::ptr::null_mut();
+        let mut result_len: usize = 0;
+
+        let result = ciris_verify_verify_integrity_token(
+            handle,
+            token_cstr.as_ptr(),
+            nonce_cstr.as_ptr(),
+            &mut result_data,
+            &mut result_len,
+        );
+
+        if result != CirisVerifyError::Success as i32 {
+            tracing::warn!(
+                "JNI: nativeVerifyIntegrityToken failed with code {}",
+                result
+            );
+            return JByteArray::default();
+        }
+
+        if result_data.is_null() {
+            tracing::warn!("JNI: nativeVerifyIntegrityToken returned null");
+            return JByteArray::default();
+        }
+
+        let slice = std::slice::from_raw_parts(result_data, result_len);
+        let jarray = match env.byte_array_from_slice(slice) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!("JNI: failed to create integrity result byte array: {}", e);
+                ciris_verify_free(result_data as *mut libc::c_void);
+                return JByteArray::default();
+            },
+        };
+
+        ciris_verify_free(result_data as *mut libc::c_void);
+        jarray
     }
 }
