@@ -60,7 +60,8 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          key: release-${{ matrix.target }}
+          # Include git tag in cache key to bust cache on version bumps
+          key: release-${{ matrix.target }}-${{ github.ref_name }}
 
       # Install TPM development libraries (Linux native only, not cross-compile)
       - name: Install TPM libs (Linux)
