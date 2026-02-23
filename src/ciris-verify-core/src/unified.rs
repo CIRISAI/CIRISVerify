@@ -80,7 +80,7 @@ pub struct FullAttestationResult {
     /// Key attestation proof.
     pub key_attestation: Option<KeyAttestationResult>,
     /// Registry key verification status (if key_fingerprint was provided in request).
-    /// One of: "active", "rotated", "revoked", "not_found", "not_checked", "error:<message>"
+    /// One of: "active", "rotated", "revoked", "not_found", "not_checked", "error:..."
     #[serde(default)]
     pub registry_key_status: String,
     /// File integrity check results.
@@ -164,7 +164,7 @@ pub struct KeyAttestationResult {
     #[serde(default)]
     pub mldsa_fingerprint: Option<String>,
     /// Registry key verification status.
-    /// One of: "active", "rotated", "revoked", "not_found", "not_checked", "error:<message>"
+    /// One of: "active", "rotated", "revoked", "not_found", "not_checked", "error:..."
     #[serde(default)]
     pub registry_key_status: String,
 }
