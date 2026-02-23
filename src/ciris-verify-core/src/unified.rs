@@ -50,6 +50,10 @@ pub struct FullAttestationRequest {
     /// Skip audit trail verification.
     #[serde(default)]
     pub skip_audit: bool,
+    /// Use partial file integrity check (only verify files that exist on disk).
+    /// Useful for mobile deployments where files are lazily extracted.
+    #[serde(default)]
+    pub partial_file_check: bool,
 }
 
 /// Result of full attestation.
@@ -163,6 +167,10 @@ pub struct FileCheckSummary {
     pub files_unexpected: usize,
     /// Failure reason (if any).
     pub failure_reason: String,
+    /// Files found on disk (for partial checks, indicates coverage).
+    pub files_found: usize,
+    /// Whether this was a partial check (only available files).
+    pub partial_check: bool,
 }
 
 impl From<FileIntegrityResult> for FileCheckSummary {
@@ -176,6 +184,8 @@ impl From<FileIntegrityResult> for FileCheckSummary {
             files_missing: r.files_missing,
             files_unexpected: r.files_unexpected,
             failure_reason: r.failure_reason,
+            files_found: r.files_found,
+            partial_check: r.partial_check,
         }
     }
 }
@@ -333,7 +343,7 @@ impl UnifiedAttestationEngine {
                 }
 
                 match self
-                    .run_file_integrity(version, agent_root, request.spot_check_count)
+                    .run_file_integrity(version, agent_root, request.spot_check_count, request.partial_file_check)
                     .await
                 {
                     Ok(result) => {
@@ -454,11 +464,15 @@ impl UnifiedAttestationEngine {
     }
 
     /// Run file integrity checks against registry manifest.
+    ///
+    /// If `partial_check` is true, only files that exist on disk are verified.
+    /// This is useful for mobile deployments where files are lazily extracted.
     async fn run_file_integrity(
         &self,
         version: &str,
         agent_root: &str,
         spot_count: usize,
+        partial_check: bool,
     ) -> Result<IntegrityCheckResult, VerifyError> {
         // Fetch manifest from registry
         let client = self
@@ -484,11 +498,15 @@ impl UnifiedAttestationEngine {
 
         let agent_path = Path::new(agent_root);
 
-        // Run full check
-        let full_result = file_integrity::check_full(&manifest, agent_path);
+        // Run full or partial check based on mode
+        let full_result = if partial_check {
+            file_integrity::check_available(&manifest, agent_path)
+        } else {
+            file_integrity::check_full(&manifest, agent_path)
+        };
 
-        // Run spot check if requested
-        let spot_result = if spot_count > 0 {
+        // Run spot check if requested (only for non-partial mode)
+        let spot_result = if spot_count > 0 && !partial_check {
             Some(file_integrity::check_spot(
                 &manifest, agent_path, spot_count,
             ))
@@ -671,10 +689,37 @@ mod tests {
             files_missing: 0,
             files_unexpected: 0,
             failure_reason: String::new(),
+            files_found: 100,
+            partial_check: false,
         };
 
         let summary: FileCheckSummary = integrity.into();
         assert!(summary.valid);
         assert_eq!(summary.total_files, 100);
+        assert_eq!(summary.files_found, 100);
+        assert!(!summary.partial_check);
+    }
+
+    #[test]
+    fn test_file_check_summary_partial() {
+        let integrity = FileIntegrityResult {
+            integrity_valid: true,
+            total_files: 100,
+            files_checked: 50,
+            files_passed: 50,
+            files_failed: 0,
+            files_missing: 50,
+            files_unexpected: 0,
+            failure_reason: String::new(),
+            files_found: 50,
+            partial_check: true,
+        };
+
+        let summary: FileCheckSummary = integrity.into();
+        assert!(summary.valid);
+        assert_eq!(summary.total_files, 100);
+        assert_eq!(summary.files_found, 50);
+        assert_eq!(summary.files_missing, 50);
+        assert!(summary.partial_check);
     }
 }

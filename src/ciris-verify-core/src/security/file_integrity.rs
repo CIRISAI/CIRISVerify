@@ -49,6 +49,10 @@ pub struct FileIntegrityResult {
     pub files_unexpected: usize,
     /// Opaque failure reason (does not reveal which files failed).
     pub failure_reason: String,
+    /// Number of files found on disk (for partial/available checks).
+    pub files_found: usize,
+    /// Whether this was a partial check (only available files).
+    pub partial_check: bool,
 }
 
 /// Agent file manifest loaded from JSON.
@@ -177,6 +181,8 @@ pub fn check_full(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityRe
             files_missing: 0,
             files_unexpected: 0,
             failure_reason: "manifest".to_string(),
+            files_found: 0,
+            partial_check: false,
         };
     }
 
@@ -228,6 +234,8 @@ pub fn check_full(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityRe
         files_missing,
         files_unexpected,
         failure_reason,
+        files_found: files_passed + files_failed, // files that exist on disk
+        partial_check: false,
     }
 }
 
@@ -249,6 +257,8 @@ pub fn check_spot(manifest: &FileManifest, agent_root: &Path, count: usize) -> F
             files_missing: 0,
             files_unexpected: 0,
             failure_reason: "manifest".to_string(),
+            files_found: 0,
+            partial_check: false,
         };
     }
 
@@ -298,6 +308,101 @@ pub fn check_spot(manifest: &FileManifest, agent_root: &Path, count: usize) -> F
         files_missing,
         files_unexpected: 0, // Spot check doesn't scan for unexpected files
         failure_reason,
+        files_found: files_passed + files_failed,
+        partial_check: false,
+    }
+}
+
+/// Perform a PARTIAL integrity check of only files that exist on disk.
+///
+/// This is useful for mobile deployments (e.g., Chaquopy on Android) where
+/// files are lazily extracted and not all manifest files exist at runtime.
+///
+/// - Only checks files that exist on disk
+/// - Fails if any existing file has a hash mismatch
+/// - Does NOT fail for missing files (reports them as `files_missing`)
+/// - Reports coverage: `files_found` / `total_files`
+///
+/// Security note: This provides weaker guarantees than `check_full` since
+/// missing files could be maliciously removed. Use in conjunction with
+/// binary integrity and Play Integrity on mobile platforms.
+pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityResult {
+    // First, verify the manifest itself
+    if !verify_manifest_integrity(manifest) {
+        return FileIntegrityResult {
+            integrity_valid: false,
+            total_files: manifest.files.len(),
+            files_checked: 0,
+            files_passed: 0,
+            files_failed: 0,
+            files_missing: 0,
+            files_unexpected: 0,
+            failure_reason: "manifest".to_string(),
+            files_found: 0,
+            partial_check: true,
+        };
+    }
+
+    let mut files_checked = 0usize;
+    let mut files_passed = 0usize;
+    let mut files_failed = 0usize;
+    let mut files_missing = 0usize;
+    let mut files_found = 0usize;
+
+    // Check every file in the manifest, but only verify files that exist
+    for (relative_path, expected_hash) in &manifest.files {
+        let full_path = agent_root.join(relative_path);
+
+        // Check if file exists first
+        if !full_path.exists() {
+            files_missing += 1;
+            continue; // Skip missing files in partial check
+        }
+
+        files_found += 1;
+        files_checked += 1;
+
+        match hash_file(&full_path) {
+            Ok(actual_hash) => {
+                if super::constant_time_eq(actual_hash.as_bytes(), expected_hash.as_bytes()) {
+                    files_passed += 1;
+                } else {
+                    files_failed += 1;
+                }
+            }
+            Err(_) => {
+                // File exists but can't be read - treat as failure
+                files_failed += 1;
+            }
+        }
+    }
+
+    // Scan for unexpected Python files not in the manifest
+    let files_unexpected = count_unexpected_files(agent_root, &manifest.files);
+
+    // Only fail if files that exist have hash mismatches or there are unexpected files
+    // Missing files do NOT cause failure in partial check mode
+    let integrity_valid = files_failed == 0 && files_unexpected == 0;
+
+    let failure_reason = if integrity_valid {
+        String::new()
+    } else if files_failed > 0 {
+        "modified".to_string()
+    } else {
+        "unexpected".to_string()
+    };
+
+    FileIntegrityResult {
+        integrity_valid,
+        total_files: manifest.files.len(),
+        files_checked,
+        files_passed,
+        files_failed,
+        files_missing,
+        files_unexpected,
+        failure_reason,
+        files_found,
+        partial_check: true,
     }
 }
 
@@ -570,5 +675,92 @@ mod tests {
         let dir = create_test_dir();
         let manifest = generate_manifest(dir.path(), "2.0.0").unwrap();
         assert!(verify_manifest_integrity(&manifest));
+    }
+
+    #[test]
+    fn test_check_available_passes_with_all_files() {
+        let dir = create_test_dir();
+        let manifest = generate_manifest(dir.path(), "2.0.0").unwrap();
+        let result = check_available(&manifest, dir.path());
+
+        assert!(result.integrity_valid);
+        assert!(result.partial_check);
+        assert_eq!(result.files_missing, 0);
+        assert_eq!(result.files_found, result.total_files);
+        assert_eq!(result.files_passed, result.files_checked);
+    }
+
+    #[test]
+    fn test_check_available_passes_with_missing_files() {
+        let dir = create_test_dir();
+        let manifest = generate_manifest(dir.path(), "2.0.0").unwrap();
+
+        // Delete a file - this should NOT fail in partial mode
+        fs::remove_file(dir.path().join("ciris_engine/engine.py")).unwrap();
+
+        let result = check_available(&manifest, dir.path());
+
+        // Partial check should pass even with missing files
+        assert!(result.integrity_valid);
+        assert!(result.partial_check);
+        assert!(result.files_missing > 0);
+        assert!(result.files_found < result.total_files);
+        // No failure reason since missing files are tolerated
+        assert_eq!(result.failure_reason, "");
+    }
+
+    #[test]
+    fn test_check_available_fails_with_modified_file() {
+        let dir = create_test_dir();
+        let manifest = generate_manifest(dir.path(), "2.0.0").unwrap();
+
+        // Modify a file - this SHOULD fail even in partial mode
+        fs::write(dir.path().join("ciris_engine/main.py"), b"# TAMPERED").unwrap();
+
+        let result = check_available(&manifest, dir.path());
+
+        assert!(!result.integrity_valid);
+        assert!(result.partial_check);
+        assert!(result.files_failed > 0);
+        assert_eq!(result.failure_reason, "modified");
+    }
+
+    #[test]
+    fn test_check_available_fails_with_unexpected_file() {
+        let dir = create_test_dir();
+        let manifest = generate_manifest(dir.path(), "2.0.0").unwrap();
+
+        // Add an unexpected Python file - this SHOULD fail even in partial mode
+        fs::write(
+            dir.path().join("ciris_engine/backdoor.py"),
+            b"# malicious code",
+        )
+        .unwrap();
+
+        let result = check_available(&manifest, dir.path());
+
+        assert!(!result.integrity_valid);
+        assert!(result.partial_check);
+        assert!(result.files_unexpected > 0);
+        assert_eq!(result.failure_reason, "unexpected");
+    }
+
+    #[test]
+    fn test_check_available_reports_coverage() {
+        let dir = create_test_dir();
+        let manifest = generate_manifest(dir.path(), "2.0.0").unwrap();
+        let total = manifest.files.len();
+
+        // Delete 2 of 3 files
+        fs::remove_file(dir.path().join("ciris_engine/main.py")).unwrap();
+        fs::remove_file(dir.path().join("ciris_engine/engine.py")).unwrap();
+
+        let result = check_available(&manifest, dir.path());
+
+        assert!(result.integrity_valid); // Passes with available files
+        assert!(result.partial_check);
+        assert_eq!(result.files_found, 1); // Only __init__.py remains
+        assert_eq!(result.files_missing, total - 1);
+        assert_eq!(result.total_files, total);
     }
 }

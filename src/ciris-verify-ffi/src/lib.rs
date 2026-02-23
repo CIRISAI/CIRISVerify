@@ -876,6 +876,115 @@ pub unsafe extern "C" fn ciris_verify_check_agent_integrity(
     CirisVerifyError::Success as i32
 }
 
+/// Check agent file integrity with options for partial verification.
+///
+/// This version supports partial checking for mobile deployments where
+/// files may be lazily extracted (e.g., Chaquopy on Android).
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `manifest_data` - JSON manifest bytes
+/// * `manifest_len` - Length of manifest data
+/// * `agent_root` - Path to agent root directory
+/// * `partial_check` - If true, only check files that exist on disk
+/// * `response_data` - Output pointer for JSON response (caller must free with `ciris_verify_free`)
+/// * `response_len` - Output pointer for response length
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Partial Check Mode
+///
+/// When `partial_check` is true:
+/// - Only files that exist on disk are verified
+/// - Missing files do NOT cause integrity failure
+/// - Modified or unexpected files still cause failure
+/// - Response includes `files_found` and `files_missing` for coverage reporting
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `manifest_data` must point to valid memory of at least `manifest_len` bytes
+/// - `agent_root` must be a valid null-terminated UTF-8 string
+/// - `response_data` and `response_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_check_agent_integrity_available(
+    handle: *mut CirisVerifyHandle,
+    manifest_data: *const u8,
+    manifest_len: usize,
+    agent_root: *const libc::c_char,
+    partial_check: bool,
+    response_data: *mut *mut u8,
+    response_len: *mut usize,
+) -> i32 {
+    tracing::debug!(
+        "ciris_verify_check_agent_integrity_available called (manifest_len={}, partial={})",
+        manifest_len,
+        partial_check
+    );
+
+    if handle.is_null()
+        || manifest_data.is_null()
+        || agent_root.is_null()
+        || response_data.is_null()
+        || response_len.is_null()
+    {
+        tracing::error!("ciris_verify_check_agent_integrity_available: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let _handle = &*handle;
+    let manifest_bytes = std::slice::from_raw_parts(manifest_data, manifest_len);
+
+    // Parse manifest
+    let manifest: ciris_verify_core::FileManifest = match serde_json::from_slice(manifest_bytes) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!("Failed to parse manifest: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        }
+    };
+
+    // Parse agent root path
+    let root_str = match std::ffi::CStr::from_ptr(agent_root).to_str() {
+        Ok(s) => s,
+        Err(_) => return CirisVerifyError::InvalidArgument as i32,
+    };
+    let root_path = std::path::Path::new(root_str);
+
+    // Perform check
+    let result = if partial_check {
+        ciris_verify_core::check_available_agent_integrity(&manifest, root_path)
+    } else {
+        ciris_verify_core::check_agent_integrity(&manifest, root_path)
+    };
+
+    // Serialize response
+    let response_bytes = match serde_json::to_vec(&result) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("Failed to serialize integrity result: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        }
+    };
+
+    // Allocate and copy response
+    let len = response_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(response_bytes.as_ptr(), ptr, len);
+
+    *response_data = ptr;
+    *response_len = len;
+
+    CirisVerifyError::Success as i32
+}
+
 /// Sign data using the hardware-bound private key.
 ///
 /// This is the vault-style signing interface: the agent delegates signing
@@ -1524,7 +1633,8 @@ pub unsafe extern "C" fn ciris_verify_get_diagnostics(
 ///   "portal_key_id": "key-id",       // optional
 ///   "skip_registry": false,          // optional
 ///   "skip_file_integrity": false,    // optional
-///   "skip_audit": false              // optional
+///   "skip_audit": false,             // optional
+///   "partial_file_check": false      // optional, for mobile: only check files that exist
 /// }
 /// ```
 ///
