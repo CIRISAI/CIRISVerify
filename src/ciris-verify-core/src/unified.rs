@@ -1,6 +1,7 @@
 //! Unified attestation engine.
 //!
 //! Provides a single entry point for running all verification checks:
+//! - Self-verification (binary hash + function integrity) - Level 1
 //! - Key attestation (hardware/Portal key verification)
 //! - File integrity (full + spot checks against registry manifest)
 //! - Source validation (DNS US, DNS EU, HTTPS)
@@ -10,13 +11,14 @@ use std::collections::BTreeMap;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, instrument};
+use tracing::{debug, info, instrument, warn};
 
 use crate::audit::{AuditEntry, AuditVerificationResult, AuditVerifier};
 use crate::config::VerifyConfig;
 use crate::error::VerifyError;
-use crate::registry::RegistryClient;
+use crate::registry::{compute_self_hash, current_target, RegistryClient};
 use crate::security::file_integrity::{self, FileIntegrityResult};
+use crate::security::function_integrity;
 use crate::validation::{ConsensusValidator, ValidationResult};
 
 /// Request for full attestation.
@@ -57,6 +59,8 @@ pub struct FullAttestationResult {
     pub valid: bool,
     /// Attestation level (0-5 scale).
     pub level: u8,
+    /// Self-verification result (Level 1: binary + function integrity).
+    pub self_verification: Option<SelfVerificationResult>,
     /// Key attestation proof.
     pub key_attestation: Option<KeyAttestationResult>,
     /// File integrity check results.
@@ -75,6 +79,36 @@ pub struct FullAttestationResult {
     pub errors: Vec<String>,
     /// Verification timestamp.
     pub timestamp: i64,
+}
+
+/// Self-verification result (Level 1).
+///
+/// Recursive check: CIRISVerify verifies its own integrity before
+/// verifying anything else ("who watches the watchmen").
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SelfVerificationResult {
+    /// Binary hash matches registry manifest.
+    pub binary_valid: bool,
+    /// Function integrity matches registry manifest.
+    pub functions_valid: bool,
+    /// Combined validity.
+    pub valid: bool,
+    /// Binary version being verified.
+    pub binary_version: String,
+    /// Target triple.
+    pub target: String,
+    /// Computed binary hash (SHA-256).
+    pub binary_hash: String,
+    /// Expected binary hash from registry.
+    pub expected_hash: Option<String>,
+    /// Number of functions verified.
+    pub functions_checked: usize,
+    /// Number of functions passed.
+    pub functions_passed: usize,
+    /// Registry reachable for manifest fetch.
+    pub registry_reachable: bool,
+    /// Error message if failed.
+    pub error: Option<String>,
 }
 
 /// Key attestation result.
@@ -241,6 +275,31 @@ impl UnifiedAttestationEngine {
 
         info!("Starting unified attestation");
 
+        // 0. Self-verification (Level 1: recursive check - "who watches the watchmen")
+        // This MUST run first - we verify CIRISVerify itself before trusting any results
+        checks_total += 2; // Binary hash + function integrity
+        let self_verification = self.run_self_verification().await;
+
+        if self_verification.binary_valid {
+            checks_passed += 1;
+        }
+        if self_verification.functions_valid {
+            checks_passed += 1;
+        }
+
+        diagnostics.push_str(&format!(
+            "Self-verification: binary={} functions={} ({})\n",
+            if self_verification.binary_valid { "OK" } else { "FAIL" },
+            if self_verification.functions_valid { "OK" } else { "FAIL" },
+            self_verification.target,
+        ));
+
+        if !self_verification.valid {
+            if let Some(ref err) = self_verification.error {
+                errors.push(format!("Self-verification: {}", err));
+            }
+        }
+
         // 1. Source validation (always run)
         checks_total += 3; // DNS US, DNS EU, HTTPS
         let validation = self.consensus_validator.validate_steward_key().await;
@@ -381,6 +440,7 @@ impl UnifiedAttestationEngine {
         Ok(FullAttestationResult {
             valid,
             level,
+            self_verification: Some(self_verification),
             key_attestation: None, // Filled by caller with HW signer
             file_integrity,
             sources,
@@ -413,10 +473,10 @@ impl UnifiedAttestationEngine {
         // Convert registry manifest to file_integrity manifest
         // Convert HashMap to BTreeMap for deterministic ordering
         let files_btree: BTreeMap<String, String> =
-            build.file_manifest_json.files.into_iter().collect();
+            build.file_manifest_json.files().iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
         let manifest = file_integrity::FileManifest {
-            version: build.file_manifest_json.version.clone(),
+            version: build.file_manifest_json.version().to_string(),
             generated_at: String::new(),
             files: files_btree,
             manifest_hash: build.file_manifest_hash.clone(),
@@ -442,6 +502,130 @@ impl UnifiedAttestationEngine {
             registry_reachable: true,
             manifest_version: Some(build.version),
         })
+    }
+
+    /// Run self-verification (Level 1: recursive integrity check).
+    ///
+    /// Verifies CIRISVerify's own integrity before trusting any results.
+    /// This is the "who watches the watchmen" check.
+    async fn run_self_verification(&self) -> SelfVerificationResult {
+        let version = env!("CARGO_PKG_VERSION");
+        let target = current_target();
+
+        // Compute our own binary hash
+        let binary_hash = match compute_self_hash() {
+            Ok(h) => h,
+            Err(e) => {
+                warn!("Failed to compute self hash: {}", e);
+                return SelfVerificationResult {
+                    binary_valid: false,
+                    functions_valid: false,
+                    valid: false,
+                    binary_version: version.to_string(),
+                    target: target.to_string(),
+                    binary_hash: String::new(),
+                    expected_hash: None,
+                    functions_checked: 0,
+                    functions_passed: 0,
+                    registry_reachable: false,
+                    error: Some(format!("Failed to compute self hash: {}", e)),
+                };
+            },
+        };
+
+        debug!(
+            "Self-verification: version={}, target={}, hash={}",
+            version, target, &binary_hash[..16]
+        );
+
+        // Try to fetch binary manifest from registry
+        let client = match &self.registry_client {
+            Some(c) => c,
+            None => {
+                return SelfVerificationResult {
+                    binary_valid: false,
+                    functions_valid: false,
+                    valid: false,
+                    binary_version: version.to_string(),
+                    target: target.to_string(),
+                    binary_hash,
+                    expected_hash: None,
+                    functions_checked: 0,
+                    functions_passed: 0,
+                    registry_reachable: false,
+                    error: Some("Registry client not available".to_string()),
+                };
+            },
+        };
+
+        // Verify binary hash against registry
+        let binary_valid = match client.get_binary_manifest(version).await {
+            Ok(manifest) => {
+                if let Some(expected) = manifest.binaries.get(target) {
+                    // Strip "sha256:" prefix if present
+                    let expected_clean = expected.strip_prefix("sha256:").unwrap_or(expected);
+                    let matches = binary_hash == expected_clean;
+                    if !matches {
+                        warn!(
+                            "Binary hash mismatch: expected={}, actual={}",
+                            &expected_clean[..16],
+                            &binary_hash[..16]
+                        );
+                    }
+                    matches
+                } else {
+                    warn!("No binary hash for target {} in manifest", target);
+                    false
+                }
+            },
+            Err(e) => {
+                debug!("Binary manifest not available: {}", e);
+                // Not a hard failure - manifest may not exist for this version yet
+                false
+            },
+        };
+
+        // Verify function integrity
+        let (functions_valid, functions_checked, functions_passed) =
+            match client.get_function_manifest(version, target).await {
+                Ok(manifest) => {
+                    let result = function_integrity::verify_functions(&manifest);
+                    info!(
+                        "Function integrity: {}/{} passed",
+                        result.functions_passed, result.functions_checked
+                    );
+                    (
+                        result.integrity_valid,
+                        result.functions_checked,
+                        result.functions_passed,
+                    )
+                },
+                Err(e) => {
+                    debug!("Function manifest not available: {}", e);
+                    // Not a hard failure - manifest may not exist for this version/target
+                    (false, 0, 0)
+                },
+            };
+
+        let valid = binary_valid && functions_valid;
+
+        SelfVerificationResult {
+            binary_valid,
+            functions_valid,
+            valid,
+            binary_version: version.to_string(),
+            target: target.to_string(),
+            binary_hash,
+            expected_hash: None, // Could be populated from manifest
+            functions_checked,
+            functions_passed,
+            registry_reachable: true,
+            error: if valid {
+                None
+            } else {
+                Some("Self-verification failed".to_string())
+            },
+        }
     }
 }
 

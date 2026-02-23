@@ -45,14 +45,52 @@ pub struct BuildRecord {
 }
 
 /// File integrity manifest.
+///
+/// Supports two formats:
+/// 1. Structured: `{"version": "...", "files": {"path": "hash", ...}}`
+/// 2. Flat (from registry): `{"path": "hash", ...}`
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct FileManifest {
-    /// Manifest version.
-    #[serde(default)]
-    pub version: String,
-    /// Map of file path to SHA-256 hash.
-    #[serde(default)]
-    pub files: HashMap<String, String>,
+#[serde(untagged)]
+pub enum FileManifest {
+    /// Structured format with version and files fields.
+    Structured {
+        /// Manifest version.
+        #[serde(default)]
+        version: String,
+        /// Map of file path to SHA-256 hash.
+        #[serde(default)]
+        files: HashMap<String, String>,
+    },
+    /// Flat format - just the file map directly.
+    Flat(HashMap<String, String>),
+}
+
+impl FileManifest {
+    /// Get the version string (empty if flat format).
+    pub fn version(&self) -> &str {
+        match self {
+            FileManifest::Structured { version, .. } => version,
+            FileManifest::Flat(_) => "",
+        }
+    }
+
+    /// Get the files map.
+    pub fn files(&self) -> &HashMap<String, String> {
+        match self {
+            FileManifest::Structured { files, .. } => files,
+            FileManifest::Flat(files) => files,
+        }
+    }
+
+    /// Get the number of files.
+    pub fn len(&self) -> usize {
+        self.files().len()
+    }
+
+    /// Check if empty.
+    pub fn is_empty(&self) -> bool {
+        self.files().is_empty()
+    }
 }
 
 /// Registry client for fetching manifests.

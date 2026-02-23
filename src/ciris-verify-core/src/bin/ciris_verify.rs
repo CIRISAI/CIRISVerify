@@ -834,9 +834,9 @@ async fn run_agent_files_check(
                 generated_at: chrono::Utc::now().to_rfc3339(),
                 files: build
                     .file_manifest_json
-                    .files
+                    .files()
                     .iter()
-                    .map(|(k, v)| (k.clone(), v.clone()))
+                    .map(|(k, v): (&String, &String)| (k.clone(), v.clone()))
                     .collect(),
                 manifest_hash: build.file_manifest_hash.clone(),
             };
