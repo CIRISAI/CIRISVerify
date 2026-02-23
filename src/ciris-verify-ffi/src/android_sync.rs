@@ -144,21 +144,13 @@ pub fn get_license_status_blocking(
     });
 
     // Wait for all threads to complete
-    let dns_us_result = dns_us_handle.join().unwrap_or_else(|_| {
-        Err(DohError::Http(ureq::Error::Transport(
-            ureq::Transport::new().with_message("thread panic"),
-        )))
-    });
-    let dns_eu_result = dns_eu_handle.join().unwrap_or_else(|_| {
-        Err(DohError::Http(ureq::Error::Transport(
-            ureq::Transport::new().with_message("thread panic"),
-        )))
-    });
-    let https_result = https_handle.join().unwrap_or_else(|_| {
-        Err(ureq::Error::Transport(
-            ureq::Transport::new().with_message("thread panic"),
-        ))
-    });
+    let dns_us_result = dns_us_handle
+        .join()
+        .unwrap_or_else(|_| Err(DohError::ThreadPanic));
+    let dns_eu_result = dns_eu_handle
+        .join()
+        .unwrap_or_else(|_| Err(DohError::ThreadPanic));
+    let https_result = https_handle.join();
 
     info!(
         "Android sync: All parallel checks completed in {:?}",
@@ -210,22 +202,30 @@ pub fn get_license_status_blocking(
         },
     };
 
-    // Process HTTPS result
-    let (https_reachable, https_error, https_error_category) = match &https_result {
-        Ok(_response) => {
+    // Process HTTPS result (handle both thread panic and HTTP errors)
+    let (https_reachable, https_error, https_error_category) = match https_result {
+        Ok(Ok(_response)) => {
             info!(
                 "Android sync: HTTPS fetch succeeded in {:?}",
                 start.elapsed()
             );
             (true, None, None)
         },
-        Err(e) => {
-            let (category, details) = categorize_ureq_error(e);
+        Ok(Err(e)) => {
+            let (category, details) = categorize_ureq_error(&e);
             warn!(
                 "Android sync: HTTPS fetch failed: {} (category: {})",
                 details, category
             );
             (false, Some(details), Some(category))
+        },
+        Err(_) => {
+            warn!("Android sync: HTTPS thread panicked");
+            (
+                false,
+                Some("Thread panic".to_string()),
+                Some("thread_panic".to_string()),
+            )
         },
     };
 
@@ -378,6 +378,7 @@ enum DohError {
     Http(ureq::Error),
     Json(std::io::Error),
     DnsStatus(i32),
+    ThreadPanic,
 }
 
 impl std::fmt::Display for DohError {
@@ -396,6 +397,7 @@ impl std::fmt::Display for DohError {
                 };
                 write!(f, "DNS error: {} ({})", status_name, code)
             },
+            Self::ThreadPanic => write!(f, "Thread panic"),
         }
     }
 }
