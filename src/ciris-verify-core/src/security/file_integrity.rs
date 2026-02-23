@@ -170,8 +170,15 @@ pub fn load_manifest(manifest_path: &Path) -> Result<FileManifest, String> {
 ///
 /// Any failure = integrity_valid: false → agent must shut down.
 pub fn check_full(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityResult {
+    tracing::info!(
+        "check_full: starting full check, agent_root={:?}, manifest_files={}",
+        agent_root,
+        manifest.files.len()
+    );
+
     // First, verify the manifest itself
     if !verify_manifest_integrity(manifest) {
+        tracing::error!("check_full: manifest integrity verification FAILED");
         return FileIntegrityResult {
             integrity_valid: false,
             total_files: manifest.files.len(),
@@ -185,6 +192,7 @@ pub fn check_full(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityRe
             partial_check: false,
         };
     }
+    tracing::info!("check_full: manifest integrity OK");
 
     let mut files_checked = 0usize;
     let mut files_passed = 0usize;
@@ -327,8 +335,22 @@ pub fn check_spot(manifest: &FileManifest, agent_root: &Path, count: usize) -> F
 /// missing files could be maliciously removed. Use in conjunction with
 /// binary integrity and Play Integrity on mobile platforms.
 pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityResult {
+    tracing::info!(
+        "check_available: starting partial check, agent_root={:?}, manifest_files={}",
+        agent_root,
+        manifest.files.len()
+    );
+
+    // Log if agent_root exists
+    if !agent_root.exists() {
+        tracing::error!("check_available: agent_root does NOT exist: {:?}", agent_root);
+    } else {
+        tracing::info!("check_available: agent_root exists: {:?}", agent_root);
+    }
+
     // First, verify the manifest itself
     if !verify_manifest_integrity(manifest) {
+        tracing::error!("check_available: manifest integrity verification FAILED");
         return FileIntegrityResult {
             integrity_valid: false,
             total_files: manifest.files.len(),
@@ -342,6 +364,7 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
             partial_check: true,
         };
     }
+    tracing::info!("check_available: manifest integrity OK");
 
     let mut files_checked = 0usize;
     let mut files_passed = 0usize;
@@ -349,9 +372,24 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
     let mut files_missing = 0usize;
     let mut files_found = 0usize;
 
+    // Log first few paths for debugging
+    let mut sample_logged = 0;
+
     // Check every file in the manifest, but only verify files that exist
     for (relative_path, expected_hash) in &manifest.files {
         let full_path = agent_root.join(relative_path);
+
+        // Log first 3 paths for debugging
+        if sample_logged < 3 {
+            tracing::info!(
+                "check_available: sample path #{}: relative={:?}, full={:?}, exists={}",
+                sample_logged + 1,
+                relative_path,
+                full_path,
+                full_path.exists()
+            );
+            sample_logged += 1;
+        }
 
         // Check if file exists first
         if !full_path.exists() {
@@ -368,6 +406,7 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
                     files_passed += 1;
                 } else {
                     files_failed += 1;
+                    tracing::warn!("check_available: hash mismatch for {:?}", relative_path);
                 }
             }
             Err(_) => {
@@ -391,6 +430,16 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
     } else {
         "unexpected".to_string()
     };
+
+    tracing::info!(
+        "check_available: complete - found={}, missing={}, passed={}, failed={}, unexpected={}, valid={}",
+        files_found,
+        files_missing,
+        files_passed,
+        files_failed,
+        files_unexpected,
+        integrity_valid
+    );
 
     FileIntegrityResult {
         integrity_valid,
