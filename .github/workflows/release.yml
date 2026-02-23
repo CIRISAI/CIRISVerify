@@ -321,20 +321,37 @@ jobs:
           if-no-files-found: warn
 
   # ==========================================================================
+  # Build Manifest Tool (runs in parallel with other builds)
+  # ==========================================================================
+  build-manifest-tool:
+    name: Build Manifest Tool
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: manifest-tool
+
+      - name: Build manifest tool
+        run: cargo build --release -p ciris-manifest-tool
+
+      - name: Upload manifest tool
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris-manifest-tool
+          path: target/release/ciris-manifest-tool
+          if-no-files-found: error
+
+  # ==========================================================================
   # Create Release
   # ==========================================================================
   create-release:
     name: Create Release
-    needs: [build-native, build-android, build-ios, xcframework, android-aar, generate-header]
+    needs: [build-native, build-android, build-ios, xcframework, android-aar, generate-header, build-manifest-tool]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-
-      - uses: dtolnay/rust-toolchain@stable
-
-      - uses: Swatinem/rust-cache@v2
-        with:
-          key: release-manifest-tool
 
       - name: Download all artifacts
         uses: actions/download-artifact@v4
@@ -471,8 +488,14 @@ jobs:
           files: release/manifest.json
 
       # Generate and upload function manifests for runtime verification
-      - name: Build manifest tool
-        run: cargo build --release -p ciris-manifest-tool
+      - name: Download manifest tool
+        uses: actions/download-artifact@v4
+        with:
+          name: ciris-manifest-tool
+          path: manifest-tool
+
+      - name: Make manifest tool executable
+        run: chmod +x manifest-tool/ciris-manifest-tool
 
       - name: Generate function manifests
         run: |
@@ -498,7 +521,7 @@ jobs:
               target="${TARGET_MAP[$binary_path]}"
               echo "Generating function manifest for $target..."
 
-              ./target/release/ciris-manifest-tool generate \
+              ./manifest-tool/ciris-manifest-tool generate \
                 --binary "$binary_path" \
                 --target "$target" \
                 --version "$VERSION" \
