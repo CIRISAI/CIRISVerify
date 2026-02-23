@@ -1063,7 +1063,10 @@ impl UnifiedAttestationEngine {
                         }
                     },
                     Err(e) => {
-                        warn!("Binary manifest check: fetch failed: {}", e);
+                        warn!(
+                            "Binary manifest check: fetch FAILED for version={}, target={}: {}",
+                            version, target, e
+                        );
                         (false, None, vec![])
                     },
                 }
