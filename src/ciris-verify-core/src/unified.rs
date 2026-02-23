@@ -272,6 +272,10 @@ impl UnifiedAttestationEngine {
     /// Run full attestation.
     ///
     /// This is the main entry point for comprehensive verification.
+    /// All three major checks run IN PARALLEL for maximum performance:
+    /// - Self-verification (binary + function integrity)
+    /// - Source validation (DNS US, DNS EU, HTTPS)
+    /// - File integrity (agent files vs manifest)
     #[instrument(skip(self, request))]
     pub async fn run_attestation(
         &self,
@@ -283,12 +287,43 @@ impl UnifiedAttestationEngine {
         let mut checks_total = 0u32;
         let mut diagnostics = String::new();
 
-        info!("Starting unified attestation");
+        info!("Starting unified attestation (parallel checks)");
 
-        // 0. Self-verification (Level 1: recursive check - "who watches the watchmen")
-        // This MUST run first - we verify CIRISVerify itself before trusting any results
+        // Prepare file integrity check params
+        let should_run_file_integrity = !request.skip_file_integrity
+            && request.agent_version.is_some()
+            && request.agent_root.is_some();
+
+        // Run all three checks IN PARALLEL
+        let (self_verification, validation, file_integrity_result) = tokio::join!(
+            // 0. Self-verification (Level 1: recursive check - "who watches the watchmen")
+            self.run_self_verification(),
+
+            // 1. Source validation (always run)
+            self.consensus_validator.validate_steward_key(),
+
+            // 2. File integrity (if requested and params available)
+            async {
+                if should_run_file_integrity {
+                    let version = request.agent_version.as_ref().unwrap();
+                    let agent_root = request.agent_root.as_ref().unwrap();
+                    Some(
+                        self.run_file_integrity(
+                            version,
+                            agent_root,
+                            request.spot_check_count,
+                            request.partial_file_check,
+                        )
+                        .await,
+                    )
+                } else {
+                    None
+                }
+            }
+        );
+
+        // Process self-verification results
         checks_total += 2; // Binary hash + function integrity
-        let self_verification = self.run_self_verification().await;
 
         if self_verification.binary_valid {
             checks_passed += 1;
@@ -310,9 +345,8 @@ impl UnifiedAttestationEngine {
             }
         }
 
-        // 1. Source validation (always run)
+        // Process source validation results
         checks_total += 3; // DNS US, DNS EU, HTTPS
-        let validation = self.consensus_validator.validate_steward_key().await;
         let sources = SourceCheckResult::from(&validation);
 
         if sources.dns_us_valid {
@@ -332,52 +366,45 @@ impl UnifiedAttestationEngine {
             if sources.https_valid { "OK" } else { "FAIL" },
         ));
 
-        // 2. File integrity checks (if requested)
-        let file_integrity = if !request.skip_file_integrity {
-            if let (Some(ref version), Some(ref agent_root)) =
-                (&request.agent_version, &request.agent_root)
-            {
-                checks_total += 1; // Full check
-                if request.spot_check_count > 0 {
-                    checks_total += 1; // Spot check
-                }
-
-                match self
-                    .run_file_integrity(version, agent_root, request.spot_check_count, request.partial_file_check)
-                    .await
-                {
-                    Ok(result) => {
-                        if result.full.as_ref().map(|f| f.valid).unwrap_or(false) {
-                            checks_passed += 1;
-                        }
-                        if result.spot.as_ref().map(|s| s.valid).unwrap_or(false) {
-                            checks_passed += 1;
-                        }
-                        diagnostics.push_str(&format!(
-                            "File integrity: full={} spot={}\n",
-                            result
-                                .full
-                                .as_ref()
-                                .map(|f| if f.valid { "OK" } else { "FAIL" })
-                                .unwrap_or("SKIP"),
-                            result
-                                .spot
-                                .as_ref()
-                                .map(|s| if s.valid { "OK" } else { "FAIL" })
-                                .unwrap_or("SKIP"),
-                        ));
-                        Some(result)
-                    },
-                    Err(e) => {
-                        errors.push(format!("File integrity check failed: {}", e));
-                        diagnostics.push_str(&format!("File integrity: ERROR ({})\n", e));
-                        None
-                    },
-                }
-            } else {
-                diagnostics.push_str("File integrity: SKIP (no version/root provided)\n");
-                None
+        // Process file integrity results
+        let file_integrity = if should_run_file_integrity {
+            checks_total += 1; // Full check
+            if request.spot_check_count > 0 {
+                checks_total += 1; // Spot check
             }
+
+            match file_integrity_result.unwrap() {
+                Ok(result) => {
+                    if result.full.as_ref().map(|f| f.valid).unwrap_or(false) {
+                        checks_passed += 1;
+                    }
+                    if result.spot.as_ref().map(|s| s.valid).unwrap_or(false) {
+                        checks_passed += 1;
+                    }
+                    diagnostics.push_str(&format!(
+                        "File integrity: full={} spot={}\n",
+                        result
+                            .full
+                            .as_ref()
+                            .map(|f| if f.valid { "OK" } else { "FAIL" })
+                            .unwrap_or("SKIP"),
+                        result
+                            .spot
+                            .as_ref()
+                            .map(|s| if s.valid { "OK" } else { "FAIL" })
+                            .unwrap_or("SKIP"),
+                    ));
+                    Some(result)
+                },
+                Err(e) => {
+                    errors.push(format!("File integrity check failed: {}", e));
+                    diagnostics.push_str(&format!("File integrity: ERROR ({})\n", e));
+                    None
+                },
+            }
+        } else if !request.skip_file_integrity {
+            diagnostics.push_str("File integrity: SKIP (no version/root provided)\n");
+            None
         } else {
             diagnostics.push_str("File integrity: SKIP (disabled)\n");
             None
@@ -526,6 +553,8 @@ impl UnifiedAttestationEngine {
     ///
     /// Verifies CIRISVerify's own integrity before trusting any results.
     /// This is the "who watches the watchmen" check.
+    ///
+    /// Binary hash verification and function integrity verification run in parallel.
     async fn run_self_verification(&self) -> SelfVerificationResult {
         let version = env!("CARGO_PKG_VERSION");
         let target = current_target();
@@ -576,55 +605,61 @@ impl UnifiedAttestationEngine {
             },
         };
 
-        // Verify binary hash against registry
-        let binary_valid = match client.get_binary_manifest(version).await {
-            Ok(manifest) => {
-                if let Some(expected) = manifest.binaries.get(target) {
-                    // Strip "sha256:" prefix if present
-                    let expected_clean = expected.strip_prefix("sha256:").unwrap_or(expected);
-                    let matches = binary_hash == expected_clean;
-                    if !matches {
-                        warn!(
-                            "Binary hash mismatch: expected={}, actual={}",
-                            &expected_clean[..16],
-                            &binary_hash[..16]
-                        );
-                    }
-                    matches
-                } else {
-                    warn!("No binary hash for target {} in manifest", target);
-                    false
+        // Run binary and function verification IN PARALLEL
+        let binary_hash_clone = binary_hash.clone();
+        let (binary_result, function_result) = tokio::join!(
+            // Binary hash verification
+            async {
+                match client.get_binary_manifest(version).await {
+                    Ok(manifest) => {
+                        if let Some(expected) = manifest.binaries.get(target) {
+                            // Strip "sha256:" prefix if present
+                            let expected_clean = expected.strip_prefix("sha256:").unwrap_or(expected);
+                            let matches = binary_hash_clone == expected_clean;
+                            if !matches {
+                                warn!(
+                                    "Binary hash mismatch: expected={}, actual={}",
+                                    &expected_clean[..16],
+                                    &binary_hash_clone[..16]
+                                );
+                            }
+                            matches
+                        } else {
+                            warn!("No binary hash for target {} in manifest", target);
+                            false
+                        }
+                    },
+                    Err(e) => {
+                        debug!("Binary manifest not available: {}", e);
+                        false
+                    },
                 }
             },
-            Err(e) => {
-                debug!("Binary manifest not available: {}", e);
-                // Not a hard failure - manifest may not exist for this version yet
-                false
-            },
-        };
+            // Function integrity verification
+            async {
+                match client.get_function_manifest(version, target).await {
+                    Ok(manifest) => {
+                        let result = function_integrity::verify_functions(&manifest);
+                        info!(
+                            "Function integrity: {}/{} passed",
+                            result.functions_passed, result.functions_checked
+                        );
+                        (
+                            result.integrity_valid,
+                            result.functions_checked,
+                            result.functions_passed,
+                        )
+                    },
+                    Err(e) => {
+                        debug!("Function manifest not available: {}", e);
+                        (false, 0, 0)
+                    },
+                }
+            }
+        );
 
-        // Verify function integrity
-        let (functions_valid, functions_checked, functions_passed) =
-            match client.get_function_manifest(version, target).await {
-                Ok(manifest) => {
-                    let result = function_integrity::verify_functions(&manifest);
-                    info!(
-                        "Function integrity: {}/{} passed",
-                        result.functions_passed, result.functions_checked
-                    );
-                    (
-                        result.integrity_valid,
-                        result.functions_checked,
-                        result.functions_passed,
-                    )
-                },
-                Err(e) => {
-                    debug!("Function manifest not available: {}", e);
-                    // Not a hard failure - manifest may not exist for this version/target
-                    (false, 0, 0)
-                },
-            };
-
+        let binary_valid = binary_result;
+        let (functions_valid, functions_checked, functions_passed) = function_result;
         let valid = binary_valid && functions_valid;
 
         SelfVerificationResult {

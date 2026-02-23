@@ -88,11 +88,12 @@ fn create_basic_agent(timeout: Duration) -> ureq::Agent {
 ///
 /// This is the Android-specific code path that bypasses tokio entirely.
 /// Uses rustls with bundled Mozilla CA certificates.
+/// All three network checks (DNS US, DNS EU, HTTPS) run IN PARALLEL using threads.
 pub fn get_license_status_blocking(
     _request: &LicenseStatusRequest,
     timeout: Duration,
 ) -> LicenseStatusResponse {
-    info!("Android sync: Starting blocking license verification");
+    info!("Android sync: Starting blocking license verification (parallel)");
     let start = std::time::Instant::now();
 
     // Try to create TLS-enabled agent, fall back to basic agent if it fails
@@ -108,19 +109,69 @@ pub fn get_license_status_blocking(
 
     let now = chrono::Utc::now().timestamp();
 
-    // Query DNS TXT records via DoH (parallel would be nice but we're blocking)
-    info!("Android sync: Querying DNS TXT records via DoH");
-    let dns_us_result = query_dns_txt_doh(&agent, DNS_US_HOSTNAME);
-    let dns_eu_result = query_dns_txt_doh(&agent, DNS_EU_HOSTNAME);
+    // Run all three network checks IN PARALLEL using threads
+    // Note: ureq agents are not Send, so we create separate agents for each thread
+    info!("Android sync: Spawning parallel network checks");
+
+    // Thread 1: DNS US via DoH
+    let timeout_clone1 = timeout;
+    let dns_us_handle = std::thread::spawn(move || {
+        let agent = match create_tls_agent(timeout_clone1) {
+            Some(a) => a,
+            None => create_basic_agent(timeout_clone1),
+        };
+        query_dns_txt_doh(&agent, DNS_US_HOSTNAME)
+    });
+
+    // Thread 2: DNS EU via DoH
+    let timeout_clone2 = timeout;
+    let dns_eu_handle = std::thread::spawn(move || {
+        let agent = match create_tls_agent(timeout_clone2) {
+            Some(a) => a,
+            None => create_basic_agent(timeout_clone2),
+        };
+        query_dns_txt_doh(&agent, DNS_EU_HOSTNAME)
+    });
+
+    // Thread 3: HTTPS steward key fetch
+    let timeout_clone3 = timeout;
+    let https_handle = std::thread::spawn(move || {
+        let agent = match create_tls_agent(timeout_clone3) {
+            Some(a) => a,
+            None => create_basic_agent(timeout_clone3),
+        };
+        fetch_steward_key_blocking(&agent, REGISTRY_URL)
+    });
+
+    // Wait for all threads to complete
+    let dns_us_result = dns_us_handle.join().unwrap_or_else(|_| {
+        Err(DohError::Http(ureq::Error::Transport(
+            ureq::Transport::new().with_message("thread panic"),
+        )))
+    });
+    let dns_eu_result = dns_eu_handle.join().unwrap_or_else(|_| {
+        Err(DohError::Http(ureq::Error::Transport(
+            ureq::Transport::new().with_message("thread panic"),
+        )))
+    });
+    let https_result = https_handle.join().unwrap_or_else(|_| {
+        Err(ureq::Error::Transport(
+            ureq::Transport::new().with_message("thread panic"),
+        ))
+    });
+
+    info!(
+        "Android sync: All parallel checks completed in {:?}",
+        start.elapsed()
+    );
 
     // Process DNS US result
     let (dns_us_reachable, dns_us_valid, dns_us_error, dns_us_error_category) = match &dns_us_result
     {
         Ok(txt_records) => {
             info!(
-                "Android sync: DNS US returned {} TXT records in {:?}",
-                txt_records.len(),
-                start.elapsed()
+                "Android sync: DNS US returned {} TXT records",
+                txt_records.len()
             );
             // For now, just verify we got records - actual validation would check content
             let valid = !txt_records.is_empty();
@@ -159,10 +210,7 @@ pub fn get_license_status_blocking(
         },
     };
 
-    // Try to fetch steward key from HTTPS endpoint
-    info!("Android sync: Fetching steward key from HTTPS");
-    let https_result = fetch_steward_key_blocking(&agent, REGISTRY_URL);
-
+    // Process HTTPS result
     let (https_reachable, https_error, https_error_category) = match &https_result {
         Ok(_response) => {
             info!(

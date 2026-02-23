@@ -145,40 +145,49 @@ fn run_verification() -> FunctionIntegrityStatus {
     })
 }
 
-/// Detect the current target triple.
+/// Detect the current target platform name.
 ///
-/// Returns the Rust target triple based on compile-time configuration.
+/// Returns platform names that match the registry manifest naming convention.
+/// - Desktop: Uses Rust target triples (e.g., `x86_64-unknown-linux-gnu`)
+/// - Android: Uses Android ABI names (e.g., `android-arm64-v8a`)
+/// - iOS: Uses platform names (e.g., `ios-arm64`, `ios-arm64-sim`)
 fn detect_target() -> &'static str {
     // Detect at compile time using cfg attributes
+
+    // Desktop Linux
     #[cfg(all(target_arch = "x86_64", target_os = "linux", target_env = "gnu"))]
     return "x86_64-unknown-linux-gnu";
 
     #[cfg(all(target_arch = "aarch64", target_os = "linux", target_env = "gnu"))]
     return "aarch64-unknown-linux-gnu";
 
+    // macOS
     #[cfg(all(target_arch = "x86_64", target_os = "macos"))]
     return "x86_64-apple-darwin";
 
     #[cfg(all(target_arch = "aarch64", target_os = "macos"))]
     return "aarch64-apple-darwin";
 
+    // Windows
     #[cfg(all(target_arch = "x86_64", target_os = "windows", target_env = "msvc"))]
     return "x86_64-pc-windows-msvc";
 
+    // Android - use ABI names to match registry manifest
     #[cfg(all(target_arch = "aarch64", target_os = "android"))]
-    return "aarch64-linux-android";
+    return "android-arm64-v8a";
 
     #[cfg(all(target_arch = "arm", target_os = "android"))]
-    return "armv7-linux-androideabi";
+    return "android-armeabi-v7a";
 
     #[cfg(all(target_arch = "x86_64", target_os = "android"))]
-    return "x86_64-linux-android";
+    return "android-x86_64";
 
+    // iOS - use platform names to match registry manifest
     #[cfg(all(target_arch = "aarch64", target_os = "ios", not(target_abi = "sim")))]
-    return "aarch64-apple-ios";
+    return "ios-arm64";
 
     #[cfg(all(target_arch = "aarch64", target_os = "ios", target_abi = "sim"))]
-    return "aarch64-apple-ios-sim";
+    return "ios-arm64-sim";
 
     // Fallback for unknown targets
     #[cfg(not(any(
@@ -299,14 +308,18 @@ mod tests {
     fn test_detect_target() {
         let target = detect_target();
         assert!(!target.is_empty());
-        // Should be a known target or "unknown"
+        // Should be a known platform name or "unknown"
+        // Desktop: Rust triples (linux, darwin, windows)
+        // Mobile: Platform names (android-*, ios-*)
         assert!(
             target.contains("linux")
                 || target.contains("darwin")
                 || target.contains("windows")
-                || target.contains("android")
-                || target.contains("ios")
-                || target == "unknown"
+                || target.starts_with("android-")
+                || target.starts_with("ios-")
+                || target == "unknown",
+            "Unexpected target: {}",
+            target
         );
     }
 

@@ -594,11 +594,32 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
     Ok(hex::encode(hash))
 }
 
-/// Get the current target triple at compile time.
+/// Get the current target platform name at compile time.
 ///
-/// Returns the Rust target triple (e.g., "x86_64-unknown-linux-gnu").
+/// Maps Rust target triples to registry platform names:
+/// - Desktop: Uses Rust target triples (e.g., `x86_64-unknown-linux-gnu`)
+/// - Android: Uses Android ABI names (e.g., `android-arm64-v8a`)
+/// - iOS: Uses platform names (e.g., `ios-arm64`, `ios-arm64-sim`)
 pub fn current_target() -> &'static str {
-    env!("TARGET")
+    // Get the Rust target triple from build environment
+    const TARGET: &str = env!("TARGET");
+
+    // Map to registry platform names
+    match TARGET {
+        // Android - map to ABI names
+        "aarch64-linux-android" => "android-arm64-v8a",
+        "armv7-linux-androideabi" => "android-armeabi-v7a",
+        "x86_64-linux-android" => "android-x86_64",
+        "i686-linux-android" => "android-x86",
+
+        // iOS - map to platform names
+        "aarch64-apple-ios" => "ios-arm64",
+        "aarch64-apple-ios-sim" => "ios-arm64-sim",
+        "x86_64-apple-ios" => "ios-x86_64-sim",
+
+        // Desktop - keep Rust target triples
+        _ => TARGET,
+    }
 }
 
 /// Verify the running binary against a registry manifest.
