@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "aws-lc-rs",
  "ed25519-dalek",
@@ -570,11 +570,11 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "async-trait",
  "block2",
- "core-foundation 0.9.4",
+ "core-foundation",
  "core-foundation-sys",
  "dirs",
  "ed25519-dalek",
@@ -585,7 +585,7 @@ dependencies = [
  "p256",
  "rand_core 0.6.4",
  "secret-service",
- "security-framework 2.11.1",
+ "security-framework",
  "security-framework-sys",
  "serde",
  "serde_json",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -656,7 +656,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "0.7.5"
+version = "0.7.6"
 dependencies = [
  "android_logger",
  "cbindgen",
@@ -798,16 +798,6 @@ name = "core-foundation"
 version = "0.9.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "91e195e091a93c46f7102ec7818a2aa394e1e1771c3ab4825963fa03e45afb8f"
-dependencies = [
- "core-foundation-sys",
- "libc",
-]
-
-[[package]]
-name = "core-foundation"
-version = "0.10.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b2a6cd9ae233e7f62ba4e9353e81a88df7fc8a5987b8d445b4d90c879bd156f6"
 dependencies = [
  "core-foundation-sys",
  "libc",
@@ -1551,7 +1541,7 @@ dependencies = [
  "once_cell",
  "rand 0.8.5",
  "rustls 0.21.12",
- "rustls-native-certs 0.6.3",
+ "rustls-native-certs",
  "rustls-pemfile",
  "thiserror 1.0.69",
  "tinyvec",
@@ -1577,7 +1567,7 @@ dependencies = [
  "rand 0.8.5",
  "resolv-conf",
  "rustls 0.21.12",
- "rustls-native-certs 0.6.3",
+ "rustls-native-certs",
  "smallvec",
  "thiserror 1.0.69",
  "tokio",
@@ -1699,11 +1689,11 @@ dependencies = [
  "hyper",
  "hyper-util",
  "rustls 0.23.36",
- "rustls-native-certs 0.8.3",
  "rustls-pki-types",
  "tokio",
  "tokio-rustls 0.26.4",
  "tower-service",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -2361,12 +2351,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d05e27ee213611ffe7d6348b942e8f942b37114c00cc03cec254295a4a17852e"
 
 [[package]]
-name = "openssl-probe"
-version = "0.2.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
-
-[[package]]
 name = "option-ext"
 version = "0.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2954,7 +2938,6 @@ dependencies = [
  "pin-project-lite",
  "quinn",
  "rustls 0.23.36",
- "rustls-native-certs 0.8.3",
  "rustls-pki-types",
  "serde",
  "serde_json",
@@ -2969,6 +2952,7 @@ dependencies = [
  "wasm-bindgen",
  "wasm-bindgen-futures",
  "web-sys",
+ "webpki-roots 1.0.6",
 ]
 
 [[package]]
@@ -3103,22 +3087,10 @@ version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a9aace74cb666635c918e9c12bc0d348266037aa8eb599b5cba565709a8dff00"
 dependencies = [
- "openssl-probe 0.1.6",
+ "openssl-probe",
  "rustls-pemfile",
  "schannel",
- "security-framework 2.11.1",
-]
-
-[[package]]
-name = "rustls-native-certs"
-version = "0.8.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "612460d5f7bea540c490b2b6395d8e34a953e52b491accd6c86c8164c5932a63"
-dependencies = [
- "openssl-probe 0.2.1",
- "rustls-pki-types",
- "schannel",
- "security-framework 3.5.1",
+ "security-framework",
 ]
 
 [[package]]
@@ -3279,20 +3251,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
 dependencies = [
  "bitflags 2.10.0",
- "core-foundation 0.9.4",
- "core-foundation-sys",
- "libc",
- "security-framework-sys",
-]
-
-[[package]]
-name = "security-framework"
-version = "3.5.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3297343eaf830f66ede390ea39da1d462b6b0c1b000f420d0a83f898bbbe6ef"
-dependencies = [
- "bitflags 2.10.0",
- "core-foundation 0.10.1",
+ "core-foundation",
  "core-foundation-sys",
  "libc",
  "security-framework-sys",

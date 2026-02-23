@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.5"
+version = "0.7.6"
 edition = "2021"
 rust-version = "1.85"
 license = "AGPL-3.0-or-later"
@@ -74,9 +74,9 @@ chrono = { version = "0.4", features = ["serde"] }
 hickory-resolver = { version = "0.24", features = ["dns-over-https-rustls", "tokio-runtime", "native-certs"] }
 
 # HTTP client
-# rustls-tls-native-roots: uses platform's native certificate store (important for Android)
-# Android's bundled certs may differ from Mozilla's webpki-roots
-reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json"] }
+# Uses rustls with bundled Mozilla CA certs (webpki-roots) for cross-platform compatibility
+# This works on Android where rustls-native-certs fails to find system certs
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots", "json"] }
 
 # Blocking HTTP client for Android (tokio async I/O doesn't work on JNI threads)
 # Uses rustls with native-certs on desktop, native-tls on Android
