@@ -27,7 +27,7 @@ pub use factory::{
 };
 
 #[cfg(target_os = "android")]
-pub use android::AndroidKeystoreSigner;
+pub use android::{AndroidKeystoreSigner, HardwareWrappedEd25519Signer};
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 pub use ios::SecureEnclaveSigner;

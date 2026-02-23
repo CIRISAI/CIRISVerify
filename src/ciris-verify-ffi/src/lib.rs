@@ -50,6 +50,8 @@ mod constructor;
 #[cfg(target_os = "android")]
 mod android_sync;
 
+// Android logging: using tracing-log bridge to route tracing events -> log crate -> android_logger -> logcat
+
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::ptr;
@@ -309,26 +311,84 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
         static ANDROID_LOGGING_INIT: Once = Once::new();
 
         ANDROID_LOGGING_INIT.call_once(|| {
-            // Initialize android_logger for the log crate
+            // Initialize android_logger for the log crate (used by dependencies)
             android_logger::init_once(
                 android_logger::Config::default()
                     .with_max_level(log::LevelFilter::Debug)
                     .with_tag("CIRISVerify"),
             );
 
-            // Set up tracing subscriber that outputs to stderr (which goes to logcat on Android)
-            // Use fmt subscriber with full formatting for visibility
-            let subscriber = tracing_subscriber::fmt()
-                .with_max_level(tracing::Level::DEBUG)
-                .with_target(true)
-                .with_thread_ids(false)
-                .with_file(false)
-                .with_line_number(false)
-                .with_ansi(false) // No ANSI colors in logcat
-                .compact()
-                .finish();
+            // Direct logcat test to verify the mechanism works
+            {
+                use std::ffi::CString;
+                use std::os::raw::c_char;
+                const ANDROID_LOG_INFO: i32 = 4;
+                extern "C" {
+                    fn __android_log_write(prio: i32, tag: *const c_char, text: *const c_char) -> i32;
+                }
+                let tag = CString::new("CIRISVerify").unwrap();
+                let msg = CString::new("=== CIRISVerify FFI init starting (v0.7.16-log) ===").unwrap();
+                unsafe {
+                    __android_log_write(ANDROID_LOG_INFO, tag.as_ptr(), msg.as_ptr());
+                }
+            }
 
-            tracing::subscriber::set_global_default(subscriber).ok();
+            // Custom tracing layer that outputs to Android log
+            struct AndroidTracingLayer;
+
+            impl<S> tracing_subscriber::layer::Layer<S> for AndroidTracingLayer
+            where
+                S: tracing::Subscriber,
+            {
+                fn on_event(
+                    &self,
+                    event: &tracing::Event<'_>,
+                    _ctx: tracing_subscriber::layer::Context<'_, S>,
+                ) {
+                    // Format the event
+                    let mut visitor = LogVisitor { message: String::new() };
+                    event.record(&mut visitor);
+
+                    let level = event.metadata().level();
+                    let target = event.metadata().target();
+                    let msg = format!("[{}] {}: {}", level, target, visitor.message);
+
+                    // Output via log crate which goes to android_logger
+                    match *level {
+                        tracing::Level::ERROR => log::error!("{}", msg),
+                        tracing::Level::WARN => log::warn!("{}", msg),
+                        tracing::Level::INFO => log::info!("{}", msg),
+                        tracing::Level::DEBUG => log::debug!("{}", msg),
+                        tracing::Level::TRACE => log::trace!("{}", msg),
+                    }
+                }
+            }
+
+            struct LogVisitor {
+                message: String,
+            }
+
+            impl tracing::field::Visit for LogVisitor {
+                fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+                    if field.name() == "message" {
+                        self.message = format!("{:?}", value);
+                    } else {
+                        if !self.message.is_empty() {
+                            self.message.push_str(", ");
+                        }
+                        self.message.push_str(&format!("{}={:?}", field.name(), value));
+                    }
+                }
+            }
+
+            // Set up tracing subscriber with our custom layer
+            use tracing_subscriber::layer::SubscriberExt;
+            use tracing_subscriber::util::SubscriberInitExt;
+
+            let _ = tracing_subscriber::registry()
+                .with(tracing_subscriber::filter::LevelFilter::DEBUG)
+                .with(AndroidTracingLayer)
+                .try_init();
         });
     }
 
@@ -1745,7 +1805,7 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
     };
 
     // Run attestation
-    let result: FullAttestationResult =
+    let mut result: FullAttestationResult =
         match handle.runtime.block_on(engine.run_attestation(request)) {
             Ok(r) => r,
             Err(e) => {
@@ -1754,11 +1814,73 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
             },
         };
 
+    // Populate key_attestation with signer info
+    let diag = handle.ed25519_signer.diagnostics();
+    let has_key = handle.ed25519_signer.has_key();
+    let key_type = if has_key { "portal" } else { "ephemeral" };
+
+    // Get public key and compute fingerprint
+    let (ed25519_fingerprint, public_key_hex) = if has_key {
+        match handle.ed25519_signer.get_public_key() {
+            Some(pk) => {
+                let fingerprint = ciris_verify_core::registry::compute_ed25519_fingerprint(&pk);
+                (fingerprint, hex::encode(&pk))
+            }
+            None => (String::new(), String::new()),
+        }
+    } else {
+        (String::new(), String::new())
+    };
+
+    // Parse diagnostics for hardware_backed and storage_mode
+    let hardware_backed = diag.contains("hardware_backed: true");
+    let storage_mode = if diag.contains("AES-256-GCM") {
+        "HW-AES-256-GCM (Android Keystore)".to_string()
+    } else if diag.contains("SecureEnclave") {
+        "SecureEnclave".to_string()
+    } else if diag.contains("TPM") {
+        "TPM".to_string()
+    } else {
+        "Software".to_string()
+    };
+
+    result.key_attestation = Some(ciris_verify_core::unified::KeyAttestationResult {
+        key_type: key_type.to_string(),
+        hardware_type: if hardware_backed { "HardwareBacked" } else { "Software" }.to_string(),
+        has_valid_signature: has_key,
+        binary_version: env!("CARGO_PKG_VERSION").to_string(),
+        running_in_vm: false, // TODO: detect VM
+        classical_signature: String::new(), // Filled during actual attestation signing
+        pqc_available: false, // TODO: check PQC signer
+        hardware_backed,
+        storage_mode: storage_mode.clone(),
+        ed25519_fingerprint: ed25519_fingerprint.clone(),
+        mldsa_fingerprint: None,
+    });
+
+    // Prepend key attestation info to diagnostics
+    let key_diag = format!(
+        "=== KEY ATTESTATION ===\n\
+         Key type: {} ({})\n\
+         Storage: {}\n\
+         Ed25519 fingerprint: {}\n\
+         Public key: {}...\n\n",
+        key_type,
+        if hardware_backed { "hardware-backed" } else { "software" },
+        storage_mode,
+        if ed25519_fingerprint.is_empty() { "N/A" } else { &ed25519_fingerprint },
+        if public_key_hex.len() >= 16 { &public_key_hex[..16] } else { &public_key_hex }
+    );
+    result.diagnostics = format!("{}{}", key_diag, result.diagnostics);
+
     tracing::info!(
         valid = result.valid,
         level = result.level,
         checks_passed = result.checks_passed,
         checks_total = result.checks_total,
+        key_type = %key_type,
+        hardware_backed = hardware_backed,
+        ed25519_fingerprint = %ed25519_fingerprint,
         "Unified attestation complete"
     );
 

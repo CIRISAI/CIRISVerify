@@ -140,20 +140,63 @@ fn hash_file(path: &Path) -> std::io::Result<String> {
 
 /// Verify the manifest's own integrity (manifest_hash field).
 fn verify_manifest_integrity(manifest: &FileManifest) -> bool {
+    tracing::info!(
+        "verify_manifest_integrity: starting with {} files, stored_hash='{}'",
+        manifest.files.len(),
+        &manifest.manifest_hash
+    );
+
+    // Check for empty manifest
+    if manifest.files.is_empty() {
+        tracing::error!("verify_manifest_integrity: FAILED - manifest has 0 files!");
+        return false;
+    }
+
+    // Check for empty/missing manifest hash
+    if manifest.manifest_hash.is_empty() {
+        tracing::error!("verify_manifest_integrity: FAILED - manifest_hash is empty!");
+        return false;
+    }
+
     let mut hasher = Sha256::new();
     // Hash all file hashes in sorted order (BTreeMap is already sorted)
-    for hash in manifest.files.values() {
+    let mut hash_count = 0;
+    for (path, hash) in manifest.files.iter() {
         hasher.update(hash.as_bytes());
+        hash_count += 1;
+        // Log first 3 entries for debugging
+        if hash_count <= 3 {
+            tracing::debug!(
+                "verify_manifest_integrity: hashing file #{}: path='{}', hash='{}'",
+                hash_count,
+                path,
+                &hash[..std::cmp::min(16, hash.len())]
+            );
+        }
     }
     let computed = hex::encode(hasher.finalize());
-    let matches = super::constant_time_eq(computed.as_bytes(), manifest.manifest_hash.as_bytes());
+
+    // Strip "sha256:" prefix from stored hash if present
+    let stored_clean = manifest.manifest_hash.strip_prefix("sha256:").unwrap_or(&manifest.manifest_hash);
+
+    let matches = super::constant_time_eq(computed.as_bytes(), stored_clean.as_bytes());
 
     tracing::info!(
-        "verify_manifest_integrity: computed={}, stored={}, matches={}",
+        "verify_manifest_integrity: hashed {} files, computed='{}', stored='{}', matches={}",
+        hash_count,
         &computed[..std::cmp::min(16, computed.len())],
-        &manifest.manifest_hash[..std::cmp::min(16, manifest.manifest_hash.len())],
+        &stored_clean[..std::cmp::min(16, stored_clean.len())],
         matches
     );
+
+    if !matches {
+        tracing::warn!(
+            "verify_manifest_integrity: HASH MISMATCH! This could mean:\n\
+             1. Registry uses different hash algorithm (JSON hash vs concatenated values)\n\
+             2. File ordering differs between registry and local\n\
+             3. Manifest was modified in transit"
+        );
+    }
 
     matches
 }
@@ -344,21 +387,35 @@ pub fn check_spot(manifest: &FileManifest, agent_root: &Path, count: usize) -> F
 /// binary integrity and Play Integrity on mobile platforms.
 pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityResult {
     tracing::info!(
-        "check_available: starting partial check, agent_root={:?}, manifest_files={}",
+        "check_available: === STARTING PARTIAL FILE CHECK ===\n  \
+         agent_root={:?}\n  \
+         manifest_files={}\n  \
+         manifest_hash='{}'",
         agent_root,
-        manifest.files.len()
+        manifest.files.len(),
+        &manifest.manifest_hash
     );
 
-    // Log if agent_root exists
+    // Log if agent_root exists and list first few entries
     if !agent_root.exists() {
         tracing::error!("check_available: agent_root does NOT exist: {:?}", agent_root);
     } else {
         tracing::info!("check_available: agent_root exists: {:?}", agent_root);
+        // Try to list first few entries
+        if let Ok(entries) = std::fs::read_dir(agent_root) {
+            let first_entries: Vec<_> = entries.take(5).filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+            tracing::info!("check_available: agent_root contains (first 5): {:?}", first_entries);
+        }
     }
 
     // First, verify the manifest itself
+    tracing::info!("check_available: verifying manifest integrity...");
     if !verify_manifest_integrity(manifest) {
-        tracing::error!("check_available: manifest integrity verification FAILED");
+        tracing::error!(
+            "check_available: MANIFEST INTEGRITY FAILED - returning files_checked=0\n  \
+             This means the hash of concatenated file hashes doesn't match manifest_hash.\n  \
+             Check if registry stores a different hash format."
+        );
         return FileIntegrityResult {
             integrity_valid: false,
             total_files: manifest.files.len(),
@@ -372,7 +429,7 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
             partial_check: true,
         };
     }
-    tracing::info!("check_available: manifest integrity OK");
+    tracing::info!("check_available: manifest integrity PASSED, now checking files...");
 
     let mut files_checked = 0usize;
     let mut files_passed = 0usize;

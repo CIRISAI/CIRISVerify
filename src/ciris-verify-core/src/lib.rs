@@ -97,8 +97,9 @@ pub use audit::{
     ChainSummary,
 };
 pub use registry::{
-    compute_self_hash, current_target, verify_self_against_manifest, BinaryManifest, BuildRecord,
-    FileManifest as RegistryManifest, RegistryClient,
+    compute_ed25519_fingerprint, compute_self_hash, current_target, verify_self_against_manifest,
+    BinaryManifest, BuildRecord, FileManifest as RegistryManifest, KeyVerificationResponse,
+    RegistryClient,
 };
 pub use unified::{
     FullAttestationRequest, FullAttestationResult, IntegrityCheckResult, SourceCheckResult,

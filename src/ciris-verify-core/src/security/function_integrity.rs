@@ -319,10 +319,20 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
 
     let timestamp = current_timestamp();
 
-    // Get code base address
-    let code_base = match get_code_base_linux() {
-        Some(base) => base,
+    // Get code base address - use platform-specific function
+    #[cfg(target_os = "android")]
+    let code_base_opt = get_code_base_android();
+
+    #[cfg(all(target_os = "linux", not(target_os = "android")))]
+    let code_base_opt = get_code_base_linux();
+
+    let code_base = match code_base_opt {
+        Some(base) => {
+            tracing::info!("verify_functions: using code base 0x{:x}", base);
+            base
+        }
         None => {
+            tracing::error!("verify_functions: could not determine code base address");
             return FunctionIntegrityResult {
                 integrity_valid: false,
                 functions_checked: 0,
@@ -515,10 +525,10 @@ pub fn verify_functions(_manifest: &FunctionManifest) -> FunctionIntegrityResult
 // Platform-specific code base detection
 // =============================================================================
 
-/// Get the base address of the code section on Linux/Android.
+/// Get the base address of the code section on Linux (not Android).
 ///
 /// Uses `dl_iterate_phdr` to find the main executable's load address.
-#[cfg(any(target_os = "linux", target_os = "android"))]
+#[cfg(all(target_os = "linux", not(target_os = "android")))]
 fn get_code_base_linux() -> Option<usize> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -573,6 +583,71 @@ fn get_code_base_linux() -> Option<usize> {
     } else {
         None
     }
+}
+
+/// Get the base address of libciris_verify_ffi.so on Android.
+///
+/// On Android, the "main executable" is app_process64 (Android runtime), not our library.
+/// We need to find libciris_verify_ffi.so's load address from /proc/self/maps.
+#[cfg(target_os = "android")]
+fn get_code_base_android() -> Option<usize> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static BASE: AtomicUsize = AtomicUsize::new(0);
+    static FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    // Only compute once
+    if FOUND.load(Ordering::Relaxed) {
+        let base = BASE.load(Ordering::Relaxed);
+        tracing::debug!("get_code_base_android: cached base=0x{:x}", base);
+        return Some(base);
+    }
+
+    const LIB_NAME: &str = "libciris_verify_ffi.so";
+    tracing::info!("get_code_base_android: searching for {} in /proc/self/maps", LIB_NAME);
+
+    let maps_file = match File::open("/proc/self/maps") {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::error!("get_code_base_android: cannot open /proc/self/maps: {}", e);
+            return None;
+        }
+    };
+
+    let reader = BufReader::new(maps_file);
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+
+        // Look for our library with r-xp (read-execute) permissions (code segment)
+        if line.contains(LIB_NAME) && line.contains("r-xp") {
+            // /proc/self/maps format:
+            // 7f1234567000-7f123456a000 r-xp 00000000 fd:01 1234567 /path/to/lib.so
+            // The first address is the base load address for this segment
+            if let Some(addr_str) = line.split('-').next() {
+                if let Ok(base) = usize::from_str_radix(addr_str, 16) {
+                    tracing::info!(
+                        "get_code_base_android: found {} at base=0x{:x}",
+                        LIB_NAME, base
+                    );
+                    BASE.store(base, Ordering::Relaxed);
+                    FOUND.store(true, Ordering::Relaxed);
+                    return Some(base);
+                }
+            }
+        }
+    }
+
+    tracing::warn!(
+        "get_code_base_android: {} not found in /proc/self/maps with r-xp permissions",
+        LIB_NAME
+    );
+    None
 }
 
 /// Get the base address of the code section on macOS/iOS.

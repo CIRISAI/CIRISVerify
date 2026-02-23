@@ -35,6 +35,8 @@ keyring = { version = "3", optional = true }
 # Platform-specific
 [target.'cfg(target_os = "android")'.dependencies]
 jni = { version = "0.21", optional = true }
+# Tokio for blocking on async hardware operations in sync context
+tokio = { version = "1.41", features = ["rt"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
 security-framework = { version = "2.9", optional = true }

@@ -537,6 +537,118 @@ impl RegistryClient {
 
         Ok(result)
     }
+
+    // =========================================================================
+    // Key Verification
+    // =========================================================================
+
+    /// Verify an agent signing key by its Ed25519 fingerprint.
+    ///
+    /// Calls GET /v1/verify/key/{fingerprint} to check if a signing key
+    /// is registered and active in the Portal.
+    ///
+    /// # Arguments
+    ///
+    /// * `fingerprint` - SHA-256 hex of the Ed25519 public key (64 hex chars)
+    #[instrument(skip(self), fields(fingerprint = %fingerprint))]
+    pub async fn verify_key_by_fingerprint(
+        &self,
+        fingerprint: &str,
+    ) -> Result<KeyVerificationResponse, VerifyError> {
+        let url = format!("{}/v1/verify/key/{}", self.base_url, fingerprint);
+        debug!("Verifying key by fingerprint at {}", url);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Key verification request failed: {}", e),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(VerifyError::HttpsError {
+                message: format!("Key verification HTTP error: {}", response.status()),
+            });
+        }
+
+        let result = response
+            .json::<KeyVerificationResponse>()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Failed to parse key verification response: {}", e),
+            })?;
+
+        info!(
+            found = result.found,
+            status = ?result.status,
+            key_id = ?result.key_id,
+            "Key verification complete"
+        );
+
+        Ok(result)
+    }
+}
+
+/// Response from key verification endpoint.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct KeyVerificationResponse {
+    /// Whether the key was found in the registry.
+    pub found: bool,
+    /// Key ID (UUID) if found.
+    pub key_id: Option<String>,
+    /// Organization ID that owns this key.
+    pub org_id: Option<String>,
+    /// Key status as string (KEY_ACTIVE, KEY_ROTATED, KEY_REVOKED, KEY_PENDING, NOT_FOUND).
+    pub status: String,
+    /// Key status as numeric code.
+    pub status_code: i32,
+    /// Ed25519 fingerprint.
+    #[serde(default)]
+    pub ed25519_fingerprint: Option<String>,
+    /// ML-DSA-65 fingerprint.
+    #[serde(default)]
+    pub ml_dsa_65_fingerprint: Option<String>,
+    /// Ed25519 public key (base64).
+    #[serde(default)]
+    pub ed25519_public_key: Option<String>,
+    /// ML-DSA-65 public key (base64).
+    #[serde(default)]
+    pub ml_dsa_65_public_key: Option<String>,
+    /// Activation timestamp (Unix).
+    #[serde(default)]
+    pub activated_at: Option<i64>,
+    /// Revocation timestamp (Unix).
+    #[serde(default)]
+    pub revoked_at: Option<i64>,
+    /// Revocation reason.
+    #[serde(default)]
+    pub revocation_reason: Option<String>,
+}
+
+impl KeyVerificationResponse {
+    /// Check if the key is valid for signing (found and active).
+    pub fn is_valid_for_signing(&self) -> bool {
+        self.found && (self.status == "KEY_ACTIVE" || self.status_code == 1)
+    }
+
+    /// Check if the key is still valid during grace period (rotated).
+    pub fn is_valid_rotated(&self) -> bool {
+        self.found && (self.status == "KEY_ROTATED" || self.status_code == 2)
+    }
+
+    /// Check if the key has been revoked.
+    pub fn is_revoked(&self) -> bool {
+        self.found && (self.status == "KEY_REVOKED" || self.status_code == 3)
+    }
+}
+
+/// Compute Ed25519 fingerprint (SHA-256 hex) from a public key.
+pub fn compute_ed25519_fingerprint(public_key: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+    let hash = Sha256::digest(public_key);
+    hex::encode(hash)
 }
 
 /// Response from listing function manifest targets.
@@ -558,6 +670,7 @@ pub struct FunctionManifestTargets {
 ///
 /// # Platform Notes
 ///
+/// - Android: Discovers `libciris_verify_ffi.so` via `/proc/self/maps`
 /// - Linux: Reads from `/proc/self/exe`
 /// - macOS/Windows: Uses `std::env::current_exe()`
 pub fn compute_self_hash() -> Result<String, VerifyError> {
@@ -565,6 +678,27 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
     use std::fs::File;
     use std::io::Read;
 
+    // On Android, current_exe() returns /system/bin/app_process64 which is the
+    // Android runtime, not our library. We need to find libciris_verify_ffi.so.
+    #[cfg(target_os = "android")]
+    let exe_path = {
+        match find_library_path("libciris_verify_ffi.so") {
+            Some(path) => {
+                tracing::info!("compute_self_hash (Android): found .so at {:?}", path);
+                path
+            }
+            None => {
+                tracing::warn!(
+                    "compute_self_hash (Android): could not find libciris_verify_ffi.so, falling back to current_exe()"
+                );
+                std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
+                    message: format!("Cannot determine executable path: {}", e),
+                })?
+            }
+        }
+    };
+
+    #[cfg(not(target_os = "android"))]
     let exe_path = std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
         message: format!("Cannot determine executable path: {}", e),
     })?;
@@ -600,32 +734,62 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
     Ok(hex::encode(hash))
 }
 
+/// Find a loaded library's path by parsing /proc/self/maps.
+///
+/// On Android, shared libraries are loaded into the process address space
+/// and their paths are listed in /proc/self/maps. This function finds the
+/// first mapping for a library with the given name.
+#[cfg(target_os = "android")]
+fn find_library_path(lib_name: &str) -> Option<std::path::PathBuf> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+
+    let maps_file = match File::open("/proc/self/maps") {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("find_library_path: cannot open /proc/self/maps: {}", e);
+            return None;
+        }
+    };
+
+    let reader = BufReader::new(maps_file);
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+
+        // /proc/self/maps format:
+        // address          perms offset  dev   inode   pathname
+        // 7f1234567000-... r-xp  00000000 fd:01 1234567 /path/to/lib.so
+        if line.contains(lib_name) {
+            // Find the path - it's the last whitespace-separated field
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 6 {
+                let full_path = parts[5..].join(" ");
+                if full_path.contains(lib_name) {
+                    tracing::info!(
+                        "find_library_path: found {} at {}",
+                        lib_name,
+                        full_path
+                    );
+                    return Some(std::path::PathBuf::from(full_path));
+                }
+            }
+        }
+    }
+
+    tracing::warn!("find_library_path: {} not found in /proc/self/maps", lib_name);
+    None
+}
+
 /// Get the current target platform name at compile time.
 ///
-/// Maps Rust target triples to registry platform names:
-/// - Desktop: Uses Rust target triples (e.g., `x86_64-unknown-linux-gnu`)
-/// - Android: Uses Android ABI names (e.g., `android-arm64-v8a`)
-/// - iOS: Uses platform names (e.g., `ios-arm64`, `ios-arm64-sim`)
+/// Returns the Rust target triple directly - the registry uses these
+/// as keys (e.g., `aarch64-linux-android`, `x86_64-unknown-linux-gnu`).
 pub fn current_target() -> &'static str {
-    // Get the Rust target triple from build environment
-    const TARGET: &str = env!("TARGET");
-
-    // Map to registry platform names
-    match TARGET {
-        // Android - map to ABI names
-        "aarch64-linux-android" => "android-arm64-v8a",
-        "armv7-linux-androideabi" => "android-armeabi-v7a",
-        "x86_64-linux-android" => "android-x86_64",
-        "i686-linux-android" => "android-x86",
-
-        // iOS - map to platform names
-        "aarch64-apple-ios" => "ios-arm64",
-        "aarch64-apple-ios-sim" => "ios-arm64-sim",
-        "x86_64-apple-ios" => "ios-x86_64-sim",
-
-        // Desktop - keep Rust target triples
-        _ => TARGET,
-    }
+    env!("TARGET")
 }
 
 /// Verify the running binary against a registry manifest.

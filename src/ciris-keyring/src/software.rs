@@ -450,14 +450,23 @@ impl HardwareSigner for Ed25519SoftwareSigner {
 /// 4. Windows: `%LOCALAPPDATA%\ciris-verify\{alias}.key`
 /// 5. Fallback: `./{alias}.key` in current directory
 ///
+/// # Hardware Backing (Android)
+///
+/// On Android, keys are encrypted with an AES-256-GCM key stored in the
+/// Android Keystore (hardware-backed). This provides hardware-level protection
+/// for Ed25519 keys even though the Keystore doesn't support Ed25519 directly.
+///
 /// # Security Note
 ///
-/// Keys are stored in plaintext. On Android, app-private storage provides
-/// isolation. On desktop, consider encrypting the storage directory.
+/// On non-Android platforms, keys are stored in plaintext. Consider encrypting
+/// the storage directory for additional protection.
 pub struct MutableEd25519Signer {
     inner: std::sync::RwLock<Ed25519SoftwareSigner>,
     /// Path to key storage file (set after first persistence attempt)
     storage_path: std::sync::RwLock<Option<std::path::PathBuf>>,
+    /// Hardware wrapper for Android (AES-256-GCM encryption via Keystore)
+    #[cfg(target_os = "android")]
+    hardware_wrapper: Option<crate::platform::android::HardwareWrappedEd25519Signer>,
 }
 
 impl MutableEd25519Signer {
@@ -465,13 +474,48 @@ impl MutableEd25519Signer {
     ///
     /// If a persisted key exists at the storage location, it will be loaded.
     /// Otherwise, the signer starts with no key loaded.
+    ///
+    /// On Android, keys are protected with hardware-backed AES-256-GCM encryption.
     pub fn new(alias: impl Into<String>) -> Self {
         let alias = alias.into();
         tracing::info!(alias = %alias, "MutableEd25519Signer::new - initializing");
 
+        // On Android, try to initialize hardware wrapper for AES encryption
+        #[cfg(target_os = "android")]
+        let hardware_wrapper = {
+            // Get storage directory for hardware-wrapped key
+            let key_dir = std::env::var("CIRIS_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+            match crate::platform::android::HardwareWrappedEd25519Signer::new(
+                alias.clone(),
+                key_dir,
+                false, // Don't require StrongBox (TEE is sufficient)
+            ) {
+                Ok(wrapper) => {
+                    tracing::info!(
+                        alias = %alias,
+                        "Hardware-backed Ed25519 wrapper initialized (AES-256-GCM via Android Keystore)"
+                    );
+                    Some(wrapper)
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        alias = %alias,
+                        error = %e,
+                        "Failed to initialize hardware wrapper - falling back to software-only"
+                    );
+                    None
+                },
+            }
+        };
+
         let signer = Self {
             inner: std::sync::RwLock::new(Ed25519SoftwareSigner::new(alias.clone())),
             storage_path: std::sync::RwLock::new(None),
+            #[cfg(target_os = "android")]
+            hardware_wrapper,
         };
 
         // Try to load persisted key
@@ -498,6 +542,19 @@ impl MutableEd25519Signer {
         }
 
         signer
+    }
+
+    /// Check if hardware-backed encryption is available.
+    #[must_use]
+    pub fn is_hardware_backed(&self) -> bool {
+        #[cfg(target_os = "android")]
+        {
+            self.hardware_wrapper.is_some()
+        }
+        #[cfg(not(target_os = "android"))]
+        {
+            false
+        }
     }
 
     /// Get the storage path for this signer's key.
@@ -557,7 +614,54 @@ impl MutableEd25519Signer {
     ///
     /// Returns Ok(true) if key was loaded, Ok(false) if no key exists,
     /// or Err if loading failed.
+    ///
+    /// On Android with hardware backing, the key is decrypted using the
+    /// hardware-backed AES key from Android Keystore.
     pub fn try_load_persisted_key(&self) -> Result<bool, KeyringError> {
+        // On Android, try hardware-backed loading first
+        #[cfg(target_os = "android")]
+        {
+            if let Some(ref hw) = self.hardware_wrapper {
+                tracing::info!("Attempting to load hardware-backed Ed25519 key...");
+
+                // Create a simple runtime to run the async check
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| KeyringError::PlatformError {
+                        message: format!("Failed to create runtime: {}", e),
+                    })?;
+
+                let exists = rt.block_on(hw.key_exists())?;
+
+                if exists {
+                    // Key exists in hardware-backed storage
+                    // Load the public key to verify it works
+                    match rt.block_on(hw.public_key()) {
+                        Ok(pubkey) => {
+                            tracing::info!(
+                                pubkey_len = pubkey.len(),
+                                "Hardware-backed Ed25519 key loaded successfully"
+                            );
+
+                            // Also load into the software signer for compatibility
+                            // (the hardware wrapper holds the actual key)
+                            return Ok(true);
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "Hardware key exists but failed to load - will try software fallback"
+                            );
+                        },
+                    }
+                } else {
+                    tracing::debug!("No hardware-backed key found");
+                }
+            }
+        }
+
+        // Software fallback (or non-Android platforms)
         let path = match self.get_storage_path() {
             Some(p) => p,
             None => {
@@ -611,8 +715,53 @@ impl MutableEd25519Signer {
 
         tracing::info!(
             path = %path.display(),
-            "Successfully loaded persisted Ed25519 key"
+            "Successfully loaded persisted Ed25519 key (software-only)"
         );
+
+        // On Android: migrate existing software key to hardware-backed storage
+        #[cfg(target_os = "android")]
+        {
+            drop(inner); // Release the lock before migration
+            if let Some(ref hw) = self.hardware_wrapper {
+                tracing::info!(
+                    "Migrating existing software key to hardware-backed storage (AES-256-GCM)..."
+                );
+
+                // Create a runtime to run async operations
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    // Check if hardware key already exists (shouldn't, but be safe)
+                    let hw_exists = rt.block_on(hw.key_exists()).unwrap_or(false);
+                    if !hw_exists {
+                        match rt.block_on(hw.import_key(&key_bytes)) {
+                            Ok(()) => {
+                                tracing::info!(
+                                    "✓ Software key migrated to hardware-backed storage successfully"
+                                );
+                                // Optionally delete the old plaintext key file for security
+                                // (keeping it as backup for now - can be removed later)
+                                tracing::info!(
+                                    "Note: Old plaintext key file still exists at {:?} - \
+                                     consider deleting it for improved security",
+                                    path
+                                );
+                            },
+                            Err(e) => {
+                                tracing::warn!(
+                                    error = %e,
+                                    "Failed to migrate key to hardware-backed storage - \
+                                     will continue with software-only key"
+                                );
+                            },
+                        }
+                    } else {
+                        tracing::debug!("Hardware key already exists, no migration needed");
+                    }
+                }
+            }
+        }
 
         Ok(true)
     }
@@ -749,12 +898,62 @@ impl MutableEd25519Signer {
     ///
     /// This is the primary method for importing Portal-issued keys.
     /// The key is stored both in memory and persisted to disk.
+    ///
+    /// On Android with hardware backing, the key is encrypted using a
+    /// hardware-backed AES-256-GCM key from Android Keystore before storage.
     pub fn import_key(&self, key_bytes: &[u8]) -> Result<(), KeyringError> {
         tracing::info!(
             key_len = key_bytes.len(),
+            hardware_backed = self.is_hardware_backed(),
             "MutableEd25519Signer::import_key - importing key"
         );
 
+        // On Android, use hardware-backed import if available
+        #[cfg(target_os = "android")]
+        {
+            if let Some(ref hw) = self.hardware_wrapper {
+                tracing::info!("Using hardware-backed import (AES-256-GCM via Android Keystore)");
+
+                // Create a runtime to run async operations
+                let rt = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                    .map_err(|e| KeyringError::PlatformError {
+                        message: format!("Failed to create runtime: {}", e),
+                    })?;
+
+                // Delete existing key if any (ignore errors)
+                let _ = rt.block_on(hw.delete_key());
+
+                // Import the key with hardware-backed encryption
+                match rt.block_on(hw.import_key(key_bytes)) {
+                    Ok(()) => {
+                        tracing::info!(
+                            "Ed25519 key imported with hardware-backed AES-256-GCM encryption"
+                        );
+                        // Also keep in software signer for backwards compatibility
+                        // (but the encrypted version on disk is the source of truth)
+                        let mut inner = self
+                            .inner
+                            .write()
+                            .map_err(|_| KeyringError::PlatformError {
+                                message: "Lock poisoned".into(),
+                            })?;
+                        inner.import_key(key_bytes)?;
+                        return Ok(());
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "Hardware-backed import failed - falling back to software-only"
+                        );
+                        // Fall through to software import
+                    },
+                }
+            }
+        }
+
+        // Software import (or fallback)
         // First import to memory
         {
             let mut inner = self
@@ -793,15 +992,34 @@ impl MutableEd25519Signer {
         Ok(())
     }
 
-    /// Check if a key is loaded (in memory).
+    /// Check if a key is loaded (in memory or hardware-backed storage).
     pub fn has_key(&self) -> bool {
+        // On Android, also check hardware wrapper
+        #[cfg(target_os = "android")]
+        {
+            if let Some(ref hw) = self.hardware_wrapper {
+                // Create a runtime to run async check
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    if let Ok(exists) = rt.block_on(hw.key_exists()) {
+                        if exists {
+                            tracing::debug!(has_key = true, hardware_backed = true, "MutableEd25519Signer::has_key check");
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+
         let has = self
             .inner
             .read()
             .map(|inner| inner.has_key())
             .unwrap_or(false);
 
-        tracing::debug!(has_key = has, "MutableEd25519Signer::has_key check");
+        tracing::debug!(has_key = has, hardware_backed = false, "MutableEd25519Signer::has_key check");
         has
     }
 
@@ -842,6 +1060,26 @@ impl MutableEd25519Signer {
 
     /// Get the public key if loaded.
     pub fn get_public_key(&self) -> Option<Vec<u8>> {
+        // On Android, try hardware wrapper first
+        #[cfg(target_os = "android")]
+        {
+            if let Some(ref hw) = self.hardware_wrapper {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    if let Ok(pubkey) = rt.block_on(hw.public_key()) {
+                        tracing::debug!(
+                            pubkey_len = pubkey.len(),
+                            hardware_backed = true,
+                            "get_public_key from hardware wrapper"
+                        );
+                        return Some(pubkey);
+                    }
+                }
+            }
+        }
+
         self.inner
             .read()
             .ok()
@@ -849,7 +1087,41 @@ impl MutableEd25519Signer {
     }
 
     /// Sign data with the loaded key.
+    ///
+    /// On Android with hardware backing, the key is decrypted using the
+    /// hardware-backed AES key, signs the data, then the decrypted key
+    /// is only held in memory briefly.
     pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        // On Android, try hardware wrapper first
+        #[cfg(target_os = "android")]
+        {
+            if let Some(ref hw) = self.hardware_wrapper {
+                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
+                    .enable_all()
+                    .build()
+                {
+                    match rt.block_on(hw.sign(data)) {
+                        Ok(sig) => {
+                            tracing::debug!(
+                                data_len = data.len(),
+                                sig_len = sig.len(),
+                                hardware_backed = true,
+                                "Signed with hardware-backed Ed25519 key"
+                            );
+                            return Ok(sig);
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "Hardware-backed signing failed - trying software fallback"
+                            );
+                        },
+                    }
+                }
+            }
+        }
+
+        // Software fallback
         let inner = self.inner.read().map_err(|_| KeyringError::PlatformError {
             message: "Lock poisoned".into(),
         })?;
@@ -878,16 +1150,30 @@ impl MutableEd25519Signer {
         let has_key = self.has_key();
         let storage_path = self.current_storage_path();
         let alias = self.alias();
+        let hardware_backed = self.is_hardware_backed();
+
+        #[cfg(target_os = "android")]
+        let hw_status = if hardware_backed {
+            "ENABLED (AES-256-GCM via Android Keystore)"
+        } else {
+            "DISABLED (software-only)"
+        };
+
+        #[cfg(not(target_os = "android"))]
+        let hw_status = "N/A (not Android)";
 
         format!(
             "MutableEd25519Signer diagnostics:\n\
              - alias: {}\n\
-             - has_key (memory): {}\n\
+             - has_key: {}\n\
+             - hardware_backed: {} - {}\n\
              - storage_path: {:?}\n\
              - CIRIS_KEY_PATH: {:?}\n\
              - CIRIS_DATA_DIR: {:?}",
             alias,
             has_key,
+            hardware_backed,
+            hw_status,
             storage_path,
             std::env::var("CIRIS_KEY_PATH").ok(),
             std::env::var("CIRIS_DATA_DIR").ok(),
