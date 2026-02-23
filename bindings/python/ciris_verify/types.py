@@ -283,3 +283,36 @@ class BinaryIntegrityStatus(BaseModel):
     def is_available(self) -> bool:
         """Check if verification was possible (registry reachable)."""
         return self.status not in ("unavailable", "not_found", "pending")
+
+
+class PythonModuleHashes(BaseModel):
+    """Python module hashes for Android/mobile code integrity (v0.8.1).
+
+    Generated at startup by hashing all Python modules (ciris_engine, etc.).
+    Used for code integrity verification on mobile where Python is embedded in APK.
+    """
+    model_config = ConfigDict(frozen=True)
+
+    total_hash: str = Field(..., description="SHA-256 hex of all module hashes concatenated")
+    module_hashes: dict = Field(default_factory=dict, description="module_name -> SHA-256 hex")
+    module_count: int = Field(default=0, description="Number of modules hashed")
+    agent_version: str = Field(default="", description="Agent version that generated these hashes")
+    computed_at: int = Field(default=0, description="Unix timestamp when hashes were computed")
+
+
+class PythonIntegrityResult(BaseModel):
+    """Result of Python module integrity verification (v0.8.1).
+
+    Returned when python_hashes is provided to run_attestation().
+    """
+    model_config = ConfigDict(frozen=True)
+
+    valid: bool = Field(..., description="Overall integrity valid")
+    modules_checked: int = Field(default=0, description="Total modules checked")
+    modules_passed: int = Field(default=0, description="Modules that passed")
+    modules_failed: int = Field(default=0, description="Modules that failed")
+    total_hash_valid: bool = Field(default=False, description="Whether total_hash matched")
+    expected_total_hash: Optional[str] = Field(default=None, description="Expected hash from manifest")
+    actual_total_hash: str = Field(default="", description="Actual total hash from agent")
+    verification_mode: str = Field(default="", description="total_hash_only, individual_modules, or both")
+    error: Optional[str] = Field(default=None, description="Error message if verification failed")

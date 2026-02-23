@@ -29,6 +29,8 @@ from .types import (
     ValidationStatus,
     SourceDetails,
     AttestationData,
+    PythonModuleHashes,
+    PythonIntegrityResult,
 )
 from .exceptions import (
     BinaryNotFoundError,
@@ -1231,6 +1233,10 @@ class CIRISVerify:
         skip_registry: bool = False,
         skip_file_integrity: bool = False,
         skip_audit: bool = False,
+        key_fingerprint: Optional[str] = None,
+        python_hashes: Optional[PythonModuleHashes] = None,
+        expected_python_hash: Optional[str] = None,
+        partial_file_check: bool = False,
         timeout: Optional[float] = None,
     ) -> dict:
         """Run full unified attestation with all 5 verification levels.
@@ -1252,6 +1258,10 @@ class CIRISVerify:
             skip_registry: Skip registry manifest fetch (offline operation).
             skip_file_integrity: Skip file integrity checks.
             skip_audit: Skip audit trail verification.
+            key_fingerprint: Agent key fingerprint for registry verification (v0.8.1+).
+            python_hashes: Python module hashes for mobile code integrity (v0.8.1+).
+            expected_python_hash: Expected total hash for Python modules (v0.8.1+).
+            partial_file_check: Use partial file check mode (v0.8.1+).
             timeout: Operation timeout in seconds.
 
         Returns:
@@ -1262,6 +1272,8 @@ class CIRISVerify:
             - file_integrity: File integrity result (dict or None)
             - sources: Source validation results (dict)
             - audit_trail: Audit verification result (dict or None)
+            - python_integrity: Python module integrity result (dict or None, v0.8.1+)
+            - registry_key_status: Registry key verification status (str, v0.8.1+)
             - checks_passed: Number of checks passed (int)
             - checks_total: Total checks run (int)
             - diagnostics: Diagnostic information (str)
@@ -1296,9 +1308,23 @@ class CIRISVerify:
                 request_obj["audit_entries"] = audit_entries
             if portal_key_id is not None:
                 request_obj["portal_key_id"] = portal_key_id
+            if key_fingerprint is not None:
+                request_obj["key_fingerprint"] = key_fingerprint
+            if python_hashes is not None:
+                # Convert PythonModuleHashes to dict for JSON serialization
+                request_obj["python_hashes"] = {
+                    "total_hash": python_hashes.total_hash,
+                    "module_hashes": python_hashes.module_hashes,
+                    "module_count": python_hashes.module_count,
+                    "agent_version": python_hashes.agent_version,
+                    "computed_at": python_hashes.computed_at,
+                }
+            if expected_python_hash is not None:
+                request_obj["expected_python_hash"] = expected_python_hash
             request_obj["skip_registry"] = skip_registry
             request_obj["skip_file_integrity"] = skip_file_integrity
             request_obj["skip_audit"] = skip_audit
+            request_obj["partial_file_check"] = partial_file_check
 
             request_bytes = json.dumps(request_obj).encode("utf-8")
 
@@ -1343,6 +1369,10 @@ class CIRISVerify:
         skip_registry: bool = False,
         skip_file_integrity: bool = False,
         skip_audit: bool = False,
+        key_fingerprint: Optional[str] = None,
+        python_hashes: Optional[PythonModuleHashes] = None,
+        expected_python_hash: Optional[str] = None,
+        partial_file_check: bool = False,
     ) -> dict:
         """Synchronous version of run_attestation.
 
@@ -1356,6 +1386,10 @@ class CIRISVerify:
             skip_registry: Skip registry manifest fetch.
             skip_file_integrity: Skip file integrity checks.
             skip_audit: Skip audit trail verification.
+            key_fingerprint: Agent key fingerprint for registry verification (v0.8.1+).
+            python_hashes: Python module hashes for mobile code integrity (v0.8.1+).
+            expected_python_hash: Expected total hash for Python modules (v0.8.1+).
+            partial_file_check: Use partial file check mode (v0.8.1+).
 
         Returns:
             Dictionary containing FullAttestationResult.
@@ -1385,9 +1419,23 @@ class CIRISVerify:
             request_obj["audit_entries"] = audit_entries
         if portal_key_id is not None:
             request_obj["portal_key_id"] = portal_key_id
+        if key_fingerprint is not None:
+            request_obj["key_fingerprint"] = key_fingerprint
+        if python_hashes is not None:
+            # Convert PythonModuleHashes to dict for JSON serialization
+            request_obj["python_hashes"] = {
+                "total_hash": python_hashes.total_hash,
+                "module_hashes": python_hashes.module_hashes,
+                "module_count": python_hashes.module_count,
+                "agent_version": python_hashes.agent_version,
+                "computed_at": python_hashes.computed_at,
+            }
+        if expected_python_hash is not None:
+            request_obj["expected_python_hash"] = expected_python_hash
         request_obj["skip_registry"] = skip_registry
         request_obj["skip_file_integrity"] = skip_file_integrity
         request_obj["skip_audit"] = skip_audit
+        request_obj["partial_file_check"] = partial_file_check
 
         request_bytes = json.dumps(request_obj).encode("utf-8")
 
@@ -1825,6 +1873,10 @@ class MockCIRISVerify(CIRISVerify):
         skip_registry: bool = False,
         skip_file_integrity: bool = False,
         skip_audit: bool = False,
+        key_fingerprint: Optional[str] = None,
+        python_hashes: Optional[PythonModuleHashes] = None,
+        expected_python_hash: Optional[str] = None,
+        partial_file_check: bool = False,
         timeout: Optional[float] = None,
     ) -> dict:
         """Mock run_attestation — returns successful attestation."""
@@ -1837,6 +1889,7 @@ class MockCIRISVerify(CIRISVerify):
             "key_attestation": {
                 "valid": True,
                 "hardware_type": "Software",
+                "registry_key_status": "active" if key_fingerprint else "not_checked",
             },
             "file_integrity": None,  # Skipped in mock
             "sources": {
@@ -1845,6 +1898,14 @@ class MockCIRISVerify(CIRISVerify):
                 "https": {"reachable": True, "valid": True},
             },
             "audit_trail": None,  # Skipped in mock
+            "python_integrity": {
+                "valid": True,
+                "modules_checked": python_hashes.module_count if python_hashes else 0,
+                "modules_passed": python_hashes.module_count if python_hashes else 0,
+                "modules_failed": 0,
+                "total_hash_valid": True,
+            } if python_hashes else None,
+            "registry_key_status": "active" if key_fingerprint else "not_checked",
             "checks_passed": 3,
             "checks_total": 3,
             "diagnostics": "[MOCK] Using MockCIRISVerify",
@@ -1862,6 +1923,10 @@ class MockCIRISVerify(CIRISVerify):
         skip_registry: bool = False,
         skip_file_integrity: bool = False,
         skip_audit: bool = False,
+        key_fingerprint: Optional[str] = None,
+        python_hashes: Optional[PythonModuleHashes] = None,
+        expected_python_hash: Optional[str] = None,
+        partial_file_check: bool = False,
     ) -> dict:
         """Synchronous mock run_attestation."""
         if len(challenge) < 32:
@@ -1870,7 +1935,11 @@ class MockCIRISVerify(CIRISVerify):
         return {
             "valid": True,
             "level": 3,
-            "key_attestation": {"valid": True, "hardware_type": "Software"},
+            "key_attestation": {
+                "valid": True,
+                "hardware_type": "Software",
+                "registry_key_status": "active" if key_fingerprint else "not_checked",
+            },
             "file_integrity": None,
             "sources": {
                 "dns_us": {"reachable": True, "valid": True},
@@ -1878,6 +1947,14 @@ class MockCIRISVerify(CIRISVerify):
                 "https": {"reachable": True, "valid": True},
             },
             "audit_trail": None,
+            "python_integrity": {
+                "valid": True,
+                "modules_checked": python_hashes.module_count if python_hashes else 0,
+                "modules_passed": python_hashes.module_count if python_hashes else 0,
+                "modules_failed": 0,
+                "total_hash_valid": True,
+            } if python_hashes else None,
+            "registry_key_status": "active" if key_fingerprint else "not_checked",
             "checks_passed": 3,
             "checks_total": 3,
             "diagnostics": "[MOCK] Using MockCIRISVerify",
