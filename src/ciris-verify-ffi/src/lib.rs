@@ -305,11 +305,14 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
     // Initialize logging for the platform (exactly once)
     #[cfg(target_os = "android")]
     {
+        // Initialize android_logger for the log crate
         android_logger::init_once(
             android_logger::Config::default()
-                .with_max_level(log::LevelFilter::Info)
+                .with_max_level(log::LevelFilter::Debug)
                 .with_tag("CIRISVerify"),
         );
+        // Bridge tracing events to the log crate (which goes to android_logger → logcat)
+        tracing_log::LogTracer::init().ok();
     }
 
     #[cfg(target_os = "ios")]
