@@ -302,9 +302,22 @@ impl ConsensusValidator {
                     dns_us_reachable: dns_us.is_some(),
                     dns_eu_reachable: dns_eu.is_some(),
                     https_reachable: https.is_some(),
-                    dns_us_error: errors.dns_us_error,
-                    dns_eu_error: errors.dns_eu_error,
-                    https_error: errors.https_error,
+                    // Only set error if source is NOT reachable
+                    dns_us_error: if dns_us.is_none() {
+                        errors.dns_us_error.or(Some("Not reachable".into()))
+                    } else {
+                        None
+                    },
+                    dns_eu_error: if dns_eu.is_none() {
+                        errors.dns_eu_error.or(Some("Not reachable".into()))
+                    } else {
+                        None
+                    },
+                    https_error: if https.is_none() {
+                        errors.https_error.or(Some("Not reachable".into()))
+                    } else {
+                        None
+                    },
                 },
             };
         }
@@ -338,14 +351,26 @@ impl ConsensusValidator {
             "Consensus analysis"
         );
 
-        // Build source details (preserve errors for sources that failed)
+        // Build source details (only set error if source is NOT reachable)
         let source_details = SourceDetails {
             dns_us_reachable: dns_us.is_some(),
             dns_eu_reachable: dns_eu.is_some(),
             https_reachable: https.is_some(),
-            dns_us_error: errors.dns_us_error,
-            dns_eu_error: errors.dns_eu_error,
-            https_error: errors.https_error,
+            dns_us_error: if dns_us.is_none() {
+                errors.dns_us_error.or(Some("Not reachable".into()))
+            } else {
+                None
+            },
+            dns_eu_error: if dns_eu.is_none() {
+                errors.dns_eu_error.or(Some("Not reachable".into()))
+            } else {
+                None
+            },
+            https_error: if https.is_none() {
+                errors.https_error.or(Some("Not reachable".into()))
+            } else {
+                None
+            },
         };
 
         // Determine status based on agreement
@@ -444,8 +469,17 @@ impl ConsensusValidator {
             dns_us_reachable: dns_us.is_some(),
             dns_eu_reachable: dns_eu.is_some(),
             https_reachable: !https_sources.is_empty(),
-            dns_us_error: errors.dns_us_error.clone(),
-            dns_eu_error: errors.dns_eu_error.clone(),
+            // Only set error if source is NOT reachable (consistent with https_error)
+            dns_us_error: if dns_us.is_none() {
+                errors.dns_us_error.clone().or(Some("Not reachable".into()))
+            } else {
+                None
+            },
+            dns_eu_error: if dns_eu.is_none() {
+                errors.dns_eu_error.clone().or(Some("Not reachable".into()))
+            } else {
+                None
+            },
             https_error: if https_sources.is_empty() {
                 errors.https_error.clone().or(Some("Not reachable".into()))
             } else {
