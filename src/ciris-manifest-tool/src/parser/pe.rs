@@ -28,6 +28,8 @@ pub fn parse_pe(
     let code_section_offset = u64::from(text_section.pointer_to_raw_data);
     let code_section_size = u64::from(text_section.size_of_raw_data);
     let code_section_vaddr = u64::from(text_section.virtual_address) + pe.image_base as u64;
+    // For PE, the "segment" base is the image base (where GetModuleHandle returns)
+    let exec_segment_vaddr = pe.image_base as u64;
 
     // Extract functions from export table
     let mut functions = Vec::new();
@@ -44,7 +46,7 @@ pub fn parse_pe(
             }
         }
 
-        // Get the RVA and convert to absolute address
+        // Get the RVA (Relative Virtual Address - already relative to image base)
         let rva = export.rva;
         if rva == 0 {
             continue;
@@ -58,8 +60,9 @@ pub fn parse_pe(
         if addr >= section_start && addr < section_end {
             functions.push(FunctionInfo {
                 name: name.to_string(),
-                // Convert virtual address to offset from code section base
-                offset: addr - code_section_vaddr,
+                // For PE, use RVA directly - it's relative to image base
+                // which is what GetModuleHandle returns at runtime
+                offset: rva as u64,
                 size: 0, // Will be computed below
             });
         }
@@ -69,13 +72,12 @@ pub fn parse_pe(
     functions.sort_by_key(|f| f.offset);
 
     // Compute sizes based on gaps
-    // Since offsets are now relative to code section base, the boundary
-    // is just the code section size
+    let section_end_rva = u64::from(text_section.virtual_address) + code_section_size;
     for i in 0..functions.len() {
         let end = if i + 1 < functions.len() {
             functions[i + 1].offset
         } else {
-            code_section_size
+            section_end_rva
         };
         functions[i].size = end - functions[i].offset;
     }
@@ -86,6 +88,7 @@ pub fn parse_pe(
         code_section_offset,
         code_section_size,
         code_section_vaddr,
+        exec_segment_vaddr,
     })
 }
 

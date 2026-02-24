@@ -55,15 +55,25 @@ pub struct ParsedBinary {
     pub code_section_size: u64,
     /// Virtual address base of the code section.
     pub code_section_vaddr: u64,
+    /// Virtual address base of the executable segment (for runtime offset calculation).
+    /// Function offsets are relative to this address.
+    pub exec_segment_vaddr: u64,
 }
 
 impl ParsedBinary {
     /// Get the bytes of a function.
     #[allow(clippy::cast_possible_truncation)]
     pub fn function_bytes(&self, func: &FunctionInfo) -> Option<&[u8]> {
-        // Function offset is relative to code section base (not virtual address)
-        // File offset = code_section_offset + relative_offset
-        let file_offset = self.code_section_offset + func.offset;
+        // Function offset is relative to EXECUTABLE SEGMENT base
+        // But we need FILE offset for extracting bytes
+        //
+        // func.offset = func_vaddr - exec_segment_vaddr
+        // func_vaddr = func.offset + exec_segment_vaddr
+        // section_relative = func_vaddr - code_section_vaddr
+        //                  = func.offset + exec_segment_vaddr - code_section_vaddr
+        // file_offset = code_section_offset + section_relative
+        let section_relative = func.offset + self.exec_segment_vaddr - self.code_section_vaddr;
+        let file_offset = self.code_section_offset + section_relative;
         let start = file_offset as usize;
         let end = start + func.size as usize;
 

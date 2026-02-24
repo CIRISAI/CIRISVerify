@@ -32,14 +32,17 @@ fn parse_single_macho(
     macho: &MachO,
     filter_prefix: Option<&str>,
 ) -> Result<ParsedBinary, ParseError> {
-    // Find the __TEXT,__text section
+    // Find the __TEXT,__text section and __TEXT segment
     let mut code_section_offset = 0u64;
     let mut code_section_size = 0u64;
     let mut code_section_vaddr = 0u64;
+    let mut exec_segment_vaddr = 0u64;
 
     for segment in &macho.segments {
         let segname = segment.name().unwrap_or("");
         if segname == "__TEXT" {
+            // Store segment vmaddr - this is what dyld loads
+            exec_segment_vaddr = segment.vmaddr;
             for (section, _) in segment.sections()? {
                 let sectname = section.name().unwrap_or("");
                 if sectname == "__text" {
@@ -54,6 +57,11 @@ fn parse_single_macho(
 
     if code_section_size == 0 {
         return Err(ParseError::NoCodeSection);
+    }
+
+    // If we couldn't find segment vaddr, fall back to section vaddr
+    if exec_segment_vaddr == 0 {
+        exec_segment_vaddr = code_section_vaddr;
     }
 
     // Extract functions from symbol table
@@ -92,8 +100,9 @@ fn parse_single_macho(
             {
                 functions.push(FunctionInfo {
                     name: clean_name.to_string(),
-                    // Convert virtual address to offset from code section base
-                    offset: nlist.n_value - code_section_vaddr,
+                    // Convert virtual address to offset from __TEXT SEGMENT base
+                    // This matches what dyld maps and what runtime code base detection finds
+                    offset: nlist.n_value - exec_segment_vaddr,
                     size: 0, // Will be computed below
                 });
             }
@@ -104,13 +113,13 @@ fn parse_single_macho(
     functions.sort_by_key(|f| f.offset);
 
     // Compute sizes based on gaps between functions
-    // Since offsets are now relative to code section base, the boundary
-    // is just the code section size
+    // Offsets are relative to segment, so max offset is section end relative to segment
+    let section_end_offset = (code_section_vaddr - exec_segment_vaddr) + code_section_size;
     for i in 0..functions.len() {
         let end = if i + 1 < functions.len() {
             functions[i + 1].offset
         } else {
-            code_section_size
+            section_end_offset
         };
         functions[i].size = end - functions[i].offset;
     }
@@ -121,6 +130,7 @@ fn parse_single_macho(
         code_section_offset,
         code_section_size,
         code_section_vaddr,
+        exec_segment_vaddr,
     })
 }
 

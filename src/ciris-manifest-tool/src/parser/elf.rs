@@ -25,6 +25,28 @@ pub fn parse_elf(
     let code_section_size = text_section.sh_size;
     let code_section_vaddr = text_section.sh_addr;
 
+    // Find the executable LOAD segment that contains .text
+    // This is what the runtime linker maps, and what /proc/self/maps shows
+    // We need offsets relative to this segment's base, not .text section
+    let exec_segment_vaddr = elf
+        .program_headers
+        .iter()
+        .find(|ph| {
+            ph.p_type == goblin::elf::program_header::PT_LOAD
+                && (ph.p_flags & goblin::elf::program_header::PF_X) != 0
+                && code_section_vaddr >= ph.p_vaddr
+                && code_section_vaddr < ph.p_vaddr + ph.p_memsz
+        })
+        .map(|ph| ph.p_vaddr)
+        .unwrap_or(code_section_vaddr); // Fallback to section vaddr if not found
+
+    tracing::info!(
+        "parse_elf: .text section vaddr=0x{:x}, exec segment vaddr=0x{:x}, delta=0x{:x}",
+        code_section_vaddr,
+        exec_segment_vaddr,
+        code_section_vaddr - exec_segment_vaddr
+    );
+
     // Extract functions from symbol table
     let mut functions = Vec::new();
 
@@ -58,9 +80,10 @@ pub fn parse_elf(
         {
             functions.push(FunctionInfo {
                 name: name.to_string(),
-                // Convert virtual address to offset from code section base
-                // Runtime verification adds this offset to the code base address
-                offset: sym.st_value - code_section_vaddr,
+                // Convert virtual address to offset from EXECUTABLE SEGMENT base
+                // Runtime verification adds this offset to the segment load address
+                // (which is what /proc/self/maps shows for r-xp regions)
+                offset: sym.st_value - exec_segment_vaddr,
                 size: sym.st_size,
             });
         }
@@ -97,8 +120,8 @@ pub fn parse_elf(
         {
             functions.push(FunctionInfo {
                 name: name.to_string(),
-                // Convert virtual address to offset from code section base
-                offset: sym.st_value - code_section_vaddr,
+                // Convert virtual address to offset from EXECUTABLE SEGMENT base
+                offset: sym.st_value - exec_segment_vaddr,
                 size: sym.st_size,
             });
         }
@@ -113,6 +136,7 @@ pub fn parse_elf(
         code_section_offset,
         code_section_size,
         code_section_vaddr,
+        exec_segment_vaddr,
     })
 }
 
