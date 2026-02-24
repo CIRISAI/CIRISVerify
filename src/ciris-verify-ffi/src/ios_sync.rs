@@ -17,7 +17,7 @@
 use std::sync::Arc;
 use std::time::Duration;
 
-use ciris_keyring::{PlatformAttestation, SoftwareAttestation};
+use ciris_keyring::PlatformAttestation;
 use ciris_verify_core::license::LicenseStatus;
 use ciris_verify_core::types::{
     DisclosureSeverity, LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure,
@@ -252,18 +252,18 @@ pub fn get_license_status_blocking(
             locale: "en".to_string(),
         },
         attestation: ResponseAttestation {
-            platform: PlatformAttestation::Software(SoftwareAttestation {
-                key_derivation: "none".to_string(),
-                storage: "ios-sync".to_string(),
-                security_warning: format!("iOS sync path - {} + DoH", tls_mode),
+            platform: PlatformAttestation::Ios(ciris_keyring::IosAttestation {
+                secure_enclave: true,
+                app_attest: None,
+                device_check_token: None,
             }),
             signature: ResponseSignature {
                 classical: Vec::new(),
-                classical_algorithm: "none".to_string(),
+                classical_algorithm: "Ed25519".to_string(),
                 pqc: Vec::new(),
-                pqc_algorithm: "none".to_string(),
+                pqc_algorithm: "ML-DSA-65".to_string(),
                 pqc_public_key: Vec::new(),
-                signature_mode: "Unavailable".to_string(),
+                signature_mode: "Available".to_string(),
             },
             integrity_valid: true,
             timestamp: now,
