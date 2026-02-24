@@ -890,9 +890,8 @@ impl SecureEnclaveWrappedEd25519Signer {
 
         if ciphertext.is_null() {
             let err_msg = if !error.is_null() {
-                let cf_error = unsafe {
-                    core_foundation::error::CFError::wrap_under_create_rule(error)
-                };
+                let cf_error =
+                    unsafe { core_foundation::error::CFError::wrap_under_create_rule(error) };
                 format!("ECIES encryption failed: {cf_error}")
             } else {
                 "ECIES encryption failed".to_string()
@@ -923,9 +922,8 @@ impl SecureEnclaveWrappedEd25519Signer {
 
         if plaintext.is_null() {
             let err_msg = if !error.is_null() {
-                let cf_error = unsafe {
-                    core_foundation::error::CFError::wrap_under_create_rule(error)
-                };
+                let cf_error =
+                    unsafe { core_foundation::error::CFError::wrap_under_create_rule(error) };
                 format!("ECIES decryption failed: {cf_error}")
             } else {
                 "ECIES decryption failed".to_string()
@@ -982,10 +980,7 @@ impl SecureEnclaveWrappedEd25519Signer {
     pub fn import_key(&self, key_bytes: &[u8]) -> Result<(), KeyringError> {
         if key_bytes.len() != 32 {
             return Err(KeyringError::InvalidKey {
-                reason: format!(
-                    "Ed25519 key must be 32 bytes, got {}",
-                    key_bytes.len()
-                ),
+                reason: format!("Ed25519 key must be 32 bytes, got {}", key_bytes.len()),
             });
         }
 
@@ -1131,7 +1126,9 @@ mod tests {
         if let Ok(mut guard) = signer.cached_key.write() {
             *guard = None;
         }
-        let sig2 = signer.sign(data).expect("sign after cache clear should succeed");
+        let sig2 = signer
+            .sign(data)
+            .expect("sign after cache clear should succeed");
         assert_eq!(sig, sig2);
 
         // Cleanup

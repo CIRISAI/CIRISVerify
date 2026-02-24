@@ -30,6 +30,40 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
+/// Direct Android logcat output that bypasses tracing layer complexity.
+/// This ensures diagnostic messages are always visible in `adb logcat`.
+#[cfg(target_os = "android")]
+macro_rules! logcat {
+    ($level:expr, $($arg:tt)*) => {{
+        use std::ffi::CString;
+        use std::os::raw::c_char;
+        #[allow(dead_code)]
+        const ANDROID_LOG_DEBUG: i32 = 3;
+        #[allow(dead_code)]
+        const ANDROID_LOG_INFO: i32 = 4;
+        #[allow(dead_code)]
+        const ANDROID_LOG_WARN: i32 = 5;
+        #[allow(dead_code)]
+        const ANDROID_LOG_ERROR: i32 = 6;
+        extern "C" {
+            fn __android_log_write(prio: i32, tag: *const c_char, text: *const c_char) -> i32;
+        }
+        if let Ok(tag) = CString::new("CIRISVerify") {
+            if let Ok(msg) = CString::new(format!($($arg)*)) {
+                unsafe { __android_log_write($level, tag.as_ptr(), msg.as_ptr()); }
+            }
+        }
+    }};
+}
+
+/// No-op on non-Android platforms - just use tracing.
+#[cfg(not(target_os = "android"))]
+macro_rules! logcat {
+    ($level:expr, $($arg:tt)*) => {{
+        let _ = format!($($arg)*); // Suppress unused warnings
+    }};
+}
+
 /// Function-level integrity manifest for a specific platform.
 ///
 /// Generated at build time by `ciris-manifest-tool`, this manifest contains
@@ -355,12 +389,20 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
 
     let timestamp = current_timestamp();
 
-    // Log manifest details for diagnostics
+    // Log manifest details for diagnostics (tracing + direct logcat for Android)
     tracing::info!(
         "verify_functions: manifest version={}, target={}, binary_hash={}, functions={}, exec_segment_vaddr=0x{:x}",
         manifest.binary_version,
         manifest.target,
         manifest.binary_hash,
+        manifest.functions.len(),
+        manifest.metadata.exec_segment_vaddr
+    );
+    logcat!(
+        ANDROID_LOG_INFO,
+        "verify_functions: manifest version={}, target={}, functions={}, exec_segment_vaddr=0x{:x}",
+        manifest.binary_version,
+        manifest.target,
         manifest.functions.len(),
         manifest.metadata.exec_segment_vaddr
     );
@@ -396,10 +438,15 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     let code_base = match code_base_opt {
         Some(base) => {
             tracing::info!("verify_functions: code_base=0x{:x}", base);
+            logcat!(ANDROID_LOG_INFO, "verify_functions: code_base=0x{:x}", base);
             base
         },
         None => {
             tracing::error!("verify_functions: FAILED - could not determine code base address");
+            logcat!(
+                ANDROID_LOG_ERROR,
+                "verify_functions: FAILED - could not determine code base address"
+            );
             return FunctionIntegrityResult {
                 integrity_valid: false,
                 functions_checked: 0,
@@ -445,29 +492,52 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         if matches {
             functions_passed += 1;
         } else if !first_mismatch_logged {
-            // Log first mismatch with diagnostic details
+            // Log first mismatch with diagnostic details (tracing + direct logcat for Android)
             let ptr_addr = code_base + entry.offset as usize;
             let first_bytes: Vec<u8> = func_bytes.iter().take(16).copied().collect();
+            let first_bytes_hex = hex::encode(&first_bytes);
             tracing::warn!(
                 "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, ptr=0x{:x}, first_bytes={}, expected={}, actual={}",
                 name,
                 entry.offset,
                 entry.size,
                 ptr_addr,
-                hex::encode(&first_bytes),
+                first_bytes_hex,
                 entry.hash,
                 actual_hash
+            );
+            // Direct logcat for Android - CRITICAL debug info
+            logcat!(
+                ANDROID_LOG_WARN,
+                "MISMATCH name={}, offset=0x{:x}, size={}, ptr=0x{:x}",
+                name,
+                entry.offset,
+                entry.size,
+                ptr_addr
+            );
+            logcat!(
+                ANDROID_LOG_WARN,
+                "MISMATCH first_bytes={}, expected={}...",
+                first_bytes_hex,
+                &entry.hash[..std::cmp::min(30, entry.hash.len())]
+            );
+            logcat!(
+                ANDROID_LOG_WARN,
+                "MISMATCH actual={}...",
+                &actual_hash[..std::cmp::min(30, actual_hash.len())]
             );
             first_mismatch_logged = true;
         }
     }
 
-    tracing::info!(
+    let result_msg = format!(
         "verify_functions: RESULT {}/{} passed, valid={}",
         functions_passed,
         manifest.functions.len(),
         all_valid
     );
+    tracing::info!("{}", result_msg);
+    logcat!(ANDROID_LOG_INFO, "{}", result_msg);
 
     FunctionIntegrityResult {
         integrity_valid: all_valid,
@@ -870,11 +940,21 @@ fn get_code_base_android() -> Option<usize> {
         "get_code_base_android: searching for {} in /proc/self/maps",
         LIB_NAME
     );
+    logcat!(
+        ANDROID_LOG_INFO,
+        "get_code_base_android: searching for {} in /proc/self/maps",
+        LIB_NAME
+    );
 
     let maps_file = match File::open("/proc/self/maps") {
         Ok(f) => f,
         Err(e) => {
             tracing::error!("get_code_base_android: cannot open /proc/self/maps: {}", e);
+            logcat!(
+                ANDROID_LOG_ERROR,
+                "get_code_base_android: cannot open /proc/self/maps: {}",
+                e
+            );
             return None;
         },
     };
@@ -894,6 +974,7 @@ fn get_code_base_android() -> Option<usize> {
             // The first address is the base load address for this segment
             // Log the full line for diagnostics
             tracing::info!("get_code_base_android: maps entry: {}", line);
+            logcat!(ANDROID_LOG_INFO, "maps entry: {}", line);
 
             if let Some(addr_str) = line.split('-').next() {
                 if let Ok(base) = usize::from_str_radix(addr_str, 16) {
@@ -903,6 +984,12 @@ fn get_code_base_android() -> Option<usize> {
                     tracing::info!(
                         "get_code_base_android: found {} at base=0x{:x}, file_offset={}",
                         LIB_NAME,
+                        base,
+                        file_offset
+                    );
+                    logcat!(
+                        ANDROID_LOG_INFO,
+                        "get_code_base_android: FOUND base=0x{:x}, file_offset={}",
                         base,
                         file_offset
                     );
@@ -916,6 +1003,11 @@ fn get_code_base_android() -> Option<usize> {
 
     tracing::warn!(
         "get_code_base_android: {} not found in /proc/self/maps with r-xp permissions",
+        LIB_NAME
+    );
+    logcat!(
+        ANDROID_LOG_WARN,
+        "get_code_base_android: {} NOT FOUND in /proc/self/maps with r-xp",
         LIB_NAME
     );
     None

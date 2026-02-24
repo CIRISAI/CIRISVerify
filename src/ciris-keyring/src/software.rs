@@ -839,9 +839,7 @@ impl MutableEd25519Signer {
         {
             drop(inner); // Release the lock before migration
             if let Some(ref hw) = self.hardware_wrapper {
-                tracing::info!(
-                    "Migrating existing software key to SE-backed storage (ECIES)..."
-                );
+                tracing::info!("Migrating existing software key to SE-backed storage (ECIES)...");
 
                 if !hw.key_exists() {
                     match hw.import_key(&key_bytes) {
@@ -1071,9 +1069,7 @@ impl MutableEd25519Signer {
 
                 match hw.import_key(key_bytes) {
                     Ok(()) => {
-                        tracing::info!(
-                            "Ed25519 key imported with SE ECIES encryption"
-                        );
+                        tracing::info!("Ed25519 key imported with SE ECIES encryption");
                         // Also keep in software signer for compatibility
                         let mut inner =
                             self.inner
