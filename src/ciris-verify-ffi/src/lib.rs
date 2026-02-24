@@ -50,6 +50,9 @@ mod constructor;
 #[cfg(target_os = "android")]
 mod android_sync;
 
+#[cfg(target_os = "ios")]
+mod ios_sync;
+
 // Android logging: using tracing-log bridge to route tracing events -> log crate -> android_logger -> logcat
 
 use std::ffi::c_void;
@@ -691,7 +694,22 @@ pub unsafe extern "C" fn ciris_verify_get_status(
         result
     };
 
-    #[cfg(not(target_os = "android"))]
+    #[cfg(target_os = "ios")]
+    let mut response = {
+        // On iOS, bypass tokio entirely and use blocking I/O.
+        // getaddrinfo() hangs for 30s on iOS (IPv6 AAAA query timeout),
+        // and hickory-resolver's DoH bootstrap triggers this hang.
+        tracing::info!("FFI (iOS): Using blocking I/O (ureq) - bypassing tokio");
+        let result =
+            ios_sync::get_license_status_blocking(&request, std::time::Duration::from_secs(10));
+        tracing::info!(
+            "FFI (iOS): Blocking call completed in {:?}",
+            start.elapsed()
+        );
+        result
+    };
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let mut response = {
         // On non-Android platforms, use worker thread for hard timeout.
         // tokio::time::timeout can't interrupt blocking syscalls, so we use a real thread timeout.

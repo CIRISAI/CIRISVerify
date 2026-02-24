@@ -445,10 +445,12 @@ impl HardwareSigner for Ed25519SoftwareSigner {
 /// # Storage Locations (tried in order)
 ///
 /// 1. `$CIRIS_KEY_PATH` environment variable (if set)
-/// 2. Android: `$CIRIS_DATA_DIR/{alias}.key` (set by app to Context.getFilesDir())
-/// 3. Linux/macOS: `$XDG_DATA_HOME/ciris-verify/{alias}.key` or `~/.local/share/ciris-verify/{alias}.key`
-/// 4. Windows: `%LOCALAPPDATA%\ciris-verify\{alias}.key`
-/// 5. Fallback: `./{alias}.key` in current directory
+/// 2. `$CIRIS_DATA_DIR/{alias}.key` (set by Android/iOS app wrapper)
+/// 3. iOS: `~/Documents/ciris-verify/{alias}.key` (sandbox container Documents dir)
+/// 4. Android: `./{alias}.key` (fallback if CIRIS_DATA_DIR not set)
+/// 5. Linux/macOS: `$XDG_DATA_HOME/ciris-verify/{alias}.key` or `~/.local/share/ciris-verify/{alias}.key`
+/// 6. Windows: `%LOCALAPPDATA%\ciris-verify\{alias}.key`
+/// 7. Fallback: `./{alias}.key` in current directory
 ///
 /// # Hardware Backing (Android)
 ///
@@ -520,9 +522,21 @@ impl MutableEd25519Signer {
             let key_dir = std::env::var("CIRIS_DATA_DIR")
                 .map(std::path::PathBuf::from)
                 .or_else(|_| {
-                    dirs::data_local_dir()
-                        .map(|d| d.join("ciris-verify"))
-                        .ok_or(())
+                    // On iOS, dirs::data_local_dir() returns ~/Library/Application Support/
+                    // which is wrong for sandboxed apps. Use ~/Documents/ciris-verify/ instead,
+                    // since dirs::home_dir() returns the sandbox container root on iOS.
+                    #[cfg(target_os = "ios")]
+                    {
+                        dirs::home_dir()
+                            .map(|d| d.join("Documents").join("ciris-verify"))
+                            .ok_or(())
+                    }
+                    #[cfg(not(target_os = "ios"))]
+                    {
+                        dirs::data_local_dir()
+                            .map(|d| d.join("ciris-verify"))
+                            .ok_or(())
+                    }
                 })
                 .unwrap_or_else(|_| std::path::PathBuf::from("."));
 
@@ -612,7 +626,7 @@ impl MutableEd25519Signer {
             return Some(path);
         }
 
-        // 2. Check CIRIS_DATA_DIR (set by Android app)
+        // 2. Check CIRIS_DATA_DIR (set by Android/iOS app wrapper)
         if let Ok(data_dir) = std::env::var("CIRIS_DATA_DIR") {
             let path = std::path::PathBuf::from(data_dir).join(&filename);
             tracing::debug!(path = %path.display(), "Using CIRIS_DATA_DIR for key storage");
@@ -630,9 +644,34 @@ impl MutableEd25519Signer {
             return Some(std::path::PathBuf::from(".").join(&filename));
         }
 
-        #[cfg(not(target_os = "android"))]
+        // iOS: use ~/Documents/ciris-verify/ (sandbox-safe)
+        // On iOS, dirs::data_local_dir() gives ~/Library/Application Support/ which
+        // is wrong for sandboxed apps. dirs::home_dir() returns the sandbox container
+        // root, so ~/Documents/ciris-verify/ is the correct persistent location.
+        #[cfg(target_os = "ios")]
         {
-            // Desktop platforms: use XDG/AppData directories
+            if let Some(home) = dirs::home_dir() {
+                let ciris_dir = home.join("Documents").join("ciris-verify");
+                if let Err(e) = std::fs::create_dir_all(&ciris_dir) {
+                    tracing::warn!(
+                        error = %e,
+                        path = %ciris_dir.display(),
+                        "Failed to create ciris-verify data directory"
+                    );
+                }
+                let path = ciris_dir.join(&filename);
+                tracing::debug!(path = %path.display(), "Using iOS Documents dir for key storage");
+                return Some(path);
+            }
+
+            // Fallback to current directory
+            tracing::warn!("No suitable data directory found on iOS - using current directory");
+            Some(std::path::PathBuf::from(".").join(&filename))
+        }
+
+        // Desktop platforms (macOS, Linux, Windows): use XDG/AppData directories
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
             if let Some(data_dir) = dirs::data_local_dir() {
                 let ciris_dir = data_dir.join("ciris-verify");
                 if let Err(e) = std::fs::create_dir_all(&ciris_dir) {

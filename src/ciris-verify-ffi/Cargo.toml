@@ -53,6 +53,13 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 [target.'cfg(target_os = "ios")'.dependencies]
 oslog = "0.2"
 log = "0.4"
+# Blocking HTTP client with rustls (same pattern as Android — bypasses tokio/hickory-resolver)
+# getaddrinfo() hangs for 30s on iOS; ureq + DoH avoids this entirely
+ureq = { version = "2.9", default-features = false, features = ["tls", "json"] }
+# Bundled Mozilla CA certs (rustls-native-certs may not find iOS system certs)
+webpki-roots = { workspace = true }
+# Force ring backend for rustls (consistent with Android)
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [build-dependencies]
 cbindgen = "0.26"
