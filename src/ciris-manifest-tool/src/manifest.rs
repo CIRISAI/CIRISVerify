@@ -158,6 +158,7 @@ mod tests {
                 offset: 0,
                 size: 10,
                 hash: "sha256:aaa".to_string(),
+                first_bytes: String::new(),
             },
         );
         functions.insert(
@@ -167,6 +168,7 @@ mod tests {
                 offset: 10,
                 size: 20,
                 hash: "sha256:bbb".to_string(),
+                first_bytes: String::new(),
             },
         );
 

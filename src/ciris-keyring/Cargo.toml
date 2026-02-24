@@ -12,7 +12,7 @@ authors.workspace = true
 default = ["software", "keyring-storage"]
 software = []
 android = ["jni"]
-ios = ["security-framework"]
+ios = []
 tpm = ["tss-esapi"]
 tpm-windows = ["windows"]  # Experimental: Windows native TPM via Platform Crypto Provider
 keyring-storage = ["dep:keyring"]
@@ -39,7 +39,7 @@ jni = { version = "0.21", optional = true }
 tokio = { version = "1.41", features = ["rt"] }
 
 [target.'cfg(target_os = "ios")'.dependencies]
-security-framework = { version = "2.9", optional = true }
+security-framework = "2.9"
 security-framework-sys = "2.9"
 core-foundation = "0.9"
 core-foundation-sys = "0.8"

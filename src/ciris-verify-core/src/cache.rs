@@ -544,9 +544,8 @@ impl LicenseCache {
         // Decrypt
         let plaintext = cipher
             .decrypt(nonce, ciphertext)
-            .map_err(|e| {
+            .inspect_err(|e| {
                 warn!("Cache: decryption failed (possible tampering): {}", e);
-                e
             })
             .ok()?;
 

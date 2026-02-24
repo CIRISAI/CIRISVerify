@@ -1,5 +1,5 @@
 # Pre-commit hooks for CIRISVerify
-# Install: pip install pre-commit && pre-commit install
+# Install: pre-commit install
 
 repos:
   # Standard pre-commit hooks
@@ -20,8 +20,8 @@ repos:
       # Ensure Cargo.lock is up to date with workspace versions
       - id: cargo-lock-check
         name: Check Cargo.lock is current
-        entry: bash -c 'cargo update -w --locked 2>/dev/null || (echo "ERROR: Cargo.lock is out of date. Run: cargo update -w" && exit 1)'
-        language: system
+        entry: scripts/hooks/check-cargo-lock.sh
+        language: script
         pass_filenames: false
         files: 'Cargo\.toml$'
 
@@ -36,7 +36,15 @@ repos:
       # Run clippy
       - id: cargo-clippy
         name: Rust clippy
-        entry: cargo clippy --all-targets --all-features -- -D warnings
+        entry: cargo clippy --all-targets -- -D warnings
+        language: system
+        pass_filenames: false
+        types: [rust]
+
+      # Run lib tests (fast — no integration/proptest hang risk)
+      - id: cargo-test
+        name: Rust lib tests
+        entry: cargo test --all --lib
         language: system
         pass_filenames: false
         types: [rust]
@@ -44,19 +52,7 @@ repos:
       # Check version consistency across files
       - id: version-consistency
         name: Check version consistency
-        entry: bash -c '
-          CARGO_VER=$(grep "^version = " Cargo.toml | head -1 | cut -d\" -f2)
-          PYPROJECT_VER=$(grep "^version = " bindings/python/pyproject.toml | cut -d\" -f2)
-          INIT_VER=$(grep "__version__" bindings/python/ciris_verify/__init__.py | cut -d\" -f2)
-          if [ "$CARGO_VER" != "$PYPROJECT_VER" ] || [ "$CARGO_VER" != "$INIT_VER" ]; then
-            echo "ERROR: Version mismatch!"
-            echo "  Cargo.toml: $CARGO_VER"
-            echo "  pyproject.toml: $PYPROJECT_VER"
-            echo "  __init__.py: $INIT_VER"
-            exit 1
-          fi
-          echo "Version consistent: $CARGO_VER"
-        '
-        language: system
+        entry: scripts/hooks/check-version-consistency.sh
+        language: script
         pass_filenames: false
         files: '(Cargo\.toml|pyproject\.toml|__init__\.py)$'

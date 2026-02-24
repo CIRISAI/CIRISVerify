@@ -58,6 +58,7 @@ macro_rules! logcat {
 
 /// No-op on non-Android platforms - just use tracing.
 #[cfg(not(target_os = "android"))]
+#[allow(unused_macros)]
 macro_rules! logcat {
     ($level:expr, $($arg:tt)*) => {{
         let _ = format!($($arg)*); // Suppress unused warnings
@@ -1217,6 +1218,7 @@ mod tests {
             offset: 0x1000,
             size: 0x100,
             hash: "sha256:abc123".to_string(),
+            first_bytes: String::new(),
         };
 
         let json = serde_json::to_string(&entry).unwrap();
@@ -1234,6 +1236,7 @@ mod tests {
                 offset: 0,
                 size: 10,
                 hash: "sha256:aaa".to_string(),
+                first_bytes: String::new(),
             },
         );
         functions.insert(
@@ -1243,6 +1246,7 @@ mod tests {
                 offset: 10,
                 size: 20,
                 hash: "sha256:bbb".to_string(),
+                first_bytes: String::new(),
             },
         );
 
@@ -1285,6 +1289,7 @@ mod tests {
                 offset: 0,
                 size: 10,
                 hash: "sha256:abc123".to_string(),
+                first_bytes: String::new(),
             },
         );
 
