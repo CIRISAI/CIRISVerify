@@ -41,7 +41,7 @@ pub struct AppAttestNonce {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AppAttestVerifyRequest {
     /// CBOR-encoded attestation object from DCAppAttestService (base64).
-    pub attestation_object: String,
+    pub attestation: String,
     /// Key ID from DCAppAttestService.generateKey().
     pub key_id: String,
     /// Nonce used when requesting the attestation.
@@ -327,13 +327,13 @@ mod tests {
     #[test]
     fn test_verify_request_serialization() {
         let request = AppAttestVerifyRequest {
-            attestation_object: "base64_attestation".to_string(),
+            attestation: "base64_attestation".to_string(),
             key_id: "test_key_id".to_string(),
             nonce: "test_nonce".to_string(),
         };
 
         let json = serde_json::to_string(&request).unwrap();
-        assert!(json.contains("attestation_object"));
+        assert!(json.contains("\"attestation\""));
         assert!(json.contains("key_id"));
     }
 

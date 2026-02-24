@@ -586,10 +586,10 @@ impl RegistryClient {
     /// * `attestation_object` - Base64-encoded CBOR attestation from DCAppAttestService
     /// * `key_id` - Key ID from DCAppAttestService.generateKey()
     /// * `nonce` - The nonce used when requesting the attestation
-    #[instrument(skip(self, attestation_object))]
+    #[instrument(skip(self, attestation))]
     pub async fn verify_app_attest(
         &self,
-        attestation_object: &str,
+        attestation: &str,
         key_id: &str,
         nonce: &str,
     ) -> Result<crate::app_attest::AppAttestVerifyResponse, VerifyError> {
@@ -597,7 +597,7 @@ impl RegistryClient {
         debug!("Verifying App Attest attestation at {}", url);
 
         let request = crate::app_attest::AppAttestVerifyRequest {
-            attestation_object: attestation_object.to_string(),
+            attestation: attestation.to_string(),
             key_id: key_id.to_string(),
             nonce: nonce.to_string(),
         };

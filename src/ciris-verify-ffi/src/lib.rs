@@ -2500,7 +2500,7 @@ pub unsafe extern "C" fn ciris_verify_get_app_attest_nonce(
 ///
 /// ```json
 /// {
-///   "attestation_object": "base64-encoded-cbor",
+///   "attestation": "base64-encoded-cbor",
 ///   "key_id": "key-id-from-generateKey",
 ///   "nonce": "the-nonce-used"
 /// }
@@ -2583,7 +2583,7 @@ pub unsafe extern "C" fn ciris_verify_app_attest(
             std::time::Duration::from_secs(30),
         )?;
         client
-            .verify_app_attest(&request.attestation_object, &request.key_id, &request.nonce)
+            .verify_app_attest(&request.attestation, &request.key_id, &request.nonce)
             .await
     });
 

@@ -84,13 +84,18 @@ _RUST_SEVERITY_MAP = {
 
 # Map Rust HardwareType to Python enum (from PlatformAttestation variant)
 _RUST_HARDWARE_MAP = {
+    # Serde externally-tagged enum keys (from PlatformAttestation variants)
+    "Android": HardwareType.ANDROID_KEYSTORE,
+    "Ios": HardwareType.IOS_SECURE_ENCLAVE,
+    "Tpm": HardwareType.TPM_DISCRETE,
+    "Software": HardwareType.SOFTWARE_ONLY,
+    # Legacy/alternate keys for backwards compatibility
     "AndroidKeystore": HardwareType.ANDROID_KEYSTORE,
     "AndroidStrongbox": HardwareType.ANDROID_STRONGBOX,
     "IosSecureEnclave": HardwareType.IOS_SECURE_ENCLAVE,
     "Tpm20": HardwareType.TPM_DISCRETE,
     "IntelSgx": HardwareType.INTEL_SGX,
     "SoftwareOnly": HardwareType.SOFTWARE_ONLY,
-    "Software": HardwareType.SOFTWARE_ONLY,
 }
 
 # Map Rust ValidationStatus variants to Python enum
