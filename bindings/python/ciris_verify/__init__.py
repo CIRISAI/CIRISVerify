@@ -44,7 +44,7 @@ from .exceptions import (
     CommunicationError,
 )
 
-__version__ = "0.8.18"
+__version__ = "0.8.19"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",

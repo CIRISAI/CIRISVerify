@@ -2394,6 +2394,385 @@ pub unsafe extern "C" fn ciris_verify_verify_integrity_token(
     CirisVerifyError::Success as i32
 }
 
+// =============================================================================
+// App Attest API (Apple iOS Hardware Attestation)
+// =============================================================================
+
+/// Get an App Attest nonce from the registry.
+///
+/// This nonce should be hashed (SHA-256) and passed to DCAppAttestService.attestKey()
+/// as the clientDataHash. The nonce is valid for a limited time (check expires_at).
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `nonce_json` - Output pointer for JSON-encoded AppAttestNonce (caller must free with `ciris_verify_free`)
+/// * `nonce_len` - Output pointer for nonce length
+///
+/// # Result JSON Format
+///
+/// ```json
+/// {
+///   "nonce": "base64-url-encoded-nonce",
+///   "expires_at": "2025-01-15T12:00:00Z"
+/// }
+/// ```
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `nonce_json` and `nonce_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_get_app_attest_nonce(
+    handle: *mut CirisVerifyHandle,
+    nonce_json: *mut *mut u8,
+    nonce_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_get_app_attest_nonce called");
+
+    if handle.is_null() || nonce_json.is_null() || nonce_len.is_null() {
+        tracing::error!("ciris_verify_get_app_attest_nonce: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+
+    // Create registry client and fetch nonce
+    let result = handle.runtime.block_on(async {
+        let client = ciris_verify_core::RegistryClient::new(
+            "https://api.registry.ciris-services-1.ai",
+            std::time::Duration::from_secs(10),
+        )?;
+        client.get_app_attest_nonce().await
+    });
+
+    let nonce = match result {
+        Ok(n) => n,
+        Err(e) => {
+            tracing::error!("Failed to get App Attest nonce: {}", e);
+            return CirisVerifyError::RequestFailed as i32;
+        },
+    };
+
+    // Serialize to JSON
+    let nonce_bytes = match serde_json::to_vec(&nonce) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("Failed to serialize App Attest nonce: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    // Allocate and copy
+    let len = nonce_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(nonce_bytes.as_ptr(), ptr, len);
+
+    *nonce_json = ptr;
+    *nonce_len = len;
+
+    tracing::info!("App Attest nonce retrieved successfully");
+    CirisVerifyError::Success as i32
+}
+
+/// Verify an App Attest attestation object from iOS.
+///
+/// The attestation object is the CBOR data returned by DCAppAttestService.attestKey().
+/// This verifies the attestation against Apple's certificate chain.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `request_json` - JSON-encoded AppAttestVerifyRequest
+/// * `request_len` - Length of request JSON
+/// * `result_json` - Output pointer for JSON-encoded AppAttestVerifyResponse (caller must free)
+/// * `result_len` - Output pointer for result length
+///
+/// # Request JSON Format
+///
+/// ```json
+/// {
+///   "attestation_object": "base64-encoded-cbor",
+///   "key_id": "key-id-from-generateKey",
+///   "nonce": "the-nonce-used"
+/// }
+/// ```
+///
+/// # Result JSON Format
+///
+/// ```json
+/// {
+///   "verified": true,
+///   "device_environment": {
+///     "environment": "production",
+///     "is_genuine_device": true,
+///     "is_unmodified_app": true
+///   },
+///   "app_identity": {
+///     "app_id": "TEAMID.ai.ciris.mobile",
+///     "team_id": "TEAMID",
+///     "bundle_id": "ai.ciris.mobile"
+///   },
+///   "receipt": { ... },
+///   "error": null
+/// }
+/// ```
+///
+/// # Returns
+///
+/// 0 on success (check result JSON for verification status), negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `request_json` must point to valid UTF-8 JSON of length `request_len`
+/// - `result_json` and `result_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_app_attest(
+    handle: *mut CirisVerifyHandle,
+    request_json: *const u8,
+    request_len: usize,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_app_attest called");
+
+    if handle.is_null() || request_json.is_null() || result_json.is_null() || result_len.is_null() {
+        tracing::error!("ciris_verify_app_attest: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+    let request_bytes = std::slice::from_raw_parts(request_json, request_len);
+
+    // Parse request JSON
+    let request_str = match std::str::from_utf8(request_bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("ciris_verify_app_attest: invalid UTF-8: {}", e);
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    let request: ciris_verify_core::app_attest::AppAttestVerifyRequest =
+        match serde_json::from_str(request_str) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("ciris_verify_app_attest: invalid JSON: {}", e);
+                return CirisVerifyError::SerializationError as i32;
+            },
+        };
+
+    tracing::info!(
+        "Verifying App Attest attestation: key_id={}",
+        &request.key_id[..std::cmp::min(16, request.key_id.len())]
+    );
+
+    // Call registry to verify attestation
+    let result = handle.runtime.block_on(async {
+        let client = ciris_verify_core::RegistryClient::new(
+            "https://api.registry.ciris-services-1.ai",
+            std::time::Duration::from_secs(30),
+        )?;
+        client
+            .verify_app_attest(&request.attestation_object, &request.key_id, &request.nonce)
+            .await
+    });
+
+    let response = match result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("App Attest verification failed: {}", e);
+            // Return error response rather than error code
+            ciris_verify_core::app_attest::AppAttestVerifyResponse {
+                verified: false,
+                device_environment: None,
+                app_identity: None,
+                receipt: None,
+                error: Some(format!("Verification failed: {}", e)),
+            }
+        },
+    };
+
+    tracing::info!("App Attest verification result: {}", response.summary());
+
+    // Serialize result
+    let result_bytes = match serde_json::to_vec(&response) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("ciris_verify_app_attest: JSON serialization failed: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    // Allocate and copy
+    let len = result_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, len);
+
+    *result_json = ptr;
+    *result_len = len;
+
+    CirisVerifyError::Success as i32
+}
+
+/// Verify an App Attest assertion (for ongoing requests after initial attestation).
+///
+/// Assertions are used after the initial attestation to verify ongoing requests.
+/// Each assertion includes a monotonic counter to prevent replay attacks.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `request_json` - JSON-encoded AppAttestAssertionRequest
+/// * `request_len` - Length of request JSON
+/// * `result_json` - Output pointer for JSON-encoded AppAttestAssertionResponse (caller must free)
+/// * `result_len` - Output pointer for result length
+///
+/// # Request JSON Format
+///
+/// ```json
+/// {
+///   "assertion": "base64-encoded-assertion",
+///   "key_id": "key-id-from-attestation",
+///   "client_data": "base64-encoded-data-that-was-signed",
+///   "nonce": "fresh-nonce-for-this-assertion"
+/// }
+/// ```
+///
+/// # Result JSON Format
+///
+/// ```json
+/// {
+///   "verified": true,
+///   "counter": 42,
+///   "error": null
+/// }
+/// ```
+///
+/// # Returns
+///
+/// 0 on success (check result JSON for verification status), negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `request_json` must point to valid UTF-8 JSON of length `request_len`
+/// - `result_json` and `result_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_app_attest_assertion(
+    handle: *mut CirisVerifyHandle,
+    request_json: *const u8,
+    request_len: usize,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_app_attest_assertion called");
+
+    if handle.is_null() || request_json.is_null() || result_json.is_null() || result_len.is_null() {
+        tracing::error!("ciris_verify_app_attest_assertion: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+    let request_bytes = std::slice::from_raw_parts(request_json, request_len);
+
+    // Parse request JSON
+    let request_str = match std::str::from_utf8(request_bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("ciris_verify_app_attest_assertion: invalid UTF-8: {}", e);
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    let request: ciris_verify_core::app_attest::AppAttestAssertionRequest =
+        match serde_json::from_str(request_str) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("ciris_verify_app_attest_assertion: invalid JSON: {}", e);
+                return CirisVerifyError::SerializationError as i32;
+            },
+        };
+
+    tracing::info!(
+        "Verifying App Attest assertion: key_id={}",
+        &request.key_id[..std::cmp::min(16, request.key_id.len())]
+    );
+
+    // Call registry to verify assertion
+    let result = handle.runtime.block_on(async {
+        let client = ciris_verify_core::RegistryClient::new(
+            "https://api.registry.ciris-services-1.ai",
+            std::time::Duration::from_secs(30),
+        )?;
+        client
+            .verify_app_attest_assertion(
+                &request.assertion,
+                &request.key_id,
+                &request.client_data,
+                &request.nonce,
+            )
+            .await
+    });
+
+    let response = match result {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("App Attest assertion verification failed: {}", e);
+            ciris_verify_core::app_attest::AppAttestAssertionResponse {
+                verified: false,
+                counter: None,
+                error: Some(format!("Assertion verification failed: {}", e)),
+            }
+        },
+    };
+
+    tracing::info!(
+        "App Attest assertion result: verified={}, counter={:?}",
+        response.verified,
+        response.counter
+    );
+
+    // Serialize result
+    let result_bytes = match serde_json::to_vec(&response) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_app_attest_assertion: JSON serialization failed: {}",
+                e
+            );
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    // Allocate and copy
+    let len = result_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, len);
+
+    *result_json = ptr;
+    *result_len = len;
+
+    CirisVerifyError::Success as i32
+}
+
 // Android JNI bindings
 #[cfg(target_os = "android")]
 mod android {
