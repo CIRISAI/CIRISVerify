@@ -537,6 +537,163 @@ impl RegistryClient {
     }
 
     // =========================================================================
+    // App Attest (Apple iOS HW Attestation)
+    // =========================================================================
+
+    /// Get a nonce for App Attest verification.
+    ///
+    /// The iOS app uses this nonce as the challenge hash when calling
+    /// `DCAppAttestService.attestKey(_:clientDataHash:)`.
+    /// Nonces expire after 5 minutes and are single-use.
+    #[instrument(skip(self))]
+    pub async fn get_app_attest_nonce(
+        &self,
+    ) -> Result<crate::app_attest::AppAttestNonce, VerifyError> {
+        let url = format!("{}/v1/integrity/ios/nonce", self.base_url);
+        debug!("Fetching App Attest nonce from {}", url);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("App Attest nonce request failed: {}", e),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(VerifyError::HttpsError {
+                message: format!("App Attest nonce HTTP error: {}", response.status()),
+            });
+        }
+
+        response
+            .json::<crate::app_attest::AppAttestNonce>()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Failed to parse App Attest nonce: {}", e),
+            })
+    }
+
+    /// Verify an App Attest attestation object from iOS.
+    ///
+    /// The attestation object is a CBOR structure containing Apple's
+    /// certificate chain and device attestation statement. The registry
+    /// verifies the certificate chain against Apple's root CA.
+    ///
+    /// # Arguments
+    ///
+    /// * `attestation_object` - Base64-encoded CBOR attestation from DCAppAttestService
+    /// * `key_id` - Key ID from DCAppAttestService.generateKey()
+    /// * `nonce` - The nonce used when requesting the attestation
+    #[instrument(skip(self, attestation_object))]
+    pub async fn verify_app_attest(
+        &self,
+        attestation_object: &str,
+        key_id: &str,
+        nonce: &str,
+    ) -> Result<crate::app_attest::AppAttestVerifyResponse, VerifyError> {
+        let url = format!("{}/v1/integrity/ios/verify", self.base_url);
+        debug!("Verifying App Attest attestation at {}", url);
+
+        let request = crate::app_attest::AppAttestVerifyRequest {
+            attestation_object: attestation_object.to_string(),
+            key_id: key_id.to_string(),
+            nonce: nonce.to_string(),
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("App Attest verify request failed: {}", e),
+            })?;
+
+        if response.status().as_u16() == 503 {
+            return Err(VerifyError::HttpsError {
+                message: "App Attest not configured on registry".to_string(),
+            });
+        }
+
+        if !response.status().is_success() {
+            return Err(VerifyError::HttpsError {
+                message: format!("App Attest verify HTTP error: {}", response.status()),
+            });
+        }
+
+        let result = response
+            .json::<crate::app_attest::AppAttestVerifyResponse>()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Failed to parse App Attest response: {}", e),
+            })?;
+
+        info!(
+            verified = result.verified,
+            summary = %result.summary(),
+            "App Attest verification complete"
+        );
+
+        Ok(result)
+    }
+
+    /// Verify an App Attest assertion (post-attestation ongoing verification).
+    ///
+    /// After initial attestation, assertions are used for ongoing verification.
+    /// Each assertion includes a monotonic counter to prevent replay attacks.
+    ///
+    /// # Arguments
+    ///
+    /// * `assertion` - Base64-encoded assertion from DCAppAttestService
+    /// * `key_id` - Key ID (same as initial attestation)
+    /// * `client_data` - The client data that was signed
+    /// * `nonce` - Fresh nonce for this assertion
+    #[instrument(skip(self, assertion, client_data))]
+    pub async fn verify_app_attest_assertion(
+        &self,
+        assertion: &str,
+        key_id: &str,
+        client_data: &str,
+        nonce: &str,
+    ) -> Result<crate::app_attest::AppAttestAssertionResponse, VerifyError> {
+        let url = format!("{}/v1/integrity/ios/assert", self.base_url);
+        debug!("Verifying App Attest assertion at {}", url);
+
+        let request = crate::app_attest::AppAttestAssertionRequest {
+            assertion: assertion.to_string(),
+            key_id: key_id.to_string(),
+            client_data: client_data.to_string(),
+            nonce: nonce.to_string(),
+        };
+
+        let response = self
+            .client
+            .post(&url)
+            .json(&request)
+            .send()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("App Attest assertion request failed: {}", e),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(VerifyError::HttpsError {
+                message: format!("App Attest assertion HTTP error: {}", response.status()),
+            });
+        }
+
+        response
+            .json::<crate::app_attest::AppAttestAssertionResponse>()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Failed to parse App Attest assertion response: {}", e),
+            })
+    }
+
+    // =========================================================================
     // Key Verification
     // =========================================================================
 

@@ -50,6 +50,7 @@
 #![allow(clippy::module_name_repetitions)] // Allow Type in module::Type
 #![allow(clippy::must_use_candidate)] // Not all functions need must_use
 
+pub mod app_attest;
 pub mod audit;
 pub mod cache;
 pub mod config;
