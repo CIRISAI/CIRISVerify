@@ -162,6 +162,19 @@ pub struct ManifestSignature {
     pub key_id: String,
 }
 
+/// Code base information from runtime detection.
+///
+/// Contains both the memory base address and the file offset from /proc/self/maps,
+/// which is needed to calculate the correct pointer adjustment.
+#[derive(Debug, Clone, Copy)]
+pub struct CodeBaseInfo {
+    /// Memory base address where the executable segment is loaded.
+    pub base: usize,
+    /// File offset from /proc/self/maps (where this segment starts in the file).
+    /// Used with manifest's text_section_offset to calculate adjustment.
+    pub maps_file_offset: u64,
+}
+
 /// Result of function-level integrity verification.
 ///
 /// Per FSD-001 Section "Integrity Check Opacity", we MUST NOT expose
@@ -435,16 +448,36 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
 
     // Get code base address - use platform-specific function
     #[cfg(target_os = "android")]
-    let code_base_opt = get_code_base_android();
+    let (code_base, text_adjustment) = match get_code_base_android() {
+        Some(info) => {
+            // Calculate adjustment: difference between .text file offset and maps file offset
+            // This accounts for the gap between segment start and .text section start
+            let text_offset = manifest.metadata.text_section_offset;
+            let adjustment = if text_offset >= info.maps_file_offset {
+                (text_offset - info.maps_file_offset) as usize
+            } else {
+                tracing::warn!(
+                    "verify_functions: text_offset (0x{:x}) < maps_file_offset (0x{:x}), no adjustment",
+                    text_offset,
+                    info.maps_file_offset
+                );
+                0
+            };
 
-    #[cfg(all(target_os = "linux", not(target_os = "android")))]
-    let code_base_opt = get_code_base_linux();
+            tracing::info!(
+                "verify_functions: base=0x{:x}, maps_file_offset=0x{:x}, text_offset=0x{:x}, adjustment=0x{:x}",
+                info.base, info.maps_file_offset, text_offset, adjustment
+            );
+            logcat!(
+                ANDROID_LOG_INFO,
+                "verify_functions: base=0x{:x}, maps_offset=0x{:x}, text_offset=0x{:x}, adj=0x{:x}",
+                info.base,
+                info.maps_file_offset,
+                text_offset,
+                adjustment
+            );
 
-    let code_base = match code_base_opt {
-        Some(base) => {
-            tracing::info!("verify_functions: code_base=0x{:x}", base);
-            logcat!(ANDROID_LOG_INFO, "verify_functions: code_base=0x{:x}", base);
-            base
+            (info.base, adjustment)
         },
         None => {
             tracing::error!("verify_functions: FAILED - could not determine code base address");
@@ -465,6 +498,29 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         },
     };
 
+    #[cfg(all(target_os = "linux", not(target_os = "android")))]
+    let (code_base, text_adjustment) = match get_code_base_linux() {
+        Some(base) => {
+            tracing::info!("verify_functions: code_base=0x{:x}", base);
+            // Linux uses dl_iterate_phdr which gives segment base directly
+            // TODO: may need similar adjustment for Linux shared libraries
+            (base, 0usize)
+        },
+        None => {
+            tracing::error!("verify_functions: FAILED - could not determine code base address");
+            return FunctionIntegrityResult {
+                integrity_valid: false,
+                functions_checked: 0,
+                functions_passed: 0,
+                verified_at: timestamp,
+                failure_reason: "missing".to_string(),
+                manifest_binary_hash: manifest.binary_hash.clone(),
+                manifest_target: manifest.target.clone(),
+                code_base: "not_found".to_string(),
+            };
+        },
+    };
+
     // Verify each function (constant-time accumulation)
     let mut all_valid = true;
     let mut functions_passed = 0usize;
@@ -472,8 +528,9 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
 
     for (name, entry) in &manifest.functions {
         // Safety: We trust the manifest offsets for our own binary
+        // ptr = base + text_adjustment + manifest_offset
         let func_bytes = unsafe {
-            let ptr = (code_base + entry.offset as usize) as *const u8;
+            let ptr = (code_base + text_adjustment + entry.offset as usize) as *const u8;
             if ptr.is_null() {
                 tracing::warn!(
                     "verify_functions: null pointer for {} at offset 0x{:x}",
@@ -498,7 +555,7 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
             functions_passed += 1;
         } else if !first_mismatch_logged {
             // Log first mismatch with diagnostic details (tracing + direct logcat for Android)
-            let ptr_addr = code_base + entry.offset as usize;
+            let ptr_addr = code_base + text_adjustment + entry.offset as usize;
             let first_bytes: Vec<u8> = func_bytes.iter().take(16).copied().collect();
             let first_bytes_hex = hex::encode(&first_bytes);
             tracing::warn!(
@@ -507,6 +564,12 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
                 entry.offset,
                 entry.size,
                 ptr_addr
+            );
+            tracing::warn!(
+                "  base=0x{:x}, adjustment=0x{:x}, offset=0x{:x}",
+                code_base,
+                text_adjustment,
+                entry.offset
             );
             tracing::warn!(
                 "  runtime_bytes={}, manifest_bytes={}",
@@ -530,6 +593,13 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
                 entry.offset,
                 entry.size,
                 ptr_addr
+            );
+            logcat!(
+                ANDROID_LOG_WARN,
+                "MISMATCH ptr=base(0x{:x})+adj(0x{:x})+off(0x{:x})",
+                code_base,
+                text_adjustment,
+                entry.offset
             );
             // Show both actual runtime bytes and expected manifest bytes for comparison
             logcat!(
@@ -672,15 +742,28 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
             // Log first mismatch with diagnostic details
             let ptr_addr = code_base + entry.offset as usize;
             let first_bytes: Vec<u8> = func_bytes.iter().take(16).copied().collect();
+            let first_bytes_hex = hex::encode(&first_bytes);
             tracing::warn!(
-                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, ptr=0x{:x}, first_bytes={}, expected={}, actual={}",
+                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, ptr=0x{:x}",
                 name,
                 entry.offset,
                 entry.size,
-                ptr_addr,
-                hex::encode(&first_bytes),
-                entry.hash,
-                actual_hash
+                ptr_addr
+            );
+            tracing::warn!("  base=0x{:x}, offset=0x{:x}", code_base, entry.offset);
+            tracing::warn!(
+                "  runtime_bytes={}, manifest_bytes={}",
+                first_bytes_hex,
+                if entry.first_bytes.is_empty() {
+                    "n/a"
+                } else {
+                    &entry.first_bytes
+                }
+            );
+            tracing::warn!(
+                "  runtime_hash={}, manifest_hash={}",
+                actual_hash,
+                entry.hash
             );
             first_mismatch_logged = true;
         }
@@ -945,24 +1028,36 @@ fn get_code_base_linux() -> Option<usize> {
     }
 }
 
-/// Get the base address of libciris_verify_ffi.so on Android.
+/// Get the base address and file offset of libciris_verify_ffi.so on Android.
 ///
 /// On Android, the "main executable" is app_process64 (Android runtime), not our library.
 /// We need to find libciris_verify_ffi.so's load address from /proc/self/maps.
+///
+/// Returns both the memory base address AND the maps file offset, which is needed
+/// to calculate the adjustment between segment start and .text section start.
 #[cfg(target_os = "android")]
-fn get_code_base_android() -> Option<usize> {
+fn get_code_base_android() -> Option<CodeBaseInfo> {
     use std::fs::File;
     use std::io::{BufRead, BufReader};
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     static BASE: AtomicUsize = AtomicUsize::new(0);
+    static MAPS_FILE_OFFSET: AtomicU64 = AtomicU64::new(0);
     static FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     // Only compute once
     if FOUND.load(Ordering::Relaxed) {
         let base = BASE.load(Ordering::Relaxed);
-        tracing::debug!("get_code_base_android: cached base=0x{:x}", base);
-        return Some(base);
+        let maps_file_offset = MAPS_FILE_OFFSET.load(Ordering::Relaxed);
+        tracing::debug!(
+            "get_code_base_android: cached base=0x{:x}, maps_file_offset=0x{:x}",
+            base,
+            maps_file_offset
+        );
+        return Some(CodeBaseInfo {
+            base,
+            maps_file_offset,
+        });
     }
 
     const LIB_NAME: &str = "libciris_verify_ffi.so";
@@ -1001,31 +1096,46 @@ fn get_code_base_android() -> Option<usize> {
         if line.contains(LIB_NAME) && line.contains("r-xp") {
             // /proc/self/maps format:
             // 7f1234567000-7f123456a000 r-xp 00000000 fd:01 1234567 /path/to/lib.so
-            // The first address is the base load address for this segment
-            // Log the full line for diagnostics
+            // Field 0: start-end addresses
+            // Field 1: permissions
+            // Field 2: file offset (hex, no 0x prefix)
+            // Field 3: device
+            // Field 4: inode
+            // Field 5+: pathname
             tracing::info!("get_code_base_android: maps entry: {}", line);
             logcat!(ANDROID_LOG_INFO, "maps entry: {}", line);
 
+            let parts: Vec<&str> = line.split_whitespace().collect();
+
             if let Some(addr_str) = line.split('-').next() {
                 if let Ok(base) = usize::from_str_radix(addr_str, 16) {
-                    // Also extract the file offset (third field) for diagnostics
-                    let parts: Vec<&str> = line.split_whitespace().collect();
-                    let file_offset = parts.get(2).unwrap_or(&"?");
+                    // Parse the file offset (field 2)
+                    let maps_file_offset = parts
+                        .get(2)
+                        .and_then(|s| u64::from_str_radix(s, 16).ok())
+                        .unwrap_or(0);
+
                     tracing::info!(
-                        "get_code_base_android: found {} at base=0x{:x}, file_offset={}",
+                        "get_code_base_android: found {} at base=0x{:x}, maps_file_offset=0x{:x}",
                         LIB_NAME,
                         base,
-                        file_offset
+                        maps_file_offset
                     );
                     logcat!(
                         ANDROID_LOG_INFO,
-                        "get_code_base_android: FOUND base=0x{:x}, file_offset={}",
+                        "get_code_base_android: FOUND base=0x{:x}, maps_file_offset=0x{:x}",
                         base,
-                        file_offset
+                        maps_file_offset
                     );
+
                     BASE.store(base, Ordering::Relaxed);
+                    MAPS_FILE_OFFSET.store(maps_file_offset, Ordering::Relaxed);
                     FOUND.store(true, Ordering::Relaxed);
-                    return Some(base);
+
+                    return Some(CodeBaseInfo {
+                        base,
+                        maps_file_offset,
+                    });
                 }
             }
         }
