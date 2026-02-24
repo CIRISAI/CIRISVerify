@@ -65,6 +65,8 @@ pub fn generate_manifest(
     for func in &parsed.functions {
         if let Some(bytes) = parsed.function_bytes(func) {
             let hash = compute_hash(bytes);
+            // Store first 16 bytes for debugging runtime mismatches
+            let first_bytes: Vec<u8> = bytes.iter().take(16).copied().collect();
             functions.insert(
                 func.name.clone(),
                 FunctionEntry {
@@ -72,6 +74,7 @@ pub fn generate_manifest(
                     offset: func.offset,
                     size: func.size,
                     hash,
+                    first_bytes: hex::encode(&first_bytes),
                 },
             );
         }

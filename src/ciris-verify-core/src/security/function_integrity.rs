@@ -116,6 +116,11 @@ pub struct FunctionEntry {
 
     /// SHA-256 hash of the function bytes (hex-encoded).
     pub hash: String,
+
+    /// First 16 bytes of the function (hex-encoded, for debugging mismatches).
+    /// Compare this with runtime first_bytes to identify offset calculation issues.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub first_bytes: String,
 }
 
 /// Metadata about how offsets were computed (for debugging).
@@ -497,14 +502,25 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
             let first_bytes: Vec<u8> = func_bytes.iter().take(16).copied().collect();
             let first_bytes_hex = hex::encode(&first_bytes);
             tracing::warn!(
-                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, ptr=0x{:x}, first_bytes={}, expected={}, actual={}",
+                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, ptr=0x{:x}",
                 name,
                 entry.offset,
                 entry.size,
-                ptr_addr,
+                ptr_addr
+            );
+            tracing::warn!(
+                "  runtime_bytes={}, manifest_bytes={}",
                 first_bytes_hex,
-                entry.hash,
-                actual_hash
+                if entry.first_bytes.is_empty() {
+                    "n/a"
+                } else {
+                    &entry.first_bytes
+                }
+            );
+            tracing::warn!(
+                "  runtime_hash={}, manifest_hash={}",
+                actual_hash,
+                entry.hash
             );
             // Direct logcat for Android - CRITICAL debug info
             logcat!(
@@ -515,16 +531,30 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
                 entry.size,
                 ptr_addr
             );
+            // Show both actual runtime bytes and expected manifest bytes for comparison
             logcat!(
                 ANDROID_LOG_WARN,
-                "MISMATCH first_bytes={}, expected={}...",
-                first_bytes_hex,
-                &entry.hash[..std::cmp::min(30, entry.hash.len())]
+                "MISMATCH runtime_bytes={} (at ptr)",
+                first_bytes_hex
             );
             logcat!(
                 ANDROID_LOG_WARN,
-                "MISMATCH actual={}...",
+                "MISMATCH manifest_bytes={} (from file)",
+                if entry.first_bytes.is_empty() {
+                    "not_in_manifest".to_string()
+                } else {
+                    entry.first_bytes.clone()
+                }
+            );
+            logcat!(
+                ANDROID_LOG_WARN,
+                "MISMATCH runtime_hash={}...",
                 &actual_hash[..std::cmp::min(30, actual_hash.len())]
+            );
+            logcat!(
+                ANDROID_LOG_WARN,
+                "MISMATCH manifest_hash={}...",
+                &entry.hash[..std::cmp::min(30, entry.hash.len())]
             );
             first_mismatch_logged = true;
         }
