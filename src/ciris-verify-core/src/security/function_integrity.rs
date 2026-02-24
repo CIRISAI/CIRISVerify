@@ -60,6 +60,10 @@ pub struct FunctionManifest {
 
     /// Hybrid signature over the manifest.
     pub signature: ManifestSignature,
+
+    /// Metadata about how offsets were computed (for debugging).
+    #[serde(default)]
+    pub metadata: ManifestMetadata,
 }
 
 /// Entry for a single function in the manifest.
@@ -68,7 +72,9 @@ pub struct FunctionEntry {
     /// Function name (demangled if possible).
     pub name: String,
 
-    /// Offset from code section base address.
+    /// Offset from executable segment base address.
+    /// Runtime calculation: ptr = code_base + offset
+    /// Where code_base is the library's load address from /proc/self/maps or dl_iterate_phdr.
     pub offset: u64,
 
     /// Size in bytes.
@@ -76,6 +82,23 @@ pub struct FunctionEntry {
 
     /// SHA-256 hash of the function bytes (hex-encoded).
     pub hash: String,
+}
+
+/// Metadata about how offsets were computed (for debugging).
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct ManifestMetadata {
+    /// Executable segment virtual address used as offset base.
+    /// Offsets are computed as: func_vaddr - exec_segment_vaddr
+    #[serde(default)]
+    pub exec_segment_vaddr: u64,
+
+    /// .text section virtual address.
+    #[serde(default)]
+    pub text_section_vaddr: u64,
+
+    /// .text section file offset.
+    #[serde(default)]
+    pub text_section_offset: u64,
 }
 
 /// Hybrid signature for the manifest.
@@ -334,11 +357,12 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
 
     // Log manifest details for diagnostics
     tracing::info!(
-        "verify_functions: manifest version={}, target={}, binary_hash={}, functions={}",
+        "verify_functions: manifest version={}, target={}, binary_hash={}, functions={}, exec_segment_vaddr=0x{:x}",
         manifest.binary_version,
         manifest.target,
         manifest.binary_hash,
-        manifest.functions.len()
+        manifest.functions.len(),
+        manifest.metadata.exec_segment_vaddr
     );
 
     // Log first few function entries for debugging
@@ -421,12 +445,16 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         if matches {
             functions_passed += 1;
         } else if !first_mismatch_logged {
-            // Log first mismatch for debugging (security: only log one to avoid enumeration)
+            // Log first mismatch with diagnostic details
+            let ptr_addr = code_base + entry.offset as usize;
+            let first_bytes: Vec<u8> = func_bytes.iter().take(16).copied().collect();
             tracing::warn!(
-                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, expected={}, actual={}",
+                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, ptr=0x{:x}, first_bytes={}, expected={}, actual={}",
                 name,
                 entry.offset,
                 entry.size,
+                ptr_addr,
+                hex::encode(&first_bytes),
                 entry.hash,
                 actual_hash
             );
@@ -541,12 +569,16 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         if matches {
             functions_passed += 1;
         } else if !first_mismatch_logged {
-            // Log first mismatch for debugging (security: only log one to avoid enumeration)
+            // Log first mismatch with diagnostic details
+            let ptr_addr = code_base + entry.offset as usize;
+            let first_bytes: Vec<u8> = func_bytes.iter().take(16).copied().collect();
             tracing::warn!(
-                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, expected={}, actual={}",
+                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, ptr=0x{:x}, first_bytes={}, expected={}, actual={}",
                 name,
                 entry.offset,
                 entry.size,
+                ptr_addr,
+                hex::encode(&first_bytes),
                 entry.hash,
                 actual_hash
             );
@@ -660,12 +692,16 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         if matches {
             functions_passed += 1;
         } else if !first_mismatch_logged {
-            // Log first mismatch for debugging (security: only log one to avoid enumeration)
+            // Log first mismatch with diagnostic details
+            let ptr_addr = code_base + entry.offset as usize;
+            let first_bytes: Vec<u8> = func_bytes.iter().take(16).copied().collect();
             tracing::warn!(
-                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, expected={}, actual={}",
+                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, ptr=0x{:x}, first_bytes={}, expected={}, actual={}",
                 name,
                 entry.offset,
                 entry.size,
+                ptr_addr,
+                hex::encode(&first_bytes),
                 entry.hash,
                 actual_hash
             );
@@ -723,9 +759,9 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
 // Platform-specific code base detection
 // =============================================================================
 
-/// Get the base address of the code section on Linux (not Android).
+/// Get the base address of libciris_verify_ffi.so on Linux (not Android).
 ///
-/// Uses `dl_iterate_phdr` to find the main executable's load address.
+/// Uses `dl_iterate_phdr` to find our library's load address.
 #[cfg(all(target_os = "linux", not(target_os = "android")))]
 fn get_code_base_linux() -> Option<usize> {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -733,10 +769,16 @@ fn get_code_base_linux() -> Option<usize> {
     static BASE: AtomicUsize = AtomicUsize::new(0);
     static FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+    const LIB_NAME: &str = "libciris_verify_ffi.so";
+
     // Only compute once
     if FOUND.load(Ordering::Relaxed) {
-        return Some(BASE.load(Ordering::Relaxed));
+        let base = BASE.load(Ordering::Relaxed);
+        tracing::debug!("get_code_base_linux: cached base=0x{:x}", base);
+        return Some(base);
     }
+
+    tracing::info!("get_code_base_linux: searching for {} via dl_iterate_phdr", LIB_NAME);
 
     #[repr(C)]
     struct DlPhdrInfo {
@@ -758,9 +800,17 @@ fn get_code_base_linux() -> Option<usize> {
         data: *mut std::ffi::c_void,
     ) -> i32 {
         unsafe {
-            let name = (*info).dlpi_name;
-            // First entry with empty name is the main executable
-            if name.is_null() || *name == 0 {
+            let name_ptr = (*info).dlpi_name;
+            if name_ptr.is_null() {
+                return 0; // Continue
+            }
+
+            // Convert C string to Rust &str
+            let name_cstr = std::ffi::CStr::from_ptr(name_ptr);
+            let name = name_cstr.to_str().unwrap_or("");
+
+            // Look for our library
+            if name.contains("libciris_verify_ffi.so") {
                 let base_ptr = data as *mut usize;
                 *base_ptr = (*info).dlpi_addr;
                 return 1; // Stop iteration
@@ -775,10 +825,12 @@ fn get_code_base_linux() -> Option<usize> {
     }
 
     if base != 0 {
+        tracing::info!("get_code_base_linux: found {} at base=0x{:x}", LIB_NAME, base);
         BASE.store(base, Ordering::Relaxed);
         FOUND.store(true, Ordering::Relaxed);
         Some(base)
     } else {
+        tracing::warn!("get_code_base_linux: {} not found in loaded libraries", LIB_NAME);
         None
     }
 }
@@ -830,12 +882,19 @@ fn get_code_base_android() -> Option<usize> {
             // /proc/self/maps format:
             // 7f1234567000-7f123456a000 r-xp 00000000 fd:01 1234567 /path/to/lib.so
             // The first address is the base load address for this segment
+            // Log the full line for diagnostics
+            tracing::info!("get_code_base_android: maps entry: {}", line);
+
             if let Some(addr_str) = line.split('-').next() {
                 if let Ok(base) = usize::from_str_radix(addr_str, 16) {
+                    // Also extract the file offset (third field) for diagnostics
+                    let parts: Vec<&str> = line.split_whitespace().collect();
+                    let file_offset = parts.get(2).unwrap_or(&"?");
                     tracing::info!(
-                        "get_code_base_android: found {} at base=0x{:x}",
+                        "get_code_base_android: found {} at base=0x{:x}, file_offset={}",
                         LIB_NAME,
-                        base
+                        base,
+                        file_offset
                     );
                     BASE.store(base, Ordering::Relaxed);
                     FOUND.store(true, Ordering::Relaxed);
@@ -960,6 +1019,7 @@ mod tests {
                 pqc_algorithm: "ML-DSA-65".to_string(),
                 key_id: "test".to_string(),
             },
+            metadata: ManifestMetadata::default(),
         };
 
         // Call twice - should produce identical bytes
@@ -1001,6 +1061,7 @@ mod tests {
                 pqc_algorithm: "ML-DSA-65".to_string(),
                 key_id: "test".to_string(),
             },
+            metadata: ManifestMetadata::default(),
         };
 
         let hash = manifest.compute_manifest_hash();

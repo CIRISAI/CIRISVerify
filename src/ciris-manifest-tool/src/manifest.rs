@@ -12,7 +12,7 @@ use crate::parser::{parse_binary, ParseError};
 
 // Re-export types from ciris-verify-core
 pub use ciris_verify_core::security::function_integrity::{
-    FunctionEntry, FunctionManifest, ManifestSignature,
+    FunctionEntry, FunctionManifest, ManifestMetadata, ManifestSignature,
 };
 
 /// Error during manifest generation.
@@ -94,6 +94,11 @@ pub fn generate_manifest(
             pqc: String::new(),
             pqc_algorithm: "ML-DSA-65".to_string(),
             key_id: String::new(),
+        },
+        metadata: ManifestMetadata {
+            exec_segment_vaddr: parsed.exec_segment_vaddr,
+            text_section_vaddr: parsed.code_section_vaddr,
+            text_section_offset: parsed.code_section_offset,
         },
     })
 }

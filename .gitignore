@@ -43,3 +43,4 @@ bindings/python/ciris_verify/libciris_verify_ffi.so
 bindings/python/ciris_verify/libciris_verify_ffi.dylib
 bindings/python/ciris_verify/ciris_verify_ffi.dll
 android-libs/
+.venv/
