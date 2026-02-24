@@ -778,7 +778,10 @@ fn get_code_base_linux() -> Option<usize> {
         return Some(base);
     }
 
-    tracing::info!("get_code_base_linux: searching for {} via dl_iterate_phdr", LIB_NAME);
+    tracing::info!(
+        "get_code_base_linux: searching for {} via dl_iterate_phdr",
+        LIB_NAME
+    );
 
     #[repr(C)]
     struct DlPhdrInfo {
@@ -825,12 +828,19 @@ fn get_code_base_linux() -> Option<usize> {
     }
 
     if base != 0 {
-        tracing::info!("get_code_base_linux: found {} at base=0x{:x}", LIB_NAME, base);
+        tracing::info!(
+            "get_code_base_linux: found {} at base=0x{:x}",
+            LIB_NAME,
+            base
+        );
         BASE.store(base, Ordering::Relaxed);
         FOUND.store(true, Ordering::Relaxed);
         Some(base)
     } else {
-        tracing::warn!("get_code_base_linux: {} not found in loaded libraries", LIB_NAME);
+        tracing::warn!(
+            "get_code_base_linux: {} not found in loaded libraries",
+            LIB_NAME
+        );
         None
     }
 }
