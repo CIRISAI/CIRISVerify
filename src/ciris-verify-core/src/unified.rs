@@ -251,10 +251,23 @@ pub struct FileCheckSummary {
     pub files_found: usize,
     /// Whether this was a partial check (only available files).
     pub partial_check: bool,
+    /// Per-file check results (path → status: passed/failed/missing/unreadable).
+    #[serde(default)]
+    pub per_file_results: std::collections::BTreeMap<String, String>,
+    /// List of unexpected files found (not in manifest, not exempt).
+    #[serde(default)]
+    pub unexpected_files: Vec<String>,
 }
 
 impl From<FileIntegrityResult> for FileCheckSummary {
     fn from(r: FileIntegrityResult) -> Self {
+        // Convert FileCheckStatus enum to string for JSON serialization
+        let per_file_results: std::collections::BTreeMap<String, String> = r
+            .per_file_results
+            .into_iter()
+            .map(|(k, v)| (k, v.to_string()))
+            .collect();
+
         Self {
             valid: r.integrity_valid,
             total_files: r.total_files,
@@ -266,6 +279,8 @@ impl From<FileIntegrityResult> for FileCheckSummary {
             failure_reason: r.failure_reason,
             files_found: r.files_found,
             partial_check: r.partial_check,
+            per_file_results,
+            unexpected_files: r.unexpected_files,
         }
     }
 }

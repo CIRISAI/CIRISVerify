@@ -86,6 +86,24 @@ cargo deny check
 2. Update `HybridSigner` if signature binding changes
 3. Add test vectors from NIST/Wycheproof
 
+### Feature Completion Checklist
+
+**A feature is NOT done until it is wired end-to-end:**
+
+1. **Rust core implementation** - Types, logic, tests in `ciris-verify-core`
+2. **FFI exposure** - Function/struct exposed in `ciris-verify-ffi/src/lib.rs`
+3. **JSON serialization** - New fields serialized in FFI response (check `serde` derives)
+4. **Python bindings** - Types added to `bindings/python/ciris_verify/types.py`
+5. **Platform logging** - Rust `tracing` logs reach platform (Android logcat, iOS console)
+
+**Common mistakes:**
+- Adding a field to a Rust struct but not including it in JSON response
+- Adding logging with `tracing::warn!()` but not wiring to Android logger
+- Testing on desktop but not verifying on mobile targets
+
+**Android logging**: Requires `android_logger` crate initialization in JNI_OnLoad or constructor.
+**iOS logging**: Requires `oslog` crate or similar for Console.app visibility.
+
 ### Veilid Upstream Compatibility
 
 This project extends Veilid's `keyring-manager` pattern. To maintain compatibility:
