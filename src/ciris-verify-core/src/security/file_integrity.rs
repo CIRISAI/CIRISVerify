@@ -30,6 +30,31 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::path::Path;
 
+/// Status of a single file check.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FileCheckStatus {
+    /// File hash matches expected.
+    Passed,
+    /// File hash does not match expected.
+    Failed,
+    /// File not found on disk.
+    Missing,
+    /// File exists but could not be read.
+    Unreadable,
+}
+
+impl std::fmt::Display for FileCheckStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Passed => write!(f, "passed"),
+            Self::Failed => write!(f, "failed"),
+            Self::Missing => write!(f, "missing"),
+            Self::Unreadable => write!(f, "unreadable"),
+        }
+    }
+}
+
 /// Result of a file integrity check.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FileIntegrityResult {
@@ -53,6 +78,13 @@ pub struct FileIntegrityResult {
     pub files_found: usize,
     /// Whether this was a partial check (only available files).
     pub partial_check: bool,
+    /// Per-file check results (path → status).
+    /// Only populated for files that were checked.
+    #[serde(default)]
+    pub per_file_results: BTreeMap<String, FileCheckStatus>,
+    /// List of unexpected files found (not in manifest, not exempt).
+    #[serde(default)]
+    pub unexpected_files: Vec<String>,
 }
 
 /// Agent file manifest loaded from JSON.
@@ -244,6 +276,8 @@ pub fn check_full(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityRe
             failure_reason: "manifest".to_string(),
             files_found: 0,
             partial_check: false,
+            per_file_results: BTreeMap::new(),
+            unexpected_files: Vec::new(),
         };
     }
     tracing::info!("check_full: manifest integrity OK");
@@ -252,6 +286,7 @@ pub fn check_full(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityRe
     let mut files_passed = 0usize;
     let mut files_failed = 0usize;
     let mut files_missing = 0usize;
+    let mut per_file_results = BTreeMap::new();
 
     // Check every file in the manifest
     for (relative_path, expected_hash) in &manifest.files {
@@ -262,18 +297,27 @@ pub fn check_full(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityRe
             Ok(actual_hash) => {
                 if super::constant_time_eq(actual_hash.as_bytes(), expected_hash.as_bytes()) {
                     files_passed += 1;
+                    per_file_results.insert(relative_path.clone(), FileCheckStatus::Passed);
                 } else {
                     files_failed += 1;
+                    per_file_results.insert(relative_path.clone(), FileCheckStatus::Failed);
                 }
             },
-            Err(_) => {
-                files_missing += 1;
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    files_missing += 1;
+                    per_file_results.insert(relative_path.clone(), FileCheckStatus::Missing);
+                } else {
+                    files_failed += 1;
+                    per_file_results.insert(relative_path.clone(), FileCheckStatus::Unreadable);
+                }
             },
         }
     }
 
     // Scan for unexpected Python files not in the manifest
-    let files_unexpected = count_unexpected_files(agent_root, &manifest.files);
+    let unexpected_files = collect_unexpected_files(agent_root, &manifest.files);
+    let files_unexpected = unexpected_files.len();
 
     let integrity_valid = files_failed == 0 && files_missing == 0 && files_unexpected == 0;
 
@@ -298,6 +342,8 @@ pub fn check_full(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityRe
         failure_reason,
         files_found: files_passed + files_failed, // files that exist on disk
         partial_check: false,
+        per_file_results,
+        unexpected_files,
     }
 }
 
@@ -321,6 +367,8 @@ pub fn check_spot(manifest: &FileManifest, agent_root: &Path, count: usize) -> F
             failure_reason: "manifest".to_string(),
             files_found: 0,
             partial_check: false,
+            per_file_results: BTreeMap::new(),
+            unexpected_files: Vec::new(),
         };
     }
 
@@ -333,6 +381,7 @@ pub fn check_spot(manifest: &FileManifest, agent_root: &Path, count: usize) -> F
     let mut files_passed = 0usize;
     let mut files_failed = 0usize;
     let mut files_missing = 0usize;
+    let mut per_file_results = BTreeMap::new();
 
     for (relative_path, expected_hash) in &selected {
         let full_path = agent_root.join(relative_path);
@@ -341,12 +390,20 @@ pub fn check_spot(manifest: &FileManifest, agent_root: &Path, count: usize) -> F
             Ok(actual_hash) => {
                 if super::constant_time_eq(actual_hash.as_bytes(), expected_hash.as_bytes()) {
                     files_passed += 1;
+                    per_file_results.insert((*relative_path).clone(), FileCheckStatus::Passed);
                 } else {
                     files_failed += 1;
+                    per_file_results.insert((*relative_path).clone(), FileCheckStatus::Failed);
                 }
             },
-            Err(_) => {
-                files_missing += 1;
+            Err(e) => {
+                if e.kind() == std::io::ErrorKind::NotFound {
+                    files_missing += 1;
+                    per_file_results.insert((*relative_path).clone(), FileCheckStatus::Missing);
+                } else {
+                    files_failed += 1;
+                    per_file_results.insert((*relative_path).clone(), FileCheckStatus::Unreadable);
+                }
             },
         }
     }
@@ -372,6 +429,8 @@ pub fn check_spot(manifest: &FileManifest, agent_root: &Path, count: usize) -> F
         failure_reason,
         files_found: files_passed + files_failed,
         partial_check: false,
+        per_file_results,
+        unexpected_files: Vec::new(),
     }
 }
 
@@ -440,6 +499,8 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
             failure_reason: "manifest".to_string(),
             files_found: 0,
             partial_check: true,
+            per_file_results: BTreeMap::new(),
+            unexpected_files: Vec::new(),
         };
     }
     tracing::info!("check_available: manifest integrity PASSED, now checking files...");
@@ -449,6 +510,7 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
     let mut files_failed = 0usize;
     let mut files_missing = 0usize;
     let mut files_found = 0usize;
+    let mut per_file_results = BTreeMap::new();
 
     // Log first few paths for debugging
     let mut sample_logged = 0;
@@ -472,6 +534,7 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
         // Check if file exists first
         if !full_path.exists() {
             files_missing += 1;
+            per_file_results.insert(relative_path.clone(), FileCheckStatus::Missing);
             continue; // Skip missing files in partial check
         }
 
@@ -482,20 +545,24 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
             Ok(actual_hash) => {
                 if super::constant_time_eq(actual_hash.as_bytes(), expected_hash.as_bytes()) {
                     files_passed += 1;
+                    per_file_results.insert(relative_path.clone(), FileCheckStatus::Passed);
                 } else {
                     files_failed += 1;
+                    per_file_results.insert(relative_path.clone(), FileCheckStatus::Failed);
                     tracing::warn!("check_available: hash mismatch for {:?}", relative_path);
                 }
             },
             Err(_) => {
                 // File exists but can't be read - treat as failure
                 files_failed += 1;
+                per_file_results.insert(relative_path.clone(), FileCheckStatus::Unreadable);
             },
         }
     }
 
     // Scan for unexpected Python files not in the manifest
-    let files_unexpected = count_unexpected_files(agent_root, &manifest.files);
+    let unexpected_files = collect_unexpected_files(agent_root, &manifest.files);
+    let files_unexpected = unexpected_files.len();
 
     // Only fail if files that exist have hash mismatches or there are unexpected files
     // Missing files do NOT cause failure in partial check mode
@@ -530,12 +597,15 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
         failure_reason,
         files_found,
         partial_check: true,
+        per_file_results,
+        unexpected_files,
     }
 }
 
-/// Count Python files on disk that are NOT in the manifest and NOT exempt.
-fn count_unexpected_files(agent_root: &Path, manifest_files: &BTreeMap<String, String>) -> usize {
-    let mut unexpected = 0usize;
+/// Collect Python files on disk that are NOT in the manifest and NOT exempt.
+/// Returns a Vec of relative file paths.
+fn collect_unexpected_files(agent_root: &Path, manifest_files: &BTreeMap<String, String>) -> Vec<String> {
+    let mut unexpected = Vec::new();
     walk_python_files(agent_root, agent_root, manifest_files, &mut unexpected);
     unexpected
 }
@@ -545,7 +615,7 @@ fn walk_python_files(
     root: &Path,
     dir: &Path,
     manifest_files: &BTreeMap<String, String>,
-    unexpected: &mut usize,
+    unexpected: &mut Vec<String>,
 ) {
     let entries = match std::fs::read_dir(dir) {
         Ok(e) => e,
@@ -572,7 +642,7 @@ fn walk_python_files(
             // Check .py files that aren't in manifest
             if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
                 if ext == "py" && !manifest_files.contains_key(&relative) {
-                    *unexpected += 1;
+                    unexpected.push(relative);
                 }
             }
         }

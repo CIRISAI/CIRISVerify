@@ -1195,6 +1195,8 @@ mod tests {
             failure_reason: String::new(),
             files_found: 100,
             partial_check: false,
+            per_file_results: std::collections::BTreeMap::new(),
+            unexpected_files: Vec::new(),
         };
 
         let summary: FileCheckSummary = integrity.into();
@@ -1217,6 +1219,8 @@ mod tests {
             failure_reason: String::new(),
             files_found: 50,
             partial_check: true,
+            per_file_results: std::collections::BTreeMap::new(),
+            unexpected_files: Vec::new(),
         };
 
         let summary: FileCheckSummary = integrity.into();
