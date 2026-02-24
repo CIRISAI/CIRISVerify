@@ -645,6 +645,441 @@ impl HardwareSigner for SecureEnclaveSigner {
     }
 }
 
+/// Secure Enclave-wrapped Ed25519 signer for iOS/macOS.
+///
+/// Uses ECIES (Elliptic Curve Integrated Encryption Scheme) with a
+/// Secure Enclave P-256 key to encrypt/decrypt Ed25519 private keys.
+/// This provides hardware-level protection for Ed25519 keys even though
+/// the Secure Enclave doesn't support Ed25519 directly.
+///
+/// Architecture (mirrors Android's `HardwareWrappedEd25519Signer`):
+/// ```text
+/// ┌─────────────────────────────────────┐
+/// │  Secure Enclave (P-256)             │
+/// │  Tag: {alias}_ed25519_wrapper       │
+/// │  ECIES encrypt (public) / decrypt   │
+/// └──────────────┬──────────────────────┘
+///                │ SecKeyCreateDecryptedData
+///                ▼
+/// ┌─────────────────────────────────────┐
+/// │  Disk: {alias}.ed25519.enc          │
+/// │  ECIES ciphertext of Ed25519 seed   │
+/// └─────────────────────────────────────┘
+/// ```
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+pub struct SecureEnclaveWrappedEd25519Signer {
+    /// SE key tag for the ECIES wrapper key
+    wrapper_key_tag: String,
+    /// Directory for encrypted key storage
+    storage_dir: std::path::PathBuf,
+    /// Logical alias for this key
+    alias: String,
+    /// Cached decrypted Ed25519 signing key (avoids repeated SE decryption)
+    cached_key: std::sync::RwLock<Option<ed25519_dalek::SigningKey>>,
+}
+
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+impl SecureEnclaveWrappedEd25519Signer {
+    /// Create a new SE-wrapped Ed25519 signer.
+    ///
+    /// Generates the SE wrapper key if it doesn't exist.
+    ///
+    /// # Arguments
+    /// * `alias` - Key alias (used for file name and SE key tag)
+    /// * `storage_dir` - Directory for the encrypted key file
+    pub fn new(
+        alias: impl Into<String>,
+        storage_dir: std::path::PathBuf,
+    ) -> Result<Self, KeyringError> {
+        let alias = alias.into();
+        let wrapper_key_tag = format!("{alias}_ed25519_wrapper");
+
+        let signer = Self {
+            wrapper_key_tag,
+            storage_dir,
+            alias,
+            cached_key: std::sync::RwLock::new(None),
+        };
+
+        // Ensure the SE wrapper key exists
+        signer.ensure_wrapper_key()?;
+
+        Ok(signer)
+    }
+
+    /// Path to the encrypted Ed25519 key file.
+    fn encrypted_key_path(&self) -> std::path::PathBuf {
+        self.storage_dir.join(format!("{}.ed25519.enc", self.alias))
+    }
+
+    /// Ensure the SE ECIES wrapper key exists, creating it if needed.
+    fn ensure_wrapper_key(&self) -> Result<(), KeyringError> {
+        match self.query_wrapper_private_key() {
+            Ok(_) => {
+                tracing::debug!(
+                    tag = %self.wrapper_key_tag,
+                    "SE ECIES wrapper key already exists"
+                );
+                Ok(())
+            },
+            Err(KeyringError::KeyNotFound { .. }) => {
+                tracing::info!(
+                    tag = %self.wrapper_key_tag,
+                    "Generating SE ECIES wrapper key"
+                );
+                self.generate_wrapper_key()
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Build a keychain query dictionary for the wrapper key.
+    fn build_wrapper_key_query(&self) -> CFMutableDictionary {
+        use security_framework_sys::item::*;
+
+        let tag = CFData::from_buffer(self.wrapper_key_tag.as_bytes());
+
+        unsafe {
+            let mut query = CFMutableDictionary::new();
+            query.set(
+                CFString::wrap_under_get_rule(kSecClass).as_CFTypeRef(),
+                CFString::wrap_under_get_rule(kSecClassKey).as_CFTypeRef(),
+            );
+            query.set(
+                CFString::wrap_under_get_rule(kSecAttrKeyType).as_CFTypeRef(),
+                CFString::wrap_under_get_rule(kSecAttrKeyTypeECSECPrimeRandom).as_CFTypeRef(),
+            );
+            query.set(
+                CFString::wrap_under_get_rule(kSecAttrKeyClass).as_CFTypeRef(),
+                CFString::wrap_under_get_rule(kSecAttrKeyClassPrivate).as_CFTypeRef(),
+            );
+            query.set(
+                CFString::wrap_under_get_rule(kSecAttrApplicationTag).as_CFTypeRef(),
+                tag.as_CFTypeRef(),
+            );
+            query
+        }
+    }
+
+    /// Query the keychain for the wrapper private key.
+    fn query_wrapper_private_key(&self) -> Result<SecKey, KeyringError> {
+        use security_framework_sys::item::*;
+        use security_framework_sys::keychain_item::SecItemCopyMatching;
+
+        unsafe {
+            let mut query = self.build_wrapper_key_query();
+            query.set(
+                CFString::wrap_under_get_rule(kSecReturnRef).as_CFTypeRef(),
+                CFBoolean::true_value().as_CFTypeRef(),
+            );
+            query.set(
+                CFString::wrap_under_get_rule(kSecMatchLimit).as_CFTypeRef(),
+                CFString::wrap_under_get_rule(kSecMatchLimitOne).as_CFTypeRef(),
+            );
+
+            let mut result: core_foundation::base::CFTypeRef = std::ptr::null();
+            let status = SecItemCopyMatching(query.as_concrete_TypeRef(), &mut result);
+
+            if status != 0 || result.is_null() {
+                return Err(KeyringError::KeyNotFound {
+                    alias: self.wrapper_key_tag.clone(),
+                });
+            }
+
+            Ok(SecKey::wrap_under_create_rule(result as _))
+        }
+    }
+
+    /// Generate a new SE P-256 key for ECIES wrapping.
+    fn generate_wrapper_key(&self) -> Result<(), KeyringError> {
+        use security_framework_sys::access_control::kSecAccessControlPrivateKeyUsage;
+        use security_framework_sys::item::*;
+
+        let access_control = SecAccessControl::create_with_protection(
+            Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
+            kSecAccessControlPrivateKeyUsage,
+        )
+        .map_err(|e| KeyringError::KeyGenerationFailed {
+            reason: format!("Failed to create access control: {e}"),
+        })?;
+
+        let tag = CFData::from_buffer(self.wrapper_key_tag.as_bytes());
+
+        unsafe {
+            let mut private_attrs = CFMutableDictionary::new();
+            private_attrs.set(
+                CFString::wrap_under_get_rule(kSecAttrIsPermanent).as_CFTypeRef(),
+                CFBoolean::true_value().as_CFTypeRef(),
+            );
+            private_attrs.set(
+                CFString::wrap_under_get_rule(kSecAttrApplicationTag).as_CFTypeRef(),
+                tag.as_CFTypeRef(),
+            );
+            private_attrs.set(
+                CFString::wrap_under_get_rule(kSecAttrAccessControl).as_CFTypeRef(),
+                access_control.as_CFTypeRef(),
+            );
+
+            let mut params = CFMutableDictionary::new();
+            params.set(
+                CFString::wrap_under_get_rule(kSecAttrKeyType).as_CFTypeRef(),
+                CFString::wrap_under_get_rule(kSecAttrKeyTypeECSECPrimeRandom).as_CFTypeRef(),
+            );
+            params.set(
+                CFString::wrap_under_get_rule(kSecAttrKeySizeInBits).as_CFTypeRef(),
+                CFNumber::from(256_i32).as_CFTypeRef(),
+            );
+            params.set(
+                CFString::wrap_under_get_rule(kSecAttrTokenID).as_CFTypeRef(),
+                CFString::wrap_under_get_rule(kSecAttrTokenIDSecureEnclave).as_CFTypeRef(),
+            );
+            params.set(
+                CFString::wrap_under_get_rule(kSecPrivateKeyAttrs).as_CFTypeRef(),
+                private_attrs.as_CFTypeRef(),
+            );
+
+            let mut error: core_foundation_sys::error::CFErrorRef = std::ptr::null_mut();
+            let key = security_framework_sys::key::SecKeyCreateRandomKey(
+                params.as_concrete_TypeRef(),
+                &mut error,
+            );
+
+            if key.is_null() {
+                let err_msg = if !error.is_null() {
+                    let cf_error = core_foundation::error::CFError::wrap_under_create_rule(error);
+                    format!("SE wrapper key generation failed: {cf_error}")
+                } else {
+                    "SE wrapper key generation failed".to_string()
+                };
+                return Err(KeyringError::KeyGenerationFailed { reason: err_msg });
+            }
+
+            core_foundation::base::CFRelease(key as _);
+        }
+
+        tracing::info!(
+            tag = %self.wrapper_key_tag,
+            "SE ECIES wrapper key generated"
+        );
+
+        Ok(())
+    }
+
+    /// Encrypt data using the SE public key via ECIES.
+    fn encrypt_with_se(&self, plaintext: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        use security_framework_sys::key::SecKeyCreateEncryptedData;
+
+        let private_key = self.query_wrapper_private_key()?;
+        let public_key = private_key
+            .public_key()
+            .ok_or_else(|| KeyringError::HardwareError {
+                reason: "Failed to get public key from SE wrapper key".into(),
+            })?;
+
+        let plaintext_cf = CFData::from_buffer(plaintext);
+        let mut error: core_foundation_sys::error::CFErrorRef = std::ptr::null_mut();
+
+        let ciphertext = unsafe {
+            SecKeyCreateEncryptedData(
+                public_key.as_concrete_TypeRef(),
+                Algorithm::ECIESEncryptionStandardX963SHA256AESGCM.into(),
+                plaintext_cf.as_concrete_TypeRef(),
+                &mut error,
+            )
+        };
+
+        if ciphertext.is_null() {
+            let err_msg = if !error.is_null() {
+                let cf_error = unsafe {
+                    core_foundation::error::CFError::wrap_under_create_rule(error)
+                };
+                format!("ECIES encryption failed: {cf_error}")
+            } else {
+                "ECIES encryption failed".to_string()
+            };
+            return Err(KeyringError::HardwareError { reason: err_msg });
+        }
+
+        let cf_data = unsafe { CFData::wrap_under_create_rule(ciphertext) };
+        Ok(cf_data.to_vec())
+    }
+
+    /// Decrypt data using the SE private key via ECIES.
+    fn decrypt_with_se(&self, ciphertext: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        use security_framework_sys::key::SecKeyCreateDecryptedData;
+
+        let private_key = self.query_wrapper_private_key()?;
+        let ciphertext_cf = CFData::from_buffer(ciphertext);
+        let mut error: core_foundation_sys::error::CFErrorRef = std::ptr::null_mut();
+
+        let plaintext = unsafe {
+            SecKeyCreateDecryptedData(
+                private_key.as_concrete_TypeRef(),
+                Algorithm::ECIESEncryptionStandardX963SHA256AESGCM.into(),
+                ciphertext_cf.as_concrete_TypeRef(),
+                &mut error,
+            )
+        };
+
+        if plaintext.is_null() {
+            let err_msg = if !error.is_null() {
+                let cf_error = unsafe {
+                    core_foundation::error::CFError::wrap_under_create_rule(error)
+                };
+                format!("ECIES decryption failed: {cf_error}")
+            } else {
+                "ECIES decryption failed".to_string()
+            };
+            return Err(KeyringError::HardwareError { reason: err_msg });
+        }
+
+        let cf_data = unsafe { CFData::wrap_under_create_rule(plaintext) };
+        Ok(cf_data.to_vec())
+    }
+
+    /// Decrypt the stored key and return an Ed25519 signing key.
+    ///
+    /// Uses a cache to avoid repeated SE decryption operations.
+    fn get_signing_key(&self) -> Result<ed25519_dalek::SigningKey, KeyringError> {
+        // Check cache first
+        if let Ok(guard) = self.cached_key.read() {
+            if let Some(ref key) = *guard {
+                return Ok(key.clone());
+            }
+        }
+
+        // Read encrypted file
+        let path = self.encrypted_key_path();
+        let encrypted = std::fs::read(&path).map_err(|e| KeyringError::StorageFailed {
+            reason: format!("Failed to read encrypted key file: {e}"),
+        })?;
+
+        // Decrypt with SE
+        let plaintext = self.decrypt_with_se(&encrypted)?;
+
+        if plaintext.len() != 32 {
+            return Err(KeyringError::InvalidKey {
+                reason: format!(
+                    "Decrypted key has invalid length: {} (expected 32)",
+                    plaintext.len()
+                ),
+            });
+        }
+
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(&plaintext);
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+
+        // Update cache
+        if let Ok(mut guard) = self.cached_key.write() {
+            *guard = Some(signing_key.clone());
+        }
+
+        Ok(signing_key)
+    }
+
+    /// Import an Ed25519 key, encrypting it with the SE wrapper key.
+    pub fn import_key(&self, key_bytes: &[u8]) -> Result<(), KeyringError> {
+        if key_bytes.len() != 32 {
+            return Err(KeyringError::InvalidKey {
+                reason: format!(
+                    "Ed25519 key must be 32 bytes, got {}",
+                    key_bytes.len()
+                ),
+            });
+        }
+
+        // Encrypt with SE
+        let encrypted = self.encrypt_with_se(key_bytes)?;
+
+        // Write to disk
+        std::fs::create_dir_all(&self.storage_dir).map_err(|e| KeyringError::StorageFailed {
+            reason: format!("Failed to create storage directory: {e}"),
+        })?;
+
+        let path = self.encrypted_key_path();
+
+        #[cfg(unix)]
+        {
+            use std::io::Write;
+            use std::os::unix::fs::OpenOptionsExt;
+            let mut file = std::fs::OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(true)
+                .mode(0o600)
+                .open(&path)
+                .map_err(|e| KeyringError::StorageFailed {
+                    reason: format!("Failed to create encrypted key file: {e}"),
+                })?;
+            file.write_all(&encrypted)
+                .map_err(|e| KeyringError::StorageFailed {
+                    reason: format!("Failed to write encrypted key: {e}"),
+                })?;
+        }
+
+        #[cfg(not(unix))]
+        {
+            std::fs::write(&path, &encrypted).map_err(|e| KeyringError::StorageFailed {
+                reason: format!("Failed to write encrypted key: {e}"),
+            })?;
+        }
+
+        // Cache the key
+        let mut seed = [0u8; 32];
+        seed.copy_from_slice(key_bytes);
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed);
+        if let Ok(mut guard) = self.cached_key.write() {
+            *guard = Some(signing_key);
+        }
+
+        tracing::info!(
+            alias = %self.alias,
+            "Ed25519 key imported with SE ECIES encryption"
+        );
+
+        Ok(())
+    }
+
+    /// Check if an encrypted key file exists.
+    pub fn key_exists(&self) -> bool {
+        self.encrypted_key_path().exists()
+    }
+
+    /// Get the Ed25519 public key.
+    pub fn public_key(&self) -> Result<Vec<u8>, KeyringError> {
+        let signing_key = self.get_signing_key()?;
+        Ok(signing_key.verifying_key().to_bytes().to_vec())
+    }
+
+    /// Sign data with the Ed25519 key.
+    pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        use ed25519_dalek::Signer;
+        let signing_key = self.get_signing_key()?;
+        let signature = signing_key.sign(data);
+        Ok(signature.to_bytes().to_vec())
+    }
+
+    /// Delete the encrypted key and clear cache.
+    pub fn delete_key(&self) -> Result<(), KeyringError> {
+        // Clear cache
+        if let Ok(mut guard) = self.cached_key.write() {
+            *guard = None;
+        }
+
+        // Delete encrypted file
+        let path = self.encrypted_key_path();
+        if path.exists() {
+            std::fs::remove_file(&path).map_err(|e| KeyringError::StorageFailed {
+                reason: format!("Failed to delete encrypted key file: {e}"),
+            })?;
+        }
+
+        tracing::info!(alias = %self.alias, "SE-wrapped Ed25519 key deleted");
+        Ok(())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -658,5 +1093,50 @@ mod tests {
             assert_eq!(signer.hardware_type(), HardwareType::IosSecureEnclave);
             assert_eq!(signer.current_alias(), "test_key");
         }
+    }
+
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    #[test]
+    #[ignore = "Requires keychain entitlements (run from signed app or with codesign)"]
+    fn test_se_wrapped_ed25519_roundtrip() {
+        let dir = std::env::temp_dir().join("ciris_test_se_wrapped");
+        let _ = std::fs::create_dir_all(&dir);
+
+        let signer = SecureEnclaveWrappedEd25519Signer::new("test_se_ed25519", dir.clone())
+            .expect("SE wrapper should initialize");
+
+        // Import a test key
+        let seed: [u8; 32] = [0x42; 32];
+        signer.import_key(&seed).expect("import should succeed");
+
+        // Verify key exists
+        assert!(signer.key_exists());
+
+        // Get public key
+        let pubkey = signer.public_key().expect("public_key should succeed");
+        assert_eq!(pubkey.len(), 32);
+
+        // Sign and verify
+        let data = b"test data for SE-wrapped Ed25519";
+        let sig = signer.sign(data).expect("sign should succeed");
+        assert_eq!(sig.len(), 64);
+
+        // Verify signature
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+        let vk = VerifyingKey::from_bytes(&pubkey.try_into().unwrap()).unwrap();
+        let dalek_sig = Signature::from_slice(&sig).unwrap();
+        assert!(vk.verify(data, &dalek_sig).is_ok());
+
+        // Clear cache and sign again (forces SE decryption)
+        if let Ok(mut guard) = signer.cached_key.write() {
+            *guard = None;
+        }
+        let sig2 = signer.sign(data).expect("sign after cache clear should succeed");
+        assert_eq!(sig, sig2);
+
+        // Cleanup
+        signer.delete_key().expect("delete should succeed");
+        assert!(!signer.key_exists());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -30,7 +30,7 @@ pub use factory::{
 pub use android::{AndroidKeystoreSigner, HardwareWrappedEd25519Signer};
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
-pub use ios::SecureEnclaveSigner;
+pub use ios::{SecureEnclaveWrappedEd25519Signer, SecureEnclaveSigner};
 
 #[cfg(any(target_os = "linux", target_os = "windows"))]
 pub use tpm::TpmSigner;

@@ -467,6 +467,9 @@ pub struct MutableEd25519Signer {
     /// Hardware wrapper for Android (AES-256-GCM encryption via Keystore)
     #[cfg(target_os = "android")]
     hardware_wrapper: Option<crate::platform::android::HardwareWrappedEd25519Signer>,
+    /// Hardware wrapper for iOS/macOS (ECIES encryption via Secure Enclave)
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    hardware_wrapper: Option<crate::platform::ios::SecureEnclaveWrappedEd25519Signer>,
 }
 
 impl MutableEd25519Signer {
@@ -511,10 +514,46 @@ impl MutableEd25519Signer {
             }
         };
 
+        // On iOS/macOS, try to initialize SE ECIES wrapper
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        let hardware_wrapper = {
+            let key_dir = std::env::var("CIRIS_DATA_DIR")
+                .map(std::path::PathBuf::from)
+                .or_else(|_| {
+                    dirs::data_local_dir()
+                        .map(|d| d.join("ciris-verify"))
+                        .ok_or(())
+                })
+                .unwrap_or_else(|_| std::path::PathBuf::from("."));
+
+            match crate::platform::ios::SecureEnclaveWrappedEd25519Signer::new(
+                alias.clone(),
+                key_dir,
+            ) {
+                Ok(wrapper) => {
+                    tracing::info!(
+                        alias = %alias,
+                        "SE-backed Ed25519 wrapper initialized (ECIES via Secure Enclave)"
+                    );
+                    Some(wrapper)
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        alias = %alias,
+                        error = %e,
+                        "Failed to initialize SE wrapper - falling back to software-only"
+                    );
+                    None
+                },
+            }
+        };
+
         let signer = Self {
             inner: std::sync::RwLock::new(Ed25519SoftwareSigner::new(alias.clone())),
             storage_path: std::sync::RwLock::new(None),
             #[cfg(target_os = "android")]
+            hardware_wrapper,
+            #[cfg(any(target_os = "ios", target_os = "macos"))]
             hardware_wrapper,
         };
 
@@ -551,7 +590,11 @@ impl MutableEd25519Signer {
         {
             self.hardware_wrapper.is_some()
         }
-        #[cfg(not(target_os = "android"))]
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            self.hardware_wrapper.is_some()
+        }
+        #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "macos")))]
         {
             false
         }
@@ -615,8 +658,8 @@ impl MutableEd25519Signer {
     /// Returns Ok(true) if key was loaded, Ok(false) if no key exists,
     /// or Err if loading failed.
     ///
-    /// On Android with hardware backing, the key is decrypted using the
-    /// hardware-backed AES key from Android Keystore.
+    /// On Android, the key is decrypted using a hardware-backed AES key.
+    /// On iOS/macOS, the key is decrypted using SE ECIES.
     pub fn try_load_persisted_key(&self) -> Result<bool, KeyringError> {
         // On Android, try hardware-backed loading first
         #[cfg(target_os = "android")]
@@ -661,7 +704,35 @@ impl MutableEd25519Signer {
             }
         }
 
-        // Software fallback (or non-Android platforms)
+        // On iOS/macOS, try SE ECIES-backed loading first
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            if let Some(ref hw) = self.hardware_wrapper {
+                tracing::info!("Attempting to load SE-backed Ed25519 key...");
+
+                if hw.key_exists() {
+                    match hw.public_key() {
+                        Ok(pubkey) => {
+                            tracing::info!(
+                                pubkey_len = pubkey.len(),
+                                "SE-backed Ed25519 key loaded successfully (ECIES)"
+                            );
+                            return Ok(true);
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "SE-backed key exists but failed to load - will try software fallback"
+                            );
+                        },
+                    }
+                } else {
+                    tracing::debug!("No SE-backed key found");
+                }
+            }
+        }
+
+        // Software fallback (or platforms without hardware wrapper)
         let path = match self.get_storage_path() {
             Some(p) => p,
             None => {
@@ -759,6 +830,41 @@ impl MutableEd25519Signer {
                     } else {
                         tracing::debug!("Hardware key already exists, no migration needed");
                     }
+                }
+            }
+        }
+
+        // On iOS/macOS: migrate existing plaintext key to SE-backed storage
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            drop(inner); // Release the lock before migration
+            if let Some(ref hw) = self.hardware_wrapper {
+                tracing::info!(
+                    "Migrating existing software key to SE-backed storage (ECIES)..."
+                );
+
+                if !hw.key_exists() {
+                    match hw.import_key(&key_bytes) {
+                        Ok(()) => {
+                            tracing::info!(
+                                "Software key migrated to SE-backed storage successfully"
+                            );
+                            tracing::info!(
+                                "Note: Old plaintext key file still exists at {:?} - \
+                                 consider deleting it for improved security",
+                                path
+                            );
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "Failed to migrate key to SE-backed storage - \
+                                 will continue with software-only key"
+                            );
+                        },
+                    }
+                } else {
+                    tracing::debug!("SE-backed key already exists, no migration needed");
                 }
             }
         }
@@ -901,6 +1007,7 @@ impl MutableEd25519Signer {
     ///
     /// On Android with hardware backing, the key is encrypted using a
     /// hardware-backed AES-256-GCM key from Android Keystore before storage.
+    /// On iOS/macOS, the key is encrypted using SE ECIES.
     pub fn import_key(&self, key_bytes: &[u8]) -> Result<(), KeyringError> {
         tracing::info!(
             key_len = key_bytes.len(),
@@ -946,6 +1053,41 @@ impl MutableEd25519Signer {
                         tracing::warn!(
                             error = %e,
                             "Hardware-backed import failed - falling back to software-only"
+                        );
+                        // Fall through to software import
+                    },
+                }
+            }
+        }
+
+        // On iOS/macOS, use SE ECIES-backed import if available
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            if let Some(ref hw) = self.hardware_wrapper {
+                tracing::info!("Using SE-backed import (ECIES via Secure Enclave)");
+
+                // Delete existing key if any (ignore errors)
+                let _ = hw.delete_key();
+
+                match hw.import_key(key_bytes) {
+                    Ok(()) => {
+                        tracing::info!(
+                            "Ed25519 key imported with SE ECIES encryption"
+                        );
+                        // Also keep in software signer for compatibility
+                        let mut inner =
+                            self.inner
+                                .write()
+                                .map_err(|_| KeyringError::PlatformError {
+                                    message: "Lock poisoned".into(),
+                                })?;
+                        inner.import_key(key_bytes)?;
+                        return Ok(());
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "SE-backed import failed - falling back to software-only"
                         );
                         // Fall through to software import
                     },
@@ -1017,6 +1159,21 @@ impl MutableEd25519Signer {
             }
         }
 
+        // On iOS/macOS, also check SE wrapper
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            if let Some(ref hw) = self.hardware_wrapper {
+                if hw.key_exists() {
+                    tracing::debug!(
+                        has_key = true,
+                        hardware_backed = true,
+                        "MutableEd25519Signer::has_key check (SE ECIES)"
+                    );
+                    return true;
+                }
+            }
+        }
+
         let has = self
             .inner
             .read()
@@ -1047,7 +1204,22 @@ impl MutableEd25519Signer {
             inner.clear_key();
         }
 
-        // Delete from storage
+        // Delete from hardware-backed storage if available
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            if let Some(ref hw) = self.hardware_wrapper {
+                match hw.delete_key() {
+                    Ok(()) => {
+                        tracing::info!("SE-backed Ed25519 key deleted");
+                    },
+                    Err(e) => {
+                        tracing::warn!(error = %e, "Failed to delete SE-backed key");
+                    },
+                }
+            }
+        }
+
+        // Delete from software storage
         match self.delete_persisted_key() {
             Ok(true) => {
                 tracing::info!("Key cleared from memory and deleted from storage");
@@ -1088,6 +1260,21 @@ impl MutableEd25519Signer {
             }
         }
 
+        // On iOS/macOS, try SE wrapper first
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            if let Some(ref hw) = self.hardware_wrapper {
+                if let Ok(pubkey) = hw.public_key() {
+                    tracing::debug!(
+                        pubkey_len = pubkey.len(),
+                        hardware_backed = true,
+                        "get_public_key from SE ECIES wrapper"
+                    );
+                    return Some(pubkey);
+                }
+            }
+        }
+
         self.inner
             .read()
             .ok()
@@ -1099,6 +1286,7 @@ impl MutableEd25519Signer {
     /// On Android with hardware backing, the key is decrypted using the
     /// hardware-backed AES key, signs the data, then the decrypted key
     /// is only held in memory briefly.
+    /// On iOS/macOS, the key is decrypted using SE ECIES.
     pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>, KeyringError> {
         // On Android, try hardware wrapper first
         #[cfg(target_os = "android")]
@@ -1125,6 +1313,30 @@ impl MutableEd25519Signer {
                             );
                         },
                     }
+                }
+            }
+        }
+
+        // On iOS/macOS, try SE wrapper first
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            if let Some(ref hw) = self.hardware_wrapper {
+                match hw.sign(data) {
+                    Ok(sig) => {
+                        tracing::debug!(
+                            data_len = data.len(),
+                            sig_len = sig.len(),
+                            hardware_backed = true,
+                            "Signed with SE-backed Ed25519 key (ECIES)"
+                        );
+                        return Ok(sig);
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            error = %e,
+                            "SE-backed signing failed - trying software fallback"
+                        );
+                    },
                 }
             }
         }
@@ -1167,8 +1379,15 @@ impl MutableEd25519Signer {
             "DISABLED (software-only)"
         };
 
-        #[cfg(not(target_os = "android"))]
-        let hw_status = "N/A (not Android)";
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        let hw_status = if hardware_backed {
+            "ENABLED (ECIES via Secure Enclave)"
+        } else {
+            "DISABLED (software-only)"
+        };
+
+        #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "macos")))]
+        let hw_status = "N/A (no hardware wrapper on this platform)";
 
         format!(
             "MutableEd25519Signer diagnostics:\n\
