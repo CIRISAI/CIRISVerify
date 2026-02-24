@@ -332,7 +332,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
         with:
-          key: manifest-tool
+          # IMPORTANT: Include tag to bust cache on version bumps
+          # Without this, stale manifest-tool binary may be used (missing metadata field)
+          key: manifest-tool-${{ github.ref_name }}
 
       - name: Build manifest tool
         run: cargo build --release -p ciris-manifest-tool
