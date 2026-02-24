@@ -293,17 +293,12 @@ impl RegistryClient {
         let url = format!("{}/v1/verify/binary-manifest/{}", self.base_url, version);
         info!("Fetching binary manifest from URL: {}", url);
 
-        let response = self
-            .client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| {
-                warn!("Binary manifest request FAILED: url={}, error={}", url, e);
-                VerifyError::HttpsError {
-                    message: format!("Binary manifest request failed (url={}): {}", url, e),
-                }
-            })?;
+        let response = self.client.get(&url).send().await.map_err(|e| {
+            warn!("Binary manifest request FAILED: url={}, error={}", url, e);
+            VerifyError::HttpsError {
+                message: format!("Binary manifest request failed (url={}): {}", url, e),
+            }
+        })?;
 
         if !response.status().is_success() {
             return Err(VerifyError::HttpsError {

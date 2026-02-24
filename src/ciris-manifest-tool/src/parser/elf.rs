@@ -37,8 +37,7 @@ pub fn parse_elf(
                 && code_section_vaddr >= ph.p_vaddr
                 && code_section_vaddr < ph.p_vaddr + ph.p_memsz
         })
-        .map(|ph| ph.p_vaddr)
-        .unwrap_or(code_section_vaddr); // Fallback to section vaddr if not found
+        .map_or(code_section_vaddr, |ph| ph.p_vaddr); // Fallback to section vaddr if not found
 
     tracing::info!(
         "parse_elf: .text section vaddr=0x{:x}, exec segment vaddr=0x{:x}, delta=0x{:x}",

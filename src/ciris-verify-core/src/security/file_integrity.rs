@@ -604,7 +604,10 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
 
 /// Collect Python files on disk that are NOT in the manifest and NOT exempt.
 /// Returns a Vec of relative file paths.
-fn collect_unexpected_files(agent_root: &Path, manifest_files: &BTreeMap<String, String>) -> Vec<String> {
+fn collect_unexpected_files(
+    agent_root: &Path,
+    manifest_files: &BTreeMap<String, String>,
+) -> Vec<String> {
     let mut unexpected = Vec::new();
     walk_python_files(agent_root, agent_root, manifest_files, &mut unexpected);
     unexpected
