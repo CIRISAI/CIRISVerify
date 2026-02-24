@@ -515,11 +515,17 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     // Verify each function (constant-time accumulation)
     let mut all_valid = true;
     let mut functions_passed = 0usize;
+    let mut first_mismatch_logged = false;
 
-    for entry in manifest.functions.values() {
+    for (name, entry) in &manifest.functions {
         let func_bytes = unsafe {
             let ptr = (code_base + entry.offset as usize) as *const u8;
             if ptr.is_null() {
+                tracing::warn!(
+                    "verify_functions: null pointer for {} at offset 0x{:x}",
+                    name,
+                    entry.offset
+                );
                 all_valid = false;
                 continue;
             }
@@ -534,6 +540,17 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         all_valid &= matches;
         if matches {
             functions_passed += 1;
+        } else if !first_mismatch_logged {
+            // Log first mismatch for debugging (security: only log one to avoid enumeration)
+            tracing::warn!(
+                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, expected={}, actual={}",
+                name,
+                entry.offset,
+                entry.size,
+                entry.hash,
+                actual_hash
+            );
+            first_mismatch_logged = true;
         }
     }
 
@@ -575,6 +592,24 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         manifest.functions.len()
     );
 
+    // Log first few function entries for debugging
+    for (i, (name, entry)) in manifest.functions.iter().take(3).enumerate() {
+        tracing::info!(
+            "verify_functions: sample[{}] name={}, offset=0x{:x}, size={}, hash={}",
+            i,
+            name,
+            entry.offset,
+            entry.size,
+            &entry.hash[..std::cmp::min(20, entry.hash.len())]
+        );
+        if entry.offset > 0x100000 {
+            tracing::warn!(
+                "verify_functions: WARNING - offset 0x{:x} is unusually large (>1MB), may be virtual address instead of relative offset",
+                entry.offset
+            );
+        }
+    }
+
     // Get code base address
     let code_base = match get_code_base_windows() {
         Some(base) => {
@@ -596,14 +631,20 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         },
     };
 
-    // Verify each function
+    // Verify each function (constant-time accumulation)
     let mut all_valid = true;
     let mut functions_passed = 0usize;
+    let mut first_mismatch_logged = false;
 
-    for entry in manifest.functions.values() {
+    for (name, entry) in &manifest.functions {
         let func_bytes = unsafe {
             let ptr = (code_base + entry.offset as usize) as *const u8;
             if ptr.is_null() {
+                tracing::warn!(
+                    "verify_functions: null pointer for {} at offset 0x{:x}",
+                    name,
+                    entry.offset
+                );
                 all_valid = false;
                 continue;
             }
@@ -618,6 +659,17 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         all_valid &= matches;
         if matches {
             functions_passed += 1;
+        } else if !first_mismatch_logged {
+            // Log first mismatch for debugging (security: only log one to avoid enumeration)
+            tracing::warn!(
+                "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, expected={}, actual={}",
+                name,
+                entry.offset,
+                entry.size,
+                entry.hash,
+                actual_hash
+            );
+            first_mismatch_logged = true;
         }
     }
 
