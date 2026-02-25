@@ -2022,7 +2022,7 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
         },
     };
 
-    let request: FullAttestationRequest = match serde_json::from_str(request_str) {
+    let mut request: FullAttestationRequest = match serde_json::from_str(request_str) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("ciris_verify_run_attestation: invalid JSON: {}", e);
@@ -2037,6 +2037,19 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
             request.challenge.len()
         );
         return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    // Auto-populate key_fingerprint from ed25519_signer if not provided
+    // This ensures the Portal key fingerprint is used for registry verification
+    if request.key_fingerprint.is_none() && handle.ed25519_signer.has_key() {
+        if let Some(pk) = handle.ed25519_signer.get_public_key() {
+            let fingerprint = ciris_verify_core::registry::compute_ed25519_fingerprint(&pk);
+            tracing::info!(
+                "Auto-populating key_fingerprint from ed25519_signer: {}",
+                fingerprint
+            );
+            request.key_fingerprint = Some(fingerprint);
+        }
     }
 
     // Create attestation engine with default config
