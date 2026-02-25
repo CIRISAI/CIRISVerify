@@ -2063,7 +2063,6 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
         };
 
     // Populate key_attestation with signer info
-    let diag = handle.ed25519_signer.diagnostics();
     let has_key = handle.ed25519_signer.has_key();
     let key_type = if has_key { "portal" } else { "ephemeral" };
 
@@ -2080,21 +2079,20 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
         (String::new(), String::new())
     };
 
-    // Parse diagnostics for hardware_backed and storage_mode
-    let hardware_backed = diag.contains("hardware_backed: true");
-    let storage_mode = if diag.contains("AES-256-GCM") {
-        "HW-AES-256-GCM (Android Keystore)".to_string()
-    } else if diag.contains("SecureEnclave") {
-        "SecureEnclave".to_string()
-    } else if diag.contains("TPM") {
-        "TPM".to_string()
-    } else {
-        "Software".to_string()
-    };
-
-    // Detect actual hardware type from platform capabilities
+    // Detect hardware type and derive storage_mode from actual platform capabilities
     let capabilities = ciris_keyring::detect_hardware_type();
     let hw_type_str = format!("{:?}", capabilities.hardware_type);
+    let hardware_backed = handle.ed25519_signer.is_hardware_backed();
+    let storage_mode = match capabilities.hardware_type {
+        ciris_keyring::HardwareType::AndroidKeystore => {
+            "HW-AES-256-GCM (Android Keystore)".to_string()
+        },
+        ciris_keyring::HardwareType::IosSecureEnclave => "Secure Enclave".to_string(),
+        ciris_keyring::HardwareType::TpmDiscrete | ciris_keyring::HardwareType::TpmFirmware => {
+            "TPM".to_string()
+        },
+        _ => "Software".to_string(),
+    };
 
     result.key_attestation = Some(ciris_verify_core::unified::KeyAttestationResult {
         key_type: key_type.to_string(),
