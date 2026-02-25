@@ -517,6 +517,8 @@ jobs:
             ["release/android/arm64-v8a/libciris_verify_ffi.so"]="aarch64-linux-android"
             ["release/android/armeabi-v7a/libciris_verify_ffi.so"]="armv7-linux-androideabi"
             ["release/android/x86_64/libciris_verify_ffi.so"]="x86_64-linux-android"
+            ["release/ios/aarch64-apple-ios/libciris_verify_ffi.a"]="aarch64-apple-ios"
+            ["release/ios/aarch64-apple-ios-sim/libciris_verify_ffi.a"]="aarch64-apple-ios-sim"
           )
 
           for binary_path in "${!TARGET_MAP[@]}"; do

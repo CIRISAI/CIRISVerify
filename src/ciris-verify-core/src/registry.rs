@@ -461,6 +461,12 @@ impl RegistryClient {
                 message: format!("Play Integrity nonce request failed: {}", e),
             })?;
 
+        if response.status().as_u16() == 409 {
+            return Err(VerifyError::HttpsError {
+                message: "Play Integrity nonce conflict: a nonce was already issued for this session. Wait for it to expire or use the existing one.".to_string(),
+            });
+        }
+
         if !response.status().is_success() {
             return Err(VerifyError::HttpsError {
                 message: format!("Play Integrity nonce HTTP error: {}", response.status()),
@@ -514,6 +520,13 @@ impl RegistryClient {
             });
         }
 
+        if response.status().as_u16() == 409 {
+            return Err(VerifyError::HttpsError {
+                message: "Play Integrity nonce already consumed or expired. Request a new nonce."
+                    .to_string(),
+            });
+        }
+
         if !response.status().is_success() {
             return Err(VerifyError::HttpsError {
                 message: format!("Play Integrity verify HTTP error: {}", response.status()),
@@ -560,6 +573,12 @@ impl RegistryClient {
             .map_err(|e| VerifyError::HttpsError {
                 message: format!("App Attest nonce request failed: {}", e),
             })?;
+
+        if response.status().as_u16() == 409 {
+            return Err(VerifyError::HttpsError {
+                message: "App Attest nonce conflict: a nonce was already issued for this session. Wait for it to expire or use the existing one.".to_string(),
+            });
+        }
 
         if !response.status().is_success() {
             return Err(VerifyError::HttpsError {
@@ -615,6 +634,13 @@ impl RegistryClient {
         if response.status().as_u16() == 503 {
             return Err(VerifyError::HttpsError {
                 message: "App Attest not configured on registry".to_string(),
+            });
+        }
+
+        if response.status().as_u16() == 409 {
+            return Err(VerifyError::HttpsError {
+                message: "App Attest nonce already consumed or expired. Request a new nonce."
+                    .to_string(),
             });
         }
 

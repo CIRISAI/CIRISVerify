@@ -83,6 +83,9 @@ pub struct FullAttestationResult {
     /// One of: "active", "rotated", "revoked", "not_found", "not_checked", "error:..."
     #[serde(default)]
     pub registry_key_status: String,
+    /// Device attestation result (L2: Play Integrity / App Attest).
+    #[serde(default)]
+    pub device_attestation: Option<DeviceAttestationCheckResult>,
     /// File integrity check results.
     pub file_integrity: Option<IntegrityCheckResult>,
     /// Python module integrity check results (Android/mobile).
@@ -167,6 +170,21 @@ pub struct KeyAttestationResult {
     /// One of: "active", "rotated", "revoked", "not_found", "not_checked", "error:..."
     #[serde(default)]
     pub registry_key_status: String,
+}
+
+/// Device attestation result (L2: Play Integrity on Android, App Attest on iOS).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeviceAttestationCheckResult {
+    /// Platform that was checked ("android" or "ios").
+    pub platform: String,
+    /// Whether the device attestation passed.
+    pub verified: bool,
+    /// Summary of the verification result.
+    #[serde(default)]
+    pub summary: String,
+    /// Error message if verification failed.
+    #[serde(default)]
+    pub error: Option<String>,
 }
 
 /// File integrity check result.
@@ -831,9 +849,40 @@ impl UnifiedAttestationEngine {
         }
         diagnostics.push('\n');
 
-        // Calculate level (0-5 scale)
-        let level = if checks_total > 0 {
-            ((checks_passed as f32 / checks_total as f32) * 5.0).round() as u8
+        // Calculate level as cascading tiers (any failure caps at prior level)
+        // L1: Binary hash + function integrity
+        let l1_pass = self_verification.binary_valid && self_verification.functions_valid;
+        // L2: Device attestation is injected by FFI layer from cached results
+        // (Play Integrity / App Attest verified via separate FFI calls before run_attestation).
+        // At the engine level, L2 passes through from L1.
+        let l2_pass = l1_pass;
+        // L3: Registry cross-validation (at least 2/3 sources must agree)
+        let sources_agreeing = u8::from(sources.dns_us_valid)
+            + u8::from(sources.dns_eu_valid)
+            + u8::from(sources.https_valid);
+        let l3_pass = l2_pass && sources_agreeing >= 2;
+        // L4: File integrity (if checked)
+        let l4_pass = l3_pass
+            && file_integrity
+                .as_ref()
+                .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(true))
+                .unwrap_or(true)
+            && python_integrity.as_ref().map(|pi| pi.valid).unwrap_or(true);
+        // L5: Audit trail + registry key
+        let l5_pass = l4_pass
+            && audit_trail.as_ref().map(|a| a.valid).unwrap_or(true)
+            && (key_verification_result == "active" || key_verification_result == "not_checked");
+
+        let level = if l5_pass {
+            5
+        } else if l4_pass {
+            4
+        } else if l3_pass {
+            3
+        } else if l2_pass {
+            2
+        } else if l1_pass {
+            1
         } else {
             0
         };
@@ -857,6 +906,7 @@ impl UnifiedAttestationEngine {
             self_verification: Some(self_verification),
             key_attestation: None, // Filled by caller with HW signer
             registry_key_status: key_verification_result,
+            device_attestation: None, // Injected by FFI layer from cached Play Integrity / App Attest results
             file_integrity,
             python_integrity,
             sources,

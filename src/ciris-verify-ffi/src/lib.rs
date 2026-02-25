@@ -58,6 +58,7 @@ mod ios_sync;
 use std::ffi::c_void;
 use std::path::PathBuf;
 use std::ptr;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
 
 use ciris_keyring::MutableEd25519Signer;
@@ -270,6 +271,100 @@ fn base64_decode(input: &str) -> Result<Vec<u8>, &'static str> {
 /// Ensure tracing is initialized exactly once.
 static TRACING_INIT: Once = Once::new();
 
+// =============================================================================
+// Log Callback Infrastructure
+// =============================================================================
+
+/// C-compatible log callback function pointer.
+///
+/// Parameters:
+/// - `level`: 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG, 5=TRACE
+/// - `target`: Null-terminated module path (e.g., "ciris_verify_core::engine")
+/// - `message`: Null-terminated log message
+///
+/// The strings are only valid for the duration of the callback call.
+/// The callback may be invoked from any thread.
+pub type CirisLogCallback =
+    unsafe extern "C" fn(level: i32, target: *const libc::c_char, message: *const libc::c_char);
+
+/// Global atomic storage for the log callback function pointer.
+/// 0 = no callback registered.
+static LOG_CALLBACK: AtomicUsize = AtomicUsize::new(0);
+
+/// Get the currently registered log callback, if any.
+fn get_log_callback() -> Option<CirisLogCallback> {
+    let ptr = LOG_CALLBACK.load(Ordering::Relaxed);
+    if ptr == 0 {
+        None
+    } else {
+        // SAFETY: We only store valid function pointers via set_log_callback.
+        Some(unsafe { std::mem::transmute::<usize, CirisLogCallback>(ptr) })
+    }
+}
+
+/// Tracing layer that forwards events to the registered C log callback.
+///
+/// Always installed during init. If no callback is registered, events
+/// are silently ignored (zero overhead beyond the pointer check).
+struct CallbackTracingLayer;
+
+impl<S> tracing_subscriber::layer::Layer<S> for CallbackTracingLayer
+where
+    S: tracing::Subscriber,
+{
+    fn on_event(
+        &self,
+        event: &tracing::Event<'_>,
+        _ctx: tracing_subscriber::layer::Context<'_, S>,
+    ) {
+        let callback = match get_log_callback() {
+            Some(cb) => cb,
+            None => return,
+        };
+
+        // Format the event fields
+        let mut visitor = FfiLogVisitor {
+            message: String::new(),
+        };
+        event.record(&mut visitor);
+
+        let level = match *event.metadata().level() {
+            tracing::Level::ERROR => 1,
+            tracing::Level::WARN => 2,
+            tracing::Level::INFO => 3,
+            tracing::Level::DEBUG => 4,
+            tracing::Level::TRACE => 5,
+        };
+
+        // Convert to C strings (replacing interior nulls with \0 escape)
+        let target = std::ffi::CString::new(event.metadata().target()).unwrap_or_default();
+        let message = std::ffi::CString::new(visitor.message).unwrap_or_default();
+
+        unsafe {
+            callback(level, target.as_ptr(), message.as_ptr());
+        }
+    }
+}
+
+/// Visitor that formats tracing event fields into a single message string.
+struct FfiLogVisitor {
+    message: String,
+}
+
+impl tracing::field::Visit for FfiLogVisitor {
+    fn record_debug(&mut self, field: &tracing::field::Field, value: &dyn std::fmt::Debug) {
+        if field.name() == "message" {
+            self.message = format!("{:?}", value);
+        } else {
+            if !self.message.is_empty() {
+                self.message.push_str(", ");
+            }
+            self.message
+                .push_str(&format!("{}={:?}", field.name(), value));
+        }
+    }
+}
+
 /// Opaque handle to the CIRISVerify instance.
 #[repr(C)]
 pub struct CirisVerifyHandle {
@@ -278,6 +373,11 @@ pub struct CirisVerifyHandle {
     /// Optional Ed25519 signer for Portal-issued keys.
     /// This is separate from the hardware signer and used for agent identity.
     ed25519_signer: MutableEd25519Signer,
+    /// Cached device attestation result (Play Integrity / App Attest).
+    /// Populated automatically when ciris_verify_verify_integrity_token or
+    /// ciris_verify_app_attest is called. Used by run_attestation for L2.
+    device_attestation_cache:
+        std::sync::Mutex<Option<ciris_verify_core::unified::DeviceAttestationCheckResult>>,
 }
 
 /// Error codes returned by FFI functions.
@@ -403,6 +503,7 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
             let _ = tracing_subscriber::registry()
                 .with(tracing_subscriber::filter::LevelFilter::DEBUG)
                 .with(AndroidTracingLayer)
+                .with(CallbackTracingLayer)
                 .try_init();
         });
     }
@@ -410,26 +511,97 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
     #[cfg(target_os = "ios")]
     {
         TRACING_INIT.call_once(|| {
-            // On iOS, use oslog to write to the unified logging system (Console.app)
+            // Initialize oslog for the log crate (used by dependencies)
             oslog::OsLogger::new("ai.ciris.verify")
                 .level_filter(log::LevelFilter::Info)
                 .init()
                 .ok();
+
+            // Custom tracing layer that outputs to iOS unified logging via oslog
+            struct IosTracingLayer;
+
+            impl<S> tracing_subscriber::layer::Layer<S> for IosTracingLayer
+            where
+                S: tracing::Subscriber,
+            {
+                fn on_event(
+                    &self,
+                    event: &tracing::Event<'_>,
+                    _ctx: tracing_subscriber::layer::Context<'_, S>,
+                ) {
+                    let mut visitor = LogVisitor {
+                        message: String::new(),
+                    };
+                    event.record(&mut visitor);
+
+                    let level = event.metadata().level();
+                    let target = event.metadata().target();
+                    let msg = format!("[{}] {}: {}", level, target, visitor.message);
+
+                    // Output via log crate which goes to oslog
+                    match *level {
+                        tracing::Level::ERROR => log::error!("{}", msg),
+                        tracing::Level::WARN => log::warn!("{}", msg),
+                        tracing::Level::INFO => log::info!("{}", msg),
+                        tracing::Level::DEBUG => log::debug!("{}", msg),
+                        tracing::Level::TRACE => log::trace!("{}", msg),
+                    }
+                }
+            }
+
+            struct LogVisitor {
+                message: String,
+            }
+
+            impl tracing::field::Visit for LogVisitor {
+                fn record_debug(
+                    &mut self,
+                    field: &tracing::field::Field,
+                    value: &dyn std::fmt::Debug,
+                ) {
+                    if field.name() == "message" {
+                        self.message = format!("{:?}", value);
+                    } else {
+                        if !self.message.is_empty() {
+                            self.message.push_str(", ");
+                        }
+                        self.message
+                            .push_str(&format!("{}={:?}", field.name(), value));
+                    }
+                }
+            }
+
+            // Set up tracing subscriber with iOS layer + callback layer
+            use tracing_subscriber::layer::SubscriberExt;
+            use tracing_subscriber::util::SubscriberInitExt;
+
+            let _ = tracing_subscriber::registry()
+                .with(tracing_subscriber::filter::LevelFilter::INFO)
+                .with(IosTracingLayer)
+                .with(CallbackTracingLayer)
+                .try_init();
         });
     }
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
         TRACING_INIT.call_once(|| {
+            use tracing_subscriber::layer::SubscriberExt;
+            use tracing_subscriber::util::SubscriberInitExt;
+
             let filter = tracing_subscriber::EnvFilter::try_from_default_env()
                 .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
-            tracing_subscriber::fmt()
-                .with_env_filter(filter)
-                .with_target(true)
-                .with_thread_ids(false)
-                .with_file(false)
-                .with_line_number(false)
-                .init();
+            let _ = tracing_subscriber::registry()
+                .with(filter)
+                .with(
+                    tracing_subscriber::fmt::layer()
+                        .with_target(true)
+                        .with_thread_ids(false)
+                        .with_file(false)
+                        .with_line_number(false),
+                )
+                .with(CallbackTracingLayer)
+                .try_init();
         });
     }
 
@@ -524,6 +696,7 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
         runtime,
         engine,
         ed25519_signer,
+        device_attestation_cache: std::sync::Mutex::new(None),
     });
     Box::into_raw(handle)
 }
@@ -1938,6 +2111,65 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
         registry_key_status: result.registry_key_status.clone(),
     });
 
+    // Inject cached device attestation result (from prior Play Integrity / App Attest call)
+    // On mobile platforms, this is automatically populated; on desktop it's N/A.
+    let device_attestation = handle
+        .device_attestation_cache
+        .lock()
+        .ok()
+        .and_then(|cache| cache.clone());
+
+    if let Some(ref da) = device_attestation {
+        // Add device attestation as a check
+        result.checks_total += 1;
+        if da.verified {
+            result.checks_passed += 1;
+        }
+        result.device_attestation = Some(da.clone());
+
+        // Recalculate level with device attestation factored into L2
+        let l1_pass = result
+            .self_verification
+            .as_ref()
+            .map(|sv| sv.binary_valid && sv.functions_valid)
+            .unwrap_or(false);
+        let l2_pass = l1_pass && da.verified;
+        let sources_agreeing = u8::from(result.sources.dns_us_valid)
+            + u8::from(result.sources.dns_eu_valid)
+            + u8::from(result.sources.https_valid);
+        let l3_pass = l2_pass && sources_agreeing >= 2;
+        let l4_pass = l3_pass
+            && result
+                .file_integrity
+                .as_ref()
+                .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(true))
+                .unwrap_or(true)
+            && result
+                .python_integrity
+                .as_ref()
+                .map(|pi| pi.valid)
+                .unwrap_or(true);
+        let l5_pass = l4_pass
+            && result.audit_trail.as_ref().map(|a| a.valid).unwrap_or(true)
+            && (result.registry_key_status == "active"
+                || result.registry_key_status == "not_checked");
+
+        result.level = if l5_pass {
+            5
+        } else if l4_pass {
+            4
+        } else if l3_pass {
+            3
+        } else if l2_pass {
+            2
+        } else if l1_pass {
+            1
+        } else {
+            0
+        };
+        result.valid = result.checks_passed == result.checks_total && result.errors.is_empty();
+    }
+
     // Prepend key attestation info to diagnostics
     let key_diag = format!(
         "=== KEY ATTESTATION ===\n\
@@ -2370,6 +2602,16 @@ pub unsafe extern "C" fn ciris_verify_verify_integrity_token(
 
     tracing::info!("Play Integrity verification: {}", response.summary());
 
+    // Cache result for run_attestation L2
+    if let Ok(mut cache) = handle.device_attestation_cache.lock() {
+        *cache = Some(ciris_verify_core::unified::DeviceAttestationCheckResult {
+            platform: "android".to_string(),
+            verified: response.verified,
+            summary: response.summary(),
+            error: response.error.clone(),
+        });
+    }
+
     // Serialize to JSON
     let result_bytes = match serde_json::to_vec(&response) {
         Ok(b) => b,
@@ -2604,6 +2846,16 @@ pub unsafe extern "C" fn ciris_verify_app_attest(
 
     tracing::info!("App Attest verification result: {}", response.summary());
 
+    // Cache result for run_attestation L2
+    if let Ok(mut cache) = handle.device_attestation_cache.lock() {
+        *cache = Some(ciris_verify_core::unified::DeviceAttestationCheckResult {
+            platform: "ios".to_string(),
+            verified: response.verified,
+            summary: response.summary(),
+            error: response.error.clone(),
+        });
+    }
+
     // Serialize result
     let result_bytes = match serde_json::to_vec(&response) {
         Ok(b) => b,
@@ -2771,6 +3023,39 @@ pub unsafe extern "C" fn ciris_verify_app_attest_assertion(
     *result_len = len;
 
     CirisVerifyError::Success as i32
+}
+
+// =============================================================================
+// Log Callback Registration
+// =============================================================================
+
+/// Register a callback function to receive all CIRISVerify log events.
+///
+/// The callback receives:
+/// - `level`: 1=ERROR, 2=WARN, 3=INFO, 4=DEBUG, 5=TRACE
+/// - `target`: The module path (e.g. "ciris_verify_core::engine"), null-terminated UTF-8
+/// - `message`: The log message, null-terminated UTF-8
+///
+/// Pass NULL to unregister the callback.
+///
+/// The callback may be invoked from any thread. The `target` and `message` pointers
+/// are only valid for the duration of the callback invocation.
+///
+/// # Safety
+///
+/// If non-null, `callback` must point to a valid function with the expected signature.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_set_log_callback(callback: Option<CirisLogCallback>) {
+    match callback {
+        Some(cb) => {
+            LOG_CALLBACK.store(cb as usize, Ordering::Relaxed);
+            tracing::info!("Log callback registered");
+        },
+        None => {
+            LOG_CALLBACK.store(0, Ordering::Relaxed);
+            // Don't log here — the callback is already gone
+        },
+    }
 }
 
 // Android JNI bindings
