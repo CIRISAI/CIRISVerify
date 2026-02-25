@@ -757,9 +757,58 @@ impl UnifiedAttestationEngine {
             if let Some(ref manifest_files) = expected_hashes {
                 diagnostics.push_str("  Per-module verification:\n");
 
+                // Log sample paths from both sides for debugging path format mismatches
+                let agent_sample: Vec<_> = hashes.module_hashes.keys().take(3).collect();
+                let manifest_sample: Vec<_> = manifest_files
+                    .keys()
+                    .filter(|p| p.ends_with(".py"))
+                    .take(3)
+                    .collect();
+                info!(
+                    "Python module path formats - agent: {:?}, manifest: {:?}",
+                    agent_sample, manifest_sample
+                );
+                diagnostics.push_str(&format!("    Agent paths (sample): {:?}\n", agent_sample));
+                diagnostics.push_str(&format!(
+                    "    Manifest paths (sample): {:?}\n",
+                    manifest_sample
+                ));
+
+                // Helper: find manifest entry that matches agent path (handles different bases)
+                // Tries: exact match, then suffix match (manifest ends with /agent_path)
+                let find_manifest_hash = |agent_path: &str| -> Option<(&String, &String)> {
+                    // 1. Exact match
+                    if let Some(hash) = manifest_files.get(agent_path) {
+                        return Some((manifest_files.get_key_value(agent_path).unwrap().0, hash));
+                    }
+
+                    // 2. Suffix match: manifest path ends with /agent_path
+                    // e.g., agent="ciris_engine/core.py" matches manifest="src/ciris_engine/core.py"
+                    let suffix = format!("/{}", agent_path);
+                    for (manifest_path, hash) in manifest_files.iter() {
+                        if manifest_path.ends_with(&suffix) {
+                            return Some((manifest_path, hash));
+                        }
+                    }
+
+                    // 3. Try without leading directory (agent might have extra prefix)
+                    // e.g., agent="python/ciris_engine/core.py" matches manifest="ciris_engine/core.py"
+                    if let Some(slash_pos) = agent_path.find('/') {
+                        let without_prefix = &agent_path[slash_pos + 1..];
+                        if let Some(hash) = manifest_files.get(without_prefix) {
+                            return Some((
+                                manifest_files.get_key_value(without_prefix).unwrap().0,
+                                hash,
+                            ));
+                        }
+                    }
+
+                    None
+                };
+
                 // Check each module provided by agent
                 for (module_path, actual_hash) in &hashes.module_hashes {
-                    if let Some(expected_hash) = manifest_files.get(module_path) {
+                    if let Some((matched_path, expected_hash)) = find_manifest_hash(module_path) {
                         // Strip "sha256:" prefix if present
                         let expected_clean = expected_hash
                             .strip_prefix("sha256:")
@@ -772,16 +821,18 @@ impl UnifiedAttestationEngine {
                             failed_modules.insert(
                                 module_path.clone(),
                                 format!(
-                                    "hash mismatch: got {}..., expected {}...",
+                                    "hash mismatch (manifest: {}): got {}..., expected {}...",
+                                    matched_path,
                                     &actual_hash[..std::cmp::min(16, actual_hash.len())],
                                     &expected_clean[..std::cmp::min(16, expected_clean.len())]
                                 ),
                             );
                             diagnostics.push_str(&format!(
-                                "    ✗ {}: MISMATCH\n      got:      {}...\n      expected: {}...\n",
+                                "    ✗ {}: MISMATCH\n      got:      {}...\n      expected: {}... (manifest: {})\n",
                                 module_path,
                                 &actual_hash[..std::cmp::min(32, actual_hash.len())],
-                                &expected_clean[..std::cmp::min(32, expected_clean.len())]
+                                &expected_clean[..std::cmp::min(32, expected_clean.len())],
+                                matched_path
                             ));
                         }
                     } else {
