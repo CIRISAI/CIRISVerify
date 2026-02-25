@@ -1853,22 +1853,31 @@ impl HardwareWrappedEd25519Signer {
             }
         })?;
 
-        let plaintext = env
-            .call_method(
-                &cipher,
-                "doFinal",
-                "([B)[B",
-                &[JValue::Object(&ciphertext_array)],
-            )
-            .map_err(|e| {
+        let plaintext = match env.call_method(
+            &cipher,
+            "doFinal",
+            "([B)[B",
+            &[JValue::Object(&ciphertext_array)],
+        ) {
+            Ok(result) => result,
+            Err(e) => {
+                // Check for and clear any pending Java exception to prevent crashes
+                if env.exception_check().unwrap_or(false) {
+                    error!(
+                        wrapper_alias = %self.wrapper_key_alias,
+                        "Clearing pending Java exception after AES-GCM decryption failure"
+                    );
+                    let _ = env.exception_clear();
+                }
                 error!(
                     wrapper_alias = %self.wrapper_key_alias,
                     "AES-GCM decryption failed (authentication failure?): {}", e
                 );
-                KeyringError::HardwareNotAvailable {
+                return Err(KeyringError::HardwareNotAvailable {
                     reason: format!("Decryption failed: {}", e),
-                }
-            })?;
+                });
+            },
+        };
 
         let plaintext_obj = plaintext
             .l()

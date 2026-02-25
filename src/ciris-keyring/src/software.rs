@@ -571,25 +571,41 @@ impl MutableEd25519Signer {
             hardware_wrapper,
         };
 
-        // Try to load persisted key
-        match signer.try_load_persisted_key() {
-            Ok(true) => {
+        // Try to load persisted key (with panic protection)
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            signer.try_load_persisted_key()
+        })) {
+            Ok(Ok(true)) => {
                 tracing::info!(
                     alias = %alias,
                     "Loaded persisted Ed25519 key from storage"
                 );
             },
-            Ok(false) => {
+            Ok(Ok(false)) => {
                 tracing::debug!(
                     alias = %alias,
                     "No persisted Ed25519 key found"
                 );
             },
-            Err(e) => {
+            Ok(Err(e)) => {
                 tracing::warn!(
                     alias = %alias,
                     error = %e,
                     "Failed to load persisted key (will start fresh)"
+                );
+            },
+            Err(panic_info) => {
+                let msg = if let Some(s) = panic_info.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = panic_info.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                tracing::error!(
+                    alias = %alias,
+                    panic = %msg,
+                    "PANIC while loading persisted key (keystore corruption?) - starting fresh"
                 );
             },
         }

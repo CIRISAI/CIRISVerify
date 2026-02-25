@@ -56,6 +56,7 @@ mod ios_sync;
 // Android logging: using tracing-log bridge to route tracing events -> log crate -> android_logger -> logcat
 
 use std::ffi::c_void;
+use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1668,19 +1669,32 @@ pub unsafe extern "C" fn ciris_verify_import_key(
         return CirisVerifyError::InvalidArgument as i32;
     }
 
-    let handle = &*handle;
+    let handle_ref = &*handle;
     let key_bytes = std::slice::from_raw_parts(key_data, key_len);
 
     tracing::info!("Importing Ed25519 key ({} bytes)", key_len);
 
-    match handle.ed25519_signer.import_key(key_bytes) {
-        Ok(()) => {
+    match catch_unwind(AssertUnwindSafe(|| {
+        handle_ref.ed25519_signer.import_key(key_bytes)
+    })) {
+        Ok(Ok(())) => {
             tracing::info!("Ed25519 key imported successfully");
             CirisVerifyError::Success as i32
         },
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::error!("Failed to import Ed25519 key: {}", e);
             CirisVerifyError::InvalidArgument as i32
+        },
+        Err(e) => {
+            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!("import_key: panic caught: {}", msg);
+            CirisVerifyError::InternalError as i32
         },
     }
 }
@@ -1705,15 +1719,27 @@ pub unsafe extern "C" fn ciris_verify_has_key(handle: *mut CirisVerifyHandle) ->
         return CirisVerifyError::InvalidArgument as i32;
     }
 
-    let handle = &*handle;
-    let has_key = handle.ed25519_signer.has_key();
-
-    tracing::debug!("has_key check: {}", has_key);
-
-    if has_key {
-        1
-    } else {
-        0
+    let handle_ref = &*handle;
+    match catch_unwind(AssertUnwindSafe(|| handle_ref.ed25519_signer.has_key())) {
+        Ok(has_key) => {
+            tracing::debug!("has_key check: {}", has_key);
+            if has_key {
+                1
+            } else {
+                0
+            }
+        },
+        Err(e) => {
+            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!("has_key: panic caught: {}", msg);
+            CirisVerifyError::InternalError as i32
+        },
     }
 }
 
@@ -1737,17 +1763,28 @@ pub unsafe extern "C" fn ciris_verify_delete_key(handle: *mut CirisVerifyHandle)
         return CirisVerifyError::InvalidArgument as i32;
     }
 
-    let handle = &*handle;
+    let handle_ref = &*handle;
 
     tracing::info!("Deleting Ed25519 key");
 
-    match handle.ed25519_signer.clear_key() {
-        Ok(()) => {
+    match catch_unwind(AssertUnwindSafe(|| handle_ref.ed25519_signer.clear_key())) {
+        Ok(Ok(())) => {
             tracing::info!("Ed25519 key deleted successfully");
             CirisVerifyError::Success as i32
         },
-        Err(e) => {
+        Ok(Err(e)) => {
             tracing::error!("Failed to delete Ed25519 key: {}", e);
+            CirisVerifyError::InternalError as i32
+        },
+        Err(e) => {
+            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!("delete_key: panic caught: {}", msg);
             CirisVerifyError::InternalError as i32
         },
     }
@@ -1788,16 +1825,29 @@ pub unsafe extern "C" fn ciris_verify_sign_ed25519(
         return CirisVerifyError::InvalidArgument as i32;
     }
 
-    let handle = &*handle;
+    let handle_ref = &*handle;
     let data_bytes = std::slice::from_raw_parts(data, data_len);
 
     tracing::debug!("Signing {} bytes with Ed25519 key", data_len);
 
-    let sig = match handle.ed25519_signer.sign(data_bytes) {
-        Ok(s) => s,
-        Err(e) => {
+    let sig = match catch_unwind(AssertUnwindSafe(|| {
+        handle_ref.ed25519_signer.sign(data_bytes)
+    })) {
+        Ok(Ok(s)) => s,
+        Ok(Err(e)) => {
             tracing::error!("Ed25519 signing failed: {}", e);
             return CirisVerifyError::RequestFailed as i32;
+        },
+        Err(e) => {
+            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!("sign_ed25519: panic caught: {}", msg);
+            return CirisVerifyError::InternalError as i32;
         },
     };
 
@@ -1845,13 +1895,26 @@ pub unsafe extern "C" fn ciris_verify_get_ed25519_public_key(
         return CirisVerifyError::InvalidArgument as i32;
     }
 
-    let handle = &*handle;
+    let handle_ref = &*handle;
 
-    let pubkey = match handle.ed25519_signer.get_public_key() {
-        Some(pk) => pk,
-        None => {
+    let pubkey = match catch_unwind(AssertUnwindSafe(|| {
+        handle_ref.ed25519_signer.get_public_key()
+    })) {
+        Ok(Some(pk)) => pk,
+        Ok(None) => {
             tracing::error!("get_ed25519_public_key: no key loaded");
             return CirisVerifyError::RequestFailed as i32;
+        },
+        Err(e) => {
+            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!("get_ed25519_public_key: panic caught: {}", msg);
+            return CirisVerifyError::InternalError as i32;
         },
     };
 
