@@ -241,6 +241,15 @@ pub struct PythonIntegrityResult {
     pub actual_total_hash: String,
     /// Verification mode: "total_hash_only", "individual_modules", "both".
     pub verification_mode: String,
+    /// List of modules that failed verification (path → reason).
+    #[serde(default)]
+    pub failed_modules: BTreeMap<String, String>,
+    /// List of modules missing from manifest (in agent but not expected).
+    #[serde(default)]
+    pub unexpected_modules: Vec<String>,
+    /// List of modules missing from agent (expected but not provided).
+    #[serde(default)]
+    pub missing_modules: Vec<String>,
     /// Error message if verification failed.
     #[serde(default)]
     pub error: Option<String>,
@@ -689,10 +698,40 @@ impl UnifiedAttestationEngine {
 
             diagnostics.push_str("=== PYTHON INTEGRITY ===\n");
             diagnostics.push_str(&format!(
-                "  Modules: {} (total_hash: {}...)\n",
+                "  Modules provided: {} (total_hash: {}...)\n",
                 hashes.module_count,
                 &hashes.total_hash[..std::cmp::min(16, hashes.total_hash.len())]
             ));
+
+            // Fetch expected hashes from registry if we have agent_version
+            let expected_hashes: Option<std::collections::HashMap<String, String>> =
+                if let Some(ref version) = request.agent_version {
+                    if let Some(ref client) = self.registry_client {
+                        match client.get_build_by_version(version).await {
+                            Ok(build) => {
+                                diagnostics.push_str(&format!(
+                                    "  Registry manifest: {} files (v{})\n",
+                                    build.file_manifest_json.files().len(),
+                                    build.version
+                                ));
+                                Some(build.file_manifest_json.files().clone())
+                            }
+                            Err(e) => {
+                                diagnostics.push_str(&format!(
+                                    "  Registry manifest: ✗ fetch failed ({})\n",
+                                    e
+                                ));
+                                None
+                            }
+                        }
+                    } else {
+                        diagnostics.push_str("  Registry manifest: ✗ no client\n");
+                        None
+                    }
+                } else {
+                    diagnostics.push_str("  Registry manifest: ○ no agent_version provided\n");
+                    None
+                };
 
             // Verify total_hash if expected_python_hash provided
             let total_hash_valid = if let Some(ref expected) = request.expected_python_hash {
@@ -702,21 +741,114 @@ impl UnifiedAttestationEngine {
                     if matches { "✓ MATCH" } else { "✗ MISMATCH" },
                     &expected[..std::cmp::min(16, expected.len())]
                 ));
-                if matches {
-                    checks_passed += 1;
-                } else {
-                    errors.push("Python total_hash mismatch".to_string());
-                }
                 matches
             } else {
-                // No expected hash - just log the value for reference
                 diagnostics
-                    .push_str("  Total hash: ○ not verified (no expected_python_hash provided)\n");
-                diagnostics.push_str(&format!("    └─ Actual: {}\n", hashes.total_hash));
-                // Still count as passed if we're just recording
-                checks_passed += 1;
-                true
+                    .push_str("  Total hash: ○ not verified (no expected_python_hash)\n");
+                true // No expected hash means we can't fail on it
             };
+
+            // Per-module validation
+            let mut modules_passed = 0usize;
+            let mut modules_failed = 0usize;
+            let mut failed_modules: BTreeMap<String, String> = BTreeMap::new();
+            let mut unexpected_modules: Vec<String> = Vec::new();
+            let mut missing_modules: Vec<String> = Vec::new();
+
+            if let Some(ref manifest_files) = expected_hashes {
+                diagnostics.push_str("  Per-module verification:\n");
+
+                // Check each module provided by agent
+                for (module_path, actual_hash) in &hashes.module_hashes {
+                    if let Some(expected_hash) = manifest_files.get(module_path) {
+                        // Strip "sha256:" prefix if present
+                        let expected_clean = expected_hash
+                            .strip_prefix("sha256:")
+                            .unwrap_or(expected_hash);
+
+                        if actual_hash == expected_clean {
+                            modules_passed += 1;
+                        } else {
+                            modules_failed += 1;
+                            failed_modules.insert(
+                                module_path.clone(),
+                                format!(
+                                    "hash mismatch: got {}..., expected {}...",
+                                    &actual_hash[..std::cmp::min(16, actual_hash.len())],
+                                    &expected_clean[..std::cmp::min(16, expected_clean.len())]
+                                ),
+                            );
+                            diagnostics.push_str(&format!(
+                                "    ✗ {}: MISMATCH\n      got:      {}...\n      expected: {}...\n",
+                                module_path,
+                                &actual_hash[..std::cmp::min(32, actual_hash.len())],
+                                &expected_clean[..std::cmp::min(32, expected_clean.len())]
+                            ));
+                        }
+                    } else {
+                        // Module not in manifest - could be dynamically generated or unexpected
+                        unexpected_modules.push(module_path.clone());
+                        diagnostics.push_str(&format!(
+                            "    ? {}: not in manifest (unexpected)\n",
+                            module_path
+                        ));
+                    }
+                }
+
+                // Check for modules in manifest but not provided by agent
+                // Only check Python files (.py) to avoid noise from other file types
+                for manifest_path in manifest_files.keys() {
+                    if manifest_path.ends_with(".py") && !hashes.module_hashes.contains_key(manifest_path) {
+                        missing_modules.push(manifest_path.clone());
+                    }
+                }
+
+                if !missing_modules.is_empty() && missing_modules.len() <= 10 {
+                    diagnostics.push_str(&format!(
+                        "    ⚠ {} Python modules in manifest but not provided by agent\n",
+                        missing_modules.len()
+                    ));
+                    for path in missing_modules.iter().take(5) {
+                        diagnostics.push_str(&format!("      └─ {}\n", path));
+                    }
+                    if missing_modules.len() > 5 {
+                        diagnostics.push_str(&format!(
+                            "      └─ ... and {} more\n",
+                            missing_modules.len() - 5
+                        ));
+                    }
+                }
+
+                diagnostics.push_str(&format!(
+                    "    Summary: {}/{} passed, {} failed, {} unexpected\n",
+                    modules_passed,
+                    hashes.module_hashes.len(),
+                    modules_failed,
+                    unexpected_modules.len()
+                ));
+            } else {
+                // No manifest to compare against - record mode only
+                modules_passed = hashes.module_count;
+                diagnostics.push_str("  Per-module: ○ skipped (no manifest to compare)\n");
+            }
+
+            // Overall validity: all modules must pass AND total_hash must match (if provided)
+            let all_modules_valid = modules_failed == 0;
+            let valid = total_hash_valid && all_modules_valid;
+
+            if valid {
+                checks_passed += 1;
+            } else {
+                if !total_hash_valid {
+                    errors.push("Python total_hash mismatch".to_string());
+                }
+                if !all_modules_valid {
+                    errors.push(format!(
+                        "Python module integrity: {} modules failed",
+                        modules_failed
+                    ));
+                }
+            }
 
             diagnostics.push_str(&format!(
                 "  Agent version: {}\n",
@@ -732,28 +864,27 @@ impl UnifiedAttestationEngine {
             diagnostics.push('\n');
 
             Some(PythonIntegrityResult {
-                valid: total_hash_valid,
-                modules_checked: hashes.module_count,
-                modules_passed: if total_hash_valid {
-                    hashes.module_count
-                } else {
-                    0
-                },
-                modules_failed: if total_hash_valid {
-                    0
-                } else {
-                    hashes.module_count
-                },
+                valid,
+                modules_checked: hashes.module_hashes.len(),
+                modules_passed,
+                modules_failed,
                 total_hash_valid,
                 expected_total_hash: request.expected_python_hash.clone(),
                 actual_total_hash: hashes.total_hash.clone(),
-                verification_mode: if request.expected_python_hash.is_some() {
+                verification_mode: if expected_hashes.is_some() {
+                    "individual_modules".to_string()
+                } else if request.expected_python_hash.is_some() {
                     "total_hash_only".to_string()
                 } else {
                     "record_only".to_string()
                 },
-                error: if total_hash_valid {
+                failed_modules,
+                unexpected_modules,
+                missing_modules,
+                error: if valid {
                     None
+                } else if !all_modules_valid {
+                    Some(format!("{} modules failed hash verification", modules_failed))
                 } else {
                     Some("Total hash mismatch".to_string())
                 },
