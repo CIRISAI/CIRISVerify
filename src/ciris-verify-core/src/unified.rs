@@ -715,14 +715,14 @@ impl UnifiedAttestationEngine {
                                     build.version
                                 ));
                                 Some(build.file_manifest_json.files().clone())
-                            }
+                            },
                             Err(e) => {
                                 diagnostics.push_str(&format!(
                                     "  Registry manifest: ✗ fetch failed ({})\n",
                                     e
                                 ));
                                 None
-                            }
+                            },
                         }
                     } else {
                         diagnostics.push_str("  Registry manifest: ✗ no client\n");
@@ -743,8 +743,7 @@ impl UnifiedAttestationEngine {
                 ));
                 matches
             } else {
-                diagnostics
-                    .push_str("  Total hash: ○ not verified (no expected_python_hash)\n");
+                diagnostics.push_str("  Total hash: ○ not verified (no expected_python_hash)\n");
                 true // No expected hash means we can't fail on it
             };
 
@@ -798,7 +797,9 @@ impl UnifiedAttestationEngine {
                 // Check for modules in manifest but not provided by agent
                 // Only check Python files (.py) to avoid noise from other file types
                 for manifest_path in manifest_files.keys() {
-                    if manifest_path.ends_with(".py") && !hashes.module_hashes.contains_key(manifest_path) {
+                    if manifest_path.ends_with(".py")
+                        && !hashes.module_hashes.contains_key(manifest_path)
+                    {
                         missing_modules.push(manifest_path.clone());
                     }
                 }
@@ -884,7 +885,10 @@ impl UnifiedAttestationEngine {
                 error: if valid {
                     None
                 } else if !all_modules_valid {
-                    Some(format!("{} modules failed hash verification", modules_failed))
+                    Some(format!(
+                        "{} modules failed hash verification",
+                        modules_failed
+                    ))
                 } else {
                     Some("Total hash mismatch".to_string())
                 },
