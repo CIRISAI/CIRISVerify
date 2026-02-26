@@ -1010,7 +1010,7 @@ pub unsafe extern "C" fn ciris_verify_check_capability(
         Err(_) => return CirisVerifyError::InvalidArgument as i32,
     };
 
-    let result = match handle.runtime.block_on(handle.engine.check_capability(
+    let result = match handle.runtime.handle().block_on(handle.engine.check_capability(
         capability_str,
         action_str,
         required_tier as u8,
@@ -1312,7 +1312,7 @@ pub unsafe extern "C" fn ciris_verify_sign(
     let data_bytes = std::slice::from_raw_parts(data, data_len);
 
     // Sign using the hardware signer
-    let sig = match handle.runtime.block_on(handle.engine.sign(data_bytes)) {
+    let sig = match handle.runtime.handle().block_on(handle.engine.sign(data_bytes)) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("Signing failed: {}", e);
@@ -1379,7 +1379,7 @@ pub unsafe extern "C" fn ciris_verify_get_public_key(
     let handle = &*handle;
 
     // Get public key
-    let pubkey = match handle.runtime.block_on(handle.engine.public_key()) {
+    let pubkey = match handle.runtime.handle().block_on(handle.engine.public_key()) {
         Ok(k) => k,
         Err(e) => {
             tracing::error!("Failed to get public key: {}", e);
@@ -2134,7 +2134,7 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
 
     // Run attestation
     let mut result: FullAttestationResult =
-        match handle.runtime.block_on(engine.run_attestation(request)) {
+        match handle.runtime.handle().block_on(engine.run_attestation(request)) {
             Ok(r) => r,
             Err(e) => {
                 tracing::error!("ciris_verify_run_attestation: attestation failed: {}", e);
@@ -2576,7 +2576,7 @@ pub unsafe extern "C" fn ciris_verify_get_integrity_nonce(
     let handle = &*handle;
 
     // Create registry client and fetch nonce
-    let result = handle.runtime.block_on(async {
+    let result = handle.runtime.handle().block_on(async {
         let client = ciris_verify_core::RegistryClient::new(
             "https://api.registry.ciris-services-1.ai",
             std::time::Duration::from_secs(10),
@@ -2703,7 +2703,7 @@ pub unsafe extern "C" fn ciris_verify_verify_integrity_token(
     );
 
     // Create registry client and verify token
-    let result = handle.runtime.block_on(async {
+    let result = handle.runtime.handle().block_on(async {
         let client = ciris_verify_core::RegistryClient::new(
             "https://api.registry.ciris-services-1.ai",
             std::time::Duration::from_secs(15),
@@ -2803,7 +2803,7 @@ pub unsafe extern "C" fn ciris_verify_get_app_attest_nonce(
     let handle = &*handle;
 
     // Create registry client and fetch nonce
-    let result = handle.runtime.block_on(async {
+    let result = handle.runtime.handle().block_on(async {
         let client = ciris_verify_core::RegistryClient::new(
             "https://api.registry.ciris-services-1.ai",
             std::time::Duration::from_secs(10),
@@ -2969,7 +2969,7 @@ pub unsafe extern "C" fn ciris_verify_app_attest(
     );
 
     // Call registry to verify attestation
-    let result = handle.runtime.block_on(async {
+    let result = handle.runtime.handle().block_on(async {
         let client = ciris_verify_core::RegistryClient::new(
             "https://api.registry.ciris-services-1.ai",
             std::time::Duration::from_secs(30),
@@ -3125,7 +3125,7 @@ pub unsafe extern "C" fn ciris_verify_app_attest_assertion(
     );
 
     // Call registry to verify assertion
-    let result = handle.runtime.block_on(async {
+    let result = handle.runtime.handle().block_on(async {
         let client = ciris_verify_core::RegistryClient::new(
             "https://api.registry.ciris-services-1.ai",
             std::time::Duration::from_secs(30),
