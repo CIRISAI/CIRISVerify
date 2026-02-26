@@ -65,12 +65,12 @@ use std::sync::{Arc, Once};
 use ciris_keyring::MutableEd25519Signer;
 use ciris_verify_core::config::VerifyConfig;
 use ciris_verify_core::license::LicenseStatus;
+use ciris_verify_core::security::is_emulator;
 use ciris_verify_core::types::{
     DisclosureSeverity, LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure,
     ResponseAttestation, ResponseMetadata, ResponseSignature, SourceResult, ValidationResults,
     ValidationStatus,
 };
-use ciris_verify_core::security::is_emulator;
 use ciris_verify_core::unified::{
     FullAttestationRequest, FullAttestationResult, UnifiedAttestationEngine,
 };
@@ -1494,9 +1494,7 @@ pub unsafe extern "C" fn ciris_verify_export_attestation(
         ("persisted".to_string(), pk)
     } else {
         // No key yet - generate one for initial attestation
-        tracing::info!(
-            "No persisted key found, generating Ed25519 key for initial attestation"
-        );
+        tracing::info!("No persisted key found, generating Ed25519 key for initial attestation");
 
         // Generate random 32-byte seed
         let mut seed = [0u8; 32];
@@ -2156,11 +2154,11 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
         "none"
     } else {
         match result.registry_key_status.as_str() {
-            "active" => "portal",           // Confirmed by registry
-            "rotated" => "portal_rotated",  // Was portal-issued but rotated
-            "revoked" => "portal_revoked",  // Was portal-issued but revoked
-            "not_found" => "local",         // Key exists but not in registry
-            "not_checked" => "unverified",  // Registry check skipped
+            "active" => "portal",          // Confirmed by registry
+            "rotated" => "portal_rotated", // Was portal-issued but rotated
+            "revoked" => "portal_revoked", // Was portal-issued but revoked
+            "not_found" => "local",        // Key exists but not in registry
+            "not_checked" => "unverified", // Registry check skipped
             status if status.starts_with("error") => "registry_unavailable",
             _ => "unverified",
         }
@@ -2252,7 +2250,11 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
                 .unwrap_or(false);
         // L5: Audit trail (MUST be checked and valid) + registry key (must be active)
         let l5_pass = l4_pass
-            && result.audit_trail.as_ref().map(|a| a.valid).unwrap_or(false)
+            && result
+                .audit_trail
+                .as_ref()
+                .map(|a| a.valid)
+                .unwrap_or(false)
             && result.registry_key_status == "active";
 
         result.level = if l5_pass {

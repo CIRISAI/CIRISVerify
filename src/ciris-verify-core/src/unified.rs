@@ -1032,8 +1032,7 @@ impl UnifiedAttestationEngine {
         };
 
         // 3b. Unified module integrity (cross-validates disk + agent + registry)
-        let module_integrity = if request.agent_version.is_some() {
-            let version = request.agent_version.as_ref().unwrap();
+        let module_integrity = if let Some(version) = request.agent_version.as_ref() {
             let agent_hashes = request.python_hashes.as_ref().map(|h| &h.module_hashes);
 
             diagnostics.push_str("=== MODULE INTEGRITY (Unified) ===\n");
@@ -1239,7 +1238,10 @@ impl UnifiedAttestationEngine {
                 .as_ref()
                 .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
                 .unwrap_or(false)
-            && python_integrity.as_ref().map(|pi| pi.valid).unwrap_or(false);
+            && python_integrity
+                .as_ref()
+                .map(|pi| pi.valid)
+                .unwrap_or(false);
         // L5: Audit trail (MUST be checked and valid) + registry key (must be active)
         let l5_pass = l4_pass
             && audit_trail.as_ref().map(|a| a.valid).unwrap_or(false)
@@ -1705,7 +1707,7 @@ impl UnifiedAttestationEngine {
 
             // Get disk hash if agent_root provided
             let disk_hash = agent_root.and_then(|root| {
-                let file_path = Path::new(root).join(&normalize_path(manifest_path));
+                let file_path = Path::new(root).join(normalize_path(manifest_path));
                 compute_disk_hash(&file_path)
             });
 
