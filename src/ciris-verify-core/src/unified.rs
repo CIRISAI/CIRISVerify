@@ -1224,8 +1224,9 @@ impl UnifiedAttestationEngine {
         let l1_pass = self_verification.binary_valid && self_verification.functions_valid;
         // L2: Device attestation is injected by FFI layer from cached results
         // (Play Integrity / App Attest verified via separate FFI calls before run_attestation).
-        // At the engine level, L2 passes through from L1.
-        let l2_pass = l1_pass;
+        // At the engine level, L2 does NOT pass - it requires explicit device attestation.
+        // The FFI layer will set l2_pass = l1_pass && da.verified when device attestation exists.
+        let l2_pass = false;
         // L3: Registry cross-validation (at least 2/3 sources must agree)
         let sources_agreeing = u8::from(sources.dns_us_valid)
             + u8::from(sources.dns_eu_valid)

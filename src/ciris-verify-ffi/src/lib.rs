@@ -2231,7 +2231,8 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
             .as_ref()
             .map(|sv| sv.binary_valid && sv.functions_valid)
             .unwrap_or(false);
-        let l2_pass = l1_pass && da.verified;
+        // L2 requires: L1 + device attestation + hardware platform + hardware-backed key
+        let l2_pass = l1_pass && da.verified && !running_in_vm && hardware_backed;
         let sources_agreeing = u8::from(result.sources.dns_us_valid)
             + u8::from(result.sources.dns_eu_valid)
             + u8::from(result.sources.https_valid);
