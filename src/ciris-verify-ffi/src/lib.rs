@@ -3316,6 +3316,16 @@ mod android {
             return JByteArray::default();
         }
 
+        // Check for null JString parameters
+        if deployment_id.is_null() {
+            tracing::error!("JNI: nativeGetStatus - null deployment_id");
+            return JByteArray::default();
+        }
+        if challenge_nonce.is_null() {
+            tracing::error!("JNI: nativeGetStatus - null challenge_nonce");
+            return JByteArray::default();
+        }
+
         // Get deployment ID string
         let deployment_id_str: String = match env.get_string(&deployment_id) {
             Ok(s) => s.into(),
@@ -3887,6 +3897,16 @@ mod android {
         let handle = handle as *mut CirisVerifyHandle;
         if handle.is_null() {
             tracing::error!("JNI: nativeVerifyIntegrityToken - null handle");
+            return JString::default();
+        }
+
+        // Check for null JString parameters (Java can pass null)
+        if token.is_null() {
+            tracing::error!("JNI: nativeVerifyIntegrityToken - null token");
+            return JString::default();
+        }
+        if nonce.is_null() {
+            tracing::error!("JNI: nativeVerifyIntegrityToken - null nonce");
             return JString::default();
         }
 
