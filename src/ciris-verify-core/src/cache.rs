@@ -248,38 +248,45 @@ impl LicenseCache {
     ///
     /// Returns `VerifyError::RollbackDetected` if `new_revision < last_seen`.
     pub fn check_and_update_revision(&self, new_revision: u64) -> Result<(), VerifyError> {
-        let mut last_seen =
-            self.last_seen_revision
-                .write()
-                .map_err(|_| VerifyError::CacheError {
-                    message: "Failed to acquire revision lock".into(),
-                })?;
+        // Use a scope to ensure write locks are released before calling persist_revision_state
+        // (persist_revision_state needs read locks, so we'd deadlock if we held write locks)
+        {
+            let mut last_seen =
+                self.last_seen_revision
+                    .write()
+                    .map_err(|_| VerifyError::CacheError {
+                        message: "Failed to acquire revision lock".into(),
+                    })?;
 
-        if new_revision < *last_seen {
-            return Err(VerifyError::RollbackDetected {
-                current: new_revision,
-                last_seen: *last_seen,
-            });
-        }
-
-        // Update if newer
-        if new_revision > *last_seen {
-            *last_seen = new_revision;
-        }
-
-        // Record in history
-        if let Ok(mut history) = self.revision_history.write() {
-            let ts = current_timestamp();
-            history.push((ts, new_revision));
-
-            // Cap at 1000 entries
-            if history.len() > 1000 {
-                let drain_count = history.len() - 1000;
-                history.drain(..drain_count);
+            if new_revision < *last_seen {
+                return Err(VerifyError::RollbackDetected {
+                    current: new_revision,
+                    last_seen: *last_seen,
+                });
             }
-        }
+
+            // Update if newer
+            if new_revision > *last_seen {
+                *last_seen = new_revision;
+            }
+        } // Write lock on last_seen_revision released here
+
+        // Record in history (separate scope to release this lock too)
+        {
+            if let Ok(mut history) = self.revision_history.write() {
+                let ts = current_timestamp();
+                history.push((ts, new_revision));
+
+                // Cap at 1000 entries
+                if history.len() > 1000 {
+                    let drain_count = history.len() - 1000;
+                    history.drain(..drain_count);
+                }
+            }
+        } // Write lock on revision_history released here
 
         // Persist revision state (non-fatal if this fails)
+        // Now safe to call - no write locks are held
         self.persist_revision_state();
 
         Ok(())
