@@ -86,10 +86,13 @@ pub struct FullAttestationResult {
     /// Device attestation result (L2: Play Integrity / App Attest).
     #[serde(default)]
     pub device_attestation: Option<DeviceAttestationCheckResult>,
-    /// File integrity check results.
+    /// File integrity check results (legacy - use module_integrity instead).
     pub file_integrity: Option<IntegrityCheckResult>,
-    /// Python module integrity check results (Android/mobile).
+    /// Python module integrity check results (legacy - use module_integrity instead).
     pub python_integrity: Option<PythonIntegrityResult>,
+    /// Unified module integrity (cross-validates disk, agent, and registry hashes).
+    #[serde(default)]
+    pub module_integrity: Option<ModuleIntegrityResult>,
     /// Source validation results.
     pub sources: SourceCheckResult,
     /// Audit trail verification result.
@@ -253,6 +256,85 @@ pub struct PythonIntegrityResult {
     /// Error message if verification failed.
     #[serde(default)]
     pub error: Option<String>,
+}
+
+/// Unified module integrity result combining disk and agent hash verification.
+///
+/// Cross-validates hashes from three sources:
+/// - Registry manifest (expected)
+/// - Disk (computed by CIRISVerify from agent_root)
+/// - Agent-provided (sent at startup)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleIntegrityResult {
+    /// Overall integrity valid.
+    pub valid: bool,
+    /// Total files in registry manifest.
+    pub manifest_file_count: usize,
+    /// Files verified from filesystem (disk hash == registry).
+    pub filesystem_verified: Vec<String>,
+    /// Files verified from agent hashes (agent hash == registry, not on disk).
+    pub agent_verified: Vec<String>,
+    /// Files cross-validated (disk == agent == registry - strongest).
+    pub cross_validated: Vec<String>,
+    /// Files where disk hash != agent hash (tampering or stale agent hashes).
+    pub disk_agent_mismatch: BTreeMap<String, DiskAgentMismatch>,
+    /// Files where hash != registry (path → details).
+    pub registry_mismatch: BTreeMap<String, RegistryMismatch>,
+    /// Files missing entirely (in manifest but not found anywhere).
+    pub missing: Vec<String>,
+    /// Files not in manifest (found but unexpected).
+    pub unexpected: Vec<String>,
+    /// Excluded files (non-Python on mobile, etc.).
+    pub excluded: Vec<String>,
+    /// Summary counts.
+    pub summary: ModuleIntegritySummary,
+    /// Registry manifest version.
+    pub manifest_version: Option<String>,
+    /// Error if verification failed.
+    pub error: Option<String>,
+}
+
+/// Details of a disk vs agent hash mismatch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskAgentMismatch {
+    /// Hash computed from disk.
+    pub disk_hash: String,
+    /// Hash provided by agent.
+    pub agent_hash: String,
+    /// Registry expected hash.
+    pub registry_hash: String,
+    /// Which source matches registry (if any): "disk", "agent", "neither".
+    pub registry_match: String,
+}
+
+/// Details of a registry hash mismatch.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegistryMismatch {
+    /// Hash from disk (if available).
+    pub disk_hash: Option<String>,
+    /// Hash from agent (if available).
+    pub agent_hash: Option<String>,
+    /// Expected hash from registry.
+    pub registry_hash: String,
+    /// Source of the mismatch: "disk", "agent", "both".
+    pub source: String,
+}
+
+/// Summary counts for module integrity.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModuleIntegritySummary {
+    /// Total files in manifest.
+    pub total_manifest: usize,
+    /// Files successfully verified.
+    pub verified: usize,
+    /// Files with any mismatch.
+    pub failed: usize,
+    /// Files missing.
+    pub missing: usize,
+    /// Files excluded from check.
+    pub excluded: usize,
+    /// Files cross-validated (strongest verification).
+    pub cross_validated: usize,
 }
 
 /// Summary of a file integrity check.
@@ -949,6 +1031,109 @@ impl UnifiedAttestationEngine {
             None
         };
 
+        // 3b. Unified module integrity (cross-validates disk + agent + registry)
+        let module_integrity = if request.agent_version.is_some() {
+            let version = request.agent_version.as_ref().unwrap();
+            let agent_hashes = request.python_hashes.as_ref().map(|h| &h.module_hashes);
+
+            diagnostics.push_str("=== MODULE INTEGRITY (Unified) ===\n");
+
+            match self
+                .run_module_integrity(
+                    version,
+                    request.agent_root.as_deref(),
+                    agent_hashes,
+                    &[], // No excluded extensions for now
+                )
+                .await
+            {
+                Ok(result) => {
+                    checks_total += 1;
+                    if result.valid {
+                        checks_passed += 1;
+                    }
+
+                    diagnostics.push_str(&format!(
+                        "  Manifest: {} files (v{})\n",
+                        result.manifest_file_count,
+                        result.manifest_version.as_deref().unwrap_or("unknown")
+                    ));
+                    diagnostics.push_str(&format!(
+                        "  Cross-validated: {} (disk == agent == registry)\n",
+                        result.cross_validated.len()
+                    ));
+                    diagnostics.push_str(&format!(
+                        "  Filesystem verified: {} (disk == registry)\n",
+                        result.filesystem_verified.len()
+                    ));
+                    diagnostics.push_str(&format!(
+                        "  Agent verified: {} (agent == registry)\n",
+                        result.agent_verified.len()
+                    ));
+
+                    if !result.disk_agent_mismatch.is_empty() {
+                        diagnostics.push_str(&format!(
+                            "  ⚠️  Disk/Agent mismatch: {} (tampering?)\n",
+                            result.disk_agent_mismatch.len()
+                        ));
+                        for (path, mismatch) in result.disk_agent_mismatch.iter().take(5) {
+                            diagnostics.push_str(&format!(
+                                "    └─ {}: disk={}... agent={}... registry_match={}\n",
+                                path,
+                                &mismatch.disk_hash[..std::cmp::min(16, mismatch.disk_hash.len())],
+                                &mismatch.agent_hash
+                                    [..std::cmp::min(16, mismatch.agent_hash.len())],
+                                mismatch.registry_match
+                            ));
+                        }
+                        errors.push(format!(
+                            "Module integrity: {} disk/agent mismatches",
+                            result.disk_agent_mismatch.len()
+                        ));
+                    }
+
+                    if !result.registry_mismatch.is_empty() {
+                        diagnostics.push_str(&format!(
+                            "  ✗ Registry mismatch: {}\n",
+                            result.registry_mismatch.len()
+                        ));
+                        for (path, mismatch) in result.registry_mismatch.iter().take(5) {
+                            diagnostics.push_str(&format!(
+                                "    └─ {}: source={}\n",
+                                path, mismatch.source
+                            ));
+                        }
+                        errors.push(format!(
+                            "Module integrity: {} registry mismatches",
+                            result.registry_mismatch.len()
+                        ));
+                    }
+
+                    if !result.missing.is_empty() {
+                        diagnostics
+                            .push_str(&format!("  ✗ Missing: {} files\n", result.missing.len()));
+                    }
+
+                    diagnostics.push_str(&format!(
+                        "  Summary: {}/{} verified, {} failed\n\n",
+                        result.summary.verified,
+                        result.summary.total_manifest - result.summary.excluded,
+                        result.summary.failed
+                    ));
+
+                    Some(result)
+                },
+                Err(e) => {
+                    diagnostics.push_str(&format!("  ✗ Error: {}\n\n", e));
+                    errors.push(format!("Module integrity error: {}", e));
+                    None
+                },
+            }
+        } else {
+            diagnostics.push_str("=== MODULE INTEGRITY ===\n  SKIP (no agent_version)\n\n");
+            None
+        };
+
         // 4. Audit trail verification (if provided)
         let audit_trail = if !request.skip_audit {
             if let Some(ref entries) = request.audit_entries {
@@ -1047,17 +1232,18 @@ impl UnifiedAttestationEngine {
             + u8::from(sources.dns_eu_valid)
             + u8::from(sources.https_valid);
         let l3_pass = l2_pass && sources_agreeing >= 2;
-        // L4: File integrity (if checked)
+        // L4: File integrity (MUST be checked and valid - if not checked, level caps at L3)
+        // Note: unwrap_or(false) means "if not checked, don't count as passing"
         let l4_pass = l3_pass
             && file_integrity
                 .as_ref()
-                .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(true))
-                .unwrap_or(true)
-            && python_integrity.as_ref().map(|pi| pi.valid).unwrap_or(true);
-        // L5: Audit trail + registry key
+                .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
+                .unwrap_or(false)
+            && python_integrity.as_ref().map(|pi| pi.valid).unwrap_or(false);
+        // L5: Audit trail (MUST be checked and valid) + registry key (must be active)
         let l5_pass = l4_pass
-            && audit_trail.as_ref().map(|a| a.valid).unwrap_or(true)
-            && (key_verification_result == "active" || key_verification_result == "not_checked");
+            && audit_trail.as_ref().map(|a| a.valid).unwrap_or(false)
+            && key_verification_result == "active";
 
         let level = if l5_pass {
             5
@@ -1095,6 +1281,7 @@ impl UnifiedAttestationEngine {
             device_attestation: None, // Injected by FFI layer from cached Play Integrity / App Attest results
             file_integrity,
             python_integrity,
+            module_integrity,
             sources,
             audit_trail,
             checks_passed,
@@ -1399,6 +1586,280 @@ impl UnifiedAttestationEngine {
             registry_reachable: true,
             error,
         }
+    }
+
+    /// Run unified module integrity check.
+    ///
+    /// Cross-validates three sources for each file:
+    /// - Registry manifest (expected hashes)
+    /// - Disk (computed from agent_root if file exists)
+    /// - Agent-provided hashes (from request.python_hashes)
+    ///
+    /// Flags files that appear in both disk AND agent lists for cross-validation.
+    async fn run_module_integrity(
+        &self,
+        version: &str,
+        agent_root: Option<&str>,
+        agent_hashes: Option<&BTreeMap<String, String>>,
+        excluded_extensions: &[&str],
+    ) -> Result<ModuleIntegrityResult, VerifyError> {
+        use sha2::{Digest, Sha256};
+        use std::collections::HashSet;
+
+        info!(
+            "run_module_integrity: version={}, agent_root={:?}, agent_hashes={}",
+            version,
+            agent_root,
+            agent_hashes.map(|h| h.len()).unwrap_or(0)
+        );
+
+        // Fetch registry manifest
+        let client = self
+            .registry_client
+            .as_ref()
+            .ok_or_else(|| VerifyError::HttpsError {
+                message: "Registry client not available".into(),
+            })?;
+
+        let build = client.get_build_by_version(version).await?;
+        let registry_files = build.file_manifest_json.files();
+
+        info!(
+            "run_module_integrity: registry manifest has {} files",
+            registry_files.len()
+        );
+
+        let mut filesystem_verified = Vec::new();
+        let mut agent_verified = Vec::new();
+        let mut cross_validated = Vec::new();
+        let mut disk_agent_mismatch: BTreeMap<String, DiskAgentMismatch> = BTreeMap::new();
+        let mut registry_mismatch: BTreeMap<String, RegistryMismatch> = BTreeMap::new();
+        let mut missing = Vec::new();
+        let mut unexpected = Vec::new();
+        let mut excluded = Vec::new();
+
+        // Track which agent paths we've processed (to find unexpected)
+        let mut processed_agent_paths: HashSet<String> = HashSet::new();
+
+        // Helper to normalize path for comparison
+        let normalize_path = |p: &str| -> String {
+            p.trim_start_matches("./")
+                .trim_start_matches('/')
+                .to_string()
+        };
+
+        // Helper to find agent hash for a manifest path
+        let find_agent_hash = |manifest_path: &str| -> Option<String> {
+            let agent_hashes = agent_hashes?;
+            let normalized = normalize_path(manifest_path);
+
+            // 1. Exact match
+            if let Some(h) = agent_hashes.get(&normalized) {
+                return Some(h.clone());
+            }
+            if let Some(h) = agent_hashes.get(manifest_path) {
+                return Some(h.clone());
+            }
+
+            // 2. Suffix match
+            let suffix = format!("/{}", normalized);
+            for (agent_path, hash) in agent_hashes {
+                if agent_path.ends_with(&suffix) || normalize_path(agent_path) == normalized {
+                    return Some(hash.clone());
+                }
+            }
+
+            None
+        };
+
+        // Helper to compute file hash from disk
+        let compute_disk_hash = |file_path: &Path| -> Option<String> {
+            if !file_path.exists() {
+                return None;
+            }
+            match std::fs::read(file_path) {
+                Ok(contents) => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&contents);
+                    Some(hex::encode(hasher.finalize()))
+                },
+                Err(_) => None,
+            }
+        };
+
+        // Process each file in registry manifest
+        for (manifest_path, registry_hash) in registry_files {
+            // Check if excluded by extension
+            if excluded_extensions
+                .iter()
+                .any(|ext| manifest_path.ends_with(ext))
+            {
+                excluded.push(manifest_path.clone());
+                continue;
+            }
+
+            // Strip sha256: prefix if present
+            let registry_hash_clean = registry_hash
+                .strip_prefix("sha256:")
+                .unwrap_or(registry_hash);
+
+            // Get disk hash if agent_root provided
+            let disk_hash = agent_root.and_then(|root| {
+                let file_path = Path::new(root).join(&normalize_path(manifest_path));
+                compute_disk_hash(&file_path)
+            });
+
+            // Get agent-provided hash
+            let agent_hash = find_agent_hash(manifest_path);
+
+            // Track that we've processed this agent path
+            if agent_hash.is_some() {
+                processed_agent_paths.insert(normalize_path(manifest_path));
+            }
+
+            // Cross-validate based on what sources we have
+            match (disk_hash.as_ref(), agent_hash.as_ref()) {
+                (Some(disk), Some(agent)) => {
+                    // BOTH sources available - cross-validate
+                    let disk_matches_registry = disk == registry_hash_clean;
+                    let agent_matches_registry = agent == registry_hash_clean;
+                    let disk_matches_agent = disk == agent;
+
+                    if disk_matches_registry && agent_matches_registry && disk_matches_agent {
+                        // All three match - strongest verification
+                        cross_validated.push(manifest_path.clone());
+                    } else if !disk_matches_agent {
+                        // Disk != Agent - red flag!
+                        disk_agent_mismatch.insert(
+                            manifest_path.clone(),
+                            DiskAgentMismatch {
+                                disk_hash: disk.clone(),
+                                agent_hash: agent.clone(),
+                                registry_hash: registry_hash_clean.to_string(),
+                                registry_match: if disk_matches_registry {
+                                    "disk".to_string()
+                                } else if agent_matches_registry {
+                                    "agent".to_string()
+                                } else {
+                                    "neither".to_string()
+                                },
+                            },
+                        );
+                    } else if !disk_matches_registry {
+                        // Disk == Agent but both != Registry
+                        registry_mismatch.insert(
+                            manifest_path.clone(),
+                            RegistryMismatch {
+                                disk_hash: Some(disk.clone()),
+                                agent_hash: Some(agent.clone()),
+                                registry_hash: registry_hash_clean.to_string(),
+                                source: "both".to_string(),
+                            },
+                        );
+                    }
+                },
+                (Some(disk), None) => {
+                    // Only disk available
+                    if disk == registry_hash_clean {
+                        filesystem_verified.push(manifest_path.clone());
+                    } else {
+                        registry_mismatch.insert(
+                            manifest_path.clone(),
+                            RegistryMismatch {
+                                disk_hash: Some(disk.clone()),
+                                agent_hash: None,
+                                registry_hash: registry_hash_clean.to_string(),
+                                source: "disk".to_string(),
+                            },
+                        );
+                    }
+                },
+                (None, Some(agent)) => {
+                    // Only agent hash available (e.g., Chaquopy files not on disk)
+                    if agent == registry_hash_clean {
+                        agent_verified.push(manifest_path.clone());
+                    } else {
+                        registry_mismatch.insert(
+                            manifest_path.clone(),
+                            RegistryMismatch {
+                                disk_hash: None,
+                                agent_hash: Some(agent.clone()),
+                                registry_hash: registry_hash_clean.to_string(),
+                                source: "agent".to_string(),
+                            },
+                        );
+                    }
+                },
+                (None, None) => {
+                    // File not found anywhere
+                    missing.push(manifest_path.clone());
+                },
+            }
+        }
+
+        // Find unexpected files (in agent hashes but not in manifest)
+        if let Some(agent_hashes) = agent_hashes {
+            for agent_path in agent_hashes.keys() {
+                let normalized = normalize_path(agent_path);
+                if !processed_agent_paths.contains(&normalized) {
+                    // Check if it's in manifest with a different path form
+                    let in_manifest = registry_files.keys().any(|mp| {
+                        normalize_path(mp) == normalized
+                            || mp.ends_with(&format!("/{}", normalized))
+                    });
+                    if !in_manifest {
+                        unexpected.push(agent_path.clone());
+                    }
+                }
+            }
+        }
+
+        let verified_count =
+            filesystem_verified.len() + agent_verified.len() + cross_validated.len();
+        let failed_count = disk_agent_mismatch.len() + registry_mismatch.len();
+        let valid = failed_count == 0 && missing.is_empty();
+
+        let summary = ModuleIntegritySummary {
+            total_manifest: registry_files.len(),
+            verified: verified_count,
+            failed: failed_count,
+            missing: missing.len(),
+            excluded: excluded.len(),
+            cross_validated: cross_validated.len(),
+        };
+
+        info!(
+            "run_module_integrity: verified={}, failed={}, missing={}, cross_validated={}",
+            verified_count,
+            failed_count,
+            missing.len(),
+            cross_validated.len()
+        );
+
+        let missing_count = missing.len();
+
+        Ok(ModuleIntegrityResult {
+            valid,
+            manifest_file_count: registry_files.len(),
+            filesystem_verified,
+            agent_verified,
+            cross_validated,
+            disk_agent_mismatch,
+            registry_mismatch,
+            missing,
+            unexpected,
+            excluded,
+            summary,
+            manifest_version: Some(build.version.clone()),
+            error: if valid {
+                None
+            } else {
+                Some(format!(
+                    "{} files failed, {} missing",
+                    failed_count, missing_count
+                ))
+            },
+        })
     }
 }
 

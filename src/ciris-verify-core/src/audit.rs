@@ -60,24 +60,32 @@ pub struct ChainSummary {
 }
 
 /// A single audit entry for verification.
+///
+/// Accepts both SQLite hash chain format and JSONL export format via serde aliases.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuditEntry {
-    /// Unique event ID.
+    /// Unique event ID (SQLite: event_id, JSONL: entry_id).
+    #[serde(alias = "entry_id")]
     pub event_id: String,
-    /// Event timestamp.
+    /// Event timestamp (SQLite: event_timestamp, JSONL: timestamp).
+    #[serde(alias = "timestamp")]
     pub event_timestamp: String,
     /// Type of event.
     pub event_type: String,
-    /// ID of the originator.
+    /// ID of the originator (SQLite: originator_id, JSONL: entity_id).
+    #[serde(alias = "entity_id")]
     pub originator_id: String,
-    /// Event payload data.
-    #[serde(default)]
+    /// Event payload data (JSONL may use: payload, details, metadata).
+    #[serde(default, alias = "payload", alias = "details", alias = "metadata")]
     pub event_payload: String,
     /// Sequence number in chain.
+    #[serde(default)]
     pub sequence_number: u64,
     /// Hash of previous entry or "genesis".
+    #[serde(default)]
     pub previous_hash: String,
-    /// Hash of this entry.
+    /// Hash of this entry (SQLite: entry_hash, JSONL: hash).
+    #[serde(default, alias = "hash")]
     pub entry_hash: String,
     /// Cryptographic signature.
     #[serde(default)]
@@ -85,6 +93,9 @@ pub struct AuditEntry {
     /// ID of key used for signing.
     #[serde(default)]
     pub signing_key_id: Option<String>,
+    /// Actor (JSONL format) - ignored but accepted.
+    #[serde(default, skip_serializing)]
+    pub actor: Option<String>,
 }
 
 impl AuditEntry {
@@ -468,6 +479,7 @@ pub fn read_audit_from_sqlite<P: AsRef<Path>>(db_path: P) -> Result<Vec<AuditEnt
                 entry_hash: row.get(7)?,
                 signature: row.get(8)?,
                 signing_key_id: row.get(9)?,
+                actor: None,
             })
         })
         .map_err(|e| VerifyError::ConfigError {
@@ -674,6 +686,7 @@ mod tests {
             entry_hash: String::new(),
             signature: String::new(),
             signing_key_id: None,
+            actor: None,
         };
         entry.entry_hash = entry.compute_hash();
         entry

@@ -78,6 +78,8 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # Blocking HTTP client for Android (tokio async I/O broken on JNI threads)
 [target.'cfg(target_os = "android")'.dependencies]
 ureq = { workspace = true }
+# Android system properties API (for emulator detection)
+android_system_properties = "0.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.52", features = [

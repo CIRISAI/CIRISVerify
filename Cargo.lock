@@ -622,6 +622,7 @@ dependencies = [
 name = "ciris-verify-core"
 version = "0.9.6"
 dependencies = [
+ "android_system_properties",
  "anyhow",
  "async-trait",
  "base64 0.21.7",

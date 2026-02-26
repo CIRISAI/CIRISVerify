@@ -70,6 +70,7 @@ use ciris_verify_core::types::{
     ResponseAttestation, ResponseMetadata, ResponseSignature, SourceResult, ValidationResults,
     ValidationStatus,
 };
+use ciris_verify_core::security::is_emulator;
 use ciris_verify_core::unified::{
     FullAttestationRequest, FullAttestationResult, UnifiedAttestationEngine,
 };
@@ -1477,9 +1478,12 @@ pub unsafe extern "C" fn ciris_verify_export_attestation(
     let challenge_bytes = std::slice::from_raw_parts(challenge, challenge_len);
 
     // Determine key type and ensure we have a key to sign with
+    // Note: This function doesn't contact registry, so we can't verify if key is portal-issued.
+    // Use "persisted" for loaded keys, "generated" for newly created ones.
+    // The full run_attestation flow will set proper key_type based on registry status.
     let (key_type, public_key) = if handle.ed25519_signer.has_key() {
-        // Portal key is loaded - use it (Phase 2 attestation)
-        tracing::info!("Using Portal-issued Ed25519 key for attestation");
+        // Key loaded from persistent storage
+        tracing::info!("Using persisted Ed25519 key for attestation");
         let pk = match handle.ed25519_signer.get_public_key() {
             Some(pk) => pk,
             None => {
@@ -1487,14 +1491,14 @@ pub unsafe extern "C" fn ciris_verify_export_attestation(
                 return CirisVerifyError::InternalError as i32;
             },
         };
-        ("portal".to_string(), pk)
+        ("persisted".to_string(), pk)
     } else {
-        // No Portal key yet - generate ephemeral key (Phase 1 attestation)
+        // No key yet - generate one for initial attestation
         tracing::info!(
-            "No Portal key loaded, generating ephemeral Ed25519 key for initial attestation"
+            "No persisted key found, generating Ed25519 key for initial attestation"
         );
 
-        // Generate random 32-byte seed for ephemeral key
+        // Generate random 32-byte seed
         let mut seed = [0u8; 32];
         getrandom::getrandom(&mut seed).unwrap_or_else(|_| {
             // Fallback to less secure random if getrandom fails
@@ -1508,20 +1512,20 @@ pub unsafe extern "C" fn ciris_verify_export_attestation(
             }
         });
 
-        // Import ephemeral key
+        // Import generated key (will be persisted to hardware-backed storage)
         if let Err(e) = handle.ed25519_signer.import_key(&seed) {
-            tracing::error!("Failed to generate ephemeral key: {}", e);
+            tracing::error!("Failed to generate key: {}", e);
             return CirisVerifyError::InternalError as i32;
         }
 
         let pk = match handle.ed25519_signer.get_public_key() {
             Some(pk) => pk,
             None => {
-                tracing::error!("Ephemeral key generated but public key unavailable");
+                tracing::error!("Key generated but public key unavailable");
                 return CirisVerifyError::InternalError as i32;
             },
         };
-        ("ephemeral".to_string(), pk)
+        ("generated".to_string(), pk)
     };
 
     // Sign the challenge with Ed25519 key
@@ -1543,7 +1547,9 @@ pub unsafe extern "C" fn ciris_verify_export_attestation(
     // Detect platform capabilities for accurate hardware_type reporting
     let capabilities = ciris_keyring::detect_hardware_type();
     let hardware_type_str = format!("{:?}", capabilities.hardware_type);
-    let hardware_backed = handle.ed25519_signer.is_hardware_backed();
+    // On emulators, even if KeyStore API is available, it's software-emulated (no TEE/SE)
+    let running_in_vm = is_emulator();
+    let hardware_backed = handle.ed25519_signer.is_hardware_backed() && !running_in_vm;
 
     // Build platform attestation based on actual hardware detection
     let platform_attestation = if capabilities.has_hardware {
@@ -1605,7 +1611,7 @@ pub unsafe extern "C" fn ciris_verify_export_attestation(
         "binary_version": env!("CARGO_PKG_VERSION"),
         "hardware_type": hardware_type_str,
         "hardware_backed": hardware_backed,
-        "running_in_vm": false,
+        "running_in_vm": running_in_vm,
         "key_type": key_type,
         "platform_integrity": platform_integrity,
     });
@@ -2140,7 +2146,25 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
 
     // Populate key_attestation with signer info
     let has_key = handle.ed25519_signer.has_key();
-    let key_type = if has_key { "portal" } else { "ephemeral" };
+
+    // Determine key_type based on registry verification status (not just has_key)
+    // - "portal": Key fingerprint verified as active in registry
+    // - "local": Key exists but not found in registry (self-generated)
+    // - "unverified": Key exists but registry couldn't be contacted
+    // - "none": No key loaded
+    let key_type = if !has_key {
+        "none"
+    } else {
+        match result.registry_key_status.as_str() {
+            "active" => "portal",           // Confirmed by registry
+            "rotated" => "portal_rotated",  // Was portal-issued but rotated
+            "revoked" => "portal_revoked",  // Was portal-issued but revoked
+            "not_found" => "local",         // Key exists but not in registry
+            "not_checked" => "unverified",  // Registry check skipped
+            status if status.starts_with("error") => "registry_unavailable",
+            _ => "unverified",
+        }
+    };
 
     // Get public key and compute fingerprint
     let (ed25519_fingerprint, public_key_hex) = if has_key {
@@ -2158,7 +2182,9 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
     // Detect hardware type and derive storage_mode from actual platform capabilities
     let capabilities = ciris_keyring::detect_hardware_type();
     let hw_type_str = format!("{:?}", capabilities.hardware_type);
-    let hardware_backed = handle.ed25519_signer.is_hardware_backed();
+    // On emulators, even if KeyStore API is available, it's software-emulated (no TEE/SE)
+    let running_in_vm = is_emulator();
+    let hardware_backed = handle.ed25519_signer.is_hardware_backed() && !running_in_vm;
     let storage_mode = match capabilities.hardware_type {
         ciris_keyring::HardwareType::AndroidKeystore => {
             "HW-AES-256-GCM (Android Keystore)".to_string()
@@ -2175,7 +2201,7 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
         hardware_type: hw_type_str,
         has_valid_signature: has_key,
         binary_version: env!("CARGO_PKG_VERSION").to_string(),
-        running_in_vm: false,
+        running_in_vm,
         classical_signature: String::new(),
         pqc_available: true, // ML-DSA-65 compiled in via default pqc feature
         hardware_backed,
@@ -2212,21 +2238,22 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
             + u8::from(result.sources.dns_eu_valid)
             + u8::from(result.sources.https_valid);
         let l3_pass = l2_pass && sources_agreeing >= 2;
+        // L4: File integrity (MUST be checked and valid - if not checked, level caps at L3)
         let l4_pass = l3_pass
             && result
                 .file_integrity
                 .as_ref()
-                .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(true))
-                .unwrap_or(true)
+                .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
+                .unwrap_or(false)
             && result
                 .python_integrity
                 .as_ref()
                 .map(|pi| pi.valid)
-                .unwrap_or(true);
+                .unwrap_or(false);
+        // L5: Audit trail (MUST be checked and valid) + registry key (must be active)
         let l5_pass = l4_pass
-            && result.audit_trail.as_ref().map(|a| a.valid).unwrap_or(true)
-            && (result.registry_key_status == "active"
-                || result.registry_key_status == "not_checked");
+            && result.audit_trail.as_ref().map(|a| a.valid).unwrap_or(false)
+            && result.registry_key_status == "active";
 
         result.level = if l5_pass {
             5
