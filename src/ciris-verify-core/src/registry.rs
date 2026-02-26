@@ -109,9 +109,18 @@ impl RegistryClient {
     /// * `base_url` - Base URL for the registry API (e.g., `https://api.registry.ciris-services-1.ai`)
     /// * `timeout` - Request timeout
     pub fn new(base_url: &str, timeout: Duration) -> Result<Self, VerifyError> {
+        // Use aggressive timeouts to fail fast on unreachable hosts
+        // This is critical for emulators where TCP connections can hang indefinitely
+        let connect_timeout = Duration::from_secs(3);
+        let read_timeout = timeout.min(Duration::from_secs(8));
+
         let client = Client::builder()
-            .timeout(timeout)
-            .connect_timeout(Duration::from_secs(5))  // Quick fail on unreachable hosts
+            .timeout(read_timeout)                    // Total request timeout
+            .connect_timeout(connect_timeout)         // TCP connect timeout
+            .read_timeout(read_timeout)               // Read timeout
+            .pool_idle_timeout(Duration::from_secs(5)) // Don't keep idle connections
+            .pool_max_idle_per_host(1)                // Minimal connection pooling
+            .tcp_nodelay(true)                        // Disable Nagle for faster failure detection
             .user_agent(format!("CIRISVerify/{}", env!("CARGO_PKG_VERSION")))
             .build()
             .map_err(|e| VerifyError::HttpsError {
