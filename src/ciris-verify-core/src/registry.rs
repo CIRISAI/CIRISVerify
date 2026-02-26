@@ -879,18 +879,18 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
         }
     };
 
-    // On iOS, current_exe() returns the app binary which includes our code statically linked.
-    // If loaded as a .dylib framework, use dladdr to find the library path.
+    // On iOS, current_exe() returns the app binary, not our dylib.
+    // Use dyld image iteration to find CIRISVerify.framework/CIRISVerify.
     #[cfg(target_os = "ios")]
     let exe_path = {
-        match find_library_path_dladdr() {
+        match find_library_path_dyld() {
             Some(path) => {
                 tracing::info!("compute_self_hash (iOS): found dylib at {:?}", path);
                 path
             },
             None => {
                 tracing::warn!(
-                    "compute_self_hash (iOS): dladdr failed, falling back to current_exe()"
+                    "compute_self_hash (iOS): dylib not found in dyld images, falling back to current_exe()"
                 );
                 std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
                     message: format!("Cannot determine executable path: {}", e),
@@ -984,44 +984,51 @@ fn find_library_path(lib_name: &str) -> Option<std::path::PathBuf> {
     None
 }
 
-/// Find the path to our loaded library using `dladdr`.
+/// Find the path to our loaded library using dyld image iteration.
 ///
-/// On iOS, we use `dladdr` to look up the shared library containing a known
-/// symbol (`compute_self_hash` itself). This returns the `.dylib` path if
-/// loaded as a dynamic framework, or the app executable path if statically linked.
+/// Iterates all loaded dyld images to find one whose name contains
+/// `libciris_verify_ffi` or `CIRISVerify`. This matches the same approach
+/// used by `get_code_base_macos()` in function_integrity.rs.
 #[cfg(target_os = "ios")]
-fn find_library_path_dladdr() -> Option<std::path::PathBuf> {
-    use std::ffi::CStr;
-
-    // Use compute_self_hash as the symbol to look up — it's in our library.
-    let addr = compute_self_hash as *const () as *mut libc::c_void;
-    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
-
-    let ret = unsafe { libc::dladdr(addr, &mut info) };
-    if ret == 0 || info.dli_fname.is_null() {
-        tracing::warn!("find_library_path_dladdr: dladdr returned 0");
-        return None;
+fn find_library_path_dyld() -> Option<std::path::PathBuf> {
+    extern "C" {
+        fn _dyld_image_count() -> u32;
+        fn _dyld_get_image_name(image_index: u32) -> *const std::ffi::c_char;
     }
 
-    let path_str = unsafe { CStr::from_ptr(info.dli_fname) };
-    match path_str.to_str() {
-        Ok(s) => {
-            let path = std::path::PathBuf::from(s);
-            tracing::info!("find_library_path_dladdr: found {:?}", path);
-            // Only return if it's actually a dylib (not the main app executable)
-            if s.contains("libciris_verify_ffi") {
-                Some(path)
-            } else {
-                tracing::info!(
-                    "find_library_path_dladdr: path is app executable, not dylib — static linking"
-                );
-                None
+    const LIB_NAME: &str = "libciris_verify_ffi";
+    const FRAMEWORK_NAME: &str = "CIRISVerify";
+
+    unsafe {
+        let count = _dyld_image_count();
+        tracing::info!("find_library_path_dyld: searching {} loaded images", count);
+
+        for i in 0..count {
+            let name_ptr = _dyld_get_image_name(i);
+            if name_ptr.is_null() {
+                continue;
             }
-        },
-        Err(e) => {
-            tracing::warn!("find_library_path_dladdr: invalid UTF-8: {}", e);
-            None
-        },
+            let name = std::ffi::CStr::from_ptr(name_ptr);
+            let name_str = name.to_string_lossy();
+
+            if i < 5 || name_str.contains(LIB_NAME) || name_str.contains(FRAMEWORK_NAME) {
+                tracing::info!("find_library_path_dyld: image[{}] = {}", i, name_str);
+            }
+
+            if name_str.contains(LIB_NAME) || name_str.contains(FRAMEWORK_NAME) {
+                let path = std::path::PathBuf::from(name_str.into_owned());
+                tracing::info!("find_library_path_dyld: FOUND at image[{}]: {:?}", i, path);
+                return Some(path);
+            }
+        }
+
+        tracing::warn!(
+            "find_library_path_dyld: {} / {} not found in {} images",
+            LIB_NAME,
+            FRAMEWORK_NAME,
+            count
+        );
+        None
     }
 }
 
