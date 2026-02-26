@@ -481,20 +481,26 @@ jobs:
           import struct
 
           def macho_text_hash(fpath):
-              '''Hash only the __TEXT segment of a Mach-O binary (stable across code signing).'''
+              '''Hash only the code portion of __TEXT (after header + load commands).
+              Code signing modifies load command fields but never touches code sections.'''
               data = open(fpath, 'rb').read()
               magic = struct.unpack_from('<I', data, 0)[0]
               if magic == 0xFEEDFACF:  # MH_MAGIC_64
                   ncmds = struct.unpack_from('<I', data, 16)[0]
-                  off = 32  # sizeof(mach_header_64)
+                  sizeofcmds = struct.unpack_from('<I', data, 20)[0]
+                  header_size = 32  # sizeof(mach_header_64)
+                  cmds_end = header_size + sizeofcmds
+                  off = header_size
                   for _ in range(ncmds):
                       cmd, cmdsize = struct.unpack_from('<II', data, off)
                       if cmd == 0x19:  # LC_SEGMENT_64
                           segname = data[off+8:off+24].split(b'\\x00')[0].decode('ascii', errors='replace')
                           fileoff, filesize = struct.unpack_from('<QQ', data, off+40)
                           if segname == '__TEXT':
-                              seg_data = data[fileoff:fileoff+filesize]
-                              return hashlib.sha256(seg_data).hexdigest(), fileoff, filesize
+                              hash_start = max(cmds_end, fileoff)
+                              hash_end = fileoff + filesize
+                              seg_data = data[hash_start:hash_end]
+                              return hashlib.sha256(seg_data).hexdigest(), hash_start, hash_end - hash_start
                       off += cmdsize
               # Fallback: hash full file
               return hashlib.sha256(data).hexdigest(), 0, len(data)

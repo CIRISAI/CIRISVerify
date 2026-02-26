@@ -912,22 +912,22 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
         message: format!("Cannot read executable for hashing: {}", e),
     })?;
 
-    // On iOS/macOS, hash only the __TEXT segment to be stable across code signing.
-    // Code signing modifies the Mach-O header (adds LC_CODE_SIGNATURE) and appends
-    // signature data, but leaves __TEXT content untouched.
+    // On iOS/macOS, hash only the code portion of __TEXT (after header + load commands).
+    // Code signing modifies load command fields (e.g. LC_CODE_SIGNATURE offset at 0x709)
+    // but never touches actual code sections (__text, __stubs, __stub_helper).
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     let hash_bytes = {
-        match extract_text_segment(&file_bytes) {
+        match extract_text_code_region(&file_bytes) {
             Some((offset, size)) => {
                 tracing::info!(
-                    "compute_self_hash: hashing __TEXT segment only (offset=0x{:x}, size=0x{:x}, file_size=0x{:x})",
+                    "compute_self_hash: hashing __TEXT code region (offset=0x{:x}, size=0x{:x}, file_size=0x{:x})",
                     offset, size, file_bytes.len()
                 );
                 &file_bytes[offset..offset + size]
             },
             None => {
                 tracing::warn!(
-                    "compute_self_hash: could not find __TEXT segment, hashing full file (size=0x{:x})",
+                    "compute_self_hash: could not extract __TEXT code region, hashing full file (size=0x{:x})",
                     file_bytes.len()
                 );
                 &file_bytes[..]
@@ -944,59 +944,62 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
     Ok(hex::encode(hash))
 }
 
-/// Extract the __TEXT segment offset and size from a Mach-O binary.
+/// Extract the hashable code region from a Mach-O __TEXT segment.
 ///
-/// Returns `(file_offset, file_size)` of the __TEXT segment, which contains
-/// the executable code. This segment is not modified by code signing.
+/// Returns `(file_offset, size)` of the code-only portion of __TEXT,
+/// skipping the Mach-O header and load commands. Code signing modifies
+/// fields in the load commands (e.g. LC_CODE_SIGNATURE) but never
+/// touches the actual code sections (__text, __stubs, __stub_helper).
+/// By starting after header + sizeofcmds we get a hash stable across signing.
 #[cfg(any(target_os = "ios", target_os = "macos"))]
-fn extract_text_segment(data: &[u8]) -> Option<(usize, usize)> {
+fn extract_text_code_region(data: &[u8]) -> Option<(usize, usize)> {
     use goblin::mach::Mach;
 
     match Mach::parse(data) {
-        Ok(Mach::Binary(macho)) => {
-            for seg in &macho.segments {
-                let name = seg.name().unwrap_or("");
-                if name == "__TEXT" {
-                    let offset = seg.fileoff as usize;
-                    let size = seg.filesize as usize;
-                    tracing::info!(
-                        "extract_text_segment: found __TEXT at offset=0x{:x}, size=0x{:x}, vmaddr=0x{:x}",
-                        offset, size, seg.vmaddr
-                    );
-                    return Some((offset, size));
-                }
-            }
-            tracing::warn!("extract_text_segment: no __TEXT segment found in Mach-O");
-            None
-        },
+        Ok(Mach::Binary(macho)) => extract_text_code_from_macho(&macho),
         Ok(Mach::Fat(fat)) => {
-            // Fat binary — try first arch
             tracing::info!(
-                "extract_text_segment: fat binary with {} arches",
+                "extract_text_code_region: fat binary with {} arches",
                 fat.narches
             );
             if let Ok(goblin::mach::SingleArch::MachO(macho)) = fat.get(0) {
-                for seg in &macho.segments {
-                    let name = seg.name().unwrap_or("");
-                    if name == "__TEXT" {
-                        let offset = seg.fileoff as usize;
-                        let size = seg.filesize as usize;
-                        tracing::info!(
-                            "extract_text_segment: found __TEXT (fat[0]) at offset=0x{:x}, size=0x{:x}",
-                            offset, size
-                        );
-                        return Some((offset, size));
-                    }
-                }
+                extract_text_code_from_macho(&macho)
+            } else {
+                tracing::warn!("extract_text_code_region: fat arch[0] is not MachO");
+                None
             }
-            tracing::warn!("extract_text_segment: no __TEXT in fat binary");
-            None
         },
         Err(e) => {
-            tracing::warn!("extract_text_segment: Mach-O parse error: {}", e);
+            tracing::warn!("extract_text_code_region: Mach-O parse error: {}", e);
             None
         },
     }
+}
+
+/// Helper: extract code region from a parsed MachO.
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+fn extract_text_code_from_macho(macho: &goblin::mach::MachO) -> Option<(usize, usize)> {
+    // Header + load commands = mutable area modified by code signing
+    let header_size: usize = if macho.is_64 { 32 } else { 28 };
+    let cmds_end = header_size + macho.header.sizeofcmds as usize;
+
+    for seg in &macho.segments {
+        let name = seg.name().unwrap_or("");
+        if name == "__TEXT" {
+            let seg_start = seg.fileoff as usize;
+            let seg_end = seg_start + seg.filesize as usize;
+            // Hash from end of load commands to end of __TEXT segment
+            let hash_start = cmds_end.max(seg_start);
+            let hash_size = seg_end.saturating_sub(hash_start);
+            tracing::info!(
+                "extract_text_code_region: __TEXT segment=0x{:x}..0x{:x}, cmds_end=0x{:x}, hashing 0x{:x}..0x{:x} ({} bytes)",
+                seg_start, seg_end, cmds_end, hash_start, hash_start + hash_size, hash_size
+            );
+            return Some((hash_start, hash_size));
+        }
+    }
+    tracing::warn!("extract_text_code_region: no __TEXT segment found");
+    None
 }
 
 /// Find a loaded library's path by parsing /proc/self/maps.
