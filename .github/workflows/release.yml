@@ -197,7 +197,9 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ciris-verify-ios-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/libciris_verify_ffi.a
+          path: |
+            target/${{ matrix.target }}/release/libciris_verify_ffi.a
+            target/${{ matrix.target }}/release/libciris_verify_ffi.dylib
           if-no-files-found: error
 
   # ==========================================================================
@@ -470,15 +472,20 @@ jobs:
                       'shared': {'file': 'libciris_verify_ffi.so', 'sha256': h, 'size': os.path.getsize(sopath)}
                   }
 
-          # iOS
+          # iOS (hash both .dylib for runtime verification and .a for static linking)
           for target in ['aarch64-apple-ios', 'aarch64-apple-ios-sim']:
               apath = f'release/ios/{target}/libciris_verify_ffi.a'
+              dpath = f'release/ios/{target}/libciris_verify_ffi.dylib'
               pname = 'ios-arm64' if target == 'aarch64-apple-ios' else 'ios-sim-arm64'
+              entry = {}
               if os.path.isfile(apath):
                   h = hashlib.sha256(open(apath, 'rb').read()).hexdigest()
-                  manifest['platforms'][pname] = {
-                      'static': {'file': 'libciris_verify_ffi.a', 'sha256': h, 'size': os.path.getsize(apath)}
-                  }
+                  entry['static'] = {'file': 'libciris_verify_ffi.a', 'sha256': h, 'size': os.path.getsize(apath)}
+              if os.path.isfile(dpath):
+                  h = hashlib.sha256(open(dpath, 'rb').read()).hexdigest()
+                  entry['dylib'] = {'file': 'libciris_verify_ffi.dylib', 'sha256': h, 'size': os.path.getsize(dpath)}
+              if entry:
+                  manifest['platforms'][pname] = entry
 
           print(json.dumps(manifest, indent=2))
           with open('release/manifest.json', 'w') as f:
@@ -517,8 +524,8 @@ jobs:
             ["release/android/arm64-v8a/libciris_verify_ffi.so"]="aarch64-linux-android"
             ["release/android/armeabi-v7a/libciris_verify_ffi.so"]="armv7-linux-androideabi"
             ["release/android/x86_64/libciris_verify_ffi.so"]="x86_64-linux-android"
-            ["release/ios/aarch64-apple-ios/libciris_verify_ffi.a"]="aarch64-apple-ios"
-            ["release/ios/aarch64-apple-ios-sim/libciris_verify_ffi.a"]="aarch64-apple-ios-sim"
+            ["release/ios/aarch64-apple-ios/libciris_verify_ffi.dylib"]="aarch64-apple-ios"
+            ["release/ios/aarch64-apple-ios-sim/libciris_verify_ffi.dylib"]="aarch64-apple-ios-sim"
           )
 
           for binary_path in "${!TARGET_MAP[@]}"; do
@@ -576,24 +583,27 @@ jobs:
               m = json.load(f)
 
           # Convert to Registry API format
+          # For binary self-verification, prefer dylib hash (runtime binary) over static (.a)
           binaries = {}
+          target_map = {
+              'linux-x86_64': 'x86_64-unknown-linux-gnu',
+              'linux-arm64': 'aarch64-unknown-linux-gnu',
+              'darwin-x86_64': 'x86_64-apple-darwin',
+              'darwin-arm64': 'aarch64-apple-darwin',
+              'windows-x86_64': 'x86_64-pc-windows-msvc',
+              'android-arm64-v8a': 'aarch64-linux-android',
+              'android-armeabi-v7a': 'armv7-linux-androideabi',
+              'android-x86_64': 'x86_64-linux-android',
+              'ios-arm64': 'aarch64-apple-ios',
+              'ios-sim-arm64': 'aarch64-apple-ios-sim',
+          }
           for platform, libs in m.get('platforms', {}).items():
-              for lib_type, info in libs.items():
-                  # Map platform names to Rust target triples
-                  target_map = {
-                      'linux-x86_64': 'x86_64-unknown-linux-gnu',
-                      'linux-arm64': 'aarch64-unknown-linux-gnu',
-                      'darwin-x86_64': 'x86_64-apple-darwin',
-                      'darwin-arm64': 'aarch64-apple-darwin',
-                      'windows-x86_64': 'x86_64-pc-windows-msvc',
-                      'android-arm64-v8a': 'aarch64-linux-android',
-                      'android-armeabi-v7a': 'armv7-linux-androideabi',
-                      'android-x86_64': 'x86_64-linux-android',
-                      'ios-arm64': 'aarch64-apple-ios',
-                      'ios-sim-arm64': 'aarch64-apple-ios-sim',
-                  }
-                  target = target_map.get(platform, platform)
-                  binaries[target] = f\"sha256:{info['sha256']}\"
+              target = target_map.get(platform, platform)
+              # Prefer dylib > shared > dll > static (runtime binary for self-verification)
+              for pref in ['dylib', 'shared', 'dll', 'static']:
+                  if pref in libs:
+                      binaries[target] = f\"sha256:{libs[pref]['sha256']}\"
+                      break
 
           payload = {
               'version': '${VERSION}',

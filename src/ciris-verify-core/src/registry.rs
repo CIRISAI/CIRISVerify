@@ -879,7 +879,27 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
         }
     };
 
-    #[cfg(not(target_os = "android"))]
+    // On iOS, current_exe() returns the app binary which includes our code statically linked.
+    // If loaded as a .dylib framework, use dladdr to find the library path.
+    #[cfg(target_os = "ios")]
+    let exe_path = {
+        match find_library_path_dladdr() {
+            Some(path) => {
+                tracing::info!("compute_self_hash (iOS): found dylib at {:?}", path);
+                path
+            },
+            None => {
+                tracing::warn!(
+                    "compute_self_hash (iOS): dladdr failed, falling back to current_exe()"
+                );
+                std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
+                    message: format!("Cannot determine executable path: {}", e),
+                })?
+            },
+        }
+    };
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let exe_path = std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
         message: format!("Cannot determine executable path: {}", e),
     })?;
@@ -962,6 +982,47 @@ fn find_library_path(lib_name: &str) -> Option<std::path::PathBuf> {
         lib_name
     );
     None
+}
+
+/// Find the path to our loaded library using `dladdr`.
+///
+/// On iOS, we use `dladdr` to look up the shared library containing a known
+/// symbol (`compute_self_hash` itself). This returns the `.dylib` path if
+/// loaded as a dynamic framework, or the app executable path if statically linked.
+#[cfg(target_os = "ios")]
+fn find_library_path_dladdr() -> Option<std::path::PathBuf> {
+    use std::ffi::CStr;
+
+    // Use compute_self_hash as the symbol to look up — it's in our library.
+    let addr = compute_self_hash as *const () as *mut libc::c_void;
+    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+
+    let ret = unsafe { libc::dladdr(addr, &mut info) };
+    if ret == 0 || info.dli_fname.is_null() {
+        tracing::warn!("find_library_path_dladdr: dladdr returned 0");
+        return None;
+    }
+
+    let path_str = unsafe { CStr::from_ptr(info.dli_fname) };
+    match path_str.to_str() {
+        Ok(s) => {
+            let path = std::path::PathBuf::from(s);
+            tracing::info!("find_library_path_dladdr: found {:?}", path);
+            // Only return if it's actually a dylib (not the main app executable)
+            if s.contains("libciris_verify_ffi") {
+                Some(path)
+            } else {
+                tracing::info!(
+                    "find_library_path_dladdr: path is app executable, not dylib — static linking"
+                );
+                None
+            }
+        },
+        Err(e) => {
+            tracing::warn!("find_library_path_dladdr: invalid UTF-8: {}", e);
+            None
+        },
+    }
 }
 
 /// Get the current target platform name at compile time.
