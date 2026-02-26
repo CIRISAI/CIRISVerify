@@ -1212,9 +1212,11 @@ fn get_code_base_macos() -> Option<usize> {
                     continue;
                 }
                 let slide = _dyld_get_image_vmaddr_slide(i);
-                let base = (header as usize).wrapping_add(slide as usize);
+                // header IS the runtime address (vmaddr + slide), so use it directly.
+                // Do NOT add slide again — that double-counts ASLR.
+                let base = header as usize;
                 tracing::info!(
-                    "get_code_base_macos: FOUND at image[{}], base=0x{:x} (header=0x{:x} + slide=0x{:x})",
+                    "get_code_base_macos: FOUND at image[{}], base=0x{:x} (header=0x{:x}, slide=0x{:x})",
                     i, base, header as usize, slide
                 );
                 return Some(base);
@@ -1231,8 +1233,8 @@ fn get_code_base_macos() -> Option<usize> {
         if header.is_null() {
             return None;
         }
-        let slide = _dyld_get_image_vmaddr_slide(0);
-        let base = (header as usize).wrapping_add(slide as usize);
+        // header already includes ASLR slide — do not add slide again
+        let base = header as usize;
         tracing::info!("get_code_base_macos: fallback image[0] base=0x{:x}", base);
         Some(base)
     }

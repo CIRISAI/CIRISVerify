@@ -1010,11 +1010,14 @@ pub unsafe extern "C" fn ciris_verify_check_capability(
         Err(_) => return CirisVerifyError::InvalidArgument as i32,
     };
 
-    let result = match handle.runtime.handle().block_on(handle.engine.check_capability(
-        capability_str,
-        action_str,
-        required_tier as u8,
-    )) {
+    let result = match handle
+        .runtime
+        .handle()
+        .block_on(
+            handle
+                .engine
+                .check_capability(capability_str, action_str, required_tier as u8),
+        ) {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Capability check failed: {}", e);
@@ -1312,7 +1315,11 @@ pub unsafe extern "C" fn ciris_verify_sign(
     let data_bytes = std::slice::from_raw_parts(data, data_len);
 
     // Sign using the hardware signer
-    let sig = match handle.runtime.handle().block_on(handle.engine.sign(data_bytes)) {
+    let sig = match handle
+        .runtime
+        .handle()
+        .block_on(handle.engine.sign(data_bytes))
+    {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("Signing failed: {}", e);
@@ -2133,14 +2140,17 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
     };
 
     // Run attestation
-    let mut result: FullAttestationResult =
-        match handle.runtime.handle().block_on(engine.run_attestation(request)) {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::error!("ciris_verify_run_attestation: attestation failed: {}", e);
-                return CirisVerifyError::RequestFailed as i32;
-            },
-        };
+    let mut result: FullAttestationResult = match handle
+        .runtime
+        .handle()
+        .block_on(engine.run_attestation(request))
+    {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("ciris_verify_run_attestation: attestation failed: {}", e);
+            return CirisVerifyError::RequestFailed as i32;
+        },
+    };
 
     // Populate key_attestation with signer info
     let has_key = handle.ed25519_signer.has_key();
