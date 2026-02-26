@@ -2139,16 +2139,59 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
         },
     };
 
-    // Run attestation
-    let mut result: FullAttestationResult = match handle
-        .runtime
-        .handle()
-        .block_on(engine.run_attestation(request))
-    {
-        Ok(r) => r,
-        Err(e) => {
+    // Run attestation with 10-second HARD CAP
+    // This prevents network hangs from blocking indefinitely
+    const ATTESTATION_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
+
+    let mut result: FullAttestationResult = match handle.runtime.handle().block_on(async {
+        tokio::time::timeout(ATTESTATION_TIMEOUT, engine.run_attestation(request)).await
+    }) {
+        Ok(Ok(r)) => r,
+        Ok(Err(e)) => {
             tracing::error!("ciris_verify_run_attestation: attestation failed: {}", e);
             return CirisVerifyError::RequestFailed as i32;
+        },
+        Err(_timeout) => {
+            tracing::error!(
+                "ciris_verify_run_attestation: TIMEOUT after {}s - network unreachable",
+                ATTESTATION_TIMEOUT.as_secs()
+            );
+            // Return a timeout result with partial data rather than blocking
+            FullAttestationResult {
+                valid: false,
+                level: 0,
+                level_pending: false,
+                self_verification: None,
+                key_attestation: None,
+                registry_key_status: "timeout".to_string(),
+                device_attestation: None,
+                file_integrity: None,
+                python_integrity: None,
+                module_integrity: None,
+                sources: ciris_verify_core::unified::SourceCheckResult {
+                    dns_us_reachable: false,
+                    dns_us_valid: false,
+                    dns_us_error: Some("timeout".to_string()),
+                    dns_eu_reachable: false,
+                    dns_eu_valid: false,
+                    dns_eu_error: Some("timeout".to_string()),
+                    https_reachable: false,
+                    https_valid: false,
+                    https_error: Some("timeout".to_string()),
+                    validation_status: "timeout".to_string(),
+                },
+                audit_trail: None,
+                checks_passed: 0,
+                checks_total: 0,
+                diagnostics: format!(
+                    "TIMEOUT: Attestation did not complete within {}s.\n\
+                     This usually indicates the registry server is unreachable.\n\
+                     Community mode enforced.",
+                    ATTESTATION_TIMEOUT.as_secs()
+                ),
+                errors: vec!["Attestation timeout: network unreachable".to_string()],
+                timestamp: chrono::Utc::now().timestamp(),
+            }
         },
     };
 
