@@ -220,17 +220,16 @@ impl DnsValidator {
 
         // Try Google first, then Cloudflare in parallel
         let google_url = format!("{}?name={}&type=TXT", GOOGLE_DNS_JSON_API, hostname);
-        let cloudflare_url = format!(
-            "{}?name={}&type=TXT",
-            CLOUDFLARE_DNS_JSON_API, hostname
-        );
+        let cloudflare_url = format!("{}?name={}&type=TXT", CLOUDFLARE_DNS_JSON_API, hostname);
 
         info!(hostname = %hostname, "DNS JSON API: querying Google and Cloudflare in parallel");
 
-        let google_fut = client.get(&google_url)
+        let google_fut = client
+            .get(&google_url)
             .header("Accept", "application/dns-json")
             .send();
-        let cloudflare_fut = client.get(&cloudflare_url)
+        let cloudflare_fut = client
+            .get(&cloudflare_url)
             .header("Accept", "application/dns-json")
             .send();
 
@@ -269,14 +268,13 @@ impl DnsValidator {
         // If select returned without success, try the other one
         // (This handles the case where the first one failed)
         let fallback_url = format!("{}?name={}&type=TXT", CLOUDFLARE_DNS_JSON_API, hostname);
-        match client.get(&fallback_url)
+        match client
+            .get(&fallback_url)
             .header("Accept", "application/dns-json")
             .send()
             .await
         {
-            Ok(resp) if resp.status().is_success() => {
-                Self::parse_dns_json_response(resp).await
-            }
+            Ok(resp) if resp.status().is_success() => Self::parse_dns_json_response(resp).await,
             Ok(resp) => Err(VerifyError::DnsError {
                 message: format!("DNS JSON API fallback returned status {}", resp.status()),
             }),
@@ -319,7 +317,10 @@ impl DnsValidator {
             });
         }
 
-        debug!(count = txt_records.len(), "DNS JSON API: parsed TXT records");
+        debug!(
+            count = txt_records.len(),
+            "DNS JSON API: parsed TXT records"
+        );
         Ok(txt_records)
     }
 
@@ -579,7 +580,12 @@ pub async fn query_multiple_sources(
     );
 
     // Run the parallel query with a total timeout
-    match tokio_timeout(total_timeout, query_all_approaches_parallel(us_host, eu_host, per_query_timeout)).await {
+    match tokio_timeout(
+        total_timeout,
+        query_all_approaches_parallel(us_host, eu_host, per_query_timeout),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => {
             error!(
@@ -591,7 +597,7 @@ pub async fn query_multiple_sources(
                 us_result: Err("Total timeout (10s) exceeded".to_string()),
                 eu_result: Err("Total timeout (10s) exceeded".to_string()),
             }
-        }
+        },
     }
 }
 
@@ -689,11 +695,15 @@ async fn query_all_approaches_parallel(
                                 Err(e) => ("json-api", host, Err(e)),
                             }
                         } else {
-                            ("json-api", host, Err(VerifyError::DnsError {
-                                message: "No TXT records in JSON API response".to_string(),
-                            }))
+                            (
+                                "json-api",
+                                host,
+                                Err(VerifyError::DnsError {
+                                    message: "No TXT records in JSON API response".to_string(),
+                                }),
+                            )
                         }
-                    }
+                    },
                     Err(e) => ("json-api", host, Err(e)),
                 }
             }
@@ -710,11 +720,15 @@ async fn query_all_approaches_parallel(
                                 Err(e) => ("json-api", host, Err(e)),
                             }
                         } else {
-                            ("json-api", host, Err(VerifyError::DnsError {
-                                message: "No TXT records in JSON API response".to_string(),
-                            }))
+                            (
+                                "json-api",
+                                host,
+                                Err(VerifyError::DnsError {
+                                    message: "No TXT records in JSON API response".to_string(),
+                                }),
+                            )
                         }
-                    }
+                    },
                     Err(e) => ("json-api", host, Err(e)),
                 }
             }
@@ -740,13 +754,13 @@ async fn query_all_approaches_parallel(
         match result {
             Ok((approach, _host, Ok(record))) => {
                 us_successes.push((approach, record.clone()));
-            }
+            },
             Ok((approach, _host, Err(e))) => {
                 us_failures.push((approach, e.to_string()));
-            }
+            },
             Err(e) => {
                 us_failures.push(("task", format!("panic: {}", e)));
-            }
+            },
         }
     }
 
@@ -757,13 +771,13 @@ async fn query_all_approaches_parallel(
         match result {
             Ok((approach, _host, Ok(record))) => {
                 eu_successes.push((approach, record.clone()));
-            }
+            },
             Ok((approach, _host, Err(e))) => {
                 eu_failures.push((approach, e.to_string()));
-            }
+            },
             Err(e) => {
                 eu_failures.push(("task", format!("panic: {}", e)));
-            }
+            },
         }
     }
 
@@ -827,8 +841,12 @@ async fn query_all_approaches_parallel(
                     this_approach = *approach,
                     this_rev = record.revocation_revision,
                     "DNS DISAGREEMENT: {}/{} rev={} vs {}/{} rev={}",
-                    all_successes[0].0, all_successes[0].1, first_rev,
-                    source, approach, record.revocation_revision
+                    all_successes[0].0,
+                    all_successes[0].1,
+                    first_rev,
+                    source,
+                    approach,
+                    record.revocation_revision
                 );
                 disagreement = true;
             }
@@ -838,7 +856,8 @@ async fn query_all_approaches_parallel(
                 success_count = all_successes.len(),
                 revision = first_rev,
                 "DNS cross-check: {} sources agree on rev={}",
-                all_successes.len(), first_rev
+                all_successes.len(),
+                first_rev
             );
         }
     }
@@ -851,8 +870,10 @@ async fn query_all_approaches_parallel(
         eu_failed = eu_failures.len(),
         total_success = all_successes.len(),
         "DNS resolution complete: {}/{} US, {}/{} EU ({} total successes)",
-        us_successes.len(), us_successes.len() + us_failures.len(),
-        eu_successes.len(), eu_successes.len() + eu_failures.len(),
+        us_successes.len(),
+        us_successes.len() + us_failures.len(),
+        eu_successes.len(),
+        eu_successes.len() + eu_failures.len(),
         all_successes.len()
     );
 
@@ -867,7 +888,10 @@ async fn query_all_approaches_parallel(
         .map(|(_, r)| Ok(r.clone()))
         .unwrap_or_else(|| Err("No DNS approaches succeeded for EU".to_string()));
 
-    MultiDnsResult { us_result, eu_result }
+    MultiDnsResult {
+        us_result,
+        eu_result,
+    }
 }
 
 /// Query multiple DNS sources with explicit transport mode.
