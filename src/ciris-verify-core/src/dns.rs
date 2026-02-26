@@ -16,6 +16,12 @@
 //! - `pqc_fp`: SHA-256 fingerprint of ML-DSA public key (hex)
 //! - `rev`: Revocation list revision number
 //! - `ts`: Last update timestamp (Unix seconds)
+//!
+//! ## Resolution Approaches (run in parallel)
+//!
+//! 1. **DoH with native-certs** - hickory-resolver default, works on most systems
+//! 2. **DoH with bundled webpki-roots** - fallback for containers/emulators
+//! 3. **DNS JSON API via HTTPS** - Google/Cloudflare JSON API using reqwest
 
 use std::collections::HashMap;
 use std::net::IpAddr;
@@ -25,9 +31,14 @@ use std::time::Duration;
 use base64::Engine;
 use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
 use hickory_resolver::TokioAsyncResolver;
-use tracing::{debug, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::error::VerifyError;
+
+/// Google DNS JSON API endpoint (uses reqwest with bundled certs)
+const GOOGLE_DNS_JSON_API: &str = "https://dns.google/resolve";
+/// Cloudflare DNS JSON API endpoint (backup)
+const CLOUDFLARE_DNS_JSON_API: &str = "https://cloudflare-dns.com/dns-query";
 
 /// DNS transport mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -44,6 +55,7 @@ pub enum DnsTransport {
 ///
 /// Queries TXT records from independent DNS servers to retrieve
 /// steward key information and revocation status.
+#[derive(Clone)]
 pub struct DnsValidator {
     /// Resolver for the US source.
     resolver: TokioAsyncResolver,
@@ -148,8 +160,25 @@ impl DnsValidator {
         opts.attempts = 2; // Fewer attempts for DoH (already reliable)
         opts.use_hosts_file = false;
 
+        // Use default Cloudflare DoH config (uses native-certs when available)
+        // This is the PRIMARY path - works on most systems
+        let resolver = TokioAsyncResolver::tokio(ResolverConfig::cloudflare_https(), opts);
+
+        Ok(Self { resolver, timeout })
+    }
+
+    /// Create a DNS validator using DNS-over-HTTPS with bundled Mozilla CA certs.
+    /// This is the FALLBACK path for environments where native-certs fails
+    /// (containers, some Linux distros, Android emulators).
+    pub async fn with_doh_bundled_certs(timeout: Duration) -> Result<Self, VerifyError> {
+        info!("Creating DNS-over-HTTPS resolver with bundled certs (fallback)");
+
+        let mut opts = ResolverOpts::default();
+        opts.timeout = timeout;
+        opts.attempts = 2;
+        opts.use_hosts_file = false;
+
         // Build rustls ClientConfig with bundled Mozilla CA certs (webpki-roots)
-        // This ensures DoH works even when native-certs fails (containers, some Linux distros)
         let mut root_store = rustls::RootCertStore::empty();
         root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
             rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
@@ -164,7 +193,7 @@ impl DnsValidator {
             .with_root_certificates(root_store)
             .with_no_client_auth();
 
-        // Use Cloudflare's DoH endpoint with explicit TLS config
+        // Use Cloudflare's DoH endpoint with explicit bundled TLS config
         let name_servers =
             NameServerConfigGroup::cloudflare_https().with_client_config(Arc::new(tls_config));
         let config = ResolverConfig::from_parts(None, vec![], name_servers);
@@ -172,6 +201,126 @@ impl DnsValidator {
         let resolver = TokioAsyncResolver::tokio(config, opts);
 
         Ok(Self { resolver, timeout })
+    }
+
+    /// Query a TXT record using Google/Cloudflare DNS JSON API via plain HTTPS.
+    /// This bypasses hickory-resolver entirely and uses reqwest (which has bundled certs).
+    /// Returns the first successful result from Google or Cloudflare.
+    pub async fn query_txt_via_json_api(
+        hostname: &str,
+        timeout: Duration,
+    ) -> Result<Vec<String>, VerifyError> {
+        let client = reqwest::Client::builder()
+            .timeout(timeout)
+            .connect_timeout(Duration::from_secs(3))
+            .build()
+            .map_err(|e| VerifyError::DnsError {
+                message: format!("Failed to create HTTP client: {}", e),
+            })?;
+
+        // Try Google first, then Cloudflare in parallel
+        let google_url = format!("{}?name={}&type=TXT", GOOGLE_DNS_JSON_API, hostname);
+        let cloudflare_url = format!(
+            "{}?name={}&type=TXT",
+            CLOUDFLARE_DNS_JSON_API, hostname
+        );
+
+        info!(hostname = %hostname, "DNS JSON API: querying Google and Cloudflare in parallel");
+
+        let google_fut = client.get(&google_url)
+            .header("Accept", "application/dns-json")
+            .send();
+        let cloudflare_fut = client.get(&cloudflare_url)
+            .header("Accept", "application/dns-json")
+            .send();
+
+        // Race both requests
+        tokio::select! {
+            google_result = google_fut => {
+                match google_result {
+                    Ok(resp) if resp.status().is_success() => {
+                        info!("DNS JSON API: Google responded first");
+                        return Self::parse_dns_json_response(resp).await;
+                    }
+                    Ok(resp) => {
+                        warn!("DNS JSON API: Google returned status {}", resp.status());
+                    }
+                    Err(e) => {
+                        warn!("DNS JSON API: Google failed: {}", e);
+                    }
+                }
+            }
+            cloudflare_result = cloudflare_fut => {
+                match cloudflare_result {
+                    Ok(resp) if resp.status().is_success() => {
+                        info!("DNS JSON API: Cloudflare responded first");
+                        return Self::parse_dns_json_response(resp).await;
+                    }
+                    Ok(resp) => {
+                        warn!("DNS JSON API: Cloudflare returned status {}", resp.status());
+                    }
+                    Err(e) => {
+                        warn!("DNS JSON API: Cloudflare failed: {}", e);
+                    }
+                }
+            }
+        }
+
+        // If select returned without success, try the other one
+        // (This handles the case where the first one failed)
+        let fallback_url = format!("{}?name={}&type=TXT", CLOUDFLARE_DNS_JSON_API, hostname);
+        match client.get(&fallback_url)
+            .header("Accept", "application/dns-json")
+            .send()
+            .await
+        {
+            Ok(resp) if resp.status().is_success() => {
+                Self::parse_dns_json_response(resp).await
+            }
+            Ok(resp) => Err(VerifyError::DnsError {
+                message: format!("DNS JSON API fallback returned status {}", resp.status()),
+            }),
+            Err(e) => Err(VerifyError::DnsError {
+                message: format!("DNS JSON API fallback failed: {}", e),
+            }),
+        }
+    }
+
+    /// Parse DNS JSON API response (Google/Cloudflare compatible format)
+    async fn parse_dns_json_response(resp: reqwest::Response) -> Result<Vec<String>, VerifyError> {
+        let json: serde_json::Value = resp.json().await.map_err(|e| VerifyError::DnsError {
+            message: format!("Failed to parse DNS JSON response: {}", e),
+        })?;
+
+        // Check for DNS error status
+        if let Some(status) = json.get("Status").and_then(|s| s.as_i64()) {
+            if status != 0 {
+                return Err(VerifyError::DnsError {
+                    message: format!("DNS JSON API returned error status: {}", status),
+                });
+            }
+        }
+
+        // Extract TXT records from Answer array
+        let mut txt_records = Vec::new();
+        if let Some(answers) = json.get("Answer").and_then(|a| a.as_array()) {
+            for answer in answers {
+                if let Some(data) = answer.get("data").and_then(|d| d.as_str()) {
+                    // Remove surrounding quotes if present
+                    let clean = data.trim_matches('"');
+                    txt_records.push(clean.to_string());
+                }
+            }
+        }
+
+        if txt_records.is_empty() {
+            return Err(VerifyError::DnsError {
+                message: "No TXT records found in DNS JSON response".to_string(),
+            });
+        }
+
+        debug!(count = txt_records.len(), "DNS JSON API: parsed TXT records");
+        Ok(txt_records)
     }
 
     /// Create a DNS validator with the specified transport mode.
@@ -267,7 +416,7 @@ impl DnsValidator {
     ///
     /// Expected format:
     /// `v=ciris2 key=ed25519:{base64} pqc_fp=sha256:{hex} rev={revision} ts={timestamp}`
-    fn parse_txt_record(txt: &str) -> Result<DnsTxtRecord, VerifyError> {
+    pub fn parse_txt_record(txt: &str) -> Result<DnsTxtRecord, VerifyError> {
         let fields: HashMap<&str, &str> = txt
             .split_whitespace()
             .filter_map(|part| {
@@ -389,17 +538,21 @@ pub struct MultiDnsResult {
     pub eu_result: Result<DnsTxtRecord, String>,
 }
 
-/// Query multiple DNS sources in parallel with automatic fallback.
+/// Query multiple DNS sources using ALL approaches in parallel.
 ///
-/// Tries the primary transport first, then falls back to the secondary
-/// transport for any failed queries. This handles cases where DoH is
-/// blocked but UDP works, or vice versa.
+/// Runs 6+ parallel queries across 3 approaches:
+/// 1. DoH with native-certs (PRIMARY) - works on most systems
+/// 2. DoH with bundled webpki-roots (FALLBACK) - for containers/emulators
+/// 3. DNS JSON API via HTTPS - Google/Cloudflare JSON API using reqwest
+///
+/// Returns results as soon as ANY approach succeeds for each source.
+/// Total timeout is capped at 10 seconds regardless of individual query timeouts.
 ///
 /// # Arguments
 ///
 /// * `us_host` - US DNS source host
 /// * `eu_host` - EU DNS source host
-/// * `timeout` - Query timeout
+/// * `timeout` - Individual query timeout (total capped at 10s)
 ///
 /// # Returns
 ///
@@ -410,53 +563,311 @@ pub async fn query_multiple_sources(
     eu_host: &str,
     timeout: Duration,
 ) -> MultiDnsResult {
-    let primary = default_dns_transport();
-    let fallback = match primary {
-        DnsTransport::DnsOverHttps => DnsTransport::Udp,
-        DnsTransport::Udp => DnsTransport::DnsOverHttps,
-    };
+    use tokio::time::timeout as tokio_timeout;
 
-    // Try primary transport first
-    info!(transport = ?primary, "Trying primary DNS transport");
-    let mut result =
-        query_multiple_sources_with_transport(us_host, eu_host, timeout, primary).await;
+    // Cap individual timeout at 8 seconds to leave room for overhead
+    let per_query_timeout = timeout.min(Duration::from_secs(8));
+    // Total operation capped at 10 seconds
+    let total_timeout = Duration::from_secs(10);
 
-    // Check if we need fallback
-    let us_failed = result.us_result.is_err();
-    let eu_failed = result.eu_result.is_err();
+    info!(
+        us_host = %us_host,
+        eu_host = %eu_host,
+        per_query_timeout_ms = per_query_timeout.as_millis(),
+        total_timeout_ms = total_timeout.as_millis(),
+        "Starting parallel DNS resolution (3 approaches × 2 sources)"
+    );
 
-    if us_failed || eu_failed {
-        info!(
-            us_failed = us_failed,
-            eu_failed = eu_failed,
-            fallback_transport = ?fallback,
-            "Primary DNS failed, trying fallback transport"
-        );
+    // Run the parallel query with a total timeout
+    match tokio_timeout(total_timeout, query_all_approaches_parallel(us_host, eu_host, per_query_timeout)).await {
+        Ok(result) => result,
+        Err(_) => {
+            error!(
+                us_host = %us_host,
+                eu_host = %eu_host,
+                "DNS resolution timed out after 10 seconds"
+            );
+            MultiDnsResult {
+                us_result: Err("Total timeout (10s) exceeded".to_string()),
+                eu_result: Err("Total timeout (10s) exceeded".to_string()),
+            }
+        }
+    }
+}
 
-        // Create fallback validator
-        if let Ok(fallback_validator) = DnsValidator::with_transport(fallback, timeout).await {
-            // Retry failed queries with fallback transport
-            if us_failed {
-                info!(host = %us_host, "Retrying US source with fallback");
-                if let Ok(record) = fallback_validator.query_steward_record(us_host).await {
-                    info!(host = %us_host, "US fallback succeeded");
-                    result.us_result = Ok(record);
+/// Run all DNS approaches in parallel and return first successful results.
+async fn query_all_approaches_parallel(
+    us_host: &str,
+    eu_host: &str,
+    timeout: Duration,
+) -> MultiDnsResult {
+    use futures::future::join_all;
+
+    // Create all validators in parallel
+    let (doh_native, doh_bundled) = tokio::join!(
+        DnsValidator::with_doh(timeout),
+        DnsValidator::with_doh_bundled_certs(timeout),
+    );
+
+    let us_query_name = format!("_ciris-verify.{}", us_host);
+    let eu_query_name = format!("_ciris-verify.{}", eu_host);
+
+    // Spawn all queries in parallel (6 queries total: 3 approaches × 2 sources)
+    let mut us_futures = Vec::new();
+    let mut eu_futures = Vec::new();
+
+    // Approach 1: DoH with native-certs (PRIMARY)
+    if let Ok(validator) = &doh_native {
+        info!("DoH native-certs: validator created successfully");
+        let us_host_owned = us_host.to_string();
+        let eu_host_owned = eu_host.to_string();
+        let validator_clone = validator.clone();
+        us_futures.push(tokio::spawn({
+            let host = us_host_owned.clone();
+            let v = validator_clone.clone();
+            async move {
+                let result = v.query_steward_record(&host).await;
+                ("doh-native", host, result)
+            }
+        }));
+        eu_futures.push(tokio::spawn({
+            let host = eu_host_owned.clone();
+            let v = validator_clone;
+            async move {
+                let result = v.query_steward_record(&host).await;
+                ("doh-native", host, result)
+            }
+        }));
+    } else {
+        warn!("DoH native-certs: failed to create validator");
+    }
+
+    // Approach 2: DoH with bundled webpki-roots (FALLBACK)
+    if let Ok(validator) = &doh_bundled {
+        info!("DoH bundled-certs: validator created successfully");
+        let us_host_owned = us_host.to_string();
+        let eu_host_owned = eu_host.to_string();
+        let validator_clone = validator.clone();
+        us_futures.push(tokio::spawn({
+            let host = us_host_owned.clone();
+            let v = validator_clone.clone();
+            async move {
+                let result = v.query_steward_record(&host).await;
+                ("doh-bundled", host, result)
+            }
+        }));
+        eu_futures.push(tokio::spawn({
+            let host = eu_host_owned.clone();
+            let v = validator_clone;
+            async move {
+                let result = v.query_steward_record(&host).await;
+                ("doh-bundled", host, result)
+            }
+        }));
+    } else {
+        warn!("DoH bundled-certs: failed to create validator");
+    }
+
+    // Approach 3: DNS JSON API via HTTPS (reqwest with bundled certs)
+    {
+        let us_query = us_query_name.clone();
+        let eu_query = eu_query_name.clone();
+        let us_host_owned = us_host.to_string();
+        let eu_host_owned = eu_host.to_string();
+        let timeout_clone = timeout;
+
+        us_futures.push(tokio::spawn({
+            let query = us_query.clone();
+            let host = us_host_owned;
+            async move {
+                match DnsValidator::query_txt_via_json_api(&query, timeout_clone).await {
+                    Ok(txt_records) => {
+                        // Parse the first TXT record
+                        if let Some(txt) = txt_records.first() {
+                            match DnsValidator::parse_txt_record(txt) {
+                                Ok(record) => ("json-api", host, Ok(record)),
+                                Err(e) => ("json-api", host, Err(e)),
+                            }
+                        } else {
+                            ("json-api", host, Err(VerifyError::DnsError {
+                                message: "No TXT records in JSON API response".to_string(),
+                            }))
+                        }
+                    }
+                    Err(e) => ("json-api", host, Err(e)),
                 }
             }
-
-            if eu_failed {
-                info!(host = %eu_host, "Retrying EU source with fallback");
-                if let Ok(record) = fallback_validator.query_steward_record(eu_host).await {
-                    info!(host = %eu_host, "EU fallback succeeded");
-                    result.eu_result = Ok(record);
+        }));
+        eu_futures.push(tokio::spawn({
+            let query = eu_query;
+            let host = eu_host_owned;
+            async move {
+                match DnsValidator::query_txt_via_json_api(&query, timeout_clone).await {
+                    Ok(txt_records) => {
+                        if let Some(txt) = txt_records.first() {
+                            match DnsValidator::parse_txt_record(txt) {
+                                Ok(record) => ("json-api", host, Ok(record)),
+                                Err(e) => ("json-api", host, Err(e)),
+                            }
+                        } else {
+                            ("json-api", host, Err(VerifyError::DnsError {
+                                message: "No TXT records in JSON API response".to_string(),
+                            }))
+                        }
+                    }
+                    Err(e) => ("json-api", host, Err(e)),
                 }
             }
-        } else {
-            warn!("Failed to create fallback DNS validator");
+        }));
+    }
+
+    info!(
+        us_queries = us_futures.len(),
+        eu_queries = eu_futures.len(),
+        "Launched {} parallel DNS queries",
+        us_futures.len() + eu_futures.len()
+    );
+
+    // Wait for all queries and collect results
+    let us_results = join_all(us_futures).await;
+    let eu_results = join_all(eu_futures).await;
+
+    // Collect ALL successful results for cross-checking
+    let mut us_successes: Vec<(&str, DnsTxtRecord)> = Vec::new();
+    let mut us_failures: Vec<(&str, String)> = Vec::new();
+
+    for result in &us_results {
+        match result {
+            Ok((approach, _host, Ok(record))) => {
+                us_successes.push((approach, record.clone()));
+            }
+            Ok((approach, _host, Err(e))) => {
+                us_failures.push((approach, e.to_string()));
+            }
+            Err(e) => {
+                us_failures.push(("task", format!("panic: {}", e)));
+            }
         }
     }
 
-    result
+    let mut eu_successes: Vec<(&str, DnsTxtRecord)> = Vec::new();
+    let mut eu_failures: Vec<(&str, String)> = Vec::new();
+
+    for result in &eu_results {
+        match result {
+            Ok((approach, _host, Ok(record))) => {
+                eu_successes.push((approach, record.clone()));
+            }
+            Ok((approach, _host, Err(e))) => {
+                eu_failures.push((approach, e.to_string()));
+            }
+            Err(e) => {
+                eu_failures.push(("task", format!("panic: {}", e)));
+            }
+        }
+    }
+
+    // Log matrix header for UI parsing
+    info!("┌─────────────────────────────────────────────────────────────────┐");
+    info!("│ DNS Resolution Matrix (3 approaches × 2 sources = 6 queries)   │");
+    info!("├──────────┬─────────────┬────────┬──────────┬──────────────────┤");
+    info!("│ Source   │ Approach    │ Status │ Revision │ Details          │");
+    info!("├──────────┼─────────────┼────────┼──────────┼──────────────────┤");
+
+    // Log each US result
+    for (approach, record) in &us_successes {
+        info!(
+            "│ US       │ {:11} │ OK     │ {:>8} │ ts={:<13} │",
+            approach, record.revocation_revision, record.timestamp
+        );
+    }
+    for (approach, error) in &us_failures {
+        let short_err: String = error.chars().take(16).collect();
+        info!(
+            "│ US       │ {:11} │ FAIL   │        - │ {:<16} │",
+            approach, short_err
+        );
+    }
+
+    // Log each EU result
+    for (approach, record) in &eu_successes {
+        info!(
+            "│ EU       │ {:11} │ OK     │ {:>8} │ ts={:<13} │",
+            approach, record.revocation_revision, record.timestamp
+        );
+    }
+    for (approach, error) in &eu_failures {
+        let short_err: String = error.chars().take(16).collect();
+        info!(
+            "│ EU       │ {:11} │ FAIL   │        - │ {:<16} │",
+            approach, short_err
+        );
+    }
+
+    info!("└──────────┴─────────────┴────────┴──────────┴──────────────────┘");
+
+    // Cross-check: verify all successful results agree
+    let all_successes: Vec<(&str, &str, &DnsTxtRecord)> = us_successes
+        .iter()
+        .map(|(a, r)| ("US", *a, r))
+        .chain(eu_successes.iter().map(|(a, r)| ("EU", *a, r)))
+        .collect();
+
+    if all_successes.len() > 1 {
+        // Check for disagreement on revision
+        let first_rev = all_successes[0].2.revocation_revision;
+        let mut disagreement = false;
+        for (source, approach, record) in &all_successes[1..] {
+            if record.revocation_revision != first_rev {
+                warn!(
+                    first_source = all_successes[0].0,
+                    first_approach = all_successes[0].1,
+                    first_rev = first_rev,
+                    this_source = *source,
+                    this_approach = *approach,
+                    this_rev = record.revocation_revision,
+                    "DNS DISAGREEMENT: {}/{} rev={} vs {}/{} rev={}",
+                    all_successes[0].0, all_successes[0].1, first_rev,
+                    source, approach, record.revocation_revision
+                );
+                disagreement = true;
+            }
+        }
+        if !disagreement {
+            info!(
+                success_count = all_successes.len(),
+                revision = first_rev,
+                "DNS cross-check: {} sources agree on rev={}",
+                all_successes.len(), first_rev
+            );
+        }
+    }
+
+    // Summary log
+    info!(
+        us_success = us_successes.len(),
+        us_failed = us_failures.len(),
+        eu_success = eu_successes.len(),
+        eu_failed = eu_failures.len(),
+        total_success = all_successes.len(),
+        "DNS resolution complete: {}/{} US, {}/{} EU ({} total successes)",
+        us_successes.len(), us_successes.len() + us_failures.len(),
+        eu_successes.len(), eu_successes.len() + eu_failures.len(),
+        all_successes.len()
+    );
+
+    // Return first successful result for each source
+    let us_result = us_successes
+        .first()
+        .map(|(_, r)| Ok(r.clone()))
+        .unwrap_or_else(|| Err("No DNS approaches succeeded for US".to_string()));
+
+    let eu_result = eu_successes
+        .first()
+        .map(|(_, r)| Ok(r.clone()))
+        .unwrap_or_else(|| Err("No DNS approaches succeeded for EU".to_string()));
+
+    MultiDnsResult { us_result, eu_result }
 }
 
 /// Query multiple DNS sources with explicit transport mode.
