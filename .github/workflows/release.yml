@@ -477,7 +477,28 @@ jobs:
                       'shared': {'file': 'libciris_verify_ffi.so', 'sha256': h, 'size': os.path.getsize(sopath)}
                   }
 
-          # iOS (hash both .dylib for runtime verification and .a for static linking)
+          # iOS (hash __TEXT segment of .dylib for code-sign-stable verification)
+          import struct
+
+          def macho_text_hash(fpath):
+              '''Hash only the __TEXT segment of a Mach-O binary (stable across code signing).'''
+              data = open(fpath, 'rb').read()
+              magic = struct.unpack_from('<I', data, 0)[0]
+              if magic == 0xFEEDFACF:  # MH_MAGIC_64
+                  ncmds = struct.unpack_from('<I', data, 16)[0]
+                  off = 32  # sizeof(mach_header_64)
+                  for _ in range(ncmds):
+                      cmd, cmdsize = struct.unpack_from('<II', data, off)
+                      if cmd == 0x19:  # LC_SEGMENT_64
+                          segname = data[off+8:off+24].split(b'\\x00')[0].decode('ascii', errors='replace')
+                          fileoff, filesize = struct.unpack_from('<QQ', data, off+40)
+                          if segname == '__TEXT':
+                              seg_data = data[fileoff:fileoff+filesize]
+                              return hashlib.sha256(seg_data).hexdigest(), fileoff, filesize
+                      off += cmdsize
+              # Fallback: hash full file
+              return hashlib.sha256(data).hexdigest(), 0, len(data)
+
           for target in ['aarch64-apple-ios', 'aarch64-apple-ios-sim']:
               apath = f'release/ios/{target}/libciris_verify_ffi.a'
               dpath = f'release/ios/{target}/libciris_verify_ffi.dylib'
@@ -487,8 +508,9 @@ jobs:
                   h = hashlib.sha256(open(apath, 'rb').read()).hexdigest()
                   entry['static'] = {'file': 'libciris_verify_ffi.a', 'sha256': h, 'size': os.path.getsize(apath)}
               if os.path.isfile(dpath):
-                  h = hashlib.sha256(open(dpath, 'rb').read()).hexdigest()
-                  entry['dylib'] = {'file': 'libciris_verify_ffi.dylib', 'sha256': h, 'size': os.path.getsize(dpath)}
+                  h_text, seg_off, seg_sz = macho_text_hash(dpath)
+                  h_full = hashlib.sha256(open(dpath, 'rb').read()).hexdigest()
+                  entry['dylib'] = {'file': 'libciris_verify_ffi.dylib', 'sha256': h_text, 'sha256_full': h_full, 'size': os.path.getsize(dpath), 'text_offset': seg_off, 'text_size': seg_sz}
               if entry:
                   manifest['platforms'][pname] = entry
 

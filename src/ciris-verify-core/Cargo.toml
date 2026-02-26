@@ -72,6 +72,9 @@ subtle = "2.6"
 # Platform-specific
 libc = "0.2"
 
+# Binary parsing (Mach-O __TEXT segment hashing for iOS code-sign stability)
+goblin.workspace = true
+
 # SQLite for audit trail verification
 rusqlite = { version = "0.31", features = ["bundled"] }
 

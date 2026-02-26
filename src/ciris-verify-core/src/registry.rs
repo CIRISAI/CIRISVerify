@@ -856,8 +856,6 @@ pub struct FunctionManifestTargets {
 /// - macOS/Windows: Uses `std::env::current_exe()`
 pub fn compute_self_hash() -> Result<String, VerifyError> {
     use sha2::{Digest, Sha256};
-    use std::fs::File;
-    use std::io::Read;
 
     // On Android, current_exe() returns /system/bin/app_process64 which is the
     // Android runtime, not our library. We need to find libciris_verify_ffi.so.
@@ -910,29 +908,95 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
         exe_path.exists()
     );
 
-    let mut file = File::open(&exe_path).map_err(|e| VerifyError::IntegrityError {
-        message: format!("Cannot open executable for hashing: {}", e),
+    let file_bytes = std::fs::read(&exe_path).map_err(|e| VerifyError::IntegrityError {
+        message: format!("Cannot read executable for hashing: {}", e),
     })?;
 
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 8192];
-
-    loop {
-        let bytes_read = file
-            .read(&mut buffer)
-            .map_err(|e| VerifyError::IntegrityError {
-                message: format!("Error reading executable: {}", e),
-            })?;
-
-        if bytes_read == 0 {
-            break;
+    // On iOS/macOS, hash only the __TEXT segment to be stable across code signing.
+    // Code signing modifies the Mach-O header (adds LC_CODE_SIGNATURE) and appends
+    // signature data, but leaves __TEXT content untouched.
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    let hash_bytes = {
+        match extract_text_segment(&file_bytes) {
+            Some((offset, size)) => {
+                tracing::info!(
+                    "compute_self_hash: hashing __TEXT segment only (offset=0x{:x}, size=0x{:x}, file_size=0x{:x})",
+                    offset, size, file_bytes.len()
+                );
+                &file_bytes[offset..offset + size]
+            },
+            None => {
+                tracing::warn!(
+                    "compute_self_hash: could not find __TEXT segment, hashing full file (size=0x{:x})",
+                    file_bytes.len()
+                );
+                &file_bytes[..]
+            },
         }
+    };
 
-        hasher.update(&buffer[..bytes_read]);
-    }
+    #[cfg(not(any(target_os = "ios", target_os = "macos")))]
+    let hash_bytes = &file_bytes[..];
 
+    let mut hasher = Sha256::new();
+    hasher.update(hash_bytes);
     let hash = hasher.finalize();
     Ok(hex::encode(hash))
+}
+
+/// Extract the __TEXT segment offset and size from a Mach-O binary.
+///
+/// Returns `(file_offset, file_size)` of the __TEXT segment, which contains
+/// the executable code. This segment is not modified by code signing.
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+fn extract_text_segment(data: &[u8]) -> Option<(usize, usize)> {
+    use goblin::mach::Mach;
+
+    match Mach::parse(data) {
+        Ok(Mach::Binary(macho)) => {
+            for seg in &macho.segments {
+                let name = seg.name().unwrap_or("");
+                if name == "__TEXT" {
+                    let offset = seg.fileoff as usize;
+                    let size = seg.filesize as usize;
+                    tracing::info!(
+                        "extract_text_segment: found __TEXT at offset=0x{:x}, size=0x{:x}, vmaddr=0x{:x}",
+                        offset, size, seg.vmaddr
+                    );
+                    return Some((offset, size));
+                }
+            }
+            tracing::warn!("extract_text_segment: no __TEXT segment found in Mach-O");
+            None
+        },
+        Ok(Mach::Fat(fat)) => {
+            // Fat binary — try first arch
+            tracing::info!(
+                "extract_text_segment: fat binary with {} arches",
+                fat.narches
+            );
+            if let Ok(goblin::mach::SingleArch::MachO(macho)) = fat.get(0) {
+                for seg in &macho.segments {
+                    let name = seg.name().unwrap_or("");
+                    if name == "__TEXT" {
+                        let offset = seg.fileoff as usize;
+                        let size = seg.filesize as usize;
+                        tracing::info!(
+                            "extract_text_segment: found __TEXT (fat[0]) at offset=0x{:x}, size=0x{:x}",
+                            offset, size
+                        );
+                        return Some((offset, size));
+                    }
+                }
+            }
+            tracing::warn!("extract_text_segment: no __TEXT in fat binary");
+            None
+        },
+        Err(e) => {
+            tracing::warn!("extract_text_segment: Mach-O parse error: {}", e);
+            None
+        },
+    }
 }
 
 /// Find a loaded library's path by parsing /proc/self/maps.
