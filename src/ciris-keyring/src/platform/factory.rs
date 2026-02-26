@@ -109,12 +109,27 @@ fn detect_android_capabilities() -> PlatformCapabilities {
 
 #[cfg(target_os = "ios")]
 fn detect_ios_capabilities() -> PlatformCapabilities {
-    PlatformCapabilities {
-        hardware_type: HardwareType::IosSecureEnclave,
-        has_hardware: true,
-        supports_user_auth: true,
-        supports_attestation: true,
-        max_tier: MaxTier::Standard,
+    // Simulator builds have target_abi = "sim" (Rust 1.78+)
+    #[cfg(target_abi = "sim")]
+    {
+        return PlatformCapabilities {
+            hardware_type: HardwareType::SoftwareOnly,
+            has_hardware: false,
+            supports_user_auth: false,
+            supports_attestation: false,
+            max_tier: MaxTier::CommunityOnly,
+        };
+    }
+
+    #[cfg(not(target_abi = "sim"))]
+    {
+        PlatformCapabilities {
+            hardware_type: HardwareType::IosSecureEnclave,
+            has_hardware: true,
+            supports_user_auth: true,
+            supports_attestation: true,
+            max_tier: MaxTier::Standard,
+        }
     }
 }
 
@@ -210,8 +225,12 @@ pub fn create_hardware_signer(
 
     #[cfg(target_os = "ios")]
     {
-        use super::SecureEnclaveSigner;
-        return Ok(Box::new(SecureEnclaveSigner::new(alias)?));
+        // Simulator: no Secure Enclave, fall through to software signer
+        #[cfg(not(target_abi = "sim"))]
+        {
+            use super::SecureEnclaveSigner;
+            return Ok(Box::new(SecureEnclaveSigner::new(alias)?));
+        }
     }
 
     #[cfg(any(target_os = "linux", target_os = "windows"))]

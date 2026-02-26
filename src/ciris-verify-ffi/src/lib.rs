@@ -2897,6 +2897,37 @@ pub unsafe extern "C" fn ciris_verify_app_attest(
     }
 
     let handle = &*handle;
+
+    // Check if we already have a successful attestation cached.
+    // Nonces are single-use — resubmitting a consumed nonce returns 409.
+    // Return the cached result instead of hitting the API again.
+    if let Ok(cache) = handle.device_attestation_cache.lock() {
+        if let Some(ref cached) = *cache {
+            if cached.verified {
+                tracing::info!(
+                    "App Attest: returning cached successful result (nonce already consumed)"
+                );
+                let cached_response = ciris_verify_core::app_attest::AppAttestVerifyResponse {
+                    verified: true,
+                    device_environment: None,
+                    app_identity: None,
+                    receipt: None,
+                    error: None,
+                };
+                if let Ok(bytes) = serde_json::to_vec(&cached_response) {
+                    let len = bytes.len();
+                    let ptr = libc::malloc(len) as *mut u8;
+                    if !ptr.is_null() {
+                        std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, len);
+                        *result_json = ptr;
+                        *result_len = len;
+                        return CirisVerifyError::Success as i32;
+                    }
+                }
+            }
+        }
+    }
+
     let request_bytes = std::slice::from_raw_parts(request_json, request_len);
 
     // Parse request JSON
@@ -2936,14 +2967,24 @@ pub unsafe extern "C" fn ciris_verify_app_attest(
     let response = match result {
         Ok(r) => r,
         Err(e) => {
-            tracing::error!("App Attest verification failed: {}", e);
+            let err_msg = format!("{}", e);
+            tracing::error!("App Attest verification failed: {}", err_msg);
             // Return error response rather than error code
             ciris_verify_core::app_attest::AppAttestVerifyResponse {
                 verified: false,
                 device_environment: None,
                 app_identity: None,
                 receipt: None,
-                error: Some(format!("Verification failed: {}", e)),
+                error: Some(
+                    if err_msg.contains("409")
+                        || err_msg.contains("consumed")
+                        || err_msg.contains("expired")
+                    {
+                        "nonce_expired: Nonce already consumed or expired. Get a fresh nonce and re-attest.".to_string()
+                    } else {
+                        format!("Verification failed: {}", err_msg)
+                    },
+                ),
             }
         },
     };

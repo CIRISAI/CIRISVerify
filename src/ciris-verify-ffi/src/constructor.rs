@@ -147,10 +147,10 @@ fn run_verification() -> FunctionIntegrityStatus {
 
 /// Detect the current target platform name.
 ///
-/// Returns platform names that match the registry manifest naming convention.
+/// Returns names that match the registry manifest naming convention.
 /// - Desktop: Uses Rust target triples (e.g., `x86_64-unknown-linux-gnu`)
 /// - Android: Uses Android ABI names (e.g., `android-arm64-v8a`)
-/// - iOS: Uses platform names (e.g., `ios-arm64`, `ios-arm64-sim`)
+/// - iOS: Uses Rust target triples (e.g., `aarch64-apple-ios`, `aarch64-apple-ios-sim`)
 fn detect_target() -> &'static str {
     // Detect at compile time using cfg attributes
 
@@ -182,12 +182,12 @@ fn detect_target() -> &'static str {
     #[cfg(all(target_arch = "x86_64", target_os = "android"))]
     return "android-x86_64";
 
-    // iOS - use platform names to match registry manifest
+    // iOS - use Rust target triples to match registry manifest and build.rs TARGET env
     #[cfg(all(target_arch = "aarch64", target_os = "ios", not(target_abi = "sim")))]
-    return "ios-arm64";
+    return "aarch64-apple-ios";
 
     #[cfg(all(target_arch = "aarch64", target_os = "ios", target_abi = "sim"))]
-    return "ios-arm64-sim";
+    return "aarch64-apple-ios-sim";
 
     // Fallback for unknown targets
     #[cfg(not(any(
@@ -316,7 +316,7 @@ mod tests {
                 || target.contains("darwin")
                 || target.contains("windows")
                 || target.starts_with("android-")
-                || target.starts_with("ios-")
+                || target.contains("apple-ios")
                 || target == "unknown",
             "Unexpected target: {}",
             target
