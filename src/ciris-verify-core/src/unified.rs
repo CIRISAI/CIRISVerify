@@ -75,6 +75,10 @@ pub struct FullAttestationResult {
     pub valid: bool,
     /// Attestation level (0-5 scale).
     pub level: u8,
+    /// Whether level calculation is pending async checks (Play Integrity / App Attest).
+    /// When true, the level may increase once platform-required checks complete.
+    #[serde(default)]
+    pub level_pending: bool,
     /// Self-verification result (Level 1: binary + function integrity).
     pub self_verification: Option<SelfVerificationResult>,
     /// Key attestation proof.
@@ -1278,6 +1282,7 @@ impl UnifiedAttestationEngine {
         Ok(FullAttestationResult {
             valid,
             level,
+            level_pending: true, // FFI layer will set to false when platform checks complete
             self_verification: Some(self_verification),
             key_attestation: None, // Filled by caller with HW signer
             registry_key_status: key_verification_result,

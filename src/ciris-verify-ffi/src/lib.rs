@@ -2272,6 +2272,20 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
             0
         };
         result.valid = result.checks_passed == result.checks_total && result.errors.is_empty();
+        // Device attestation is present, so level is no longer pending
+        result.level_pending = false;
+    } else {
+        // No device attestation cached yet
+        // On mobile platforms, level is pending until Play Integrity / App Attest completes
+        // On desktop platforms, device attestation is not required
+        #[cfg(any(target_os = "android", target_os = "ios"))]
+        {
+            result.level_pending = true;
+        }
+        #[cfg(not(any(target_os = "android", target_os = "ios")))]
+        {
+            result.level_pending = false;
+        }
     }
 
     // Prepend key attestation info to diagnostics
@@ -2304,6 +2318,7 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
     tracing::info!(
         valid = result.valid,
         level = result.level,
+        level_pending = result.level_pending,
         checks_passed = result.checks_passed,
         checks_total = result.checks_total,
         key_type = %key_type,
