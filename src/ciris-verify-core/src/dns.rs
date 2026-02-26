@@ -19,10 +19,11 @@
 
 use std::collections::HashMap;
 use std::net::IpAddr;
+use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
-use hickory_resolver::config::{ResolverConfig, ResolverOpts};
+use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
 use hickory_resolver::TokioAsyncResolver;
 use tracing::{debug, info, instrument, warn};
 
@@ -147,8 +148,28 @@ impl DnsValidator {
         opts.attempts = 2; // Fewer attempts for DoH (already reliable)
         opts.use_hosts_file = false;
 
-        // Use Cloudflare's DoH endpoint
-        let resolver = TokioAsyncResolver::tokio(ResolverConfig::cloudflare_https(), opts);
+        // Build rustls ClientConfig with bundled Mozilla CA certs (webpki-roots)
+        // This ensures DoH works even when native-certs fails (containers, some Linux distros)
+        let mut root_store = rustls::RootCertStore::empty();
+        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
+            rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
+                ta.subject.to_vec(),
+                ta.spki.to_vec(),
+                ta.name_constraints.map(|nc| nc.to_vec()),
+            )
+        }));
+
+        let tls_config = rustls::ClientConfig::builder()
+            .with_safe_defaults()
+            .with_root_certificates(root_store)
+            .with_no_client_auth();
+
+        // Use Cloudflare's DoH endpoint with explicit TLS config
+        let name_servers =
+            NameServerConfigGroup::cloudflare_https().with_client_config(Arc::new(tls_config));
+        let config = ResolverConfig::from_parts(None, vec![], name_servers);
+
+        let resolver = TokioAsyncResolver::tokio(config, opts);
 
         Ok(Self { resolver, timeout })
     }

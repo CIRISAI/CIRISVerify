@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.10.6"
+version = "0.10.7"
 edition = "2021"
 rust-version = "1.85"
 license = "AGPL-3.0-or-later"
@@ -70,8 +70,9 @@ tracing-subscriber = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 
 # DNS (with DNS-over-HTTPS for mobile compatibility)
-# native-certs: uses platform's native certificate store (important for Android)
-hickory-resolver = { version = "0.24", features = ["dns-over-https-rustls", "tokio-runtime", "native-certs"] }
+# webpki-roots: bundled Mozilla CA certs (fallback when native-certs unavailable)
+# native-certs: uses platform's native certificate store (preferred when available)
+hickory-resolver = { version = "0.24", features = ["dns-over-https-rustls", "tokio-runtime", "webpki-roots", "native-certs"] }
 
 # HTTP client
 # Uses rustls with bundled Mozilla CA certs (webpki-roots) for cross-platform compatibility

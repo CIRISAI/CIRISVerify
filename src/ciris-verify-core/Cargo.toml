@@ -52,6 +52,10 @@ chrono.workspace = true
 # DNS resolution
 hickory-resolver.workspace = true
 
+# TLS (for DNS-over-HTTPS with bundled certs)
+rustls = { version = "0.21", default-features = false }
+webpki-roots = "0.25"
+
 # HTTP client
 reqwest.workspace = true
 
