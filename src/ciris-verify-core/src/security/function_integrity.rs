@@ -1154,25 +1154,87 @@ fn get_code_base_android() -> Option<CodeBaseInfo> {
     None
 }
 
-/// Get the base address of the code section on macOS/iOS.
+/// Get the base address of `libciris_verify_ffi` on macOS/iOS.
 ///
-/// Uses dyld APIs to find the main executable's base address with ASLR slide.
+/// Iterates loaded dyld images to find our library. When loaded as a
+/// framework/dylib, image 0 is the main executable (wrong base).
+/// Falls back to image 0 if our library name isn't found (statically linked).
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn get_code_base_macos() -> Option<usize> {
     extern "C" {
+        fn _dyld_image_count() -> u32;
         fn _dyld_get_image_header(image_index: u32) -> *const std::ffi::c_void;
+        fn _dyld_get_image_name(image_index: u32) -> *const std::ffi::c_char;
         fn _dyld_get_image_vmaddr_slide(image_index: u32) -> isize;
     }
 
+    const LIB_NAME: &str = "libciris_verify_ffi";
+    const FRAMEWORK_NAME: &str = "CIRISVerify";
+
     unsafe {
-        // Image 0 is the main executable
+        let count = _dyld_image_count();
+        tracing::info!(
+            "get_code_base_macos: searching {} loaded images for {}",
+            count,
+            LIB_NAME
+        );
+
+        // First pass: find our library by name
+        for i in 0..count {
+            let name_ptr = _dyld_get_image_name(i);
+            if name_ptr.is_null() {
+                continue;
+            }
+            let name = std::ffi::CStr::from_ptr(name_ptr);
+            let name_str = name.to_string_lossy();
+
+            // Log first 5 images and any matching ones for diagnostics
+            if i < 5 || name_str.contains(LIB_NAME) || name_str.contains(FRAMEWORK_NAME) {
+                let header = _dyld_get_image_header(i);
+                let slide = _dyld_get_image_vmaddr_slide(i);
+                tracing::info!(
+                    "get_code_base_macos: image[{}] header=0x{:x} slide=0x{:x} name={}",
+                    i,
+                    header as usize,
+                    slide,
+                    name_str
+                );
+            }
+
+            if name_str.contains(LIB_NAME) || name_str.contains(FRAMEWORK_NAME) {
+                let header = _dyld_get_image_header(i);
+                if header.is_null() {
+                    tracing::warn!(
+                        "get_code_base_macos: found {} at image[{}] but header is null",
+                        name_str,
+                        i
+                    );
+                    continue;
+                }
+                let slide = _dyld_get_image_vmaddr_slide(i);
+                let base = (header as usize).wrapping_add(slide as usize);
+                tracing::info!(
+                    "get_code_base_macos: FOUND at image[{}], base=0x{:x} (header=0x{:x} + slide=0x{:x})",
+                    i, base, header as usize, slide
+                );
+                return Some(base);
+            }
+        }
+
+        // Fallback: image 0 (statically linked into main executable)
+        tracing::warn!(
+            "get_code_base_macos: {} not found in {} images, falling back to image[0] (static linking)",
+            LIB_NAME,
+            count
+        );
         let header = _dyld_get_image_header(0);
         if header.is_null() {
             return None;
         }
-
         let slide = _dyld_get_image_vmaddr_slide(0);
-        Some((header as usize).wrapping_add(slide as usize))
+        let base = (header as usize).wrapping_add(slide as usize);
+        tracing::info!("get_code_base_macos: fallback image[0] base=0x{:x}", base);
+        Some(base)
     }
 }
 
