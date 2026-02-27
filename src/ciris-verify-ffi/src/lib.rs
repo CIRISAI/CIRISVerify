@@ -424,9 +424,17 @@ impl tracing::field::Visit for FfiLogVisitor {
     }
 }
 
+/// Magic number to detect corrupted/freed handles.
+const HANDLE_MAGIC: u64 = 0xC121_5BEE_FCAF_E000;
+
+/// Sentinel value written to handle magic when freed (use-after-free detection).
+const HANDLE_FREED: u64 = 0xDEAD_BEEF_DEAD_BEEF;
+
 /// Opaque handle to the CIRISVerify instance.
 #[repr(C)]
 pub struct CirisVerifyHandle {
+    /// Magic number for corruption detection. Must be HANDLE_MAGIC.
+    magic: u64,
     runtime: Runtime,
     engine: Arc<LicenseEngine>,
     /// Optional Ed25519 signer for Portal-issued keys.
@@ -437,6 +445,49 @@ pub struct CirisVerifyHandle {
     /// ciris_verify_app_attest is called. Used by run_attestation for L2.
     device_attestation_cache:
         std::sync::Mutex<Option<ciris_verify_core::unified::DeviceAttestationCheckResult>>,
+}
+
+impl CirisVerifyHandle {
+    /// Check if the handle's magic number is valid.
+    #[allow(dead_code)]
+    fn is_valid(&self) -> bool {
+        self.magic == HANDLE_MAGIC
+    }
+}
+
+/// Validate a handle pointer and return a reference if valid.
+/// Returns InvalidArgument error code if handle is null or corrupted.
+unsafe fn validate_handle(handle: *mut CirisVerifyHandle) -> Result<&'static CirisVerifyHandle, i32> {
+    if handle.is_null() {
+        tracing::error!("Handle is null");
+        return Err(CirisVerifyError::InvalidArgument as i32);
+    }
+
+    // Read magic number carefully to avoid crash on corrupted pointer
+    // First check if we can read the magic field at all
+    let magic_ptr = handle as *const u64;
+
+    // Try to read magic - this could still crash if handle points to unmapped memory
+    // but at least we'll catch use-after-free where memory is zeroed
+    let magic = *magic_ptr;
+
+    if magic == HANDLE_FREED {
+        tracing::error!(
+            "Handle has been freed (use-after-free detected) - magic is DEAD_BEEF"
+        );
+        return Err(CirisVerifyError::InvalidArgument as i32);
+    }
+
+    if magic != HANDLE_MAGIC {
+        tracing::error!(
+            "Handle magic mismatch: expected {:x}, got {:x} - handle may be corrupted",
+            HANDLE_MAGIC,
+            magic
+        );
+        return Err(CirisVerifyError::InvalidArgument as i32);
+    }
+
+    Ok(&*handle)
 }
 
 /// Error codes returned by FFI functions.
@@ -752,6 +803,7 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
 
     tracing::info!("CIRISVerify FFI init complete — handle ready");
     let handle = Box::new(CirisVerifyHandle {
+        magic: HANDLE_MAGIC,
         runtime,
         engine,
         ed25519_signer,
@@ -1143,6 +1195,12 @@ pub unsafe extern "C" fn ciris_verify_destroy(handle: *mut CirisVerifyHandle) {
     let _ = ffi_guard!("ciris_verify_destroy", {
         tracing::info!("ciris_verify_destroy called");
         if !handle.is_null() {
+            // Mark as freed BEFORE dropping to detect use-after-free
+            // Write the freed sentinel to the magic field
+            let magic_ptr = handle as *mut u64;
+            *magic_ptr = HANDLE_FREED;
+            tracing::debug!("Handle magic set to FREED sentinel");
+
             drop(Box::from_raw(handle));
             tracing::info!("CIRISVerify handle destroyed");
         }
@@ -2948,11 +3006,18 @@ unsafe fn verify_integrity_token_inner(
 ) -> i32 {
     tracing::debug!("ciris_verify_verify_integrity_token called");
 
-    // Null pointer checks
-    if handle.is_null() {
-        tracing::error!("verify_integrity_token: null handle");
-        return CirisVerifyError::InvalidArgument as i32;
-    }
+    // Validate handle with magic number check
+    let handle_ref = match validate_handle(handle) {
+        Ok(h) => h,
+        Err(code) => {
+            tracing::error!("verify_integrity_token: invalid handle");
+            return code;
+        }
+    };
+
+    tracing::debug!("verify_integrity_token: handle validated");
+
+    // Null pointer checks for other arguments
     if token.is_null() {
         tracing::error!("verify_integrity_token: null token");
         return CirisVerifyError::InvalidArgument as i32;
@@ -2966,7 +3031,7 @@ unsafe fn verify_integrity_token_inner(
         return CirisVerifyError::InvalidArgument as i32;
     }
 
-    let handle_ref = &*handle;
+    tracing::debug!("verify_integrity_token: all pointers validated");
 
     // Safe C string parsing with length limits to prevent reading garbage memory
     // JWT tokens are typically 1-2KB, set reasonable max at 64KB
@@ -3007,7 +3072,12 @@ unsafe fn verify_integrity_token_inner(
 
     // Use mobile blocking HTTP on Android/iOS to avoid tokio async I/O issues
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    let result = verify_integrity_token_blocking(token_str, nonce_str);
+    let result = {
+        tracing::debug!("verify_integrity_token: calling mobile blocking HTTP");
+        let res = verify_integrity_token_blocking(token_str, nonce_str);
+        tracing::debug!("verify_integrity_token: mobile blocking HTTP returned");
+        res
+    };
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     let result: Result<
@@ -3030,25 +3100,39 @@ unsafe fn verify_integrity_token_inner(
         })
     };
 
+    tracing::debug!("verify_integrity_token: unwrapping result");
     let response: ciris_verify_core::play_integrity::IntegrityVerifyResponse = match result {
-        Ok(r) => r,
+        Ok(r) => {
+            tracing::debug!("verify_integrity_token: got successful response");
+            r
+        },
         Err(e) => {
             tracing::error!("Failed to verify integrity token: {}", e);
             return CirisVerifyError::RequestFailed as i32;
         },
     };
 
-    tracing::info!("Play Integrity verification: {}", response.summary());
+    tracing::debug!("verify_integrity_token: calling response.summary()");
+    let summary_str = response.summary();
+    tracing::info!("Play Integrity verification: {}", summary_str);
 
     // Cache result for run_attestation L2 (with mutex error handling)
+    tracing::debug!("verify_integrity_token: about to access device_attestation_cache");
+    tracing::debug!("verify_integrity_token: handle_ref ptr = {:p}", handle_ref);
+    tracing::debug!("verify_integrity_token: cache field addr = {:p}", &handle_ref.device_attestation_cache);
+
     match handle_ref.device_attestation_cache.lock() {
         Ok(mut cache) => {
-            *cache = Some(ciris_verify_core::unified::DeviceAttestationCheckResult {
+            tracing::debug!("verify_integrity_token: got cache lock");
+            let cache_entry = ciris_verify_core::unified::DeviceAttestationCheckResult {
                 platform: "android".to_string(),
                 verified: response.verified,
                 summary: response.summary(),
                 error: response.error.clone(),
-            });
+            };
+            tracing::debug!("verify_integrity_token: created cache entry");
+            *cache = Some(cache_entry);
+            tracing::debug!("verify_integrity_token: cache updated");
         },
         Err(e) => {
             tracing::warn!("Could not cache attestation result (mutex poisoned): {}", e);
@@ -3097,7 +3181,10 @@ fn verify_integrity_token_blocking(
 > {
     use ciris_verify_core::mobile_http;
 
+    tracing::debug!("verify_integrity_token_blocking: creating TLS agent");
     let agent = mobile_http::create_tls_agent(std::time::Duration::from_secs(15))?;
+    tracing::debug!("verify_integrity_token_blocking: TLS agent created");
+
     let url = "https://api.registry.ciris-services-1.ai/v1/integrity/verify";
 
     tracing::debug!("Mobile Play Integrity verify: POST {}", url);
@@ -3106,7 +3193,9 @@ fn verify_integrity_token_blocking(
         "token": token,
         "nonce": nonce,
     });
+    tracing::debug!("verify_integrity_token_blocking: payload created");
 
+    tracing::debug!("verify_integrity_token_blocking: sending POST request");
     let response = agent
         .post(url)
         .set("Content-Type", "application/json")
@@ -3114,6 +3203,7 @@ fn verify_integrity_token_blocking(
         .map_err(|e| ciris_verify_core::VerifyError::HttpsError {
             message: format!("Play Integrity verify request failed: {}", e),
         })?;
+    tracing::debug!("verify_integrity_token_blocking: POST request completed, status={}", response.status());
 
     if response.status() != 200 {
         return Err(ciris_verify_core::VerifyError::HttpsError {
@@ -3124,12 +3214,14 @@ fn verify_integrity_token_blocking(
         });
     }
 
+    tracing::debug!("verify_integrity_token_blocking: parsing JSON response");
     let result: ciris_verify_core::play_integrity::IntegrityVerifyResponse =
         response
             .into_json()
             .map_err(|e| ciris_verify_core::VerifyError::HttpsError {
                 message: format!("Failed to parse Play Integrity response: {}", e),
             })?;
+    tracing::debug!("verify_integrity_token_blocking: JSON parsed successfully");
 
     tracing::info!("Mobile Play Integrity verify: success");
     Ok(result)
