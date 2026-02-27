@@ -1184,21 +1184,25 @@ fn extract_text_code_region(data: &[u8]) -> Option<(usize, usize)> {
 /// Helper: extract code region from a parsed MachO.
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 fn extract_text_code_from_macho(macho: &goblin::mach::MachO) -> Option<(usize, usize)> {
-    // Header + load commands = mutable area modified by code signing
+    // Header + load commands = mutable area modified by code signing.
+    // Code signing adds LC_CODE_SIGNATURE (16 bytes), changing sizeofcmds.
+    // Page-align to 4096 so the hash start is identical regardless of
+    // whether LC_CODE_SIGNATURE is present (padding is always zeros).
     let header_size: usize = if macho.is_64 { 32 } else { 28 };
     let cmds_end = header_size + macho.header.sizeofcmds as usize;
+    let page_aligned = (cmds_end + 0xFFF) & !0xFFF; // round up to 4096
 
     for seg in &macho.segments {
         let name = seg.name().unwrap_or("");
         if name == "__TEXT" {
             let seg_start = seg.fileoff as usize;
             let seg_end = seg_start + seg.filesize as usize;
-            // Hash from end of load commands to end of __TEXT segment
-            let hash_start = cmds_end.max(seg_start);
+            // Hash from page-aligned boundary to end of __TEXT segment
+            let hash_start = page_aligned.max(seg_start);
             let hash_size = seg_end.saturating_sub(hash_start);
             tracing::info!(
-                "extract_text_code_region: __TEXT segment=0x{:x}..0x{:x}, cmds_end=0x{:x}, hashing 0x{:x}..0x{:x} ({} bytes)",
-                seg_start, seg_end, cmds_end, hash_start, hash_start + hash_size, hash_size
+                "extract_text_code_region: __TEXT=0x{:x}..0x{:x}, cmds_end=0x{:x}, page_aligned=0x{:x}, hashing 0x{:x}..0x{:x} ({} bytes)",
+                seg_start, seg_end, cmds_end, page_aligned, hash_start, hash_start + hash_size, hash_size
             );
             return Some((hash_start, hash_size));
         }
