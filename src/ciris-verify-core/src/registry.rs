@@ -1057,8 +1057,9 @@ pub struct FunctionManifestTargets {
 /// # Platform Notes
 ///
 /// - Android: Discovers `libciris_verify_ffi.so` via `/proc/self/maps`
-/// - Linux: Reads from `/proc/self/exe`
-/// - macOS/Windows: Uses `std::env::current_exe()`
+/// - Linux: Discovers `libciris_verify_ffi.so` via `/proc/self/maps` (FFI-aware)
+/// - iOS: Discovers dylib via `_dyld_image_count()` / `_dyld_get_image_name()`
+/// - macOS/Windows: Uses `std::env::current_exe()` (standalone binary usage)
 pub fn compute_self_hash() -> Result<String, VerifyError> {
     use sha2::{Digest, Sha256};
 
@@ -1102,7 +1103,29 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
         }
     };
 
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    // On Linux (not Android), when loaded as FFI library (e.g., by Python),
+    // current_exe() returns the host process (e.g., /usr/bin/python3.12).
+    // Use /proc/self/maps to find our .so instead.
+    #[cfg(all(target_os = "linux", not(target_os = "android")))]
+    let exe_path = {
+        match find_library_path_linux("libciris_verify_ffi.so") {
+            Some(path) => {
+                tracing::info!("compute_self_hash (Linux): found .so at {:?}", path);
+                path
+            },
+            None => {
+                tracing::warn!(
+                    "compute_self_hash (Linux): could not find libciris_verify_ffi.so, falling back to current_exe()"
+                );
+                std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
+                    message: format!("Cannot determine executable path: {}", e),
+                })?
+            },
+        }
+    };
+
+    // On macOS/Windows, use current_exe() (standalone binary usage)
+    #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "linux")))]
     let exe_path = std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
         message: format!("Cannot determine executable path: {}", e),
     })?;
@@ -1255,6 +1278,56 @@ fn find_library_path(lib_name: &str) -> Option<std::path::PathBuf> {
 
     tracing::warn!(
         "find_library_path: {} not found in /proc/self/maps",
+        lib_name
+    );
+    None
+}
+
+/// Find a loaded library's path by parsing /proc/self/maps (Linux desktop/server).
+///
+/// On Linux, when the FFI library is loaded by another process (e.g., Python),
+/// `current_exe()` returns the host process path (e.g., `/usr/bin/python3.12`)
+/// rather than our shared library. This function parses `/proc/self/maps` to
+/// find `libciris_verify_ffi.so` in the process's memory mappings.
+#[cfg(all(target_os = "linux", not(target_os = "android")))]
+fn find_library_path_linux(lib_name: &str) -> Option<std::path::PathBuf> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+
+    let maps_file = match File::open("/proc/self/maps") {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::warn!("find_library_path_linux: cannot open /proc/self/maps: {}", e);
+            return None;
+        },
+    };
+
+    let reader = BufReader::new(maps_file);
+
+    for line in reader.lines() {
+        let line = match line {
+            Ok(l) => l,
+            Err(_) => continue,
+        };
+
+        // /proc/self/maps format:
+        // address          perms offset  dev   inode   pathname
+        // 7f1234567000-... r-xp  00000000 fd:01 1234567 /path/to/lib.so
+        if line.contains(lib_name) {
+            // Find the path - it's the last whitespace-separated field
+            let parts: Vec<&str> = line.split_whitespace().collect();
+            if parts.len() >= 6 {
+                let full_path = parts[5..].join(" ");
+                if full_path.contains(lib_name) {
+                    tracing::info!("find_library_path_linux: found {} at {}", lib_name, full_path);
+                    return Some(std::path::PathBuf::from(full_path));
+                }
+            }
+        }
+    }
+
+    tracing::warn!(
+        "find_library_path_linux: {} not found in /proc/self/maps",
         lib_name
     );
     None
