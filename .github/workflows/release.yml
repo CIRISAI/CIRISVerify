@@ -550,15 +550,18 @@ jobs:
           mkdir -p function-manifests
 
           # Map artifact paths to targets
+          # Target names must match what CIRISVerify's detect_target() returns at runtime
+          # Desktop/iOS: Rust target triples
+          # Android: ABI names (android-arm64-v8a, etc.) - see constructor.rs:308-315
           declare -A TARGET_MAP=(
             ["release/x86_64-unknown-linux-gnu/libciris_verify_ffi.so"]="x86_64-unknown-linux-gnu"
             ["release/aarch64-unknown-linux-gnu/libciris_verify_ffi.so"]="aarch64-unknown-linux-gnu"
             ["release/x86_64-apple-darwin/libciris_verify_ffi.dylib"]="x86_64-apple-darwin"
             ["release/aarch64-apple-darwin/libciris_verify_ffi.dylib"]="aarch64-apple-darwin"
             ["release/x86_64-pc-windows-msvc/ciris_verify_ffi.dll"]="x86_64-pc-windows-msvc"
-            ["release/android/arm64-v8a/libciris_verify_ffi.so"]="aarch64-linux-android"
-            ["release/android/armeabi-v7a/libciris_verify_ffi.so"]="armv7-linux-androideabi"
-            ["release/android/x86_64/libciris_verify_ffi.so"]="x86_64-linux-android"
+            ["release/android/arm64-v8a/libciris_verify_ffi.so"]="android-arm64-v8a"
+            ["release/android/armeabi-v7a/libciris_verify_ffi.so"]="android-armeabi-v7a"
+            ["release/android/x86_64/libciris_verify_ffi.so"]="android-x86_64"
             ["release/ios/aarch64-apple-ios/libciris_verify_ffi.dylib"]="aarch64-apple-ios"
             ["release/ios/aarch64-apple-ios-sim/libciris_verify_ffi.dylib"]="aarch64-apple-ios-sim"
           )
@@ -620,15 +623,17 @@ jobs:
           # Convert to Registry API format
           # For binary self-verification, prefer dylib hash (runtime binary) over static (.a)
           binaries = {}
+          # Target names must match CIRISVerify's detect_target() at runtime
+          # Android uses ABI names, not Rust triples (see constructor.rs)
           target_map = {
               'linux-x86_64': 'x86_64-unknown-linux-gnu',
               'linux-arm64': 'aarch64-unknown-linux-gnu',
               'darwin-x86_64': 'x86_64-apple-darwin',
               'darwin-arm64': 'aarch64-apple-darwin',
               'windows-x86_64': 'x86_64-pc-windows-msvc',
-              'android-arm64-v8a': 'aarch64-linux-android',
-              'android-armeabi-v7a': 'armv7-linux-androideabi',
-              'android-x86_64': 'x86_64-linux-android',
+              'android-arm64-v8a': 'android-arm64-v8a',
+              'android-armeabi-v7a': 'android-armeabi-v7a',
+              'android-x86_64': 'android-x86_64',
               'ios-arm64': 'aarch64-apple-ios',
               'ios-sim-arm64': 'aarch64-apple-ios-sim',
           }
