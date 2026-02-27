@@ -17,23 +17,35 @@
 //! - `rev`: Revocation list revision number
 //! - `ts`: Last update timestamp (Unix seconds)
 //!
-//! ## Resolution Approaches (run in parallel)
+//! ## Resolution Approaches
 //!
+//! ### Desktop (async tokio)
 //! 1. **DoH with native-certs** - hickory-resolver default, works on most systems
 //! 2. **DoH with bundled webpki-roots** - fallback for containers/emulators
 //! 3. **DNS JSON API via HTTPS** - Google/Cloudflare JSON API using reqwest
+//!
+//! ### Mobile (blocking ureq - tokio async I/O broken on JNI/iOS threads)
+//! 1. **DNS JSON API via HTTPS** - Google/Cloudflare JSON API using blocking ureq
 
 use std::collections::HashMap;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::net::IpAddr;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use hickory_resolver::TokioAsyncResolver;
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::error::VerifyError;
+
+// Mobile blocking HTTP for DNS JSON API (tokio async I/O broken on JNI/iOS threads)
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use crate::mobile_http;
 
 /// Google DNS JSON API endpoint (uses reqwest with bundled certs)
 const GOOGLE_DNS_JSON_API: &str = "https://dns.google/resolve";
@@ -55,6 +67,9 @@ pub enum DnsTransport {
 ///
 /// Queries TXT records from independent DNS servers to retrieve
 /// steward key information and revocation status.
+///
+/// NOTE: Desktop only. Mobile uses blocking JSON API directly.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[derive(Clone)]
 pub struct DnsValidator {
     /// Resolver for the US source.
@@ -63,6 +78,10 @@ pub struct DnsValidator {
     #[allow(dead_code)]
     timeout: Duration,
 }
+
+/// Mobile stub for DnsValidator (only static methods used).
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub struct DnsValidator;
 
 /// Parsed data from a DNS TXT record.
 #[derive(Debug, Clone)]
@@ -79,6 +98,8 @@ pub struct DnsTxtRecord {
     pub timestamp: i64,
 }
 
+// Desktop-only async methods (use TokioAsyncResolver)
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 impl DnsValidator {
     /// Create a new DNS validator with default system resolver.
     ///
@@ -206,6 +227,8 @@ impl DnsValidator {
     /// Query a TXT record using Google/Cloudflare DNS JSON API via plain HTTPS.
     /// This bypasses hickory-resolver entirely and uses reqwest (which has bundled certs).
     /// Returns the first successful result from Google or Cloudflare.
+    /// NOTE: Desktop only - mobile uses blocking version via ureq.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub async fn query_txt_via_json_api(
         hostname: &str,
         timeout: Duration,
@@ -284,7 +307,109 @@ impl DnsValidator {
         }
     }
 
+    /// Query TXT record using DNS JSON API with blocking HTTP (mobile).
+    /// Uses ureq instead of reqwest to avoid tokio async I/O issues on JNI/iOS threads.
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    pub fn query_txt_via_json_api_blocking(
+        hostname: &str,
+        timeout: Duration,
+    ) -> Result<Vec<String>, VerifyError> {
+        let agent = mobile_http::create_tls_agent(timeout)?;
+
+        // Try Google first
+        let google_url = format!("{}?name={}&type=TXT", GOOGLE_DNS_JSON_API, hostname);
+        info!(hostname = %hostname, "DNS JSON API (blocking): trying Google");
+
+        match agent
+            .get(&google_url)
+            .set("Accept", "application/dns-json")
+            .call()
+        {
+            Ok(resp) if resp.status() == 200 => {
+                info!("DNS JSON API (blocking): Google succeeded");
+                return Self::parse_dns_json_response_blocking(resp);
+            }
+            Ok(resp) => {
+                warn!(
+                    "DNS JSON API (blocking): Google returned status {}",
+                    resp.status()
+                );
+            }
+            Err(e) => {
+                warn!("DNS JSON API (blocking): Google failed: {}", e);
+            }
+        }
+
+        // Fallback to Cloudflare
+        let cloudflare_url = format!("{}?name={}&type=TXT", CLOUDFLARE_DNS_JSON_API, hostname);
+        info!(hostname = %hostname, "DNS JSON API (blocking): trying Cloudflare");
+
+        match agent
+            .get(&cloudflare_url)
+            .set("Accept", "application/dns-json")
+            .call()
+        {
+            Ok(resp) if resp.status() == 200 => {
+                info!("DNS JSON API (blocking): Cloudflare succeeded");
+                Self::parse_dns_json_response_blocking(resp)
+            }
+            Ok(resp) => Err(VerifyError::DnsError {
+                message: format!(
+                    "DNS JSON API (blocking): Cloudflare returned status {}",
+                    resp.status()
+                ),
+            }),
+            Err(e) => Err(VerifyError::DnsError {
+                message: format!("DNS JSON API (blocking): Cloudflare failed: {}", e),
+            }),
+        }
+    }
+
+    /// Parse DNS JSON API response from blocking ureq response.
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    fn parse_dns_json_response_blocking(
+        resp: ureq::Response,
+    ) -> Result<Vec<String>, VerifyError> {
+        let json: serde_json::Value = resp.into_json().map_err(|e| VerifyError::DnsError {
+            message: format!("Failed to parse DNS JSON response: {}", e),
+        })?;
+
+        // Check for DNS error status
+        if let Some(status) = json.get("Status").and_then(|s| s.as_i64()) {
+            if status != 0 {
+                return Err(VerifyError::DnsError {
+                    message: format!("DNS JSON API returned error status: {}", status),
+                });
+            }
+        }
+
+        // Extract TXT records from Answer array
+        let mut txt_records = Vec::new();
+        if let Some(answers) = json.get("Answer").and_then(|a| a.as_array()) {
+            for answer in answers {
+                if let Some(data) = answer.get("data").and_then(|d| d.as_str()) {
+                    // Remove surrounding quotes if present
+                    let clean = data.trim_matches('"');
+                    txt_records.push(clean.to_string());
+                }
+            }
+        }
+
+        if txt_records.is_empty() {
+            return Err(VerifyError::DnsError {
+                message: "No TXT records found in DNS JSON response".to_string(),
+            });
+        }
+
+        debug!(
+            count = txt_records.len(),
+            "DNS JSON API (blocking): parsed TXT records"
+        );
+        Ok(txt_records)
+    }
+
     /// Parse DNS JSON API response (Google/Cloudflare compatible format)
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     async fn parse_dns_json_response(resp: reqwest::Response) -> Result<Vec<String>, VerifyError> {
         let json: serde_json::Value = resp.json().await.map_err(|e| VerifyError::DnsError {
             message: format!("Failed to parse DNS JSON response: {}", e),
@@ -412,7 +537,10 @@ impl DnsValidator {
         );
         Ok(record)
     }
+}
 
+// Shared methods available on all platforms
+impl DnsValidator {
     /// Parse a CIRIS TXT record string.
     ///
     /// Expected format:
@@ -539,15 +667,17 @@ pub struct MultiDnsResult {
     pub eu_result: Result<DnsTxtRecord, String>,
 }
 
-/// Query multiple DNS sources using ALL approaches in parallel.
+/// Query multiple DNS sources.
 ///
+/// ## Desktop (async tokio)
 /// Runs 6+ parallel queries across 3 approaches:
 /// 1. DoH with native-certs (PRIMARY) - works on most systems
 /// 2. DoH with bundled webpki-roots (FALLBACK) - for containers/emulators
 /// 3. DNS JSON API via HTTPS - Google/Cloudflare JSON API using reqwest
 ///
-/// Returns results as soon as ANY approach succeeds for each source.
-/// Total timeout is capped at 10 seconds regardless of individual query timeouts.
+/// ## Mobile (blocking ureq)
+/// Uses DNS JSON API with blocking HTTP (tokio async I/O broken on JNI/iOS threads).
+/// Queries Google then Cloudflare sequentially for each source.
 ///
 /// # Arguments
 ///
@@ -559,6 +689,7 @@ pub struct MultiDnsResult {
 ///
 /// Results from both sources (may contain errors).
 #[instrument(skip_all, fields(us_host = %us_host, eu_host = %eu_host))]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 pub async fn query_multiple_sources(
     us_host: &str,
     eu_host: &str,
@@ -601,7 +732,97 @@ pub async fn query_multiple_sources(
     }
 }
 
+/// Mobile version: Query multiple DNS sources using blocking HTTP.
+///
+/// Uses DNS JSON API with blocking ureq (tokio async I/O broken on JNI/iOS threads).
+/// This function is async for API compatibility but internally uses blocking I/O.
+#[instrument(skip_all, fields(us_host = %us_host, eu_host = %eu_host))]
+#[cfg(any(target_os = "android", target_os = "ios"))]
+pub async fn query_multiple_sources(
+    us_host: &str,
+    eu_host: &str,
+    timeout: Duration,
+) -> MultiDnsResult {
+    info!(
+        us_host = %us_host,
+        eu_host = %eu_host,
+        timeout_ms = timeout.as_millis(),
+        "Mobile DNS: Using blocking JSON API (tokio async broken on JNI)"
+    );
+
+    // Query both sources using blocking HTTP
+    let us_query_name = format!("_ciris-verify.{}", us_host);
+    let eu_query_name = format!("_ciris-verify.{}", eu_host);
+
+    // US query
+    let us_result = match DnsValidator::query_txt_via_json_api_blocking(&us_query_name, timeout) {
+        Ok(txt_records) => {
+            if let Some(txt) = txt_records.first() {
+                match DnsValidator::parse_txt_record(txt) {
+                    Ok(record) => {
+                        info!(
+                            "Mobile DNS US: success, rev={}",
+                            record.revocation_revision
+                        );
+                        Ok(record)
+                    }
+                    Err(e) => {
+                        warn!("Mobile DNS US: parse error: {}", e);
+                        Err(e.to_string())
+                    }
+                }
+            } else {
+                Err("No TXT records in response".to_string())
+            }
+        }
+        Err(e) => {
+            warn!("Mobile DNS US: query failed: {}", e);
+            Err(e.to_string())
+        }
+    };
+
+    // EU query
+    let eu_result = match DnsValidator::query_txt_via_json_api_blocking(&eu_query_name, timeout) {
+        Ok(txt_records) => {
+            if let Some(txt) = txt_records.first() {
+                match DnsValidator::parse_txt_record(txt) {
+                    Ok(record) => {
+                        info!(
+                            "Mobile DNS EU: success, rev={}",
+                            record.revocation_revision
+                        );
+                        Ok(record)
+                    }
+                    Err(e) => {
+                        warn!("Mobile DNS EU: parse error: {}", e);
+                        Err(e.to_string())
+                    }
+                }
+            } else {
+                Err("No TXT records in response".to_string())
+            }
+        }
+        Err(e) => {
+            warn!("Mobile DNS EU: query failed: {}", e);
+            Err(e.to_string())
+        }
+    };
+
+    info!(
+        us_ok = us_result.is_ok(),
+        eu_ok = eu_result.is_ok(),
+        "Mobile DNS resolution complete"
+    );
+
+    MultiDnsResult {
+        us_result,
+        eu_result,
+    }
+}
+
 /// Run all DNS approaches in parallel and return first successful results.
+/// Desktop only - mobile uses blocking JSON API.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 async fn query_all_approaches_parallel(
     us_host: &str,
     eu_host: &str,
@@ -895,6 +1116,8 @@ async fn query_all_approaches_parallel(
 }
 
 /// Query multiple DNS sources with explicit transport mode.
+/// Desktop only - mobile uses blocking JSON API via query_multiple_sources.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 #[instrument(skip_all, fields(us_host = %us_host, eu_host = %eu_host, transport = ?transport))]
 pub async fn query_multiple_sources_with_transport(
     us_host: &str,
