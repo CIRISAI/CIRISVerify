@@ -92,12 +92,13 @@ macro_rules! ffi_guard {
                 };
                 tracing::error!("PANIC in {}: {}", $fn_name, msg);
                 CirisVerifyError::InternalError as i32
-            }
+            },
         }
     }};
 }
 
 /// Wraps an FFI function that returns a raw pointer (returns null on panic).
+#[allow(unused_macros)]
 macro_rules! ffi_guard_ptr {
     ($fn_name:expr, $body:expr) => {{
         let result = catch_unwind(AssertUnwindSafe(|| $body));
@@ -113,7 +114,7 @@ macro_rules! ffi_guard_ptr {
                 };
                 tracing::error!("PANIC in {}: {}", $fn_name, msg);
                 std::ptr::null_mut()
-            }
+            },
         }
     }};
 }
@@ -875,6 +876,25 @@ pub unsafe extern "C" fn ciris_verify_get_status(
     response_data: *mut *mut u8,
     response_len: *mut usize,
 ) -> i32 {
+    ffi_guard!("ciris_verify_get_status", {
+        get_status_inner(
+            handle,
+            request_data,
+            request_len,
+            response_data,
+            response_len,
+        )
+    })
+}
+
+/// Inner implementation of get_status (can panic safely).
+unsafe fn get_status_inner(
+    handle: *mut CirisVerifyHandle,
+    request_data: *const u8,
+    request_len: usize,
+    response_data: *mut *mut u8,
+    response_len: *mut usize,
+) -> i32 {
     tracing::debug!(
         "ciris_verify_get_status called (request_len={})",
         request_len
@@ -1044,6 +1064,19 @@ pub unsafe extern "C" fn ciris_verify_check_capability(
     required_tier: i32,
     allowed: *mut i32,
 ) -> i32 {
+    ffi_guard!("ciris_verify_check_capability", {
+        check_capability_inner(handle, capability, action, required_tier, allowed)
+    })
+}
+
+/// Inner implementation of check_capability (can panic safely).
+unsafe fn check_capability_inner(
+    handle: *mut CirisVerifyHandle,
+    capability: *const libc::c_char,
+    action: *const libc::c_char,
+    required_tier: i32,
+    allowed: *mut i32,
+) -> i32 {
     tracing::debug!(
         "ciris_verify_check_capability called (tier={})",
         required_tier
@@ -1105,11 +1138,16 @@ pub unsafe extern "C" fn ciris_verify_free(data: *mut c_void) {
 /// After this call, the handle is invalid and must not be used.
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_destroy(handle: *mut CirisVerifyHandle) {
-    tracing::info!("ciris_verify_destroy called");
-    if !handle.is_null() {
-        drop(Box::from_raw(handle));
-        tracing::info!("CIRISVerify handle destroyed");
-    }
+    // Note: We use ffi_guard but this function doesn't have a return value expectation
+    // On panic, we return InternalError but the handle may be partially destroyed
+    let _ = ffi_guard!("ciris_verify_destroy", {
+        tracing::info!("ciris_verify_destroy called");
+        if !handle.is_null() {
+            drop(Box::from_raw(handle));
+            tracing::info!("CIRISVerify handle destroyed");
+        }
+        CirisVerifyError::Success as i32
+    });
 }
 
 /// Check agent file integrity (Tripwire-style).
@@ -1142,6 +1180,29 @@ pub unsafe extern "C" fn ciris_verify_destroy(handle: *mut CirisVerifyHandle) {
 /// - `response_data` and `response_len` must be valid pointers
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_check_agent_integrity(
+    handle: *mut CirisVerifyHandle,
+    manifest_data: *const u8,
+    manifest_len: usize,
+    agent_root: *const libc::c_char,
+    spot_check_count: u32,
+    response_data: *mut *mut u8,
+    response_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_check_agent_integrity", {
+        check_agent_integrity_inner(
+            handle,
+            manifest_data,
+            manifest_len,
+            agent_root,
+            spot_check_count,
+            response_data,
+            response_len,
+        )
+    })
+}
+
+/// Inner implementation of check_agent_integrity (can panic safely).
+unsafe fn check_agent_integrity_inner(
     handle: *mut CirisVerifyHandle,
     manifest_data: *const u8,
     manifest_len: usize,
@@ -1360,6 +1421,19 @@ pub unsafe extern "C" fn ciris_verify_sign(
     signature_data: *mut *mut u8,
     signature_len: *mut usize,
 ) -> i32 {
+    ffi_guard!("ciris_verify_sign", {
+        sign_inner(handle, data, data_len, signature_data, signature_len)
+    })
+}
+
+/// Inner implementation of sign (can panic safely).
+unsafe fn sign_inner(
+    handle: *mut CirisVerifyHandle,
+    data: *const u8,
+    data_len: usize,
+    signature_data: *mut *mut u8,
+    signature_len: *mut usize,
+) -> i32 {
     tracing::debug!("ciris_verify_sign called (data_len={})", data_len);
 
     if handle.is_null() || data.is_null() || signature_data.is_null() || signature_len.is_null() {
@@ -1421,6 +1495,19 @@ pub unsafe extern "C" fn ciris_verify_sign(
 /// - All output pointers must be valid
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_get_public_key(
+    handle: *mut CirisVerifyHandle,
+    key_data: *mut *mut u8,
+    key_len: *mut usize,
+    algorithm: *mut *mut u8,
+    algorithm_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_get_public_key", {
+        get_public_key_inner(handle, key_data, key_len, algorithm, algorithm_len)
+    })
+}
+
+/// Inner implementation of get_public_key (can panic safely).
+unsafe fn get_public_key_inner(
     handle: *mut CirisVerifyHandle,
     key_data: *mut *mut u8,
     key_len: *mut usize,
@@ -1513,6 +1600,19 @@ pub unsafe extern "C" fn ciris_verify_get_public_key(
 /// - `proof_data` and `proof_len` must be valid pointers
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_export_attestation(
+    handle: *mut CirisVerifyHandle,
+    challenge: *const u8,
+    challenge_len: usize,
+    proof_data: *mut *mut u8,
+    proof_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_export_attestation", {
+        export_attestation_inner(handle, challenge, challenge_len, proof_data, proof_len)
+    })
+}
+
+/// Inner implementation of export_attestation (can panic safely).
+unsafe fn export_attestation_inner(
     handle: *mut CirisVerifyHandle,
     challenge: *const u8,
     challenge_len: usize,
@@ -2130,6 +2230,19 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
     result_json: *mut *mut u8,
     result_len: *mut usize,
 ) -> i32 {
+    ffi_guard!("ciris_verify_run_attestation", {
+        run_attestation_inner(handle, request_json, request_len, result_json, result_len)
+    })
+}
+
+/// Inner implementation of run_attestation (can panic safely).
+unsafe fn run_attestation_inner(
+    handle: *mut CirisVerifyHandle,
+    request_json: *const u8,
+    request_len: usize,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
     tracing::debug!(
         "ciris_verify_run_attestation called (request_len={})",
         request_len
@@ -2515,6 +2628,27 @@ pub unsafe extern "C" fn ciris_verify_run_attestation(
 /// - `result_json` and `result_len` must be valid pointers
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_audit_trail(
+    handle: *mut CirisVerifyHandle,
+    db_path: *const libc::c_char,
+    jsonl_path: *const libc::c_char,
+    portal_key_id: *const libc::c_char,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_audit_trail", {
+        audit_trail_inner(
+            handle,
+            db_path,
+            jsonl_path,
+            portal_key_id,
+            result_json,
+            result_len,
+        )
+    })
+}
+
+/// Inner implementation of audit_trail (can panic safely).
+unsafe fn audit_trail_inner(
     _handle: *mut CirisVerifyHandle,
     db_path: *const libc::c_char,
     jsonl_path: *const libc::c_char,
@@ -2957,8 +3091,10 @@ unsafe fn verify_integrity_token_inner(
 fn verify_integrity_token_blocking(
     token: &str,
     nonce: &str,
-) -> Result<ciris_verify_core::play_integrity::IntegrityVerifyResponse, ciris_verify_core::VerifyError>
-{
+) -> Result<
+    ciris_verify_core::play_integrity::IntegrityVerifyResponse,
+    ciris_verify_core::VerifyError,
+> {
     use ciris_verify_core::mobile_http;
 
     let agent = mobile_http::create_tls_agent(std::time::Duration::from_secs(15))?;
@@ -2988,11 +3124,12 @@ fn verify_integrity_token_blocking(
         });
     }
 
-    let result: ciris_verify_core::play_integrity::IntegrityVerifyResponse = response
-        .into_json()
-        .map_err(|e| ciris_verify_core::VerifyError::HttpsError {
-            message: format!("Failed to parse Play Integrity response: {}", e),
-        })?;
+    let result: ciris_verify_core::play_integrity::IntegrityVerifyResponse =
+        response
+            .into_json()
+            .map_err(|e| ciris_verify_core::VerifyError::HttpsError {
+                message: format!("Failed to parse Play Integrity response: {}", e),
+            })?;
 
     tracing::info!("Mobile Play Integrity verify: success");
     Ok(result)
