@@ -307,107 +307,6 @@ impl DnsValidator {
         }
     }
 
-    /// Query TXT record using DNS JSON API with blocking HTTP (mobile).
-    /// Uses ureq instead of reqwest to avoid tokio async I/O issues on JNI/iOS threads.
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    pub fn query_txt_via_json_api_blocking(
-        hostname: &str,
-        timeout: Duration,
-    ) -> Result<Vec<String>, VerifyError> {
-        let agent = mobile_http::create_tls_agent(timeout)?;
-
-        // Try Google first
-        let google_url = format!("{}?name={}&type=TXT", GOOGLE_DNS_JSON_API, hostname);
-        info!(hostname = %hostname, "DNS JSON API (blocking): trying Google");
-
-        match agent
-            .get(&google_url)
-            .set("Accept", "application/dns-json")
-            .call()
-        {
-            Ok(resp) if resp.status() == 200 => {
-                info!("DNS JSON API (blocking): Google succeeded");
-                return Self::parse_dns_json_response_blocking(resp);
-            }
-            Ok(resp) => {
-                warn!(
-                    "DNS JSON API (blocking): Google returned status {}",
-                    resp.status()
-                );
-            }
-            Err(e) => {
-                warn!("DNS JSON API (blocking): Google failed: {}", e);
-            }
-        }
-
-        // Fallback to Cloudflare
-        let cloudflare_url = format!("{}?name={}&type=TXT", CLOUDFLARE_DNS_JSON_API, hostname);
-        info!(hostname = %hostname, "DNS JSON API (blocking): trying Cloudflare");
-
-        match agent
-            .get(&cloudflare_url)
-            .set("Accept", "application/dns-json")
-            .call()
-        {
-            Ok(resp) if resp.status() == 200 => {
-                info!("DNS JSON API (blocking): Cloudflare succeeded");
-                Self::parse_dns_json_response_blocking(resp)
-            }
-            Ok(resp) => Err(VerifyError::DnsError {
-                message: format!(
-                    "DNS JSON API (blocking): Cloudflare returned status {}",
-                    resp.status()
-                ),
-            }),
-            Err(e) => Err(VerifyError::DnsError {
-                message: format!("DNS JSON API (blocking): Cloudflare failed: {}", e),
-            }),
-        }
-    }
-
-    /// Parse DNS JSON API response from blocking ureq response.
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    fn parse_dns_json_response_blocking(
-        resp: ureq::Response,
-    ) -> Result<Vec<String>, VerifyError> {
-        let json: serde_json::Value = resp.into_json().map_err(|e| VerifyError::DnsError {
-            message: format!("Failed to parse DNS JSON response: {}", e),
-        })?;
-
-        // Check for DNS error status
-        if let Some(status) = json.get("Status").and_then(|s| s.as_i64()) {
-            if status != 0 {
-                return Err(VerifyError::DnsError {
-                    message: format!("DNS JSON API returned error status: {}", status),
-                });
-            }
-        }
-
-        // Extract TXT records from Answer array
-        let mut txt_records = Vec::new();
-        if let Some(answers) = json.get("Answer").and_then(|a| a.as_array()) {
-            for answer in answers {
-                if let Some(data) = answer.get("data").and_then(|d| d.as_str()) {
-                    // Remove surrounding quotes if present
-                    let clean = data.trim_matches('"');
-                    txt_records.push(clean.to_string());
-                }
-            }
-        }
-
-        if txt_records.is_empty() {
-            return Err(VerifyError::DnsError {
-                message: "No TXT records found in DNS JSON response".to_string(),
-            });
-        }
-
-        debug!(
-            count = txt_records.len(),
-            "DNS JSON API (blocking): parsed TXT records"
-        );
-        Ok(txt_records)
-    }
-
     /// Parse DNS JSON API response (Google/Cloudflare compatible format)
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     async fn parse_dns_json_response(resp: reqwest::Response) -> Result<Vec<String>, VerifyError> {
@@ -658,6 +557,107 @@ impl DnsValidator {
     }
 }
 
+// Mobile-only methods (blocking HTTP via ureq - tokio async broken on JNI/iOS)
+#[cfg(any(target_os = "android", target_os = "ios"))]
+impl DnsValidator {
+    /// Query TXT record using DNS JSON API with blocking HTTP (mobile).
+    /// Uses ureq instead of reqwest to avoid tokio async I/O issues on JNI/iOS threads.
+    pub fn query_txt_via_json_api_blocking(
+        hostname: &str,
+        timeout: Duration,
+    ) -> Result<Vec<String>, VerifyError> {
+        let agent = mobile_http::create_tls_agent(timeout)?;
+
+        // Try Google first
+        let google_url = format!("{}?name={}&type=TXT", GOOGLE_DNS_JSON_API, hostname);
+        info!(hostname = %hostname, "DNS JSON API (blocking): trying Google");
+
+        match agent
+            .get(&google_url)
+            .set("Accept", "application/dns-json")
+            .call()
+        {
+            Ok(resp) if resp.status() == 200 => {
+                info!("DNS JSON API (blocking): Google succeeded");
+                return Self::parse_dns_json_response_blocking(resp);
+            },
+            Ok(resp) => {
+                warn!(
+                    "DNS JSON API (blocking): Google returned status {}",
+                    resp.status()
+                );
+            },
+            Err(e) => {
+                warn!("DNS JSON API (blocking): Google failed: {}", e);
+            },
+        }
+
+        // Fallback to Cloudflare
+        let cloudflare_url = format!("{}?name={}&type=TXT", CLOUDFLARE_DNS_JSON_API, hostname);
+        info!(hostname = %hostname, "DNS JSON API (blocking): trying Cloudflare");
+
+        match agent
+            .get(&cloudflare_url)
+            .set("Accept", "application/dns-json")
+            .call()
+        {
+            Ok(resp) if resp.status() == 200 => {
+                info!("DNS JSON API (blocking): Cloudflare succeeded");
+                Self::parse_dns_json_response_blocking(resp)
+            },
+            Ok(resp) => Err(VerifyError::DnsError {
+                message: format!(
+                    "DNS JSON API (blocking): Cloudflare returned status {}",
+                    resp.status()
+                ),
+            }),
+            Err(e) => Err(VerifyError::DnsError {
+                message: format!("DNS JSON API (blocking): Cloudflare failed: {}", e),
+            }),
+        }
+    }
+
+    /// Parse DNS JSON API response from blocking ureq response.
+    fn parse_dns_json_response_blocking(resp: ureq::Response) -> Result<Vec<String>, VerifyError> {
+        let json: serde_json::Value = resp.into_json().map_err(|e| VerifyError::DnsError {
+            message: format!("Failed to parse DNS JSON response: {}", e),
+        })?;
+
+        // Check for DNS error status
+        if let Some(status) = json.get("Status").and_then(|s| s.as_i64()) {
+            if status != 0 {
+                return Err(VerifyError::DnsError {
+                    message: format!("DNS JSON API returned error status: {}", status),
+                });
+            }
+        }
+
+        // Extract TXT records from Answer array
+        let mut txt_records = Vec::new();
+        if let Some(answers) = json.get("Answer").and_then(|a| a.as_array()) {
+            for answer in answers {
+                if let Some(data) = answer.get("data").and_then(|d| d.as_str()) {
+                    // Remove surrounding quotes if present
+                    let clean = data.trim_matches('"');
+                    txt_records.push(clean.to_string());
+                }
+            }
+        }
+
+        if txt_records.is_empty() {
+            return Err(VerifyError::DnsError {
+                message: "No TXT records found in DNS JSON response".to_string(),
+            });
+        }
+
+        debug!(
+            count = txt_records.len(),
+            "DNS JSON API (blocking): parsed TXT records"
+        );
+        Ok(txt_records)
+    }
+}
+
 /// Query result from multiple DNS sources.
 #[derive(Debug, Clone)]
 pub struct MultiDnsResult {
@@ -760,25 +760,22 @@ pub async fn query_multiple_sources(
             if let Some(txt) = txt_records.first() {
                 match DnsValidator::parse_txt_record(txt) {
                     Ok(record) => {
-                        info!(
-                            "Mobile DNS US: success, rev={}",
-                            record.revocation_revision
-                        );
+                        info!("Mobile DNS US: success, rev={}", record.revocation_revision);
                         Ok(record)
-                    }
+                    },
                     Err(e) => {
                         warn!("Mobile DNS US: parse error: {}", e);
                         Err(e.to_string())
-                    }
+                    },
                 }
             } else {
                 Err("No TXT records in response".to_string())
             }
-        }
+        },
         Err(e) => {
             warn!("Mobile DNS US: query failed: {}", e);
             Err(e.to_string())
-        }
+        },
     };
 
     // EU query
@@ -787,25 +784,22 @@ pub async fn query_multiple_sources(
             if let Some(txt) = txt_records.first() {
                 match DnsValidator::parse_txt_record(txt) {
                     Ok(record) => {
-                        info!(
-                            "Mobile DNS EU: success, rev={}",
-                            record.revocation_revision
-                        );
+                        info!("Mobile DNS EU: success, rev={}", record.revocation_revision);
                         Ok(record)
-                    }
+                    },
                     Err(e) => {
                         warn!("Mobile DNS EU: parse error: {}", e);
                         Err(e.to_string())
-                    }
+                    },
                 }
             } else {
                 Err("No TXT records in response".to_string())
             }
-        }
+        },
         Err(e) => {
             warn!("Mobile DNS EU: query failed: {}", e);
             Err(e.to_string())
-        }
+        },
     };
 
     info!(
