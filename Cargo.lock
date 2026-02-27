@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "0.10.10"
+version = "0.10.12"
 dependencies = [
  "aws-lc-rs",
  "ed25519-dalek",
@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "0.10.10"
+version = "0.10.12"
 dependencies = [
  "async-trait",
  "block2",
@@ -600,7 +600,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "0.10.10"
+version = "0.10.12"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -620,7 +620,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "0.10.10"
+version = "0.10.12"
 dependencies = [
  "android_system_properties",
  "anyhow",
@@ -644,6 +644,7 @@ dependencies = [
  "reqwest",
  "rusqlite",
  "rustls 0.21.12",
+ "rustls 0.23.36",
  "serde",
  "serde_json",
  "sha2",
@@ -655,12 +656,13 @@ dependencies = [
  "tracing-subscriber",
  "ureq",
  "webpki-roots 0.25.4",
+ "webpki-roots 0.26.11",
  "windows-sys 0.52.0",
 ]
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "0.10.10"
+version = "0.10.12"
 dependencies = [
  "android_logger",
  "cbindgen",

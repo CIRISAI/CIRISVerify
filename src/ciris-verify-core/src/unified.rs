@@ -9,6 +9,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tracing::{info, instrument, warn};
@@ -16,9 +17,12 @@ use tracing::{info, instrument, warn};
 use crate::audit::{AuditEntry, AuditVerificationResult, AuditVerifier};
 use crate::config::VerifyConfig;
 use crate::error::VerifyError;
-use crate::registry::{compute_self_hash, current_target, RegistryClient};
+use crate::registry::{
+    compute_self_hash, current_target, BinaryManifest, BuildRecord, ResilientRegistryClient,
+    FALLBACK_REGISTRY_URLS,
+};
 use crate::security::file_integrity::{self, FileIntegrityResult};
-use crate::security::function_integrity;
+use crate::security::function_integrity::{self, FunctionManifest};
 use crate::validation::{ConsensusValidator, ValidationResult};
 
 /// Request for full attestation.
@@ -451,9 +455,12 @@ pub struct UnifiedAttestationEngine {
     config: VerifyConfig,
     /// Consensus validator.
     consensus_validator: ConsensusValidator,
-    /// Registry client.
-    registry_client: Option<RegistryClient>,
+    /// Resilient registry client with failover.
+    registry_client: Option<ResilientRegistryClient>,
 }
+
+/// End-to-end timeout for attestation (15 seconds max).
+const ATTESTATION_TIMEOUT: Duration = Duration::from_secs(15);
 
 impl UnifiedAttestationEngine {
     /// Create a new unified attestation engine.
@@ -468,7 +475,13 @@ impl UnifiedAttestationEngine {
             config.cert_pin.clone(),
         );
 
-        let registry_client = RegistryClient::new(&config.https_endpoint, config.timeout).ok();
+        // Use resilient client with fallback endpoints
+        let registry_client = ResilientRegistryClient::new(
+            &config.https_endpoint,
+            FALLBACK_REGISTRY_URLS,
+            config.timeout,
+        )
+        .ok();
 
         Ok(Self {
             config,
@@ -477,15 +490,58 @@ impl UnifiedAttestationEngine {
         })
     }
 
-    /// Run full attestation.
+    /// Run full attestation with 15-second timeout.
     ///
     /// This is the main entry point for comprehensive verification.
-    /// All three major checks run IN PARALLEL for maximum performance:
-    /// - Self-verification (binary + function integrity)
-    /// - Source validation (DNS US, DNS EU, HTTPS)
-    /// - File integrity (agent files vs manifest)
+    /// All network fetches and verification run IN PARALLEL for maximum performance.
+    /// Guaranteed to return within 15 seconds regardless of network conditions.
     #[instrument(skip(self, request))]
     pub async fn run_attestation(
+        &self,
+        request: FullAttestationRequest,
+    ) -> Result<FullAttestationResult, VerifyError> {
+        // Wrap entire attestation in 15-second timeout to guarantee return
+        match tokio::time::timeout(ATTESTATION_TIMEOUT, self.run_attestation_inner(request)).await {
+            Ok(result) => result,
+            Err(_) => {
+                warn!("Attestation timed out after {:?}", ATTESTATION_TIMEOUT);
+                // Return partial result on timeout
+                Ok(FullAttestationResult {
+                    valid: false,
+                    level: 0,
+                    level_pending: true,
+                    self_verification: None,
+                    key_attestation: None,
+                    registry_key_status: "timeout".to_string(),
+                    device_attestation: None,
+                    file_integrity: None,
+                    python_integrity: None,
+                    module_integrity: None,
+                    sources: SourceCheckResult {
+                        dns_us_reachable: false,
+                        dns_us_valid: false,
+                        dns_us_error: Some("timeout".to_string()),
+                        dns_eu_reachable: false,
+                        dns_eu_valid: false,
+                        dns_eu_error: Some("timeout".to_string()),
+                        https_reachable: false,
+                        https_valid: false,
+                        https_error: Some("timeout".to_string()),
+                        validation_status: "Timeout".to_string(),
+                    },
+                    audit_trail: None,
+                    checks_passed: 0,
+                    checks_total: 0,
+                    diagnostics: format!("Attestation timed out after {:?}", ATTESTATION_TIMEOUT),
+                    errors: vec![format!("Timeout after {:?}", ATTESTATION_TIMEOUT)],
+                    timestamp: chrono::Utc::now().timestamp(),
+                })
+            }
+        }
+    }
+
+    /// Inner attestation logic (called with timeout wrapper).
+    async fn run_attestation_inner(
         &self,
         request: FullAttestationRequest,
     ) -> Result<FullAttestationResult, VerifyError> {
@@ -497,48 +553,89 @@ impl UnifiedAttestationEngine {
 
         info!("Starting unified attestation (parallel checks)");
 
-        // Prepare file integrity check params
+        // Prepare check params
         let should_run_file_integrity = !request.skip_file_integrity
             && request.agent_version.is_some()
             && request.agent_root.is_some();
+        let should_run_module_integrity = request.agent_version.is_some();
+        let verify_version = env!("CARGO_PKG_VERSION");
+        let target = crate::registry::current_target();
 
-        // Run all four checks IN PARALLEL
-        let (self_verification, validation, file_integrity_result, key_verification_result): (
-            SelfVerificationResult,
-            ValidationResult,
-            Option<Result<IntegrityCheckResult, VerifyError>>,
-            String,
+        // =======================================================================
+        // PHASE 1: Fetch ALL manifests + run validations IN PARALLEL
+        // Critical for mobile where each network call blocks the thread
+        // =======================================================================
+        info!("Phase 1: Parallel manifest fetch + validation");
+
+        let (
+            binary_manifest_result,
+            function_manifest_result,
+            agent_build_result,
+            validation,
+            key_verification_result,
         ) = tokio::join!(
-            // 0. Self-verification (Level 1: recursive check - "who watches the watchmen")
-            self.run_self_verification(),
-            // 1. Source validation (always run)
-            self.consensus_validator.validate_steward_key(),
-            // 2. File integrity (if requested and params available)
+            // 1. Binary manifest (verify version) - for self-verification
             async {
-                if should_run_file_integrity {
-                    let version = request.agent_version.as_ref().unwrap();
-                    let agent_root = request.agent_root.as_ref().unwrap();
-                    Some(
-                        self.run_file_integrity(
-                            version,
-                            agent_root,
-                            request.spot_check_count,
-                            request.partial_file_check,
-                        )
-                        .await,
-                    )
+                if let Some(ref client) = self.registry_client {
+                    match client.get_binary_manifest(verify_version).await {
+                        Ok(m) => {
+                            info!("Binary manifest: {} targets", m.binaries.len());
+                            Some(m)
+                        }
+                        Err(e) => {
+                            warn!("Binary manifest fetch failed: {}", e);
+                            None
+                        }
+                    }
                 } else {
                     None
                 }
             },
-            // 3. Registry key verification (if key_fingerprint provided)
+            // 2. Function manifest (verify version + target) - for self-verification
             async {
-                let result: String = if let Some(ref fingerprint) = request.key_fingerprint {
+                if let Some(ref client) = self.registry_client {
+                    match client.get_function_manifest(verify_version, target).await {
+                        Ok(m) => {
+                            info!("Function manifest: {} functions", m.functions.len());
+                            Some(m)
+                        }
+                        Err(e) => {
+                            warn!("Function manifest fetch failed: {}", e);
+                            None
+                        }
+                    }
+                } else {
+                    None
+                }
+            },
+            // 3. Agent build record (agent version) - for file/module/python integrity
+            async {
+                if let Some(ref version) = request.agent_version {
                     if let Some(ref client) = self.registry_client {
-                        info!(
-                            "Verifying key fingerprint against registry: {}",
-                            fingerprint
-                        );
+                        match client.get_build_by_version(version).await {
+                            Ok(b) => {
+                                info!("Agent build: {} files", b.file_manifest_json.files().len());
+                                Some(b)
+                            }
+                            Err(e) => {
+                                warn!("Agent build fetch failed: {}", e);
+                                None
+                            }
+                        }
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            },
+            // 4. Source validation (DNS + HTTPS consensus)
+            self.consensus_validator.validate_steward_key(),
+            // 5. Registry key verification
+            async {
+                if let Some(ref fingerprint) = request.key_fingerprint {
+                    if let Some(ref client) = self.registry_client {
+                        info!("Verifying key fingerprint: {}", fingerprint);
                         match client.verify_key_by_fingerprint(fingerprint).await {
                             Ok(response) => {
                                 let status = if response.is_valid_for_signing() {
@@ -554,22 +651,69 @@ impl UnifiedAttestationEngine {
                                 };
                                 info!("Registry key verification: {}", status);
                                 status
-                            },
+                            }
                             Err(e) => {
                                 warn!("Registry key verification failed: {}", e);
                                 format!("error:{}", e)
-                            },
+                            }
                         }
                     } else {
-                        warn!("Registry client not available for key verification");
                         "error:no_client".to_string()
                     }
                 } else {
                     "not_checked".to_string()
-                };
-                result
+                }
             }
         );
+
+        info!("Phase 1 complete. Phase 2: Local verification using pre-fetched manifests");
+
+        // =======================================================================
+        // PHASE 2: Run verification logic using pre-fetched manifests (NO network)
+        // =======================================================================
+
+        // Self-verification using pre-fetched binary + function manifests
+        let self_verification = self
+            .run_self_verification_with_manifests(
+                binary_manifest_result.as_ref(),
+                function_manifest_result.as_ref(),
+            )
+            .await;
+
+        // File integrity using pre-fetched agent build
+        let file_integrity_result = if should_run_file_integrity {
+            let agent_root = request.agent_root.as_ref().unwrap();
+            Some(
+                self.run_file_integrity_with_build(
+                    agent_build_result.as_ref(),
+                    agent_root,
+                    request.spot_check_count,
+                    request.partial_file_check,
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+
+        // Module integrity using pre-fetched agent build
+        let module_integrity_result = if should_run_module_integrity {
+            let agent_hashes = request.python_hashes.as_ref().map(|h| &h.module_hashes);
+            Some(
+                self.run_module_integrity_with_build(
+                    agent_build_result.as_ref(),
+                    request.agent_root.as_deref(),
+                    agent_hashes,
+                    &[],
+                )
+                .await,
+            )
+        } else {
+            None
+        };
+
+        // Use pre-fetched build for Python integrity too
+        let build_record_for_python = agent_build_result;
 
         // Process self-verification results
         checks_total += 2; // Binary hash + function integrity
@@ -789,31 +933,18 @@ impl UnifiedAttestationEngine {
                 &hashes.total_hash[..std::cmp::min(16, hashes.total_hash.len())]
             ));
 
-            // Fetch expected hashes from registry if we have agent_version
+            // Use pre-fetched build record from parallel join (no sequential network call)
             let expected_hashes: Option<std::collections::HashMap<String, String>> =
-                if let Some(ref version) = request.agent_version {
-                    if let Some(ref client) = self.registry_client {
-                        match client.get_build_by_version(version).await {
-                            Ok(build) => {
-                                diagnostics.push_str(&format!(
-                                    "  Registry manifest: {} files (v{})\n",
-                                    build.file_manifest_json.files().len(),
-                                    build.version
-                                ));
-                                Some(build.file_manifest_json.files().clone())
-                            },
-                            Err(e) => {
-                                diagnostics.push_str(&format!(
-                                    "  Registry manifest: ✗ fetch failed ({})\n",
-                                    e
-                                ));
-                                None
-                            },
-                        }
-                    } else {
-                        diagnostics.push_str("  Registry manifest: ✗ no client\n");
-                        None
-                    }
+                if let Some(ref build) = build_record_for_python {
+                    diagnostics.push_str(&format!(
+                        "  Registry manifest: {} files (v{})\n",
+                        build.file_manifest_json.files().len(),
+                        build.version
+                    ));
+                    Some(build.file_manifest_json.files().clone())
+                } else if request.agent_version.is_some() {
+                    diagnostics.push_str("  Registry manifest: ✗ fetch failed (parallel)\n");
+                    None
                 } else {
                     diagnostics.push_str("  Registry manifest: ○ no agent_version provided\n");
                     None
@@ -1035,21 +1166,11 @@ impl UnifiedAttestationEngine {
             None
         };
 
-        // 3b. Unified module integrity (cross-validates disk + agent + registry)
-        let module_integrity = if let Some(version) = request.agent_version.as_ref() {
-            let agent_hashes = request.python_hashes.as_ref().map(|h| &h.module_hashes);
-
+        // 3b. Unified module integrity (use pre-fetched result from Phase 2)
+        let module_integrity = if should_run_module_integrity {
             diagnostics.push_str("=== MODULE INTEGRITY (Unified) ===\n");
 
-            match self
-                .run_module_integrity(
-                    version,
-                    request.agent_root.as_deref(),
-                    agent_hashes,
-                    &[], // No excluded extensions for now
-                )
-                .await
-            {
+            match module_integrity_result.unwrap() {
                 Ok(result) => {
                     checks_total += 1;
                     if result.valid {
@@ -1866,6 +1987,426 @@ impl UnifiedAttestationEngine {
                     "{} files failed, {} missing",
                     failed_count, missing_count
                 ))
+            },
+        })
+    }
+
+    // =========================================================================
+    // Functions that accept PRE-FETCHED data (no network calls)
+    // Used by Phase 2 of run_attestation for maximum parallelism
+    // =========================================================================
+
+    /// Run self-verification using pre-fetched manifests (NO network calls).
+    ///
+    /// This is the fast path used after Phase 1 parallel fetch.
+    async fn run_self_verification_with_manifests(
+        &self,
+        binary_manifest: Option<&BinaryManifest>,
+        function_manifest: Option<&FunctionManifest>,
+    ) -> SelfVerificationResult {
+        let version = env!("CARGO_PKG_VERSION");
+        let target = current_target();
+
+        // Compute our own binary hash
+        let binary_hash = match compute_self_hash() {
+            Ok(h) => h,
+            Err(e) => {
+                warn!("Failed to compute self hash: {}", e);
+                return SelfVerificationResult {
+                    binary_valid: false,
+                    functions_valid: false,
+                    valid: false,
+                    binary_version: version.to_string(),
+                    target: target.to_string(),
+                    binary_hash: String::new(),
+                    expected_hash: None,
+                    functions_checked: 0,
+                    functions_passed: 0,
+                    registry_reachable: false,
+                    error: Some(format!("Failed to compute self hash: {}", e)),
+                };
+            }
+        };
+
+        info!(
+            "Self-verification (pre-fetched): version={}, target={}, hash={}...",
+            version,
+            target,
+            &binary_hash[..std::cmp::min(16, binary_hash.len())]
+        );
+
+        // Binary hash verification using pre-fetched manifest
+        let (binary_valid, expected_hash, available_targets) = if let Some(manifest) = binary_manifest
+        {
+            let available_targets: Vec<String> = manifest.binaries.keys().cloned().collect();
+            if let Some(expected) = manifest.binaries.get(target) {
+                let expected_clean = expected.strip_prefix("sha256:").unwrap_or(expected);
+                let matches = binary_hash == expected_clean;
+                info!(
+                    "Binary check (pre-fetched): target={}, matches={}",
+                    target, matches
+                );
+                (matches, Some(expected_clean.to_string()), available_targets)
+            } else {
+                warn!(
+                    "Binary check (pre-fetched): no hash for target={}, available={:?}",
+                    target, available_targets
+                );
+                (false, None, available_targets)
+            }
+        } else {
+            warn!("Binary check (pre-fetched): no manifest available");
+            (false, None, vec![])
+        };
+
+        // Function integrity verification using pre-fetched manifest
+        let (functions_valid, functions_checked, functions_passed) =
+            if let Some(manifest) = function_manifest {
+                let result = function_integrity::verify_functions(manifest);
+                info!(
+                    "Function check (pre-fetched): {}/{} passed, valid={}",
+                    result.functions_passed, result.functions_checked, result.integrity_valid
+                );
+                (
+                    result.integrity_valid,
+                    result.functions_checked,
+                    result.functions_passed,
+                )
+            } else {
+                warn!("Function check (pre-fetched): no manifest available");
+                (false, 0, 0)
+            };
+
+        let valid = binary_valid && functions_valid;
+
+        // Build detailed error message
+        let error = if valid {
+            None
+        } else {
+            let mut errors = Vec::new();
+            if !binary_valid {
+                if expected_hash.is_none() {
+                    errors.push(format!(
+                        "Binary hash not in registry for target '{}'. Available: {:?}",
+                        target, available_targets
+                    ));
+                } else {
+                    errors.push("Binary hash mismatch".to_string());
+                }
+            }
+            if !functions_valid {
+                if functions_checked == 0 {
+                    errors.push(format!("No function manifest for target '{}'", target));
+                } else {
+                    errors.push(format!(
+                        "Function integrity: {}/{} passed",
+                        functions_passed, functions_checked
+                    ));
+                }
+            }
+            Some(errors.join("; "))
+        };
+
+        SelfVerificationResult {
+            binary_valid,
+            functions_valid,
+            valid,
+            binary_version: version.to_string(),
+            target: target.to_string(),
+            binary_hash,
+            expected_hash,
+            functions_checked,
+            functions_passed,
+            registry_reachable: binary_manifest.is_some() || function_manifest.is_some(),
+            error,
+        }
+    }
+
+    /// Run file integrity check using pre-fetched build record (NO network calls).
+    async fn run_file_integrity_with_build(
+        &self,
+        build: Option<&BuildRecord>,
+        agent_root: &str,
+        spot_count: usize,
+        partial_check: bool,
+    ) -> Result<IntegrityCheckResult, VerifyError> {
+        let build = build.ok_or_else(|| VerifyError::HttpsError {
+            message: "No build record available (pre-fetch failed)".into(),
+        })?;
+
+        info!(
+            "run_file_integrity (pre-fetched): version={}, files={}, agent_root={}",
+            build.version,
+            build.file_manifest_json.files().len(),
+            agent_root
+        );
+
+        // Convert registry manifest to file_integrity manifest
+        let files_btree: BTreeMap<String, String> = build
+            .file_manifest_json
+            .files()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
+        let manifest = file_integrity::FileManifest {
+            version: build.file_manifest_json.version().to_string(),
+            generated_at: String::new(),
+            files: files_btree,
+            manifest_hash: build.file_manifest_hash.clone(),
+        };
+
+        let agent_path = Path::new(agent_root);
+
+        // Run full or partial check based on mode
+        let full_result = if partial_check {
+            file_integrity::check_available(&manifest, agent_path)
+        } else {
+            file_integrity::check_full(&manifest, agent_path)
+        };
+
+        // Run spot check if requested (only for non-partial mode)
+        let spot_result = if spot_count > 0 && !partial_check {
+            Some(file_integrity::check_spot(&manifest, agent_path, spot_count))
+        } else {
+            None
+        };
+
+        Ok(IntegrityCheckResult {
+            full: Some(full_result.into()),
+            spot: spot_result.map(|r| r.into()),
+            registry_reachable: true,
+            manifest_version: Some(build.version.clone()),
+        })
+    }
+
+    /// Run module integrity check using pre-fetched build record (NO network calls).
+    async fn run_module_integrity_with_build(
+        &self,
+        build: Option<&BuildRecord>,
+        agent_root: Option<&str>,
+        agent_hashes: Option<&BTreeMap<String, String>>,
+        excluded_extensions: &[&str],
+    ) -> Result<ModuleIntegrityResult, VerifyError> {
+        use sha2::{Digest, Sha256};
+        use std::collections::HashSet;
+
+        let build = build.ok_or_else(|| VerifyError::HttpsError {
+            message: "No build record available (pre-fetch failed)".into(),
+        })?;
+
+        let registry_files = build.file_manifest_json.files();
+
+        info!(
+            "run_module_integrity (pre-fetched): version={}, files={}, agent_hashes={}",
+            build.version,
+            registry_files.len(),
+            agent_hashes.map(|h| h.len()).unwrap_or(0)
+        );
+
+        let mut filesystem_verified = Vec::new();
+        let mut agent_verified = Vec::new();
+        let mut cross_validated = Vec::new();
+        let mut disk_agent_mismatch: BTreeMap<String, DiskAgentMismatch> = BTreeMap::new();
+        let mut registry_mismatch: BTreeMap<String, RegistryMismatch> = BTreeMap::new();
+        let mut missing = Vec::new();
+        let mut unexpected = Vec::new();
+        let mut excluded = Vec::new();
+
+        let mut processed_agent_paths: HashSet<String> = HashSet::new();
+
+        let normalize_path = |p: &str| -> String {
+            p.trim_start_matches("./")
+                .trim_start_matches('/')
+                .to_string()
+        };
+
+        let find_agent_hash = |manifest_path: &str| -> Option<String> {
+            let agent_hashes = agent_hashes?;
+            let normalized = normalize_path(manifest_path);
+
+            if let Some(h) = agent_hashes.get(&normalized) {
+                return Some(h.clone());
+            }
+            if let Some(h) = agent_hashes.get(manifest_path) {
+                return Some(h.clone());
+            }
+
+            let suffix = format!("/{}", normalized);
+            for (agent_path, hash) in agent_hashes {
+                if agent_path.ends_with(&suffix) || normalize_path(agent_path) == normalized {
+                    return Some(hash.clone());
+                }
+            }
+
+            None
+        };
+
+        let compute_disk_hash = |file_path: &Path| -> Option<String> {
+            if !file_path.exists() {
+                return None;
+            }
+            match std::fs::read(file_path) {
+                Ok(contents) => {
+                    let mut hasher = Sha256::new();
+                    hasher.update(&contents);
+                    Some(hex::encode(hasher.finalize()))
+                }
+                Err(_) => None,
+            }
+        };
+
+        for (manifest_path, registry_hash) in registry_files {
+            if excluded_extensions
+                .iter()
+                .any(|ext| manifest_path.ends_with(ext))
+            {
+                excluded.push(manifest_path.clone());
+                continue;
+            }
+
+            let registry_hash_clean = registry_hash
+                .strip_prefix("sha256:")
+                .unwrap_or(registry_hash);
+
+            let disk_hash = agent_root.and_then(|root| {
+                let file_path = Path::new(root).join(normalize_path(manifest_path));
+                compute_disk_hash(&file_path)
+            });
+
+            let agent_hash = find_agent_hash(manifest_path);
+
+            if agent_hash.is_some() {
+                processed_agent_paths.insert(normalize_path(manifest_path));
+            }
+
+            match (disk_hash.as_ref(), agent_hash.as_ref()) {
+                (Some(disk), Some(agent)) => {
+                    let disk_matches_registry = disk == registry_hash_clean;
+                    let agent_matches_registry = agent == registry_hash_clean;
+                    let disk_matches_agent = disk == agent;
+
+                    if disk_matches_registry && agent_matches_registry && disk_matches_agent {
+                        cross_validated.push(manifest_path.clone());
+                    } else if !disk_matches_agent {
+                        disk_agent_mismatch.insert(
+                            manifest_path.clone(),
+                            DiskAgentMismatch {
+                                disk_hash: disk.clone(),
+                                agent_hash: agent.clone(),
+                                registry_hash: registry_hash_clean.to_string(),
+                                registry_match: if disk_matches_registry {
+                                    "disk".to_string()
+                                } else if agent_matches_registry {
+                                    "agent".to_string()
+                                } else {
+                                    "neither".to_string()
+                                },
+                            },
+                        );
+                    } else if !disk_matches_registry {
+                        registry_mismatch.insert(
+                            manifest_path.clone(),
+                            RegistryMismatch {
+                                disk_hash: Some(disk.clone()),
+                                agent_hash: Some(agent.clone()),
+                                registry_hash: registry_hash_clean.to_string(),
+                                source: "both".to_string(),
+                            },
+                        );
+                    }
+                }
+                (Some(disk), None) => {
+                    if disk == registry_hash_clean {
+                        filesystem_verified.push(manifest_path.clone());
+                    } else {
+                        registry_mismatch.insert(
+                            manifest_path.clone(),
+                            RegistryMismatch {
+                                disk_hash: Some(disk.clone()),
+                                agent_hash: None,
+                                registry_hash: registry_hash_clean.to_string(),
+                                source: "disk".to_string(),
+                            },
+                        );
+                    }
+                }
+                (None, Some(agent)) => {
+                    if agent == registry_hash_clean {
+                        agent_verified.push(manifest_path.clone());
+                    } else {
+                        registry_mismatch.insert(
+                            manifest_path.clone(),
+                            RegistryMismatch {
+                                disk_hash: None,
+                                agent_hash: Some(agent.clone()),
+                                registry_hash: registry_hash_clean.to_string(),
+                                source: "agent".to_string(),
+                            },
+                        );
+                    }
+                }
+                (None, None) => {
+                    missing.push(manifest_path.clone());
+                }
+            }
+        }
+
+        if let Some(agent_hashes) = agent_hashes {
+            for agent_path in agent_hashes.keys() {
+                let normalized = normalize_path(agent_path);
+                if !processed_agent_paths.contains(&normalized) {
+                    let in_manifest = registry_files.keys().any(|mp| {
+                        normalize_path(mp) == normalized
+                            || mp.ends_with(&format!("/{}", normalized))
+                    });
+                    if !in_manifest {
+                        unexpected.push(agent_path.clone());
+                    }
+                }
+            }
+        }
+
+        let verified_count =
+            filesystem_verified.len() + agent_verified.len() + cross_validated.len();
+        let failed_count = disk_agent_mismatch.len() + registry_mismatch.len();
+        let valid = failed_count == 0 && missing.is_empty();
+
+        let summary = ModuleIntegritySummary {
+            total_manifest: registry_files.len(),
+            verified: verified_count,
+            failed: failed_count,
+            missing: missing.len(),
+            excluded: excluded.len(),
+            cross_validated: cross_validated.len(),
+        };
+
+        info!(
+            "run_module_integrity (pre-fetched): verified={}, failed={}, missing={}",
+            verified_count,
+            failed_count,
+            missing.len()
+        );
+
+        let missing_count = missing.len();
+
+        Ok(ModuleIntegrityResult {
+            valid,
+            manifest_file_count: registry_files.len(),
+            filesystem_verified,
+            agent_verified,
+            cross_validated,
+            disk_agent_mismatch,
+            registry_mismatch,
+            missing,
+            unexpected,
+            excluded,
+            summary,
+            manifest_version: Some(build.version.clone()),
+            error: if valid {
+                None
+            } else {
+                Some(format!("{} files failed, {} missing", failed_count, missing_count))
             },
         })
     }

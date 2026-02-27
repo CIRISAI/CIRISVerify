@@ -2,15 +2,27 @@
 //!
 //! Fetches file integrity manifests from the registry to enable
 //! Tripwire-style verification of agent binaries.
+//!
+//! ## Platform-Aware HTTP
+//!
+//! On Android/iOS, tokio's async I/O is broken (JNI threads, iOS getaddrinfo hangs).
+//! This module uses blocking `ureq` on mobile platforms and async `reqwest` on desktop.
+//! The async function signatures are preserved for API compatibility.
 
 use std::collections::HashMap;
 use std::time::Duration;
 
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use reqwest::Client;
+
 use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 
 use crate::error::VerifyError;
+
+// Use shared mobile_http module for Android/iOS
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use crate::mobile_http;
 
 /// Build record from CIRISRegistry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -94,9 +106,16 @@ impl FileManifest {
 }
 
 /// Registry client for fetching manifests.
+///
+/// Uses platform-appropriate HTTP:
+/// - Android/iOS: Blocking `ureq` (tokio async I/O is broken on mobile)
+/// - Desktop: Async `reqwest`
 pub struct RegistryClient {
-    /// HTTP client.
+    /// HTTP client (reqwest on desktop, ureq on mobile).
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     client: Client,
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    agent: ureq::Agent,
     /// Base URL for the registry API.
     base_url: String,
 }
@@ -108,6 +127,7 @@ impl RegistryClient {
     ///
     /// * `base_url` - Base URL for the registry API (e.g., `https://api.registry.ciris-services-1.ai`)
     /// * `timeout` - Request timeout
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn new(base_url: &str, timeout: Duration) -> Result<Self, VerifyError> {
         // Use aggressive timeouts to fail fast on unreachable hosts
         // This is critical for emulators where TCP connections can hang indefinitely
@@ -133,11 +153,23 @@ impl RegistryClient {
         })
     }
 
+    /// Create a new registry client (mobile - blocking ureq).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    pub fn new(base_url: &str, timeout: Duration) -> Result<Self, VerifyError> {
+        info!("RegistryClient: using mobile blocking HTTP (ureq)");
+        let agent = mobile_http::create_tls_agent(timeout)?;
+        Ok(Self {
+            agent,
+            base_url: base_url.trim_end_matches('/').to_string(),
+        })
+    }
+
+    // =========================================================================
+    // Desktop implementations (async reqwest)
+    // =========================================================================
+
     /// Fetch a build record by version.
-    ///
-    /// # Arguments
-    ///
-    /// * `version` - Semantic version to look up (e.g., "2.0.0")
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self), fields(version = %version))]
     pub async fn get_build_by_version(&self, version: &str) -> Result<BuildRecord, VerifyError> {
         let url = format!("{}/v1/builds/{}", self.base_url, version);
@@ -175,10 +207,7 @@ impl RegistryClient {
     }
 
     /// Fetch a build record by build hash.
-    ///
-    /// # Arguments
-    ///
-    /// * `build_hash` - SHA-256 hash of the build
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self), fields(build_hash = %build_hash))]
     pub async fn get_build_by_hash(&self, build_hash: &str) -> Result<BuildRecord, VerifyError> {
         let url = format!("{}/v1/builds/hash/{}", self.base_url, build_hash);
@@ -208,6 +237,7 @@ impl RegistryClient {
     }
 
     /// Check if the registry is reachable.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub async fn health_check(&self) -> Result<bool, VerifyError> {
         let url = format!("{}/health", self.base_url);
 
@@ -218,6 +248,44 @@ impl RegistryClient {
                 Ok(false)
             },
         }
+    }
+
+    // =========================================================================
+    // Mobile implementations (blocking ureq)
+    // =========================================================================
+
+    /// Fetch a build record by version (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self), fields(version = %version))]
+    pub async fn get_build_by_version(&self, version: &str) -> Result<BuildRecord, VerifyError> {
+        let url = format!("{}/v1/builds/{}", self.base_url, version);
+        debug!("Fetching build from {} (mobile blocking)", url);
+
+        let build: BuildRecord = mobile_http::get_json(&self.agent, &url)?;
+
+        info!(
+            build_id = %build.build_id,
+            file_count = build.file_manifest_count,
+            "Fetched build manifest from registry (mobile)"
+        );
+
+        Ok(build)
+    }
+
+    /// Fetch a build record by build hash (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self), fields(build_hash = %build_hash))]
+    pub async fn get_build_by_hash(&self, build_hash: &str) -> Result<BuildRecord, VerifyError> {
+        let url = format!("{}/v1/builds/hash/{}", self.base_url, build_hash);
+        debug!("Fetching build by hash from {} (mobile blocking)", url);
+        mobile_http::get_json(&self.agent, &url)
+    }
+
+    /// Check if the registry is reachable (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    pub async fn health_check(&self) -> Result<bool, VerifyError> {
+        let url = format!("{}/health", self.base_url);
+        mobile_http::check_status(&self.agent, &url)
     }
 }
 
@@ -289,14 +357,12 @@ pub struct BinaryManifest {
 }
 
 impl RegistryClient {
+    // =========================================================================
+    // Binary & Function Manifests - Desktop (async reqwest)
+    // =========================================================================
+
     /// Fetch the binary manifest for self-verification.
-    ///
-    /// This enables Level 4 attestation: the running CIRISVerify binary
-    /// can verify its own integrity against the registry-hosted manifest.
-    ///
-    /// # Arguments
-    ///
-    /// * `version` - CIRISVerify version to fetch (e.g., "0.5.1")
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self), fields(version = %version))]
     pub async fn get_binary_manifest(&self, version: &str) -> Result<BinaryManifest, VerifyError> {
         let url = format!("{}/v1/verify/binary-manifest/{}", self.base_url, version);
@@ -336,15 +402,7 @@ impl RegistryClient {
     }
 
     /// Fetch the function-level integrity manifest for a specific target.
-    ///
-    /// Used for runtime function integrity verification. The manifest contains
-    /// SHA-256 hashes of all FFI export functions, allowing verification that
-    /// the code hasn't been tampered with since build time.
-    ///
-    /// # Arguments
-    ///
-    /// * `version` - CIRISVerify version (e.g., "0.5.5")
-    /// * `target` - Target triple (e.g., "x86_64-unknown-linux-gnu")
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self), fields(version = %version, target = %target))]
     pub async fn get_function_manifest(
         &self,
@@ -395,14 +453,7 @@ impl RegistryClient {
     }
 
     /// List available target triples for function manifests.
-    ///
-    /// # Arguments
-    ///
-    /// * `version` - CIRISVerify version (e.g., "0.6.17")
-    ///
-    /// # Returns
-    ///
-    /// List of target triples that have function manifests available.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self), fields(version = %version))]
     pub async fn list_function_manifest_targets(
         &self,
@@ -447,13 +498,52 @@ impl RegistryClient {
     }
 
     // =========================================================================
-    // Play Integrity (Google Android HW Attestation)
+    // Binary & Function Manifests - Mobile (blocking ureq)
+    // =========================================================================
+
+    /// Fetch the binary manifest for self-verification (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self), fields(version = %version))]
+    pub async fn get_binary_manifest(&self, version: &str) -> Result<BinaryManifest, VerifyError> {
+        let url = format!("{}/v1/verify/binary-manifest/{}", self.base_url, version);
+        info!("Fetching binary manifest from URL: {} (mobile)", url);
+        mobile_http::get_json(&self.agent, &url)
+    }
+
+    /// Fetch the function-level integrity manifest (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self), fields(version = %version, target = %target))]
+    pub async fn get_function_manifest(
+        &self,
+        version: &str,
+        target: &str,
+    ) -> Result<crate::security::function_integrity::FunctionManifest, VerifyError> {
+        let url = format!(
+            "{}/v1/verify/function-manifest/{}/{}",
+            self.base_url, version, target
+        );
+        debug!("Fetching function manifest from {} (mobile)", url);
+        mobile_http::get_json(&self.agent, &url)
+    }
+
+    /// List available target triples for function manifests (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self), fields(version = %version))]
+    pub async fn list_function_manifest_targets(
+        &self,
+        version: &str,
+    ) -> Result<FunctionManifestTargets, VerifyError> {
+        let url = format!("{}/v1/verify/function-manifests/{}", self.base_url, version);
+        debug!("Listing function manifest targets from {} (mobile)", url);
+        mobile_http::get_json(&self.agent, &url)
+    }
+
+    // =========================================================================
+    // Play Integrity (Google Android HW Attestation) - Desktop
     // =========================================================================
 
     /// Get a nonce for Play Integrity verification.
-    ///
-    /// The Android app uses this nonce when calling the Play Integrity API.
-    /// Nonces expire after 5 minutes and are single-use.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self))]
     pub async fn get_integrity_nonce(
         &self,
@@ -491,14 +581,7 @@ impl RegistryClient {
     }
 
     /// Verify a Play Integrity token from Android.
-    ///
-    /// The token is decrypted by Google's servers (via registry) and
-    /// returns device/app integrity verdicts.
-    ///
-    /// # Arguments
-    ///
-    /// * `integrity_token` - Encrypted token from Play Integrity API
-    /// * `nonce` - The nonce used when requesting the token
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self, integrity_token))]
     pub async fn verify_integrity_token(
         &self,
@@ -559,14 +642,54 @@ impl RegistryClient {
     }
 
     // =========================================================================
-    // App Attest (Apple iOS HW Attestation)
+    // Play Integrity - Mobile (blocking ureq)
+    // =========================================================================
+
+    /// Get a nonce for Play Integrity verification (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self))]
+    pub async fn get_integrity_nonce(
+        &self,
+    ) -> Result<crate::play_integrity::IntegrityNonce, VerifyError> {
+        let url = format!("{}/v1/integrity/nonce", self.base_url);
+        debug!("Fetching Play Integrity nonce from {} (mobile)", url);
+        mobile_http::get_json(&self.agent, &url)
+    }
+
+    /// Verify a Play Integrity token (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self, integrity_token))]
+    pub async fn verify_integrity_token(
+        &self,
+        integrity_token: &str,
+        nonce: &str,
+    ) -> Result<crate::play_integrity::IntegrityVerifyResponse, VerifyError> {
+        let url = format!("{}/v1/integrity/verify", self.base_url);
+        debug!("Verifying Play Integrity token at {} (mobile)", url);
+
+        let request = crate::play_integrity::IntegrityVerifyRequest {
+            integrity_token: integrity_token.to_string(),
+            nonce: nonce.to_string(),
+        };
+
+        let (_, result): (u16, crate::play_integrity::IntegrityVerifyResponse) =
+            mobile_http::post_json(&self.agent, &url, &request)?;
+
+        info!(
+            verified = result.verified,
+            summary = %result.summary(),
+            "Play Integrity verification complete (mobile)"
+        );
+
+        Ok(result)
+    }
+
+    // =========================================================================
+    // App Attest (Apple iOS HW Attestation) - Desktop
     // =========================================================================
 
     /// Get a nonce for App Attest verification.
-    ///
-    /// The iOS app uses this nonce as the challenge hash when calling
-    /// `DCAppAttestService.attestKey(_:clientDataHash:)`.
-    /// Nonces expire after 5 minutes and are single-use.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self))]
     pub async fn get_app_attest_nonce(
         &self,
@@ -604,16 +727,7 @@ impl RegistryClient {
     }
 
     /// Verify an App Attest attestation object from iOS.
-    ///
-    /// The attestation object is a CBOR structure containing Apple's
-    /// certificate chain and device attestation statement. The registry
-    /// verifies the certificate chain against Apple's root CA.
-    ///
-    /// # Arguments
-    ///
-    /// * `attestation_object` - Base64-encoded CBOR attestation from DCAppAttestService
-    /// * `key_id` - Key ID from DCAppAttestService.generateKey()
-    /// * `nonce` - The nonce used when requesting the attestation
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self, attestation))]
     pub async fn verify_app_attest(
         &self,
@@ -676,16 +790,7 @@ impl RegistryClient {
     }
 
     /// Verify an App Attest assertion (post-attestation ongoing verification).
-    ///
-    /// After initial attestation, assertions are used for ongoing verification.
-    /// Each assertion includes a monotonic counter to prevent replay attacks.
-    ///
-    /// # Arguments
-    ///
-    /// * `assertion` - Base64-encoded assertion from DCAppAttestService
-    /// * `key_id` - Key ID (same as initial attestation)
-    /// * `client_data` - The client data that was signed
-    /// * `nonce` - Fresh nonce for this assertion
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self, assertion, client_data))]
     pub async fn verify_app_attest_assertion(
         &self,
@@ -729,17 +834,82 @@ impl RegistryClient {
     }
 
     // =========================================================================
-    // Key Verification
+    // App Attest - Mobile (blocking ureq)
+    // =========================================================================
+
+    /// Get a nonce for App Attest verification (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self))]
+    pub async fn get_app_attest_nonce(
+        &self,
+    ) -> Result<crate::app_attest::AppAttestNonce, VerifyError> {
+        let url = format!("{}/v1/integrity/ios/nonce", self.base_url);
+        debug!("Fetching App Attest nonce from {} (mobile)", url);
+        mobile_http::get_json(&self.agent, &url)
+    }
+
+    /// Verify an App Attest attestation object (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self, attestation))]
+    pub async fn verify_app_attest(
+        &self,
+        attestation: &str,
+        key_id: &str,
+        nonce: &str,
+    ) -> Result<crate::app_attest::AppAttestVerifyResponse, VerifyError> {
+        let url = format!("{}/v1/integrity/ios/verify", self.base_url);
+        debug!("Verifying App Attest attestation at {} (mobile)", url);
+
+        let request = crate::app_attest::AppAttestVerifyRequest {
+            attestation: attestation.to_string(),
+            key_id: key_id.to_string(),
+            nonce: nonce.to_string(),
+        };
+
+        let (_, result): (u16, crate::app_attest::AppAttestVerifyResponse) =
+            mobile_http::post_json(&self.agent, &url, &request)?;
+
+        info!(
+            verified = result.verified,
+            summary = %result.summary(),
+            "App Attest verification complete (mobile)"
+        );
+
+        Ok(result)
+    }
+
+    /// Verify an App Attest assertion (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self, assertion, client_data))]
+    pub async fn verify_app_attest_assertion(
+        &self,
+        assertion: &str,
+        key_id: &str,
+        client_data: &str,
+        nonce: &str,
+    ) -> Result<crate::app_attest::AppAttestAssertionResponse, VerifyError> {
+        let url = format!("{}/v1/integrity/ios/assert", self.base_url);
+        debug!("Verifying App Attest assertion at {} (mobile)", url);
+
+        let request = crate::app_attest::AppAttestAssertionRequest {
+            assertion: assertion.to_string(),
+            key_id: key_id.to_string(),
+            client_data: client_data.to_string(),
+            nonce: nonce.to_string(),
+        };
+
+        let (_, result): (u16, crate::app_attest::AppAttestAssertionResponse) =
+            mobile_http::post_json(&self.agent, &url, &request)?;
+
+        Ok(result)
+    }
+
+    // =========================================================================
+    // Key Verification - Desktop
     // =========================================================================
 
     /// Verify an agent signing key by its Ed25519 fingerprint.
-    ///
-    /// Calls GET /v1/verify/key/{fingerprint} to check if a signing key
-    /// is registered and active in the Portal.
-    ///
-    /// # Arguments
-    ///
-    /// * `fingerprint` - SHA-256 hex of the Ed25519 public key (64 hex chars)
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self), fields(fingerprint = %fingerprint))]
     pub async fn verify_key_by_fingerprint(
         &self,
@@ -775,6 +945,32 @@ impl RegistryClient {
             status = ?result.status,
             key_id = ?result.key_id,
             "Key verification complete"
+        );
+
+        Ok(result)
+    }
+
+    // =========================================================================
+    // Key Verification - Mobile (blocking ureq)
+    // =========================================================================
+
+    /// Verify an agent signing key by its Ed25519 fingerprint (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self), fields(fingerprint = %fingerprint))]
+    pub async fn verify_key_by_fingerprint(
+        &self,
+        fingerprint: &str,
+    ) -> Result<KeyVerificationResponse, VerifyError> {
+        let url = format!("{}/v1/verify/key/{}", self.base_url, fingerprint);
+        debug!("Verifying key by fingerprint at {} (mobile)", url);
+
+        let result: KeyVerificationResponse = mobile_http::get_json(&self.agent, &url)?;
+
+        info!(
+            found = result.found,
+            status = ?result.status,
+            key_id = ?result.key_id,
+            "Key verification complete (mobile)"
         );
 
         Ok(result)
@@ -1153,7 +1349,162 @@ pub fn verify_self_against_manifest(manifest: &BinaryManifest) -> Result<bool, V
 /// Default registry URL.
 pub const DEFAULT_REGISTRY_URL: &str = "https://api.registry.ciris-services-1.ai";
 
+/// Fallback registry URLs for resilience.
+/// These are independent domains to survive single-domain outages or MITM attacks.
+pub const FALLBACK_REGISTRY_URLS: &[&str] = &[
+    "https://registry-us.ciris-services-1.ai",
+    "https://registry-eu.ciris-services-1.ai",
+];
+
+/// Multi-endpoint registry client with automatic failover.
+///
+/// Tries the primary endpoint first, then falls back to secondary endpoints
+/// on network errors (similar to DoH fallback pattern).
+pub struct ResilientRegistryClient {
+    /// Primary registry client.
+    primary: RegistryClient,
+    /// Fallback registry clients.
+    fallbacks: Vec<RegistryClient>,
+    /// Timeout for individual requests.
+    timeout: Duration,
+}
+
+impl ResilientRegistryClient {
+    /// Create a new resilient client with primary and fallback endpoints.
+    pub fn new(primary_url: &str, fallback_urls: &[&str], timeout: Duration) -> Result<Self, VerifyError> {
+        let primary = RegistryClient::new(primary_url, timeout)?;
+        let fallbacks = fallback_urls
+            .iter()
+            .filter_map(|url| RegistryClient::new(url, timeout).ok())
+            .collect();
+
+        Ok(Self {
+            primary,
+            fallbacks,
+            timeout,
+        })
+    }
+
+    /// Create with default endpoints.
+    pub fn with_defaults(timeout: Duration) -> Result<Self, VerifyError> {
+        Self::new(DEFAULT_REGISTRY_URL, FALLBACK_REGISTRY_URLS, timeout)
+    }
+
+    /// Get the underlying primary client (for compatibility).
+    pub fn primary(&self) -> &RegistryClient {
+        &self.primary
+    }
+
+    /// Fetch a build record by version with failover.
+    pub async fn get_build_by_version(&self, version: &str) -> Result<BuildRecord, VerifyError> {
+        // Try primary first
+        match self.primary.get_build_by_version(version).await {
+            Ok(build) => return Ok(build),
+            Err(e) => {
+                warn!("Primary registry failed for build/{}: {}", version, e);
+            }
+        }
+
+        // Try fallbacks
+        for (i, fallback) in self.fallbacks.iter().enumerate() {
+            match fallback.get_build_by_version(version).await {
+                Ok(build) => {
+                    info!("Fallback[{}] succeeded for build/{}", i, version);
+                    return Ok(build);
+                }
+                Err(e) => {
+                    warn!("Fallback[{}] failed for build/{}: {}", i, version, e);
+                }
+            }
+        }
+
+        Err(VerifyError::HttpsError {
+            message: format!("All registry endpoints failed for build/{}", version),
+        })
+    }
+
+    /// Fetch binary manifest with failover.
+    pub async fn get_binary_manifest(&self, version: &str) -> Result<BinaryManifest, VerifyError> {
+        match self.primary.get_binary_manifest(version).await {
+            Ok(m) => return Ok(m),
+            Err(e) => warn!("Primary registry failed for binary-manifest/{}: {}", version, e),
+        }
+
+        for (i, fallback) in self.fallbacks.iter().enumerate() {
+            match fallback.get_binary_manifest(version).await {
+                Ok(m) => {
+                    info!("Fallback[{}] succeeded for binary-manifest/{}", i, version);
+                    return Ok(m);
+                }
+                Err(e) => warn!("Fallback[{}] failed for binary-manifest/{}: {}", i, version, e),
+            }
+        }
+
+        Err(VerifyError::HttpsError {
+            message: format!("All registry endpoints failed for binary-manifest/{}", version),
+        })
+    }
+
+    /// Fetch function manifest with failover.
+    pub async fn get_function_manifest(
+        &self,
+        version: &str,
+        target: &str,
+    ) -> Result<crate::security::function_integrity::FunctionManifest, VerifyError> {
+        match self.primary.get_function_manifest(version, target).await {
+            Ok(m) => return Ok(m),
+            Err(e) => warn!("Primary registry failed for function-manifest/{}/{}: {}", version, target, e),
+        }
+
+        for (i, fallback) in self.fallbacks.iter().enumerate() {
+            match fallback.get_function_manifest(version, target).await {
+                Ok(m) => {
+                    info!("Fallback[{}] succeeded for function-manifest/{}/{}", i, version, target);
+                    return Ok(m);
+                }
+                Err(e) => warn!("Fallback[{}] failed for function-manifest/{}/{}: {}", i, version, target, e),
+            }
+        }
+
+        Err(VerifyError::HttpsError {
+            message: format!("All registry endpoints failed for function-manifest/{}/{}", version, target),
+        })
+    }
+
+    /// Verify key by fingerprint with failover.
+    pub async fn verify_key_by_fingerprint(
+        &self,
+        fingerprint: &str,
+    ) -> Result<KeyVerificationResponse, VerifyError> {
+        match self.primary.verify_key_by_fingerprint(fingerprint).await {
+            Ok(r) => return Ok(r),
+            Err(e) => warn!("Primary registry failed for verify/key/{}: {}", fingerprint, e),
+        }
+
+        for (i, fallback) in self.fallbacks.iter().enumerate() {
+            match fallback.verify_key_by_fingerprint(fingerprint).await {
+                Ok(r) => {
+                    info!("Fallback[{}] succeeded for verify/key/{}", i, fingerprint);
+                    return Ok(r);
+                }
+                Err(e) => warn!("Fallback[{}] failed for verify/key/{}: {}", i, fingerprint, e),
+            }
+        }
+
+        Err(VerifyError::HttpsError {
+            message: format!("All registry endpoints failed for verify/key/{}", fingerprint),
+        })
+    }
+
+    /// Health check on primary endpoint.
+    pub async fn health_check(&self) -> Result<bool, VerifyError> {
+        self.primary.health_check().await
+    }
+}
+
+// Tests only run on desktop (need reqwest)
 #[cfg(test)]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod tests {
     use super::*;
 

@@ -8,10 +8,16 @@
 //! - `GET /v1/steward-key` - Get current steward signing keys
 //! - `GET /v1/revocation/{license_id}` - Check license revocation status
 //! - `POST /v1/validate-license` - Validate a license JWT
+//!
+//! ## Platform-Aware HTTP
+//!
+//! On Android/iOS, tokio's async I/O is broken. This module uses blocking
+//! `ureq` on mobile platforms and async `reqwest` on desktop.
 
 use std::time::Duration;
 
 use base64::Engine;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 use reqwest::{Client, ClientBuilder};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -19,12 +25,21 @@ use tracing::{debug, info, instrument, warn};
 
 use crate::error::VerifyError;
 
+// Use shared mobile_http module for Android/iOS
+#[cfg(any(target_os = "android", target_os = "ios"))]
+use crate::mobile_http;
+
 /// HTTPS client for the verification endpoint.
 ///
-/// Includes optional certificate pinning for enhanced security.
+/// Uses platform-appropriate HTTP:
+/// - Android/iOS: Blocking `ureq` (tokio async I/O is broken on mobile)
+/// - Desktop: Async `reqwest`
 pub struct HttpsClient {
-    /// HTTP client.
+    /// HTTP client (reqwest on desktop, ureq on mobile).
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     client: Client,
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    agent: ureq::Agent,
     /// Base URL for the API.
     base_url: String,
     /// SHA-256 fingerprint of expected certificate (for pinning).
@@ -113,17 +128,12 @@ pub struct LicenseValidationResponse {
 }
 
 impl HttpsClient {
-    /// Create a new HTTPS client.
-    ///
-    /// # Arguments
-    ///
-    /// * `base_url` - Base URL for the API (e.g., `https://verify.ciris.ai`)
-    /// * `timeout` - Request timeout
-    /// * `cert_pin` - Optional certificate fingerprint for pinning (SHA-256, hex-encoded)
-    ///
-    /// # Errors
-    ///
-    /// Returns error if client initialization fails.
+    // =========================================================================
+    // Constructor - Desktop (async reqwest)
+    // =========================================================================
+
+    /// Create a new HTTPS client (desktop).
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     pub fn new(
         base_url: &str,
         timeout: Duration,
@@ -149,7 +159,6 @@ impl HttpsClient {
 
         let cert_fingerprint = cert_pin
             .map(|pin| {
-                // Remove "sha256:" prefix if present
                 let hex = pin.strip_prefix("sha256:").unwrap_or(pin);
                 hex::decode(hex).map_err(|e| VerifyError::HttpsError {
                     message: format!("Invalid certificate fingerprint: {}", e),
@@ -164,11 +173,42 @@ impl HttpsClient {
         })
     }
 
-    /// Get the current steward signing keys.
-    ///
-    /// # Returns
-    ///
-    /// Steward key information including both classical and PQC keys.
+    // =========================================================================
+    // Constructor - Mobile (blocking ureq)
+    // =========================================================================
+
+    /// Create a new HTTPS client (mobile - blocking ureq).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    pub fn new(
+        base_url: &str,
+        timeout: Duration,
+        cert_pin: Option<&str>,
+    ) -> Result<Self, VerifyError> {
+        info!("HttpsClient: using mobile blocking HTTP (ureq)");
+        let agent = mobile_http::create_tls_agent(timeout)?;
+
+        let cert_fingerprint = cert_pin
+            .map(|pin| {
+                let hex = pin.strip_prefix("sha256:").unwrap_or(pin);
+                hex::decode(hex).map_err(|e| VerifyError::HttpsError {
+                    message: format!("Invalid certificate fingerprint: {}", e),
+                })
+            })
+            .transpose()?;
+
+        Ok(Self {
+            agent,
+            base_url: base_url.trim_end_matches('/').to_string(),
+            cert_fingerprint,
+        })
+    }
+
+    // =========================================================================
+    // Steward Key - Desktop
+    // =========================================================================
+
+    /// Get the current steward signing keys (desktop).
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self))]
     pub async fn get_steward_key(&self) -> Result<StewardKeyResponse, VerifyError> {
         let url = format!("{}/v1/steward-key", self.base_url);
@@ -214,21 +254,44 @@ impl HttpsClient {
             "HTTPS: Steward key received successfully"
         );
 
-        // Verify PQC key fingerprint matches
         self.verify_pqc_fingerprint(&body)?;
-
         Ok(body)
     }
 
-    /// Check if a license is revoked.
-    ///
-    /// # Arguments
-    ///
-    /// * `license_id` - The license ID to check
-    ///
-    /// # Returns
-    ///
-    /// Revocation status information.
+    // =========================================================================
+    // Steward Key - Mobile
+    // =========================================================================
+
+    /// Get the current steward signing keys (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self))]
+    pub async fn get_steward_key(&self) -> Result<StewardKeyResponse, VerifyError> {
+        let url = format!("{}/v1/steward-key", self.base_url);
+        info!(
+            url = %url,
+            "HTTPS: Fetching steward key (mobile)..."
+        );
+
+        let body: StewardKeyResponse = mobile_http::get_json(&self.agent, &url)?;
+
+        info!(
+            url = %url,
+            classical_algo = %body.classical.algorithm,
+            pqc_algo = %body.pqc.algorithm,
+            revision = body.revision,
+            "HTTPS: Steward key received successfully (mobile)"
+        );
+
+        self.verify_pqc_fingerprint(&body)?;
+        Ok(body)
+    }
+
+    // =========================================================================
+    // Revocation Check - Desktop
+    // =========================================================================
+
+    /// Check if a license is revoked (desktop).
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self), fields(license_id = %license_id))]
     pub async fn check_revocation(
         &self,
@@ -260,15 +323,28 @@ impl HttpsClient {
             })
     }
 
-    /// Validate a license JWT.
-    ///
-    /// # Arguments
-    ///
-    /// * `license_jwt` - The license JWT to validate
-    ///
-    /// # Returns
-    ///
-    /// Validation result with license details if valid.
+    // =========================================================================
+    // Revocation Check - Mobile
+    // =========================================================================
+
+    /// Check if a license is revoked (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self), fields(license_id = %license_id))]
+    pub async fn check_revocation(
+        &self,
+        license_id: &str,
+    ) -> Result<RevocationResponse, VerifyError> {
+        let url = format!("{}/v1/revocation/{}", self.base_url, license_id);
+        debug!("Checking revocation for {} (mobile)", license_id);
+        mobile_http::get_json(&self.agent, &url)
+    }
+
+    // =========================================================================
+    // License Validation - Desktop
+    // =========================================================================
+
+    /// Validate a license JWT (desktop).
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self, license_jwt))]
     pub async fn validate_license(
         &self,
@@ -304,6 +380,30 @@ impl HttpsClient {
             .map_err(|e| VerifyError::HttpsError {
                 message: format!("Failed to parse response: {}", e),
             })
+    }
+
+    // =========================================================================
+    // License Validation - Mobile
+    // =========================================================================
+
+    /// Validate a license JWT (mobile - blocking).
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self, license_jwt))]
+    pub async fn validate_license(
+        &self,
+        license_jwt: &str,
+    ) -> Result<LicenseValidationResponse, VerifyError> {
+        let url = format!("{}/v1/validate-license", self.base_url);
+        debug!("Validating license JWT (mobile)");
+
+        #[derive(Serialize)]
+        struct ValidationRequest<'a> {
+            license_jwt: &'a str,
+        }
+
+        let (_, result): (u16, LicenseValidationResponse) =
+            mobile_http::post_json(&self.agent, &url, &ValidationRequest { license_jwt })?;
+        Ok(result)
     }
 
     /// Verify that the PQC key fingerprint is correct.
@@ -407,7 +507,9 @@ pub async fn query_https_source(
     client.get_steward_key().await
 }
 
+// Tests only run on desktop (need reqwest)
 #[cfg(test)]
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod tests {
     use super::*;
 
