@@ -2724,47 +2724,123 @@ pub unsafe extern "C" fn ciris_verify_verify_integrity_token(
     result_json: *mut *mut u8,
     result_len: *mut usize,
 ) -> i32 {
+    use std::panic::{catch_unwind, AssertUnwindSafe};
+
+    // Wrap entire function in catch_unwind to prevent panics from crashing FFI
+    let result = catch_unwind(AssertUnwindSafe(|| {
+        verify_integrity_token_inner(handle, token, nonce, result_json, result_len)
+    }));
+
+    match result {
+        Ok(code) => code,
+        Err(e) => {
+            // Extract panic message if possible
+            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!("PANIC in verify_integrity_token: {}", msg);
+            CirisVerifyError::InternalError as i32
+        },
+    }
+}
+
+/// Inner implementation with all the actual logic (can panic safely).
+unsafe fn verify_integrity_token_inner(
+    handle: *mut CirisVerifyHandle,
+    token: *const libc::c_char,
+    nonce: *const libc::c_char,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
     tracing::debug!("ciris_verify_verify_integrity_token called");
 
-    if handle.is_null()
-        || token.is_null()
-        || nonce.is_null()
-        || result_json.is_null()
-        || result_len.is_null()
-    {
-        tracing::error!("ciris_verify_verify_integrity_token: invalid arguments");
+    // Null pointer checks
+    if handle.is_null() {
+        tracing::error!("verify_integrity_token: null handle");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+    if token.is_null() {
+        tracing::error!("verify_integrity_token: null token");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+    if nonce.is_null() {
+        tracing::error!("verify_integrity_token: null nonce");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+    if result_json.is_null() || result_len.is_null() {
+        tracing::error!("verify_integrity_token: null output pointers");
         return CirisVerifyError::InvalidArgument as i32;
     }
 
-    let handle = &*handle;
+    let handle_ref = &*handle;
 
-    // Parse token string
-    let token_str = match std::ffi::CStr::from_ptr(token).to_str() {
+    // Safe C string parsing with length limits to prevent reading garbage memory
+    // JWT tokens are typically 1-2KB, set reasonable max at 64KB
+    const MAX_TOKEN_LEN: usize = 65536;
+    const MAX_NONCE_LEN: usize = 256;
+
+    let token_str = match safe_cstr_to_str(token, MAX_TOKEN_LEN) {
         Ok(s) => s,
-        Err(_) => return CirisVerifyError::InvalidArgument as i32,
+        Err(e) => {
+            tracing::error!("verify_integrity_token: invalid token string: {}", e);
+            return CirisVerifyError::InvalidArgument as i32;
+        },
     };
 
-    // Parse nonce string
-    let nonce_str = match std::ffi::CStr::from_ptr(nonce).to_str() {
+    let nonce_str = match safe_cstr_to_str(nonce, MAX_NONCE_LEN) {
         Ok(s) => s,
-        Err(_) => return CirisVerifyError::InvalidArgument as i32,
+        Err(e) => {
+            tracing::error!("verify_integrity_token: invalid nonce string: {}", e);
+            return CirisVerifyError::InvalidArgument as i32;
+        },
     };
+
+    // Validate strings are not empty
+    if token_str.is_empty() {
+        tracing::error!("verify_integrity_token: empty token");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+    if nonce_str.is_empty() {
+        tracing::error!("verify_integrity_token: empty nonce");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
 
     tracing::info!(
-        "Verifying Play Integrity token (nonce={}...)",
+        "Verifying Play Integrity token (len={}, nonce={}...)",
+        token_str.len(),
         &nonce_str[..nonce_str.len().min(16)]
     );
 
-    // Create registry client and verify token
-    let result = handle.runtime.handle().block_on(async {
-        let client = ciris_verify_core::RegistryClient::new(
-            "https://api.registry.ciris-services-1.ai",
-            std::time::Duration::from_secs(15),
-        )?;
-        client.verify_integrity_token(token_str, nonce_str).await
-    });
+    // Use mobile blocking HTTP on Android/iOS to avoid tokio async I/O issues
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let result = verify_integrity_token_blocking(token_str, nonce_str);
 
-    let response = match result {
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    let result: Result<
+        ciris_verify_core::play_integrity::IntegrityVerifyResponse,
+        ciris_verify_core::VerifyError,
+    > = {
+        // Desktop: use async with timeout protection
+        handle_ref.runtime.handle().block_on(async {
+            tokio::time::timeout(std::time::Duration::from_secs(20), async {
+                let client = ciris_verify_core::RegistryClient::new(
+                    "https://api.registry.ciris-services-1.ai",
+                    std::time::Duration::from_secs(15),
+                )?;
+                client.verify_integrity_token(token_str, nonce_str).await
+            })
+            .await
+            .map_err(|_| ciris_verify_core::VerifyError::HttpsError {
+                message: "Play Integrity verification timed out".to_string(),
+            })?
+        })
+    };
+
+    let response: ciris_verify_core::play_integrity::IntegrityVerifyResponse = match result {
         Ok(r) => r,
         Err(e) => {
             tracing::error!("Failed to verify integrity token: {}", e);
@@ -2774,14 +2850,20 @@ pub unsafe extern "C" fn ciris_verify_verify_integrity_token(
 
     tracing::info!("Play Integrity verification: {}", response.summary());
 
-    // Cache result for run_attestation L2
-    if let Ok(mut cache) = handle.device_attestation_cache.lock() {
-        *cache = Some(ciris_verify_core::unified::DeviceAttestationCheckResult {
-            platform: "android".to_string(),
-            verified: response.verified,
-            summary: response.summary(),
-            error: response.error.clone(),
-        });
+    // Cache result for run_attestation L2 (with mutex error handling)
+    match handle_ref.device_attestation_cache.lock() {
+        Ok(mut cache) => {
+            *cache = Some(ciris_verify_core::unified::DeviceAttestationCheckResult {
+                platform: "android".to_string(),
+                verified: response.verified,
+                summary: response.summary(),
+                error: response.error.clone(),
+            });
+        },
+        Err(e) => {
+            tracing::warn!("Could not cache attestation result (mutex poisoned): {}", e);
+            // Continue anyway - caching is optional
+        },
     }
 
     // Serialize to JSON
@@ -2793,10 +2875,16 @@ pub unsafe extern "C" fn ciris_verify_verify_integrity_token(
         },
     };
 
-    // Allocate and copy
+    // Allocate and copy with null check
     let len = result_bytes.len();
+    if len == 0 {
+        tracing::error!("verify_integrity_token: empty result");
+        return CirisVerifyError::InternalError as i32;
+    }
+
     let ptr = libc::malloc(len) as *mut u8;
     if ptr.is_null() {
+        tracing::error!("verify_integrity_token: malloc failed for {} bytes", len);
         return CirisVerifyError::InternalError as i32;
     }
 
@@ -2806,6 +2894,85 @@ pub unsafe extern "C" fn ciris_verify_verify_integrity_token(
     *result_len = len;
 
     CirisVerifyError::Success as i32
+}
+
+/// Mobile blocking implementation using ureq (avoids tokio async I/O issues on JNI/iOS).
+#[cfg(any(target_os = "android", target_os = "ios"))]
+fn verify_integrity_token_blocking(
+    token: &str,
+    nonce: &str,
+) -> Result<ciris_verify_core::registry::IntegrityVerifyResponse, ciris_verify_core::VerifyError> {
+    use ciris_verify_core::mobile_http;
+
+    let agent = mobile_http::create_tls_agent(std::time::Duration::from_secs(15))?;
+    let url = "https://api.registry.ciris-services-1.ai/v1/integrity/verify";
+
+    tracing::debug!("Mobile Play Integrity verify: POST {}", url);
+
+    let payload = serde_json::json!({
+        "token": token,
+        "nonce": nonce,
+    });
+
+    let response = agent
+        .post(url)
+        .set("Content-Type", "application/json")
+        .send_json(&payload)
+        .map_err(|e| ciris_verify_core::VerifyError::HttpsError {
+            message: format!("Play Integrity verify request failed: {}", e),
+        })?;
+
+    if response.status() != 200 {
+        return Err(ciris_verify_core::VerifyError::HttpsError {
+            message: format!(
+                "Play Integrity verify returned status {}",
+                response.status()
+            ),
+        });
+    }
+
+    let result: ciris_verify_core::registry::IntegrityVerifyResponse = response
+        .into_json()
+        .map_err(|e| ciris_verify_core::VerifyError::HttpsError {
+            message: format!("Failed to parse Play Integrity response: {}", e),
+        })?;
+
+    tracing::info!("Mobile Play Integrity verify: success");
+    Ok(result)
+}
+
+/// Safely convert a C string pointer to a Rust &str with length limit.
+/// Returns error if string is too long, not valid UTF-8, or contains embedded nulls.
+unsafe fn safe_cstr_to_str(
+    ptr: *const libc::c_char,
+    max_len: usize,
+) -> Result<&'static str, &'static str> {
+    if ptr.is_null() {
+        return Err("null pointer");
+    }
+
+    // Scan for null terminator with length limit
+    let mut len = 0;
+    while len < max_len {
+        if *ptr.add(len) == 0 {
+            break;
+        }
+        len += 1;
+    }
+
+    if len == 0 {
+        return Err("empty string");
+    }
+
+    if len >= max_len {
+        return Err("string too long (no null terminator found)");
+    }
+
+    // Create slice from the validated memory
+    let slice = std::slice::from_raw_parts(ptr as *const u8, len);
+
+    // Validate UTF-8
+    std::str::from_utf8(slice).map_err(|_| "invalid UTF-8")
 }
 
 // =============================================================================
