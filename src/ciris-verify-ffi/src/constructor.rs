@@ -205,6 +205,14 @@ fn early_verify() {
 
 /// Perform the actual verification.
 fn run_verification() -> FunctionIntegrityStatus {
+    // Check for skip flag - useful for Python/FFI contexts where blocking
+    // during dlopen() can deadlock with the import lock
+    if std::env::var("CIRIS_SKIP_EARLY_VERIFY").is_ok() {
+        return FunctionIntegrityStatus::Unavailable {
+            reason: "skipped_by_env".to_string(),
+        };
+    }
+
     // Check if we have a valid steward key
     if *STEWARD_PUBKEY.ed25519 == [0u8; 32] || STEWARD_PUBKEY.ml_dsa_65.is_empty() {
         // Steward key not configured - skip verification
