@@ -61,7 +61,7 @@ pub mod https;
 pub mod jwt;
 pub mod license;
 #[cfg(any(target_os = "android", target_os = "ios"))]
-pub(crate) mod mobile_http;
+pub mod mobile_http;
 pub mod play_integrity;
 pub mod registry;
 pub mod revocation;

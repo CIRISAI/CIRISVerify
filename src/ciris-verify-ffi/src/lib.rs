@@ -62,6 +62,62 @@ use std::ptr;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
 
+// =============================================================================
+// FFI Crash Guard Macro
+// =============================================================================
+//
+// All FFI functions exposed via `extern "C"` must NOT allow panics to unwind
+// across the FFI boundary. Per the Rustonomicon, unwinding into foreign code
+// is undefined behavior. This macro wraps function bodies in catch_unwind.
+//
+// Usage:
+//   ffi_guard!("function_name", { ... body returning i32 ... })
+//
+// Returns CirisVerifyError::InternalError on panic.
+
+/// Wraps an FFI function body in catch_unwind for panic safety.
+/// Logs panics with function name and returns InternalError code.
+macro_rules! ffi_guard {
+    ($fn_name:expr, $body:expr) => {{
+        let result = catch_unwind(AssertUnwindSafe(|| $body));
+        match result {
+            Ok(code) => code,
+            Err(e) => {
+                let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = e.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                tracing::error!("PANIC in {}: {}", $fn_name, msg);
+                CirisVerifyError::InternalError as i32
+            }
+        }
+    }};
+}
+
+/// Wraps an FFI function that returns a raw pointer (returns null on panic).
+macro_rules! ffi_guard_ptr {
+    ($fn_name:expr, $body:expr) => {{
+        let result = catch_unwind(AssertUnwindSafe(|| $body));
+        match result {
+            Ok(ptr) => ptr,
+            Err(e) => {
+                let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                    s.to_string()
+                } else if let Some(s) = e.downcast_ref::<String>() {
+                    s.clone()
+                } else {
+                    "unknown panic".to_string()
+                };
+                tracing::error!("PANIC in {}: {}", $fn_name, msg);
+                std::ptr::null_mut()
+            }
+        }
+    }};
+}
+
 use ciris_keyring::MutableEd25519Signer;
 use ciris_verify_core::config::VerifyConfig;
 use ciris_verify_core::license::LicenseStatus;
@@ -2901,7 +2957,8 @@ unsafe fn verify_integrity_token_inner(
 fn verify_integrity_token_blocking(
     token: &str,
     nonce: &str,
-) -> Result<ciris_verify_core::registry::IntegrityVerifyResponse, ciris_verify_core::VerifyError> {
+) -> Result<ciris_verify_core::play_integrity::IntegrityVerifyResponse, ciris_verify_core::VerifyError>
+{
     use ciris_verify_core::mobile_http;
 
     let agent = mobile_http::create_tls_agent(std::time::Duration::from_secs(15))?;
@@ -2931,7 +2988,7 @@ fn verify_integrity_token_blocking(
         });
     }
 
-    let result: ciris_verify_core::registry::IntegrityVerifyResponse = response
+    let result: ciris_verify_core::play_integrity::IntegrityVerifyResponse = response
         .into_json()
         .map_err(|e| ciris_verify_core::VerifyError::HttpsError {
             message: format!("Failed to parse Play Integrity response: {}", e),
