@@ -536,7 +536,7 @@ impl UnifiedAttestationEngine {
                     errors: vec![format!("Timeout after {:?}", ATTESTATION_TIMEOUT)],
                     timestamp: chrono::Utc::now().timestamp(),
                 })
-            }
+            },
         }
     }
 
@@ -581,11 +581,11 @@ impl UnifiedAttestationEngine {
                         Ok(m) => {
                             info!("Binary manifest: {} targets", m.binaries.len());
                             Some(m)
-                        }
+                        },
                         Err(e) => {
                             warn!("Binary manifest fetch failed: {}", e);
                             None
-                        }
+                        },
                     }
                 } else {
                     None
@@ -598,11 +598,11 @@ impl UnifiedAttestationEngine {
                         Ok(m) => {
                             info!("Function manifest: {} functions", m.functions.len());
                             Some(m)
-                        }
+                        },
                         Err(e) => {
                             warn!("Function manifest fetch failed: {}", e);
                             None
-                        }
+                        },
                     }
                 } else {
                     None
@@ -616,11 +616,11 @@ impl UnifiedAttestationEngine {
                             Ok(b) => {
                                 info!("Agent build: {} files", b.file_manifest_json.files().len());
                                 Some(b)
-                            }
+                            },
                             Err(e) => {
                                 warn!("Agent build fetch failed: {}", e);
                                 None
-                            }
+                            },
                         }
                     } else {
                         None
@@ -651,11 +651,11 @@ impl UnifiedAttestationEngine {
                                 };
                                 info!("Registry key verification: {}", status);
                                 status
-                            }
+                            },
                             Err(e) => {
                                 warn!("Registry key verification failed: {}", e);
                                 format!("error:{}", e)
-                            }
+                            },
                         }
                     } else {
                         "error:no_client".to_string()
@@ -1421,576 +1421,6 @@ impl UnifiedAttestationEngine {
         })
     }
 
-    /// Run file integrity checks against registry manifest.
-    ///
-    /// If `partial_check` is true, only files that exist on disk are verified.
-    /// This is useful for mobile deployments where files are lazily extracted.
-    async fn run_file_integrity(
-        &self,
-        version: &str,
-        agent_root: &str,
-        spot_count: usize,
-        partial_check: bool,
-    ) -> Result<IntegrityCheckResult, VerifyError> {
-        info!(
-            "run_file_integrity: version={}, agent_root={}, partial={}",
-            version, agent_root, partial_check
-        );
-
-        // Fetch manifest from registry
-        let client = self
-            .registry_client
-            .as_ref()
-            .ok_or_else(|| VerifyError::HttpsError {
-                message: "Registry client not available".into(),
-            })?;
-
-        info!("run_file_integrity: fetching build from registry");
-        let build = match client.get_build_by_version(version).await {
-            Ok(b) => {
-                info!(
-                    "run_file_integrity: got build, files={}, manifest_hash={}",
-                    b.file_manifest_json.files().len(),
-                    &b.file_manifest_hash[..std::cmp::min(16, b.file_manifest_hash.len())]
-                );
-                b
-            },
-            Err(e) => {
-                warn!("run_file_integrity: failed to fetch build: {}", e);
-                return Err(e);
-            },
-        };
-
-        // Convert registry manifest to file_integrity manifest
-        // Convert HashMap to BTreeMap for deterministic ordering
-        let files_btree: BTreeMap<String, String> = build
-            .file_manifest_json
-            .files()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.clone()))
-            .collect();
-
-        info!(
-            "run_file_integrity: registry returned {} files, file_manifest_hash='{}'",
-            build.file_manifest_json.files().len(),
-            &build.file_manifest_hash
-        );
-
-        // Log if manifest is empty - this would cause 0 files checked
-        if files_btree.is_empty() {
-            warn!("run_file_integrity: WARNING - registry returned EMPTY file manifest!");
-        }
-
-        let manifest = file_integrity::FileManifest {
-            version: build.file_manifest_json.version().to_string(),
-            generated_at: String::new(),
-            files: files_btree,
-            manifest_hash: build.file_manifest_hash.clone(),
-        };
-
-        // Log first 3 file paths from manifest
-        let sample_paths: Vec<_> = manifest.files.keys().take(3).collect();
-        let sample_hashes: Vec<_> = manifest
-            .files
-            .values()
-            .take(3)
-            .map(|h| &h[..std::cmp::min(16, h.len())])
-            .collect();
-        info!(
-            "run_file_integrity: constructed manifest with {} files, hash='{}'\n  sample paths: {:?}\n  sample hashes: {:?}",
-            manifest.files.len(),
-            &manifest.manifest_hash[..std::cmp::min(32, manifest.manifest_hash.len())],
-            sample_paths,
-            sample_hashes
-        );
-
-        let agent_path = Path::new(agent_root);
-        info!(
-            "run_file_integrity: agent_path={:?}, exists={}",
-            agent_path,
-            agent_path.exists()
-        );
-
-        // Run full or partial check based on mode
-        let full_result = if partial_check {
-            file_integrity::check_available(&manifest, agent_path)
-        } else {
-            file_integrity::check_full(&manifest, agent_path)
-        };
-
-        // Run spot check if requested (only for non-partial mode)
-        let spot_result = if spot_count > 0 && !partial_check {
-            Some(file_integrity::check_spot(
-                &manifest, agent_path, spot_count,
-            ))
-        } else {
-            None
-        };
-
-        Ok(IntegrityCheckResult {
-            full: Some(full_result.into()),
-            spot: spot_result.map(|r| r.into()),
-            registry_reachable: true,
-            manifest_version: Some(build.version),
-        })
-    }
-
-    /// Run self-verification (Level 1: recursive integrity check).
-    ///
-    /// Verifies CIRISVerify's own integrity before trusting any results.
-    /// This is the "who watches the watchmen" check.
-    ///
-    /// Binary hash verification and function integrity verification run in parallel.
-    async fn run_self_verification(&self) -> SelfVerificationResult {
-        let version = env!("CARGO_PKG_VERSION");
-        let target = current_target();
-
-        // Compute our own binary hash
-        let binary_hash = match compute_self_hash() {
-            Ok(h) => h,
-            Err(e) => {
-                warn!("Failed to compute self hash: {}", e);
-                return SelfVerificationResult {
-                    binary_valid: false,
-                    functions_valid: false,
-                    valid: false,
-                    binary_version: version.to_string(),
-                    target: target.to_string(),
-                    binary_hash: String::new(),
-                    expected_hash: None,
-                    functions_checked: 0,
-                    functions_passed: 0,
-                    registry_reachable: false,
-                    error: Some(format!("Failed to compute self hash: {}", e)),
-                };
-            },
-        };
-
-        info!(
-            "Self-verification: version={}, target={}, hash={}",
-            version,
-            target,
-            &binary_hash[..16]
-        );
-
-        // Try to fetch binary manifest from registry
-        let client = match &self.registry_client {
-            Some(c) => c,
-            None => {
-                return SelfVerificationResult {
-                    binary_valid: false,
-                    functions_valid: false,
-                    valid: false,
-                    binary_version: version.to_string(),
-                    target: target.to_string(),
-                    binary_hash,
-                    expected_hash: None,
-                    functions_checked: 0,
-                    functions_passed: 0,
-                    registry_reachable: false,
-                    error: Some("Registry client not available".to_string()),
-                };
-            },
-        };
-
-        // Run binary and function verification IN PARALLEL
-        let binary_hash_clone = binary_hash.clone();
-        let (binary_result, function_result) = tokio::join!(
-            // Binary hash verification - returns (valid, expected_hash_opt, available_targets)
-            async {
-                info!("Binary manifest check: fetching for version={}", version);
-                match client.get_binary_manifest(version).await {
-                    Ok(manifest) => {
-                        let available_targets: Vec<String> =
-                            manifest.binaries.keys().cloned().collect();
-                        info!(
-                            "Binary manifest check: got manifest with {} targets: {:?}",
-                            manifest.binaries.len(),
-                            available_targets
-                        );
-                        if let Some(expected) = manifest.binaries.get(target) {
-                            // Strip "sha256:" prefix if present
-                            let expected_clean =
-                                expected.strip_prefix("sha256:").unwrap_or(expected);
-                            let matches = binary_hash_clone == expected_clean;
-                            info!(
-                                "Binary manifest check: target={}, expected={}, actual={}, matches={}",
-                                target,
-                                &expected_clean[..std::cmp::min(16, expected_clean.len())],
-                                &binary_hash_clone[..std::cmp::min(16, binary_hash_clone.len())],
-                                matches
-                            );
-                            (matches, Some(expected_clean.to_string()), available_targets)
-                        } else {
-                            warn!(
-                                "Binary manifest check: no hash for target={}, available={:?}",
-                                target, available_targets
-                            );
-                            (false, None, available_targets)
-                        }
-                    },
-                    Err(e) => {
-                        warn!(
-                            "Binary manifest check: fetch FAILED for version={}, target={}: {}",
-                            version, target, e
-                        );
-                        (false, None, vec![])
-                    },
-                }
-            },
-            // Function integrity verification
-            async {
-                info!(
-                    "Function manifest check: fetching for version={}, target={}",
-                    version, target
-                );
-                match client.get_function_manifest(version, target).await {
-                    Ok(manifest) => {
-                        let result = function_integrity::verify_functions(&manifest);
-                        info!(
-                            "Function manifest check: {}/{} passed, valid={}",
-                            result.functions_passed,
-                            result.functions_checked,
-                            result.integrity_valid
-                        );
-                        (
-                            result.integrity_valid,
-                            result.functions_checked,
-                            result.functions_passed,
-                        )
-                    },
-                    Err(e) => {
-                        warn!("Function manifest check: fetch failed: {}", e);
-                        (false, 0, 0)
-                    },
-                }
-            }
-        );
-
-        let (binary_valid, expected_hash, available_targets) = binary_result;
-        let (functions_valid, functions_checked, functions_passed) = function_result;
-        let valid = binary_valid && functions_valid;
-
-        // Build detailed error message
-        let error = if valid {
-            None
-        } else {
-            let mut errors = Vec::new();
-            if !binary_valid {
-                if expected_hash.is_none() {
-                    errors.push(format!(
-                        "Binary hash not in registry for target '{}'. Available targets: {:?}",
-                        target, available_targets
-                    ));
-                } else {
-                    errors.push("Binary hash mismatch".to_string());
-                }
-            }
-            if !functions_valid {
-                if functions_checked == 0 {
-                    errors.push(format!(
-                        "No function manifest found for target '{}'",
-                        target
-                    ));
-                } else {
-                    errors.push(format!(
-                        "Function integrity failed: {}/{} passed",
-                        functions_passed, functions_checked
-                    ));
-                }
-            }
-            Some(errors.join("; "))
-        };
-
-        SelfVerificationResult {
-            binary_valid,
-            functions_valid,
-            valid,
-            binary_version: version.to_string(),
-            target: target.to_string(),
-            binary_hash,
-            expected_hash,
-            functions_checked,
-            functions_passed,
-            registry_reachable: true,
-            error,
-        }
-    }
-
-    /// Run unified module integrity check.
-    ///
-    /// Cross-validates three sources for each file:
-    /// - Registry manifest (expected hashes)
-    /// - Disk (computed from agent_root if file exists)
-    /// - Agent-provided hashes (from request.python_hashes)
-    ///
-    /// Flags files that appear in both disk AND agent lists for cross-validation.
-    async fn run_module_integrity(
-        &self,
-        version: &str,
-        agent_root: Option<&str>,
-        agent_hashes: Option<&BTreeMap<String, String>>,
-        excluded_extensions: &[&str],
-    ) -> Result<ModuleIntegrityResult, VerifyError> {
-        use sha2::{Digest, Sha256};
-        use std::collections::HashSet;
-
-        info!(
-            "run_module_integrity: version={}, agent_root={:?}, agent_hashes={}",
-            version,
-            agent_root,
-            agent_hashes.map(|h| h.len()).unwrap_or(0)
-        );
-
-        // Fetch registry manifest
-        let client = self
-            .registry_client
-            .as_ref()
-            .ok_or_else(|| VerifyError::HttpsError {
-                message: "Registry client not available".into(),
-            })?;
-
-        let build = client.get_build_by_version(version).await?;
-        let registry_files = build.file_manifest_json.files();
-
-        info!(
-            "run_module_integrity: registry manifest has {} files",
-            registry_files.len()
-        );
-
-        let mut filesystem_verified = Vec::new();
-        let mut agent_verified = Vec::new();
-        let mut cross_validated = Vec::new();
-        let mut disk_agent_mismatch: BTreeMap<String, DiskAgentMismatch> = BTreeMap::new();
-        let mut registry_mismatch: BTreeMap<String, RegistryMismatch> = BTreeMap::new();
-        let mut missing = Vec::new();
-        let mut unexpected = Vec::new();
-        let mut excluded = Vec::new();
-
-        // Track which agent paths we've processed (to find unexpected)
-        let mut processed_agent_paths: HashSet<String> = HashSet::new();
-
-        // Helper to normalize path for comparison
-        let normalize_path = |p: &str| -> String {
-            p.trim_start_matches("./")
-                .trim_start_matches('/')
-                .to_string()
-        };
-
-        // Helper to find agent hash for a manifest path
-        let find_agent_hash = |manifest_path: &str| -> Option<String> {
-            let agent_hashes = agent_hashes?;
-            let normalized = normalize_path(manifest_path);
-
-            // 1. Exact match
-            if let Some(h) = agent_hashes.get(&normalized) {
-                return Some(h.clone());
-            }
-            if let Some(h) = agent_hashes.get(manifest_path) {
-                return Some(h.clone());
-            }
-
-            // 2. Suffix match
-            let suffix = format!("/{}", normalized);
-            for (agent_path, hash) in agent_hashes {
-                if agent_path.ends_with(&suffix) || normalize_path(agent_path) == normalized {
-                    return Some(hash.clone());
-                }
-            }
-
-            None
-        };
-
-        // Helper to compute file hash from disk
-        let compute_disk_hash = |file_path: &Path| -> Option<String> {
-            if !file_path.exists() {
-                return None;
-            }
-            match std::fs::read(file_path) {
-                Ok(contents) => {
-                    let mut hasher = Sha256::new();
-                    hasher.update(&contents);
-                    Some(hex::encode(hasher.finalize()))
-                },
-                Err(_) => None,
-            }
-        };
-
-        // Process each file in registry manifest
-        for (manifest_path, registry_hash) in registry_files {
-            // Check if excluded by extension
-            if excluded_extensions
-                .iter()
-                .any(|ext| manifest_path.ends_with(ext))
-            {
-                excluded.push(manifest_path.clone());
-                continue;
-            }
-
-            // Strip sha256: prefix if present
-            let registry_hash_clean = registry_hash
-                .strip_prefix("sha256:")
-                .unwrap_or(registry_hash);
-
-            // Get disk hash if agent_root provided
-            let disk_hash = agent_root.and_then(|root| {
-                let file_path = Path::new(root).join(normalize_path(manifest_path));
-                compute_disk_hash(&file_path)
-            });
-
-            // Get agent-provided hash
-            let agent_hash = find_agent_hash(manifest_path);
-
-            // Track that we've processed this agent path
-            if agent_hash.is_some() {
-                processed_agent_paths.insert(normalize_path(manifest_path));
-            }
-
-            // Cross-validate based on what sources we have
-            match (disk_hash.as_ref(), agent_hash.as_ref()) {
-                (Some(disk), Some(agent)) => {
-                    // BOTH sources available - cross-validate
-                    let disk_matches_registry = disk == registry_hash_clean;
-                    let agent_matches_registry = agent == registry_hash_clean;
-                    let disk_matches_agent = disk == agent;
-
-                    if disk_matches_registry && agent_matches_registry && disk_matches_agent {
-                        // All three match - strongest verification
-                        cross_validated.push(manifest_path.clone());
-                    } else if !disk_matches_agent {
-                        // Disk != Agent - red flag!
-                        disk_agent_mismatch.insert(
-                            manifest_path.clone(),
-                            DiskAgentMismatch {
-                                disk_hash: disk.clone(),
-                                agent_hash: agent.clone(),
-                                registry_hash: registry_hash_clean.to_string(),
-                                registry_match: if disk_matches_registry {
-                                    "disk".to_string()
-                                } else if agent_matches_registry {
-                                    "agent".to_string()
-                                } else {
-                                    "neither".to_string()
-                                },
-                            },
-                        );
-                    } else if !disk_matches_registry {
-                        // Disk == Agent but both != Registry
-                        registry_mismatch.insert(
-                            manifest_path.clone(),
-                            RegistryMismatch {
-                                disk_hash: Some(disk.clone()),
-                                agent_hash: Some(agent.clone()),
-                                registry_hash: registry_hash_clean.to_string(),
-                                source: "both".to_string(),
-                            },
-                        );
-                    }
-                },
-                (Some(disk), None) => {
-                    // Only disk available
-                    if disk == registry_hash_clean {
-                        filesystem_verified.push(manifest_path.clone());
-                    } else {
-                        registry_mismatch.insert(
-                            manifest_path.clone(),
-                            RegistryMismatch {
-                                disk_hash: Some(disk.clone()),
-                                agent_hash: None,
-                                registry_hash: registry_hash_clean.to_string(),
-                                source: "disk".to_string(),
-                            },
-                        );
-                    }
-                },
-                (None, Some(agent)) => {
-                    // Only agent hash available (e.g., Chaquopy files not on disk)
-                    if agent == registry_hash_clean {
-                        agent_verified.push(manifest_path.clone());
-                    } else {
-                        registry_mismatch.insert(
-                            manifest_path.clone(),
-                            RegistryMismatch {
-                                disk_hash: None,
-                                agent_hash: Some(agent.clone()),
-                                registry_hash: registry_hash_clean.to_string(),
-                                source: "agent".to_string(),
-                            },
-                        );
-                    }
-                },
-                (None, None) => {
-                    // File not found anywhere
-                    missing.push(manifest_path.clone());
-                },
-            }
-        }
-
-        // Find unexpected files (in agent hashes but not in manifest)
-        if let Some(agent_hashes) = agent_hashes {
-            for agent_path in agent_hashes.keys() {
-                let normalized = normalize_path(agent_path);
-                if !processed_agent_paths.contains(&normalized) {
-                    // Check if it's in manifest with a different path form
-                    let in_manifest = registry_files.keys().any(|mp| {
-                        normalize_path(mp) == normalized
-                            || mp.ends_with(&format!("/{}", normalized))
-                    });
-                    if !in_manifest {
-                        unexpected.push(agent_path.clone());
-                    }
-                }
-            }
-        }
-
-        let verified_count =
-            filesystem_verified.len() + agent_verified.len() + cross_validated.len();
-        let failed_count = disk_agent_mismatch.len() + registry_mismatch.len();
-        let valid = failed_count == 0 && missing.is_empty();
-
-        let summary = ModuleIntegritySummary {
-            total_manifest: registry_files.len(),
-            verified: verified_count,
-            failed: failed_count,
-            missing: missing.len(),
-            excluded: excluded.len(),
-            cross_validated: cross_validated.len(),
-        };
-
-        info!(
-            "run_module_integrity: verified={}, failed={}, missing={}, cross_validated={}",
-            verified_count,
-            failed_count,
-            missing.len(),
-            cross_validated.len()
-        );
-
-        let missing_count = missing.len();
-
-        Ok(ModuleIntegrityResult {
-            valid,
-            manifest_file_count: registry_files.len(),
-            filesystem_verified,
-            agent_verified,
-            cross_validated,
-            disk_agent_mismatch,
-            registry_mismatch,
-            missing,
-            unexpected,
-            excluded,
-            summary,
-            manifest_version: Some(build.version.clone()),
-            error: if valid {
-                None
-            } else {
-                Some(format!(
-                    "{} files failed, {} missing",
-                    failed_count, missing_count
-                ))
-            },
-        })
-    }
-
     // =========================================================================
     // Functions that accept PRE-FETCHED data (no network calls)
     // Used by Phase 2 of run_attestation for maximum parallelism
@@ -2025,7 +1455,7 @@ impl UnifiedAttestationEngine {
                     registry_reachable: false,
                     error: Some(format!("Failed to compute self hash: {}", e)),
                 };
-            }
+            },
         };
 
         info!(
@@ -2036,28 +1466,28 @@ impl UnifiedAttestationEngine {
         );
 
         // Binary hash verification using pre-fetched manifest
-        let (binary_valid, expected_hash, available_targets) = if let Some(manifest) = binary_manifest
-        {
-            let available_targets: Vec<String> = manifest.binaries.keys().cloned().collect();
-            if let Some(expected) = manifest.binaries.get(target) {
-                let expected_clean = expected.strip_prefix("sha256:").unwrap_or(expected);
-                let matches = binary_hash == expected_clean;
-                info!(
-                    "Binary check (pre-fetched): target={}, matches={}",
-                    target, matches
-                );
-                (matches, Some(expected_clean.to_string()), available_targets)
+        let (binary_valid, expected_hash, available_targets) =
+            if let Some(manifest) = binary_manifest {
+                let available_targets: Vec<String> = manifest.binaries.keys().cloned().collect();
+                if let Some(expected) = manifest.binaries.get(target) {
+                    let expected_clean = expected.strip_prefix("sha256:").unwrap_or(expected);
+                    let matches = binary_hash == expected_clean;
+                    info!(
+                        "Binary check (pre-fetched): target={}, matches={}",
+                        target, matches
+                    );
+                    (matches, Some(expected_clean.to_string()), available_targets)
+                } else {
+                    warn!(
+                        "Binary check (pre-fetched): no hash for target={}, available={:?}",
+                        target, available_targets
+                    );
+                    (false, None, available_targets)
+                }
             } else {
-                warn!(
-                    "Binary check (pre-fetched): no hash for target={}, available={:?}",
-                    target, available_targets
-                );
-                (false, None, available_targets)
-            }
-        } else {
-            warn!("Binary check (pre-fetched): no manifest available");
-            (false, None, vec![])
-        };
+                warn!("Binary check (pre-fetched): no manifest available");
+                (false, None, vec![])
+            };
 
         // Function integrity verification using pre-fetched manifest
         let (functions_valid, functions_checked, functions_passed) =
@@ -2167,7 +1597,9 @@ impl UnifiedAttestationEngine {
 
         // Run spot check if requested (only for non-partial mode)
         let spot_result = if spot_count > 0 && !partial_check {
-            Some(file_integrity::check_spot(&manifest, agent_path, spot_count))
+            Some(file_integrity::check_spot(
+                &manifest, agent_path, spot_count,
+            ))
         } else {
             None
         };
@@ -2251,7 +1683,7 @@ impl UnifiedAttestationEngine {
                     let mut hasher = Sha256::new();
                     hasher.update(&contents);
                     Some(hex::encode(hasher.finalize()))
-                }
+                },
                 Err(_) => None,
             }
         };
@@ -2315,7 +1747,7 @@ impl UnifiedAttestationEngine {
                             },
                         );
                     }
-                }
+                },
                 (Some(disk), None) => {
                     if disk == registry_hash_clean {
                         filesystem_verified.push(manifest_path.clone());
@@ -2330,7 +1762,7 @@ impl UnifiedAttestationEngine {
                             },
                         );
                     }
-                }
+                },
                 (None, Some(agent)) => {
                     if agent == registry_hash_clean {
                         agent_verified.push(manifest_path.clone());
@@ -2345,10 +1777,10 @@ impl UnifiedAttestationEngine {
                             },
                         );
                     }
-                }
+                },
                 (None, None) => {
                     missing.push(manifest_path.clone());
-                }
+                },
             }
         }
 
@@ -2406,7 +1838,10 @@ impl UnifiedAttestationEngine {
             error: if valid {
                 None
             } else {
-                Some(format!("{} files failed, {} missing", failed_count, missing_count))
+                Some(format!(
+                    "{} files failed, {} missing",
+                    failed_count, missing_count
+                ))
             },
         })
     }

@@ -1365,24 +1365,22 @@ pub struct ResilientRegistryClient {
     primary: RegistryClient,
     /// Fallback registry clients.
     fallbacks: Vec<RegistryClient>,
-    /// Timeout for individual requests.
-    timeout: Duration,
 }
 
 impl ResilientRegistryClient {
     /// Create a new resilient client with primary and fallback endpoints.
-    pub fn new(primary_url: &str, fallback_urls: &[&str], timeout: Duration) -> Result<Self, VerifyError> {
+    pub fn new(
+        primary_url: &str,
+        fallback_urls: &[&str],
+        timeout: Duration,
+    ) -> Result<Self, VerifyError> {
         let primary = RegistryClient::new(primary_url, timeout)?;
         let fallbacks = fallback_urls
             .iter()
             .filter_map(|url| RegistryClient::new(url, timeout).ok())
             .collect();
 
-        Ok(Self {
-            primary,
-            fallbacks,
-            timeout,
-        })
+        Ok(Self { primary, fallbacks })
     }
 
     /// Create with default endpoints.
@@ -1402,7 +1400,7 @@ impl ResilientRegistryClient {
             Ok(build) => return Ok(build),
             Err(e) => {
                 warn!("Primary registry failed for build/{}: {}", version, e);
-            }
+            },
         }
 
         // Try fallbacks
@@ -1411,10 +1409,10 @@ impl ResilientRegistryClient {
                 Ok(build) => {
                     info!("Fallback[{}] succeeded for build/{}", i, version);
                     return Ok(build);
-                }
+                },
                 Err(e) => {
                     warn!("Fallback[{}] failed for build/{}: {}", i, version, e);
-                }
+                },
             }
         }
 
@@ -1427,7 +1425,10 @@ impl ResilientRegistryClient {
     pub async fn get_binary_manifest(&self, version: &str) -> Result<BinaryManifest, VerifyError> {
         match self.primary.get_binary_manifest(version).await {
             Ok(m) => return Ok(m),
-            Err(e) => warn!("Primary registry failed for binary-manifest/{}: {}", version, e),
+            Err(e) => warn!(
+                "Primary registry failed for binary-manifest/{}: {}",
+                version, e
+            ),
         }
 
         for (i, fallback) in self.fallbacks.iter().enumerate() {
@@ -1435,13 +1436,19 @@ impl ResilientRegistryClient {
                 Ok(m) => {
                     info!("Fallback[{}] succeeded for binary-manifest/{}", i, version);
                     return Ok(m);
-                }
-                Err(e) => warn!("Fallback[{}] failed for binary-manifest/{}: {}", i, version, e),
+                },
+                Err(e) => warn!(
+                    "Fallback[{}] failed for binary-manifest/{}: {}",
+                    i, version, e
+                ),
             }
         }
 
         Err(VerifyError::HttpsError {
-            message: format!("All registry endpoints failed for binary-manifest/{}", version),
+            message: format!(
+                "All registry endpoints failed for binary-manifest/{}",
+                version
+            ),
         })
     }
 
@@ -1453,21 +1460,33 @@ impl ResilientRegistryClient {
     ) -> Result<crate::security::function_integrity::FunctionManifest, VerifyError> {
         match self.primary.get_function_manifest(version, target).await {
             Ok(m) => return Ok(m),
-            Err(e) => warn!("Primary registry failed for function-manifest/{}/{}: {}", version, target, e),
+            Err(e) => warn!(
+                "Primary registry failed for function-manifest/{}/{}: {}",
+                version, target, e
+            ),
         }
 
         for (i, fallback) in self.fallbacks.iter().enumerate() {
             match fallback.get_function_manifest(version, target).await {
                 Ok(m) => {
-                    info!("Fallback[{}] succeeded for function-manifest/{}/{}", i, version, target);
+                    info!(
+                        "Fallback[{}] succeeded for function-manifest/{}/{}",
+                        i, version, target
+                    );
                     return Ok(m);
-                }
-                Err(e) => warn!("Fallback[{}] failed for function-manifest/{}/{}: {}", i, version, target, e),
+                },
+                Err(e) => warn!(
+                    "Fallback[{}] failed for function-manifest/{}/{}: {}",
+                    i, version, target, e
+                ),
             }
         }
 
         Err(VerifyError::HttpsError {
-            message: format!("All registry endpoints failed for function-manifest/{}/{}", version, target),
+            message: format!(
+                "All registry endpoints failed for function-manifest/{}/{}",
+                version, target
+            ),
         })
     }
 
@@ -1478,7 +1497,10 @@ impl ResilientRegistryClient {
     ) -> Result<KeyVerificationResponse, VerifyError> {
         match self.primary.verify_key_by_fingerprint(fingerprint).await {
             Ok(r) => return Ok(r),
-            Err(e) => warn!("Primary registry failed for verify/key/{}: {}", fingerprint, e),
+            Err(e) => warn!(
+                "Primary registry failed for verify/key/{}: {}",
+                fingerprint, e
+            ),
         }
 
         for (i, fallback) in self.fallbacks.iter().enumerate() {
@@ -1486,13 +1508,19 @@ impl ResilientRegistryClient {
                 Ok(r) => {
                     info!("Fallback[{}] succeeded for verify/key/{}", i, fingerprint);
                     return Ok(r);
-                }
-                Err(e) => warn!("Fallback[{}] failed for verify/key/{}: {}", i, fingerprint, e),
+                },
+                Err(e) => warn!(
+                    "Fallback[{}] failed for verify/key/{}: {}",
+                    i, fingerprint, e
+                ),
             }
         }
 
         Err(VerifyError::HttpsError {
-            message: format!("All registry endpoints failed for verify/key/{}", fingerprint),
+            message: format!(
+                "All registry endpoints failed for verify/key/{}",
+                fingerprint
+            ),
         })
     }
 
