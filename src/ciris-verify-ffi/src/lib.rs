@@ -490,6 +490,37 @@ unsafe fn validate_handle(
     Ok(&*handle)
 }
 
+/// Minimum valid pointer address.
+/// Pointers below this are almost certainly invalid - either null, or an argument
+/// shift bug where a length/count was passed instead of a pointer.
+/// 64KB covers the null guard page on most platforms.
+const MIN_VALID_PTR: usize = 0x10000;
+
+/// Check if a pointer value looks valid (not null or suspiciously small).
+/// Returns true if the pointer is likely valid, false otherwise.
+#[inline]
+#[allow(dead_code)]
+fn is_valid_ptr<T>(ptr: *const T) -> bool {
+    let addr = ptr as usize;
+    addr >= MIN_VALID_PTR
+}
+
+/// Validate a pointer and return an error message if invalid.
+/// Returns None if valid, Some(error_message) if invalid.
+fn validate_ptr<T>(ptr: *const T, name: &str) -> Option<String> {
+    let addr = ptr as usize;
+    if addr == 0 {
+        Some(format!("{} is null", name))
+    } else if addr < MIN_VALID_PTR {
+        Some(format!(
+            "{} has invalid address {:#x} (below {:#x}, likely argument shift bug - check FFI call)",
+            name, addr, MIN_VALID_PTR
+        ))
+    } else {
+        None
+    }
+}
+
 /// Error codes returned by FFI functions.
 #[repr(C)]
 pub enum CirisVerifyError {
@@ -952,17 +983,28 @@ unsafe fn get_status_inner(
         request_len
     );
 
-    // Validate arguments
-    if handle.is_null()
-        || request_data.is_null()
-        || response_data.is_null()
-        || response_len.is_null()
-    {
-        tracing::error!("ciris_verify_get_status: invalid arguments (null pointer)");
+    // Validate handle with magic number check
+    let handle = match validate_handle(handle) {
+        Ok(h) => h,
+        Err(code) => {
+            tracing::error!("ciris_verify_get_status: invalid handle");
+            return code;
+        },
+    };
+
+    // Validate other pointers (catches argument shift bugs)
+    if let Some(err) = validate_ptr(request_data, "request_data") {
+        tracing::error!("ciris_verify_get_status: {}", err);
         return CirisVerifyError::InvalidArgument as i32;
     }
-
-    let handle = &*handle;
+    if let Some(err) = validate_ptr(response_data, "response_data") {
+        tracing::error!("ciris_verify_get_status: {}", err);
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+    if let Some(err) = validate_ptr(response_len, "response_len") {
+        tracing::error!("ciris_verify_get_status: {}", err);
+        return CirisVerifyError::InvalidArgument as i32;
+    }
     let request_bytes = std::slice::from_raw_parts(request_data, request_len);
 
     // Deserialize request
@@ -1134,12 +1176,28 @@ unsafe fn check_capability_inner(
         required_tier
     );
 
-    if handle.is_null() || capability.is_null() || action.is_null() || allowed.is_null() {
-        tracing::error!("ciris_verify_check_capability: invalid arguments");
+    // Validate handle with magic number check
+    let handle = match validate_handle(handle) {
+        Ok(h) => h,
+        Err(code) => {
+            tracing::error!("ciris_verify_check_capability: invalid handle");
+            return code;
+        },
+    };
+
+    // Validate other pointers (catches argument shift bugs)
+    if let Some(err) = validate_ptr(capability, "capability") {
+        tracing::error!("ciris_verify_check_capability: {}", err);
         return CirisVerifyError::InvalidArgument as i32;
     }
-
-    let handle = &*handle;
+    if let Some(err) = validate_ptr(action, "action") {
+        tracing::error!("ciris_verify_check_capability: {}", err);
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+    if let Some(err) = validate_ptr(allowed, "allowed") {
+        tracing::error!("ciris_verify_check_capability: {}", err);
+        return CirisVerifyError::InvalidArgument as i32;
+    }
 
     let capability_str = match std::ffi::CStr::from_ptr(capability).to_str() {
         Ok(s) => s,
@@ -3017,17 +3075,27 @@ unsafe fn verify_integrity_token_inner(
 
     tracing::debug!("verify_integrity_token: handle validated");
 
-    // Null pointer checks for other arguments
-    if token.is_null() {
-        tracing::error!("verify_integrity_token: null token");
+    // Defensive pointer validation - check for null AND suspiciously small values
+    // This catches argument shift bugs where a length/count is passed instead of a pointer
+    tracing::debug!(
+        "verify_integrity_token: ptr addresses - token={:#x}, nonce={:#x}, result_json={:#x}, result_len={:#x}",
+        token as usize, nonce as usize, result_json as usize, result_len as usize
+    );
+
+    if let Some(err) = validate_ptr(token, "token") {
+        tracing::error!("verify_integrity_token: {}", err);
         return CirisVerifyError::InvalidArgument as i32;
     }
-    if nonce.is_null() {
-        tracing::error!("verify_integrity_token: null nonce");
+    if let Some(err) = validate_ptr(nonce, "nonce") {
+        tracing::error!("verify_integrity_token: {}", err);
         return CirisVerifyError::InvalidArgument as i32;
     }
-    if result_json.is_null() || result_len.is_null() {
-        tracing::error!("verify_integrity_token: null output pointers");
+    if let Some(err) = validate_ptr(result_json, "result_json") {
+        tracing::error!("verify_integrity_token: {}", err);
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+    if let Some(err) = validate_ptr(result_len, "result_len") {
+        tracing::error!("verify_integrity_token: {}", err);
         return CirisVerifyError::InvalidArgument as i32;
     }
 
