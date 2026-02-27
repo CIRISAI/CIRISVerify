@@ -457,7 +457,9 @@ impl CirisVerifyHandle {
 
 /// Validate a handle pointer and return a reference if valid.
 /// Returns InvalidArgument error code if handle is null or corrupted.
-unsafe fn validate_handle(handle: *mut CirisVerifyHandle) -> Result<&'static CirisVerifyHandle, i32> {
+unsafe fn validate_handle(
+    handle: *mut CirisVerifyHandle,
+) -> Result<&'static CirisVerifyHandle, i32> {
     if handle.is_null() {
         tracing::error!("Handle is null");
         return Err(CirisVerifyError::InvalidArgument as i32);
@@ -472,9 +474,7 @@ unsafe fn validate_handle(handle: *mut CirisVerifyHandle) -> Result<&'static Cir
     let magic = *magic_ptr;
 
     if magic == HANDLE_FREED {
-        tracing::error!(
-            "Handle has been freed (use-after-free detected) - magic is DEAD_BEEF"
-        );
+        tracing::error!("Handle has been freed (use-after-free detected) - magic is DEAD_BEEF");
         return Err(CirisVerifyError::InvalidArgument as i32);
     }
 
@@ -3012,7 +3012,7 @@ unsafe fn verify_integrity_token_inner(
         Err(code) => {
             tracing::error!("verify_integrity_token: invalid handle");
             return code;
-        }
+        },
     };
 
     tracing::debug!("verify_integrity_token: handle validated");
@@ -3119,7 +3119,10 @@ unsafe fn verify_integrity_token_inner(
     // Cache result for run_attestation L2 (with mutex error handling)
     tracing::debug!("verify_integrity_token: about to access device_attestation_cache");
     tracing::debug!("verify_integrity_token: handle_ref ptr = {:p}", handle_ref);
-    tracing::debug!("verify_integrity_token: cache field addr = {:p}", &handle_ref.device_attestation_cache);
+    tracing::debug!(
+        "verify_integrity_token: cache field addr = {:p}",
+        &handle_ref.device_attestation_cache
+    );
 
     match handle_ref.device_attestation_cache.lock() {
         Ok(mut cache) => {
@@ -3203,7 +3206,10 @@ fn verify_integrity_token_blocking(
         .map_err(|e| ciris_verify_core::VerifyError::HttpsError {
             message: format!("Play Integrity verify request failed: {}", e),
         })?;
-    tracing::debug!("verify_integrity_token_blocking: POST request completed, status={}", response.status());
+    tracing::debug!(
+        "verify_integrity_token_blocking: POST request completed, status={}",
+        response.status()
+    );
 
     if response.status() != 200 {
         return Err(ciris_verify_core::VerifyError::HttpsError {
