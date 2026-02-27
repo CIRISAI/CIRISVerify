@@ -3038,16 +3038,28 @@ unsafe fn verify_integrity_token_inner(
     const MAX_TOKEN_LEN: usize = 65536;
     const MAX_NONCE_LEN: usize = 256;
 
+    tracing::debug!("verify_integrity_token: about to parse token string");
+    tracing::debug!("verify_integrity_token: token ptr = {:p}", token);
+
     let token_str = match safe_cstr_to_str(token, MAX_TOKEN_LEN) {
-        Ok(s) => s,
+        Ok(s) => {
+            tracing::debug!("verify_integrity_token: token parsed, len={}", s.len());
+            s
+        },
         Err(e) => {
             tracing::error!("verify_integrity_token: invalid token string: {}", e);
             return CirisVerifyError::InvalidArgument as i32;
         },
     };
 
+    tracing::debug!("verify_integrity_token: about to parse nonce string");
+    tracing::debug!("verify_integrity_token: nonce ptr = {:p}", nonce);
+
     let nonce_str = match safe_cstr_to_str(nonce, MAX_NONCE_LEN) {
-        Ok(s) => s,
+        Ok(s) => {
+            tracing::debug!("verify_integrity_token: nonce parsed, len={}", s.len());
+            s
+        },
         Err(e) => {
             tracing::error!("verify_integrity_token: invalid nonce string: {}", e);
             return CirisVerifyError::InvalidArgument as i32;
@@ -3055,6 +3067,7 @@ unsafe fn verify_integrity_token_inner(
     };
 
     // Validate strings are not empty
+    tracing::debug!("verify_integrity_token: checking if strings are empty");
     if token_str.is_empty() {
         tracing::error!("verify_integrity_token: empty token");
         return CirisVerifyError::InvalidArgument as i32;
@@ -3064,11 +3077,13 @@ unsafe fn verify_integrity_token_inner(
         return CirisVerifyError::InvalidArgument as i32;
     }
 
+    tracing::debug!("verify_integrity_token: strings validated, about to log info");
     tracing::info!(
         "Verifying Play Integrity token (len={}, nonce={}...)",
         token_str.len(),
         &nonce_str[..nonce_str.len().min(16)]
     );
+    tracing::debug!("verify_integrity_token: info logged, proceeding to HTTP");
 
     // Use mobile blocking HTTP on Android/iOS to avoid tokio async I/O issues
     #[cfg(any(target_os = "android", target_os = "ios"))]
