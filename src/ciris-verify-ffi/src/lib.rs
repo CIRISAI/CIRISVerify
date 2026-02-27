@@ -3276,7 +3276,7 @@ fn verify_integrity_token_blocking(
     tracing::debug!("Mobile Play Integrity verify: POST {}", url);
 
     let payload = serde_json::json!({
-        "token": token,
+        "integrity_token": token,
         "nonce": nonce,
     });
     tracing::debug!("verify_integrity_token_blocking: payload created");
