@@ -1083,18 +1083,18 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
         }
     };
 
-    // On iOS, current_exe() returns the app binary, not our dylib.
-    // Use dyld image iteration to find CIRISVerify.framework/CIRISVerify.
-    #[cfg(target_os = "ios")]
+    // On iOS/macOS, current_exe() returns the host app binary (or Python interpreter),
+    // not our dylib. Use dyld image iteration to find libciris_verify_ffi.dylib.
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
     let exe_path = {
         match find_library_path_dyld() {
             Some(path) => {
-                tracing::info!("compute_self_hash (iOS): found dylib at {:?}", path);
+                tracing::info!("compute_self_hash (Apple): found dylib at {:?}", path);
                 path
             },
             None => {
                 tracing::warn!(
-                    "compute_self_hash (iOS): dylib not found in dyld images, falling back to current_exe()"
+                    "compute_self_hash (Apple): dylib not found in dyld images, falling back to current_exe()"
                 );
                 std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
                     message: format!("Cannot determine executable path: {}", e),
@@ -1124,8 +1124,13 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
         }
     };
 
-    // On macOS/Windows, use current_exe() (standalone binary usage)
-    #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "linux")))]
+    // On Windows (and other platforms), use current_exe() (standalone binary usage)
+    #[cfg(not(any(
+        target_os = "android",
+        target_os = "ios",
+        target_os = "macos",
+        target_os = "linux"
+    )))]
     let exe_path = std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
         message: format!("Cannot determine executable path: {}", e),
     })?;
@@ -1297,7 +1302,10 @@ fn find_library_path_linux(lib_name: &str) -> Option<std::path::PathBuf> {
     let maps_file = match File::open("/proc/self/maps") {
         Ok(f) => f,
         Err(e) => {
-            tracing::warn!("find_library_path_linux: cannot open /proc/self/maps: {}", e);
+            tracing::warn!(
+                "find_library_path_linux: cannot open /proc/self/maps: {}",
+                e
+            );
             return None;
         },
     };
@@ -1319,7 +1327,11 @@ fn find_library_path_linux(lib_name: &str) -> Option<std::path::PathBuf> {
             if parts.len() >= 6 {
                 let full_path = parts[5..].join(" ");
                 if full_path.contains(lib_name) {
-                    tracing::info!("find_library_path_linux: found {} at {}", lib_name, full_path);
+                    tracing::info!(
+                        "find_library_path_linux: found {} at {}",
+                        lib_name,
+                        full_path
+                    );
                     return Some(std::path::PathBuf::from(full_path));
                 }
             }
@@ -1338,7 +1350,7 @@ fn find_library_path_linux(lib_name: &str) -> Option<std::path::PathBuf> {
 /// Iterates all loaded dyld images to find one whose name contains
 /// `libciris_verify_ffi` or `CIRISVerify`. This matches the same approach
 /// used by `get_code_base_macos()` in function_integrity.rs.
-#[cfg(target_os = "ios")]
+#[cfg(any(target_os = "ios", target_os = "macos"))]
 fn find_library_path_dyld() -> Option<std::path::PathBuf> {
     extern "C" {
         fn _dyld_image_count() -> u32;
