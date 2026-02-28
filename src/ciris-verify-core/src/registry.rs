@@ -1395,9 +1395,22 @@ fn find_library_path_dyld() -> Option<std::path::PathBuf> {
 
 /// Get the current target platform name at compile time.
 ///
-/// Returns the Rust target triple directly - the registry uses these
-/// as keys (e.g., `aarch64-linux-android`, `x86_64-unknown-linux-gnu`).
+/// Returns platform-appropriate target names:
+/// - Desktop/iOS: Rust target triples (e.g., `x86_64-unknown-linux-gnu`)
+/// - Android: ABI names (e.g., `android-arm64-v8a`) to match registry manifest
 pub fn current_target() -> &'static str {
+    // Android: use ABI names to match registry manifest conventions
+    #[cfg(all(target_arch = "aarch64", target_os = "android"))]
+    return "android-arm64-v8a";
+
+    #[cfg(all(target_arch = "arm", target_os = "android"))]
+    return "android-armeabi-v7a";
+
+    #[cfg(all(target_arch = "x86_64", target_os = "android"))]
+    return "android-x86_64";
+
+    // All other platforms: use Rust target triple
+    #[cfg(not(target_os = "android"))]
     env!("TARGET")
 }
 
