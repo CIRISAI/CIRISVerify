@@ -1,22 +1,55 @@
 # How CIRISVerify Works
 
-**Last Updated**: 2026-02-22 (v0.6.17)
+**Last Updated**: 2026-02-28 (v1.0.8)
 
-CIRISVerify is a Rust shared library (`libciris_verify_ffi`) with Python bindings (`ciris-verify`) that serves as the trust anchor for the CIRIS ecosystem. Think of it as the **DMV for AI agents** — it handles identity, integrity, and accountability.
+> **Disclaimer**: This is research software exploring approaches to AI agent verification and accountability. It is not a complete security solution. No software can provide absolute protection against determined adversaries. This documentation is provided for educational and research purposes to inform the broader AI alignment community. We make no warranties and accept no liability.
+
+CIRISVerify is a Rust shared library (`libciris_verify_ffi`) with Python bindings (`ciris-verify`) that attempts to provide a trust anchor for the CIRIS ecosystem. Think of it as a **DMV for AI agents** — it tries to verify identity, integrity, and accountability.
+
+**Technical Deep Dives**: For implementation details, see:
+- [Binary Self-Verification](./BINARY_SELF_VERIFICATION.md) - How the library verifies itself across platforms
+- [Threat Model](./THREAT_MODEL.md) - Security analysis and attack vectors
+- [Registry Binary Manifest](./REGISTRY_BINARY_MANIFEST.md) - API specification
 
 ---
 
-## The Driving Analogy
+## The DMV Analogy
 
-Every car on the road needs three things. Every CIRIS agent needs the same three:
+Every car on the road needs three things to legally operate. Every CIRIS agent needs the same three:
 
-| Road Requirement | CIRISVerify Equivalent | What It Proves |
-|-----------------|----------------------|----------------|
-| **Driver's License** | Hardware-bound Ed25519 signing key | **Who the agent is** — identity cannot be forged or transferred |
-| **Registration & Inspection** | Tripwire file integrity + hardware attestation | **The vehicle is sound** — software hasn't been tampered with, hardware environment is genuine |
-| **Insurance** | License JWT with org ID, responsible human, capability grants | **Who is liable** — which human/organization is accountable, what they're authorized to do |
+| What Your Car Needs | What CIRIS Agents Need | What It Proves |
+|---------------------|------------------------|----------------|
+| **Driver's License** | Hardware-bound Ed25519 signing key | **Who you are** — identity that can't be forged or transferred |
+| **Vehicle Inspection** | Binary integrity + file hash verification | **Your vehicle is safe** — software hasn't been modified or tampered with |
+| **Insurance** | License certificate with org ID & human contact | **Who's responsible** — which organization and human are accountable |
 
-The DMV itself? That's the multi-source validation — CIRISVerify doesn't trust any single source, querying 3 independent endpoints and requiring consensus.
+And just like a DMV doesn't trust a single piece of ID, CIRISVerify queries **3 independent sources** and requires them to agree.
+
+---
+
+## Who Inspects the Inspection Station?
+
+Before verifying anything else, CIRISVerify must prove **it hasn't been tampered with itself**. Just like an inspection station needs its own certification before it can certify cars.
+
+### How Binary Self-Verification Works
+
+1. **Hash Yourself**: CIRISVerify computes a SHA-256 fingerprint of its own binary
+2. **Check the Registry**: Fetches the official fingerprint from CIRISRegistry
+3. **Compare**: If they match, the binary is authentic
+
+The tricky part? Finding "yourself" when you're a library loaded inside another program.
+
+### Platform-Specific Detection
+
+| Platform | How We Find Ourselves |
+|----------|----------------------|
+| **Linux** | Parse `/proc/self/maps` to find `libciris_verify_ffi.so` in memory |
+| **Android** | Same as Linux — Android is Linux under the hood |
+| **macOS** | Iterate Apple's `dyld` image list to find our loaded `.dylib` |
+| **iOS** | Same as macOS, plus special handling for code-signed binaries |
+| **Windows** | Standard executable path lookup |
+
+*For the full technical details, see [Binary Self-Verification Deep Dive](./BINARY_SELF_VERIFICATION.md).*
 
 ---
 
@@ -110,34 +143,36 @@ Every verification returns a `LicenseStatusResponse` containing:
 
 ## Command-Line Interface
 
-CIRISVerify includes a standalone CLI (`ciris-verify`) for diagnostics and verification:
+CIRISVerify includes a standalone CLI (`ciris-verify`) for running inspections manually:
 
 ### Available Commands
 
-| Command | Description | Attestation Level |
-|---------|-------------|-------------------|
-| `ciris-verify` | Show help and explanation | — |
-| `ciris-verify info` | Show system capabilities | — |
-| `ciris-verify sources` | Check DNS/HTTPS validation | Level 3 |
-| `ciris-verify self-check` | Verify binary integrity | Level 2 |
-| `ciris-verify function-check` | Verify FFI function integrity | Runtime |
-| `ciris-verify agent-files` | Verify agent file integrity | Level 4 |
-| `ciris-verify audit-trail` | Verify audit log integrity | Level 5 |
-| `ciris-verify list-manifests` | List available registry manifests | — |
+| Command | What It Does | Car Analogy |
+|---------|--------------|-------------|
+| `ciris-verify` | Show help | Read the DMV handbook |
+| `ciris-verify info` | Show system capabilities | Check what your car supports |
+| `ciris-verify self-check` | Verify binary integrity (Level 2) | Is this inspection station certified? |
+| `ciris-verify sources` | Check registry consensus (Level 3) | Cross-check 3 DMV databases |
+| `ciris-verify function-check` | Verify FFI functions | Check individual inspection equipment |
+| `ciris-verify agent-files` | Verify agent file integrity (Level 4) | Full vehicle inspection |
+| `ciris-verify audit-trail` | Verify audit log integrity (Level 5) | Review complete service history |
+| `ciris-verify list-manifests` | List available manifests | Check what records exist |
 
-### Attestation Levels
+### Attestation Levels — The 5-Point Inspection
 
-CIRISVerify implements progressive trust verification across 5 levels:
+Like a car inspection has multiple checkpoints (brakes, lights, emissions), CIRISVerify has 5 progressive trust levels:
 
-| Level | Name | Verification | CLI Command |
-|-------|------|--------------|-------------|
-| 1 | Library Loaded | Binary executes successfully | (implicit) |
-| 2 | Binary Self-Verification | SHA-256 of THIS binary vs registry | `self-check` |
-| 3 | Registry Cross-Validation | 2/3 consensus from DNS US/EU + HTTPS | `sources` |
-| 4 | Agent File Integrity | SHA-256 of agent files vs manifest | `agent-files` |
-| 5 | Portal Key + Audit Trail | Ed25519 signatures + hash chain | `audit-trail` |
+| Level | The Check | Car Analogy | CLI Command |
+|-------|-----------|-------------|-------------|
+| **1** | Library Loaded | The car starts | (implicit) |
+| **2** | Binary Self-Verification | Is this a real inspection station? | `self-check` |
+| **3** | Registry Cross-Validation | Check 3 independent DMV databases | `sources` |
+| **4** | Agent File Integrity | Vehicle hasn't been modified since manufacture | `agent-files` |
+| **5** | Audit Trail Verification | Complete service history, no gaps | `audit-trail` |
 
-**Critical**: If ANY level fails, ALL higher levels are UNVERIFIED. A compromised Level 2 binary could report "all green" regardless of actual state.
+**Critical**: If ANY level fails, ALL higher levels are UNVERIFIED (shown in yellow). A compromised inspection station (Level 2 fail) could lie about everything else.
+
+*Technical detail: See [Binary Self-Verification](./BINARY_SELF_VERIFICATION.md) for how Level 2 works on each platform.*
 
 ### Example Usage
 
@@ -171,24 +206,24 @@ ciris-verify sources --format json
 
 ## Registry Manifests
 
-CIRISRegistry hosts three types of manifests used for verification:
+CIRISRegistry hosts three types of manifests — think of them as official DMV records:
 
-### 1. Binary Manifest (Level 2)
+### 1. Binary Manifest (Level 2) — "Is This a Real Inspection Station?"
 
-SHA-256 hashes of CIRISVerify binaries for each platform target.
+SHA-256 fingerprints of CIRISVerify binaries for each platform. Used to verify the verifier itself.
 
 **Route**: `GET /v1/verify/binary-manifest/{version}`
 
 ```json
 {
-  "version": "0.6.17",
+  "version": "1.0.8",
   "binaries": {
-    "x86_64-unknown-linux-gnu": "sha256:abc123...",
-    "aarch64-apple-darwin": "sha256:def456...",
-    "x86_64-pc-windows-msvc": "sha256:ghi789...",
-    "aarch64-linux-android": "sha256:jkl012..."
+    "x86_64-unknown-linux-gnu": "sha256:63d2d68b...",
+    "aarch64-apple-darwin": "sha256:9b457096...",
+    "android-arm64-v8a": "sha256:b0b104a8...",
+    "aarch64-apple-ios": "sha256:bcf0bfc0..."
   },
-  "generated_at": "2026-02-22T00:00:00Z"
+  "generated_at": "2026-02-28T00:00:00Z"
 }
 ```
 
@@ -326,7 +361,7 @@ The `LicenseStatus` enum determines agent operating mode:
 | 500 | `LOCKDOWN_INTEGRITY_FAILURE` | Critical integrity failure | Lockdown |
 | 501 | `LOCKDOWN_ATTACK_DETECTED` | Attack pattern detected | Lockdown |
 
-**Fail-secure rule**: Status always degrades to MORE restrictive, never less.
+**Fail-secure intent**: The system is designed to degrade to MORE restrictive modes on failure—though bugs may exist.
 
 ---
 

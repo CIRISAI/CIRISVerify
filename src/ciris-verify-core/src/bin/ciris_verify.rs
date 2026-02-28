@@ -176,123 +176,120 @@ fn print_banner() {
 fn print_explanation() {
     println!(
         r#"
-WHAT IS CIRISVERIFY?
-====================
+THE DMV FOR AI AGENTS
+=====================
 
-CIRISVerify is the cryptographic verification layer that ensures CIRIS agents
-are legitimate. Like a DMV verifying a driver's license, CIRISVerify checks:
+DISCLAIMER: This is research software exploring approaches to AI agent
+verification. It is NOT a complete security solution. No software provides
+absolute protection. Use at your own risk. See LICENSE for details.
 
-  1. BINARY SELF-VERIFICATION
-     Verifies CIRISVerify itself hasn't been tampered with by checking its
-     hash against a registry-hosted manifest. "Who watches the watchmen?"
+Every car needs a license, inspection, and insurance to drive legally.
+Every CIRIS agent needs the same:
 
-  2. SOURCE VALIDATION (DNS/HTTPS)
-     Verifies data from multiple independent sources using a consensus
-     algorithm. HTTPS is authoritative; DNS provides cross-checks.
+  DRIVER'S LICENSE    Hardware-bound signing key - unforgeable identity
+  VEHICLE INSPECTION  Binary + file integrity - no tampering since manufacture
+  INSURANCE           License certificate - who's responsible if something goes wrong
 
-  3. FILE INTEGRITY
-     Verifies agent binaries match the signed manifest from CIRISRegistry,
-     detecting tampering or unauthorized modifications.
+CIRISVerify is the DMV that checks all three.
 
-  4. KEY ATTESTATION + AUDIT TRAIL
-     Verifies the agent has valid hardware-backed credentials and an
-     unbroken cryptographic audit log from genesis.
+THE 5-POINT INSPECTION
+======================
 
-ATTESTATION LEVELS (1-5)
-========================
+  Before trusting an agent, we run a progressive verification:
 
-  The "DMV for AI Agents" - Progressive Trust Verification
+  Level 1: THE CAR STARTS
+     CIRISVerify binary loaded and functional.
+     If this fails, you see nothing - the binary didn't run.
 
-  CRITICAL: If ANY level fails, ALL higher levels show YELLOW (unverified).
-  A compromised verifier binary could report "all green" regardless of state.
+  Level 2: IS THIS A REAL INSPECTION STATION?
+     Before checking anything else, verify the verifier itself.
+     SHA-256 hash of THIS binary checked against registry manifest.
+     "Who watches the watchmen?"
 
-  Level 1: LIBRARY LOADED (green if you see this output)
-     CIRISVerify binary loaded and functional
-     If this fails, you see nothing - the binary didn't run
+     * Linux/Android: Finds itself via /proc/self/maps
+     * macOS/iOS: Iterates dyld loaded images
+     * Windows: Standard executable path
 
-  Level 2: BINARY SELF-VERIFICATION (recursive!)
-     SHA-256 of THIS binary verified against registry manifest
-     "Who watches the watchmen?" - proves the verifier itself is authentic
-     RECURSIVE: Fetches manifest via Level 3, but if Level 2 fails,
-                Level 3-5 results are MEANINGLESS (yellow/unverified)
+  Level 3: CHECK THREE DMV DATABASES
+     Query 3 independent sources (DNS US, DNS EU, HTTPS API).
+     2-of-3 must agree. If they disagree, possible attack.
+     HTTPS is authoritative; DNS provides cross-checks.
 
-  Level 3: REGISTRY CROSS-VALIDATION
-     DNS (US/EU) + HTTPS registry queries (2/3 agreement)
-     Multi-source consensus prevents single point of compromise
-     HTTPS is authoritative, DNS is advisory
+  Level 4: FULL VEHICLE INSPECTION
+     SHA-256 of every agent file against the build manifest.
+     Tripwire-style: any modification = forced shutdown.
+     One tampered byte = inspection failed.
 
-  Level 4: AGENT FILE INTEGRITY
-     SHA-256 of agent files against registry-hosted manifest
-     Tripwire-style tamper detection (spot-check or full)
-     Detects code modifications or injected backdoors
+  Level 5: COMPLETE SERVICE HISTORY
+     Verify the cryptographic audit log from genesis.
+     Unbroken hash chain + Portal-issued signing key.
+     Full provenance of every action.
 
-  Level 5: PORTAL KEY + AUDIT TRAIL
-     Ed25519 key from CIRISPortal + unbroken hash chain
-     Full provenance - key legitimately issued, every action signed
+  CRITICAL: If ANY level fails, ALL higher levels are YELLOW (unverified).
+  A fake inspection station could stamp everything "passed" regardless.
 
-REGISTRY MANIFESTS
-==================
+LIMITATIONS (NOT EXHAUSTIVE)
+============================
 
-  The registry hosts three types of manifests:
+  This software CANNOT protect against:
+  - Fully compromised registry (attacker updates both binary and manifest)
+  - Compromised initial install (malicious app store listing)
+  - Sophisticated runtime attacks (hypervisor, hardware implants)
+  - Bugs in this code or its dependencies
+  - Determined adversaries with sufficient resources
 
-  1. BINARY MANIFEST (/v1/verify/binary-manifest/{{version}})
-     SHA-256 hashes of CIRISVerify binaries for each platform target.
-     Used for Level 2 self-verification.
+  Partial mitigations we attempt (not guarantees):
+  - Multi-source consensus (attacker needs 2+ sources)
+  - Encourage trusted distribution channels
+  - Constant-time comparisons (implementation may have flaws)
 
-  2. FILE MANIFEST (/v1/builds/{{version}})
-     SHA-256 hashes of all CIRISAgent files (Python, configs, etc).
-     Used for Level 4 agent file integrity verification.
-
-  3. FUNCTION MANIFEST (/v1/verify/function-manifest/{{version}}/{{target}})
-     SHA-256 hashes of FFI export functions at the bytecode level.
-     Hybrid-signed (Ed25519 + ML-DSA-65) for post-quantum security.
-     Used for runtime function integrity verification.
-
-TRUST BOUNDARIES
-================
-
-  Binary self-verification does NOT protect against a compromised registry.
-  An attacker controlling the registry could update both binary and manifest.
-
-  Mitigations:
-  - Level 3 multi-source cross-validation (2/3 geographically distributed)
-  - Initial provisioning via trusted app stores:
-    * Android: Google Play Store
-    * iOS: Apple App Store
-    * Python: PyPI (pip install ciris-verify)
-    * Linux: Official package repositories
-
-  The initial provisioning moment is the weakest point in any trust chain.
-  This is true of all trust systems (TLS CAs, PGP web of trust, etc.).
+  This is research software. We make no security guarantees.
 
 COMMANDS
 ========
 
-  ciris-verify sources        Check DNS/HTTPS source validation (Level 3)
-  ciris-verify self-check     Verify this binary's integrity (Level 2)
-  ciris-verify function-check Verify FFI function integrity (runtime)
-  ciris-verify agent-files    Verify agent files against manifest (Level 4)
-  ciris-verify audit-trail    Verify audit log integrity (Level 5)
-  ciris-verify list-manifests List available manifests for a version
-  ciris-verify info           Show system capabilities
-  ciris-verify attest         Run full attestation (all levels)
+  ciris-verify self-check     Is this inspection station certified? (Level 2)
+  ciris-verify sources        Cross-check 3 DMV databases (Level 3)
+  ciris-verify agent-files    Full vehicle inspection (Level 4)
+  ciris-verify audit-trail    Review complete service history (Level 5)
+  ciris-verify function-check Check individual inspection equipment
+  ciris-verify list-manifests What records exist for this version?
+  ciris-verify info           System capabilities
+  ciris-verify attest         Run all levels
 
   Use --help with any command for detailed options.
 
-For more information: https://github.com/CIRISAI/CIRISVerify
+DOCUMENTATION
+=============
+
+  docs/HOW_IT_WORKS.md              Overview of CIRISVerify
+  docs/BINARY_SELF_VERIFICATION.md  How Level 2 works per platform
+  docs/THREAT_MODEL.md              Security analysis
+
+RESEARCH CONTEXT
+================
+
+  This software is part of ongoing AI alignment and safety research.
+  It explores one approach to agent verification—not a complete solution.
+  Contributions, criticism, and security reports are welcome.
+
+  https://github.com/CIRISAI/CIRISVerify
+
+  Licensed under AGPL-3.0. Provided AS-IS with NO WARRANTY.
 "#
     );
 }
 
 async fn run_source_check(dns_us: &str, dns_eu: &str, https: &str, timeout_secs: u64, json: bool) {
     if !json {
-        println!("\nSOURCE VALIDATION CHECK");
-        println!("=======================\n");
+        println!("\nCROSS-CHECK THREE DMV DATABASES (Level 3)");
+        println!("==========================================\n");
+        println!("Querying 3 independent registries. 2-of-3 must agree.\n");
 
-        println!("Configuration:");
+        println!("Sources:");
         println!("  DNS US:  {}", dns_us);
         println!("  DNS EU:  {}", dns_eu);
-        println!("  HTTPS:   {}", https);
+        println!("  HTTPS:   {} (authoritative)", https);
         println!("  Timeout: {}s", timeout_secs);
         println!();
         println!("Running validation...\n");
@@ -442,11 +439,10 @@ async fn run_source_check(dns_us: &str, dns_eu: &str, https: &str, timeout_secs:
 
 async fn run_self_check(registry_url: &str, json: bool) {
     if !json {
-        println!("\nBINARY SELF-VERIFICATION (Level 2)");
-        println!("===================================\n");
-        println!("This verifies the CIRISVerify binary itself hasn't been tampered with.");
-        println!("It computes a SHA-256 hash of the running executable and compares it");
-        println!("against the registry-hosted manifest.\n");
+        println!("\nIS THIS INSPECTION STATION CERTIFIED? (Level 2)");
+        println!("================================================\n");
+        println!("Before trusting any inspection results, verify the inspector.");
+        println!("We hash THIS binary and check it against the official registry.\n");
     }
 
     // Compute self hash
@@ -523,17 +519,18 @@ async fn run_self_check(registry_url: &str, json: bool) {
                     });
                     println!("{}", serde_json::to_string_pretty(&output).unwrap());
                 } else if matches {
-                    println!("\x1b[32m[PASS]\x1b[0m Binary hash matches registry manifest");
+                    println!("\x1b[32m[PASS]\x1b[0m Binary hash matches registry");
                     println!();
-                    println!("Level 2 verification PASSED. This binary is authentic.");
+                    println!("Hash matches the registry manifest for this version/platform.");
+                    println!("This suggests (but does not guarantee) the binary is unmodified.");
                 } else {
-                    println!("\x1b[31m[FAIL]\x1b[0m Binary hash does NOT match registry manifest!");
+                    println!("\x1b[31m[FAIL]\x1b[0m Inspection station NOT certified!");
                     println!();
                     println!("  Expected: {}", expected);
                     println!("  Actual:   {}", self_hash);
                     println!();
                     println!("WARNING: This binary may have been tampered with.");
-                    println!("All subsequent attestation levels are UNVERIFIED.");
+                    println!("All inspection results from this station are SUSPECT.");
                 }
             },
             None => {
@@ -769,9 +766,10 @@ async fn run_agent_files_check(
     json: bool,
 ) {
     if !json {
-        println!("\nAGENT FILE INTEGRITY CHECK (Level 4)");
-        println!("=====================================\n");
-        println!("Verifies agent files against registry manifest.\n");
+        println!("\nFULL VEHICLE INSPECTION (Level 4)");
+        println!("==================================\n");
+        println!("Checking every component against the factory manifest.");
+        println!("One modified byte = inspection failed.\n");
     }
 
     let root_path = Path::new(agent_root);
@@ -920,9 +918,9 @@ fn run_audit_trail_check(
     }
 
     if !json {
-        println!("\nAUDIT TRAIL VERIFICATION (Level 5)");
-        println!("===================================\n");
-        println!("Verifies the cryptographic hash chain of the audit log.\n");
+        println!("\nCOMPLETE SERVICE HISTORY CHECK (Level 5)");
+        println!("=========================================\n");
+        println!("Verifying unbroken chain from genesis. No gaps allowed.\n");
     }
 
     // Read entries from source
