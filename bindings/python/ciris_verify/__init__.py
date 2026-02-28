@@ -102,10 +102,16 @@ def setup_logging(verifier: CIRISVerify, level: str = "INFO", logger_name: str =
     verifier.set_log_callback(log_callback, level=rust_level)
 
 
-__version__ = "1.0.6"
+def get_library_version() -> str:
+    """Get the CIRISVerify library version string."""
+    return __version__
+
+
+__version__ = "1.0.7"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
+    "get_library_version",
     "setup_logging",
     "LicenseStatus",
     "LicenseTier",

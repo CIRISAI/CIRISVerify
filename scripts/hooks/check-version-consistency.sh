@@ -3,7 +3,7 @@ set -euo pipefail
 
 CARGO_VER=$(grep '^version = ' Cargo.toml | head -1 | cut -d'"' -f2)
 PYPROJECT_VER=$(grep '^version = ' bindings/python/pyproject.toml | cut -d'"' -f2)
-INIT_VER=$(grep '__version__' bindings/python/ciris_verify/__init__.py | cut -d'"' -f2)
+INIT_VER=$(grep '^__version__' bindings/python/ciris_verify/__init__.py | cut -d'"' -f2)
 
 if [ "$CARGO_VER" != "$PYPROJECT_VER" ] || [ "$CARGO_VER" != "$INIT_VER" ]; then
     echo "ERROR: Version mismatch!"
