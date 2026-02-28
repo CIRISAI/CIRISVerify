@@ -2563,9 +2563,10 @@ unsafe fn run_attestation_inner(
         }
         result.device_attestation = Some(da.clone());
 
-        // Recalculate level with device attestation factored into L2
-        // On iOS, function integrity is advisory-only (Xcode code signing relocates
-        // function addresses, so runtime offsets never match CI-computed manifest offsets).
+        // Recalculate level with device attestation factored in
+        // On iOS, function integrity always fails (Xcode code signing relocates addresses).
+        // App Attest (L2) acts as a compensating trust signal: when device attestation
+        // is verified, L1 passes with binary_valid alone (function integrity forgiven).
         #[cfg(target_os = "ios")]
         let l1_pass = result
             .self_verification

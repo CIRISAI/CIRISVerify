@@ -1346,11 +1346,9 @@ impl UnifiedAttestationEngine {
 
         // Calculate level as cascading tiers (any failure caps at prior level)
         // L1: Binary hash + function integrity
-        // On iOS, function integrity is advisory-only (Xcode code signing relocates
-        // function addresses, so runtime offsets never match CI-computed manifest offsets).
-        #[cfg(target_os = "ios")]
-        let l1_pass = self_verification.binary_valid;
-        #[cfg(not(target_os = "ios"))]
+        // On iOS, function integrity always fails (Xcode code signing relocates addresses).
+        // L1 stays yellow here; the FFI layer compensates when App Attest (L2) passes,
+        // allowing L1 to pass with binary_valid alone (device attestation as trust signal).
         let l1_pass = self_verification.binary_valid && self_verification.functions_valid;
         // L2: Device attestation is injected by FFI layer from cached results
         // (Play Integrity / App Attest verified via separate FFI calls before run_attestation).
