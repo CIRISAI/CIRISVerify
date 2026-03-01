@@ -36,7 +36,7 @@ const DOH_ENDPOINT: &str = "https://dns.google/resolve";
 
 /// DNS hostnames for TXT record validation
 const DNS_US_HOSTNAME: &str = "us.registry.ciris-services-1.ai";
-const DNS_EU_HOSTNAME: &str = "eu.registry.ciris-services-1.ai";
+const DNS_EU_HOSTNAME: &str = "eu.registry.ciris-services-eu-1.com";
 
 /// Create a TLS-enabled ureq agent with bundled Mozilla CA certificates.
 /// Returns None if TLS initialization fails (graceful degradation).

@@ -16,7 +16,7 @@ CIRISVerify is the hardware-rooted license verification component that enables C
 - 54 gRPC endpoints specified in protocol
 - Core lookup endpoints implemented (stub level in Registry, functional in CIRISVerify engine)
 - Multi-source validation engine implemented in Rust with real infrastructure endpoints
-- DNS endpoints configured: `us.registry.ciris-services-1.ai`, `eu.registry.ciris-services-1.ai`
+- DNS endpoints configured: `us.registry.ciris-services-1.ai`, `eu.registry.ciris-services-eu-1.com`
 - HTTPS endpoint configured: `api.registry.ciris-services-1.ai`
 - Python SDK (`ciris-verify`) implemented and installed in CIRISAgent
 - Hardware attestation validation: software fallback operational, hardware pending
@@ -73,7 +73,7 @@ Per FSD-001, CIRISVerify MUST query multiple sources:
 
 2. **Multi-Region HTTPS Endpoints** — ✅ Configured in CIRISVerify
    - `us.registry.ciris-services-1.ai` (US region)
-   - `eu.registry.ciris-services-1.ai` (EU region)
+   - `eu.registry.ciris-services-eu-1.com` (EU region)
    - `api.registry.ciris-services-1.ai` (Primary API)
 
 3. **Validation Logic** — ✅ Implemented in Rust (`engine.rs`)

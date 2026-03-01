@@ -287,7 +287,7 @@ CIRISVerify uses an **HTTPS-authoritative, DNS-advisory** trust model to validat
 
 **Advisory sources (DNS cross-check):**
 - `us.registry.ciris-services-1.ai` (US registrar)
-- `eu.registry.ciris-services-1.ai` (EU registrar)
+- `eu.registry.ciris-services-eu-1.com` (EU registrar)
 
 **Trust hierarchy:**
 - When HTTPS endpoints are reachable, they are authoritative — DNS disagreement is logged but HTTPS is trusted

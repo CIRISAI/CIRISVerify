@@ -467,7 +467,7 @@ CIRISVerify queries three independent sources:
 | Source | Endpoint | Purpose |
 |--------|----------|---------|
 | DNS US | `us.registry.ciris-services-1.ai` | US-hosted DNS TXT records |
-| DNS EU | `eu.registry.ciris-services-1.ai` | EU-hosted DNS TXT records |
+| DNS EU | `eu.registry.ciris-services-eu-1.com` | EU-hosted DNS TXT records |
 | HTTPS | `api.registry.ciris-services-1.ai` | HTTPS API endpoint |
 
 **Consensus rules:**

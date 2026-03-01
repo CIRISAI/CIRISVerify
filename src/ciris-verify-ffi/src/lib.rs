@@ -893,7 +893,7 @@ fn build_timeout_response(_request: &LicenseStatusRequest) -> LicenseStatusRespo
                 ),
             },
             dns_eu: SourceResult {
-                source: "eu.registry.ciris-services-1.ai".to_string(),
+                source: "eu.registry.ciris-services-eu-1.com".to_string(),
                 reachable: false,
                 valid: false,
                 checked_at: now,

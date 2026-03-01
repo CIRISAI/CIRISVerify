@@ -108,8 +108,8 @@ CIRISVerify is implemented in **Rust** for the following reasons:
 │  │                    Multi-Source Validation                          │ │
 │  │                                                                     │ │
 │  │  DNS (US)                 DNS (EU)                HTTPS Endpoint   │ │
-│  │  ciris-services-1.ai      ciris-services-2.ai     verify.ciris.ai  │ │
-│  │  (Registrar A)            (Registrar B)           (Cloudflare)     │ │
+│  │  ciris-services-1.ai      ciris-services-eu-1.com verify.ciris.ai  │ │
+│  │  (Registrar A)            (Registrar B, .com TLD) (Cloudflare)     │ │
 │  │                                                                     │ │
 │  │  All three MUST agree on steward public key and revocation status  │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
@@ -204,7 +204,7 @@ An adversary who modifies the code cannot forge this signature.
 #### 2. Multi-Source Validation
 No single point of compromise:
 - DNS record at `ciris-services-1.ai` (US registrar)
-- DNS record at `ciris-services-2.ai` (EU registrar)
+- DNS record at `ciris-services-eu-1.com` (EU registrar, .com TLD)
 - HTTPS endpoint at `verify.ciris.ai`
 
 All three must agree. Compromising one triggers `SOURCES_DISAGREE` status.
@@ -695,8 +695,8 @@ Contact your administrator or licensing@ciris.ai"
 ML-DSA public keys are ~2KB, exceeding practical DNS TXT limits. The solution: store the Ed25519 key directly and the ML-DSA key fingerprint, with full PQC key available via HTTPS.
 
 ```
-_ciris-verify.ciris-services-1.ai TXT "v=ciris2 key=ed25519:{base64_pubkey} pqc_fp=sha256:{hex_fingerprint} rev={revision} ts={timestamp}"
-_ciris-verify.ciris-services-2.ai TXT "v=ciris2 key=ed25519:{base64_pubkey} pqc_fp=sha256:{hex_fingerprint} rev={revision} ts={timestamp}"
+_ciris-verify.ciris-services-1.ai     TXT "v=ciris2 key=ed25519:{base64_pubkey} pqc_fp=sha256:{hex_fingerprint} rev={revision} ts={timestamp}"
+_ciris-verify.ciris-services-eu-1.com TXT "v=ciris2 key=ed25519:{base64_pubkey} pqc_fp=sha256:{hex_fingerprint} rev={revision} ts={timestamp}"
 ```
 
 **Fields**:

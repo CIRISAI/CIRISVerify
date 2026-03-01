@@ -119,7 +119,7 @@ This project extends Veilid's `keyring-manager` pattern. To maintain compatibili
 │                    MULTI-SOURCE VALIDATION (HTTPS-Authoritative)          │
 │  HTTPS endpoints (authoritative, multiple independent domains)           │
 │  DNS US (us.registry.ciris-services-1.ai) — advisory cross-check        │
-│  DNS EU (eu.registry.ciris-services-1.ai) — advisory cross-check        │
+│  DNS EU (eu.registry.ciris-services-eu-1.com) — advisory cross-check    │
 │  HTTPS authoritative when reachable; DNS fallback with 2-of-3 consensus │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │

@@ -1316,7 +1316,7 @@ impl LicenseEngine {
                 error_details: dns_us_details,
             },
             dns_eu: SourceResult {
-                source: "eu.registry.ciris-services-1.ai".to_string(),
+                source: "eu.registry.ciris-services-eu-1.com".to_string(),
                 reachable: validation.source_details.dns_eu_reachable,
                 valid: validation.source_details.dns_eu_reachable
                     && validation.source_details.dns_eu_error.is_none(),
@@ -1352,7 +1352,7 @@ impl LicenseEngine {
                 error_details: Some("Validation not performed".to_string()),
             },
             dns_eu: SourceResult {
-                source: "eu.registry.ciris-services-1.ai".to_string(),
+                source: "eu.registry.ciris-services-eu-1.com".to_string(),
                 reachable: false,
                 valid: false,
                 checked_at: chrono::Utc::now().timestamp(),

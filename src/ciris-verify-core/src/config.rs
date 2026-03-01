@@ -45,7 +45,7 @@ impl Default for VerifyConfig {
     fn default() -> Self {
         Self {
             dns_us_host: "us.registry.ciris-services-1.ai".into(),
-            dns_eu_host: "eu.registry.ciris-services-1.ai".into(),
+            dns_eu_host: "eu.registry.ciris-services-eu-1.com".into(),
             https_endpoint: "https://api.registry.ciris-services-1.ai".into(),
             https_endpoints: Vec::new(),
             trust_model: TrustModel::HttpsAuthoritative,
