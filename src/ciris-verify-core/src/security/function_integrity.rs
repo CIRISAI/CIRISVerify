@@ -1055,7 +1055,10 @@ fn get_code_base_linux() -> Option<usize> {
         found: false,
     };
     unsafe {
-        dl_iterate_phdr(callback, &mut result as *mut CallbackResult as *mut std::ffi::c_void);
+        dl_iterate_phdr(
+            callback,
+            &mut result as *mut CallbackResult as *mut std::ffi::c_void,
+        );
     }
 
     if result.found {
