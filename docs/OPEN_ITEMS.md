@@ -367,5 +367,35 @@ gRPC remains primary; REST is convenience layer.
 
 ---
 
+---
+
+## Technical Debt
+
+### 19. TPM Quote Requires Dual-Key Architecture
+**Priority**: LOW
+**Added**: 2026-02-28
+**Stakeholders**: Enterprise Security
+
+**Issue**: TPM PCR quotes fail with "inconsistent values" because TPM2_Quote requires a **restricted signing key**, but restricted keys can only sign TPM-generated data (not arbitrary challenges).
+
+**Current behavior**:
+- TPM signing for license verification: **Works** ✓
+- TPM attestation export: Works, but `quote: null`
+- Remote PCR attestation: **Not available**
+
+**Impact**: Enterprise remote attestation (proving boot integrity via PCR measurements) is unavailable. Does not affect day-to-day license verification.
+
+**Recommendation**: Implement dual-key architecture:
+1. Create `TpmSigningKey` (non-restricted) for general signing
+2. Create `TpmAttestationKey` (restricted) for quotes/certify
+3. Store both handles in `TpmSigner`
+4. Use appropriate key for each operation
+
+**Estimated Effort**: 1-2 days
+**Files**: `src/ciris-keyring/src/platform/tpm.rs`
+**Action Owner**: CIRIS Engineering
+
+---
+
 **Document Owner**: CIRIS L3C Product/Engineering
 **Review Cycle**: Monthly until GA, quarterly thereafter
