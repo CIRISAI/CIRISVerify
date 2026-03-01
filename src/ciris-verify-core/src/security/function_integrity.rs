@@ -967,11 +967,38 @@ fn get_code_base_linux() -> Option<usize> {
         LIB_NAME
     );
 
+    // ELF program header structure (64-bit)
+    #[repr(C)]
+    struct Elf64Phdr {
+        p_type: u32,
+        p_flags: u32,
+        p_offset: u64,
+        p_vaddr: u64,
+        p_paddr: u64,
+        p_filesz: u64,
+        p_memsz: u64,
+        p_align: u64,
+    }
+
+    const PT_LOAD: u32 = 1;
+    const PF_X: u32 = 1; // Execute permission
+
+    // Full dl_phdr_info structure (must match system header)
     #[repr(C)]
     struct DlPhdrInfo {
         dlpi_addr: usize,
         dlpi_name: *const std::ffi::c_char,
-        // ... other fields we don't need
+        dlpi_phdr: *const Elf64Phdr,
+        dlpi_phnum: u16,
+        // Additional fields exist but we don't need them
+    }
+
+    // Result struct to pass both dlpi_addr and exec segment p_vaddr
+    #[repr(C)]
+    struct CallbackResult {
+        dlpi_addr: usize,
+        exec_segment_vaddr: usize,
+        found: bool,
     }
 
     extern "C" {
@@ -998,28 +1025,56 @@ fn get_code_base_linux() -> Option<usize> {
 
             // Look for our library
             if name.contains("libciris_verify_ffi.so") {
-                let base_ptr = data as *mut usize;
-                *base_ptr = (*info).dlpi_addr;
+                let result_ptr = data as *mut CallbackResult;
+
+                // Find the executable LOAD segment
+                let phdr = (*info).dlpi_phdr;
+                let phnum = (*info).dlpi_phnum as usize;
+
+                let mut exec_vaddr: usize = 0;
+                for i in 0..phnum {
+                    let ph = &*phdr.add(i);
+                    if ph.p_type == PT_LOAD && (ph.p_flags & PF_X) != 0 {
+                        exec_vaddr = ph.p_vaddr as usize;
+                        break;
+                    }
+                }
+
+                (*result_ptr).dlpi_addr = (*info).dlpi_addr;
+                (*result_ptr).exec_segment_vaddr = exec_vaddr;
+                (*result_ptr).found = true;
                 return 1; // Stop iteration
             }
         }
         0 // Continue
     }
 
-    let mut base: usize = 0;
+    let mut result = CallbackResult {
+        dlpi_addr: 0,
+        exec_segment_vaddr: 0,
+        found: false,
+    };
     unsafe {
-        dl_iterate_phdr(callback, &mut base as *mut usize as *mut std::ffi::c_void);
+        dl_iterate_phdr(callback, &mut result as *mut CallbackResult as *mut std::ffi::c_void);
     }
 
-    if base != 0 {
+    if result.found {
+        // The actual code base is dlpi_addr + exec_segment_vaddr
+        // dlpi_addr is the offset applied to all segment vaddrs at load time
+        // So runtime address of any symbol = dlpi_addr + symbol_vaddr
+        // Since manifest stores offset = symbol_vaddr - segment_vaddr,
+        // we need: runtime_addr = dlpi_addr + segment_vaddr + offset
+        let code_base = result.dlpi_addr + result.exec_segment_vaddr;
         tracing::info!(
-            "get_code_base_linux: found {} at base=0x{:x}",
+            "get_code_base_linux: found {} dlpi_addr=0x{:x}, exec_segment_vaddr=0x{:x}, code_base=0x{:x}",
             LIB_NAME,
-            base
+            result.dlpi_addr,
+            result.exec_segment_vaddr,
+            code_base
         );
-        BASE.store(base, Ordering::Relaxed);
+        BASE.store(code_base, Ordering::Relaxed);
         FOUND.store(true, Ordering::Relaxed);
-        Some(base)
+        Some(code_base)
     } else {
         tracing::warn!(
             "get_code_base_linux: {} not found in loaded libraries",
