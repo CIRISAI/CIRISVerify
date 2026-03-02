@@ -9,13 +9,8 @@ use crate::error::KeyringError;
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 use tss_esapi::{
     handles::{KeyHandle, NvIndexHandle, TpmHandle},
-    interface_types::{
-        algorithm::HashingAlgorithm,
-        resource_handles::NvAuth,
-    },
-    structures::{
-        Data, HashScheme, PcrSelectionListBuilder, PcrSlot, SignatureScheme,
-    },
+    interface_types::{algorithm::HashingAlgorithm, resource_handles::NvAuth},
+    structures::{Data, HashScheme, PcrSelectionListBuilder, PcrSlot, SignatureScheme},
     traits::Marshall,
     Context,
 };
@@ -53,8 +48,8 @@ pub fn generate_quote(
     ak_handle: KeyHandle,
     external_nonce: Option<&[u8]>,
 ) -> Result<TpmQuote, KeyringError> {
-    use rand_core::{OsRng, RngCore};
     use super::signing::extract_ecdsa_signature;
+    use rand_core::{OsRng, RngCore};
 
     tracing::info!("TPM: generating PCR quote with attestation key");
 
@@ -63,13 +58,13 @@ pub fn generate_quote(
         Some(n) => {
             tracing::debug!(nonce_len = n.len(), "TPM: using external nonce");
             n.to_vec()
-        }
+        },
         None => {
             let mut random_nonce = [0u8; 32];
             OsRng.fill_bytes(&mut random_nonce);
             tracing::debug!("TPM: using generated random nonce");
             random_nonce.to_vec()
-        }
+        },
     };
 
     let qualifying_data =
@@ -110,7 +105,12 @@ pub fn generate_quote(
 
     let (attest, signature) = context
         .execute_with_nullauth_session(|ctx| {
-            ctx.quote(ak_handle, qualifying_data.clone(), signing_scheme, pcr_selection.clone())
+            ctx.quote(
+                ak_handle,
+                qualifying_data.clone(),
+                signing_scheme,
+                pcr_selection.clone(),
+            )
         })
         .map_err(|e| {
             tracing::error!("TPM: quote generation failed: {}", e);

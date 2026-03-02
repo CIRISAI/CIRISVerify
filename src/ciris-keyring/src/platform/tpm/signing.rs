@@ -35,7 +35,7 @@ pub fn extract_ecdsa_signature(signature: &Signature) -> Result<Vec<u8>, Keyring
             sig.extend(&s_bytes[s_bytes.len().saturating_sub(32)..]);
 
             Ok(sig)
-        }
+        },
         _ => Err(KeyringError::HardwareError {
             reason: "Unexpected signature type from TPM".into(),
         }),

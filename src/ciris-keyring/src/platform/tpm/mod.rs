@@ -194,18 +194,18 @@ impl TpmSigner {
     fn ensure_attestation_key(&self) -> Result<(KeyHandle, Vec<u8>), KeyringError> {
         // Check if we have a cached attestation key
         {
-            let handle_guard = self
-                .attestation_key_handle
-                .lock()
-                .map_err(|_| KeyringError::HardwareError {
-                    reason: "AK handle lock poisoned".into(),
-                })?;
-            let pubkey_guard = self
-                .ak_public_key
-                .lock()
-                .map_err(|_| KeyringError::HardwareError {
-                    reason: "AK pubkey lock poisoned".into(),
-                })?;
+            let handle_guard =
+                self.attestation_key_handle
+                    .lock()
+                    .map_err(|_| KeyringError::HardwareError {
+                        reason: "AK handle lock poisoned".into(),
+                    })?;
+            let pubkey_guard =
+                self.ak_public_key
+                    .lock()
+                    .map_err(|_| KeyringError::HardwareError {
+                        reason: "AK pubkey lock poisoned".into(),
+                    })?;
             if let (Some(handle), Some(pubkey)) = (*handle_guard, pubkey_guard.as_ref()) {
                 tracing::trace!("TPM: using cached attestation key handle");
                 return Ok((handle, pubkey.clone()));
@@ -232,21 +232,21 @@ impl TpmSigner {
 
         // Cache the attestation key handle and public key
         {
-            let mut handle_guard = self
-                .attestation_key_handle
-                .lock()
-                .map_err(|_| KeyringError::HardwareError {
-                    reason: "AK handle lock poisoned".into(),
-                })?;
+            let mut handle_guard =
+                self.attestation_key_handle
+                    .lock()
+                    .map_err(|_| KeyringError::HardwareError {
+                        reason: "AK handle lock poisoned".into(),
+                    })?;
             *handle_guard = Some(ak_handle);
         }
         {
-            let mut pubkey_guard = self
-                .ak_public_key
-                .lock()
-                .map_err(|_| KeyringError::HardwareError {
-                    reason: "AK pubkey lock poisoned".into(),
-                })?;
+            let mut pubkey_guard =
+                self.ak_public_key
+                    .lock()
+                    .map_err(|_| KeyringError::HardwareError {
+                        reason: "AK pubkey lock poisoned".into(),
+                    })?;
             *pubkey_guard = Some(ak_pubkey.clone());
         }
 
@@ -587,11 +587,11 @@ impl HardwareSigner for TpmSigner {
                             .unwrap_or(0),
                     };
                     (Some(quote_data), Some(ak_pubkey))
-                }
+                },
                 Err(e) => {
                     tracing::warn!("TPM: quote generation failed (non-fatal): {}", e);
                     (None, None)
-                }
+                },
             };
 
             // Read EK certificate from NV storage
@@ -599,11 +599,11 @@ impl HardwareSigner for TpmSigner {
                 Ok(cert) => {
                     tracing::info!(cert_len = cert.len(), "TPM: EK cert retrieved");
                     Some(cert)
-                }
+                },
                 Err(e) => {
                     tracing::warn!("TPM: EK cert read failed (non-fatal): {}", e);
                     None
-                }
+                },
             };
 
             Ok(PlatformAttestation::Tpm(TpmAttestation {
@@ -699,10 +699,10 @@ mod tests {
                     HardwareType::TpmDiscrete | HardwareType::TpmFirmware
                 ));
                 assert_eq!(signer.algorithm(), ClassicalAlgorithm::EcdsaP256);
-            }
+            },
             Err(KeyringError::HardwareNotAvailable { .. }) => {
                 // Expected on systems without TPM
-            }
+            },
             Err(e) => panic!("Unexpected error: {:?}", e),
         }
     }

@@ -72,7 +72,14 @@ pub fn get_or_create_primary(context: &mut Context) -> Result<KeyHandle, Keyring
 
     let result = context
         .execute_with_nullauth_session(|ctx| {
-            ctx.create_primary(Hierarchy::Owner, primary_public.clone(), None, None, None, None)
+            ctx.create_primary(
+                Hierarchy::Owner,
+                primary_public.clone(),
+                None,
+                None,
+                None,
+                None,
+            )
         })
         .map_err(|e| KeyringError::HardwareError {
             reason: format!("Failed to create primary key: {}", e),
@@ -131,7 +138,14 @@ pub fn create_signing_key(
 
     let result = context
         .execute_with_nullauth_session(|ctx| {
-            ctx.create(primary_handle, signing_public.clone(), None, None, None, None)
+            ctx.create(
+                primary_handle,
+                signing_public.clone(),
+                None,
+                None,
+                None,
+                None,
+            )
         })
         .map_err(|e| KeyringError::HardwareError {
             reason: format!("Failed to create signing key: {}", e),
@@ -262,7 +276,7 @@ pub fn extract_public_key_from_public(public: &Public) -> Result<Vec<u8>, Keyrin
             return Err(KeyringError::HardwareError {
                 reason: "Expected ECC public key".into(),
             })
-        }
+        },
     };
 
     let x_bytes: Vec<u8> = ecc_point.x().value().to_vec();

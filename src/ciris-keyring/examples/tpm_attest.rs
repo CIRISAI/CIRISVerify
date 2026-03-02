@@ -6,12 +6,8 @@ use tracing_subscriber::{fmt, EnvFilter};
 #[tokio::main]
 async fn main() {
     // Enable debug output via env var: RUST_LOG=debug
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new("debug"));
-    fmt()
-        .with_env_filter(filter)
-        .with_target(true)
-        .init();
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("debug"));
+    fmt().with_env_filter(filter).with_target(true).init();
 
     println!("Testing TPM dual-key attestation...\n");
 
@@ -21,7 +17,7 @@ async fn main() {
         Err(e) => {
             eprintln!("Failed to create TPM signer: {}", e);
             return;
-        }
+        },
     };
 
     println!("TPM Hardware Type: {:?}", signer.hardware_type());
@@ -43,17 +39,20 @@ async fn main() {
                     println!("  Quote details:");
                     println!("    - Quoted len: {} bytes", q.quoted.len());
                     println!("    - Signature len: {} bytes", q.signature.len());
-                    println!("    - Qualifying data len: {} bytes", q.qualifying_data.len());
+                    println!(
+                        "    - Qualifying data len: {} bytes",
+                        q.qualifying_data.len()
+                    );
                     println!("    - Timestamp: {}", q.timestamp);
                 }
                 if let Some(ref ak) = tpm.ak_public_key {
                     println!("  AK Public Key: {} bytes", ak.len());
                 }
             }
-        }
+        },
         Err(e) => {
             eprintln!("Attestation failed: {}", e);
-        }
+        },
     }
 
     // Test attestation with external nonce
@@ -66,13 +65,16 @@ async fn main() {
                 if let Some(ref q) = tpm.quote {
                     let nonce_matches = q.qualifying_data == nonce.to_vec();
                     println!("  Qualifying data matches input nonce: {}", nonce_matches);
-                    println!("  Qualifying data: {:?}", String::from_utf8_lossy(&q.qualifying_data));
+                    println!(
+                        "  Qualifying data: {:?}",
+                        String::from_utf8_lossy(&q.qualifying_data)
+                    );
                 }
             }
-        }
+        },
         Err(e) => {
             eprintln!("Attestation with nonce failed: {}", e);
-        }
+        },
     }
 
     println!("\nDone!");
