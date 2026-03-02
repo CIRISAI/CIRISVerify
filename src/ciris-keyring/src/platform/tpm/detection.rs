@@ -145,13 +145,14 @@ mod tests {
     fn test_detect_tpm_tuple_structure() {
         let result = detect_tpm().unwrap();
         let (available, is_discrete) = result;
-        // Both should be boolean values
-        assert!(available || !available);
-        assert!(is_discrete || !is_discrete);
-        // If discrete, must be available
+        // Verify the tuple structure returned correctly
+        // A discrete TPM must also be available
         if is_discrete {
-            assert!(available);
+            assert!(available, "discrete TPM should also be marked as available");
         }
+        // available can be true or false regardless of is_discrete
+        // (fTPM is available but not discrete)
+        let _ = (available, is_discrete); // Use values to satisfy compiler
     }
 
     #[test]
