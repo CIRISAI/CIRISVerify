@@ -538,10 +538,10 @@ impl HardwareSigner for WindowsTpmSigner {
         Ok(PlatformAttestation::Tpm(TpmAttestation {
             tpm_version: "2.0".into(),
             manufacturer: "Windows Platform Crypto Provider (EXPERIMENTAL)".into(),
-            discrete: false,        // PCP typically uses fTPM
-            quote: None,            // PCP doesn't expose quote directly
-            ek_cert: None,          // PCP doesn't expose EK cert directly
-            ak_public_key: None,    // PCP doesn't expose AK directly
+            discrete: false,     // PCP typically uses fTPM
+            quote: None,         // PCP doesn't expose quote directly
+            ek_cert: None,       // PCP doesn't expose EK cert directly
+            ak_public_key: None, // PCP doesn't expose AK directly
         }))
     }
 
