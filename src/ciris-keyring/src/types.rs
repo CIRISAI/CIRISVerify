@@ -79,6 +79,18 @@ pub enum HardwareType {
     /// Software-only implementation
     /// WARNING: Limited to UNLICENSED_COMMUNITY tier maximum.
     SoftwareOnly = 7,
+
+    /// AWS CloudHSM (FIPS 140-2 Level 3)
+    AwsCloudHsm = 8,
+
+    /// Azure Dedicated HSM / Managed HSM
+    AzureHsm = 9,
+
+    /// Google Cloud HSM
+    GcpCloudHsm = 10,
+
+    /// Yubico YubiHSM 2
+    YubiHsm = 11,
 }
 
 impl HardwareType {
@@ -94,12 +106,20 @@ impl HardwareType {
     #[must_use]
     pub const fn security_level(&self) -> u8 {
         match self {
+            // FIPS 140-2 Level 3+ HSMs
+            Self::AwsCloudHsm => 5,
+            Self::AzureHsm => 5,
+            Self::GcpCloudHsm => 5,
+            Self::YubiHsm => 5,
+            // Hardware secure elements
             Self::AndroidStrongbox => 5,
             Self::TpmDiscrete => 5,
             Self::IosSecureEnclave => 5,
+            // Firmware/TEE-based
             Self::TpmFirmware => 4,
             Self::IntelSgx => 4,
             Self::AndroidKeystore => 3,
+            // No hardware protection
             Self::SoftwareOnly => 1,
         }
     }
@@ -165,11 +185,51 @@ pub struct TpmAttestation {
     /// Whether this is a discrete TPM (vs firmware TPM).
     pub discrete: bool,
 
-    /// TPM quote (signed PCR values), if available.
-    pub quote: Option<Vec<u8>>,
+    /// TPM quote data (TPMS_ATTEST structure), if available.
+    pub quote: Option<TpmQuoteData>,
 
-    /// Endorsement Key certificate, if available.
+    /// Endorsement Key certificate (X.509 DER), if available.
+    /// Can be validated against manufacturer CA to prove TPM genuineness.
     pub ek_cert: Option<Vec<u8>>,
+
+    /// Attestation Key public key (for verifying quotes).
+    /// Anyone can verify the quote signature using this key.
+    pub ak_public_key: Option<Vec<u8>>,
+}
+
+/// TPM quote data for remote attestation.
+///
+/// Contains all data needed for anyone to verify a TPM quote.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TpmQuoteData {
+    /// The TPMS_ATTEST structure (marshalled).
+    pub quoted: Vec<u8>,
+
+    /// Signature over the quoted data (ECDSA P-256).
+    pub signature: Vec<u8>,
+
+    /// PCR selection bitmap.
+    pub pcr_selection: Vec<u8>,
+
+    /// Qualifying data (nonce) used in the quote.
+    /// Verifiers should check this matches their challenge.
+    pub qualifying_data: Vec<u8>,
+
+    /// PCR values at time of quote (SHA-256 digests).
+    /// Index in vec corresponds to PCR slot number.
+    pub pcr_values: Option<Vec<PcrValue>>,
+
+    /// Timestamp when quote was generated.
+    pub timestamp: u64,
+}
+
+/// A single PCR value.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PcrValue {
+    /// PCR slot index (0-23).
+    pub index: u8,
+    /// SHA-256 digest (32 bytes).
+    pub digest: Vec<u8>,
 }
 
 /// Software-only attestation (minimal).

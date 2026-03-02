@@ -549,7 +549,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "aws-lc-rs",
  "ed25519-dalek",
@@ -570,7 +570,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "async-trait",
  "block2",
@@ -593,6 +593,7 @@ dependencies = [
  "thiserror 1.0.69",
  "tokio",
  "tracing",
+ "tracing-subscriber",
  "tss-esapi",
  "winapi",
  "windows",
@@ -600,7 +601,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -620,7 +621,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "android_system_properties",
  "anyhow",
@@ -662,7 +663,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "1.1.0"
+version = "1.1.1"
 dependencies = [
  "android_logger",
  "cbindgen",

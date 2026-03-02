@@ -1069,7 +1069,7 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
     let exe_path = {
         match find_library_path("libciris_verify_ffi.so") {
             Some(path) => {
-                tracing::info!("compute_self_hash (Android): found .so at {:?}", path);
+                tracing::debug!("compute_self_hash (Android): found .so at {:?}", path);
                 path
             },
             None => {
@@ -1089,7 +1089,7 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
     let exe_path = {
         match find_library_path_dyld() {
             Some(path) => {
-                tracing::info!("compute_self_hash (Apple): found dylib at {:?}", path);
+                tracing::debug!("compute_self_hash (Apple): found dylib at {:?}", path);
                 path
             },
             None => {
@@ -1110,7 +1110,7 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
     let exe_path = {
         match find_library_path_linux("libciris_verify_ffi.so") {
             Some(path) => {
-                tracing::info!("compute_self_hash (Linux): found .so at {:?}", path);
+                tracing::debug!("compute_self_hash (Linux): found .so at {:?}", path);
                 path
             },
             None => {
@@ -1135,7 +1135,7 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
         message: format!("Cannot determine executable path: {}", e),
     })?;
 
-    tracing::info!(
+    tracing::debug!(
         "compute_self_hash: exe_path={:?}, exists={}",
         exe_path,
         exe_path.exists()
@@ -1152,7 +1152,7 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
     let hash_bytes = {
         match extract_text_code_region(&file_bytes) {
             Some((offset, size)) => {
-                tracing::info!(
+                tracing::debug!(
                     "compute_self_hash: hashing __TEXT code region (offset=0x{:x}, size=0x{:x}, file_size=0x{:x})",
                     offset, size, file_bytes.len()
                 );
@@ -1274,7 +1274,7 @@ fn find_library_path(lib_name: &str) -> Option<std::path::PathBuf> {
             if parts.len() >= 6 {
                 let full_path = parts[5..].join(" ");
                 if full_path.contains(lib_name) {
-                    tracing::info!("find_library_path: found {} at {}", lib_name, full_path);
+                    tracing::debug!("find_library_path: found {} at {}", lib_name, full_path);
                     return Some(std::path::PathBuf::from(full_path));
                 }
             }

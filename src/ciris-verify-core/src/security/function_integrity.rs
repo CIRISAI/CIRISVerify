@@ -409,7 +409,7 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     let timestamp = current_timestamp();
 
     // Log manifest details for diagnostics (tracing + direct logcat for Android)
-    tracing::info!(
+    tracing::debug!(
         "verify_functions: manifest version={}, target={}, binary_hash={}, functions={}, exec_segment_vaddr=0x{:x}",
         manifest.binary_version,
         manifest.target,
@@ -430,7 +430,7 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     // NOTE: offsets should be small (relative to code section), not large virtual addresses
     // If offsets are > 0x100000 (1MB), likely manifest was generated with wrong offset format
     for (i, (name, entry)) in manifest.functions.iter().take(3).enumerate() {
-        tracing::info!(
+        tracing::debug!(
             "verify_functions: sample[{}] name={}, offset=0x{:x}, size={}, hash={}",
             i,
             name,
@@ -502,7 +502,7 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     #[cfg(all(target_os = "linux", not(target_os = "android")))]
     let (code_base, text_adjustment) = match get_code_base_linux() {
         Some(base) => {
-            tracing::info!("verify_functions: code_base=0x{:x}", base);
+            tracing::debug!("verify_functions: code_base=0x{:x}", base);
             // Linux uses dl_iterate_phdr which gives segment base directly
             // TODO: may need similar adjustment for Linux shared libraries
             (base, 0usize)
@@ -693,7 +693,7 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     // Get code base address
     let code_base = match get_code_base_macos() {
         Some(base) => {
-            tracing::info!("verify_functions: code_base=0x{:x}", base);
+            tracing::debug!("verify_functions: code_base=0x{:x}", base);
             base
         },
         None => {
@@ -829,7 +829,7 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     // Get code base address
     let code_base = match get_code_base_windows() {
         Some(base) => {
-            tracing::info!("verify_functions: code_base=0x{:x}", base);
+            tracing::debug!("verify_functions: code_base=0x{:x}", base);
             base
         },
         None => {

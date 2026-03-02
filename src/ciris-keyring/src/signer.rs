@@ -185,6 +185,35 @@ pub trait HardwareSigner: Send + Sync {
     /// Returns error if attestation cannot be generated.
     async fn attestation(&self) -> Result<PlatformAttestation, KeyringError>;
 
+    /// Get platform attestation with an external nonce/challenge.
+    ///
+    /// This allows remote verifiers to provide a challenge that gets
+    /// cryptographically bound to the attestation, preventing replay attacks.
+    ///
+    /// # Arguments
+    ///
+    /// * `nonce` - Optional external challenge. If None, a random nonce is generated.
+    ///
+    /// # Platform Support
+    ///
+    /// - TPM: Nonce included as qualifying_data in PCR quote
+    /// - Android: Nonce included in key attestation challenge
+    /// - iOS: Nonce used in App Attest assertion
+    /// - Software: Nonce echoed back (no cryptographic binding)
+    ///
+    /// # Errors
+    ///
+    /// Returns error if attestation cannot be generated.
+    async fn attestation_with_nonce(
+        &self,
+        nonce: Option<&[u8]>,
+    ) -> Result<PlatformAttestation, KeyringError> {
+        // Default implementation ignores nonce and calls basic attestation.
+        // Platform-specific implementations should override this.
+        let _ = nonce;
+        self.attestation().await
+    }
+
     /// Generate a new key with the given configuration.
     ///
     /// If a key with the same alias already exists, this returns

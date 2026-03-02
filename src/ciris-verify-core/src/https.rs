@@ -212,7 +212,7 @@ impl HttpsClient {
     #[instrument(skip(self))]
     pub async fn get_steward_key(&self) -> Result<StewardKeyResponse, VerifyError> {
         let url = format!("{}/v1/steward-key", self.base_url);
-        info!(
+        debug!(
             url = %url,
             user_agent = %format!("CIRISVerify/{}", env!("CARGO_PKG_VERSION")),
             "HTTPS: Fetching steward key..."
@@ -226,7 +226,7 @@ impl HttpsClient {
         })?;
 
         let status = response.status();
-        info!(
+        debug!(
             url = %url,
             status = %status,
             "HTTPS: Response received"
@@ -267,7 +267,7 @@ impl HttpsClient {
     #[instrument(skip(self))]
     pub async fn get_steward_key(&self) -> Result<StewardKeyResponse, VerifyError> {
         let url = format!("{}/v1/steward-key", self.base_url);
-        info!(
+        debug!(
             url = %url,
             "HTTPS: Fetching steward key (mobile)..."
         );

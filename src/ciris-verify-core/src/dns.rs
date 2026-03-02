@@ -174,7 +174,7 @@ impl DnsValidator {
     ///
     /// Returns error if resolver initialization fails.
     pub async fn with_doh(timeout: Duration) -> Result<Self, VerifyError> {
-        info!("Creating DNS-over-HTTPS resolver (Cloudflare 1.1.1.1)");
+        debug!("Creating DNS-over-HTTPS resolver (Cloudflare 1.1.1.1)");
 
         let mut opts = ResolverOpts::default();
         opts.timeout = timeout;
@@ -192,7 +192,7 @@ impl DnsValidator {
     /// This is the FALLBACK path for environments where native-certs fails
     /// (containers, some Linux distros, Android emulators).
     pub async fn with_doh_bundled_certs(timeout: Duration) -> Result<Self, VerifyError> {
-        info!("Creating DNS-over-HTTPS resolver with bundled certs (fallback)");
+        debug!("Creating DNS-over-HTTPS resolver with bundled certs (fallback)");
 
         let mut opts = ResolverOpts::default();
         opts.timeout = timeout;
@@ -245,7 +245,7 @@ impl DnsValidator {
         let google_url = format!("{}?name={}&type=TXT", GOOGLE_DNS_JSON_API, hostname);
         let cloudflare_url = format!("{}?name={}&type=TXT", CLOUDFLARE_DNS_JSON_API, hostname);
 
-        info!(hostname = %hostname, "DNS JSON API: querying Google and Cloudflare in parallel");
+        debug!(hostname = %hostname, "DNS JSON API: querying Google and Cloudflare in parallel");
 
         let google_fut = client
             .get(&google_url)
@@ -261,7 +261,7 @@ impl DnsValidator {
             google_result = google_fut => {
                 match google_result {
                     Ok(resp) if resp.status().is_success() => {
-                        info!("DNS JSON API: Google responded first");
+                        debug!("DNS JSON API: Google responded first");
                         return Self::parse_dns_json_response(resp).await;
                     }
                     Ok(resp) => {
@@ -275,7 +275,7 @@ impl DnsValidator {
             cloudflare_result = cloudflare_fut => {
                 match cloudflare_result {
                     Ok(resp) if resp.status().is_success() => {
-                        info!("DNS JSON API: Cloudflare responded first");
+                        debug!("DNS JSON API: Cloudflare responded first");
                         return Self::parse_dns_json_response(resp).await;
                     }
                     Ok(resp) => {
@@ -380,7 +380,7 @@ impl DnsValidator {
     #[instrument(skip(self), fields(host = %host))]
     pub async fn query_steward_record(&self, host: &str) -> Result<DnsTxtRecord, VerifyError> {
         let query_name = format!("_ciris-verify.{}", host);
-        info!(
+        debug!(
             query_name = %query_name,
             host = %host,
             "DNS: Querying TXT record..."
@@ -397,7 +397,7 @@ impl DnsValidator {
             }
         })?;
 
-        info!(
+        debug!(
             query_name = %query_name,
             record_count = lookup.iter().count(),
             "DNS: Lookup succeeded"
@@ -420,7 +420,7 @@ impl DnsValidator {
             });
         }
 
-        info!(
+        debug!(
             query_name = %query_name,
             txt_length = txt_data.len(),
             "DNS: Parsing TXT record..."
@@ -428,7 +428,7 @@ impl DnsValidator {
         debug!("DNS TXT data: {}", txt_data);
 
         let record = Self::parse_txt_record(&txt_data)?;
-        info!(
+        debug!(
             query_name = %query_name,
             version = %record.version,
             revision = record.revocation_revision,
@@ -570,7 +570,7 @@ impl DnsValidator {
 
         // Try Google first
         let google_url = format!("{}?name={}&type=TXT", GOOGLE_DNS_JSON_API, hostname);
-        info!(hostname = %hostname, "DNS JSON API (blocking): trying Google");
+        debug!(hostname = %hostname, "DNS JSON API (blocking): trying Google");
 
         match agent
             .get(&google_url)
@@ -578,7 +578,7 @@ impl DnsValidator {
             .call()
         {
             Ok(resp) if resp.status() == 200 => {
-                info!("DNS JSON API (blocking): Google succeeded");
+                debug!("DNS JSON API (blocking): Google succeeded");
                 return Self::parse_dns_json_response_blocking(resp);
             },
             Ok(resp) => {
@@ -594,7 +594,7 @@ impl DnsValidator {
 
         // Fallback to Cloudflare
         let cloudflare_url = format!("{}?name={}&type=TXT", CLOUDFLARE_DNS_JSON_API, hostname);
-        info!(hostname = %hostname, "DNS JSON API (blocking): trying Cloudflare");
+        debug!(hostname = %hostname, "DNS JSON API (blocking): trying Cloudflare");
 
         match agent
             .get(&cloudflare_url)
@@ -602,7 +602,7 @@ impl DnsValidator {
             .call()
         {
             Ok(resp) if resp.status() == 200 => {
-                info!("DNS JSON API (blocking): Cloudflare succeeded");
+                debug!("DNS JSON API (blocking): Cloudflare succeeded");
                 Self::parse_dns_json_response_blocking(resp)
             },
             Ok(resp) => Err(VerifyError::DnsError {
@@ -702,7 +702,7 @@ pub async fn query_multiple_sources(
     // Total operation capped at 10 seconds
     let total_timeout = Duration::from_secs(10);
 
-    info!(
+    debug!(
         us_host = %us_host,
         eu_host = %eu_host,
         per_query_timeout_ms = per_query_timeout.as_millis(),
@@ -743,7 +743,7 @@ pub async fn query_multiple_sources(
     eu_host: &str,
     timeout: Duration,
 ) -> MultiDnsResult {
-    info!(
+    debug!(
         us_host = %us_host,
         eu_host = %eu_host,
         timeout_ms = timeout.as_millis(),
@@ -839,7 +839,7 @@ async fn query_all_approaches_parallel(
 
     // Approach 1: DoH with native-certs (PRIMARY)
     if let Ok(validator) = &doh_native {
-        info!("DoH native-certs: validator created successfully");
+        debug!("DoH native-certs: validator created successfully");
         let us_host_owned = us_host.to_string();
         let eu_host_owned = eu_host.to_string();
         let validator_clone = validator.clone();
@@ -865,7 +865,7 @@ async fn query_all_approaches_parallel(
 
     // Approach 2: DoH with bundled webpki-roots (FALLBACK)
     if let Ok(validator) = &doh_bundled {
-        info!("DoH bundled-certs: validator created successfully");
+        debug!("DoH bundled-certs: validator created successfully");
         let us_host_owned = us_host.to_string();
         let eu_host_owned = eu_host.to_string();
         let validator_clone = validator.clone();
@@ -950,7 +950,7 @@ async fn query_all_approaches_parallel(
         }));
     }
 
-    info!(
+    debug!(
         us_queries = us_futures.len(),
         eu_queries = eu_futures.len(),
         "Launched {} parallel DNS queries",
@@ -996,23 +996,23 @@ async fn query_all_approaches_parallel(
         }
     }
 
-    // Log matrix header for UI parsing
-    info!("┌─────────────────────────────────────────────────────────────────┐");
-    info!("│ DNS Resolution Matrix (3 approaches × 2 sources = 6 queries)   │");
-    info!("├──────────┬─────────────┬────────┬──────────┬──────────────────┤");
-    info!("│ Source   │ Approach    │ Status │ Revision │ Details          │");
-    info!("├──────────┼─────────────┼────────┼──────────┼──────────────────┤");
+    // Log matrix header for UI parsing (debug level - too verbose for production)
+    debug!("┌─────────────────────────────────────────────────────────────────┐");
+    debug!("│ DNS Resolution Matrix (3 approaches × 2 sources = 6 queries)   │");
+    debug!("├──────────┬─────────────┬────────┬──────────┬──────────────────┤");
+    debug!("│ Source   │ Approach    │ Status │ Revision │ Details          │");
+    debug!("├──────────┼─────────────┼────────┼──────────┼──────────────────┤");
 
     // Log each US result
     for (approach, record) in &us_successes {
-        info!(
+        debug!(
             "│ US       │ {:11} │ OK     │ {:>8} │ ts={:<13} │",
             approach, record.revocation_revision, record.timestamp
         );
     }
     for (approach, error) in &us_failures {
         let short_err: String = error.chars().take(16).collect();
-        info!(
+        debug!(
             "│ US       │ {:11} │ FAIL   │        - │ {:<16} │",
             approach, short_err
         );
@@ -1020,20 +1020,20 @@ async fn query_all_approaches_parallel(
 
     // Log each EU result
     for (approach, record) in &eu_successes {
-        info!(
+        debug!(
             "│ EU       │ {:11} │ OK     │ {:>8} │ ts={:<13} │",
             approach, record.revocation_revision, record.timestamp
         );
     }
     for (approach, error) in &eu_failures {
         let short_err: String = error.chars().take(16).collect();
-        info!(
+        debug!(
             "│ EU       │ {:11} │ FAIL   │        - │ {:<16} │",
             approach, short_err
         );
     }
 
-    info!("└──────────┴─────────────┴────────┴──────────┴──────────────────┘");
+    debug!("└──────────┴─────────────┴────────┴──────────┴──────────────────┘");
 
     // Cross-check: verify all successful results agree
     let all_successes: Vec<(&str, &str, &DnsTxtRecord)> = us_successes
@@ -1119,7 +1119,7 @@ pub async fn query_multiple_sources_with_transport(
     timeout: Duration,
     transport: DnsTransport,
 ) -> MultiDnsResult {
-    info!(
+    debug!(
         transport = ?transport,
         us_host = %us_host,
         eu_host = %eu_host,
@@ -1138,7 +1138,7 @@ pub async fn query_multiple_sources_with_transport(
         },
     };
 
-    info!("DNS validator created, querying both sources...");
+    debug!("DNS validator created, querying both sources...");
 
     // Query both sources in parallel
     let (us_result, eu_result) = tokio::join!(
@@ -1146,7 +1146,7 @@ pub async fn query_multiple_sources_with_transport(
         validator.query_steward_record(eu_host),
     );
 
-    info!(
+    debug!(
         us_ok = us_result.is_ok(),
         eu_ok = eu_result.is_ok(),
         "DNS queries complete"
@@ -1165,7 +1165,7 @@ pub async fn query_multiple_sources_with_transport(
 pub fn default_dns_transport() -> DnsTransport {
     #[cfg(any(target_os = "android", target_os = "ios"))]
     {
-        info!("Mobile platform detected, using DNS-over-HTTPS");
+        debug!("Mobile platform detected, using DNS-over-HTTPS");
         DnsTransport::DnsOverHttps
     }
 
@@ -1173,7 +1173,7 @@ pub fn default_dns_transport() -> DnsTransport {
     {
         // On desktop, try DoH first as it's more reliable
         // TODO: Make this configurable
-        info!("Desktop platform, using DNS-over-HTTPS for reliability");
+        debug!("Desktop platform, using DNS-over-HTTPS for reliability");
         DnsTransport::DnsOverHttps
     }
 }
