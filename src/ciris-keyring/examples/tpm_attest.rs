@@ -1,8 +1,19 @@
 //! Quick TPM attestation test - exercises dual-key architecture.
+//!
+//! This example requires TPM support, which is only available on Linux and Windows.
 
+// Prevent compilation on unsupported platforms
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn main() {
+    eprintln!("TPM attestation is only supported on Linux and Windows");
+}
+
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use ciris_keyring::{platform::TpmSigner, HardwareSigner, PlatformAttestation};
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 use tracing_subscriber::{fmt, EnvFilter};
 
+#[cfg(any(target_os = "linux", target_os = "windows"))]
 #[tokio::main]
 async fn main() {
     // Enable debug output via env var: RUST_LOG=debug
