@@ -16,13 +16,24 @@ mod quote;
 mod signing;
 
 // Re-export public items
-pub use detection::{create_context, detect_tpm, get_tpm_manufacturer};
+// Detection functions work on all platforms
+pub use detection::{detect_tpm, get_tpm_manufacturer};
+
+// TPM-specific functions require the tpm feature
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+pub use detection::create_context;
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 pub use keys::{
     create_attestation_key, create_signing_key, extract_public_key_from_public,
     get_or_create_primary,
 };
-pub use quote::{read_ek_certificate, TpmQuote};
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+pub use quote::read_ek_certificate;
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 pub use signing::extract_ecdsa_signature;
+
+// TpmQuote is always available (just a data struct)
+pub use quote::TpmQuote;
 
 use async_trait::async_trait;
 use std::sync::Mutex;

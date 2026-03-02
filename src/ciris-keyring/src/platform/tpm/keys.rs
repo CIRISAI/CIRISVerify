@@ -5,6 +5,7 @@
 //! - Signing key (non-restricted, for arbitrary data)
 //! - Attestation key (restricted, for TPM quotes)
 
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 use crate::error::KeyringError;
 
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]

@@ -3,6 +3,7 @@
 //! This module contains helpers for TPM signing operations,
 //! including ECDSA signature extraction.
 
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 use crate::error::KeyringError;
 
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]

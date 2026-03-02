@@ -3,6 +3,7 @@
 //! This module handles TPM2_Quote operations for PCR attestation
 //! and reading the Endorsement Key (EK) certificate from NV storage.
 
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 use crate::error::KeyringError;
 
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
