@@ -66,6 +66,7 @@ pub mod play_integrity;
 pub mod registry;
 pub mod revocation;
 pub mod security;
+pub mod tpm_attest;
 pub mod transparency;
 pub mod types;
 pub mod unified;

@@ -259,6 +259,14 @@ impl LicenseEngine {
         })
     }
 
+    /// Get a reference to the hardware signer.
+    ///
+    /// This provides access to the platform-specific hardware security module
+    /// (TPM, Android Keystore, iOS Secure Enclave) for attestation operations.
+    pub fn hw_signer(&self) -> &Arc<dyn HardwareSigner> {
+        &self.hw_signer
+    }
+
     /// Get the current license status.
     ///
     /// This is the main verification entry point.

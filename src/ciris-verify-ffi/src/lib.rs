@@ -2632,11 +2632,23 @@ unsafe fn run_attestation_inner(
         }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
-            // Desktop: L2 requires TPM PCR quote verified via registry (similar to Play Integrity)
-            // Until that's wired in, desktop stays at L1 max when L1 passes
-            // TODO: Wire ciris_keyring::platform::tpm::quote::generate_quote() to FFI
-            //       and add registry endpoint for PCR quote verification
-            result.level_pending = false;
+            // Desktop: L2 requires TPM PCR quote verified via registry
+            // If TPM is available, set level_pending = true to signal client should call
+            // ciris_verify_tpm_attestation() to upgrade to L2+
+            let has_tpm = matches!(
+                ciris_keyring::detect_hardware_type().hardware_type,
+                ciris_keyring::HardwareType::TpmDiscrete | ciris_keyring::HardwareType::TpmFirmware
+            );
+            if has_tpm && hardware_backed {
+                // TPM available but not yet attested - pending L2
+                result.level_pending = true;
+                tracing::info!(
+                    "Desktop L2 pending: TPM available but not attested. Call ciris_verify_tpm_attestation() to upgrade."
+                );
+            } else {
+                // No TPM or software-only key - L1 is max
+                result.level_pending = false;
+            }
         }
     }
 
@@ -3788,6 +3800,242 @@ pub unsafe extern "C" fn ciris_verify_app_attest_assertion(
 
     std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, len);
 
+    *result_json = ptr;
+    *result_len = len;
+
+    CirisVerifyError::Success as i32
+}
+
+// =============================================================================
+// TPM Attestation (Desktop L2)
+// =============================================================================
+
+/// Verify TPM attestation for desktop L2 (Linux/Windows).
+///
+/// This is the desktop equivalent of Play Integrity (Android) / App Attest (iOS).
+/// Generates a PCR quote using the TPM, reads the EK certificate, and sends
+/// both to the registry for verification. The result is cached for use by
+/// run_attestation when computing attestation level.
+///
+/// # Arguments
+///
+/// - `handle`: Valid handle from `ciris_verify_init`
+/// - `nonce`: Challenge nonce (base64-encoded, 32+ bytes recommended)
+/// - `result_json`: Output pointer for result JSON
+/// - `result_len`: Output pointer for result length
+///
+/// # Returns
+///
+/// - `0` (Success): TPM attestation completed (check `verified` field in result)
+/// - `-3` (InvalidHandle): Handle is invalid or corrupted
+/// - `-5` (InvalidArgument): Null or invalid arguments
+/// - `-7` (RequestFailed): Registry verification failed
+/// - `-8` (SerializationError): JSON serialization failed
+/// - `-10` (InternalError): Unexpected error
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `nonce` must be a null-terminated UTF-8 string
+/// - `result_json` and `result_len` must be valid pointers
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_tpm_attestation(
+    handle: *mut CirisVerifyHandle,
+    nonce: *const libc::c_char,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    tracing::info!("ciris_verify_tpm_attestation called");
+
+    // Validate handle
+    let handle_ref = match validate_handle(handle) {
+        Ok(h) => h,
+        Err(code) => {
+            tracing::error!("tpm_attestation: invalid handle");
+            return code;
+        },
+    };
+
+    // Validate pointers
+    if let Some(err) = validate_ptr(nonce, "nonce") {
+        tracing::error!("tpm_attestation: {}", err);
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+    if let Some(err) = validate_ptr(result_json, "result_json") {
+        tracing::error!("tpm_attestation: {}", err);
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+    if let Some(err) = validate_ptr(result_len, "result_len") {
+        tracing::error!("tpm_attestation: {}", err);
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    // Parse nonce
+    let nonce_str = match safe_cstr_to_str(nonce, 256) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("tpm_attestation: invalid nonce string: {}", e);
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    tracing::info!(
+        "TPM attestation: generating quote with nonce (len={})",
+        nonce_str.len()
+    );
+
+    // Decode nonce from base64
+    let nonce_bytes =
+        match base64::Engine::decode(&base64::engine::general_purpose::STANDARD, nonce_str) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("tpm_attestation: invalid base64 nonce: {}", e);
+                return CirisVerifyError::InvalidArgument as i32;
+            },
+        };
+
+    // Generate TPM attestation (quote + EK cert)
+    let attestation = handle_ref.runtime.handle().block_on(async {
+        handle_ref
+            .engine
+            .hw_signer()
+            .attestation_with_nonce(Some(&nonce_bytes))
+            .await
+    });
+
+    let tpm_attest = match attestation {
+        Ok(ciris_keyring::PlatformAttestation::Tpm(tpm)) => tpm,
+        Ok(_) => {
+            tracing::error!("tpm_attestation: not a TPM platform");
+            return CirisVerifyError::RequestFailed as i32;
+        },
+        Err(e) => {
+            tracing::error!("tpm_attestation: failed to generate attestation: {}", e);
+            // Return a failed response instead of error code
+            let response = ciris_verify_core::tpm_attest::TpmAttestVerifyResponse {
+                verified: false,
+                error: Some(format!("Failed to generate TPM attestation: {}", e)),
+                ..Default::default()
+            };
+            return write_json_result(&response, result_json, result_len);
+        },
+    };
+
+    tracing::info!(
+        "TPM attestation: quote generated, manufacturer={}, discrete={}",
+        tpm_attest.manufacturer,
+        tpm_attest.discrete
+    );
+
+    // Build verification request
+    let request = match build_tpm_verify_request(&tpm_attest, nonce_str) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!("tpm_attestation: failed to build request: {}", e);
+            let response = ciris_verify_core::tpm_attest::TpmAttestVerifyResponse {
+                verified: false,
+                error: Some(format!("Failed to build verification request: {}", e)),
+                ..Default::default()
+            };
+            return write_json_result(&response, result_json, result_len);
+        },
+    };
+
+    // Call registry to verify
+    tracing::info!("TPM attestation: sending to registry for verification");
+    let result = handle_ref.runtime.handle().block_on(async {
+        let client = ciris_verify_core::RegistryClient::new(
+            "https://api.registry.ciris-services-1.ai",
+            std::time::Duration::from_secs(30),
+        )?;
+        client.verify_tpm_attestation(&request).await
+    });
+
+    let response = match result {
+        Ok(r) => {
+            tracing::info!(
+                "TPM attestation: registry response: verified={}",
+                r.verified
+            );
+            r
+        },
+        Err(e) => {
+            tracing::warn!("TPM attestation: registry verification failed: {}", e);
+            ciris_verify_core::tpm_attest::TpmAttestVerifyResponse {
+                verified: false,
+                error: Some(format!("Registry verification failed: {}", e)),
+                ..Default::default()
+            }
+        },
+    };
+
+    // Cache result for run_attestation L2
+    if let Ok(mut cache) = handle_ref.device_attestation_cache.lock() {
+        *cache = Some(ciris_verify_core::unified::DeviceAttestationCheckResult {
+            platform: "tpm".to_string(),
+            verified: response.verified,
+            summary: response.summary(),
+            error: response.error.clone(),
+        });
+        tracing::info!(
+            "TPM attestation: cached result for L2 (verified={})",
+            response.verified
+        );
+    } else {
+        tracing::warn!("TPM attestation: failed to cache result (mutex poisoned)");
+    }
+
+    write_json_result(&response, result_json, result_len)
+}
+
+/// Build TPM verification request from attestation data.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn build_tpm_verify_request(
+    tpm: &ciris_keyring::TpmAttestation,
+    nonce: &str,
+) -> Result<ciris_verify_core::tpm_attest::TpmAttestVerifyRequest, String> {
+    use base64::Engine;
+    let b64 = base64::engine::general_purpose::STANDARD;
+
+    let quote = tpm.quote.as_ref().ok_or("No quote data")?;
+    let ak_pubkey = tpm.ak_public_key.as_ref().ok_or("No AK public key")?;
+
+    Ok(ciris_verify_core::tpm_attest::TpmAttestVerifyRequest {
+        quoted: b64.encode(&quote.quoted),
+        signature: b64.encode(&quote.signature),
+        pcr_selection: b64.encode(&quote.pcr_selection),
+        nonce: nonce.to_string(),
+        ak_public_key: b64.encode(ak_pubkey),
+        ek_cert: tpm.ek_cert.as_ref().map(|c| b64.encode(c)),
+        tpm_version: tpm.tpm_version.clone(),
+        manufacturer: tpm.manufacturer.clone(),
+        discrete: tpm.discrete,
+    })
+}
+
+/// Helper to write JSON result to output pointers.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+unsafe fn write_json_result<T: serde::Serialize>(
+    response: &T,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    let result_bytes = match serde_json::to_vec(response) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("JSON serialization failed: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    let len = result_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(result_bytes.as_ptr(), ptr, len);
     *result_json = ptr;
     *result_len = len;
 

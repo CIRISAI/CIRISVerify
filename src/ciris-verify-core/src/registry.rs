@@ -905,6 +905,61 @@ impl RegistryClient {
     }
 
     // =========================================================================
+    // TPM Attestation - Desktop (Linux/Windows)
+    // =========================================================================
+
+    /// Verify TPM attestation (PCR quote + EK certificate).
+    ///
+    /// This is the desktop equivalent of Play Integrity (Android) / App Attest (iOS).
+    /// Sends the TPM quote and EK certificate to the registry for verification.
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[instrument(skip(self, request))]
+    pub async fn verify_tpm_attestation(
+        &self,
+        request: &crate::tpm_attest::TpmAttestVerifyRequest,
+    ) -> Result<crate::tpm_attest::TpmAttestVerifyResponse, VerifyError> {
+        let url = format!("{}/v1/integrity/tpm/verify", self.base_url);
+        debug!("Verifying TPM attestation at {}", url);
+
+        let response = self
+            .client
+            .post(&url)
+            .json(request)
+            .send()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("TPM attestation verify request failed: {}", e),
+            })?;
+
+        if response.status().as_u16() == 503 {
+            return Err(VerifyError::HttpsError {
+                message: "TPM attestation not configured on registry".to_string(),
+            });
+        }
+
+        if !response.status().is_success() {
+            return Err(VerifyError::HttpsError {
+                message: format!("TPM attestation verify HTTP error: {}", response.status()),
+            });
+        }
+
+        let result = response
+            .json::<crate::tpm_attest::TpmAttestVerifyResponse>()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Failed to parse TPM attestation response: {}", e),
+            })?;
+
+        info!(
+            verified = result.verified,
+            summary = %result.summary(),
+            "TPM attestation verification complete"
+        );
+
+        Ok(result)
+    }
+
+    // =========================================================================
     // Key Verification - Desktop
     // =========================================================================
 
