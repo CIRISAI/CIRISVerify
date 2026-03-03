@@ -11,10 +11,13 @@ use crate::error::KeyringError;
 use tracing::{debug, error, info, warn};
 
 /// Size of Ed25519 private key
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 const ED25519_PRIVATE_KEY_SIZE: usize = 32;
 /// AES-256-GCM nonce size
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 const AES_GCM_NONCE_SIZE: usize = 12;
 /// AES-256-GCM tag size
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 const AES_GCM_TAG_SIZE: usize = 16;
 
 /// TPM-wrapped Ed25519 signer for Linux/Windows.
@@ -238,7 +241,7 @@ impl TpmWrappedEd25519Signer {
     /// from the signature using HKDF. This binds the encryption to this
     /// specific TPM - a different TPM will produce a different signature.
     fn derive_aes_key(&self) -> Result<[u8; 32], KeyringError> {
-        use sha2::{Sha256, Digest};
+        use sha2::{Digest, Sha256};
 
         debug!(alias = %self.alias, "Deriving AES key from TPM");
 
@@ -281,10 +284,8 @@ impl TpmWrappedEd25519Signer {
                     validation.clone(),
                 )
             })
-            .map_err(|e| {
-                KeyringError::HardwareError {
-                    reason: format!("TPM signing for key derivation failed: {}", e),
-                }
+            .map_err(|e| KeyringError::HardwareError {
+                reason: format!("TPM signing for key derivation failed: {}", e),
             })?;
 
         // Extract signature bytes
@@ -294,11 +295,10 @@ impl TpmWrappedEd25519Signer {
         use hkdf::Hkdf;
         let hk = Hkdf::<Sha256>::new(None, &sig_bytes);
         let mut aes_key = [0u8; 32];
-        hk.expand(b"aes-256-gcm-key", &mut aes_key).map_err(|_| {
-            KeyringError::HardwareError {
+        hk.expand(b"aes-256-gcm-key", &mut aes_key)
+            .map_err(|_| KeyringError::HardwareError {
                 reason: "HKDF expansion failed".into(),
-            }
-        })?;
+            })?;
 
         // Cleanup
         let _ = context.flush_context(signing_key_handle.into());
@@ -322,18 +322,17 @@ impl TpmWrappedEd25519Signer {
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         // Create cipher
-        let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| {
-            KeyringError::HardwareError {
-                reason: format!("Failed to create AES cipher: {}", e),
-            }
+        let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| KeyringError::HardwareError {
+            reason: format!("Failed to create AES cipher: {}", e),
         })?;
 
         // Encrypt
-        let ciphertext = cipher.encrypt(nonce, plaintext).map_err(|e| {
-            KeyringError::HardwareError {
-                reason: format!("AES encryption failed: {}", e),
-            }
-        })?;
+        let ciphertext =
+            cipher
+                .encrypt(nonce, plaintext)
+                .map_err(|e| KeyringError::HardwareError {
+                    reason: format!("AES encryption failed: {}", e),
+                })?;
 
         // Format: nonce || ciphertext (includes tag)
         let mut result = Vec::with_capacity(AES_GCM_NONCE_SIZE + ciphertext.len());
@@ -365,17 +364,18 @@ impl TpmWrappedEd25519Signer {
         let nonce = Nonce::from_slice(nonce_bytes);
 
         // Create cipher
-        let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| {
-            KeyringError::HardwareError {
-                reason: format!("Failed to create AES cipher: {}", e),
-            }
+        let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| KeyringError::HardwareError {
+            reason: format!("Failed to create AES cipher: {}", e),
         })?;
 
         // Decrypt
         let plaintext = cipher.decrypt(nonce, ciphertext).map_err(|e| {
             error!(alias = %self.alias, "AES decryption failed (wrong TPM?): {}", e);
             KeyringError::HardwareError {
-                reason: format!("AES decryption failed (key may be bound to different TPM): {}", e),
+                reason: format!(
+                    "AES decryption failed (key may be bound to different TPM): {}",
+                    e
+                ),
             }
         })?;
 
@@ -391,6 +391,7 @@ pub struct TpmWrappedEd25519Signer {
 
 #[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
 impl TpmWrappedEd25519Signer {
+    /// Create a new TPM-wrapped Ed25519 signer (stub - returns error).
     pub fn new(
         _alias: impl Into<String>,
         _key_dir: impl Into<std::path::PathBuf>,
@@ -398,30 +399,37 @@ impl TpmWrappedEd25519Signer {
         Err(crate::error::KeyringError::NoPlatformSupport)
     }
 
+    /// Check if a TPM-wrapped key exists (stub - always false).
     pub fn key_exists(&self) -> bool {
         false
     }
 
+    /// Import an Ed25519 key (stub - returns error).
     pub fn import_key(&self, _key_bytes: &[u8]) -> Result<(), crate::error::KeyringError> {
         Err(crate::error::KeyringError::NoPlatformSupport)
     }
 
+    /// Get the Ed25519 public key (stub - returns error).
     pub fn public_key(&self) -> Result<Vec<u8>, crate::error::KeyringError> {
         Err(crate::error::KeyringError::NoPlatformSupport)
     }
 
+    /// Sign data with the Ed25519 key (stub - returns error).
     pub fn sign(&self, _data: &[u8]) -> Result<Vec<u8>, crate::error::KeyringError> {
         Err(crate::error::KeyringError::NoPlatformSupport)
     }
 
+    /// Delete the TPM-wrapped key (stub - returns error).
     pub fn delete_key(&self) -> Result<(), crate::error::KeyringError> {
         Err(crate::error::KeyringError::NoPlatformSupport)
     }
 
+    /// Check if hardware-backed (stub - always false).
     pub fn is_hardware_backed(&self) -> bool {
         false
     }
 
+    /// Get diagnostics information (stub).
     pub fn diagnostics(&self) -> String {
         "TpmWrappedEd25519Signer: TPM not available on this platform".into()
     }

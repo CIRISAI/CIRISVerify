@@ -665,7 +665,9 @@ impl MutableEd25519Signer {
         }
         #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
         {
-            self.tpm_wrapper.as_ref().is_some_and(|w| w.is_hardware_backed())
+            self.tpm_wrapper
+                .as_ref()
+                .is_some_and(|w| w.is_hardware_backed())
         }
         #[cfg(not(any(
             target_os = "android",
