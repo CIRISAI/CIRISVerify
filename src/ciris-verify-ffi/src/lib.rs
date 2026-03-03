@@ -2625,29 +2625,87 @@ unsafe fn run_attestation_inner(
     } else {
         // No device attestation cached yet
         // On mobile platforms, level is pending until Play Integrity / App Attest completes
-        // On desktop platforms, L2 requires TPM PCR quote validation (not yet wired - TODO)
+        // On desktop platforms, L2 = hardware environment detected (TPM/SE)
         #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             result.level_pending = true;
         }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
-            // Desktop: L2 requires TPM PCR quote verified via registry
-            // If TPM is available, set level_pending = true to signal client should call
-            // ciris_verify_tpm_attestation() to upgrade to L2+
+            // Desktop: L2 = hardware environment detected (TPM + hardware-backed key)
+            // This is separate from TPM PCR attestation which adds confidence but isn't required
             let has_tpm = matches!(
                 ciris_keyring::detect_hardware_type().hardware_type,
                 ciris_keyring::HardwareType::TpmDiscrete | ciris_keyring::HardwareType::TpmFirmware
             );
+
+            // Recalculate levels for desktop based on hardware detection
+            let l1_pass = result
+                .self_verification
+                .as_ref()
+                .map(|sv| sv.binary_valid && sv.functions_valid)
+                .unwrap_or(false);
+            // L2: Hardware environment detected (TPM + not VM + hardware-backed key)
+            let l2_pass = l1_pass && has_tpm && !running_in_vm && hardware_backed;
+            let sources_agreeing = u8::from(result.sources.dns_us_valid)
+                + u8::from(result.sources.dns_eu_valid)
+                + u8::from(result.sources.https_valid);
+            let l3_pass = l2_pass && sources_agreeing >= 2;
+            // L4: File integrity (MUST be checked and valid)
+            let l4_pass = l3_pass
+                && result
+                    .file_integrity
+                    .as_ref()
+                    .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
+                    .unwrap_or(false)
+                && result
+                    .python_integrity
+                    .as_ref()
+                    .map(|pi| pi.valid)
+                    .unwrap_or(true); // Python integrity optional on desktop
+                                      // L5: Audit trail + registry key
+            let l5_pass = l4_pass
+                && result
+                    .audit_trail
+                    .as_ref()
+                    .map(|a| a.valid)
+                    .unwrap_or(false)
+                && result.registry_key_status == "active";
+
+            result.level = if l5_pass {
+                5
+            } else if l4_pass {
+                4
+            } else if l3_pass {
+                3
+            } else if l2_pass {
+                2
+            } else if l1_pass {
+                1
+            } else {
+                0
+            };
+            result.valid = result.checks_passed == result.checks_total && result.errors.is_empty();
+
             if has_tpm && hardware_backed {
-                // TPM available but not yet attested - pending L2
-                result.level_pending = true;
+                // TPM available - level calculation is complete, not pending
+                result.level_pending = false;
                 tracing::info!(
-                    "Desktop L2 pending: TPM available but not attested. Call ciris_verify_tpm_attestation() to upgrade."
+                    "Desktop level calculated: L1={}, L2={} (TPM), L3={} (sources={}), level={}",
+                    l1_pass,
+                    l2_pass,
+                    l3_pass,
+                    sources_agreeing,
+                    result.level
                 );
             } else {
                 // No TPM or software-only key - L1 is max
                 result.level_pending = false;
+                tracing::info!(
+                    "Desktop software-only: L1={}, level={}",
+                    l1_pass,
+                    result.level
+                );
             }
         }
     }
