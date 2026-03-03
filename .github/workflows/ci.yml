@@ -13,6 +13,39 @@ env:
 
 jobs:
   # ==========================================================================
+  # Version Consistency Check
+  # ==========================================================================
+  version-check:
+    name: Version Consistency
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check version consistency
+        run: |
+          set -e
+          # Extract versions from all sources
+          CARGO_VERSION=$(grep -m1 '^version = ' Cargo.toml | sed 's/version = "\(.*\)"/\1/')
+          PYPROJECT_VERSION=$(grep -m1 '^version = ' bindings/python/pyproject.toml | sed 's/version = "\(.*\)"/\1/')
+          PYTHON_VERSION=$(grep '__version__ = ' bindings/python/ciris_verify/__init__.py | sed 's/__version__ = "\(.*\)"/\1/')
+
+          echo "Cargo.toml (workspace): $CARGO_VERSION"
+          echo "pyproject.toml:         $PYPROJECT_VERSION"
+          echo "Python __version__:     $PYTHON_VERSION"
+
+          # Check all versions match
+          if [ "$CARGO_VERSION" != "$PYPROJECT_VERSION" ]; then
+            echo "ERROR: Cargo.toml ($CARGO_VERSION) != pyproject.toml ($PYPROJECT_VERSION)"
+            exit 1
+          fi
+
+          if [ "$CARGO_VERSION" != "$PYTHON_VERSION" ]; then
+            echo "ERROR: Cargo.toml ($CARGO_VERSION) != Python __version__ ($PYTHON_VERSION)"
+            exit 1
+          fi
+
+          echo "✓ All versions match: $CARGO_VERSION"
+
+  # ==========================================================================
   # Code Quality
   # ==========================================================================
   fmt:
