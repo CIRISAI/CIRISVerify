@@ -14,6 +14,7 @@ mod detection;
 mod keys;
 mod quote;
 mod signing;
+mod wrapping;
 
 // Re-export public items
 // Detection functions work on all platforms
@@ -34,6 +35,9 @@ pub use signing::extract_ecdsa_signature;
 
 // TpmQuote is always available (just a data struct)
 pub use quote::TpmQuote;
+
+// TPM-wrapped Ed25519 signer for hardware-backed key storage
+pub use wrapping::TpmWrappedEd25519Signer;
 
 use async_trait::async_trait;
 use std::sync::Mutex;
