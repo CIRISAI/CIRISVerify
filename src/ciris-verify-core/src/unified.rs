@@ -551,7 +551,14 @@ impl UnifiedAttestationEngine {
         let mut checks_total = 0u32;
         let mut diagnostics = String::new();
 
-        info!("Starting unified attestation (parallel checks)");
+        info!(
+            "VERIFY ATTESTATION STARTING: Full attestation with {} checks",
+            if request.skip_file_integrity {
+                "network"
+            } else {
+                "network+integrity"
+            }
+        );
 
         // Prepare check params
         let should_run_file_integrity = !request.skip_file_integrity
@@ -565,7 +572,7 @@ impl UnifiedAttestationEngine {
         // PHASE 1: Fetch ALL manifests + run validations IN PARALLEL
         // Critical for mobile where each network call blocks the thread
         // =======================================================================
-        info!("Phase 1: Parallel manifest fetch + validation");
+        info!("VERIFY PHASE 1/2 STARTING: Parallel manifest fetch + validation (5 network calls)");
 
         let (
             binary_manifest_result,
@@ -576,66 +583,93 @@ impl UnifiedAttestationEngine {
         ) = tokio::join!(
             // 1. Binary manifest (verify version) - for self-verification
             async {
+                info!("VERIFY STEP 1/5 STARTING: Binary manifest fetch");
                 if let Some(ref client) = self.registry_client {
                     match client.get_binary_manifest(verify_version).await {
                         Ok(m) => {
-                            info!("Binary manifest: {} targets", m.binaries.len());
+                            info!(
+                                "VERIFY STEP 1/5 COMPLETE: OK ({} targets)",
+                                m.binaries.len()
+                            );
                             Some(m)
                         },
                         Err(e) => {
-                            warn!("Binary manifest fetch failed: {}", e);
+                            warn!("VERIFY STEP 1/5 COMPLETE: FAILED ({})", e);
                             None
                         },
                     }
                 } else {
+                    info!("VERIFY STEP 1/5 COMPLETE: SKIP (no client)");
                     None
                 }
             },
             // 2. Function manifest (verify version + target) - for self-verification
             async {
+                info!("VERIFY STEP 2/5 STARTING: Function manifest fetch");
                 if let Some(ref client) = self.registry_client {
                     match client.get_function_manifest(verify_version, target).await {
                         Ok(m) => {
-                            info!("Function manifest: {} functions", m.functions.len());
+                            info!(
+                                "VERIFY STEP 2/5 COMPLETE: OK ({} functions)",
+                                m.functions.len()
+                            );
                             Some(m)
                         },
                         Err(e) => {
-                            warn!("Function manifest fetch failed: {}", e);
+                            warn!("VERIFY STEP 2/5 COMPLETE: FAILED ({})", e);
                             None
                         },
                     }
                 } else {
+                    info!("VERIFY STEP 2/5 COMPLETE: SKIP (no client)");
                     None
                 }
             },
             // 3. Agent build record (agent version) - for file/module/python integrity
             async {
+                info!("VERIFY STEP 3/5 STARTING: Agent build record fetch");
                 if let Some(ref version) = request.agent_version {
                     if let Some(ref client) = self.registry_client {
                         match client.get_build_by_version(version).await {
                             Ok(b) => {
-                                info!("Agent build: {} files", b.file_manifest_json.files().len());
+                                info!(
+                                    "VERIFY STEP 3/5 COMPLETE: OK ({} files)",
+                                    b.file_manifest_json.files().len()
+                                );
                                 Some(b)
                             },
                             Err(e) => {
-                                warn!("Agent build fetch failed: {}", e);
+                                warn!("VERIFY STEP 3/5 COMPLETE: FAILED ({})", e);
                                 None
                             },
                         }
                     } else {
+                        info!("VERIFY STEP 3/5 COMPLETE: SKIP (no client)");
                         None
                     }
                 } else {
+                    info!("VERIFY STEP 3/5 COMPLETE: SKIP (no agent_version)");
                     None
                 }
             },
             // 4. Source validation (DNS + HTTPS consensus)
-            self.consensus_validator.validate_steward_key(),
+            async {
+                info!("VERIFY STEP 4/5 STARTING: Source validation (DNS US + EU + HTTPS)");
+                let result = self.consensus_validator.validate_steward_key().await;
+                let sources_ok = u8::from(result.source_details.dns_us_reachable)
+                    + u8::from(result.source_details.dns_eu_reachable)
+                    + u8::from(result.source_details.https_reachable);
+                info!(
+                    "VERIFY STEP 4/5 COMPLETE: {}/3 sources reachable",
+                    sources_ok
+                );
+                result
+            },
             // 5. Registry key verification
             async {
+                info!("VERIFY STEP 5/5 STARTING: Registry key verification");
                 if let Some(ref fingerprint) = request.key_fingerprint {
                     if let Some(ref client) = self.registry_client {
-                        info!("Verifying key fingerprint: {}", fingerprint);
                         match client.verify_key_by_fingerprint(fingerprint).await {
                             Ok(response) => {
                                 let status = if response.is_valid_for_signing() {
@@ -649,66 +683,112 @@ impl UnifiedAttestationEngine {
                                 } else {
                                     format!("unknown:{}", response.status)
                                 };
-                                info!("Registry key verification: {}", status);
+                                info!("VERIFY STEP 5/5 COMPLETE: {}", status);
                                 status
                             },
                             Err(e) => {
-                                warn!("Registry key verification failed: {}", e);
+                                warn!("VERIFY STEP 5/5 COMPLETE: FAILED ({})", e);
                                 format!("error:{}", e)
                             },
                         }
                     } else {
+                        info!("VERIFY STEP 5/5 COMPLETE: SKIP (no client)");
                         "error:no_client".to_string()
                     }
                 } else {
+                    info!("VERIFY STEP 5/5 COMPLETE: SKIP (no fingerprint)");
                     "not_checked".to_string()
                 }
             }
         );
 
-        info!("Phase 1 complete. Phase 2: Local verification using pre-fetched manifests");
+        info!("VERIFY PHASE 1/2 COMPLETE: All network fetches done");
+        info!("VERIFY PHASE 2/2 STARTING: Local verification (6 checks)");
 
         // =======================================================================
         // PHASE 2: Run verification logic using pre-fetched manifests (NO network)
         // =======================================================================
 
         // Self-verification using pre-fetched binary + function manifests
+        info!("VERIFY STEP 1/6 STARTING: Self-verification (binary + functions)");
         let self_verification = self
             .run_self_verification_with_manifests(
                 binary_manifest_result.as_ref(),
                 function_manifest_result.as_ref(),
             )
             .await;
+        info!(
+            "VERIFY STEP 1/6 COMPLETE: {} (binary={}, functions={}/{})",
+            if self_verification.valid {
+                "OK"
+            } else {
+                "FAILED"
+            },
+            if self_verification.binary_valid {
+                "✓"
+            } else {
+                "✗"
+            },
+            self_verification.functions_passed,
+            self_verification.functions_checked
+        );
 
         // File integrity using pre-fetched agent build
+        info!("VERIFY STEP 2/6 STARTING: File integrity check");
         let file_integrity_result = if should_run_file_integrity {
             let agent_root = request.agent_root.as_ref().unwrap();
-            Some(
-                self.run_file_integrity_with_build(
+            let result = self
+                .run_file_integrity_with_build(
                     agent_build_result.as_ref(),
                     agent_root,
                     request.spot_check_count,
                     request.partial_file_check,
                 )
-                .await,
-            )
+                .await;
+            match &result {
+                Ok(r) => {
+                    let valid = r.full.as_ref().map(|f| f.valid).unwrap_or(false);
+                    info!(
+                        "VERIFY STEP 2/6 COMPLETE: {} (full={})",
+                        if valid { "OK" } else { "FAILED" },
+                        r.full
+                            .as_ref()
+                            .map(|f| format!("{}/{}", f.files_passed, f.total_files))
+                            .unwrap_or_else(|| "n/a".to_string())
+                    );
+                },
+                Err(e) => warn!("VERIFY STEP 2/6 COMPLETE: FAILED ({})", e),
+            }
+            Some(result)
         } else {
+            info!("VERIFY STEP 2/6 COMPLETE: SKIP (disabled or no root)");
             None
         };
 
         // Module integrity using pre-fetched agent build
+        info!("VERIFY STEP 3/6 STARTING: Module integrity check");
         let module_integrity_result = if should_run_module_integrity {
             let agent_hashes = request.python_hashes.as_ref().map(|h| &h.module_hashes);
-            Some(
-                self.run_module_integrity_with_build(
+            let result = self
+                .run_module_integrity_with_build(
                     agent_build_result.as_ref(),
                     request.agent_root.as_deref(),
                     agent_hashes,
                     &[],
                 )
-                .await,
-            )
+                .await;
+            match &result {
+                Ok(r) => info!(
+                    "VERIFY STEP 3/6 COMPLETE: {} ({}/{} verified)",
+                    if r.valid { "OK" } else { "FAILED" },
+                    r.summary.verified,
+                    r.manifest_file_count
+                ),
+                Err(e) => warn!("VERIFY STEP 3/6 COMPLETE: FAILED ({})", e),
+            }
+            Some(result)
         } else {
+            info!("VERIFY STEP 3/6 COMPLETE: SKIP (no agent_version)");
             None
         };
 
@@ -786,8 +866,16 @@ impl UnifiedAttestationEngine {
         }
 
         // Process source validation results
+        info!("VERIFY STEP 4/6 STARTING: Source validation analysis");
         checks_total += 3; // DNS US, DNS EU, HTTPS
         let sources = SourceCheckResult::from(&validation);
+        let sources_valid_count = u8::from(sources.dns_us_valid)
+            + u8::from(sources.dns_eu_valid)
+            + u8::from(sources.https_valid);
+        info!(
+            "VERIFY STEP 4/6 COMPLETE: {}/3 sources valid (status={})",
+            sources_valid_count, sources.validation_status
+        );
 
         if sources.dns_us_valid {
             checks_passed += 1;
@@ -923,6 +1011,7 @@ impl UnifiedAttestationEngine {
         };
 
         // 3. Python module integrity (Android/mobile)
+        info!("VERIFY STEP 5/6 STARTING: Python module integrity");
         let python_integrity = if let Some(ref hashes) = request.python_hashes {
             checks_total += 1;
 
@@ -1132,7 +1221,7 @@ impl UnifiedAttestationEngine {
             }
             diagnostics.push('\n');
 
-            Some(PythonIntegrityResult {
+            let result = PythonIntegrityResult {
                 valid,
                 modules_checked: hashes.module_hashes.len(),
                 modules_passed,
@@ -1160,9 +1249,17 @@ impl UnifiedAttestationEngine {
                 } else {
                     Some("Total hash mismatch".to_string())
                 },
-            })
+            };
+            info!(
+                "VERIFY STEP 5/6 COMPLETE: {} ({}/{} modules passed)",
+                if result.valid { "OK" } else { "FAILED" },
+                result.modules_passed,
+                result.modules_checked
+            );
+            Some(result)
         } else {
             diagnostics.push_str("=== PYTHON INTEGRITY ===\n  SKIP (no hashes provided)\n\n");
+            info!("VERIFY STEP 5/6 COMPLETE: SKIP (no hashes provided)");
             None
         };
 
@@ -1259,6 +1356,7 @@ impl UnifiedAttestationEngine {
         };
 
         // 4. Audit trail verification (if provided)
+        info!("VERIFY STEP 6/6 STARTING: Audit trail verification");
         let audit_trail = if !request.skip_audit {
             if let Some(ref entries) = request.audit_entries {
                 checks_total += 1;
@@ -1269,6 +1367,16 @@ impl UnifiedAttestationEngine {
                 if result.valid {
                     checks_passed += 1;
                 }
+                info!(
+                    "VERIFY STEP 6/6 COMPLETE: {} ({} entries, chain={})",
+                    if result.valid { "OK" } else { "FAILED" },
+                    result.total_entries,
+                    if result.hash_chain_valid {
+                        "valid"
+                    } else {
+                        "broken"
+                    }
+                );
 
                 diagnostics.push_str("=== AUDIT TRAIL ===\n");
                 diagnostics.push_str(&format!(
@@ -1309,10 +1417,12 @@ impl UnifiedAttestationEngine {
                 Some(result)
             } else {
                 diagnostics.push_str("=== AUDIT TRAIL ===\n  SKIP (no entries provided)\n\n");
+                info!("VERIFY STEP 6/6 COMPLETE: SKIP (no entries provided)");
                 None
             }
         } else {
             diagnostics.push_str("=== AUDIT TRAIL ===\n  SKIP (disabled)\n\n");
+            info!("VERIFY STEP 6/6 COMPLETE: SKIP (disabled)");
             None
         };
 
@@ -1398,9 +1508,14 @@ impl UnifiedAttestationEngine {
         ));
         diagnostics.push_str(&format!("Time: {}ms\n", start.elapsed().as_millis()));
 
+        info!("VERIFY PHASE 2/2 COMPLETE: All local checks done");
         info!(
+            "VERIFY ATTESTATION COMPLETE: level={}, valid={}, checks={}/{}, time={}ms",
+            level,
+            valid,
             checks_passed,
-            checks_total, level, valid, "Unified attestation complete"
+            checks_total,
+            start.elapsed().as_millis()
         );
 
         Ok(FullAttestationResult {
