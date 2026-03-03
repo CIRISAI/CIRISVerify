@@ -748,14 +748,28 @@ impl UnifiedAttestationEngine {
             match &result {
                 Ok(r) => {
                     let valid = r.full.as_ref().map(|f| f.valid).unwrap_or(false);
-                    info!(
-                        "VERIFY STEP 2/6 COMPLETE: {} (full={})",
-                        if valid { "OK" } else { "FAILED" },
-                        r.full
-                            .as_ref()
-                            .map(|f| format!("{}/{}", f.files_passed, f.total_files))
-                            .unwrap_or_else(|| "n/a".to_string())
-                    );
+                    let unexpected_count = r
+                        .full
+                        .as_ref()
+                        .map(|f| f.unexpected_files.len())
+                        .unwrap_or(0);
+                    if unexpected_count > 0 {
+                        warn!(
+                            "VERIFY STEP 2/6 COMPLETE: FAILED (passed={}/{}, unexpected={})",
+                            r.full.as_ref().map(|f| f.files_passed).unwrap_or(0),
+                            r.full.as_ref().map(|f| f.total_files).unwrap_or(0),
+                            unexpected_count
+                        );
+                    } else {
+                        info!(
+                            "VERIFY STEP 2/6 COMPLETE: {} (full={})",
+                            if valid { "OK" } else { "FAILED" },
+                            r.full
+                                .as_ref()
+                                .map(|f| format!("{}/{}", f.files_passed, f.total_files))
+                                .unwrap_or_else(|| "n/a".to_string())
+                        );
+                    }
                 },
                 Err(e) => warn!("VERIFY STEP 2/6 COMPLETE: FAILED ({})", e),
             }
@@ -982,6 +996,25 @@ impl UnifiedAttestationEngine {
                                 "    └─ Partial mode: {}/{} files found on disk\n",
                                 full.files_found, full.total_files
                             ));
+                        }
+                        // List unexpected files (files on disk but not in manifest)
+                        if !full.unexpected_files.is_empty() {
+                            diagnostics.push_str(&format!(
+                                "    └─ Unexpected files ({}):\n",
+                                full.unexpected_files.len()
+                            ));
+                            // Show first 20 files, then summary
+                            for (i, path) in full.unexpected_files.iter().enumerate() {
+                                if i < 20 {
+                                    diagnostics.push_str(&format!("       • {}\n", path));
+                                } else if i == 20 {
+                                    diagnostics.push_str(&format!(
+                                        "       ... and {} more (see unexpected_files in JSON response)\n",
+                                        full.unexpected_files.len() - 20
+                                    ));
+                                    break;
+                                }
+                            }
                         }
                     }
 

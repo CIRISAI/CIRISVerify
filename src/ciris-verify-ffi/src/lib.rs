@@ -2625,13 +2625,17 @@ unsafe fn run_attestation_inner(
     } else {
         // No device attestation cached yet
         // On mobile platforms, level is pending until Play Integrity / App Attest completes
-        // On desktop platforms, device attestation is not required
+        // On desktop platforms, L2 requires TPM PCR quote validation (not yet wired - TODO)
         #[cfg(any(target_os = "android", target_os = "ios"))]
         {
             result.level_pending = true;
         }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
+            // Desktop: L2 requires TPM PCR quote verified via registry (similar to Play Integrity)
+            // Until that's wired in, desktop stays at L1 max when L1 passes
+            // TODO: Wire ciris_keyring::platform::tpm::quote::generate_quote() to FFI
+            //       and add registry endpoint for PCR quote verification
             result.level_pending = false;
         }
     }
