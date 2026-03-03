@@ -1,6 +1,6 @@
 # CIRISVerify Integration Requirements
 
-**Version:** 1.1.0
+**Version:** 1.1.1
 **Date:** 2026-02-17
 **Status:** Active — Infrastructure endpoints configured, multi-source engine implemented
 
