@@ -9,10 +9,12 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
-use tracing::{info, instrument, warn};
+use tokio::sync::RwLock;
+use tracing::{error, info, instrument, warn};
 
 use crate::audit::{AuditEntry, AuditVerificationResult, AuditVerifier};
 use crate::config::VerifyConfig;
@@ -24,6 +26,44 @@ use crate::registry::{
 use crate::security::file_integrity::{self, FileIntegrityResult};
 use crate::security::function_integrity::{self, FunctionManifest};
 use crate::validation::{ConsensusValidator, ValidationResult};
+
+// =============================================================================
+// MANIFEST CACHE — survives across FFI calls so intermittent network failures
+// during periodic refresh don't cause L1/L2/L4 to fail and shut down the agent.
+// =============================================================================
+
+/// Cached manifests from a previous successful registry fetch.
+struct ManifestCache {
+    binary: Option<BinaryManifest>,
+    function: Option<FunctionManifest>,
+    build: Option<BuildRecord>,
+    /// Baseline integrity snapshot from first successful attestation.
+    /// Used to detect degradation: if a check was passing and now fails,
+    /// something was tampered with (not a network issue).
+    baseline: Option<IntegrityBaseline>,
+}
+
+/// Snapshot of integrity check results from first successful attestation.
+#[derive(Debug, Clone)]
+struct IntegrityBaseline {
+    binary_valid: bool,
+    functions_valid: bool,
+    file_integrity_valid: bool,
+    python_integrity_valid: bool,
+}
+
+/// Global manifest cache (populated on first successful fetch, used as fallback).
+fn manifest_cache() -> &'static RwLock<ManifestCache> {
+    static CACHE: OnceLock<RwLock<ManifestCache>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        RwLock::new(ManifestCache {
+            binary: None,
+            function: None,
+            build: None,
+            baseline: None,
+        })
+    })
+}
 
 /// Request for full attestation.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -575,9 +615,9 @@ impl UnifiedAttestationEngine {
         info!("VERIFY PHASE 1/2 STARTING: Parallel manifest fetch + validation (5 network calls)");
 
         let (
-            binary_manifest_result,
-            function_manifest_result,
-            agent_build_result,
+            binary_manifest_fresh,
+            function_manifest_fresh,
+            agent_build_fresh,
             validation,
             key_verification_result,
         ) = tokio::join!(
@@ -703,6 +743,80 @@ impl UnifiedAttestationEngine {
         );
 
         info!("VERIFY PHASE 1/2 COMPLETE: All network fetches done");
+
+        // =======================================================================
+        // MANIFEST CACHE: Store fresh fetches, fall back to cache on failure.
+        // This prevents intermittent network issues during periodic refresh
+        // from causing L1/L2/L4 degradation and agent shutdown.
+        // =======================================================================
+        let (binary_manifest_result, function_manifest_result, agent_build_result) = {
+            let mut cache = manifest_cache().write().await;
+
+            // Update cache with any fresh results
+            if let Some(ref m) = binary_manifest_fresh {
+                cache.binary = Some(m.clone());
+            }
+            if let Some(ref m) = function_manifest_fresh {
+                cache.function = Some(m.clone());
+            }
+            if let Some(ref b) = agent_build_fresh {
+                cache.build = Some(b.clone());
+            }
+
+            // Use fresh if available, otherwise fall back to cached
+            let binary = binary_manifest_fresh.or_else(|| {
+                if let Some(ref cached) = cache.binary {
+                    warn!(
+                        "VERIFY MANIFEST_CACHE FALLBACK: Using cached binary manifest \
+                         (version={}, generated_at={}) — registry unreachable",
+                        cached.version, cached.generated_at
+                    );
+                    Some(cached.clone())
+                } else {
+                    error!(
+                        "VERIFY MANIFEST_CACHE MISS: No cached binary manifest available \
+                         and registry unreachable — L1 binary check will be skipped"
+                    );
+                    None
+                }
+            });
+            let function = function_manifest_fresh.or_else(|| {
+                if let Some(ref cached) = cache.function {
+                    warn!(
+                        "VERIFY MANIFEST_CACHE FALLBACK: Using cached function manifest \
+                         (version={}, target={}) — registry unreachable",
+                        cached.binary_version, cached.target
+                    );
+                    Some(cached.clone())
+                } else {
+                    error!(
+                        "VERIFY MANIFEST_CACHE MISS: No cached function manifest available \
+                         and registry unreachable — L1 function check will be skipped"
+                    );
+                    None
+                }
+            });
+            let build = agent_build_fresh.or_else(|| {
+                if let Some(ref cached) = cache.build {
+                    warn!(
+                        "VERIFY MANIFEST_CACHE FALLBACK: Using cached build record \
+                         (version={}, {} files) — registry unreachable",
+                        cached.version,
+                        cached.file_manifest_json.files().len()
+                    );
+                    Some(cached.clone())
+                } else {
+                    error!(
+                        "VERIFY MANIFEST_CACHE MISS: No cached build record available \
+                         and registry unreachable — L4 file integrity will be skipped"
+                    );
+                    None
+                }
+            });
+
+            (binary, function, build)
+        };
+
         info!("VERIFY PHASE 2/2 STARTING: Local verification (6 checks)");
 
         // =======================================================================
@@ -1542,6 +1656,66 @@ impl UnifiedAttestationEngine {
         diagnostics.push_str(&format!("Time: {}ms\n", start.elapsed().as_millis()));
 
         info!("VERIFY PHASE 2/2 COMPLETE: All local checks done");
+
+        // =======================================================================
+        // DEGRADATION DETECTION: Compare current results against startup baseline.
+        // Only flags LOCAL integrity changes (binary tampered, HSM tampered,
+        // agent files modified). Network fields are intentionally ignored.
+        // =======================================================================
+        let file_integrity_valid = file_integrity
+            .as_ref()
+            .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
+            .unwrap_or(true); // true if not checked (no degradation)
+        let python_integrity_valid = python_integrity.as_ref().map(|pi| pi.valid).unwrap_or(true); // true if not checked
+
+        let current = IntegrityBaseline {
+            binary_valid: self_verification.binary_valid,
+            functions_valid: self_verification.functions_valid,
+            file_integrity_valid,
+            python_integrity_valid,
+        };
+
+        {
+            let mut cache = manifest_cache().write().await;
+            if let Some(ref baseline) = cache.baseline {
+                // Compare against baseline — only flag if something was passing and now fails
+                if baseline.binary_valid && !current.binary_valid {
+                    error!(
+                        "VERIFY DEGRADATION DETECTED: binary_valid was PASSING at startup, \
+                         now FAILING — CIRISVerify binary may have been tampered with"
+                    );
+                }
+                if baseline.functions_valid && !current.functions_valid {
+                    error!(
+                        "VERIFY DEGRADATION DETECTED: functions_valid was PASSING at startup, \
+                         now FAILING — CIRISVerify FFI functions may have been tampered with"
+                    );
+                }
+                if baseline.file_integrity_valid && !current.file_integrity_valid {
+                    error!(
+                        "VERIFY DEGRADATION DETECTED: file_integrity was PASSING at startup, \
+                         now FAILING — agent Python files may have been modified"
+                    );
+                }
+                if baseline.python_integrity_valid && !current.python_integrity_valid {
+                    error!(
+                        "VERIFY DEGRADATION DETECTED: python_integrity was PASSING at startup, \
+                         now FAILING — agent Python modules may have been modified"
+                    );
+                }
+            } else {
+                // First attestation — store as baseline
+                info!(
+                    "VERIFY BASELINE SET: binary={}, functions={}, file_integrity={}, python={}",
+                    current.binary_valid,
+                    current.functions_valid,
+                    current.file_integrity_valid,
+                    current.python_integrity_valid,
+                );
+                cache.baseline = Some(current);
+            }
+        }
+
         info!(
             "VERIFY ATTESTATION COMPLETE: level={}, valid={}, checks={}/{}, time={}ms",
             level,
