@@ -446,38 +446,7 @@ jobs:
               'platforms': {}
           }
 
-          # Map target dirs to platform names
-          platform_map = {
-              'x86_64-unknown-linux-gnu': 'linux-x86_64',
-              'aarch64-unknown-linux-gnu': 'linux-arm64',
-              'x86_64-apple-darwin': 'darwin-x86_64',
-              'aarch64-apple-darwin': 'darwin-arm64',
-              'x86_64-pc-windows-msvc': 'windows-x86_64',
-          }
-
-          for target_dir, platform in platform_map.items():
-              base = f'release/{target_dir}'
-              if os.path.isdir(base):
-                  manifest['platforms'][platform] = {}
-                  for f in os.listdir(base):
-                      fpath = os.path.join(base, f)
-                      if os.path.isfile(fpath):
-                          h = hashlib.sha256(open(fpath, 'rb').read()).hexdigest()
-                          kind = 'dylib' if f.endswith('.dylib') else 'shared' if f.endswith('.so') else 'dll' if f.endswith('.dll') else 'static'
-                          manifest['platforms'][platform][kind] = {
-                              'file': f, 'sha256': h, 'size': os.path.getsize(fpath)
-                          }
-
-          # Android
-          for abi in ['arm64-v8a', 'armeabi-v7a', 'x86_64']:
-              sopath = f'release/android/{abi}/libciris_verify_ffi.so'
-              if os.path.isfile(sopath):
-                  h = hashlib.sha256(open(sopath, 'rb').read()).hexdigest()
-                  manifest['platforms'][f'android-{abi}'] = {
-                      'shared': {'file': 'libciris_verify_ffi.so', 'sha256': h, 'size': os.path.getsize(sopath)}
-                  }
-
-          # iOS (hash __TEXT segment of .dylib for code-sign-stable verification)
+          # Hash code portion of __TEXT for Mach-O binaries (code-sign-stable)
           import struct
 
           def macho_text_hash(fpath):
@@ -507,6 +476,47 @@ jobs:
               # Fallback: hash full file
               return hashlib.sha256(data).hexdigest(), 0, len(data)
 
+          # Map target dirs to platform names
+          platform_map = {
+              'x86_64-unknown-linux-gnu': 'linux-x86_64',
+              'aarch64-unknown-linux-gnu': 'linux-arm64',
+              'x86_64-apple-darwin': 'darwin-x86_64',
+              'aarch64-apple-darwin': 'darwin-arm64',
+              'x86_64-pc-windows-msvc': 'windows-x86_64',
+          }
+
+          for target_dir, platform in platform_map.items():
+              base = f'release/{target_dir}'
+              if os.path.isdir(base):
+                  manifest['platforms'][platform] = {}
+                  for f in os.listdir(base):
+                      fpath = os.path.join(base, f)
+                      if os.path.isfile(fpath):
+                          kind = 'dylib' if f.endswith('.dylib') else 'shared' if f.endswith('.so') else 'dll' if f.endswith('.dll') else 'static'
+                          # macOS dylibs use __TEXT hash (same as iOS) for code-sign stability
+                          if kind == 'dylib' and f.endswith('.dylib'):
+                              h_text, seg_off, seg_sz = macho_text_hash(fpath)
+                              h_full = hashlib.sha256(open(fpath, 'rb').read()).hexdigest()
+                              manifest['platforms'][platform][kind] = {
+                                  'file': f, 'sha256': h_text, 'sha256_full': h_full, 'size': os.path.getsize(fpath),
+                                  'text_offset': seg_off, 'text_size': seg_sz
+                              }
+                          else:
+                              h = hashlib.sha256(open(fpath, 'rb').read()).hexdigest()
+                              manifest['platforms'][platform][kind] = {
+                                  'file': f, 'sha256': h, 'size': os.path.getsize(fpath)
+                              }
+
+          # Android
+          for abi in ['arm64-v8a', 'armeabi-v7a', 'x86_64']:
+              sopath = f'release/android/{abi}/libciris_verify_ffi.so'
+              if os.path.isfile(sopath):
+                  h = hashlib.sha256(open(sopath, 'rb').read()).hexdigest()
+                  manifest['platforms'][f'android-{abi}'] = {
+                      'shared': {'file': 'libciris_verify_ffi.so', 'sha256': h, 'size': os.path.getsize(sopath)}
+                  }
+
+          # iOS (uses same macho_text_hash defined above)
           for target in ['aarch64-apple-ios', 'aarch64-apple-ios-sim']:
               apath = f'release/ios/{target}/libciris_verify_ffi.a'
               dpath = f'release/ios/{target}/libciris_verify_ffi.dylib'
