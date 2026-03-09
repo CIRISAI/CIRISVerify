@@ -2288,6 +2288,91 @@ pub unsafe extern "C" fn ciris_verify_delete_key(handle: *mut CirisVerifyHandle)
     }
 }
 
+/// Generate a new Ed25519 signing key.
+///
+/// This creates an ephemeral key that can be used for attestation before
+/// Portal issues a permanent key. The key is stored with hardware protection
+/// (TPM/Keystore/Secure Enclave) if available.
+///
+/// Use cases:
+/// - Initial attestation before Portal key activation
+/// - Recovery after orphaned key cleanup
+/// - Testing/development without Portal
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+/// Returns -100 (ATTESTATION_IN_PROGRESS) if attestation is running.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_generate_key(handle: *mut CirisVerifyHandle) -> i32 {
+    // Check if attestation is running - if so, return busy status
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!(
+            "generate_key: attestation in progress, returning ATTESTATION_IN_PROGRESS (-100)"
+        );
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    if handle.is_null() {
+        tracing::error!("generate_key: null handle");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Check if key already exists
+    if handle_ref.ed25519_signer.has_key() {
+        tracing::warn!("generate_key: key already exists, delete first if you want a new one");
+        // Return success - key exists, which is the goal
+        return CirisVerifyError::Success as i32;
+    }
+
+    tracing::info!(
+        hardware_available = handle_ref.ed25519_signer.is_hardware_backed(),
+        "Generating new Ed25519 key (ephemeral)"
+    );
+
+    match catch_unwind(AssertUnwindSafe(|| {
+        handle_ref.ed25519_signer.generate_key()
+    })) {
+        Ok(Ok(())) => {
+            // Log the fingerprint for debugging
+            if let Some(pk) = handle_ref.ed25519_signer.get_public_key() {
+                let fingerprint = ciris_verify_core::registry::compute_ed25519_fingerprint(&pk);
+                tracing::info!(
+                    fingerprint = %fingerprint,
+                    hardware_backed = handle_ref.ed25519_signer.is_hardware_backed(),
+                    "Ed25519 key generated successfully"
+                );
+            }
+            CirisVerifyError::Success as i32
+        },
+        Ok(Err(e)) => {
+            tracing::error!("Failed to generate Ed25519 key: {}", e);
+            CirisVerifyError::InternalError as i32
+        },
+        Err(e) => {
+            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::error!("generate_key: panic caught: {}", msg);
+            CirisVerifyError::InternalError as i32
+        },
+    }
+}
+
 /// Sign data using the imported Ed25519 key.
 ///
 /// This signs with the Portal-issued Ed25519 key (if loaded), not the
@@ -2725,16 +2810,43 @@ unsafe fn run_attestation_inner(
     };
 
     // Populate key_attestation with signer info
-    let has_key = handle.ed25519_signer.has_key();
+    // If no key exists, auto-generate an ephemeral one for attestation
+    let (has_key, key_was_generated) = if !handle.ed25519_signer.has_key() {
+        tracing::info!(
+            hardware_available = handle.ed25519_signer.is_hardware_backed(),
+            "No key found during attestation, generating ephemeral Ed25519 key"
+        );
+        match handle.ed25519_signer.generate_key() {
+            Ok(()) => {
+                if let Some(pk) = handle.ed25519_signer.get_public_key() {
+                    let fingerprint = ciris_verify_core::registry::compute_ed25519_fingerprint(&pk);
+                    tracing::info!(
+                        fingerprint = %fingerprint,
+                        "Ephemeral Ed25519 key generated for attestation"
+                    );
+                }
+                (true, true)
+            },
+            Err(e) => {
+                tracing::error!("Failed to generate ephemeral key: {}", e);
+                (false, false)
+            },
+        }
+    } else {
+        (true, false)
+    };
 
     // Determine key_type based on registry verification status (not just has_key)
     // - "portal": Key fingerprint verified as active in registry
     // - "pending": Key just imported, waiting for registry propagation
     // - "local": Key exists but not found in registry (self-generated)
+    // - "ephemeral": Key was just generated for this attestation
     // - "unverified": Key exists but registry couldn't be contacted
-    // - "none": No key loaded
+    // - "none": No key loaded (generation failed)
     let key_type = if !has_key {
         "none"
+    } else if key_was_generated {
+        "ephemeral"
     } else {
         match result.registry_key_status.as_str() {
             "active" => "portal",          // Confirmed by registry

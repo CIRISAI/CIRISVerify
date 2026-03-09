@@ -1735,6 +1735,52 @@ class CIRISVerify:
             raise AttestationInProgressError("delete_key")
         return ret == 0
 
+    def generate_key_sync(self) -> bool:
+        """Generate a new ephemeral Ed25519 signing key.
+
+        This creates an ephemeral key that can be used for attestation before
+        Portal issues a permanent key. The key is stored with hardware protection
+        (TPM/Keystore/Secure Enclave) if available.
+
+        Use cases:
+            - Initial attestation before Portal key activation
+            - Recovery after orphaned key cleanup
+            - Testing/development without Portal
+
+        Returns:
+            True if key was generated successfully, False otherwise.
+            Returns True if a key already exists (idempotent).
+
+        Raises:
+            NotImplementedError: If Ed25519 support is not available.
+            AttestationInProgressError: If attestation is currently running.
+
+        Example:
+            # Generate ephemeral key for initial attestation
+            if not verifier.has_key_sync():
+                verifier.generate_key_sync()
+
+            # Now attestation will work with ephemeral key
+            attestation = verifier.run_attestation_sync(challenge)
+            # attestation["key_attestation"]["key_type"] == "ephemeral"
+        """
+        if not self._has_ed25519_support:
+            raise NotImplementedError(
+                "Ed25519 key functions not available in this library version."
+            )
+
+        # Check if the FFI function exists
+        if not hasattr(self._lib, "ciris_verify_generate_key"):
+            raise NotImplementedError(
+                "generate_key not available in this library version. "
+                "Update to ciris-verify >= 1.1.16."
+            )
+
+        ret = self._lib.ciris_verify_generate_key(self._handle)
+        if ret == CIRIS_ERROR_ATTESTATION_IN_PROGRESS:
+            raise AttestationInProgressError("generate_key")
+        return ret == 0
+
     def sign_ed25519_sync(self, data: bytes) -> bytes:
         """Sign data using the Portal-issued Ed25519 key.
 
