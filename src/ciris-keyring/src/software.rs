@@ -573,7 +573,12 @@ impl MutableEd25519Signer {
     /// On Android, keys are protected with hardware-backed AES-256-GCM encryption.
     pub fn new(alias: impl Into<String>) -> Self {
         let alias = alias.into();
-        tracing::info!(alias = %alias, "MutableEd25519Signer::new - initializing");
+        tracing::info!(
+            alias = %alias,
+            ciris_data_dir = ?std::env::var("CIRIS_DATA_DIR").ok(),
+            ciris_key_path = ?std::env::var("CIRIS_KEY_PATH").ok(),
+            "VERIFY MutableEd25519Signer::new - initializing"
+        );
 
         // On Android, try to initialize hardware wrapper for AES encryption
         #[cfg(target_os = "android")]
@@ -854,7 +859,10 @@ impl MutableEd25519Signer {
         #[cfg(target_os = "android")]
         {
             if let Some(ref hw) = self.hardware_wrapper {
-                tracing::info!("Attempting to load hardware-backed Ed25519 key...");
+                tracing::info!(
+                    ciris_data_dir = ?std::env::var("CIRIS_DATA_DIR").ok(),
+                    "VERIFY Attempting to load hardware-backed Ed25519 key..."
+                );
 
                 // Create a simple runtime to run the async check
                 let rt = tokio::runtime::Builder::new_current_thread()
@@ -1293,7 +1301,8 @@ impl MutableEd25519Signer {
         tracing::info!(
             key_len = key_bytes.len(),
             hardware_backed = self.is_hardware_backed(),
-            "MutableEd25519Signer::import_key - importing key"
+            ciris_data_dir = ?std::env::var("CIRIS_DATA_DIR").ok(),
+            "VERIFY MutableEd25519Signer::import_key - importing key"
         );
 
         // On Android, use hardware-backed import if available
@@ -1516,15 +1525,24 @@ impl MutableEd25519Signer {
                     .enable_all()
                     .build()
                 {
-                    if let Ok(exists) = rt.block_on(hw.key_exists()) {
-                        if exists {
-                            tracing::debug!(
-                                has_key = true,
+                    match rt.block_on(hw.key_exists()) {
+                        Ok(exists) => {
+                            tracing::info!(
+                                has_key = exists,
                                 hardware_backed = true,
-                                "MutableEd25519Signer::has_key check"
+                                ciris_data_dir = ?std::env::var("CIRIS_DATA_DIR").ok(),
+                                "VERIFY MutableEd25519Signer::has_key - hardware wrapper check"
                             );
-                            return true;
-                        }
+                            if exists {
+                                return true;
+                            }
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                error = %e,
+                                "VERIFY has_key: hardware wrapper key_exists() failed"
+                            );
+                        },
                     }
                 }
             }

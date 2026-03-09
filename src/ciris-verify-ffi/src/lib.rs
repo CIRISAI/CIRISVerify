@@ -789,11 +789,19 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
     };
 
     // Create Ed25519 signer for Portal-issued keys
+    // Log environment before creating signer to trace key persistence path
+    tracing::info!(
+        ciris_data_dir = ?std::env::var("CIRIS_DATA_DIR").ok(),
+        ciris_key_path = ?std::env::var("CIRIS_KEY_PATH").ok(),
+        current_dir = ?std::env::current_dir().ok(),
+        "VERIFY Creating Ed25519 signer - environment snapshot"
+    );
+
     // Note: MutableEd25519Signer::new() automatically attempts to load persisted keys
     let ed25519_signer = MutableEd25519Signer::new("agent_signing");
 
     // Log comprehensive diagnostics for debugging key persistence issues
-    tracing::info!("Ed25519 signer initialized");
+    tracing::info!("VERIFY Ed25519 signer initialized");
     tracing::info!("{}", ed25519_signer.diagnostics());
 
     // Check if key was loaded from persistence

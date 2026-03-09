@@ -1013,8 +1013,10 @@ impl HardwareWrappedEd25519Signer {
             alias = %alias,
             wrapper_alias = %wrapper_key_alias,
             key_path = ?encrypted_key_path,
+            key_dir = ?key_dir,
             prefer_strongbox = prefer_strongbox,
-            "HardwareWrappedEd25519Signer::new"
+            ciris_data_dir = ?std::env::var("CIRIS_DATA_DIR").ok(),
+            "VERIFY HardwareWrappedEd25519Signer::new - initializing hardware wrapper"
         );
 
         // Ensure key directory exists
@@ -1045,12 +1047,24 @@ impl HardwareWrappedEd25519Signer {
             // Check if encrypted key file exists
             let file_exists = self.encrypted_key_path.exists();
 
-            debug!(
+            info!(
                 wrapper_alias = %self.wrapper_key_alias,
+                encrypted_key_path = ?self.encrypted_key_path,
                 wrapper_exists = wrapper_exists,
                 file_exists = file_exists,
-                "key_exists check"
+                result = (wrapper_exists && file_exists),
+                "VERIFY key_exists check"
             );
+
+            // If wrapper exists but file doesn't, log additional diagnostics
+            if wrapper_exists && !file_exists {
+                warn!(
+                    encrypted_key_path = ?self.encrypted_key_path,
+                    parent_exists = self.encrypted_key_path.parent().map(|p| p.exists()).unwrap_or(false),
+                    ciris_data_dir = ?std::env::var("CIRIS_DATA_DIR").ok(),
+                    "VERIFY AES wrapper key exists but encrypted file NOT FOUND - key persistence issue!"
+                );
+            }
 
             Ok(wrapper_exists && file_exists)
         }
@@ -1150,14 +1164,51 @@ impl HardwareWrappedEd25519Signer {
             let encrypted = self.jni_aes_encrypt(key_bytes).await?;
 
             // 4. Write encrypted key to disk
+            info!(
+                wrapper_alias = %self.wrapper_key_alias,
+                encrypted_key_path = ?self.encrypted_key_path,
+                encrypted_size = encrypted.len(),
+                ciris_data_dir = ?std::env::var("CIRIS_DATA_DIR").ok(),
+                "VERIFY Writing encrypted Ed25519 key to disk"
+            );
+
             std::fs::write(&self.encrypted_key_path, &encrypted).map_err(|e| {
-                error!("Failed to write encrypted key: {}", e);
+                error!(
+                    encrypted_key_path = ?self.encrypted_key_path,
+                    error = %e,
+                    "VERIFY Failed to write encrypted key"
+                );
                 KeyringError::StorageFailed {
                     reason: format!("Failed to write encrypted key: {}", e),
                 }
             })?;
 
-            // 5. Cache the signing key
+            // 5. Verify the file was written successfully
+            if !self.encrypted_key_path.exists() {
+                error!(
+                    encrypted_key_path = ?self.encrypted_key_path,
+                    "VERIFY Encrypted key file does NOT exist after write!"
+                );
+                return Err(KeyringError::StorageFailed {
+                    reason: format!(
+                        "Encrypted key file not found after write: {:?}",
+                        self.encrypted_key_path
+                    ),
+                });
+            }
+
+            // Verify file size is correct
+            let file_size = std::fs::metadata(&self.encrypted_key_path)
+                .map(|m| m.len())
+                .unwrap_or(0);
+            info!(
+                encrypted_key_path = ?self.encrypted_key_path,
+                file_size = file_size,
+                expected_size = encrypted.len(),
+                "VERIFY Encrypted key file written and verified"
+            );
+
+            // 6. Cache the signing key
             {
                 let mut cache = self.cached_signing_key.lock().unwrap();
                 *cache = Some(signing_key);
@@ -1165,8 +1216,8 @@ impl HardwareWrappedEd25519Signer {
 
             info!(
                 wrapper_alias = %self.wrapper_key_alias,
-                encrypted_size = encrypted.len(),
-                "Hardware-wrapped Ed25519 key imported successfully"
+                encrypted_key_path = ?self.encrypted_key_path,
+                "VERIFY Hardware-wrapped Ed25519 key imported successfully"
             );
 
             Ok(())
