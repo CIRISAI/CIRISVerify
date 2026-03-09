@@ -55,7 +55,7 @@ mod ios_sync;
 
 // Android logging: using tracing-log bridge to route tracing events -> log crate -> android_logger -> logcat
 
-use std::ffi::c_void;
+use std::ffi::{c_char, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::ptr;
@@ -1972,6 +1972,157 @@ pub unsafe extern "C" fn ciris_verify_import_key(
     }
 }
 
+/// Wait for key registration in registry after portal import.
+///
+/// Polls registry endpoints once per second for up to 5 seconds.
+/// Returns JSON: `{"status": "active"|"pending"|"error", "fingerprint": "...", "elapsed_ms": N}`
+///
+/// - "active": Key confirmed in registry, ready for attestation with key_type="portal"
+/// - "pending": Timeout (5s), attestation will have key_type="pending"
+/// - "error": Registry unreachable or other error
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `result_out` - Pointer to receive JSON result string (caller must free with `ciris_verify_free_string`)
+///
+/// # Returns
+///
+/// 0 on success (check JSON status), negative on error.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `result_out` must be a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_await_key_registration(
+    handle: *mut CirisVerifyHandle,
+    result_out: *mut *mut c_char,
+) -> i32 {
+    if handle.is_null() || result_out.is_null() {
+        tracing::error!("await_key_registration: null handle or result_out");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+    let start = std::time::Instant::now();
+
+    // Get the current key's fingerprint
+    let fingerprint = match handle_ref.ed25519_signer.get_public_key() {
+        Some(pk) => ciris_verify_core::registry::compute_ed25519_fingerprint(&pk),
+        None => {
+            tracing::error!("await_key_registration: no key loaded");
+            let json = r#"{"status": "error", "error": "no_key_loaded", "elapsed_ms": 0}"#;
+            *result_out = std::ffi::CString::new(json).unwrap().into_raw();
+            return CirisVerifyError::Success as i32;
+        },
+    };
+
+    tracing::info!(
+        fingerprint = %fingerprint,
+        "Awaiting key registration in registry (max 5s)"
+    );
+
+    // Create runtime for async polling
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!("await_key_registration: failed to create runtime: {}", e);
+            let json = format!(
+                r#"{{"status": "error", "error": "runtime_error", "fingerprint": "{}", "elapsed_ms": {}}}"#,
+                fingerprint,
+                start.elapsed().as_millis()
+            );
+            *result_out = std::ffi::CString::new(json).unwrap().into_raw();
+            return CirisVerifyError::Success as i32;
+        },
+    };
+
+    // Poll registry once per second for up to 5 seconds
+    let result = rt.block_on(async {
+        use ciris_verify_core::registry::{ResilientRegistryClient, FALLBACK_REGISTRY_URLS};
+
+        let client = match ResilientRegistryClient::new(
+            "https://api.registry.ciris-services-1.ai",
+            FALLBACK_REGISTRY_URLS,
+            std::time::Duration::from_secs(5),
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                tracing::error!("Failed to create registry client: {}", e);
+                return format!(
+                    r#"{{"status": "error", "error": "client_init_failed", "fingerprint": "{}", "elapsed_ms": {}}}"#,
+                    fingerprint,
+                    start.elapsed().as_millis()
+                );
+            },
+        };
+
+        let max_attempts = 5;
+
+        for attempt in 1..=max_attempts {
+            tracing::debug!(
+                attempt = attempt,
+                fingerprint = %fingerprint,
+                "Checking registry for key"
+            );
+
+            match client.verify_key_by_fingerprint(&fingerprint).await {
+                Ok(response) => {
+                    tracing::info!(
+                        attempt = attempt,
+                        status = %response.status,
+                        found = response.found,
+                        fingerprint = %fingerprint,
+                        elapsed_ms = start.elapsed().as_millis(),
+                        "Registry key check result"
+                    );
+
+                    // Check if key is active (KEY_ACTIVE or status contains "active")
+                    if response.found && (response.status == "KEY_ACTIVE" || response.status.to_lowercase().contains("active")) {
+                        return format!(
+                            r#"{{"status": "active", "fingerprint": "{}", "elapsed_ms": {}, "attempts": {}}}"#,
+                            fingerprint,
+                            start.elapsed().as_millis(),
+                            attempt
+                        );
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        attempt = attempt,
+                        error = %e,
+                        "Registry check failed, will retry"
+                    );
+                },
+            }
+
+            if attempt < max_attempts {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            }
+        }
+
+        // Timeout - return pending
+        tracing::warn!(
+            fingerprint = %fingerprint,
+            elapsed_ms = start.elapsed().as_millis(),
+            "Key registration timeout (5s), returning pending"
+        );
+        format!(
+            r#"{{"status": "pending", "fingerprint": "{}", "elapsed_ms": {}, "attempts": {}}}"#,
+            fingerprint,
+            start.elapsed().as_millis(),
+            max_attempts
+        )
+    });
+
+    *result_out = std::ffi::CString::new(result).unwrap().into_raw();
+    CirisVerifyError::Success as i32
+}
+
 /// Check if an Ed25519 signing key is loaded.
 ///
 /// # Arguments
@@ -2475,6 +2626,7 @@ unsafe fn run_attestation_inner(
 
     // Determine key_type based on registry verification status (not just has_key)
     // - "portal": Key fingerprint verified as active in registry
+    // - "pending": Key just imported, waiting for registry propagation
     // - "local": Key exists but not found in registry (self-generated)
     // - "unverified": Key exists but registry couldn't be contacted
     // - "none": No key loaded
@@ -2483,6 +2635,7 @@ unsafe fn run_attestation_inner(
     } else {
         match result.registry_key_status.as_str() {
             "active" => "portal",          // Confirmed by registry
+            "pending" => "pending",        // Just imported, awaiting registry propagation
             "rotated" => "portal_rotated", // Was portal-issued but rotated
             "revoked" => "portal_revoked", // Was portal-issued but revoked
             "not_found" => "local",        // Key exists but not in registry

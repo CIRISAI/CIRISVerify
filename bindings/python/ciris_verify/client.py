@@ -1615,6 +1615,81 @@ class CIRISVerify:
 
         return ret == 0
 
+    def await_key_registration(self, timeout_seconds: int = 5) -> dict:
+        """Wait for key registration in registry after portal import.
+
+        Polls registry endpoints once per second until the key is confirmed
+        as "active" or timeout is reached.
+
+        Args:
+            timeout_seconds: Maximum time to wait (default 5 seconds).
+
+        Returns:
+            dict with keys:
+                - status: "active" (ready), "pending" (timeout), or "error"
+                - fingerprint: The key's fingerprint
+                - elapsed_ms: Time spent waiting
+                - attempts: Number of registry checks made
+                - error: Error message if status is "error"
+
+        Raises:
+            NotImplementedError: If Ed25519 support is not available.
+
+        Example:
+            verifier.import_key_sync(portal_key)
+            result = verifier.await_key_registration()
+            if result["status"] == "active":
+                # Key confirmed in registry, attestation will have key_type="portal"
+                attestation = verifier.attestation_with_challenge(challenge)
+            elif result["status"] == "pending":
+                # Timeout, but can still proceed with key_type="pending"
+                attestation = verifier.attestation_with_challenge(challenge)
+        """
+        if not self._has_ed25519_support:
+            raise NotImplementedError(
+                "Ed25519 key functions not available in this library version."
+            )
+
+        # Check if the FFI function exists
+        if not hasattr(self._lib, "ciris_verify_await_key_registration"):
+            # Fallback for older library versions
+            return {
+                "status": "error",
+                "error": "await_key_registration not available in this library version",
+                "fingerprint": "",
+                "elapsed_ms": 0,
+                "attempts": 0,
+            }
+
+        result_ptr = ctypes.c_char_p()
+        ret = self._lib.ciris_verify_await_key_registration(
+            self._handle,
+            ctypes.byref(result_ptr),
+        )
+
+        if ret != 0:
+            return {
+                "status": "error",
+                "error": f"FFI call failed with code {ret}",
+                "fingerprint": "",
+                "elapsed_ms": 0,
+                "attempts": 0,
+            }
+
+        if result_ptr.value:
+            import json
+            result_json = result_ptr.value.decode("utf-8")
+            self._lib.ciris_verify_free_string(result_ptr)
+            return json.loads(result_json)
+        else:
+            return {
+                "status": "error",
+                "error": "null result from FFI",
+                "fingerprint": "",
+                "elapsed_ms": 0,
+                "attempts": 0,
+            }
+
     def has_key_sync(self) -> bool:
         """Check if an Ed25519 signing key is loaded.
 
