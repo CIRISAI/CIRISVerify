@@ -1038,7 +1038,15 @@ impl HardwareWrappedEd25519Signer {
         })
     }
 
-    /// Check if an Ed25519 key exists (both wrapper key and encrypted key file).
+    /// Check if an Ed25519 key exists AND can be decrypted.
+    ///
+    /// This performs a full verification including:
+    /// 1. Wrapper key exists in Android Keystore
+    /// 2. Encrypted key file exists on disk
+    /// 3. Key can actually be decrypted (not orphaned)
+    ///
+    /// If the key file exists but decryption fails (orphaned key), this method
+    /// will clean up the orphaned file and return false.
     pub async fn key_exists(&self) -> Result<bool, KeyringError> {
         #[cfg(target_os = "android")]
         {
@@ -1052,8 +1060,7 @@ impl HardwareWrappedEd25519Signer {
                 encrypted_key_path = ?self.encrypted_key_path,
                 wrapper_exists = wrapper_exists,
                 file_exists = file_exists,
-                result = (wrapper_exists && file_exists),
-                "VERIFY key_exists check"
+                "VERIFY key_exists check - phase 1 (file/wrapper check)"
             );
 
             // If wrapper exists but file doesn't, log additional diagnostics
@@ -1064,9 +1071,42 @@ impl HardwareWrappedEd25519Signer {
                     ciris_data_dir = ?std::env::var("CIRIS_DATA_DIR").ok(),
                     "VERIFY AES wrapper key exists but encrypted file NOT FOUND - key persistence issue!"
                 );
+                return Ok(false);
             }
 
-            Ok(wrapper_exists && file_exists)
+            // If file doesn't exist, no key
+            if !file_exists {
+                return Ok(false);
+            }
+
+            // CRITICAL: Verify the key can actually be loaded (not orphaned)
+            // This catches the case where file exists but wrapper key was rotated
+            match self.get_or_load_signing_key().await {
+                Ok(_) => {
+                    info!(
+                        wrapper_alias = %self.wrapper_key_alias,
+                        "VERIFY key_exists check - phase 2 PASSED (key can be decrypted)"
+                    );
+                    Ok(true)
+                },
+                Err(KeyringError::KeyNotFound { .. }) => {
+                    // Orphaned key was detected and cleaned up by get_or_load_signing_key
+                    info!(
+                        wrapper_alias = %self.wrapper_key_alias,
+                        "VERIFY key_exists check - phase 2: key was orphaned and cleaned up"
+                    );
+                    Ok(false)
+                },
+                Err(e) => {
+                    // Other error - might be transient, don't clean up
+                    warn!(
+                        wrapper_alias = %self.wrapper_key_alias,
+                        error = %e,
+                        "VERIFY key_exists check - phase 2 FAILED with unexpected error"
+                    );
+                    Err(e)
+                },
+            }
         }
 
         #[cfg(not(target_os = "android"))]
@@ -1322,7 +1362,51 @@ impl HardwareWrappedEd25519Signer {
             }
         })?;
 
-        let decrypted = self.jni_aes_decrypt(&encrypted).await?;
+        let decrypted = match self.jni_aes_decrypt(&encrypted).await {
+            Ok(d) => d,
+            Err(e) => {
+                // AES-GCM decryption failed - this is an ORPHANED KEY condition
+                // The encrypted file exists but the AES wrapper key was invalidated/rotated
+                // (e.g., user re-ran setup wizard, or Keystore was cleared)
+                //
+                // Recovery: Delete the orphaned file and return KeyNotFound
+                // This allows the caller to create a new key or wait for Portal import
+                warn!(
+                    wrapper_alias = %self.wrapper_key_alias,
+                    encrypted_key_path = ?self.encrypted_key_path,
+                    error = %e,
+                    "ORPHANED KEY DETECTED: AES-GCM decryption failed. \
+                     The encrypted key file exists but cannot be decrypted \
+                     (wrapper key was invalidated). Cleaning up orphaned file."
+                );
+
+                // Delete the orphaned encrypted key file
+                if let Err(delete_err) = std::fs::remove_file(&self.encrypted_key_path) {
+                    warn!(
+                        encrypted_key_path = ?self.encrypted_key_path,
+                        error = %delete_err,
+                        "Failed to delete orphaned encrypted key file"
+                    );
+                } else {
+                    info!(
+                        encrypted_key_path = ?self.encrypted_key_path,
+                        "Successfully deleted orphaned encrypted key file"
+                    );
+                }
+
+                // Clear cache to ensure clean state
+                {
+                    let mut cache = self.cached_signing_key.lock().unwrap();
+                    *cache = None;
+                }
+
+                // Return KeyNotFound instead of a hard error
+                // This allows fallback to ephemeral key or Portal import
+                return Err(KeyringError::KeyNotFound {
+                    alias: self.wrapper_key_alias.clone(),
+                });
+            },
+        };
 
         if decrypted.len() != ED25519_PRIVATE_KEY_SIZE {
             return Err(KeyringError::StorageFailed {
