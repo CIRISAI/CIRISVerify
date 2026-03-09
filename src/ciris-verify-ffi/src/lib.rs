@@ -1773,24 +1773,14 @@ unsafe fn export_attestation_inner(
         ("persisted".to_string(), pk)
     } else {
         // No key yet - generate one for initial attestation
-        tracing::info!("No persisted key found, generating Ed25519 key for initial attestation");
+        // This will use hardware protection (TPM/Keystore/SE) if available
+        tracing::info!(
+            hardware_available = handle.ed25519_signer.is_hardware_backed(),
+            "No persisted key found, generating Ed25519 key for initial attestation"
+        );
 
-        // Generate random 32-byte seed
-        let mut seed = [0u8; 32];
-        getrandom::getrandom(&mut seed).unwrap_or_else(|_| {
-            // Fallback to less secure random if getrandom fails
-            use std::time::{SystemTime, UNIX_EPOCH};
-            let nanos = SystemTime::now()
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0);
-            for (i, byte) in seed.iter_mut().enumerate() {
-                *byte = ((nanos >> (i % 16)) & 0xFF) as u8;
-            }
-        });
-
-        // Import generated key (will be persisted to hardware-backed storage)
-        if let Err(e) = handle.ed25519_signer.import_key(&seed) {
+        // Generate key (uses hardware if available, sets hardware marker)
+        if let Err(e) = handle.ed25519_signer.generate_key() {
             tracing::error!("Failed to generate key: {}", e);
             return CirisVerifyError::InternalError as i32;
         }

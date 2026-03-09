@@ -241,6 +241,11 @@ impl MutableSoftwareSigner {
 pub struct Ed25519SoftwareSigner {
     signing_key: Option<Ed25519SigningKey>,
     alias: String,
+    /// When set, indicates the real key is secured by a hardware key (AES-256-GCM
+    /// via Android Keystore, SE ECIES via Secure Enclave, or AES-256-GCM via TPM).
+    /// The software signer should NOT be used as a fallback.
+    /// Format: "HARDWARE_SECURED:{fingerprint}" where fingerprint is first 8 chars of pubkey hex.
+    hardware_key_marker: Option<String>,
 }
 
 impl Ed25519SoftwareSigner {
@@ -257,6 +262,7 @@ impl Ed25519SoftwareSigner {
         Self {
             signing_key: None,
             alias,
+            hardware_key_marker: None,
         }
     }
 
@@ -305,6 +311,7 @@ impl Ed25519SoftwareSigner {
         Ok(Self {
             signing_key: Some(signing_key),
             alias,
+            hardware_key_marker: None,
         })
     }
 
@@ -336,27 +343,84 @@ impl Ed25519SoftwareSigner {
         seed.copy_from_slice(key_bytes);
 
         self.signing_key = Some(Ed25519SigningKey::from_bytes(&seed));
+        self.hardware_key_marker = None; // Clear hardware marker when importing software key
 
         tracing::info!(alias = %self.alias, "Ed25519 key imported successfully");
         Ok(())
     }
 
-    /// Check if a key is loaded.
+    /// Check if a key is loaded (either in software or marked as hardware-stored).
     #[must_use]
     pub fn has_key(&self) -> bool {
-        self.signing_key.is_some()
+        self.signing_key.is_some() || self.hardware_key_marker.is_some()
     }
 
-    /// Delete the loaded key.
+    /// Check if this signer is marked as hardware-backed.
+    /// When true, the software signer should NOT be used as a fallback.
+    #[must_use]
+    pub fn is_hardware_marker_set(&self) -> bool {
+        self.hardware_key_marker.is_some()
+    }
+
+    /// Get the hardware key marker (fingerprint) if set.
+    #[must_use]
+    pub fn hardware_key_fingerprint(&self) -> Option<&str> {
+        self.hardware_key_marker.as_deref()
+    }
+
+    /// Set hardware key marker to prevent software fallback.
+    ///
+    /// When set, this indicates the real key is secured by a hardware key
+    /// (AES-256-GCM via Android Keystore, SE ECIES via Secure Enclave, or
+    /// AES-256-GCM via TPM) and the software signer should NOT be used as a fallback.
+    ///
+    /// # Arguments
+    /// * `fingerprint` - The public key fingerprint (first 8 chars of hex)
+    pub fn set_hardware_marker(&mut self, fingerprint: &str) {
+        let marker = format!("HARDWARE_SECURED:{}", fingerprint);
+        tracing::info!(
+            alias = %self.alias,
+            marker = %marker,
+            "Setting hardware key marker - software fallback disabled"
+        );
+        self.hardware_key_marker = Some(marker);
+        self.signing_key = None; // Clear any software key - hardware is authoritative
+    }
+
+    /// Clear hardware key marker (used when deleting the hardware key).
+    pub fn clear_hardware_marker(&mut self) {
+        if self.hardware_key_marker.is_some() {
+            tracing::info!(
+                alias = %self.alias,
+                "Clearing hardware key marker"
+            );
+        }
+        self.hardware_key_marker = None;
+    }
+
+    /// Delete the loaded key and hardware marker.
     pub fn clear_key(&mut self) {
         if self.signing_key.is_some() {
             tracing::info!(alias = %self.alias, "Ed25519 key cleared");
         }
         self.signing_key = None;
+        self.hardware_key_marker = None;
     }
 
-    /// Get the public key bytes if a key is loaded.
+    /// Get the public key bytes if a SOFTWARE key is loaded.
+    ///
+    /// Returns None if:
+    /// - No key is loaded
+    /// - Hardware marker is set (real key is in hardware, use hardware path)
     pub fn get_public_key(&self) -> Option<Vec<u8>> {
+        if self.hardware_key_marker.is_some() {
+            tracing::warn!(
+                alias = %self.alias,
+                marker = ?self.hardware_key_marker,
+                "get_public_key called but hardware marker is set - use hardware path instead"
+            );
+            return None;
+        }
         self.signing_key
             .as_ref()
             .map(|k| k.verifying_key().to_bytes().to_vec())
@@ -436,6 +500,26 @@ impl HardwareSigner for Ed25519SoftwareSigner {
         &self.alias
     }
 }
+
+// =============================================================================
+// Hardware Key Access Retry Logic
+// =============================================================================
+//
+// Hardware key access can fail transiently (JNI issues, TPM busy, etc.).
+// We retry with exponential backoff before giving up.
+// These constants are only used on Android (cfg(target_os = "android")).
+
+/// Maximum number of retries for hardware key access
+#[allow(dead_code)]
+const HW_ACCESS_MAX_RETRIES: u32 = 3;
+
+/// Initial backoff delay in milliseconds
+#[allow(dead_code)]
+const HW_ACCESS_INITIAL_BACKOFF_MS: u64 = 50;
+
+/// Backoff multiplier (2 = exponential doubling)
+#[allow(dead_code)]
+const HW_ACCESS_BACKOFF_MULTIPLIER: u64 = 2;
 
 /// Thread-safe mutable Ed25519 software signer with optional persistence.
 ///
@@ -787,13 +871,22 @@ impl MutableEd25519Signer {
                     // Load the public key to verify it works
                     match rt.block_on(hw.public_key()) {
                         Ok(pubkey) => {
+                            // Compute fingerprint (first 8 chars of hex pubkey)
+                            let fingerprint =
+                                hex::encode(&pubkey).chars().take(8).collect::<String>();
+
                             tracing::info!(
                                 pubkey_len = pubkey.len(),
+                                fingerprint = %fingerprint,
                                 "Hardware-backed Ed25519 key loaded successfully"
                             );
 
-                            // Also load into the software signer for compatibility
-                            // (the hardware wrapper holds the actual key)
+                            // Set hardware marker to PREVENT software fallback
+                            // The real key is in Android Keystore, don't use software signer
+                            if let Ok(mut inner) = self.inner.write() {
+                                inner.set_hardware_marker(&fingerprint);
+                            }
+
                             return Ok(true);
                         },
                         Err(e) => {
@@ -818,10 +911,21 @@ impl MutableEd25519Signer {
                 if hw.key_exists() {
                     match hw.public_key() {
                         Ok(pubkey) => {
+                            // Compute fingerprint (first 8 chars of hex pubkey)
+                            let fingerprint =
+                                hex::encode(&pubkey).chars().take(8).collect::<String>();
+
                             tracing::info!(
                                 pubkey_len = pubkey.len(),
+                                fingerprint = %fingerprint,
                                 "SE-backed Ed25519 key loaded successfully (ECIES)"
                             );
+
+                            // Set hardware marker to PREVENT software fallback
+                            if let Ok(mut inner) = self.inner.write() {
+                                inner.set_hardware_marker(&fingerprint);
+                            }
+
                             return Ok(true);
                         },
                         Err(e) => {
@@ -846,10 +950,21 @@ impl MutableEd25519Signer {
                 if tpm.key_exists() {
                     match tpm.public_key() {
                         Ok(pubkey) => {
+                            // Compute fingerprint (first 8 chars of hex pubkey)
+                            let fingerprint =
+                                hex::encode(&pubkey).chars().take(8).collect::<String>();
+
                             tracing::info!(
                                 pubkey_len = pubkey.len(),
+                                fingerprint = %fingerprint,
                                 "TPM-backed Ed25519 key loaded successfully (AES-256-GCM via TPM)"
                             );
+
+                            // Set hardware marker to PREVENT software fallback
+                            if let Ok(mut inner) = self.inner.write() {
+                                inner.set_hardware_marker(&fingerprint);
+                            }
+
                             return Ok(true);
                         },
                         Err(e) => {
@@ -1201,18 +1316,28 @@ impl MutableEd25519Signer {
                 // Import the key with hardware-backed encryption
                 match rt.block_on(hw.import_key(key_bytes)) {
                     Ok(()) => {
+                        // Get the public key to compute fingerprint
+                        let pubkey = rt.block_on(hw.public_key()).map_err(|e| {
+                            KeyringError::PlatformError {
+                                message: format!("Failed to get public key after import: {}", e),
+                            }
+                        })?;
+                        let fingerprint = hex::encode(&pubkey).chars().take(8).collect::<String>();
+
                         tracing::info!(
+                            fingerprint = %fingerprint,
                             "Ed25519 key imported with hardware-backed AES-256-GCM encryption"
                         );
-                        // Also keep in software signer for backwards compatibility
-                        // (but the encrypted version on disk is the source of truth)
+
+                        // Set hardware marker to PREVENT software fallback
+                        // Do NOT import the actual key to software signer
                         let mut inner =
                             self.inner
                                 .write()
                                 .map_err(|_| KeyringError::PlatformError {
                                     message: "Lock poisoned".into(),
                                 })?;
-                        inner.import_key(key_bytes)?;
+                        inner.set_hardware_marker(&fingerprint);
                         return Ok(());
                     },
                     Err(e) => {
@@ -1237,15 +1362,25 @@ impl MutableEd25519Signer {
 
                 match hw.import_key(key_bytes) {
                     Ok(()) => {
-                        tracing::info!("Ed25519 key imported with SE ECIES encryption");
-                        // Also keep in software signer for compatibility
+                        // Get the public key to compute fingerprint
+                        let pubkey = hw.public_key().map_err(|e| KeyringError::PlatformError {
+                            message: format!("Failed to get public key after import: {}", e),
+                        })?;
+                        let fingerprint = hex::encode(&pubkey).chars().take(8).collect::<String>();
+
+                        tracing::info!(
+                            fingerprint = %fingerprint,
+                            "Ed25519 key imported with SE ECIES encryption"
+                        );
+
+                        // Set hardware marker to PREVENT software fallback
                         let mut inner =
                             self.inner
                                 .write()
                                 .map_err(|_| KeyringError::PlatformError {
                                     message: "Lock poisoned".into(),
                                 })?;
-                        inner.import_key(key_bytes)?;
+                        inner.set_hardware_marker(&fingerprint);
                         return Ok(());
                     },
                     Err(e) => {
@@ -1270,17 +1405,25 @@ impl MutableEd25519Signer {
 
                 match tpm.import_key(key_bytes) {
                     Ok(()) => {
+                        // Get the public key to compute fingerprint
+                        let pubkey = tpm.public_key().map_err(|e| KeyringError::PlatformError {
+                            message: format!("Failed to get public key after import: {}", e),
+                        })?;
+                        let fingerprint = hex::encode(&pubkey).chars().take(8).collect::<String>();
+
                         tracing::info!(
+                            fingerprint = %fingerprint,
                             "Ed25519 key imported with TPM-backed AES-256-GCM encryption"
                         );
-                        // Also keep in software signer for compatibility
+
+                        // Set hardware marker to PREVENT software fallback
                         let mut inner =
                             self.inner
                                 .write()
                                 .map_err(|_| KeyringError::PlatformError {
                                     message: "Lock poisoned".into(),
                                 })?;
-                        inner.import_key(key_bytes)?;
+                        inner.set_hardware_marker(&fingerprint);
                         return Ok(());
                     },
                     Err(e) => {
@@ -1330,6 +1473,35 @@ impl MutableEd25519Signer {
             },
         }
 
+        Ok(())
+    }
+
+    /// Generate a new random Ed25519 key, secured by hardware if available.
+    ///
+    /// This is used for agent signing keys when no portal key is available.
+    /// The key will be:
+    /// - Secured by hardware (Android Keystore, Secure Enclave, TPM) if available
+    /// - Stored as software-only if no hardware is available
+    ///
+    /// If hardware is available, the hardware marker is set to prevent fallback.
+    pub fn generate_key(&self) -> Result<(), KeyringError> {
+        tracing::info!(
+            hardware_available = self.is_hardware_backed(),
+            "MutableEd25519Signer::generate_key - generating new Ed25519 key"
+        );
+
+        // Generate random 32-byte seed
+        use rand_core::{OsRng, RngCore};
+        let mut key_bytes = [0u8; 32];
+        OsRng.fill_bytes(&mut key_bytes);
+
+        // Use import_key which handles hardware wrapping
+        self.import_key(&key_bytes)?;
+
+        // Zero the key bytes in memory
+        key_bytes.fill(0);
+
+        tracing::info!("New Ed25519 key generated and stored");
         Ok(())
     }
 
@@ -1468,8 +1640,14 @@ impl MutableEd25519Signer {
     }
 
     /// Get the public key if loaded.
+    ///
+    /// Returns None if:
+    /// - No key is loaded
+    /// - Hardware key exists but hardware access failed (does NOT fall back to wrong key)
+    ///
+    /// Hardware access uses exponential backoff retry (3 attempts, 50ms → 100ms → 200ms).
     pub fn get_public_key(&self) -> Option<Vec<u8>> {
-        // On Android, try hardware wrapper first
+        // On Android, try hardware wrapper first with retry
         #[cfg(target_os = "android")]
         {
             if let Some(ref hw) = self.hardware_wrapper {
@@ -1477,13 +1655,63 @@ impl MutableEd25519Signer {
                     .enable_all()
                     .build()
                 {
-                    if let Ok(pubkey) = rt.block_on(hw.public_key()) {
-                        tracing::debug!(
-                            pubkey_len = pubkey.len(),
-                            hardware_backed = true,
-                            "get_public_key from hardware wrapper"
+                    let mut last_error = None;
+                    let mut backoff_ms = HW_ACCESS_INITIAL_BACKOFF_MS;
+
+                    for attempt in 1..=HW_ACCESS_MAX_RETRIES {
+                        match rt.block_on(hw.public_key()) {
+                            Ok(pubkey) => {
+                                if attempt > 1 {
+                                    tracing::info!(
+                                        attempt = attempt,
+                                        "Hardware key access succeeded after retry"
+                                    );
+                                }
+                                tracing::debug!(
+                                    pubkey_len = pubkey.len(),
+                                    hardware_backed = true,
+                                    "get_public_key from hardware wrapper"
+                                );
+                                return Some(pubkey);
+                            },
+                            Err(e) => {
+                                tracing::warn!(
+                                    attempt = attempt,
+                                    max_retries = HW_ACCESS_MAX_RETRIES,
+                                    backoff_ms = backoff_ms,
+                                    error = %e,
+                                    "Hardware key access failed, will retry"
+                                );
+                                last_error = Some(e);
+
+                                if attempt < HW_ACCESS_MAX_RETRIES {
+                                    std::thread::sleep(std::time::Duration::from_millis(
+                                        backoff_ms,
+                                    ));
+                                    backoff_ms *= HW_ACCESS_BACKOFF_MULTIPLIER;
+                                }
+                            },
+                        }
+                    }
+
+                    // All retries exhausted - check if hardware marker is set
+                    if let Some(e) = last_error {
+                        if let Ok(inner) = self.inner.read() {
+                            if inner.is_hardware_marker_set() {
+                                tracing::error!(
+                                    error = %e,
+                                    marker = ?inner.hardware_key_fingerprint(),
+                                    retries = HW_ACCESS_MAX_RETRIES,
+                                    "Hardware key access failed after all retries and marker is set - NOT falling back"
+                                );
+                                return None;
+                            }
+                        }
+                        tracing::warn!(
+                            error = %e,
+                            retries = HW_ACCESS_MAX_RETRIES,
+                            "Hardware key access failed after all retries, trying software"
                         );
-                        return Some(pubkey);
                     }
                 }
             }
@@ -1493,13 +1721,29 @@ impl MutableEd25519Signer {
         #[cfg(any(target_os = "ios", target_os = "macos"))]
         {
             if let Some(ref hw) = self.hardware_wrapper {
-                if let Ok(pubkey) = hw.public_key() {
-                    tracing::debug!(
-                        pubkey_len = pubkey.len(),
-                        hardware_backed = true,
-                        "get_public_key from SE ECIES wrapper"
-                    );
-                    return Some(pubkey);
+                match hw.public_key() {
+                    Ok(pubkey) => {
+                        tracing::debug!(
+                            pubkey_len = pubkey.len(),
+                            hardware_backed = true,
+                            "get_public_key from SE ECIES wrapper"
+                        );
+                        return Some(pubkey);
+                    },
+                    Err(e) => {
+                        // Check if software signer has hardware marker - if so, don't fallback
+                        if let Ok(inner) = self.inner.read() {
+                            if inner.is_hardware_marker_set() {
+                                tracing::error!(
+                                    error = %e,
+                                    marker = ?inner.hardware_key_fingerprint(),
+                                    "SE key access failed and marker is set - NOT falling back"
+                                );
+                                return None;
+                            }
+                        }
+                        tracing::warn!(error = %e, "SE key access failed, trying software");
+                    },
                 }
             }
         }
@@ -1508,17 +1752,34 @@ impl MutableEd25519Signer {
         #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
         {
             if let Some(ref tpm) = self.tpm_wrapper {
-                if let Ok(pubkey) = tpm.public_key() {
-                    tracing::debug!(
-                        pubkey_len = pubkey.len(),
-                        hardware_backed = true,
-                        "get_public_key from TPM wrapper"
-                    );
-                    return Some(pubkey);
+                match tpm.public_key() {
+                    Ok(pubkey) => {
+                        tracing::debug!(
+                            pubkey_len = pubkey.len(),
+                            hardware_backed = true,
+                            "get_public_key from TPM wrapper"
+                        );
+                        return Some(pubkey);
+                    },
+                    Err(e) => {
+                        // Check if software signer has hardware marker - if so, don't fallback
+                        if let Ok(inner) = self.inner.read() {
+                            if inner.is_hardware_marker_set() {
+                                tracing::error!(
+                                    error = %e,
+                                    marker = ?inner.hardware_key_fingerprint(),
+                                    "TPM key access failed and marker is set - NOT falling back"
+                                );
+                                return None;
+                            }
+                        }
+                        tracing::warn!(error = %e, "TPM key access failed, trying software");
+                    },
                 }
             }
         }
 
+        // Software fallback - only works if no hardware marker is set
         self.inner
             .read()
             .ok()
@@ -1531,8 +1792,16 @@ impl MutableEd25519Signer {
     /// hardware-backed AES key, signs the data, then the decrypted key
     /// is only held in memory briefly.
     /// On iOS/macOS, the key is decrypted using SE ECIES.
+    ///
+    /// # Errors
+    ///
+    /// Returns error if:
+    /// - No key is loaded
+    /// - Hardware key exists but hardware access failed (does NOT fall back to wrong key)
+    ///
+    /// Hardware access uses exponential backoff retry (3 attempts, 50ms → 100ms → 200ms).
     pub fn sign(&self, data: &[u8]) -> Result<Vec<u8>, KeyringError> {
-        // On Android, try hardware wrapper first
+        // On Android, try hardware wrapper first with retry
         #[cfg(target_os = "android")]
         {
             if let Some(ref hw) = self.hardware_wrapper {
@@ -1540,22 +1809,71 @@ impl MutableEd25519Signer {
                     .enable_all()
                     .build()
                 {
-                    match rt.block_on(hw.sign(data)) {
-                        Ok(sig) => {
-                            tracing::debug!(
-                                data_len = data.len(),
-                                sig_len = sig.len(),
-                                hardware_backed = true,
-                                "Signed with hardware-backed Ed25519 key"
-                            );
-                            return Ok(sig);
-                        },
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "Hardware-backed signing failed - trying software fallback"
-                            );
-                        },
+                    let mut last_error = None;
+                    let mut backoff_ms = HW_ACCESS_INITIAL_BACKOFF_MS;
+
+                    for attempt in 1..=HW_ACCESS_MAX_RETRIES {
+                        match rt.block_on(hw.sign(data)) {
+                            Ok(sig) => {
+                                if attempt > 1 {
+                                    tracing::info!(
+                                        attempt = attempt,
+                                        "Hardware signing succeeded after retry"
+                                    );
+                                }
+                                tracing::debug!(
+                                    data_len = data.len(),
+                                    sig_len = sig.len(),
+                                    hardware_backed = true,
+                                    "Signed with hardware-backed Ed25519 key"
+                                );
+                                return Ok(sig);
+                            },
+                            Err(e) => {
+                                tracing::warn!(
+                                    attempt = attempt,
+                                    max_retries = HW_ACCESS_MAX_RETRIES,
+                                    backoff_ms = backoff_ms,
+                                    error = %e,
+                                    "Hardware signing failed, will retry"
+                                );
+                                last_error = Some(e);
+
+                                if attempt < HW_ACCESS_MAX_RETRIES {
+                                    std::thread::sleep(std::time::Duration::from_millis(
+                                        backoff_ms,
+                                    ));
+                                    backoff_ms *= HW_ACCESS_BACKOFF_MULTIPLIER;
+                                }
+                            },
+                        }
+                    }
+
+                    // All retries exhausted - check if hardware marker is set
+                    if let Some(e) = last_error {
+                        if let Ok(inner) = self.inner.read() {
+                            if inner.is_hardware_marker_set() {
+                                tracing::error!(
+                                    error = %e,
+                                    marker = ?inner.hardware_key_fingerprint(),
+                                    retries = HW_ACCESS_MAX_RETRIES,
+                                    "Hardware signing failed after all retries and marker is set - NOT falling back"
+                                );
+                                return Err(KeyringError::HardwareError {
+                                    reason: format!(
+                                        "Hardware key access failed after {} retries (marker={}): {}",
+                                        HW_ACCESS_MAX_RETRIES,
+                                        inner.hardware_key_fingerprint().unwrap_or("unknown"),
+                                        e
+                                    ),
+                                });
+                            }
+                        }
+                        tracing::warn!(
+                            error = %e,
+                            retries = HW_ACCESS_MAX_RETRIES,
+                            "Hardware signing failed after all retries, trying software"
+                        );
                     }
                 }
             }
@@ -1576,10 +1894,24 @@ impl MutableEd25519Signer {
                         return Ok(sig);
                     },
                     Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "SE-backed signing failed - trying software fallback"
-                        );
+                        // Check if software signer has hardware marker - if so, don't fallback
+                        if let Ok(inner) = self.inner.read() {
+                            if inner.is_hardware_marker_set() {
+                                tracing::error!(
+                                    error = %e,
+                                    marker = ?inner.hardware_key_fingerprint(),
+                                    "SE signing failed and marker is set - NOT falling back"
+                                );
+                                return Err(KeyringError::HardwareError {
+                                    reason: format!(
+                                        "SE key access failed (marker={}): {}",
+                                        inner.hardware_key_fingerprint().unwrap_or("unknown"),
+                                        e
+                                    ),
+                                });
+                            }
+                        }
+                        tracing::warn!(error = %e, "SE signing failed, trying software");
                     },
                 }
             }
@@ -1600,19 +1932,47 @@ impl MutableEd25519Signer {
                         return Ok(sig);
                     },
                     Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "TPM-backed signing failed - trying software fallback"
-                        );
+                        // Check if software signer has hardware marker - if so, don't fallback
+                        if let Ok(inner) = self.inner.read() {
+                            if inner.is_hardware_marker_set() {
+                                tracing::error!(
+                                    error = %e,
+                                    marker = ?inner.hardware_key_fingerprint(),
+                                    "TPM signing failed and marker is set - NOT falling back"
+                                );
+                                return Err(KeyringError::HardwareError {
+                                    reason: format!(
+                                        "TPM key access failed (marker={}): {}",
+                                        inner.hardware_key_fingerprint().unwrap_or("unknown"),
+                                        e
+                                    ),
+                                });
+                            }
+                        }
+                        tracing::warn!(error = %e, "TPM signing failed, trying software");
                     },
                 }
             }
         }
 
-        // Software fallback
+        // Software fallback - but NOT if hardware marker is set
         let inner = self.inner.read().map_err(|_| KeyringError::PlatformError {
             message: "Lock poisoned".into(),
         })?;
+
+        // Check for hardware marker - if set, real key is secured by hardware key, don't use software
+        if inner.is_hardware_marker_set() {
+            tracing::error!(
+                marker = ?inner.hardware_key_fingerprint(),
+                "Software fallback attempted but hardware marker is set - key is secured by hardware"
+            );
+            return Err(KeyringError::HardwareError {
+                reason: format!(
+                    "Key is secured by hardware key (marker={}) but hardware access failed",
+                    inner.hardware_key_fingerprint().unwrap_or("unknown")
+                ),
+            });
+        }
 
         let key = inner
             .signing_key
