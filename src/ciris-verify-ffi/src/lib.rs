@@ -59,8 +59,24 @@ use std::ffi::{c_char, c_void};
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::PathBuf;
 use std::ptr;
-use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Once};
+
+// =============================================================================
+// Attestation Busy Flag
+// =============================================================================
+//
+// Attestation can take 2+ seconds (network calls to registry). During this time,
+// the Rust runtime may be blocked if called from FFI with block_on(). To prevent
+// race conditions where other FFI calls (has_key, sign, etc.) are made during
+// attestation, we use an atomic flag to track when attestation is running.
+//
+// Key operations check this flag and return CIRIS_ERROR_ATTESTATION_IN_PROGRESS
+// (-100) if attestation is running, allowing callers to retry after a delay.
+
+/// Global flag indicating attestation is currently running.
+/// When true, key operations should return ATTESTATION_IN_PROGRESS.
+static ATTESTATION_RUNNING: AtomicBool = AtomicBool::new(false);
 
 // =============================================================================
 // FFI Crash Guard Macro
@@ -536,6 +552,12 @@ pub enum CirisVerifyError {
     SerializationError = -4,
     /// Internal error.
     InternalError = -99,
+    /// Attestation is currently running - retry after delay.
+    ///
+    /// This error is returned when key operations (has_key, get_public_key,
+    /// sign, import_key) are called while attestation is in progress.
+    /// The caller should wait ~500ms and retry.
+    AttestationInProgress = -100,
 }
 
 /// Initialize the CIRISVerify module.
@@ -1560,6 +1582,12 @@ unsafe fn sign_inner(
 ) -> i32 {
     tracing::debug!("ciris_verify_sign called (data_len={})", data_len);
 
+    // Check if attestation is running - if so, return busy status
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("sign: attestation in progress, returning ATTESTATION_IN_PROGRESS (-100)");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
     if handle.is_null() || data.is_null() || signature_data.is_null() || signature_len.is_null() {
         tracing::error!("ciris_verify_sign: invalid arguments");
         return CirisVerifyError::InvalidArgument as i32;
@@ -1639,6 +1667,14 @@ unsafe fn get_public_key_inner(
     algorithm_len: *mut usize,
 ) -> i32 {
     tracing::debug!("ciris_verify_get_public_key called");
+
+    // Check if attestation is running - if so, return busy status
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!(
+            "get_public_key: attestation in progress, returning ATTESTATION_IN_PROGRESS (-100)"
+        );
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
 
     if handle.is_null()
         || key_data.is_null()
@@ -1940,6 +1976,14 @@ pub unsafe extern "C" fn ciris_verify_import_key(
     key_data: *const u8,
     key_len: usize,
 ) -> i32 {
+    // Check if attestation is running - if so, return busy status
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!(
+            "import_key: attestation in progress, returning ATTESTATION_IN_PROGRESS (-100)"
+        );
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
     if handle.is_null() || key_data.is_null() {
         tracing::error!("import_key: null handle or key_data");
         return CirisVerifyError::InvalidArgument as i32;
@@ -2007,6 +2051,12 @@ pub unsafe extern "C" fn ciris_verify_await_key_registration(
     handle: *mut CirisVerifyHandle,
     result_out: *mut *mut c_char,
 ) -> i32 {
+    // Check if attestation is running - if so, return busy status
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("await_key_registration: attestation in progress, returning ATTESTATION_IN_PROGRESS (-100)");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
     if handle.is_null() || result_out.is_null() {
         tracing::error!("await_key_registration: null handle or result_out");
         return CirisVerifyError::InvalidArgument as i32;
@@ -2146,6 +2196,14 @@ pub unsafe extern "C" fn ciris_verify_await_key_registration(
 /// - `handle` must be a valid handle from `ciris_verify_init`
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_has_key(handle: *mut CirisVerifyHandle) -> i32 {
+    // Check if attestation is running - if so, return busy status
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!(
+            "has_key: attestation in progress, returning ATTESTATION_IN_PROGRESS (-100)"
+        );
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
     if handle.is_null() {
         tracing::error!("has_key: null handle");
         return CirisVerifyError::InvalidArgument as i32;
@@ -2190,6 +2248,14 @@ pub unsafe extern "C" fn ciris_verify_has_key(handle: *mut CirisVerifyHandle) ->
 /// - `handle` must be a valid handle from `ciris_verify_init`
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_delete_key(handle: *mut CirisVerifyHandle) -> i32 {
+    // Check if attestation is running - if so, return busy status
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!(
+            "delete_key: attestation in progress, returning ATTESTATION_IN_PROGRESS (-100)"
+        );
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
     if handle.is_null() {
         tracing::error!("delete_key: null handle");
         return CirisVerifyError::InvalidArgument as i32;
@@ -2252,6 +2318,14 @@ pub unsafe extern "C" fn ciris_verify_sign_ed25519(
     signature_data: *mut *mut u8,
     signature_len: *mut usize,
 ) -> i32 {
+    // Check if attestation is running - if so, return busy status
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!(
+            "sign_ed25519: attestation in progress, returning ATTESTATION_IN_PROGRESS (-100)"
+        );
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
     if handle.is_null() || data.is_null() || signature_data.is_null() || signature_len.is_null() {
         tracing::error!("sign_ed25519: null arguments");
         return CirisVerifyError::InvalidArgument as i32;
@@ -2322,6 +2396,12 @@ pub unsafe extern "C" fn ciris_verify_get_ed25519_public_key(
     key_data: *mut *mut u8,
     key_len: *mut usize,
 ) -> i32 {
+    // Check if attestation is running - if so, return busy status
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("get_ed25519_public_key: attestation in progress, returning ATTESTATION_IN_PROGRESS (-100)");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
     if handle.is_null() || key_data.is_null() || key_len.is_null() {
         tracing::error!("get_ed25519_public_key: null arguments");
         return CirisVerifyError::InvalidArgument as i32;
@@ -2517,6 +2597,21 @@ unsafe fn run_attestation_inner(
         tracing::error!("ciris_verify_run_attestation: invalid arguments");
         return CirisVerifyError::InvalidArgument as i32;
     }
+
+    // Set attestation running flag to block concurrent key operations
+    // This prevents race conditions when audit service calls has_key during attestation
+    ATTESTATION_RUNNING.store(true, Ordering::SeqCst);
+    tracing::info!("ATTESTATION_RUNNING flag set to true");
+
+    // Use a guard to ensure the flag is cleared on all exit paths
+    struct AttestationGuard;
+    impl Drop for AttestationGuard {
+        fn drop(&mut self) {
+            ATTESTATION_RUNNING.store(false, Ordering::SeqCst);
+            tracing::info!("ATTESTATION_RUNNING flag cleared");
+        }
+    }
+    let _guard = AttestationGuard;
 
     let handle = &*handle;
     let request_bytes = std::slice::from_raw_parts(request_json, request_len);
