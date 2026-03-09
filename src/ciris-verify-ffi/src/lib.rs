@@ -2328,15 +2328,41 @@ pub unsafe extern "C" fn ciris_verify_generate_key(handle: *mut CirisVerifyHandl
 
     let handle_ref = &*handle;
 
-    // Check if key already exists
-    if handle_ref.ed25519_signer.has_key() {
+    // Check if key already exists - wrap in catch_unwind since has_key()
+    // on Android creates a tokio runtime and runs JNI code that can panic
+    let key_exists = match catch_unwind(AssertUnwindSafe(|| handle_ref.ed25519_signer.has_key())) {
+        Ok(exists) => exists,
+        Err(e) => {
+            // has_key() panicked - treat as "no key exists" and proceed to generate
+            let msg = if let Some(s) = e.downcast_ref::<&str>() {
+                s.to_string()
+            } else if let Some(s) = e.downcast_ref::<String>() {
+                s.clone()
+            } else {
+                "unknown panic".to_string()
+            };
+            tracing::warn!(
+                "generate_key: has_key() panicked (JNI issue?): {} - proceeding to generate",
+                msg
+            );
+            false
+        },
+    };
+
+    if key_exists {
         tracing::warn!("generate_key: key already exists, delete first if you want a new one");
         // Return success - key exists, which is the goal
         return CirisVerifyError::Success as i32;
     }
 
+    // Also wrap is_hardware_backed() in case of JNI issues
+    let hardware_available = catch_unwind(AssertUnwindSafe(|| {
+        handle_ref.ed25519_signer.is_hardware_backed()
+    }))
+    .unwrap_or(false);
+
     tracing::info!(
-        hardware_available = handle_ref.ed25519_signer.is_hardware_backed(),
+        hardware_available = hardware_available,
         "Generating new Ed25519 key (ephemeral)"
     );
 
@@ -2344,15 +2370,20 @@ pub unsafe extern "C" fn ciris_verify_generate_key(handle: *mut CirisVerifyHandl
         handle_ref.ed25519_signer.generate_key()
     })) {
         Ok(Ok(())) => {
-            // Log the fingerprint for debugging
-            if let Some(pk) = handle_ref.ed25519_signer.get_public_key() {
-                let fingerprint = ciris_verify_core::registry::compute_ed25519_fingerprint(&pk);
-                tracing::info!(
-                    fingerprint = %fingerprint,
-                    hardware_backed = handle_ref.ed25519_signer.is_hardware_backed(),
-                    "Ed25519 key generated successfully"
-                );
-            }
+            // Log the fingerprint for debugging - wrap in catch_unwind since
+            // get_public_key() on Android involves JNI which could panic
+            let _ = catch_unwind(AssertUnwindSafe(|| {
+                if let Some(pk) = handle_ref.ed25519_signer.get_public_key() {
+                    let fingerprint = ciris_verify_core::registry::compute_ed25519_fingerprint(&pk);
+                    let hw_backed = handle_ref.ed25519_signer.is_hardware_backed();
+                    tracing::info!(
+                        fingerprint = %fingerprint,
+                        hardware_backed = hw_backed,
+                        "Ed25519 key generated successfully"
+                    );
+                }
+            }));
+            // Return success regardless - key was generated
             CirisVerifyError::Success as i32
         },
         Ok(Err(e)) => {
