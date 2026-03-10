@@ -1618,12 +1618,24 @@ impl UnifiedAttestationEngine {
             + u8::from(sources.https_valid);
         let l3_pass = l2_pass && sources_agreeing >= 2;
         // L4: File integrity (MUST be checked and valid - if not checked, level caps at L3)
-        // Note: unwrap_or(false) means "if not checked, don't count as passing"
+        // Use module_integrity (unified) which properly handles server-only files.
+        // Falls back to legacy file_integrity if module_integrity not available.
+        let module_integrity_valid = module_integrity
+            .as_ref()
+            .map(|mi| mi.valid)
+            .unwrap_or(false);
+        let legacy_file_integrity_valid = file_integrity
+            .as_ref()
+            .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
+            .unwrap_or(false);
+        // Prefer module_integrity (handles server-only exclusions), fall back to legacy
+        let file_check_valid = if module_integrity.is_some() {
+            module_integrity_valid
+        } else {
+            legacy_file_integrity_valid
+        };
         let l4_pass = l3_pass
-            && file_integrity
-                .as_ref()
-                .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
-                .unwrap_or(false)
+            && file_check_valid
             && python_integrity
                 .as_ref()
                 .map(|pi| pi.valid)
@@ -1662,9 +1674,15 @@ impl UnifiedAttestationEngine {
         // Only flags LOCAL integrity changes (binary tampered, HSM tampered,
         // agent files modified). Network fields are intentionally ignored.
         // =======================================================================
-        let file_integrity_valid = file_integrity
+        // Prefer module_integrity (handles server-only exclusions properly)
+        let file_integrity_valid = module_integrity
             .as_ref()
-            .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
+            .map(|mi| mi.valid)
+            .or_else(|| {
+                file_integrity
+                    .as_ref()
+                    .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
+            })
             .unwrap_or(true); // true if not checked (no degradation)
         let python_integrity_valid = python_integrity.as_ref().map(|pi| pi.valid).unwrap_or(true); // true if not checked
 
