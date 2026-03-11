@@ -2975,17 +2975,29 @@ unsafe fn run_attestation_inner(
             + u8::from(result.sources.https_valid);
         let l3_pass = l2_pass && sources_agreeing >= 2;
         // L4: File integrity (MUST be checked and valid - if not checked, level caps at L3)
-        let l4_pass = l3_pass
-            && result
-                .file_integrity
-                .as_ref()
-                .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
-                .unwrap_or(false)
-            && result
-                .python_integrity
-                .as_ref()
-                .map(|pi| pi.valid)
-                .unwrap_or(false);
+        // Prefer module_integrity (handles server-only exclusions), fall back to legacy
+        let l4_pass = if result.module_integrity.is_some() {
+            // Unified check: module_integrity covers everything
+            l3_pass
+                && result
+                    .module_integrity
+                    .as_ref()
+                    .map(|mi| mi.valid)
+                    .unwrap_or(false)
+        } else {
+            // Legacy fallback: require both file_integrity AND python_integrity
+            l3_pass
+                && result
+                    .file_integrity
+                    .as_ref()
+                    .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
+                    .unwrap_or(false)
+                && result
+                    .python_integrity
+                    .as_ref()
+                    .map(|pi| pi.valid)
+                    .unwrap_or(false)
+        };
         // L5: Audit trail (MUST be checked and valid) + registry key (must be active)
         let l5_pass = l4_pass
             && result
@@ -3041,18 +3053,30 @@ unsafe fn run_attestation_inner(
                 + u8::from(result.sources.https_valid);
             let l3_pass = l2_pass && sources_agreeing >= 2;
             // L4: File integrity (MUST be checked and valid)
-            let l4_pass = l3_pass
-                && result
-                    .file_integrity
-                    .as_ref()
-                    .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
-                    .unwrap_or(false)
-                && result
-                    .python_integrity
-                    .as_ref()
-                    .map(|pi| pi.valid)
-                    .unwrap_or(true); // Python integrity optional on desktop
-                                      // L5: Audit trail + registry key
+            // Prefer module_integrity (handles server-only exclusions), fall back to legacy
+            let l4_pass = if result.module_integrity.is_some() {
+                // Unified check: module_integrity covers everything
+                l3_pass
+                    && result
+                        .module_integrity
+                        .as_ref()
+                        .map(|mi| mi.valid)
+                        .unwrap_or(false)
+            } else {
+                // Legacy fallback: require both file_integrity AND python_integrity
+                l3_pass
+                    && result
+                        .file_integrity
+                        .as_ref()
+                        .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
+                        .unwrap_or(false)
+                    && result
+                        .python_integrity
+                        .as_ref()
+                        .map(|pi| pi.valid)
+                        .unwrap_or(true) // Python integrity optional on desktop
+            };
+            // L5: Audit trail + registry key
             let l5_pass = l4_pass
                 && result
                     .audit_trail
