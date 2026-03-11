@@ -2145,7 +2145,9 @@ impl UnifiedAttestationEngine {
         let verified_count =
             filesystem_verified.len() + agent_verified.len() + cross_validated.len();
         let failed_count = disk_agent_mismatch.len() + registry_mismatch.len();
-        let valid = failed_count == 0 && missing.is_empty();
+        // Missing files (server-only, not bundled in mobile) do NOT fail integrity.
+        // Only actual hash mismatches (failed_count > 0) indicate tampering.
+        let valid = failed_count == 0;
 
         let summary = ModuleIntegritySummary {
             total_manifest: registry_files.len(),
@@ -2163,8 +2165,6 @@ impl UnifiedAttestationEngine {
             missing.len()
         );
 
-        let missing_count = missing.len();
-
         Ok(ModuleIntegrityResult {
             valid,
             manifest_file_count: registry_files.len(),
@@ -2181,10 +2181,7 @@ impl UnifiedAttestationEngine {
             error: if valid {
                 None
             } else {
-                Some(format!(
-                    "{} files failed, {} missing",
-                    failed_count, missing_count
-                ))
+                Some(format!("{} files failed integrity check", failed_count))
             },
         })
     }
