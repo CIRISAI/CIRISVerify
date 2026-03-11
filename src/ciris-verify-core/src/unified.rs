@@ -1628,18 +1628,20 @@ impl UnifiedAttestationEngine {
             .as_ref()
             .map(|fi| fi.full.as_ref().map(|f| f.valid).unwrap_or(false))
             .unwrap_or(false);
-        // Prefer module_integrity (handles server-only exclusions), fall back to legacy
-        let file_check_valid = if module_integrity.is_some() {
-            module_integrity_valid
+        // Prefer module_integrity (handles server-only exclusions), fall back to legacy.
+        // When module_integrity is available, it replaces BOTH file_integrity AND python_integrity
+        // because it already cross-validates agent Python files against disk and registry.
+        let l4_pass = if module_integrity.is_some() {
+            // Unified check: module_integrity covers everything
+            l3_pass && module_integrity_valid
         } else {
-            legacy_file_integrity_valid
-        };
-        let l4_pass = l3_pass
-            && file_check_valid
-            && python_integrity
+            // Legacy fallback: require both file_integrity AND python_integrity
+            let python_valid = python_integrity
                 .as_ref()
                 .map(|pi| pi.valid)
                 .unwrap_or(false);
+            l3_pass && legacy_file_integrity_valid && python_valid
+        };
         // L5: Audit trail (MUST be checked and valid) + registry key (must be active)
         let l5_pass = l4_pass
             && audit_trail.as_ref().map(|a| a.valid).unwrap_or(false)
