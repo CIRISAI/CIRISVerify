@@ -461,6 +461,9 @@ pub struct CirisVerifyHandle {
     /// ciris_verify_app_attest is called. Used by run_attestation for L2.
     device_attestation_cache:
         std::sync::Mutex<Option<ciris_verify_core::unified::DeviceAttestationCheckResult>>,
+    /// Cached audit trail verification result.
+    /// Populated when ciris_verify_audit_trail is called. Used by run_attestation for L5.
+    audit_trail_cache: std::sync::Mutex<Option<ciris_verify_core::audit::AuditVerificationResult>>,
 }
 
 impl CirisVerifyHandle {
@@ -869,6 +872,7 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
         engine,
         ed25519_signer,
         device_attestation_cache: std::sync::Mutex::new(None),
+        audit_trail_cache: std::sync::Mutex::new(None),
     });
     Box::into_raw(handle)
 }
@@ -2944,6 +2948,26 @@ unsafe fn run_attestation_inner(
         .ok()
         .and_then(|cache| cache.clone());
 
+    // Inject cached audit trail result if not already present in the request
+    // This allows ciris_verify_audit_trail to be called separately before run_attestation
+    if result.audit_trail.is_none() {
+        if let Ok(cache) = handle.audit_trail_cache.lock() {
+            if let Some(ref cached_audit) = *cache {
+                tracing::info!(
+                    "Injecting cached audit trail for L5: valid={}, entries={}",
+                    cached_audit.valid,
+                    cached_audit.total_entries
+                );
+                result.audit_trail = Some(cached_audit.clone());
+                // Add audit to check counts if not already counted
+                result.checks_total += 1;
+                if cached_audit.valid {
+                    result.checks_passed += 1;
+                }
+            }
+        }
+    }
+
     if let Some(ref da) = device_attestation {
         // Add device attestation as a check
         result.checks_total += 1;
@@ -3278,7 +3302,7 @@ pub unsafe extern "C" fn ciris_verify_audit_trail(
 
 /// Inner implementation of audit_trail (can panic safely).
 unsafe fn audit_trail_inner(
-    _handle: *mut CirisVerifyHandle,
+    handle: *mut CirisVerifyHandle,
     db_path: *const libc::c_char,
     jsonl_path: *const libc::c_char,
     portal_key_id: *const libc::c_char,
@@ -3287,7 +3311,7 @@ unsafe fn audit_trail_inner(
 ) -> i32 {
     tracing::debug!("ciris_verify_audit_trail called");
 
-    if db_path.is_null() || result_json.is_null() || result_len.is_null() {
+    if handle.is_null() || db_path.is_null() || result_json.is_null() || result_len.is_null() {
         tracing::error!(
             "ciris_verify_audit_trail: invalid arguments (db_path or result pointers null)"
         );
@@ -3368,6 +3392,17 @@ unsafe fn audit_trail_inner(
             }
         },
     };
+
+    // Cache the audit result for use by run_attestation L5 calculation
+    let handle_ref = &*handle;
+    if let Ok(mut cache) = handle_ref.audit_trail_cache.lock() {
+        *cache = Some(verification_result.clone());
+        tracing::info!(
+            "Audit trail cached for L5: valid={}, entries={}",
+            verification_result.valid,
+            verification_result.total_entries
+        );
+    }
 
     // Serialize result to JSON
     let result_bytes = match serde_json::to_vec(&verification_result) {
