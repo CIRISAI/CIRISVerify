@@ -1055,20 +1055,28 @@ impl UnifiedAttestationEngine {
         diagnostics.push_str(&format!("  Status: {}\n\n", sources.validation_status));
 
         // Process file integrity results
+        // NOTE: When module_integrity is also run, we don't count file_integrity
+        // toward checks_total/checks_passed because module_integrity supersedes it.
+        // We still run file_integrity for diagnostics and backwards compatibility.
+        let count_file_integrity = should_run_file_integrity && !should_run_module_integrity;
         let file_integrity = if should_run_file_integrity {
-            checks_total += 1; // Full check
-            if request.spot_check_count > 0 {
-                checks_total += 1; // Spot check
+            if count_file_integrity {
+                checks_total += 1; // Full check
+                if request.spot_check_count > 0 {
+                    checks_total += 1; // Spot check
+                }
             }
 
             diagnostics.push_str("=== FILE INTEGRITY ===\n");
             match file_integrity_result.unwrap() {
                 Ok(result) => {
-                    if result.full.as_ref().map(|f| f.valid).unwrap_or(false) {
-                        checks_passed += 1;
-                    }
-                    if result.spot.as_ref().map(|s| s.valid).unwrap_or(false) {
-                        checks_passed += 1;
+                    if count_file_integrity {
+                        if result.full.as_ref().map(|f| f.valid).unwrap_or(false) {
+                            checks_passed += 1;
+                        }
+                        if result.spot.as_ref().map(|s| s.valid).unwrap_or(false) {
+                            checks_passed += 1;
+                        }
                     }
 
                     diagnostics.push_str(&format!(
@@ -1158,9 +1166,16 @@ impl UnifiedAttestationEngine {
         };
 
         // 3. Python module integrity (Android/mobile)
+        // NOTE: When module_integrity is also run, we don't count python_integrity
+        // toward checks_total/checks_passed because module_integrity supersedes it.
+        // We still run python_integrity for diagnostics and backwards compatibility.
+        let count_python_integrity =
+            request.python_hashes.is_some() && !should_run_module_integrity;
         info!("VERIFY STEP 5/6 STARTING: Python module integrity");
         let python_integrity = if let Some(ref hashes) = request.python_hashes {
-            checks_total += 1;
+            if count_python_integrity {
+                checks_total += 1;
+            }
 
             diagnostics.push_str("=== PYTHON INTEGRITY ===\n");
             diagnostics.push_str(&format!(
@@ -1341,9 +1356,10 @@ impl UnifiedAttestationEngine {
             let all_modules_valid = modules_failed == 0;
             let valid = total_hash_valid && all_modules_valid;
 
-            if valid {
+            if count_python_integrity && valid {
                 checks_passed += 1;
-            } else {
+            }
+            if !valid {
                 if !total_hash_valid {
                     errors.push("Python total_hash mismatch".to_string());
                 }
