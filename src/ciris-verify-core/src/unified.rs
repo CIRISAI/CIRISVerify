@@ -1659,9 +1659,13 @@ impl UnifiedAttestationEngine {
             l3_pass && legacy_file_integrity_valid && python_valid
         };
         // L5: Audit trail (MUST be checked and valid) + registry key (must be active)
-        let l5_pass = l4_pass
-            && audit_trail.as_ref().map(|a| a.valid).unwrap_or(false)
-            && key_verification_result == "active";
+        let audit_valid = audit_trail.as_ref().map(|a| a.valid).unwrap_or(false);
+        let key_active = key_verification_result == "active";
+        info!(
+            "L5 calculation: l4_pass={}, audit_valid={}, audit_present={}, key_status='{}', key_active={}",
+            l4_pass, audit_valid, audit_trail.is_some(), key_verification_result, key_active
+        );
+        let l5_pass = l4_pass && audit_valid && key_active;
 
         let level = if l5_pass {
             5

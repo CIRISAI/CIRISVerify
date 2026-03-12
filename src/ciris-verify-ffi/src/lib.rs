@@ -2999,13 +2999,21 @@ unsafe fn run_attestation_inner(
                     .unwrap_or(false)
         };
         // L5: Audit trail (MUST be checked and valid) + registry key (must be active)
-        let l5_pass = l4_pass
-            && result
-                .audit_trail
-                .as_ref()
-                .map(|a| a.valid)
-                .unwrap_or(false)
-            && result.registry_key_status == "active";
+        let audit_valid = result
+            .audit_trail
+            .as_ref()
+            .map(|a| a.valid)
+            .unwrap_or(false);
+        let key_active = result.registry_key_status == "active";
+        tracing::debug!(
+            l4_pass = l4_pass,
+            audit_valid = audit_valid,
+            audit_present = result.audit_trail.is_some(),
+            key_status = %result.registry_key_status,
+            key_active = key_active,
+            "L5 calculation inputs"
+        );
+        let l5_pass = l4_pass && audit_valid && key_active;
 
         result.level = if l5_pass {
             5
@@ -3077,13 +3085,21 @@ unsafe fn run_attestation_inner(
                         .unwrap_or(true) // Python integrity optional on desktop
             };
             // L5: Audit trail + registry key
-            let l5_pass = l4_pass
-                && result
-                    .audit_trail
-                    .as_ref()
-                    .map(|a| a.valid)
-                    .unwrap_or(false)
-                && result.registry_key_status == "active";
+            let audit_valid = result
+                .audit_trail
+                .as_ref()
+                .map(|a| a.valid)
+                .unwrap_or(false);
+            let key_active = result.registry_key_status == "active";
+            tracing::debug!(
+                l4_pass = l4_pass,
+                audit_valid = audit_valid,
+                audit_present = result.audit_trail.is_some(),
+                key_status = %result.registry_key_status,
+                key_active = key_active,
+                "L5 calculation inputs (desktop)"
+            );
+            let l5_pass = l4_pass && audit_valid && key_active;
 
             result.level = if l5_pass {
                 5
