@@ -368,7 +368,8 @@ static LOG_CALLBACK: AtomicUsize = AtomicUsize::new(0);
 
 /// Get the currently registered log callback, if any.
 fn get_log_callback() -> Option<CirisLogCallback> {
-    let ptr = LOG_CALLBACK.load(Ordering::Relaxed);
+    // Use SeqCst to ensure we see the most recent store from set_log_callback
+    let ptr = LOG_CALLBACK.load(Ordering::SeqCst);
     if ptr == 0 {
         None
     } else {
@@ -415,9 +416,17 @@ where
         let target = std::ffi::CString::new(event.metadata().target()).unwrap_or_default();
         let message = std::ffi::CString::new(visitor.message).unwrap_or_default();
 
-        unsafe {
-            callback(level, target.as_ptr(), message.as_ptr());
-        }
+        // Wrap callback invocation in catch_unwind to prevent panics from unwinding
+        // across FFI boundary (undefined behavior). SIGSEGV is not caught by this,
+        // but panics from the Python callback mechanism are.
+        let target_ptr = target.as_ptr();
+        let message_ptr = message.as_ptr();
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            callback(level, target_ptr, message_ptr);
+        }));
+        // Keep target and message alive until after callback returns
+        drop(target);
+        drop(message);
     }
 }
 
@@ -4585,16 +4594,22 @@ unsafe fn write_json_result<T: serde::Serialize>(
 /// If non-null, `callback` must point to a valid function with the expected signature.
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_set_log_callback(callback: Option<CirisLogCallback>) {
-    match callback {
-        Some(cb) => {
-            LOG_CALLBACK.store(cb as usize, Ordering::Relaxed);
-            tracing::info!("Log callback registered");
-        },
-        None => {
-            LOG_CALLBACK.store(0, Ordering::Relaxed);
-            // Don't log here — the callback is already gone
-        },
-    }
+    // Wrap entire function in catch_unwind for FFI safety
+    let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        match callback {
+            Some(cb) => {
+                // Use SeqCst ordering to ensure visibility across all threads
+                LOG_CALLBACK.store(cb as usize, Ordering::SeqCst);
+                // Ensure the store is visible before we try to use the callback
+                std::sync::atomic::fence(Ordering::SeqCst);
+                tracing::info!("Log callback registered");
+            },
+            None => {
+                LOG_CALLBACK.store(0, Ordering::SeqCst);
+                // Don't log here — the callback is already gone
+            },
+        }
+    }));
 }
 
 // Android JNI bindings
