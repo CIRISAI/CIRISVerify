@@ -1770,29 +1770,36 @@ impl MutableEd25519Signer {
         #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
         {
             if let Some(ref tpm) = self.tpm_wrapper {
-                match tpm.public_key() {
-                    Ok(pubkey) => {
-                        tracing::debug!(
-                            pubkey_len = pubkey.len(),
-                            hardware_backed = true,
-                            "get_public_key from TPM wrapper"
-                        );
-                        return Some(pubkey);
-                    },
-                    Err(e) => {
-                        // Check if software signer has hardware marker - if so, don't fallback
-                        if let Ok(inner) = self.inner.read() {
-                            if inner.is_hardware_marker_set() {
-                                tracing::error!(
-                                    error = %e,
-                                    marker = ?inner.hardware_key_fingerprint(),
-                                    "TPM key access failed and marker is set - NOT falling back"
-                                );
-                                return None;
+                // Check if TPM key exists before attempting to access it.
+                // This prevents unnecessary TPM context creation and file read attempts
+                // that could cause issues when the key file doesn't exist yet.
+                if tpm.key_exists() {
+                    match tpm.public_key() {
+                        Ok(pubkey) => {
+                            tracing::debug!(
+                                pubkey_len = pubkey.len(),
+                                hardware_backed = true,
+                                "get_public_key from TPM wrapper"
+                            );
+                            return Some(pubkey);
+                        },
+                        Err(e) => {
+                            // Check if software signer has hardware marker - if so, don't fallback
+                            if let Ok(inner) = self.inner.read() {
+                                if inner.is_hardware_marker_set() {
+                                    tracing::error!(
+                                        error = %e,
+                                        marker = ?inner.hardware_key_fingerprint(),
+                                        "TPM key access failed and marker is set - NOT falling back"
+                                    );
+                                    return None;
+                                }
                             }
-                        }
-                        tracing::warn!(error = %e, "TPM key access failed, trying software");
-                    },
+                            tracing::warn!(error = %e, "TPM key access failed, trying software");
+                        },
+                    }
+                } else {
+                    tracing::debug!("TPM key file does not exist, skipping TPM access");
                 }
             }
         }
@@ -1939,36 +1946,43 @@ impl MutableEd25519Signer {
         #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
         {
             if let Some(ref tpm) = self.tpm_wrapper {
-                match tpm.sign(data) {
-                    Ok(sig) => {
-                        tracing::debug!(
-                            data_len = data.len(),
-                            sig_len = sig.len(),
-                            hardware_backed = true,
-                            "Signed with TPM-backed Ed25519 key"
-                        );
-                        return Ok(sig);
-                    },
-                    Err(e) => {
-                        // Check if software signer has hardware marker - if so, don't fallback
-                        if let Ok(inner) = self.inner.read() {
-                            if inner.is_hardware_marker_set() {
-                                tracing::error!(
-                                    error = %e,
-                                    marker = ?inner.hardware_key_fingerprint(),
-                                    "TPM signing failed and marker is set - NOT falling back"
-                                );
-                                return Err(KeyringError::HardwareError {
-                                    reason: format!(
-                                        "TPM key access failed (marker={}): {}",
-                                        inner.hardware_key_fingerprint().unwrap_or("unknown"),
-                                        e
-                                    ),
-                                });
+                // Check if TPM key exists before attempting to sign.
+                // This prevents unnecessary TPM context creation and file read attempts
+                // that could cause issues when the key file doesn't exist yet.
+                if tpm.key_exists() {
+                    match tpm.sign(data) {
+                        Ok(sig) => {
+                            tracing::debug!(
+                                data_len = data.len(),
+                                sig_len = sig.len(),
+                                hardware_backed = true,
+                                "Signed with TPM-backed Ed25519 key"
+                            );
+                            return Ok(sig);
+                        },
+                        Err(e) => {
+                            // Check if software signer has hardware marker - if so, don't fallback
+                            if let Ok(inner) = self.inner.read() {
+                                if inner.is_hardware_marker_set() {
+                                    tracing::error!(
+                                        error = %e,
+                                        marker = ?inner.hardware_key_fingerprint(),
+                                        "TPM signing failed and marker is set - NOT falling back"
+                                    );
+                                    return Err(KeyringError::HardwareError {
+                                        reason: format!(
+                                            "TPM key access failed (marker={}): {}",
+                                            inner.hardware_key_fingerprint().unwrap_or("unknown"),
+                                            e
+                                        ),
+                                    });
+                                }
                             }
-                        }
-                        tracing::warn!(error = %e, "TPM signing failed, trying software");
-                    },
+                            tracing::warn!(error = %e, "TPM signing failed, trying software");
+                        },
+                    }
+                } else {
+                    tracing::debug!("TPM key file does not exist, skipping TPM sign");
                 }
             }
         }
