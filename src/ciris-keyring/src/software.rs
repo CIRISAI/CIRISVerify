@@ -1673,63 +1673,80 @@ impl MutableEd25519Signer {
                     .enable_all()
                     .build()
                 {
-                    let mut last_error = None;
-                    let mut backoff_ms = HW_ACCESS_INITIAL_BACKOFF_MS;
+                    // Check if key exists before attempting to access it.
+                    // This prevents unnecessary hardware access attempts when no key exists.
+                    let key_exists = match rt.block_on(hw.key_exists()) {
+                        Ok(exists) => exists,
+                        Err(e) => {
+                            tracing::debug!(error = %e, "key_exists check failed, assuming no key");
+                            false
+                        },
+                    };
 
-                    for attempt in 1..=HW_ACCESS_MAX_RETRIES {
-                        match rt.block_on(hw.public_key()) {
-                            Ok(pubkey) => {
-                                if attempt > 1 {
-                                    tracing::info!(
-                                        attempt = attempt,
-                                        "Hardware key access succeeded after retry"
+                    if !key_exists {
+                        tracing::debug!(
+                            "Android hardware key does not exist, skipping hardware access"
+                        );
+                        // Fall through to software fallback
+                    } else {
+                        let mut last_error = None;
+                        let mut backoff_ms = HW_ACCESS_INITIAL_BACKOFF_MS;
+
+                        for attempt in 1..=HW_ACCESS_MAX_RETRIES {
+                            match rt.block_on(hw.public_key()) {
+                                Ok(pubkey) => {
+                                    if attempt > 1 {
+                                        tracing::info!(
+                                            attempt = attempt,
+                                            "Hardware key access succeeded after retry"
+                                        );
+                                    }
+                                    tracing::debug!(
+                                        pubkey_len = pubkey.len(),
+                                        hardware_backed = true,
+                                        "get_public_key from hardware wrapper"
                                     );
-                                }
-                                tracing::debug!(
-                                    pubkey_len = pubkey.len(),
-                                    hardware_backed = true,
-                                    "get_public_key from hardware wrapper"
-                                );
-                                return Some(pubkey);
-                            },
-                            Err(e) => {
-                                tracing::warn!(
-                                    attempt = attempt,
-                                    max_retries = HW_ACCESS_MAX_RETRIES,
-                                    backoff_ms = backoff_ms,
-                                    error = %e,
-                                    "Hardware key access failed, will retry"
-                                );
-                                last_error = Some(e);
+                                    return Some(pubkey);
+                                },
+                                Err(e) => {
+                                    tracing::warn!(
+                                        attempt = attempt,
+                                        max_retries = HW_ACCESS_MAX_RETRIES,
+                                        backoff_ms = backoff_ms,
+                                        error = %e,
+                                        "Hardware key access failed, will retry"
+                                    );
+                                    last_error = Some(e);
 
-                                if attempt < HW_ACCESS_MAX_RETRIES {
-                                    std::thread::sleep(std::time::Duration::from_millis(
-                                        backoff_ms,
-                                    ));
-                                    backoff_ms *= HW_ACCESS_BACKOFF_MULTIPLIER;
-                                }
-                            },
-                        }
-                    }
-
-                    // All retries exhausted - check if hardware marker is set
-                    if let Some(e) = last_error {
-                        if let Ok(inner) = self.inner.read() {
-                            if inner.is_hardware_marker_set() {
-                                tracing::error!(
-                                    error = %e,
-                                    marker = ?inner.hardware_key_fingerprint(),
-                                    retries = HW_ACCESS_MAX_RETRIES,
-                                    "Hardware key access failed after all retries and marker is set - NOT falling back"
-                                );
-                                return None;
+                                    if attempt < HW_ACCESS_MAX_RETRIES {
+                                        std::thread::sleep(std::time::Duration::from_millis(
+                                            backoff_ms,
+                                        ));
+                                        backoff_ms *= HW_ACCESS_BACKOFF_MULTIPLIER;
+                                    }
+                                },
                             }
                         }
-                        tracing::warn!(
-                            error = %e,
-                            retries = HW_ACCESS_MAX_RETRIES,
-                            "Hardware key access failed after all retries, trying software"
-                        );
+
+                        // All retries exhausted - check if hardware marker is set
+                        if let Some(e) = last_error {
+                            if let Ok(inner) = self.inner.read() {
+                                if inner.is_hardware_marker_set() {
+                                    tracing::error!(
+                                        error = %e,
+                                        marker = ?inner.hardware_key_fingerprint(),
+                                        retries = HW_ACCESS_MAX_RETRIES,
+                                        "Hardware key access failed after all retries and marker is set - NOT falling back"
+                                    );
+                                    return None;
+                                }
+                            }
+                            tracing::warn!(
+                                error = %e,
+                                retries = HW_ACCESS_MAX_RETRIES,
+                                "Hardware key access failed after all retries, trying software"
+                            );
+                        }
                     }
                 }
             }
@@ -1739,29 +1756,35 @@ impl MutableEd25519Signer {
         #[cfg(any(target_os = "ios", target_os = "macos"))]
         {
             if let Some(ref hw) = self.hardware_wrapper {
-                match hw.public_key() {
-                    Ok(pubkey) => {
-                        tracing::debug!(
-                            pubkey_len = pubkey.len(),
-                            hardware_backed = true,
-                            "get_public_key from SE ECIES wrapper"
-                        );
-                        return Some(pubkey);
-                    },
-                    Err(e) => {
-                        // Check if software signer has hardware marker - if so, don't fallback
-                        if let Ok(inner) = self.inner.read() {
-                            if inner.is_hardware_marker_set() {
-                                tracing::error!(
-                                    error = %e,
-                                    marker = ?inner.hardware_key_fingerprint(),
-                                    "SE key access failed and marker is set - NOT falling back"
-                                );
-                                return None;
+                // Check if key exists before attempting to access it.
+                // This prevents unnecessary hardware access attempts when no key exists.
+                if hw.key_exists() {
+                    match hw.public_key() {
+                        Ok(pubkey) => {
+                            tracing::debug!(
+                                pubkey_len = pubkey.len(),
+                                hardware_backed = true,
+                                "get_public_key from SE ECIES wrapper"
+                            );
+                            return Some(pubkey);
+                        },
+                        Err(e) => {
+                            // Check if software signer has hardware marker - if so, don't fallback
+                            if let Ok(inner) = self.inner.read() {
+                                if inner.is_hardware_marker_set() {
+                                    tracing::error!(
+                                        error = %e,
+                                        marker = ?inner.hardware_key_fingerprint(),
+                                        "SE key access failed and marker is set - NOT falling back"
+                                    );
+                                    return None;
+                                }
                             }
-                        }
-                        tracing::warn!(error = %e, "SE key access failed, trying software");
-                    },
+                            tracing::warn!(error = %e, "SE key access failed, trying software");
+                        },
+                    }
+                } else {
+                    tracing::debug!("SE key does not exist, skipping hardware access");
                 }
             }
         }
@@ -1834,57 +1857,73 @@ impl MutableEd25519Signer {
                     .enable_all()
                     .build()
                 {
-                    let mut last_error = None;
-                    let mut backoff_ms = HW_ACCESS_INITIAL_BACKOFF_MS;
+                    // Check if key exists before attempting to sign.
+                    // This prevents unnecessary hardware access attempts when no key exists.
+                    let key_exists = match rt.block_on(hw.key_exists()) {
+                        Ok(exists) => exists,
+                        Err(e) => {
+                            tracing::debug!(error = %e, "key_exists check failed for signing, assuming no key");
+                            false
+                        },
+                    };
 
-                    for attempt in 1..=HW_ACCESS_MAX_RETRIES {
-                        match rt.block_on(hw.sign(data)) {
-                            Ok(sig) => {
-                                if attempt > 1 {
-                                    tracing::info!(
-                                        attempt = attempt,
-                                        "Hardware signing succeeded after retry"
+                    if !key_exists {
+                        tracing::debug!(
+                            "Android hardware key does not exist, skipping hardware sign"
+                        );
+                        // Fall through to software fallback
+                    } else {
+                        let mut last_error = None;
+                        let mut backoff_ms = HW_ACCESS_INITIAL_BACKOFF_MS;
+
+                        for attempt in 1..=HW_ACCESS_MAX_RETRIES {
+                            match rt.block_on(hw.sign(data)) {
+                                Ok(sig) => {
+                                    if attempt > 1 {
+                                        tracing::info!(
+                                            attempt = attempt,
+                                            "Hardware signing succeeded after retry"
+                                        );
+                                    }
+                                    tracing::debug!(
+                                        data_len = data.len(),
+                                        sig_len = sig.len(),
+                                        hardware_backed = true,
+                                        "Signed with hardware-backed Ed25519 key"
                                     );
-                                }
-                                tracing::debug!(
-                                    data_len = data.len(),
-                                    sig_len = sig.len(),
-                                    hardware_backed = true,
-                                    "Signed with hardware-backed Ed25519 key"
-                                );
-                                return Ok(sig);
-                            },
-                            Err(e) => {
-                                tracing::warn!(
-                                    attempt = attempt,
-                                    max_retries = HW_ACCESS_MAX_RETRIES,
-                                    backoff_ms = backoff_ms,
-                                    error = %e,
-                                    "Hardware signing failed, will retry"
-                                );
-                                last_error = Some(e);
+                                    return Ok(sig);
+                                },
+                                Err(e) => {
+                                    tracing::warn!(
+                                        attempt = attempt,
+                                        max_retries = HW_ACCESS_MAX_RETRIES,
+                                        backoff_ms = backoff_ms,
+                                        error = %e,
+                                        "Hardware signing failed, will retry"
+                                    );
+                                    last_error = Some(e);
 
-                                if attempt < HW_ACCESS_MAX_RETRIES {
-                                    std::thread::sleep(std::time::Duration::from_millis(
-                                        backoff_ms,
-                                    ));
-                                    backoff_ms *= HW_ACCESS_BACKOFF_MULTIPLIER;
-                                }
-                            },
+                                    if attempt < HW_ACCESS_MAX_RETRIES {
+                                        std::thread::sleep(std::time::Duration::from_millis(
+                                            backoff_ms,
+                                        ));
+                                        backoff_ms *= HW_ACCESS_BACKOFF_MULTIPLIER;
+                                    }
+                                },
+                            }
                         }
-                    }
 
-                    // All retries exhausted - check if hardware marker is set
-                    if let Some(e) = last_error {
-                        if let Ok(inner) = self.inner.read() {
-                            if inner.is_hardware_marker_set() {
-                                tracing::error!(
-                                    error = %e,
-                                    marker = ?inner.hardware_key_fingerprint(),
-                                    retries = HW_ACCESS_MAX_RETRIES,
-                                    "Hardware signing failed after all retries and marker is set - NOT falling back"
-                                );
-                                return Err(KeyringError::HardwareError {
+                        // All retries exhausted - check if hardware marker is set
+                        if let Some(e) = last_error {
+                            if let Ok(inner) = self.inner.read() {
+                                if inner.is_hardware_marker_set() {
+                                    tracing::error!(
+                                        error = %e,
+                                        marker = ?inner.hardware_key_fingerprint(),
+                                        retries = HW_ACCESS_MAX_RETRIES,
+                                        "Hardware signing failed after all retries and marker is set - NOT falling back"
+                                    );
+                                    return Err(KeyringError::HardwareError {
                                     reason: format!(
                                         "Hardware key access failed after {} retries (marker={}): {}",
                                         HW_ACCESS_MAX_RETRIES,
@@ -1892,13 +1931,14 @@ impl MutableEd25519Signer {
                                         e
                                     ),
                                 });
+                                }
                             }
+                            tracing::warn!(
+                                error = %e,
+                                retries = HW_ACCESS_MAX_RETRIES,
+                                "Hardware signing failed after all retries, trying software"
+                            );
                         }
-                        tracing::warn!(
-                            error = %e,
-                            retries = HW_ACCESS_MAX_RETRIES,
-                            "Hardware signing failed after all retries, trying software"
-                        );
                     }
                 }
             }
@@ -1908,36 +1948,42 @@ impl MutableEd25519Signer {
         #[cfg(any(target_os = "ios", target_os = "macos"))]
         {
             if let Some(ref hw) = self.hardware_wrapper {
-                match hw.sign(data) {
-                    Ok(sig) => {
-                        tracing::debug!(
-                            data_len = data.len(),
-                            sig_len = sig.len(),
-                            hardware_backed = true,
-                            "Signed with SE-backed Ed25519 key (ECIES)"
-                        );
-                        return Ok(sig);
-                    },
-                    Err(e) => {
-                        // Check if software signer has hardware marker - if so, don't fallback
-                        if let Ok(inner) = self.inner.read() {
-                            if inner.is_hardware_marker_set() {
-                                tracing::error!(
-                                    error = %e,
-                                    marker = ?inner.hardware_key_fingerprint(),
-                                    "SE signing failed and marker is set - NOT falling back"
-                                );
-                                return Err(KeyringError::HardwareError {
-                                    reason: format!(
-                                        "SE key access failed (marker={}): {}",
-                                        inner.hardware_key_fingerprint().unwrap_or("unknown"),
-                                        e
-                                    ),
-                                });
+                // Check if key exists before attempting to sign.
+                // This prevents unnecessary hardware access attempts when no key exists.
+                if hw.key_exists() {
+                    match hw.sign(data) {
+                        Ok(sig) => {
+                            tracing::debug!(
+                                data_len = data.len(),
+                                sig_len = sig.len(),
+                                hardware_backed = true,
+                                "Signed with SE-backed Ed25519 key (ECIES)"
+                            );
+                            return Ok(sig);
+                        },
+                        Err(e) => {
+                            // Check if software signer has hardware marker - if so, don't fallback
+                            if let Ok(inner) = self.inner.read() {
+                                if inner.is_hardware_marker_set() {
+                                    tracing::error!(
+                                        error = %e,
+                                        marker = ?inner.hardware_key_fingerprint(),
+                                        "SE signing failed and marker is set - NOT falling back"
+                                    );
+                                    return Err(KeyringError::HardwareError {
+                                        reason: format!(
+                                            "SE key access failed (marker={}): {}",
+                                            inner.hardware_key_fingerprint().unwrap_or("unknown"),
+                                            e
+                                        ),
+                                    });
+                                }
                             }
-                        }
-                        tracing::warn!(error = %e, "SE signing failed, trying software");
-                    },
+                            tracing::warn!(error = %e, "SE signing failed, trying software");
+                        },
+                    }
+                } else {
+                    tracing::debug!("SE key does not exist, skipping hardware sign");
                 }
             }
         }
