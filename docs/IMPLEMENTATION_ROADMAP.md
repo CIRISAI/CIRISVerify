@@ -910,9 +910,9 @@ sign-ml-dsa-65 SHA256SUMS > SHA256SUMS.sig.mldsa65
 | 3: Verification | License engine + consensus + transparency | ✅ Complete |
 | 4: Interface | FFI (19 functions) + Python bindings (v1.2.1) | ✅ Complete |
 | 5: Security | Hardened binary + HW vuln detection + offline cache | ✅ Complete |
-| 6: Builds | Cross-platform releases | Planned |
-| 7: Integration | CIRISAgent integration | Planned |
-| **Final** | Production v2.0.0 | |
+| 6: Builds | Cross-platform releases (PyPI wheels, Android/iOS) | ✅ Complete |
+| 7: Integration | CIRISAgent adapter + WiseBus + mobile | ✅ Complete |
+| **Final** | Production v2.0.0 | 🎉 **READY** |
 
 ### Recent Additions (v1.2.x)
 
