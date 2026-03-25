@@ -62,16 +62,20 @@ cargo deny check
 |-------|--------|-------|
 | `ciris-keyring` | Phase 2 Complete | HardwareSigner trait, SoftwareSigner impl, Android Keystore, TPM 2.0 (dual-key architecture) |
 | `ciris-crypto` | Phase 1 Complete | ECDSA P-256, Ed25519, ML-DSA-65 (FIPS 204), hybrid signer with bound signatures |
-| `ciris-verify-core` | Phase 3-5 Active | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), Tripwire file integrity, remote attestation export, Level 2 binary self-verification |
-| `ciris-verify-ffi` | Phase 4 Active | C FFI (17 functions), JNI bindings (Android Level 5), Swift wrapper (iOS Level 5) |
-| `bindings/python` | Released | ciris-verify 1.1.2 on PyPI with platform wheels |
+| `ciris-verify-core` | Phase 3-5 Active | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), Tripwire file integrity, remote attestation export, Level 2 binary self-verification, **hardware vulnerability detection (v1.2.0+)**, **offline manifest cache (v1.2.0+)** |
+| `ciris-verify-ffi` | Phase 4 Active | C FFI (19 functions), JNI bindings (Android Level 5), Swift wrapper (iOS Level 5) |
+| `bindings/python` | Released | ciris-verify 1.2.1 on PyPI with platform wheels |
 | `bindings/swift` | Released | CIRISVerify.swift wrapper + bridging header, XCFramework build script |
 
 **ML-DSA-65**: Fully implemented using `ml-dsa` 0.1.0-rc.3 (RustCrypto). Bound dual signatures operational.
 
 **TPM 2.0**: Dual-key architecture with attestation key (restricted, for quotes) and signing key (non-restricted, for arbitrary data). Supports EK certificate reading and external nonce binding.
 
-**200+ tests passing** across all crates.
+**Hardware Vulnerability Detection (v1.2.0+)**: Detects SoC-level vulnerabilities (CVE-2026-20435 MediaTek, CVE-2026-21385 Qualcomm) and caps attestation to SOFTWARE_ONLY for affected devices.
+
+**Offline Manifest Cache (v1.2.0+)**: Hardware-signed cache for L1 self-verification when registry is unreachable. No expiration - valid as long as hardware key exists.
+
+**150+ tests passing** across all crates.
 
 ## Development Workflow
 

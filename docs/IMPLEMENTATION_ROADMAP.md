@@ -4,8 +4,9 @@
 **Target**: Production-ready v2.0.0
 **Language**: Rust
 **Upstream Alignment**: Veilid patterns for potential contribution
-**Test Suite**: 155 tests passing
-**Last Updated**: 2026-02-17
+**Test Suite**: 150+ tests passing
+**Last Updated**: 2026-03-25
+**Current Version**: v1.2.1
 
 ---
 
@@ -747,6 +748,52 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 }
 ```
 
+### 5.4 Hardware Vulnerability Detection (v1.2.0+)
+
+```rust
+/// Detect SoC-level vulnerabilities that compromise TEE trust
+pub struct HardwareInfo {
+    pub platform: String,
+    pub soc_manufacturer: Option<String>,
+    pub limitations: Vec<HardwareLimitation>,
+    pub hardware_trust_degraded: bool,
+}
+
+pub enum HardwareLimitation {
+    Emulator,
+    VulnerableSoC { manufacturer: String, advisory: SecurityAdvisory },
+    RootedDevice,
+    UnlockedBootloader,
+    OutdatedPatchLevel { current: String, minimum_required: String },
+}
+```
+
+**Tracked Vulnerabilities**:
+- CVE-2026-20435 (MediaTek Boot ROM EMFI) - Not patchable
+- CVE-2026-21385 (Qualcomm Security Component) - Patchable via March 2026 patch
+
+**Detection Method**:
+- Android: `Build.HARDWARE`, `Build.BOARD`, `Build.VERSION.SECURITY_PATCH` via JNI
+- Affected devices: attestation capped to `SOFTWARE_ONLY`
+
+### 5.5 Offline Manifest Cache (v1.2.0+)
+
+```rust
+/// Hardware-signed cache for offline L1 self-verification
+pub struct SignedManifestCache {
+    pub binary_manifest: BTreeMap<String, String>,
+    pub function_manifest: Option<FunctionManifest>,
+    pub build_record: Option<BuildRecordCache>,
+    pub signature: Vec<u8>,
+    pub public_key_fingerprint: String,
+}
+```
+
+**Properties**:
+- No expiration - valid as long as hardware key exists
+- Hardware-signed with device's Ed25519 key
+- Enables L1 verification when registry is unreachable
+
 ### Deliverables
 - ✅ Constant-time comparison utilities
 - ✅ Anti-rollback revision enforcement (persisted, monotonic)
@@ -755,6 +802,8 @@ pub fn constant_time_eq(a: &[u8], b: &[u8]) -> bool {
 - ✅ Binary self-integrity verification
 - ✅ Anti-debugging and platform integrity detection
 - ✅ Formal threat model document (`docs/THREAT_MODEL.md`)
+- ✅ **Hardware vulnerability detection (CVE-2026-20435, CVE-2026-21385)**
+- ✅ **Offline manifest cache with hardware signatures**
 - Fuzzing harness (cargo-fuzz) (pending)
 - Third-party audit preparation docs (pending)
 
@@ -853,13 +902,22 @@ sign-ml-dsa-65 SHA256SUMS > SHA256SUMS.sig.mldsa65
 |-------|-----------------|--------|
 | 0: Foundation | Compiling workspace, CI | ✅ Complete |
 | 1: Cryptography | Hybrid signature system (Ed25519 + ML-DSA-65) | ✅ Complete |
-| 2: Hardware | Platform signers + attestation | Planned |
-| 3: Verification | License engine + consensus + transparency | 🔧 In Progress |
-| 4: Interface | FFI + Python bindings | 🔧 In Progress |
-| 5: Security | Hardened binary + threat model + anti-rollback | 🔧 In Progress |
+| 2: Hardware | Platform signers + attestation | 🔧 In Progress |
+| 3: Verification | License engine + consensus + transparency | ✅ Complete |
+| 4: Interface | FFI (19 functions) + Python bindings (v1.2.1) | ✅ Complete |
+| 5: Security | Hardened binary + HW vuln detection + offline cache | 🔧 In Progress |
 | 6: Builds | Cross-platform releases | Planned |
 | 7: Integration | CIRISAgent integration | Planned |
 | **Final** | Production v2.0.0 | |
+
+### Recent Additions (v1.2.x)
+
+| Feature | Version | Description |
+|---------|---------|-------------|
+| Offline Manifest Cache | v1.2.0 | Hardware-signed L1 verification cache |
+| MediaTek CVE Detection | v1.2.0 | CVE-2026-20435 Boot ROM vulnerability |
+| Qualcomm CVE Detection | v1.2.1 | CVE-2026-21385 with patch level check |
+| Hardware Info FFI | v1.2.0 | `get_hardware_info`, `get_hardware_info_android` |
 
 ---
 
@@ -909,5 +967,5 @@ Periodic sync with upstream:
 ---
 
 **Document Owner**: CIRIS Engineering
-**Last Updated**: 2026-02-17
+**Last Updated**: 2026-03-25
 **Review Cycle**: During active development

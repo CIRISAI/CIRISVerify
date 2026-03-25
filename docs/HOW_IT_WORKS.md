@@ -1,6 +1,6 @@
 # How CIRISVerify Works
 
-**Last Updated**: 2026-02-28 (v1.0.8)
+**Last Updated**: 2026-03-25 (v1.2.1)
 
 > **Disclaimer**: This is research software exploring approaches to AI agent verification and accountability. It is not a complete security solution. No software can provide absolute protection against determined adversaries. This documentation is provided for educational and research purposes to inform the broader AI alignment community. We make no warranties and accept no liability.
 
@@ -64,6 +64,8 @@ CIRISVerify holds a hardware-bound Ed25519 signing key that **is** the agent's i
 **Software integrity (Tripwire):** Every file in the CIRISAgent distribution is SHA-256 hashed at build time and registered in CIRISRegistry as a signed manifest. At runtime, CIRISVerify hashes files on disk and compares. **Any modification whatsoever** — except `.env`, logs, and runtime data — triggers immediate forced shutdown.
 
 **Hardware attestation:** Validates the execution environment via platform-specific secure hardware. Software-only environments are capped at COMMUNITY tier — like driving with a learner's permit.
+
+**Hardware vulnerability detection (v1.2.0+):** Even with hardware security, some SoCs have known vulnerabilities that compromise the trust chain. CIRISVerify detects these and caps attestation accordingly — like a recall notice on your car's brakes.
 
 ### 3. Insurance — Accountability and Licensing (HITL)
 
@@ -478,6 +480,90 @@ CIRISVerify queries three independent sources:
 
 ---
 
+## Hardware Vulnerability Detection (v1.2.0+)
+
+Even with hardware-backed security, some devices have known silicon-level vulnerabilities that compromise the trust chain. CIRISVerify actively detects these and caps attestation to `SOFTWARE_ONLY` level — the same treatment as emulators.
+
+### Known Vulnerabilities Tracked
+
+| CVE | Vendor | Impact | Patchable? | Detection Method |
+|-----|--------|--------|------------|------------------|
+| **CVE-2026-20435** | MediaTek | Boot ROM EMFI - key extraction in <45s | ❌ NO (silicon) | `Build.HARDWARE` chip ID |
+| **CVE-2026-21385** | Qualcomm | Security component under active exploitation | ✅ YES | `Build.VERSION.SECURITY_PATCH` |
+
+### How Detection Works
+
+1. **On Android**: JNI provides `Build.HARDWARE`, `Build.BOARD`, `Build.VERSION.SECURITY_PATCH`
+2. **CIRISVerify parses** these properties to identify SoC manufacturer and model
+3. **Vulnerable chips** are matched against a known-bad list
+4. **Patchable CVEs** check the security patch level against the fix date
+
+### Affected MediaTek Chips (CVE-2026-20435)
+
+These Dimensity SoCs have Trustonic TEE with exploitable boot ROM:
+
+| Chip ID | Marketing Name | Vulnerable? |
+|---------|----------------|-------------|
+| mt6878 | Dimensity 7300 | ✅ YES |
+| mt6886 | Dimensity 7200 | ✅ YES |
+| mt6893 | Dimensity 1200 | ✅ YES |
+| mt6895 | Dimensity 8100 | ✅ YES |
+| mt6983 | Dimensity 9000 | ✅ YES |
+| mt6985 | Dimensity 9200 | ✅ YES |
+
+**Why it matters**: An attacker with ~45 seconds of physical access can extract Android Keystore keys. This defeats hardware-rooted attestation.
+
+### Qualcomm Patch Detection (CVE-2026-21385)
+
+Unlike MediaTek's unfixable boot ROM issue, Qualcomm's CVE-2026-21385 was patched in the **March 2026 Android Security Bulletin**.
+
+```
+Security Patch Level >= 2026-03-01  →  SAFE
+Security Patch Level < 2026-03-01   →  VULNERABLE (caps attestation)
+```
+
+### API Usage
+
+```python
+from ciris_verify import CIRISVerify
+
+verifier = CIRISVerify()
+
+# Basic detection (desktop/iOS)
+info = verifier.get_hardware_info_sync()
+
+# Enhanced Android detection with JNI properties
+info = verifier.get_hardware_info_android_sync(
+    hardware="mt6878",
+    board="dimensity7300",
+    manufacturer="Xiaomi",
+    model="Redmi Note 13",
+    security_patch="2026-03-01",
+    fingerprint="Xiaomi/redmi/device:14/fingerprint",
+)
+
+if info.hardware_trust_degraded:
+    print(f"⚠️ Hardware trust degraded: {info.trust_degradation_reason}")
+    for lim in info.limitations:
+        print(f"  - {lim.description()}")
+```
+
+### Trust Degradation Chain
+
+```
+Vulnerable SoC detected
+    ↓
+hardware_trust_degraded = true
+    ↓
+HardwareLimitation::VulnerableSoC added
+    ↓
+Attestation capped to SOFTWARE_ONLY
+    ↓
+Maximum tier = COMMUNITY (no professional license)
+```
+
+---
+
 ## Agent File Integrity (Tripwire)
 
 CIRISVerify validates that the CIRISAgent's Python files have not been tampered with since the distribution was built. This is similar to how [Tripwire](https://en.wikipedia.org/wiki/Open_Source_Tripwire) works for server security.
@@ -597,13 +683,15 @@ CIRISVerify/
 │   │       ├── registry.rs     # Registry client for manifests
 │   │       ├── audit.rs        # Audit trail verification
 │   │       ├── config.rs       # Infrastructure endpoints
+│   │       ├── hardware_info.rs # Hardware vulnerability detection (v1.2.0+)
+│   │       ├── manifest_cache.rs # Offline L1 verification cache (v1.2.0+)
 │   │       ├── types.rs        # Rust types
 │   │       └── security/
 │   │           ├── mod.rs           # Security module
 │   │           ├── file_integrity.rs    # Tripwire file checks
 │   │           ├── function_integrity.rs # FFI function verification
 │   │           ├── anti_tamper.rs       # Anti-tamper detection
-│   │           └── platform.rs          # Platform detection
+│   │           └── platform.rs          # Platform detection (emulator/root)
 │   ├── ciris-verify-ffi/       # C FFI layer
 │   │   └── src/
 │   │       ├── lib.rs          # FFI functions called by Python
