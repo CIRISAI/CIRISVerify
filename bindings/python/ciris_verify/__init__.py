@@ -44,6 +44,9 @@ from .types import (
     ValidationStatus,
     PythonModuleHashes,
     PythonIntegrityResult,
+    SecurityAdvisory,
+    HardwareLimitation,
+    HardwareInfo,
 )
 from .exceptions import (
     CIRISVerifyError,
@@ -128,6 +131,9 @@ __all__ = [
     "ValidationStatus",
     "PythonModuleHashes",
     "PythonIntegrityResult",
+    "SecurityAdvisory",
+    "HardwareLimitation",
+    "HardwareInfo",
     "CIRISVerifyError",
     "BinaryNotFoundError",
     "BinaryTamperedError",

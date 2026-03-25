@@ -3639,6 +3639,322 @@ pub unsafe extern "C" fn ciris_verify_manifest_cache_exists(
     }
 }
 
+// =============================================================================
+// Hardware Information
+// =============================================================================
+
+/// Get hardware information and security limitations.
+///
+/// Detects platform-specific hardware characteristics that affect
+/// attestation trust level:
+/// - Emulator/VM detection (mobile emulators are suspicious)
+/// - Rooted/jailbroken device detection
+/// - SoC vulnerability detection (e.g., MediaTek CVE-2026-20435)
+/// - TEE implementation identification
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init` (can be null for basic detection)
+/// * `result_json` - Output pointer for JSON result
+/// * `result_len` - Output pointer for result length
+///
+/// # Result JSON Format
+///
+/// ```json
+/// {
+///   "platform": "android",
+///   "soc_manufacturer": "MediaTek",
+///   "soc_model": "mt6878 (dimensity7300)",
+///   "is_emulator": false,
+///   "is_suspicious_emulator": false,
+///   "is_rooted": false,
+///   "tee_implementation": "Trustonic",
+///   "security_patch_level": "2026-03-01",
+///   "limitations": [
+///     {
+///       "VulnerableSoC": {
+///         "manufacturer": "MediaTek",
+///         "advisory": {
+///           "cve": "CVE-2026-20435",
+///           "title": "MediaTek Boot ROM EMFI vulnerability",
+///           "impact": "Physical access can extract Keystore keys in <45 seconds",
+///           "software_patchable": false,
+///           "min_patch_level": null
+///         }
+///       }
+///     }
+///   ],
+///   "hardware_trust_degraded": true,
+///   "trust_degradation_reason": "MediaTek SoC affected by CVE-2026-20435..."
+/// }
+/// ```
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `result_json` and `result_len` must be valid pointers
+/// - Result must be freed with `ciris_verify_free`
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_get_hardware_info(
+    _handle: *mut CirisVerifyHandle,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_get_hardware_info", {
+        get_hardware_info_inner(result_json, result_len)
+    })
+}
+
+/// Inner implementation of get_hardware_info.
+unsafe fn get_hardware_info_inner(result_json: *mut *mut u8, result_len: *mut usize) -> i32 {
+    use ciris_verify_core::HardwareInfo;
+
+    tracing::debug!("ciris_verify_get_hardware_info called");
+
+    if result_json.is_null() || result_len.is_null() {
+        tracing::error!("ciris_verify_get_hardware_info: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    // Detect hardware information
+    let info = HardwareInfo::detect();
+
+    tracing::info!(
+        "Hardware detection: platform={}, emulator={}, suspicious={}, rooted={}, degraded={}",
+        info.platform,
+        info.is_emulator,
+        info.is_suspicious_emulator,
+        info.is_rooted,
+        info.hardware_trust_degraded
+    );
+
+    // Serialize to JSON
+    let json = match serde_json::to_string(&info) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_get_hardware_info: serialization failed: {}",
+                e
+            );
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    // Allocate and copy
+    let len = json.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("ciris_verify_get_hardware_info: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(json.as_ptr(), ptr, len);
+    *result_json = ptr;
+    *result_len = len;
+
+    CirisVerifyError::Success as i32
+}
+
+/// Update hardware info with Android-specific properties.
+///
+/// On Android, some hardware properties can only be read via JNI (Build.HARDWARE,
+/// Build.FINGERPRINT, etc.). This function allows the Android app to pass these
+/// properties to enhance detection.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init` (can be null)
+/// * `hardware` - Build.HARDWARE value (null-terminated)
+/// * `board` - Build.BOARD value (null-terminated)
+/// * `manufacturer` - Build.MANUFACTURER value (null-terminated)
+/// * `model` - Build.MODEL value (null-terminated)
+/// * `security_patch` - Build.VERSION.SECURITY_PATCH value (null-terminated)
+/// * `fingerprint` - Build.FINGERPRINT value (null-terminated)
+/// * `result_json` - Output pointer for JSON result
+/// * `result_len` - Output pointer for result length
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// All string arguments must be valid null-terminated UTF-8 strings.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_get_hardware_info_android(
+    _handle: *mut CirisVerifyHandle,
+    hardware: *const libc::c_char,
+    board: *const libc::c_char,
+    manufacturer: *const libc::c_char,
+    model: *const libc::c_char,
+    security_patch: *const libc::c_char,
+    fingerprint: *const libc::c_char,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_get_hardware_info_android", {
+        get_hardware_info_android_inner(
+            hardware,
+            board,
+            manufacturer,
+            model,
+            security_patch,
+            fingerprint,
+            result_json,
+            result_len,
+        )
+    })
+}
+
+/// Inner implementation of get_hardware_info_android.
+#[allow(clippy::too_many_arguments)]
+unsafe fn get_hardware_info_android_inner(
+    hardware: *const libc::c_char,
+    board: *const libc::c_char,
+    manufacturer: *const libc::c_char,
+    model: *const libc::c_char,
+    security_patch: *const libc::c_char,
+    fingerprint: *const libc::c_char,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    use ciris_verify_core::HardwareInfo;
+
+    tracing::debug!("ciris_verify_get_hardware_info_android called");
+
+    if hardware.is_null()
+        || board.is_null()
+        || manufacturer.is_null()
+        || model.is_null()
+        || security_patch.is_null()
+        || fingerprint.is_null()
+        || result_json.is_null()
+        || result_len.is_null()
+    {
+        tracing::error!("ciris_verify_get_hardware_info_android: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    // Parse strings
+    let hardware_str = match std::ffi::CStr::from_ptr(hardware).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_get_hardware_info_android: invalid hardware UTF-8: {}",
+                e
+            );
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+    let board_str = match std::ffi::CStr::from_ptr(board).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_get_hardware_info_android: invalid board UTF-8: {}",
+                e
+            );
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+    let manufacturer_str = match std::ffi::CStr::from_ptr(manufacturer).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_get_hardware_info_android: invalid manufacturer UTF-8: {}",
+                e
+            );
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+    let model_str = match std::ffi::CStr::from_ptr(model).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_get_hardware_info_android: invalid model UTF-8: {}",
+                e
+            );
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+    let security_patch_str = match std::ffi::CStr::from_ptr(security_patch).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_get_hardware_info_android: invalid security_patch UTF-8: {}",
+                e
+            );
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+    let fingerprint_str = match std::ffi::CStr::from_ptr(fingerprint).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_get_hardware_info_android: invalid fingerprint UTF-8: {}",
+                e
+            );
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    // Start with basic detection and enhance with Android properties
+    let mut info = HardwareInfo::detect();
+    info.update_from_android_properties(
+        hardware_str,
+        board_str,
+        manufacturer_str,
+        model_str,
+        security_patch_str,
+        fingerprint_str,
+    );
+
+    tracing::info!(
+        "Android hardware: soc={:?}, tee={:?}, degraded={}, limitations={}",
+        info.soc_manufacturer,
+        info.tee_implementation,
+        info.hardware_trust_degraded,
+        info.limitations.len()
+    );
+
+    if info.hardware_trust_degraded {
+        tracing::warn!(
+            "Hardware trust degraded: {}",
+            info.trust_degradation_reason
+                .as_deref()
+                .unwrap_or("unknown")
+        );
+    }
+
+    // Serialize to JSON
+    let json = match serde_json::to_string(&info) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_get_hardware_info_android: serialization failed: {}",
+                e
+            );
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    // Allocate and copy
+    let len = json.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("ciris_verify_get_hardware_info_android: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(json.as_ptr(), ptr, len);
+    *result_json = ptr;
+    *result_len = len;
+
+    CirisVerifyError::Success as i32
+}
+
 /// Verify audit trail from SQLite database and/or JSONL file.
 ///
 /// This function reads the agent's audit trail and verifies:

@@ -121,6 +121,49 @@ Six primary attack vectors identified in FSD-001:
 
 ---
 
+## 5.1 Known Hardware Vulnerabilities (v1.2.0+)
+
+CIRISVerify detects known hardware vulnerabilities that compromise TEE security. Devices with these vulnerabilities are treated equivalently to emulators—attestation is capped at `SOFTWARE_ONLY` level.
+
+### CVE-2026-20435: MediaTek Boot ROM EMFI Vulnerability
+
+| Property | Value |
+|----------|-------|
+| Severity | CRITICAL |
+| Affected | MediaTek Dimensity 7300, 7200, 1200, 8100, 9000, 9200 (mt6878, mt6886, mt6893, mt6895, mt6983, mt6985) |
+| TEE | Trustonic |
+| Impact | Physical access can extract Android Keystore keys in <45 seconds |
+| Patchable | NO (Boot ROM is burned into silicon) |
+| Disclosed | March 12, 2026 by Ledger Donjon |
+
+**Technical Details**: The MediaTek boot ROM contains a flaw in how it handles electromagnetic fault injection (EMFI) during the secure boot process. An attacker with physical access can glitch the chip during TEE initialization to dump the Trustonic TEE's secure world memory, including Android Keystore keys.
+
+**Detection**: CIRISVerify identifies vulnerable chipsets via `Build.HARDWARE` and `Build.BOARD` system properties on Android.
+
+**Mitigation**: Devices with affected chipsets have `hardware_trust_degraded = true` and `HardwareLimitation::VulnerableSoC` in their limitations. Professional license tiers are not available on these devices.
+
+### CVE-2026-21385: Qualcomm Security Component Vulnerability
+
+| Property | Value |
+|----------|-------|
+| Severity | HIGH |
+| Status | Under limited, targeted exploitation (CISA KEV catalog) |
+| Patchable | YES (March 2026 Android Security Patch) |
+
+**Mitigation**: Devices running Qualcomm chipsets should apply the March 2026 security patch. CIRISVerify tracks `Build.VERSION.SECURITY_PATCH` and can warn about outdated patch levels.
+
+### Other Hardware Limitations
+
+| Limitation | Impact | Caps Attestation? |
+|------------|--------|-------------------|
+| Emulator detected | No real hardware security | YES |
+| Rooted/jailbroken device | HSM protections bypassed | YES |
+| Unlocked bootloader | Secure boot chain compromised | YES |
+| Outdated security patch | Known vulnerabilities unpatched | NO (warning only) |
+| Weak TEE implementation | TEE-specific issues | YES |
+
+---
+
 ## 6. Security Assumptions
 
 From FSD-001, the system depends on these assumptions:
@@ -157,12 +200,14 @@ Risks that CIRISVerify mitigates but cannot fully eliminate:
 
 1. **Hardware supply chain compromise**: If HSM manufacturers are compromised, attestation data can be forged. Mitigation: use hardware from multiple manufacturers; monitor for HSM vulnerability disclosures.
 
-2. **Zero-day in HSM firmware**: Undisclosed vulnerabilities in TPM/SE firmware could allow key extraction. Mitigation: hybrid crypto means both classical AND PQC must be broken; firmware update monitoring.
+2. **Zero-day in HSM firmware**: Undisclosed vulnerabilities in TPM/SE firmware could allow key extraction. Mitigation: hybrid crypto means both classical AND PQC must be broken; firmware update monitoring. **Note**: CIRISVerify v1.2.0+ actively detects known vulnerabilities (e.g., CVE-2026-20435 on MediaTek) and degrades affected devices to `SOFTWARE_ONLY` level.
 
-3. **Clock manipulation**: If system clock is skewed by more than 5 minutes, expiry-based protections weaken. Mitigation: multi-source timestamp cross-checking; NTP hardening guidance for deployments.
+3. **Physical access attacks on vulnerable SoCs**: Some chipsets (e.g., MediaTek Dimensity with CVE-2026-20435) have boot ROM flaws that allow key extraction via electromagnetic fault injection in under 45 seconds. Mitigation: CIRISVerify detects affected chipsets and caps attestation. Users should avoid these devices for high-security deployments.
 
-4. **All verification sources compromised simultaneously**: If attacker controls all DNS registrars AND HTTPS endpoints, false consensus can be achieved. Mitigation: sources are in different jurisdictions (US/EU) with different registrars; transparency log provides after-the-fact audit capability.
+4. **Clock manipulation**: If system clock is skewed by more than 5 minutes, expiry-based protections weaken. Mitigation: multi-source timestamp cross-checking; NTP hardening guidance for deployments.
 
-5. **Quantum computer capable of breaking both Ed25519 and ML-DSA-65**: Current quantum computers cannot break either. Hybrid approach means BOTH must fall. ML-DSA-65 provides NIST-standardized post-quantum resistance. Mitigation: algorithm agility allows future upgrades.
+5. **All verification sources compromised simultaneously**: If attacker controls all DNS registrars AND HTTPS endpoints, false consensus can be achieved. Mitigation: sources are in different jurisdictions (US/EU) with different registrars; transparency log provides after-the-fact audit capability.
 
-6. **Insider threat at license issuing authority**: A compromised steward could issue valid licenses to malicious agents. Mitigation: transparency log records all issuance events for audit; multi-party authorization for license issuance (registry-side control).
+6. **Quantum computer capable of breaking both Ed25519 and ML-DSA-65**: Current quantum computers cannot break either. Hybrid approach means BOTH must fall. ML-DSA-65 provides NIST-standardized post-quantum resistance. Mitigation: algorithm agility allows future upgrades.
+
+7. **Insider threat at license issuing authority**: A compromised steward could issue valid licenses to malicious agents. Mitigation: transparency log records all issuance events for audit; multi-party authorization for license issuance (registry-side control).

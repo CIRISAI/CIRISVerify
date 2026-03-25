@@ -57,6 +57,7 @@ pub mod config;
 pub mod dns;
 pub mod engine;
 pub mod error;
+pub mod hardware_info;
 pub mod https;
 pub mod jwt;
 pub mod license;
@@ -115,3 +116,6 @@ pub use unified::{
 pub use manifest_cache::{
     load_and_verify as load_manifest_cache, BuildRecordCache, CacheLoadResult, SignedManifestCache,
 };
+
+// Hardware information and limitations
+pub use hardware_info::{HardwareInfo, HardwareLimitation, SecurityAdvisory};

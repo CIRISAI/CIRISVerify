@@ -31,6 +31,9 @@ from .types import (
     AttestationData,
     PythonModuleHashes,
     PythonIntegrityResult,
+    SecurityAdvisory,
+    HardwareLimitation,
+    HardwareInfo,
 )
 from .exceptions import (
     BinaryNotFoundError,
@@ -544,6 +547,32 @@ class CIRISVerify:
             self._has_manifest_cache_support = True
         except AttributeError:
             self._has_manifest_cache_support = False
+
+        # ciris_verify_get_hardware_info (optional - added in 1.2.0)
+        # Get hardware information and security limitations
+        try:
+            self._lib.ciris_verify_get_hardware_info.argtypes = [
+                ctypes.c_void_p,                    # handle (can be null)
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)),  # result_json
+                ctypes.POINTER(ctypes.c_size_t),   # result_len
+            ]
+            self._lib.ciris_verify_get_hardware_info.restype = ctypes.c_int
+
+            self._lib.ciris_verify_get_hardware_info_android.argtypes = [
+                ctypes.c_void_p,                    # handle (can be null)
+                ctypes.c_char_p,                    # hardware
+                ctypes.c_char_p,                    # board
+                ctypes.c_char_p,                    # manufacturer
+                ctypes.c_char_p,                    # model
+                ctypes.c_char_p,                    # security_patch
+                ctypes.c_char_p,                    # fingerprint
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)),  # result_json
+                ctypes.POINTER(ctypes.c_size_t),   # result_len
+            ]
+            self._lib.ciris_verify_get_hardware_info_android.restype = ctypes.c_int
+            self._has_hardware_info_support = True
+        except AttributeError:
+            self._has_hardware_info_support = False
 
         # ciris_verify_set_log_callback (optional - added in 0.9.1)
         # Register a callback to receive internal log messages
@@ -1595,6 +1624,15 @@ class CIRISVerify:
         """
         return getattr(self, "_has_manifest_cache_support", False)
 
+    @property
+    def has_hardware_info_support(self) -> bool:
+        """Check if hardware info functions are available.
+
+        Returns:
+            True if the library supports hardware info detection (>= 1.2.0).
+        """
+        return getattr(self, "_has_hardware_info_support", False)
+
     def save_manifest_cache_sync(
         self,
         binary_manifest: dict,
@@ -1706,6 +1744,160 @@ class CIRISVerify:
 
         ret = self._lib.ciris_verify_manifest_cache_exists(self._handle)
         return ret == 1
+
+    # ========================================================================
+    # Hardware Information
+    # ========================================================================
+
+    def get_hardware_info_sync(self) -> Optional[HardwareInfo]:
+        """Get hardware information and security limitations.
+
+        Detects platform-specific hardware characteristics that affect
+        attestation trust level:
+        - Emulator/VM detection (mobile emulators are suspicious)
+        - Root/jailbreak detection
+        - SoC vulnerability detection (e.g., MediaTek CVE-2026-20435)
+        - TEE implementation identification
+
+        Returns:
+            HardwareInfo with platform details and detected limitations,
+            or None if detection fails.
+
+        Note:
+            On Android, call get_hardware_info_android_sync() with JNI
+            properties for more accurate detection.
+        """
+        if not self._has_hardware_info_support:
+            return None
+
+        result_ptr = ctypes.POINTER(ctypes.c_uint8)()
+        result_len = ctypes.c_size_t()
+
+        ret = self._lib.ciris_verify_get_hardware_info(
+            self._handle,
+            ctypes.byref(result_ptr),
+            ctypes.byref(result_len),
+        )
+
+        if ret != 0:
+            return None
+
+        try:
+            data = ctypes.string_at(result_ptr, result_len.value)
+            self._lib.ciris_verify_free(result_ptr)
+            parsed = json.loads(data)
+            return self._parse_hardware_info(parsed)
+        except Exception:
+            return None
+
+    def get_hardware_info_android_sync(
+        self,
+        hardware: str,
+        board: str,
+        manufacturer: str,
+        model: str,
+        security_patch: str,
+        fingerprint: str,
+    ) -> Optional[HardwareInfo]:
+        """Get hardware information with Android-specific properties.
+
+        On Android, some hardware properties can only be read via JNI.
+        This method allows the Android app to pass these properties for
+        more accurate detection of SoC vulnerabilities.
+
+        Args:
+            hardware: Build.HARDWARE value
+            board: Build.BOARD value
+            manufacturer: Build.MANUFACTURER value
+            model: Build.MODEL value
+            security_patch: Build.VERSION.SECURITY_PATCH value
+            fingerprint: Build.FINGERPRINT value
+
+        Returns:
+            HardwareInfo with Android-specific details and detected limitations.
+        """
+        if not self._has_hardware_info_support:
+            return None
+
+        result_ptr = ctypes.POINTER(ctypes.c_uint8)()
+        result_len = ctypes.c_size_t()
+
+        ret = self._lib.ciris_verify_get_hardware_info_android(
+            self._handle,
+            hardware.encode("utf-8") + b"\0",
+            board.encode("utf-8") + b"\0",
+            manufacturer.encode("utf-8") + b"\0",
+            model.encode("utf-8") + b"\0",
+            security_patch.encode("utf-8") + b"\0",
+            fingerprint.encode("utf-8") + b"\0",
+            ctypes.byref(result_ptr),
+            ctypes.byref(result_len),
+        )
+
+        if ret != 0:
+            return None
+
+        try:
+            data = ctypes.string_at(result_ptr, result_len.value)
+            self._lib.ciris_verify_free(result_ptr)
+            parsed = json.loads(data)
+            return self._parse_hardware_info(parsed)
+        except Exception:
+            return None
+
+    def _parse_hardware_info(self, data: dict) -> HardwareInfo:
+        """Parse JSON hardware info into HardwareInfo object."""
+        limitations = []
+        for lim in data.get("limitations", []):
+            # Handle Rust enum serialization (externally tagged)
+            if isinstance(lim, dict):
+                if "Emulator" in lim or lim == "Emulator":
+                    limitations.append(HardwareLimitation(limitation_type="Emulator"))
+                elif "RootedDevice" in lim or lim == "RootedDevice":
+                    limitations.append(HardwareLimitation(limitation_type="RootedDevice"))
+                elif "UnlockedBootloader" in lim or lim == "UnlockedBootloader":
+                    limitations.append(HardwareLimitation(limitation_type="UnlockedBootloader"))
+                elif "VulnerableSoC" in lim:
+                    vuln = lim["VulnerableSoC"]
+                    advisory = vuln.get("advisory", {})
+                    limitations.append(HardwareLimitation(
+                        limitation_type="VulnerableSoC",
+                        manufacturer=vuln.get("manufacturer"),
+                        advisory=SecurityAdvisory(
+                            cve=advisory.get("cve", ""),
+                            title=advisory.get("title", ""),
+                            impact=advisory.get("impact", ""),
+                            software_patchable=advisory.get("software_patchable", False),
+                            min_patch_level=advisory.get("min_patch_level"),
+                        ),
+                    ))
+                elif "WeakTEE" in lim:
+                    limitations.append(HardwareLimitation(
+                        limitation_type="WeakTEE",
+                        reason=lim["WeakTEE"].get("reason"),
+                    ))
+                elif "OutdatedPatchLevel" in lim:
+                    patch = lim["OutdatedPatchLevel"]
+                    limitations.append(HardwareLimitation(
+                        limitation_type="OutdatedPatchLevel",
+                        current_patch=patch.get("current"),
+                        minimum_patch=patch.get("minimum_required"),
+                    ))
+
+        return HardwareInfo(
+            platform=data.get("platform", "unknown"),
+            soc_manufacturer=data.get("soc_manufacturer"),
+            soc_model=data.get("soc_model"),
+            security_patch_level=data.get("security_patch_level"),
+            is_emulator=data.get("is_emulator", False),
+            is_suspicious_emulator=data.get("is_suspicious_emulator", False),
+            bootloader_unlocked=data.get("bootloader_unlocked"),
+            tee_implementation=data.get("tee_implementation"),
+            is_rooted=data.get("is_rooted", False),
+            limitations=limitations,
+            hardware_trust_degraded=data.get("hardware_trust_degraded", False),
+            trust_degradation_reason=data.get("trust_degradation_reason"),
+        )
 
     def get_mandatory_disclosure(self, status: LicenseStatus) -> MandatoryDisclosure:
         """Get mandatory disclosure for a given status.
