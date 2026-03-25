@@ -199,7 +199,7 @@ impl HybridSigner {
 
 ---
 
-## Phase 2: Hardware Integration
+## Phase 2: Hardware Integration ✅ COMPLETE
 
 ### 2.1 HardwareSigner Trait (`ciris-keyring`)
 
@@ -392,10 +392,14 @@ impl HardwareSigner for SoftwareSigner {
 ```
 
 ### Deliverables
-- `ciris-keyring` crate with all platform implementations
-- Integration tests on real hardware (CI with device farm)
-- Attestation verification test suite
-- Platform capability detection
+- ✅ `ciris-keyring` crate with all platform implementations (8 signers)
+- ✅ Android Keystore + Hardware-Wrapped Ed25519 (TEE/StrongBox)
+- ✅ iOS/macOS Secure Enclave + ECIES-Wrapped Ed25519
+- ✅ TPM 2.0 + AES-256-GCM-Wrapped Ed25519 (Linux/Windows)
+- ✅ Software fallback signers (tier-limited)
+- ✅ Platform capability detection and factory pattern
+- ✅ Attestation verification test suite
+- Integration tests on real hardware (CI with device farm) - future
 
 ---
 
@@ -902,10 +906,10 @@ sign-ml-dsa-65 SHA256SUMS > SHA256SUMS.sig.mldsa65
 |-------|-----------------|--------|
 | 0: Foundation | Compiling workspace, CI | ✅ Complete |
 | 1: Cryptography | Hybrid signature system (Ed25519 + ML-DSA-65) | ✅ Complete |
-| 2: Hardware | Platform signers + attestation | 🔧 In Progress |
+| 2: Hardware | Platform signers + attestation (8 implementations) | ✅ Complete |
 | 3: Verification | License engine + consensus + transparency | ✅ Complete |
 | 4: Interface | FFI (19 functions) + Python bindings (v1.2.1) | ✅ Complete |
-| 5: Security | Hardened binary + HW vuln detection + offline cache | 🔧 In Progress |
+| 5: Security | Hardened binary + HW vuln detection + offline cache | ✅ Complete |
 | 6: Builds | Cross-platform releases | Planned |
 | 7: Integration | CIRISAgent integration | Planned |
 | **Final** | Production v2.0.0 | |
@@ -963,6 +967,23 @@ Periodic sync with upstream:
 | Async runtime | tokio vs async-std | tokio (Veilid compat) | **Decided** |
 | Protobuf | prost vs protobuf-rs | prost (Veilid compat) | **Decided** |
 | Android JNI | jni vs ndk-glue | jni (keyring-manager compat) | **Decided** |
+
+---
+
+---
+
+## Remaining TODOs in Codebase
+
+| File | Line | Description | Priority |
+|------|------|-------------|----------|
+| `audit.rs` | 247 | Implement actual Ed25519 signature verification | Medium |
+| `engine.rs` | 508 | Full capability checking against cached license | Medium |
+| `engine.rs` | 840 | Query CIRISRegistry to verify agent_hash is registered | Low |
+| `engine.rs` | 983 | Fetch and verify license JWT from registry | Medium |
+| `function_integrity.rs` | 507 | Linux shared library offset adjustment | Low |
+| `tpm/mod.rs` | 587 | Read actual PCR values if needed | Low |
+| `dns.rs` | 1175 | Make DNS timeout configurable | Low |
+| `elf.rs` | 155 | Android ELF detection by sections/notes | Low |
 
 ---
 
