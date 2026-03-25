@@ -562,6 +562,18 @@ pub enum CirisVerifyError {
     RequestFailed = -3,
     /// Serialization error.
     SerializationError = -4,
+    /// No signing key available.
+    NoKey = -5,
+    /// Signing operation failed.
+    SigningFailed = -6,
+    /// IO error (file read/write).
+    IoError = -7,
+    /// Manifest cache not found.
+    CacheNotFound = -8,
+    /// Signature verification failed (possible tampering).
+    SignatureInvalid = -9,
+    /// Version or target mismatch.
+    VersionMismatch = -10,
     /// Internal error.
     InternalError = -99,
     /// Attestation is currently running - retry after delay.
@@ -3237,6 +3249,394 @@ unsafe fn run_attestation_inner(
     *result_len = len;
 
     CirisVerifyError::Success as i32
+}
+
+// =============================================================================
+// MANIFEST CACHE - Hardware-signed offline L1 verification
+// =============================================================================
+
+/// Save manifests to a hardware-signed cache for offline L1 verification.
+///
+/// After successful attestation with registry access, call this function to
+/// cache the manifests locally with a hardware signature. When the registry
+/// is unreachable, the cached manifest can be used for L1 self-verification.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `binary_manifest_json` - JSON-encoded BinaryManifest
+/// * `binary_manifest_len` - Length of binary manifest JSON
+/// * `function_manifest_json` - JSON-encoded FunctionManifest (can be null)
+/// * `function_manifest_len` - Length of function manifest JSON (0 if null)
+/// * `build_record_json` - JSON-encoded BuildRecord (can be null)
+/// * `build_record_len` - Length of build record JSON (0 if null)
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `binary_manifest_json` must be valid for `binary_manifest_len` bytes
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_save_manifest_cache(
+    handle: *mut CirisVerifyHandle,
+    binary_manifest_json: *const u8,
+    binary_manifest_len: usize,
+    function_manifest_json: *const u8,
+    function_manifest_len: usize,
+    build_record_json: *const u8,
+    build_record_len: usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_save_manifest_cache", {
+        save_manifest_cache_inner(
+            handle,
+            binary_manifest_json,
+            binary_manifest_len,
+            function_manifest_json,
+            function_manifest_len,
+            build_record_json,
+            build_record_len,
+        )
+    })
+}
+
+/// Inner implementation of save_manifest_cache.
+unsafe fn save_manifest_cache_inner(
+    handle: *mut CirisVerifyHandle,
+    binary_manifest_json: *const u8,
+    binary_manifest_len: usize,
+    function_manifest_json: *const u8,
+    function_manifest_len: usize,
+    build_record_json: *const u8,
+    build_record_len: usize,
+) -> i32 {
+    use ciris_verify_core::manifest_cache::SignedManifestCache;
+    use ciris_verify_core::registry::BinaryManifest;
+    use ciris_verify_core::security::function_integrity::FunctionManifest;
+
+    tracing::info!("ciris_verify_save_manifest_cache: starting");
+
+    if handle.is_null() || binary_manifest_json.is_null() {
+        tracing::error!("ciris_verify_save_manifest_cache: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+
+    // Check if we have a key to sign with
+    if !handle.ed25519_signer.has_key() {
+        tracing::error!("ciris_verify_save_manifest_cache: no signing key available");
+        return CirisVerifyError::NoKey as i32;
+    }
+
+    // Get public key fingerprint
+    let public_key = match handle.ed25519_signer.get_public_key() {
+        Some(pk) => pk,
+        None => {
+            tracing::error!("ciris_verify_save_manifest_cache: failed to get public key");
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+    let fingerprint = ciris_verify_core::compute_ed25519_fingerprint(&public_key);
+
+    // Parse binary manifest (required)
+    let binary_slice = std::slice::from_raw_parts(binary_manifest_json, binary_manifest_len);
+    let binary_str = match std::str::from_utf8(binary_slice) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_save_manifest_cache: invalid binary manifest UTF-8: {}",
+                e
+            );
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+    let binary_manifest: BinaryManifest = match serde_json::from_str(binary_str) {
+        Ok(m) => m,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_save_manifest_cache: invalid binary manifest JSON: {}",
+                e
+            );
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    // Parse function manifest (optional)
+    let function_manifest: Option<FunctionManifest> = if !function_manifest_json.is_null()
+        && function_manifest_len > 0
+    {
+        let func_slice = std::slice::from_raw_parts(function_manifest_json, function_manifest_len);
+        match std::str::from_utf8(func_slice) {
+            Ok(func_str) => match serde_json::from_str(func_str) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    tracing::warn!(
+                        "ciris_verify_save_manifest_cache: invalid function manifest JSON: {}",
+                        e
+                    );
+                    None
+                },
+            },
+            Err(e) => {
+                tracing::warn!(
+                    "ciris_verify_save_manifest_cache: invalid function manifest UTF-8: {}",
+                    e
+                );
+                None
+            },
+        }
+    } else {
+        None
+    };
+
+    // Parse build record (optional) - for file integrity
+    let build_record: Option<ciris_verify_core::BuildRecord> =
+        if !build_record_json.is_null() && build_record_len > 0 {
+            let build_slice = std::slice::from_raw_parts(build_record_json, build_record_len);
+            match std::str::from_utf8(build_slice) {
+                Ok(build_str) => match serde_json::from_str(build_str) {
+                    Ok(m) => Some(m),
+                    Err(e) => {
+                        tracing::warn!(
+                            "ciris_verify_save_manifest_cache: invalid build record JSON: {}",
+                            e
+                        );
+                        None
+                    },
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        "ciris_verify_save_manifest_cache: invalid build record UTF-8: {}",
+                        e
+                    );
+                    None
+                },
+            }
+        } else {
+            None
+        };
+
+    // Create unsigned cache
+    let mut cache = SignedManifestCache::new(
+        binary_manifest,
+        function_manifest,
+        build_record.as_ref(),
+        fingerprint,
+    );
+
+    // Sign the cache
+    let hash = cache.compute_signing_hash();
+    let signature = match handle.ed25519_signer.sign(&hash) {
+        Ok(sig) => sig,
+        Err(e) => {
+            tracing::error!("ciris_verify_save_manifest_cache: signing failed: {}", e);
+            return CirisVerifyError::SigningFailed as i32;
+        },
+    };
+    cache.set_signature(signature);
+
+    // Get cache directory
+    let cache_dir = ciris_verify_core::VerifyConfig::default()
+        .cache_dir
+        .unwrap_or_else(|| std::env::temp_dir().join("ciris-verify-cache"));
+
+    // Save to disk
+    if let Err(e) = cache.save(&cache_dir) {
+        tracing::error!("ciris_verify_save_manifest_cache: save failed: {}", e);
+        return CirisVerifyError::IoError as i32;
+    }
+
+    tracing::info!(
+        cache_dir = %cache_dir.display(),
+        binaries = cache.binary_manifest.binaries.len(),
+        has_functions = cache.function_manifest.is_some(),
+        has_build = cache.build_record.is_some(),
+        "ciris_verify_save_manifest_cache: saved signed manifest cache"
+    );
+
+    CirisVerifyError::Success as i32
+}
+
+/// Load and verify a cached manifest for offline L1 verification.
+///
+/// Returns the cached manifest as JSON if signature verification passes.
+/// Use this when the registry is unreachable to still perform L1 self-verification.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `result_json` - Output pointer for JSON-encoded SignedManifestCache
+/// * `result_len` - Output pointer for result length
+///
+/// # Result JSON Format
+///
+/// ```json
+/// {
+///   "binary_manifest": { "version": "1.0.0", "binaries": {...} },
+///   "function_manifest": { ... },
+///   "build_record": { "version": "...", "files": {...} },
+///   "cached_at": 1234567890,
+///   "verify_version": "1.2.0",
+///   "target": "x86_64-unknown-linux-gnu",
+///   "public_key_fingerprint": "abc123...",
+///   "signature": "..."
+/// }
+/// ```
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure:
+/// - `CirisVerifyError::NoKey` - No signing key available to verify
+/// - `CirisVerifyError::CacheNotFound` - No cached manifest exists
+/// - `CirisVerifyError::SignatureInvalid` - Signature verification failed (tampering?)
+/// - `CirisVerifyError::VersionMismatch` - Cache is for different version/target
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `result_json` and `result_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_load_manifest_cache(
+    handle: *mut CirisVerifyHandle,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_load_manifest_cache", {
+        load_manifest_cache_inner(handle, result_json, result_len)
+    })
+}
+
+/// Inner implementation of load_manifest_cache.
+unsafe fn load_manifest_cache_inner(
+    handle: *mut CirisVerifyHandle,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    use ciris_verify_core::manifest_cache::{load_and_verify, CacheLoadResult};
+
+    tracing::info!("ciris_verify_load_manifest_cache: starting");
+
+    if handle.is_null() || result_json.is_null() || result_len.is_null() {
+        tracing::error!("ciris_verify_load_manifest_cache: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+
+    // Get public key for verification
+    let public_key = match handle.ed25519_signer.get_public_key() {
+        Some(pk) => pk,
+        None => {
+            tracing::error!("ciris_verify_load_manifest_cache: no public key available");
+            return CirisVerifyError::NoKey as i32;
+        },
+    };
+
+    // Get cache directory
+    let cache_dir = ciris_verify_core::VerifyConfig::default()
+        .cache_dir
+        .unwrap_or_else(|| std::env::temp_dir().join("ciris-verify-cache"));
+
+    // Load and verify
+    match load_and_verify(&cache_dir, &public_key) {
+        CacheLoadResult::Valid(cache) => {
+            tracing::info!(
+                cached_at = cache.cached_at,
+                verify_version = %cache.verify_version,
+                target = %cache.target,
+                binaries = cache.binary_manifest.binaries.len(),
+                "ciris_verify_load_manifest_cache: loaded valid cache"
+            );
+
+            // Serialize to JSON
+            let json = match serde_json::to_string(&cache) {
+                Ok(j) => j,
+                Err(e) => {
+                    tracing::error!(
+                        "ciris_verify_load_manifest_cache: serialization failed: {}",
+                        e
+                    );
+                    return CirisVerifyError::SerializationError as i32;
+                },
+            };
+
+            // Allocate and copy
+            let bytes = json.as_bytes();
+            let len = bytes.len();
+            let ptr = libc::malloc(len) as *mut u8;
+            if ptr.is_null() {
+                tracing::error!("ciris_verify_load_manifest_cache: malloc failed");
+                return CirisVerifyError::InternalError as i32;
+            }
+
+            std::ptr::copy_nonoverlapping(bytes.as_ptr(), ptr, len);
+            *result_json = ptr;
+            *result_len = len;
+
+            CirisVerifyError::Success as i32
+        },
+        CacheLoadResult::NotFound => {
+            tracing::info!("ciris_verify_load_manifest_cache: no cache found");
+            CirisVerifyError::CacheNotFound as i32
+        },
+        CacheLoadResult::InvalidSignature => {
+            tracing::error!(
+                "ciris_verify_load_manifest_cache: SIGNATURE INVALID - possible tampering!"
+            );
+            CirisVerifyError::SignatureInvalid as i32
+        },
+        CacheLoadResult::VersionMismatch { cached, current } => {
+            tracing::warn!(
+                "ciris_verify_load_manifest_cache: version mismatch (cached={}, current={})",
+                cached,
+                current
+            );
+            CirisVerifyError::VersionMismatch as i32
+        },
+        CacheLoadResult::TargetMismatch { cached, current } => {
+            tracing::warn!(
+                "ciris_verify_load_manifest_cache: target mismatch (cached={}, current={})",
+                cached,
+                current
+            );
+            CirisVerifyError::VersionMismatch as i32
+        },
+        CacheLoadResult::Error(msg) => {
+            tracing::error!("ciris_verify_load_manifest_cache: error: {}", msg);
+            CirisVerifyError::IoError as i32
+        },
+    }
+}
+
+/// Check if a signed manifest cache exists.
+///
+/// Quick check without loading or verifying the cache.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init` (can be null for this check)
+///
+/// # Returns
+///
+/// 1 if cache exists, 0 if not found, negative on error.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_manifest_cache_exists(
+    _handle: *mut CirisVerifyHandle,
+) -> i32 {
+    use ciris_verify_core::manifest_cache::SignedManifestCache;
+
+    let cache_dir = ciris_verify_core::VerifyConfig::default()
+        .cache_dir
+        .unwrap_or_else(|| std::env::temp_dir().join("ciris-verify-cache"));
+
+    if SignedManifestCache::exists(&cache_dir) {
+        1
+    } else {
+        0
+    }
 }
 
 /// Verify audit trail from SQLite database and/or JSONL file.

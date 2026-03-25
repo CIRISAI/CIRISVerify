@@ -516,6 +516,35 @@ class CIRISVerify:
         except AttributeError:
             self._has_run_attestation_support = False
 
+        # ciris_verify_save_manifest_cache (optional - added in 1.2.0)
+        # Save manifests with hardware signature for offline L1
+        try:
+            self._lib.ciris_verify_save_manifest_cache.argtypes = [
+                ctypes.c_void_p,                    # handle
+                ctypes.c_char_p,                    # binary_manifest_json
+                ctypes.c_size_t,                    # binary_manifest_len
+                ctypes.c_char_p,                    # function_manifest_json (nullable)
+                ctypes.c_size_t,                    # function_manifest_len
+                ctypes.c_char_p,                    # build_record_json (nullable)
+                ctypes.c_size_t,                    # build_record_len
+            ]
+            self._lib.ciris_verify_save_manifest_cache.restype = ctypes.c_int
+
+            self._lib.ciris_verify_load_manifest_cache.argtypes = [
+                ctypes.c_void_p,                    # handle
+                ctypes.POINTER(ctypes.c_void_p),    # result_json (out)
+                ctypes.POINTER(ctypes.c_size_t),    # result_len (out)
+            ]
+            self._lib.ciris_verify_load_manifest_cache.restype = ctypes.c_int
+
+            self._lib.ciris_verify_manifest_cache_exists.argtypes = [
+                ctypes.c_void_p,                    # handle (can be null)
+            ]
+            self._lib.ciris_verify_manifest_cache_exists.restype = ctypes.c_int
+            self._has_manifest_cache_support = True
+        except AttributeError:
+            self._has_manifest_cache_support = False
+
         # ciris_verify_set_log_callback (optional - added in 0.9.1)
         # Register a callback to receive internal log messages
         try:
@@ -1552,6 +1581,131 @@ class CIRISVerify:
         finally:
             if result_data.value:
                 self._lib.ciris_verify_free(result_data.value)
+
+    # ========================================================================
+    # Manifest Cache - Offline L1 Verification
+    # ========================================================================
+
+    @property
+    def has_manifest_cache_support(self) -> bool:
+        """Check if manifest cache functions are available.
+
+        Returns:
+            True if the library supports manifest caching (>= 1.2.0).
+        """
+        return getattr(self, "_has_manifest_cache_support", False)
+
+    def save_manifest_cache_sync(
+        self,
+        binary_manifest: dict,
+        function_manifest: Optional[dict] = None,
+        build_record: Optional[dict] = None,
+    ) -> bool:
+        """Save manifests to a hardware-signed cache for offline L1 verification.
+
+        After successful attestation with registry access, call this to cache
+        the manifests locally with a hardware signature. When the registry is
+        unreachable, the cached manifest can be used for L1 self-verification.
+
+        The cache is signed by the Ed25519 hardware key, ensuring:
+        - Authenticity: Only this device could have created the cache
+        - Integrity: Tampering invalidates the hardware signature
+        - No expiration: Valid as long as the binary and key are unchanged
+
+        Args:
+            binary_manifest: BinaryManifest dict from registry (required).
+            function_manifest: FunctionManifest dict (optional).
+            build_record: BuildRecord dict for file integrity (optional).
+
+        Returns:
+            True if cache was saved successfully.
+
+        Raises:
+            RuntimeError: If manifest cache support is not available.
+            VerificationFailedError: If no key is available or signing fails.
+        """
+        if not self.has_manifest_cache_support:
+            raise RuntimeError("Manifest cache not available in this library version (requires >= 1.2.0)")
+
+        binary_bytes = json.dumps(binary_manifest).encode("utf-8")
+        func_bytes = json.dumps(function_manifest).encode("utf-8") if function_manifest else None
+        build_bytes = json.dumps(build_record).encode("utf-8") if build_record else None
+
+        ret = self._lib.ciris_verify_save_manifest_cache(
+            self._handle,
+            binary_bytes,
+            len(binary_bytes),
+            func_bytes,
+            len(func_bytes) if func_bytes else 0,
+            build_bytes,
+            len(build_bytes) if build_bytes else 0,
+        )
+
+        if ret == -5:  # NoKey
+            raise VerificationFailedError(ret, "No signing key available to sign manifest cache")
+        if ret == -6:  # SigningFailed
+            raise VerificationFailedError(ret, "Failed to sign manifest cache")
+        if ret != 0:
+            raise VerificationFailedError(ret, f"save_manifest_cache failed with code {ret}")
+
+        return True
+
+    def load_manifest_cache_sync(self) -> Optional[dict]:
+        """Load and verify a cached manifest for offline L1 verification.
+
+        Returns the cached manifest if signature verification passes.
+        Use this when the registry is unreachable to still perform L1 self-verification.
+
+        Returns:
+            SignedManifestCache dict if valid, None if not found.
+            Contains: binary_manifest, function_manifest, build_record,
+                     cached_at, verify_version, target, public_key_fingerprint
+
+        Raises:
+            RuntimeError: If manifest cache support is not available.
+            VerificationFailedError: If signature verification fails (tampering detected).
+        """
+        if not self.has_manifest_cache_support:
+            raise RuntimeError("Manifest cache not available in this library version (requires >= 1.2.0)")
+
+        result_data = ctypes.c_void_p()
+        result_len = ctypes.c_size_t()
+
+        ret = self._lib.ciris_verify_load_manifest_cache(
+            self._handle,
+            ctypes.byref(result_data),
+            ctypes.byref(result_len),
+        )
+
+        if ret == -8:  # CacheNotFound
+            return None
+        if ret == -9:  # SignatureInvalid
+            raise VerificationFailedError(ret, "Manifest cache signature invalid - possible tampering!")
+        if ret == -10:  # VersionMismatch
+            raise VerificationFailedError(ret, "Manifest cache version/target mismatch")
+        if ret != 0:
+            raise VerificationFailedError(ret, f"load_manifest_cache failed with code {ret}")
+
+        try:
+            result_bytes = ctypes.string_at(result_data.value, result_len.value)
+            return json.loads(result_bytes)
+        finally:
+            if result_data.value:
+                self._lib.ciris_verify_free(result_data.value)
+
+    def manifest_cache_exists_sync(self) -> bool:
+        """Check if a signed manifest cache exists.
+
+        Quick check without loading or verifying the cache.
+
+        Returns:
+            True if a cache file exists, False otherwise.
+        """
+        if not self.has_manifest_cache_support:
+            return False
+
+        ret = self._lib.ciris_verify_manifest_cache_exists(self._handle)
+        return ret == 1
 
     def get_mandatory_disclosure(self, status: LicenseStatus) -> MandatoryDisclosure:
         """Get mandatory disclosure for a given status.

@@ -60,6 +60,7 @@ pub mod error;
 pub mod https;
 pub mod jwt;
 pub mod license;
+pub mod manifest_cache;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub mod mobile_http;
 pub mod play_integrity;
@@ -108,4 +109,9 @@ pub use registry::{
 pub use unified::{
     FullAttestationRequest, FullAttestationResult, IntegrityCheckResult, PythonIntegrityResult,
     PythonModuleHashes, SourceCheckResult, UnifiedAttestationEngine,
+};
+
+// Manifest cache for offline L1 verification
+pub use manifest_cache::{
+    load_and_verify as load_manifest_cache, BuildRecordCache, CacheLoadResult, SignedManifestCache,
 };
