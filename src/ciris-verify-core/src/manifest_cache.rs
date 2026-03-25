@@ -27,7 +27,7 @@
 //! If internet access is permanently lost, the agent can still reach L1
 //! (self-verification) using the cached manifest.
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -66,21 +66,33 @@ pub struct SignedManifestCache {
 }
 
 /// Cached build record (subset of BuildRecord for serialization).
+///
+/// Uses BTreeMap for deterministic serialization order, ensuring
+/// signatures remain valid across save/load cycles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BuildRecordCache {
     /// Agent version.
     pub version: String,
     /// File manifest: path → SHA-256 hash.
-    pub files: HashMap<String, String>,
+    /// Uses BTreeMap for deterministic key ordering in JSON serialization.
+    pub files: BTreeMap<String, String>,
     /// Manifest hash for quick verification.
     pub manifest_hash: String,
 }
 
 impl From<&BuildRecord> for BuildRecordCache {
     fn from(record: &BuildRecord) -> Self {
+        // Convert HashMap to BTreeMap for deterministic ordering
+        let files: BTreeMap<String, String> = record
+            .file_manifest_json
+            .files()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.clone()))
+            .collect();
+
         Self {
             version: record.version.clone(),
-            files: record.file_manifest_json.files().clone(),
+            files,
             manifest_hash: record.file_manifest_hash.clone(),
         }
     }
@@ -387,6 +399,7 @@ mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use rand::rngs::OsRng;
+    use std::collections::HashMap;
 
     fn create_test_binary_manifest() -> BinaryManifest {
         let mut binaries = HashMap::new();
@@ -707,7 +720,7 @@ mod tests {
         // Create a build record cache directly
         let build_cache = BuildRecordCache {
             version: "1.0.0".to_string(),
-            files: HashMap::from([
+            files: BTreeMap::from([
                 ("src/main.py".to_string(), "abc123".to_string()),
                 ("src/utils.py".to_string(), "def456".to_string()),
             ]),
