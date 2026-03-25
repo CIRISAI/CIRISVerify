@@ -242,6 +242,12 @@ impl HardwareInfo {
             self.limitations.push(HardwareLimitation::Emulator);
         }
 
+        // Check for Qualcomm CVE-2026-21385 (patchable)
+        self.check_qualcomm_cve_2026_21385();
+
+        // Check for outdated patch level (warning only)
+        self.check_outdated_patch_level();
+
         self.update_trust_status();
     }
 
@@ -270,6 +276,51 @@ impl HardwareInfo {
         }
 
         false
+    }
+
+    /// Check if Qualcomm device is vulnerable to CVE-2026-21385.
+    ///
+    /// This vulnerability was patched in the March 2026 Android Security Bulletin.
+    /// Devices with patch level >= 2026-03-01 are protected.
+    fn check_qualcomm_cve_2026_21385(&mut self) {
+        // Only applies to Qualcomm devices
+        if self.soc_manufacturer.as_deref() != Some("Qualcomm") {
+            return;
+        }
+
+        // Check if patch level is before the fix
+        if let Some(ref patch_level) = self.security_patch_level {
+            if patch_level.as_str() < "2026-03-01" {
+                self.limitations.push(HardwareLimitation::VulnerableSoC {
+                    manufacturer: "Qualcomm".to_string(),
+                    advisory: SecurityAdvisory {
+                        cve: "CVE-2026-21385".to_string(),
+                        title: "Qualcomm Security Component vulnerability".to_string(),
+                        impact: "Under limited targeted exploitation (CISA KEV)".to_string(),
+                        software_patchable: true,
+                        min_patch_level: Some("2026-03-01".to_string()),
+                    },
+                });
+            }
+        }
+    }
+
+    /// Check for outdated security patch level.
+    ///
+    /// Adds a warning (non-capping) limitation if patch level is significantly outdated.
+    fn check_outdated_patch_level(&mut self) {
+        if let Some(ref patch_level) = self.security_patch_level {
+            // Warn if patch level is more than 6 months old
+            // Using a fixed cutoff for now; in production this could be dynamic
+            let minimum_acceptable = "2025-09-01";
+            if patch_level.as_str() < minimum_acceptable {
+                self.limitations
+                    .push(HardwareLimitation::OutdatedPatchLevel {
+                        current: patch_level.clone(),
+                        minimum_required: minimum_acceptable.to_string(),
+                    });
+            }
+        }
     }
 
     /// Update trust status based on detected limitations.
@@ -650,5 +701,131 @@ mod tests {
             info.hardware_trust_degraded,
             deserialized.hardware_trust_degraded
         );
+    }
+
+    #[test]
+    fn test_qualcomm_cve_2026_21385_unpatched() {
+        // Qualcomm device with old patch level - should be vulnerable
+        let mut info = HardwareInfo::default();
+        info.update_from_android_properties(
+            "qcom",
+            "sm8550",
+            "Samsung",
+            "Galaxy S24",
+            "2026-01-01", // Before March 2026 patch
+            "samsung/galaxy/s24:14/fingerprint",
+        );
+
+        assert_eq!(info.soc_manufacturer, Some("Qualcomm".to_string()));
+        // Should have CVE-2026-21385 limitation
+        assert!(info.limitations.iter().any(|l| {
+            if let HardwareLimitation::VulnerableSoC { advisory, .. } = l {
+                advisory.cve == "CVE-2026-21385"
+            } else {
+                false
+            }
+        }));
+        // This CVE caps attestation
+        assert!(info.hardware_trust_degraded);
+    }
+
+    #[test]
+    fn test_qualcomm_cve_2026_21385_patched() {
+        // Qualcomm device with March 2026 patch - should be safe
+        let mut info = HardwareInfo::default();
+        info.update_from_android_properties(
+            "qcom",
+            "sm8550",
+            "Samsung",
+            "Galaxy S24",
+            "2026-03-01", // March 2026 patch applied
+            "samsung/galaxy/s24:14/fingerprint",
+        );
+
+        assert_eq!(info.soc_manufacturer, Some("Qualcomm".to_string()));
+        // Should NOT have CVE-2026-21385 limitation
+        assert!(!info.limitations.iter().any(|l| {
+            if let HardwareLimitation::VulnerableSoC { advisory, .. } = l {
+                advisory.cve == "CVE-2026-21385"
+            } else {
+                false
+            }
+        }));
+        // No trust degradation for patched device
+        assert!(!info.hardware_trust_degraded);
+    }
+
+    #[test]
+    fn test_qualcomm_cve_2026_21385_newer_patch() {
+        // Qualcomm device with newer patch level - should be safe
+        let mut info = HardwareInfo::default();
+        info.update_from_android_properties(
+            "qcom",
+            "sm8650",
+            "OnePlus",
+            "12",
+            "2026-05-01", // Well after the fix
+            "oneplus/12:15/fingerprint",
+        );
+
+        assert_eq!(info.soc_manufacturer, Some("Qualcomm".to_string()));
+        assert!(!info.hardware_trust_degraded);
+    }
+
+    #[test]
+    fn test_outdated_patch_level_warning() {
+        // Device with very old patch level
+        let mut info = HardwareInfo::default();
+        info.update_from_android_properties(
+            "tensor",
+            "gs201",
+            "Google",
+            "Pixel 7",
+            "2025-01-01", // Very old
+            "google/pixel/7:14/fingerprint",
+        );
+
+        // Should have outdated patch level warning
+        assert!(info
+            .limitations
+            .iter()
+            .any(|l| matches!(l, HardwareLimitation::OutdatedPatchLevel { .. })));
+
+        // But this is just a warning, doesn't cap attestation
+        let outdated_lim = info
+            .limitations
+            .iter()
+            .find(|l| matches!(l, HardwareLimitation::OutdatedPatchLevel { .. }));
+        assert!(!outdated_lim.unwrap().caps_attestation());
+    }
+
+    #[test]
+    fn test_mediatek_not_affected_by_qualcomm_cve() {
+        // MediaTek device should not get Qualcomm CVE
+        let mut info = HardwareInfo::default();
+        info.update_from_android_properties(
+            "mt6878",
+            "dimensity7300",
+            "Xiaomi",
+            "Redmi Note 13",
+            "2026-01-01", // Old patch, but MediaTek
+            "Xiaomi/redmi/device:14/fingerprint",
+        );
+
+        // Should have MediaTek CVE, NOT Qualcomm CVE
+        assert!(info.limitations.iter().any(|l| {
+            if let HardwareLimitation::VulnerableSoC { advisory, .. } = l {
+                advisory.cve == "CVE-2026-20435"
+            } else {
+                false
+            }
+        }));
+        assert!(!info.limitations.iter().any(|l| {
+            if let HardwareLimitation::VulnerableSoC { advisory, .. } = l {
+                advisory.cve == "CVE-2026-21385"
+            } else {
+                false
+            }
+        }));
     }
 }
