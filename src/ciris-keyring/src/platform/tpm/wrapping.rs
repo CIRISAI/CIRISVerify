@@ -113,7 +113,49 @@ impl TpmWrappedEd25519Signer {
 
     /// Check if a TPM-wrapped key exists.
     pub fn key_exists(&self) -> bool {
-        self.encrypted_key_path.exists()
+        if !self.encrypted_key_path.exists() {
+            return false;
+        }
+
+        // Check if it's a legacy format that needs migration
+        if self.needs_migration() {
+            warn!(
+                alias = %self.alias,
+                path = %self.encrypted_key_path.display(),
+                "Legacy TPM key format detected - will auto-migrate on next import"
+            );
+            // Delete the legacy file so import_key can create a new one
+            if let Err(e) = std::fs::remove_file(&self.encrypted_key_path) {
+                error!(
+                    alias = %self.alias,
+                    error = %e,
+                    "Failed to delete legacy TPM key file for migration"
+                );
+            }
+            return false;
+        }
+
+        true
+    }
+
+    /// Check if the key file is in a legacy format that needs migration.
+    fn needs_migration(&self) -> bool {
+        // Read just the magic bytes
+        let file = match std::fs::File::open(&self.encrypted_key_path) {
+            Ok(f) => f,
+            Err(_) => return false,
+        };
+
+        let mut reader = std::io::BufReader::new(file);
+        let mut magic = [0u8; 4];
+        if std::io::Read::read_exact(&mut reader, &mut magic).is_err() {
+            return false;
+        }
+
+        // TPM1 format is legacy (has ECDSA non-determinism bug)
+        // TPM2 format is current
+        // Any other magic is pre-1.2.2 legacy format
+        magic == *TPM_FILE_MAGIC_V1 || magic != *TPM_FILE_MAGIC
     }
 
     /// Import an Ed25519 key and encrypt it with TPM-derived key.
@@ -979,6 +1021,86 @@ mod tests {
             format!("{:?}", err).contains("Key already exists"),
             "Expected 'Key already exists' error, got: {:?}",
             err
+        );
+
+        // Cleanup
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[test]
+    fn test_legacy_format_auto_migration() {
+        // Test that legacy TPM1 format is auto-migrated (file deleted)
+        use std::fs;
+
+        let test_dir = "/tmp/ciris_test_migration";
+        let _ = fs::remove_dir_all(test_dir);
+        fs::create_dir_all(test_dir).expect("Failed to create test dir");
+
+        let signer = TpmWrappedEd25519Signer::new("test_migrate", test_dir)
+            .expect("Failed to create signer");
+
+        // Create a TPM1 (legacy) format file
+        let legacy_path = std::path::Path::new(test_dir).join("test_migrate.ed25519.tpm");
+        let mut legacy_data = b"TPM1\x01\x00\x00\x00".to_vec(); // TPM1 magic + version
+        legacy_data.extend(vec![0u8; 200]); // padding
+        fs::write(&legacy_path, &legacy_data).expect("Failed to write legacy file");
+
+        // Verify file exists
+        assert!(
+            legacy_path.exists(),
+            "Legacy file should exist before migration"
+        );
+
+        // key_exists() should detect legacy format and delete the file
+        assert!(
+            !signer.key_exists(),
+            "key_exists should return false after detecting legacy format"
+        );
+
+        // File should be deleted
+        assert!(
+            !legacy_path.exists(),
+            "Legacy file should be deleted after migration"
+        );
+
+        // Cleanup
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[test]
+    fn test_needs_migration_detects_formats() {
+        use std::fs;
+
+        let test_dir = "/tmp/ciris_test_needs_migration";
+        let _ = fs::remove_dir_all(test_dir);
+        fs::create_dir_all(test_dir).expect("Failed to create test dir");
+
+        let signer =
+            TpmWrappedEd25519Signer::new("test_needs", test_dir).expect("Failed to create signer");
+
+        let key_path = std::path::Path::new(test_dir).join("test_needs.ed25519.tpm");
+
+        // TPM1 format needs migration
+        fs::write(&key_path, b"TPM1\x01\x00\x00\x00xxxxxxxx").expect("write TPM1");
+        assert!(
+            signer.needs_migration(),
+            "TPM1 format should need migration"
+        );
+
+        // TPM2 format does NOT need migration
+        fs::write(&key_path, b"TPM2\x02\x00\x00\x00xxxxxxxx").expect("write TPM2");
+        assert!(
+            !signer.needs_migration(),
+            "TPM2 format should not need migration"
+        );
+
+        // Random garbage needs migration (unknown format)
+        fs::write(&key_path, b"JUNK\x00\x00\x00\x00xxxxxxxx").expect("write junk");
+        assert!(
+            signer.needs_migration(),
+            "Unknown format should need migration"
         );
 
         // Cleanup
