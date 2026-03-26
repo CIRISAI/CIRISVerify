@@ -226,8 +226,10 @@ impl HardwareInfo {
         self.security_patch_level = Some(security_patch.to_string());
 
         // Use centralized emulator detection enhanced with JNI-provided data
+        // When processing Android properties, JNI detection is authoritative
+        // (overrides any host-level VM detection which is irrelevant for Android)
         let jni_emulator = is_android_emulator_from_properties(fingerprint, hardware, model);
-        if jni_emulator && !self.is_emulator {
+        if jni_emulator {
             self.is_emulator = true;
             self.is_suspicious_emulator = true;
         }

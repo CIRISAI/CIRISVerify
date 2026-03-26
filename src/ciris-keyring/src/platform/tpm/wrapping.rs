@@ -6,23 +6,27 @@
 //!
 //! # Key Persistence Architecture
 //!
-//! **CRITICAL**: The signing key used for AES key derivation MUST be persisted
-//! alongside the encrypted Ed25519 key. Creating a new signing key on each
-//! session would derive a different AES key, making decryption impossible.
+//! **CRITICAL**: The ECDSA signature used for AES key derivation MUST be persisted
+//! alongside the encrypted Ed25519 key. ECDSA signatures are non-deterministic
+//! (random k value), so re-signing the same challenge produces a different signature,
+//! which would derive a different AES key, making decryption impossible.
 //!
-//! File format (.tpm):
+//! File format v2 (.tpm):
 //! ```text
-//! [4 bytes]  Magic: "TPM1"
-//! [4 bytes]  Version: 1
+//! [4 bytes]  Magic: "TPM2"
+//! [4 bytes]  Version: 2
 //! [4 bytes]  Private blob length (little-endian)
 //! [N bytes]  TPM2B_PRIVATE blob (signing key)
 //! [4 bytes]  Public blob length (little-endian)
 //! [M bytes]  TPM2B_PUBLIC blob (signing key)
+//! [4 bytes]  Signature length (little-endian)
+//! [K bytes]  ECDSA signature (used for AES key derivation)
 //! [remaining] AES-GCM encrypted Ed25519 key (nonce || ciphertext || tag)
 //! ```
 //!
-//! The signing key is created ONLY at genesis (first import). Subsequent
-//! operations load the persisted key blobs instead of creating new ones.
+//! The signing key and its signature are created ONLY at genesis (first import).
+//! Subsequent operations use the stored signature directly for HKDF derivation,
+//! avoiding the ECDSA non-determinism problem.
 
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 use crate::error::KeyringError;
@@ -35,10 +39,15 @@ use tracing::{debug, error, info, warn};
 
 /// Magic bytes for TPM wrapped key file format
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
-const TPM_FILE_MAGIC: &[u8; 4] = b"TPM1";
+const TPM_FILE_MAGIC: &[u8; 4] = b"TPM2";
 /// Current file format version
+/// v1: Stored blobs but re-signed on load (broken due to ECDSA non-determinism)
+/// v2: Stores signature from genesis for deterministic AES key derivation
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
-const TPM_FILE_VERSION: u32 = 1;
+const TPM_FILE_VERSION: u32 = 2;
+/// Legacy magic for v1 format (broken)
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+const TPM_FILE_MAGIC_V1: &[u8; 4] = b"TPM1";
 /// Size of Ed25519 private key
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 const ED25519_PRIVATE_KEY_SIZE: usize = 32;
@@ -140,13 +149,13 @@ impl TpmWrappedEd25519Signer {
         }
 
         // Create TPM context and keys - THIS IS THE ONLY PLACE WE CREATE SIGNING KEY
-        let (aes_key, private_blob, public_blob) = self.derive_aes_key_genesis()?;
+        let (aes_key, private_blob, public_blob, signature) = self.derive_aes_key_genesis()?;
 
         // Encrypt the Ed25519 key
         let encrypted = self.aes_encrypt(&aes_key, key_bytes)?;
 
-        // Build the file with signing key blobs + encrypted Ed25519
-        let file_data = self.build_tpm_file(&private_blob, &public_blob, &encrypted)?;
+        // Build the file with signing key blobs + signature + encrypted Ed25519
+        let file_data = self.build_tpm_file(&private_blob, &public_blob, &signature, &encrypted)?;
 
         // Write atomically (write to temp, then rename)
         let temp_path = self.encrypted_key_path.with_extension("tpm.tmp");
@@ -259,11 +268,13 @@ impl TpmWrappedEd25519Signer {
             }
         })?;
 
-        // Parse the TPM file format (includes signing key blobs)
-        let (private_blob, public_blob, encrypted) = self.parse_tpm_file(&file_data)?;
+        // Parse the TPM file format (includes signing key blobs and signature)
+        let (_private_blob, _public_blob, signature, encrypted) =
+            self.parse_tpm_file(&file_data)?;
 
-        // Derive AES key by LOADING the persisted signing key (NOT creating new)
-        let aes_key = self.derive_aes_key_from_blobs(&private_blob, &public_blob)?;
+        // Derive AES key from the STORED signature (NOT re-signing with TPM)
+        // This avoids the ECDSA non-determinism problem (random k)
+        let aes_key = self.derive_aes_key_from_signature(&signature)?;
 
         // Decrypt
         let decrypted = self.aes_decrypt(&aes_key, &encrypted)?;
@@ -293,12 +304,15 @@ impl TpmWrappedEd25519Signer {
 
     /// Derive an AES-256 key from TPM at GENESIS (first import).
     ///
-    /// Creates a NEW signing key and returns both the AES key and the
-    /// signing key's private/public blobs for persistence.
+    /// Creates a NEW signing key and returns the AES key, the signing key's
+    /// private/public blobs, AND the signature used for derivation.
     ///
     /// **CRITICAL**: This is the ONLY function that creates a new signing key.
-    /// All subsequent operations must use `derive_aes_key_from_blobs()`.
-    fn derive_aes_key_genesis(&self) -> Result<([u8; 32], Vec<u8>, Vec<u8>), KeyringError> {
+    /// The signature is stored and reused on subsequent loads to avoid ECDSA
+    /// non-determinism (random k value would produce different signatures).
+    fn derive_aes_key_genesis(
+        &self,
+    ) -> Result<([u8; 32], Vec<u8>, Vec<u8>, Vec<u8>), KeyringError> {
         use sha2::{Digest, Sha256};
 
         info!(alias = %self.alias, "GENESIS: Creating new TPM signing key for AES derivation");
@@ -362,85 +376,39 @@ impl TpmWrappedEd25519Signer {
             alias = %self.alias,
             private_blob_len = private_blob.len(),
             public_blob_len = public_blob.len(),
-            "GENESIS: TPM signing key created and AES key derived"
+            signature_len = sig_bytes.len(),
+            "GENESIS: TPM signing key created and AES key derived (signature stored for future loads)"
         );
 
-        Ok((aes_key, private_blob, public_blob))
+        Ok((aes_key, private_blob, public_blob, sig_bytes))
     }
 
-    /// Derive AES key by LOADING persisted signing key blobs.
+    /// Derive AES key from the stored signature.
     ///
-    /// **CRITICAL**: This does NOT create a new signing key. It loads the
-    /// previously persisted key blobs, ensuring the same AES key is derived.
-    fn derive_aes_key_from_blobs(
-        &self,
-        private_blob: &[u8],
-        public_blob: &[u8],
-    ) -> Result<[u8; 32], KeyringError> {
-        use sha2::{Digest, Sha256};
+    /// **CRITICAL**: This uses the signature stored at genesis, NOT re-signing.
+    /// ECDSA signatures are non-deterministic (random k), so re-signing would
+    /// produce a different signature and thus a different AES key.
+    ///
+    /// This function does NOT require TPM access - it's pure HKDF derivation.
+    fn derive_aes_key_from_signature(&self, signature: &[u8]) -> Result<[u8; 32], KeyringError> {
+        use sha2::Sha256;
 
-        debug!(alias = %self.alias, "Loading persisted TPM signing key for AES derivation");
+        debug!(
+            alias = %self.alias,
+            signature_len = signature.len(),
+            "Deriving AES key from stored signature (no TPM access needed)"
+        );
 
-        let challenge = b"CIRISVerify-TPM-KeyWrap-v1";
-
-        // Create TPM context
-        let mut context = super::detection::create_context()?;
-
-        // Get or create primary storage key
-        let primary_handle = super::keys::get_or_create_primary(&mut context)?;
-
-        // LOAD the signing key from persisted blobs (NOT create new)
-        let signing_key_handle = self.load_signing_key_from_blobs(
-            &mut context,
-            primary_handle,
-            private_blob,
-            public_blob,
-        )?;
-
-        // Hash the challenge
-        let digest_bytes = Sha256::digest(challenge);
-        let digest = tss_esapi::structures::Digest::try_from(&digest_bytes[..]).map_err(|e| {
-            KeyringError::HardwareError {
-                reason: format!("Failed to create digest: {}", e),
-            }
-        })?;
-
-        // Sign with TPM
-        let validation = super::signing::create_null_validation_ticket()?;
-        let signature = context
-            .execute_with_nullauth_session(|ctx| {
-                ctx.sign(
-                    signing_key_handle,
-                    digest.clone(),
-                    tss_esapi::structures::SignatureScheme::EcDsa {
-                        hash_scheme: tss_esapi::structures::HashScheme::new(
-                            tss_esapi::interface_types::algorithm::HashingAlgorithm::Sha256,
-                        ),
-                    },
-                    validation.clone(),
-                )
-            })
-            .map_err(|e| KeyringError::HardwareError {
-                reason: format!("TPM signing for key derivation failed: {}", e),
-            })?;
-
-        // Extract signature bytes
-        let sig_bytes = super::signing::extract_ecdsa_signature(&signature)?;
-
-        // Derive AES key using HKDF
+        // Derive AES key using HKDF from the stored signature
         use hkdf::Hkdf;
-        let hk = Hkdf::<Sha256>::new(None, &sig_bytes);
+        let hk = Hkdf::<Sha256>::new(None, signature);
         let mut aes_key = [0u8; 32];
         hk.expand(b"aes-256-gcm-key", &mut aes_key)
             .map_err(|_| KeyringError::HardwareError {
                 reason: "HKDF expansion failed".into(),
             })?;
 
-        // Cleanup
-        let _ = context.flush_context(signing_key_handle.into());
-        let _ = context.flush_context(primary_handle.into());
-
-        debug!(alias = %self.alias, "AES key derived from persisted TPM signing key");
+        debug!(alias = %self.alias, "AES key derived from stored signature");
         Ok(aes_key)
     }
 
@@ -565,11 +533,12 @@ impl TpmWrappedEd25519Signer {
         Ok(key_handle)
     }
 
-    /// Build the TPM file format with signing key blobs + encrypted data.
+    /// Build the TPM file format v2 with signing key blobs + signature + encrypted data.
     fn build_tpm_file(
         &self,
         private_blob: &[u8],
         public_blob: &[u8],
+        signature: &[u8],
         encrypted: &[u8],
     ) -> Result<Vec<u8>, KeyringError> {
         let mut data = Vec::new();
@@ -588,14 +557,21 @@ impl TpmWrappedEd25519Signer {
         data.extend_from_slice(&(public_blob.len() as u32).to_le_bytes());
         data.extend_from_slice(public_blob);
 
+        // Signature length + data (NEW in v2)
+        data.extend_from_slice(&(signature.len() as u32).to_le_bytes());
+        data.extend_from_slice(signature);
+
         // Encrypted Ed25519 key
         data.extend_from_slice(encrypted);
 
         Ok(data)
     }
 
-    /// Parse the TPM file format, extracting signing key blobs + encrypted data.
-    fn parse_tpm_file(&self, data: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), KeyringError> {
+    /// Parse the TPM file format v2, extracting blobs + signature + encrypted data.
+    fn parse_tpm_file(
+        &self,
+        data: &[u8],
+    ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>), KeyringError> {
         let mut offset = 0;
 
         // Check minimum size
@@ -613,9 +589,19 @@ impl TpmWrappedEd25519Signer {
             });
         }
 
-        // Check magic
+        // Check magic - detect v1 format (broken due to ECDSA non-determinism)
+        if &data[0..4] == TPM_FILE_MAGIC_V1 {
+            return Err(KeyringError::StorageFailed {
+                reason: "TPM file format v1 detected. This format has a bug where ECDSA \
+                         signatures are non-deterministic, causing key decryption to fail \
+                         across sessions. Key must be re-imported with v1.2.4+. \
+                         Delete the existing .tpm file and re-import the key."
+                    .into(),
+            });
+        }
+
         if &data[0..4] != TPM_FILE_MAGIC {
-            // Check for legacy format
+            // Check for legacy format (pre-v1.2.2)
             return Err(KeyringError::StorageFailed {
                 reason:
                     "Invalid TPM file magic. Legacy format detected - key must be re-imported. \
@@ -635,7 +621,8 @@ impl TpmWrappedEd25519Signer {
         if version != TPM_FILE_VERSION {
             return Err(KeyringError::StorageFailed {
                 reason: format!(
-                    "Unsupported TPM file version: {} (expected {})",
+                    "Unsupported TPM file version: {} (expected {}). \
+                     Key must be re-imported with the current version.",
                     version, TPM_FILE_VERSION
                 ),
             });
@@ -686,6 +673,28 @@ impl TpmWrappedEd25519Signer {
         let public_blob = data[offset..offset + public_len].to_vec();
         offset += public_len;
 
+        // Read signature (v2 format)
+        if offset + 4 > data.len() {
+            return Err(KeyringError::StorageFailed {
+                reason: "TPM file truncated (signature length)".into(),
+            });
+        }
+        let signature_len = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
+        offset += 4;
+
+        if offset + signature_len > data.len() {
+            return Err(KeyringError::StorageFailed {
+                reason: "TPM file truncated (signature data)".into(),
+            });
+        }
+        let signature = data[offset..offset + signature_len].to_vec();
+        offset += signature_len;
+
         // Remaining data is encrypted Ed25519
         let encrypted = data[offset..].to_vec();
 
@@ -699,7 +708,7 @@ impl TpmWrappedEd25519Signer {
             });
         }
 
-        Ok((private_blob, public_blob, encrypted))
+        Ok((private_blob, public_blob, signature, encrypted))
     }
 
     /// Encrypt data using AES-256-GCM.
@@ -864,18 +873,20 @@ mod tests {
 
         let private_blob = vec![1, 2, 3, 4, 5, 6, 7, 8];
         let public_blob = vec![9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
+        let signature = vec![20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31]; // ECDSA sig
         let encrypted = vec![0u8; AES_GCM_NONCE_SIZE + ED25519_PRIVATE_KEY_SIZE + AES_GCM_TAG_SIZE];
 
         let file_data = signer
-            .build_tpm_file(&private_blob, &public_blob, &encrypted)
+            .build_tpm_file(&private_blob, &public_blob, &signature, &encrypted)
             .expect("Failed to build TPM file");
 
-        let (parsed_private, parsed_public, parsed_encrypted) = signer
+        let (parsed_private, parsed_public, parsed_signature, parsed_encrypted) = signer
             .parse_tpm_file(&file_data)
             .expect("Failed to parse TPM file");
 
         assert_eq!(private_blob, parsed_private, "Private blob mismatch");
         assert_eq!(public_blob, parsed_public, "Public blob mismatch");
+        assert_eq!(signature, parsed_signature, "Signature mismatch");
         assert_eq!(encrypted, parsed_encrypted, "Encrypted data mismatch");
     }
 
@@ -886,7 +897,7 @@ mod tests {
             .expect("Failed to create signer");
 
         // Invalid magic should fail - need enough bytes to pass minimum size check
-        let mut bad_data = b"BADM\x01\x00\x00\x00\x04\x00\x00\x00".to_vec();
+        let mut bad_data = b"BADM\x02\x00\x00\x00\x04\x00\x00\x00".to_vec();
         bad_data.extend(vec![0u8; 100]); // padding
         let result = signer.parse_tpm_file(&bad_data);
         assert!(result.is_err());
@@ -901,12 +912,34 @@ mod tests {
 
     #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
     #[test]
+    fn test_tpm_file_format_v1_detection() {
+        // Test that v1 format (TPM1 magic) is detected and rejected
+        let signer = TpmWrappedEd25519Signer::new("test_v1", "/tmp/ciris_test_v1")
+            .expect("Failed to create signer");
+
+        // v1 format magic (broken due to ECDSA non-determinism)
+        let mut v1_data = b"TPM1\x01\x00\x00\x00\x04\x00\x00\x00".to_vec();
+        v1_data.extend(vec![0u8; 200]); // padding for blobs + encrypted data
+        let result = signer.parse_tpm_file(&v1_data);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            format!("{:?}", err).contains("v1 detected")
+                || format!("{:?}", err).contains("non-deterministic"),
+            "Expected v1 format detection error, got: {:?}",
+            err
+        );
+    }
+
+    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[test]
     fn test_tpm_file_format_version_check() {
         let signer = TpmWrappedEd25519Signer::new("test_version", "/tmp/ciris_test_version")
             .expect("Failed to create signer");
 
         // Wrong version should fail - need enough bytes
-        let mut bad_data = b"TPM1\x99\x00\x00\x00\x04\x00\x00\x00".to_vec();
+        // Use TPM2 magic but wrong version (99)
+        let mut bad_data = b"TPM2\x99\x00\x00\x00\x04\x00\x00\x00".to_vec();
         bad_data.extend(vec![0u8; 100]); // padding
         let result = signer.parse_tpm_file(&bad_data);
         assert!(result.is_err());
