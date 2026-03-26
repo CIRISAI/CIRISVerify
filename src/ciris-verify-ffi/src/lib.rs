@@ -6049,3 +6049,205 @@ mod android {
         jstring
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::CString;
+
+    #[test]
+    fn test_get_hardware_info_returns_valid_json() {
+        unsafe {
+            let mut result_json: *mut u8 = std::ptr::null_mut();
+            let mut result_len: usize = 0;
+
+            let ret = ciris_verify_get_hardware_info(
+                std::ptr::null_mut(),
+                &mut result_json,
+                &mut result_len,
+            );
+
+            assert_eq!(ret, CirisVerifyError::Success as i32);
+            assert!(!result_json.is_null());
+            assert!(result_len > 0);
+
+            // Parse the JSON
+            let slice = std::slice::from_raw_parts(result_json, result_len);
+            let json_str = std::str::from_utf8(slice).expect("Invalid UTF-8");
+            let info: serde_json::Value = serde_json::from_str(json_str).expect("Invalid JSON");
+
+            // Check required fields exist
+            assert!(info.get("platform").is_some());
+            assert!(info.get("is_emulator").is_some());
+            assert!(info.get("hardware_trust_degraded").is_some());
+            assert!(info.get("limitations").is_some());
+
+            ciris_verify_free(result_json as *mut libc::c_void);
+        }
+    }
+
+    #[test]
+    fn test_get_hardware_info_null_args() {
+        unsafe {
+            // Null result_json
+            let mut result_len: usize = 0;
+            let ret = ciris_verify_get_hardware_info(
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+                &mut result_len,
+            );
+            assert_eq!(ret, CirisVerifyError::InvalidArgument as i32);
+
+            // Null result_len
+            let mut result_json: *mut u8 = std::ptr::null_mut();
+            let ret = ciris_verify_get_hardware_info(
+                std::ptr::null_mut(),
+                &mut result_json,
+                std::ptr::null_mut(),
+            );
+            assert_eq!(ret, CirisVerifyError::InvalidArgument as i32);
+        }
+    }
+
+    #[test]
+    fn test_get_hardware_info_android_mediatek_vulnerable() {
+        unsafe {
+            let hardware = CString::new("mt6893").unwrap();
+            let board = CString::new("k6893v1_64").unwrap();
+            let manufacturer = CString::new("Xiaomi").unwrap();
+            let model = CString::new("Redmi Note 11 Pro").unwrap();
+            let security_patch = CString::new("2026-01-01").unwrap();
+            let fingerprint = CString::new("xiaomi/test/test:12/SKQ1.211006.001").unwrap();
+
+            let mut result_json: *mut u8 = std::ptr::null_mut();
+            let mut result_len: usize = 0;
+
+            let ret = ciris_verify_get_hardware_info_android(
+                std::ptr::null_mut(),
+                hardware.as_ptr(),
+                board.as_ptr(),
+                manufacturer.as_ptr(),
+                model.as_ptr(),
+                security_patch.as_ptr(),
+                fingerprint.as_ptr(),
+                &mut result_json,
+                &mut result_len,
+            );
+
+            assert_eq!(ret, CirisVerifyError::Success as i32);
+            assert!(!result_json.is_null());
+
+            let slice = std::slice::from_raw_parts(result_json, result_len);
+            let json_str = std::str::from_utf8(slice).expect("Invalid UTF-8");
+            let info: serde_json::Value = serde_json::from_str(json_str).expect("Invalid JSON");
+
+            // MediaTek mt6893 should be flagged as vulnerable
+            assert_eq!(info["hardware_trust_degraded"], true);
+            assert!(info["soc_manufacturer"]
+                .as_str()
+                .unwrap_or("")
+                .to_lowercase()
+                .contains("mediatek"));
+
+            ciris_verify_free(result_json as *mut libc::c_void);
+        }
+    }
+
+    #[test]
+    fn test_get_hardware_info_android_qualcomm_patched() {
+        unsafe {
+            let hardware = CString::new("qcom").unwrap();
+            let board = CString::new("sm8550").unwrap();
+            let manufacturer = CString::new("Samsung").unwrap();
+            let model = CString::new("SM-S918B").unwrap();
+            // Patch level AFTER the fix (2026-03-01)
+            let security_patch = CString::new("2026-03-05").unwrap();
+            let fingerprint = CString::new("samsung/test/test:14/UP1A.231005.007").unwrap();
+
+            let mut result_json: *mut u8 = std::ptr::null_mut();
+            let mut result_len: usize = 0;
+
+            let ret = ciris_verify_get_hardware_info_android(
+                std::ptr::null_mut(),
+                hardware.as_ptr(),
+                board.as_ptr(),
+                manufacturer.as_ptr(),
+                model.as_ptr(),
+                security_patch.as_ptr(),
+                fingerprint.as_ptr(),
+                &mut result_json,
+                &mut result_len,
+            );
+
+            assert_eq!(ret, CirisVerifyError::Success as i32);
+            assert!(!result_json.is_null());
+
+            let slice = std::slice::from_raw_parts(result_json, result_len);
+            let json_str = std::str::from_utf8(slice).expect("Invalid UTF-8");
+            let info: serde_json::Value = serde_json::from_str(json_str).expect("Invalid JSON");
+
+            // Qualcomm with March 2026+ patch should NOT be flagged
+            assert_eq!(info["hardware_trust_degraded"], false);
+
+            ciris_verify_free(result_json as *mut libc::c_void);
+        }
+    }
+
+    #[test]
+    fn test_get_hardware_info_android_emulator() {
+        unsafe {
+            let hardware = CString::new("goldfish").unwrap();
+            let board = CString::new("goldfish_x86_64").unwrap();
+            let manufacturer = CString::new("Google").unwrap();
+            let model = CString::new("sdk_gphone64_x86_64").unwrap();
+            let security_patch = CString::new("2026-03-01").unwrap();
+            let fingerprint =
+                CString::new("google/sdk_gphone64_x86_64/emulator64_x86_64:14").unwrap();
+
+            let mut result_json: *mut u8 = std::ptr::null_mut();
+            let mut result_len: usize = 0;
+
+            let ret = ciris_verify_get_hardware_info_android(
+                std::ptr::null_mut(),
+                hardware.as_ptr(),
+                board.as_ptr(),
+                manufacturer.as_ptr(),
+                model.as_ptr(),
+                security_patch.as_ptr(),
+                fingerprint.as_ptr(),
+                &mut result_json,
+                &mut result_len,
+            );
+
+            assert_eq!(ret, CirisVerifyError::Success as i32);
+
+            let slice = std::slice::from_raw_parts(result_json, result_len);
+            let json_str = std::str::from_utf8(slice).expect("Invalid UTF-8");
+            let info: serde_json::Value = serde_json::from_str(json_str).expect("Invalid JSON");
+
+            // Emulator should be detected and trust degraded
+            assert_eq!(info["is_emulator"], true);
+            assert_eq!(info["hardware_trust_degraded"], true);
+
+            ciris_verify_free(result_json as *mut libc::c_void);
+        }
+    }
+
+    #[test]
+    fn test_version_returns_valid_string() {
+        unsafe {
+            let version_ptr = ciris_verify_version();
+            assert!(!version_ptr.is_null());
+
+            let version_cstr = std::ffi::CStr::from_ptr(version_ptr);
+            let version = version_cstr.to_str().expect("Invalid UTF-8");
+
+            // Should be semver format
+            assert!(
+                version.contains('.'),
+                "Version should contain dots: {}",
+                version
+            );
+        }
+    }
+}

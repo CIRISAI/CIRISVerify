@@ -69,13 +69,15 @@ cargo deny check
 
 **ML-DSA-65**: Fully implemented using `ml-dsa` 0.1.0-rc.3 (RustCrypto). Bound dual signatures operational.
 
-**TPM 2.0**: Dual-key architecture with attestation key (restricted, for quotes) and signing key (non-restricted, for arbitrary data). Supports EK certificate reading and external nonce binding.
+**TPM 2.0**: Dual-key architecture with attestation key (restricted, for quotes) and signing key (non-restricted, for arbitrary data). Supports EK certificate reading and external nonce binding. **v1.2.2+**: Signing key blobs are persisted in the `.tpm` file to survive process restart.
 
 **Hardware Vulnerability Detection (v1.2.0+)**: Detects SoC-level vulnerabilities (CVE-2026-20435 MediaTek, CVE-2026-21385 Qualcomm) and caps attestation to SOFTWARE_ONLY for affected devices.
 
 **Offline Manifest Cache (v1.2.0+)**: Hardware-signed cache for L1 self-verification when registry is unreachable. No expiration - valid as long as hardware key exists.
 
-**150+ tests passing** across all crates.
+**TPM Key Persistence (v1.2.2+)**: The TPM wrapping module now persists signing key blobs (TPM2B_PRIVATE, TPM2B_PUBLIC) alongside encrypted Ed25519 keys. This prevents identity loss across sessions. File format: `TPM1` magic + version + blobs + AES-GCM ciphertext.
+
+**201 tests passing** across all crates.
 
 ## Development Workflow
 
