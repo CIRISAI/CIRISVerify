@@ -3,13 +3,42 @@
 //! Uses TPM-derived AES-256-GCM encryption to protect Ed25519 keys at rest.
 //! The encryption key is derived from a TPM-held secret, providing hardware
 //! binding while allowing import of Portal keys.
+//!
+//! # Key Persistence Architecture
+//!
+//! **CRITICAL**: The signing key used for AES key derivation MUST be persisted
+//! alongside the encrypted Ed25519 key. Creating a new signing key on each
+//! session would derive a different AES key, making decryption impossible.
+//!
+//! File format (.tpm):
+//! ```text
+//! [4 bytes]  Magic: "TPM1"
+//! [4 bytes]  Version: 1
+//! [4 bytes]  Private blob length (little-endian)
+//! [N bytes]  TPM2B_PRIVATE blob (signing key)
+//! [4 bytes]  Public blob length (little-endian)
+//! [M bytes]  TPM2B_PUBLIC blob (signing key)
+//! [remaining] AES-GCM encrypted Ed25519 key (nonce || ciphertext || tag)
+//! ```
+//!
+//! The signing key is created ONLY at genesis (first import). Subsequent
+//! operations load the persisted key blobs instead of creating new ones.
 
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 use crate::error::KeyringError;
 
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+use tss_esapi::traits::{Marshall, UnMarshall};
+
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 use tracing::{debug, error, info, warn};
 
+/// Magic bytes for TPM wrapped key file format
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+const TPM_FILE_MAGIC: &[u8; 4] = b"TPM1";
+/// Current file format version
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+const TPM_FILE_VERSION: u32 = 1;
 /// Size of Ed25519 private key
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 const ED25519_PRIVATE_KEY_SIZE: usize = 32;
@@ -79,12 +108,26 @@ impl TpmWrappedEd25519Signer {
     }
 
     /// Import an Ed25519 key and encrypt it with TPM-derived key.
+    ///
+    /// **CRITICAL**: This creates a NEW TPM signing key for AES derivation.
+    /// The signing key blobs are persisted alongside the encrypted Ed25519 key.
+    /// This function should only be called at genesis (no existing key).
     pub fn import_key(&self, key_bytes: &[u8]) -> Result<(), KeyringError> {
         info!(
             alias = %self.alias,
             key_len = key_bytes.len(),
-            "Importing Ed25519 key with TPM wrapping"
+            "Importing Ed25519 key with TPM wrapping (GENESIS)"
         );
+
+        // Safety check: refuse to overwrite existing key
+        if self.encrypted_key_path.exists() {
+            return Err(KeyringError::StorageFailed {
+                reason: format!(
+                    "Key already exists at {:?}. Use delete_key() first to avoid accidental identity loss.",
+                    self.encrypted_key_path
+                ),
+            });
+        }
 
         if key_bytes.len() != ED25519_PRIVATE_KEY_SIZE {
             return Err(KeyringError::InvalidKey {
@@ -96,17 +139,27 @@ impl TpmWrappedEd25519Signer {
             });
         }
 
-        // Derive AES key from TPM
-        let aes_key = self.derive_aes_key()?;
+        // Create TPM context and keys - THIS IS THE ONLY PLACE WE CREATE SIGNING KEY
+        let (aes_key, private_blob, public_blob) = self.derive_aes_key_genesis()?;
 
         // Encrypt the Ed25519 key
         let encrypted = self.aes_encrypt(&aes_key, key_bytes)?;
 
-        // Write encrypted key to disk
-        std::fs::write(&self.encrypted_key_path, &encrypted).map_err(|e| {
+        // Build the file with signing key blobs + encrypted Ed25519
+        let file_data = self.build_tpm_file(&private_blob, &public_blob, &encrypted)?;
+
+        // Write atomically (write to temp, then rename)
+        let temp_path = self.encrypted_key_path.with_extension("tpm.tmp");
+        std::fs::write(&temp_path, &file_data).map_err(|e| {
             error!("Failed to write encrypted key: {}", e);
             KeyringError::StorageFailed {
                 reason: format!("Failed to write encrypted key: {}", e),
+            }
+        })?;
+        std::fs::rename(&temp_path, &self.encrypted_key_path).map_err(|e| {
+            error!("Failed to rename temp key file: {}", e);
+            KeyringError::StorageFailed {
+                reason: format!("Failed to rename temp key file: {}", e),
             }
         })?;
 
@@ -122,8 +175,8 @@ impl TpmWrappedEd25519Signer {
 
         info!(
             alias = %self.alias,
-            encrypted_size = encrypted.len(),
-            "Ed25519 key encrypted with TPM-derived key"
+            file_size = file_data.len(),
+            "Ed25519 key encrypted with TPM-derived key (signing key persisted)"
         );
 
         Ok(())
@@ -198,16 +251,19 @@ impl TpmWrappedEd25519Signer {
             }
         }
 
-        // Load and decrypt from disk
-        let encrypted = std::fs::read(&self.encrypted_key_path).map_err(|e| {
+        // Load file from disk
+        let file_data = std::fs::read(&self.encrypted_key_path).map_err(|e| {
             error!("Failed to read encrypted key: {}", e);
             KeyringError::StorageFailed {
                 reason: format!("Failed to read encrypted key: {}", e),
             }
         })?;
 
-        // Derive AES key from TPM
-        let aes_key = self.derive_aes_key()?;
+        // Parse the TPM file format (includes signing key blobs)
+        let (private_blob, public_blob, encrypted) = self.parse_tpm_file(&file_data)?;
+
+        // Derive AES key by LOADING the persisted signing key (NOT creating new)
+        let aes_key = self.derive_aes_key_from_blobs(&private_blob, &public_blob)?;
 
         // Decrypt
         let decrypted = self.aes_decrypt(&aes_key, &encrypted)?;
@@ -235,18 +291,18 @@ impl TpmWrappedEd25519Signer {
         Ok(signing_key)
     }
 
-    /// Derive an AES-256 key from TPM.
+    /// Derive an AES-256 key from TPM at GENESIS (first import).
     ///
-    /// Uses the TPM to sign a fixed challenge, then derives an AES key
-    /// from the signature using HKDF. This binds the encryption to this
-    /// specific TPM - a different TPM will produce a different signature.
-    fn derive_aes_key(&self) -> Result<[u8; 32], KeyringError> {
+    /// Creates a NEW signing key and returns both the AES key and the
+    /// signing key's private/public blobs for persistence.
+    ///
+    /// **CRITICAL**: This is the ONLY function that creates a new signing key.
+    /// All subsequent operations must use `derive_aes_key_from_blobs()`.
+    fn derive_aes_key_genesis(&self) -> Result<([u8; 32], Vec<u8>, Vec<u8>), KeyringError> {
         use sha2::{Digest, Sha256};
 
-        debug!(alias = %self.alias, "Deriving AES key from TPM");
+        info!(alias = %self.alias, "GENESIS: Creating new TPM signing key for AES derivation");
 
-        // Fixed challenge for key derivation
-        // This is public knowledge - security comes from TPM signature
         let challenge = b"CIRISVerify-TPM-KeyWrap-v1";
 
         // Create TPM context
@@ -255,22 +311,20 @@ impl TpmWrappedEd25519Signer {
         // Get or create primary storage key
         let primary_handle = super::keys::get_or_create_primary(&mut context)?;
 
-        // Create a signing key under the primary
-        let signing_key_handle = super::keys::create_signing_key(&mut context, primary_handle)?;
+        // Create a NEW signing key - THIS IS GENESIS, the only time we do this
+        let (signing_key_handle, private_blob, public_blob) =
+            self.create_and_extract_signing_key(&mut context, primary_handle)?;
 
         // Hash the challenge
         let digest_bytes = Sha256::digest(challenge);
-
-        // Sign with TPM
         let digest = tss_esapi::structures::Digest::try_from(&digest_bytes[..]).map_err(|e| {
             KeyringError::HardwareError {
                 reason: format!("Failed to create digest: {}", e),
             }
         })?;
 
-        // Create null validation ticket for external data
+        // Sign with TPM
         let validation = super::signing::create_null_validation_ticket()?;
-
         let signature = context
             .execute_with_nullauth_session(|ctx| {
                 ctx.sign(
@@ -304,8 +358,348 @@ impl TpmWrappedEd25519Signer {
         let _ = context.flush_context(signing_key_handle.into());
         let _ = context.flush_context(primary_handle.into());
 
-        debug!(alias = %self.alias, "AES key derived from TPM signature");
+        info!(
+            alias = %self.alias,
+            private_blob_len = private_blob.len(),
+            public_blob_len = public_blob.len(),
+            "GENESIS: TPM signing key created and AES key derived"
+        );
+
+        Ok((aes_key, private_blob, public_blob))
+    }
+
+    /// Derive AES key by LOADING persisted signing key blobs.
+    ///
+    /// **CRITICAL**: This does NOT create a new signing key. It loads the
+    /// previously persisted key blobs, ensuring the same AES key is derived.
+    fn derive_aes_key_from_blobs(
+        &self,
+        private_blob: &[u8],
+        public_blob: &[u8],
+    ) -> Result<[u8; 32], KeyringError> {
+        use sha2::{Digest, Sha256};
+
+        debug!(alias = %self.alias, "Loading persisted TPM signing key for AES derivation");
+
+        let challenge = b"CIRISVerify-TPM-KeyWrap-v1";
+
+        // Create TPM context
+        let mut context = super::detection::create_context()?;
+
+        // Get or create primary storage key
+        let primary_handle = super::keys::get_or_create_primary(&mut context)?;
+
+        // LOAD the signing key from persisted blobs (NOT create new)
+        let signing_key_handle = self.load_signing_key_from_blobs(
+            &mut context,
+            primary_handle,
+            private_blob,
+            public_blob,
+        )?;
+
+        // Hash the challenge
+        let digest_bytes = Sha256::digest(challenge);
+        let digest = tss_esapi::structures::Digest::try_from(&digest_bytes[..]).map_err(|e| {
+            KeyringError::HardwareError {
+                reason: format!("Failed to create digest: {}", e),
+            }
+        })?;
+
+        // Sign with TPM
+        let validation = super::signing::create_null_validation_ticket()?;
+        let signature = context
+            .execute_with_nullauth_session(|ctx| {
+                ctx.sign(
+                    signing_key_handle,
+                    digest.clone(),
+                    tss_esapi::structures::SignatureScheme::EcDsa {
+                        hash_scheme: tss_esapi::structures::HashScheme::new(
+                            tss_esapi::interface_types::algorithm::HashingAlgorithm::Sha256,
+                        ),
+                    },
+                    validation.clone(),
+                )
+            })
+            .map_err(|e| KeyringError::HardwareError {
+                reason: format!("TPM signing for key derivation failed: {}", e),
+            })?;
+
+        // Extract signature bytes
+        let sig_bytes = super::signing::extract_ecdsa_signature(&signature)?;
+
+        // Derive AES key using HKDF
+        use hkdf::Hkdf;
+        let hk = Hkdf::<Sha256>::new(None, &sig_bytes);
+        let mut aes_key = [0u8; 32];
+        hk.expand(b"aes-256-gcm-key", &mut aes_key)
+            .map_err(|_| KeyringError::HardwareError {
+                reason: "HKDF expansion failed".into(),
+            })?;
+
+        // Cleanup
+        let _ = context.flush_context(signing_key_handle.into());
+        let _ = context.flush_context(primary_handle.into());
+
+        debug!(alias = %self.alias, "AES key derived from persisted TPM signing key");
         Ok(aes_key)
+    }
+
+    /// Create a signing key and extract its private/public blobs for persistence.
+    fn create_and_extract_signing_key(
+        &self,
+        context: &mut tss_esapi::Context,
+        primary_handle: tss_esapi::handles::KeyHandle,
+    ) -> Result<(tss_esapi::handles::KeyHandle, Vec<u8>, Vec<u8>), KeyringError> {
+        use tss_esapi::{
+            attributes::ObjectAttributesBuilder,
+            interface_types::{
+                algorithm::{HashingAlgorithm, PublicAlgorithm},
+                ecc::EccCurve,
+            },
+            structures::{
+                EccPoint, EccScheme, HashScheme, KeyDerivationFunctionScheme, PublicBuilder,
+                PublicEccParametersBuilder, SymmetricDefinitionObject,
+            },
+        };
+
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_sensitive_data_origin(true)
+            .with_user_with_auth(true)
+            .with_sign_encrypt(true)
+            .build()
+            .map_err(|e| KeyringError::HardwareError {
+                reason: format!("Failed to build signing key attributes: {}", e),
+            })?;
+
+        let ecc_params = PublicEccParametersBuilder::new()
+            .with_ecc_scheme(EccScheme::EcDsa(HashScheme::new(HashingAlgorithm::Sha256)))
+            .with_curve(EccCurve::NistP256)
+            .with_key_derivation_function_scheme(KeyDerivationFunctionScheme::Null)
+            .with_symmetric(SymmetricDefinitionObject::Null)
+            .with_is_signing_key(true)
+            .with_is_decryption_key(false)
+            .with_restricted(false)
+            .build()
+            .map_err(|e| KeyringError::HardwareError {
+                reason: format!("Failed to build signing key ECC parameters: {}", e),
+            })?;
+
+        let signing_public = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::Ecc)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_ecc_parameters(ecc_params)
+            .with_ecc_unique_identifier(EccPoint::default())
+            .build()
+            .map_err(|e| KeyringError::HardwareError {
+                reason: format!("Failed to build signing key public: {}", e),
+            })?;
+
+        // Create the key and capture blobs
+        let result = context
+            .execute_with_nullauth_session(|ctx| {
+                ctx.create(
+                    primary_handle,
+                    signing_public.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            })
+            .map_err(|e| KeyringError::HardwareError {
+                reason: format!("Failed to create signing key: {}", e),
+            })?;
+
+        // Serialize blobs for persistence
+        let private_blob = result.out_private.to_vec();
+        let public_blob =
+            result
+                .out_public
+                .marshall()
+                .map_err(|e| KeyringError::HardwareError {
+                    reason: format!("Failed to marshal public blob: {}", e),
+                })?;
+
+        // Load the key to get a handle
+        let key_handle = context
+            .execute_with_nullauth_session(|ctx| {
+                ctx.load(primary_handle, result.out_private, result.out_public)
+            })
+            .map_err(|e| KeyringError::HardwareError {
+                reason: format!("Failed to load signing key: {}", e),
+            })?;
+
+        Ok((key_handle, private_blob, public_blob))
+    }
+
+    /// Load a signing key from persisted blobs.
+    fn load_signing_key_from_blobs(
+        &self,
+        context: &mut tss_esapi::Context,
+        primary_handle: tss_esapi::handles::KeyHandle,
+        private_blob: &[u8],
+        public_blob: &[u8],
+    ) -> Result<tss_esapi::handles::KeyHandle, KeyringError> {
+        use tss_esapi::structures::{Private, Public};
+
+        // Deserialize blobs
+        let private =
+            Private::try_from(private_blob.to_vec()).map_err(|e| KeyringError::HardwareError {
+                reason: format!("Failed to deserialize private blob: {}", e),
+            })?;
+
+        let public = Public::unmarshall(public_blob).map_err(|e| KeyringError::HardwareError {
+            reason: format!("Failed to deserialize public blob: {}", e),
+        })?;
+
+        // Load the key
+        let key_handle = context
+            .execute_with_nullauth_session(|ctx| ctx.load(primary_handle, private, public))
+            .map_err(|e| KeyringError::HardwareError {
+                reason: format!("Failed to load signing key from blobs (wrong TPM?): {}", e),
+            })?;
+
+        Ok(key_handle)
+    }
+
+    /// Build the TPM file format with signing key blobs + encrypted data.
+    fn build_tpm_file(
+        &self,
+        private_blob: &[u8],
+        public_blob: &[u8],
+        encrypted: &[u8],
+    ) -> Result<Vec<u8>, KeyringError> {
+        let mut data = Vec::new();
+
+        // Magic
+        data.extend_from_slice(TPM_FILE_MAGIC);
+
+        // Version
+        data.extend_from_slice(&TPM_FILE_VERSION.to_le_bytes());
+
+        // Private blob length + data
+        data.extend_from_slice(&(private_blob.len() as u32).to_le_bytes());
+        data.extend_from_slice(private_blob);
+
+        // Public blob length + data
+        data.extend_from_slice(&(public_blob.len() as u32).to_le_bytes());
+        data.extend_from_slice(public_blob);
+
+        // Encrypted Ed25519 key
+        data.extend_from_slice(encrypted);
+
+        Ok(data)
+    }
+
+    /// Parse the TPM file format, extracting signing key blobs + encrypted data.
+    fn parse_tpm_file(&self, data: &[u8]) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), KeyringError> {
+        let mut offset = 0;
+
+        // Check minimum size
+        if data.len() < 12 {
+            // Check for legacy format (no header, just encrypted data)
+            if data.len() >= AES_GCM_NONCE_SIZE + AES_GCM_TAG_SIZE + ED25519_PRIVATE_KEY_SIZE {
+                return Err(KeyringError::StorageFailed {
+                    reason: "Legacy TPM file format detected. Key must be re-imported. \
+                             Delete the existing .tpm file and re-import the key."
+                        .into(),
+                });
+            }
+            return Err(KeyringError::StorageFailed {
+                reason: format!("TPM file too short: {} bytes", data.len()),
+            });
+        }
+
+        // Check magic
+        if &data[0..4] != TPM_FILE_MAGIC {
+            // Check for legacy format
+            return Err(KeyringError::StorageFailed {
+                reason:
+                    "Invalid TPM file magic. Legacy format detected - key must be re-imported. \
+                         Delete the existing .tpm file and re-import the key."
+                        .into(),
+            });
+        }
+        offset += 4;
+
+        // Check version
+        let version = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]);
+        if version != TPM_FILE_VERSION {
+            return Err(KeyringError::StorageFailed {
+                reason: format!(
+                    "Unsupported TPM file version: {} (expected {})",
+                    version, TPM_FILE_VERSION
+                ),
+            });
+        }
+        offset += 4;
+
+        // Read private blob
+        if offset + 4 > data.len() {
+            return Err(KeyringError::StorageFailed {
+                reason: "TPM file truncated (private blob length)".into(),
+            });
+        }
+        let private_len = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
+        offset += 4;
+
+        if offset + private_len > data.len() {
+            return Err(KeyringError::StorageFailed {
+                reason: "TPM file truncated (private blob data)".into(),
+            });
+        }
+        let private_blob = data[offset..offset + private_len].to_vec();
+        offset += private_len;
+
+        // Read public blob
+        if offset + 4 > data.len() {
+            return Err(KeyringError::StorageFailed {
+                reason: "TPM file truncated (public blob length)".into(),
+            });
+        }
+        let public_len = u32::from_le_bytes([
+            data[offset],
+            data[offset + 1],
+            data[offset + 2],
+            data[offset + 3],
+        ]) as usize;
+        offset += 4;
+
+        if offset + public_len > data.len() {
+            return Err(KeyringError::StorageFailed {
+                reason: "TPM file truncated (public blob data)".into(),
+            });
+        }
+        let public_blob = data[offset..offset + public_len].to_vec();
+        offset += public_len;
+
+        // Remaining data is encrypted Ed25519
+        let encrypted = data[offset..].to_vec();
+
+        if encrypted.len() < AES_GCM_NONCE_SIZE + AES_GCM_TAG_SIZE {
+            return Err(KeyringError::StorageFailed {
+                reason: format!(
+                    "Encrypted data too short: {} bytes (min {})",
+                    encrypted.len(),
+                    AES_GCM_NONCE_SIZE + AES_GCM_TAG_SIZE
+                ),
+            });
+        }
+
+        Ok((private_blob, public_blob, encrypted))
     }
 
     /// Encrypt data using AES-256-GCM.
@@ -459,5 +853,123 @@ mod tests {
         let signer = result.unwrap();
         assert!(!signer.key_exists());
         assert!(signer.is_hardware_backed());
+    }
+
+    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[test]
+    fn test_tpm_file_format_roundtrip() {
+        // Test that build_tpm_file and parse_tpm_file are inverses
+        let signer = TpmWrappedEd25519Signer::new("test_format", "/tmp/ciris_test_format")
+            .expect("Failed to create signer");
+
+        let private_blob = vec![1, 2, 3, 4, 5, 6, 7, 8];
+        let public_blob = vec![9, 10, 11, 12, 13, 14, 15, 16, 17, 18];
+        let encrypted = vec![0u8; AES_GCM_NONCE_SIZE + ED25519_PRIVATE_KEY_SIZE + AES_GCM_TAG_SIZE];
+
+        let file_data = signer
+            .build_tpm_file(&private_blob, &public_blob, &encrypted)
+            .expect("Failed to build TPM file");
+
+        let (parsed_private, parsed_public, parsed_encrypted) = signer
+            .parse_tpm_file(&file_data)
+            .expect("Failed to parse TPM file");
+
+        assert_eq!(private_blob, parsed_private, "Private blob mismatch");
+        assert_eq!(public_blob, parsed_public, "Public blob mismatch");
+        assert_eq!(encrypted, parsed_encrypted, "Encrypted data mismatch");
+    }
+
+    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[test]
+    fn test_tpm_file_format_magic_check() {
+        let signer = TpmWrappedEd25519Signer::new("test_magic", "/tmp/ciris_test_magic")
+            .expect("Failed to create signer");
+
+        // Invalid magic should fail - need enough bytes to pass minimum size check
+        let mut bad_data = b"BADM\x01\x00\x00\x00\x04\x00\x00\x00".to_vec();
+        bad_data.extend(vec![0u8; 100]); // padding
+        let result = signer.parse_tpm_file(&bad_data);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            format!("{:?}", err).contains("Legacy format")
+                || format!("{:?}", err).contains("Invalid TPM file magic"),
+            "Expected legacy/magic format error, got: {:?}",
+            err
+        );
+    }
+
+    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[test]
+    fn test_tpm_file_format_version_check() {
+        let signer = TpmWrappedEd25519Signer::new("test_version", "/tmp/ciris_test_version")
+            .expect("Failed to create signer");
+
+        // Wrong version should fail - need enough bytes
+        let mut bad_data = b"TPM1\x99\x00\x00\x00\x04\x00\x00\x00".to_vec();
+        bad_data.extend(vec![0u8; 100]); // padding
+        let result = signer.parse_tpm_file(&bad_data);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            format!("{:?}", err).contains("Unsupported TPM file version"),
+            "Expected version error, got: {:?}",
+            err
+        );
+    }
+
+    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[test]
+    fn test_import_refuses_overwrite() {
+        // Test that import_key refuses to overwrite existing key
+        // This prevents accidental identity loss
+        use std::fs;
+
+        let test_dir = "/tmp/ciris_test_overwrite";
+        let _ = fs::remove_dir_all(test_dir);
+        fs::create_dir_all(test_dir).expect("Failed to create test dir");
+
+        let signer = TpmWrappedEd25519Signer::new("test_overwrite", test_dir)
+            .expect("Failed to create signer");
+
+        // Create a fake .tpm file
+        let fake_path = std::path::Path::new(test_dir).join("test_overwrite.ed25519.tpm");
+        fs::write(&fake_path, b"fake existing key").expect("Failed to write fake key");
+
+        // Now try to import - should fail because file exists
+        let key_bytes = [0u8; ED25519_PRIVATE_KEY_SIZE];
+        let result = signer.import_key(&key_bytes);
+
+        assert!(result.is_err(), "Expected error when key already exists");
+        let err = result.unwrap_err();
+        assert!(
+            format!("{:?}", err).contains("Key already exists"),
+            "Expected 'Key already exists' error, got: {:?}",
+            err
+        );
+
+        // Cleanup
+        let _ = fs::remove_dir_all(test_dir);
+    }
+
+    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[test]
+    fn test_legacy_format_detection() {
+        // Test that old format (no header) is detected and requires re-import
+        let signer = TpmWrappedEd25519Signer::new("test_legacy", "/tmp/ciris_test_legacy")
+            .expect("Failed to create signer");
+
+        // Legacy format: just nonce + ciphertext + tag, no header
+        let legacy_data =
+            vec![0u8; AES_GCM_NONCE_SIZE + ED25519_PRIVATE_KEY_SIZE + AES_GCM_TAG_SIZE];
+
+        let result = signer.parse_tpm_file(&legacy_data);
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(
+            format!("{:?}", err).contains("re-imported"),
+            "Expected re-import message, got: {:?}",
+            err
+        );
     }
 }
