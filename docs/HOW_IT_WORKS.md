@@ -1,6 +1,6 @@
 # How CIRISVerify Works
 
-**Last Updated**: 2026-03-25 (v1.2.1)
+**Last Updated**: 2026-03-28 (v1.3.1)
 
 > **Disclaimer**: This is research software exploring approaches to AI agent verification and accountability. It is not a complete security solution. No software can provide absolute protection against determined adversaries. This documentation is provided for educational and research purposes to inform the broader AI alignment community. We make no warranties and accept no liability.
 
@@ -564,6 +564,82 @@ Maximum tier = COMMUNITY (no professional license)
 
 ---
 
+## EVM Wallet Signing (v1.3.0+)
+
+CIRISVerify can derive an EVM-compatible secp256k1 wallet from the agent's identity key. This enables agents to sign blockchain transactions, proving their identity on-chain without exposing the root Ed25519 key.
+
+### Key Derivation Hierarchy
+
+The wallet key is derived deterministically from the Ed25519 seed using HKDF:
+
+```
+Ed25519 Seed (32 bytes)
+    │
+    └── HKDF-SHA256(salt="CIRIS-wallet-v1", info="secp256k1-evm-signing-key")
+            │
+            └── secp256k1 Private Key (32 bytes)
+                    │
+                    └── secp256k1 Public Key (65 bytes uncompressed)
+                            │
+                            └── EVM Address (20 bytes via keccak256)
+```
+
+**Security property**: The same Ed25519 seed always produces the same EVM wallet. The wallet cannot exist without the identity key, and vice versa — they are cryptographically bound.
+
+### Supported Operations
+
+| Operation | Description | Use Case |
+|-----------|-------------|----------|
+| **Address derivation** | Get checksummed EVM address | Display to users, receive funds |
+| **Message signing** | Sign arbitrary 32-byte hash | Off-chain attestations |
+| **Transaction signing** | Sign with EIP-155 replay protection | On-chain transactions |
+| **Typed data signing** | EIP-712 structured data | DeFi interactions, permits |
+| **Address recovery** | Verify signature → recover signer | On-chain verification |
+
+### Python API
+
+```python
+from ciris_verify import CIRISVerify
+
+verifier = CIRISVerify()
+
+# Get wallet info (address, public key)
+wallet = verifier.get_wallet_info_sync()
+print(f"EVM Address: {wallet['evm_address']}")
+# Output: 0x1234...abcd (checksummed)
+
+# Sign a message hash
+message_hash = bytes.fromhex("a1b2c3..." * 8)  # 32 bytes
+signature = verifier.sign_secp256k1_sync(message_hash)
+# Returns 65-byte signature (r || s || v)
+
+# Sign an EVM transaction
+tx_hash = bytes.fromhex("d4e5f6..." * 8)  # 32 bytes
+chain_id = 8453  # Base mainnet
+signature = verifier.sign_evm_transaction_sync(tx_hash, chain_id)
+# Returns signature with v = 27 or 28 (legacy format)
+
+# Sign EIP-712 typed data
+domain_hash = bytes.fromhex("...")  # 32 bytes
+struct_hash = bytes.fromhex("...")  # 32 bytes
+signature = verifier.sign_typed_data_sync(domain_hash, struct_hash)
+
+# Recover address from signature
+recovered = verifier.recover_evm_address_sync(message_hash, signature)
+assert recovered == wallet['evm_address']
+```
+
+### Hardware Binding
+
+When running on hardware-backed platforms (TPM, Secure Enclave, Android Keystore):
+- The Ed25519 seed is protected by hardware
+- Wallet derivation requires hardware unlock
+- Software-only mode still works but lacks hardware protection
+
+**Note**: The secp256k1 key itself is derived in software (HKDF), not stored in hardware. The hardware protection is at the Ed25519 seed level. This is intentional — hardware secure elements rarely support secp256k1 directly.
+
+---
+
 ## Agent File Integrity (Tripwire)
 
 CIRISVerify validates that the CIRISAgent's Python files have not been tampered with since the distribution was built. This is similar to how [Tripwire](https://en.wikipedia.org/wiki/Open_Source_Tripwire) works for server security.
@@ -674,7 +750,7 @@ pip install ciris-verify
 CIRISVerify/
 ├── src/
 │   ├── ciris-keyring/          # Hardware keyring (TPM/SE/Keystore)
-│   ├── ciris-crypto/           # Hybrid crypto (Ed25519 + ML-DSA-65)
+│   ├── ciris-crypto/           # Hybrid crypto (Ed25519 + ML-DSA-65 + secp256k1)
 │   ├── ciris-verify-core/      # Core verification engine
 │   │   └── src/
 │   │       ├── bin/

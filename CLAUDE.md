@@ -61,10 +61,10 @@ cargo deny check
 | Crate | Status | Notes |
 |-------|--------|-------|
 | `ciris-keyring` | Phase 2 Complete | HardwareSigner trait, SoftwareSigner impl, Android Keystore, TPM 2.0 (dual-key architecture) |
-| `ciris-crypto` | Phase 1 Complete | ECDSA P-256, Ed25519, ML-DSA-65 (FIPS 204), hybrid signer with bound signatures |
+| `ciris-crypto` | Phase 1 Complete | ECDSA P-256, Ed25519, ML-DSA-65 (FIPS 204), hybrid signer with bound signatures, **secp256k1 wallet signing (v1.3.0+)** |
 | `ciris-verify-core` | Phase 3-5 Active | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), Tripwire file integrity, remote attestation export, Level 2 binary self-verification, **hardware vulnerability detection (v1.2.0+)**, **offline manifest cache (v1.2.0+)** |
-| `ciris-verify-ffi` | Phase 4 Active | C FFI (19 functions), JNI bindings (Android Level 5), Swift wrapper (iOS Level 5) |
-| `bindings/python` | Released | ciris-verify 1.2.1 on PyPI with platform wheels |
+| `ciris-verify-ffi` | Phase 4 Active | C FFI (27 functions), JNI bindings (Android Level 5), Swift wrapper (iOS Level 5), **wallet signing FFI (v1.3.0+)** |
+| `bindings/python` | Released | ciris-verify 1.3.0 on PyPI with platform wheels, **wallet signing support** |
 | `bindings/swift` | Released | CIRISVerify.swift wrapper + bridging header, XCFramework build script |
 
 **ML-DSA-65**: Fully implemented using `ml-dsa` 0.1.0-rc.3 (RustCrypto). Bound dual signatures operational.
@@ -75,9 +75,11 @@ cargo deny check
 
 **Offline Manifest Cache (v1.2.0+)**: Hardware-signed cache for L1 self-verification when registry is unreachable. No expiration - valid as long as hardware key exists.
 
-**TPM Key Persistence (v1.2.2+)**: The TPM wrapping module now persists signing key blobs (TPM2B_PRIVATE, TPM2B_PUBLIC) alongside encrypted Ed25519 keys. This prevents identity loss across sessions. File format: `TPM1` magic + version + blobs + AES-GCM ciphertext.
+**TPM Key Persistence (v1.2.2+)**: The TPM wrapping module now persists signing key blobs (TPM2B_PRIVATE, TPM2B_PUBLIC) alongside encrypted Ed25519 keys. This prevents identity loss across sessions. File format: `TPM2` magic + version + blobs + signature + AES-GCM ciphertext.
 
-**201 tests passing** across all crates.
+**secp256k1 Wallet Signing (v1.3.0+)**: Deterministic EVM wallet key derivation from Ed25519 root identity using HKDF. Supports EIP-155 transaction signing, EIP-712 typed data, and address recovery. Key hierarchy: `Ed25519 Seed → HKDF-SHA256("CIRIS-wallet-v1", "secp256k1-evm-signing-key") → secp256k1 Private Key → EVM Address (keccak256)`.
+
+**256 tests passing** across all crates.
 
 ## Development Workflow
 
