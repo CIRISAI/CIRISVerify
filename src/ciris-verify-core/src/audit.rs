@@ -196,7 +196,8 @@ impl AuditVerifier {
         }
 
         let mut hash_chain_valid = true;
-        let signatures_valid = true;
+        let mut signatures_valid = true;
+        let mut signature_failures = 0u64;
         let mut previous_hash = String::from("genesis");
 
         for (i, entry) in entries.iter().enumerate() {
@@ -244,12 +245,74 @@ impl AuditVerifier {
 
             // Check signature (if requested and signature present)
             if verify_signatures && !entry.signature.is_empty() {
-                // TODO: Implement actual Ed25519 signature verification
-                // For now, we just check that a signature exists
-                debug!(
-                    sequence = entry.sequence_number,
-                    "Signature present (full verification pending)"
-                );
+                // Verify Ed25519 signature over entry hash
+                // Both signature and entry_hash are hex-encoded strings
+                if let Some(ref signing_key) = entry.signing_key_id {
+                    use ed25519_dalek::{Signature, VerifyingKey};
+
+                    // Parse public key from signing_key_id (hex-encoded)
+                    let pubkey_result = hex::decode(signing_key).ok().and_then(|bytes| {
+                        if bytes.len() == 32 {
+                            VerifyingKey::from_bytes(bytes.as_slice().try_into().ok()?).ok()
+                        } else {
+                            None
+                        }
+                    });
+
+                    // Decode signature from hex
+                    let sig_bytes_result = hex::decode(&entry.signature).ok();
+
+                    // Decode entry hash from hex for verification
+                    let hash_bytes_result = hex::decode(&entry.entry_hash).ok();
+
+                    match (pubkey_result, sig_bytes_result, hash_bytes_result) {
+                        (Some(pubkey), Some(sig_bytes), Some(hash_bytes))
+                            if sig_bytes.len() == 64 =>
+                        {
+                            let sig_array: [u8; 64] = sig_bytes.try_into().unwrap();
+                            let signature = Signature::from_bytes(&sig_array);
+
+                            // Verify signature over entry hash bytes
+                            use ed25519_dalek::Verifier;
+                            if pubkey.verify(&hash_bytes, &signature).is_err() {
+                                warn!(
+                                    sequence = entry.sequence_number,
+                                    "Signature verification failed"
+                                );
+                                signature_failures += 1;
+                            } else {
+                                debug!(
+                                    sequence = entry.sequence_number,
+                                    "Signature verified successfully"
+                                );
+                            }
+                        },
+                        (None, _, _) => {
+                            debug!(
+                                sequence = entry.sequence_number,
+                                "Could not parse signing key for verification"
+                            );
+                        },
+                        (_, None, _) | (_, Some(_), None) => {
+                            debug!(
+                                sequence = entry.sequence_number,
+                                "Could not decode signature or hash from hex"
+                            );
+                        },
+                        (_, Some(sig), _) => {
+                            debug!(
+                                sequence = entry.sequence_number,
+                                sig_len = sig.len(),
+                                "Invalid signature length (expected 64 bytes)"
+                            );
+                        },
+                    }
+                } else {
+                    debug!(
+                        sequence = entry.sequence_number,
+                        "Signature present but no signing_key_id for verification"
+                    );
+                }
             }
 
             // Check Portal key usage
@@ -269,6 +332,15 @@ impl AuditVerifier {
 
             // Update previous hash for next iteration
             previous_hash = entry.entry_hash.clone();
+        }
+
+        // Mark signatures invalid if any failures occurred
+        if signature_failures > 0 {
+            signatures_valid = false;
+            errors.push(format!(
+                "{} signature verification failures",
+                signature_failures
+            ));
         }
 
         let total_entries = entries.len() as u64;

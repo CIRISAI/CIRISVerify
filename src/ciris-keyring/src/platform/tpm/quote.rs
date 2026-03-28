@@ -229,6 +229,59 @@ pub fn read_ek_certificate(context: &mut Context) -> Result<Vec<u8>, KeyringErro
     Ok(cert_data)
 }
 
+/// Read PCR values for slots 0-7.
+///
+/// Returns a map of PCR slot index to SHA-256 digest (32 bytes each).
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+pub fn read_pcr_values(
+    context: &mut Context,
+) -> Result<std::collections::HashMap<u8, Vec<u8>>, KeyringError> {
+    tracing::info!("TPM: reading PCR values 0-7");
+
+    // Select PCRs 0-7 with SHA-256
+    let pcr_selection = PcrSelectionListBuilder::new()
+        .with_selection(
+            HashingAlgorithm::Sha256,
+            &[
+                PcrSlot::Slot0,
+                PcrSlot::Slot1,
+                PcrSlot::Slot2,
+                PcrSlot::Slot3,
+                PcrSlot::Slot4,
+                PcrSlot::Slot5,
+                PcrSlot::Slot6,
+                PcrSlot::Slot7,
+            ],
+        )
+        .build()
+        .map_err(|e| KeyringError::HardwareError {
+            reason: format!("Failed to build PCR selection: {}", e),
+        })?;
+
+    // Read PCR values
+    let (_update_counter, _selection_out, digests) = context
+        .execute_without_session(|ctx| ctx.pcr_read(pcr_selection))
+        .map_err(|e| {
+            tracing::error!("TPM: PCR read failed: {}", e);
+            KeyringError::HardwareError {
+                reason: format!("PCR read failed: {}", e),
+            }
+        })?;
+
+    // Convert to map
+    let mut pcr_map = std::collections::HashMap::new();
+    for (i, digest) in digests.value().iter().enumerate() {
+        pcr_map.insert(i as u8, digest.value().to_vec());
+    }
+
+    tracing::info!(
+        pcr_count = pcr_map.len(),
+        "TPM: PCR values read successfully"
+    );
+
+    Ok(pcr_map)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -29,7 +29,7 @@ pub use keys::{
     get_or_create_primary,
 };
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
-pub use quote::read_ek_certificate;
+pub use quote::{read_ek_certificate, read_pcr_values};
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 pub use signing::{create_null_validation_ticket, extract_ecdsa_signature};
 
@@ -578,13 +578,35 @@ impl HardwareSigner for TpmSigner {
                         ak_pubkey_len = ak_pubkey.len(),
                         "TPM: quote generated successfully with attestation key"
                     );
+                    // Read actual PCR values and convert to PcrValue structs
+                    let pcr_values = match create_context() {
+                        Ok(mut tpm_ctx) => match quote::read_pcr_values(&mut tpm_ctx) {
+                            Ok(values) => {
+                                tracing::debug!(pcr_count = values.len(), "Read PCR values");
+                                let pcr_vec: Vec<crate::types::PcrValue> = values
+                                    .into_iter()
+                                    .map(|(index, digest)| crate::types::PcrValue { index, digest })
+                                    .collect();
+                                Some(pcr_vec)
+                            },
+                            Err(e) => {
+                                tracing::warn!("Failed to read PCR values (non-fatal): {}", e);
+                                None
+                            },
+                        },
+                        Err(e) => {
+                            tracing::warn!("Failed to create TPM context for PCR read: {}", e);
+                            None
+                        },
+                    };
+
                     // Convert TpmQuote to TpmQuoteData for the public API
                     let quote_data = TpmQuoteData {
                         quoted: q.quoted,
                         signature: q.signature,
                         pcr_selection: q.pcr_selection,
                         qualifying_data: q.nonce,
-                        pcr_values: None, // TODO: Read actual PCR values if needed
+                        pcr_values,
                         timestamp: std::time::SystemTime::now()
                             .duration_since(std::time::UNIX_EPOCH)
                             .map(|d| d.as_secs())

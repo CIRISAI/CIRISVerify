@@ -13,6 +13,18 @@ pub enum TrustModel {
     EqualWeight,
 }
 
+/// DNS transport preference for multi-source validation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DnsTransportPreference {
+    /// Auto-detect based on platform (default).
+    #[default]
+    Auto,
+    /// Always use DNS-over-HTTPS (DoH) - more reliable, slightly slower.
+    DnsOverHttps,
+    /// Always use native DNS - faster, may be filtered.
+    Native,
+}
+
 /// Configuration for CIRISVerify.
 #[derive(Debug, Clone)]
 pub struct VerifyConfig {
@@ -26,6 +38,8 @@ pub struct VerifyConfig {
     pub https_endpoints: Vec<String>,
     /// Trust model for multi-source validation.
     pub trust_model: TrustModel,
+    /// DNS transport preference (Auto, DoH, or Native).
+    pub dns_transport: DnsTransportPreference,
     /// Certificate fingerprint for pinning.
     pub cert_pin: Option<String>,
     /// Request timeout.
@@ -49,6 +63,7 @@ impl Default for VerifyConfig {
             https_endpoint: "https://api.registry.ciris-services-1.ai".into(),
             https_endpoints: Vec::new(),
             trust_model: TrustModel::HttpsAuthoritative,
+            dns_transport: DnsTransportPreference::Auto,
             cert_pin: None,
             timeout: Duration::from_secs(10), // Must be < Python's 30s timeout
             cache_ttl: Duration::from_secs(300),

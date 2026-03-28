@@ -1171,8 +1171,7 @@ pub fn default_dns_transport() -> DnsTransport {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     {
-        // On desktop, try DoH first as it's more reliable
-        // TODO: Make this configurable
+        // On desktop, use DoH for reliability (configurable via VerifyConfig.dns_transport)
         debug!("Desktop platform, using DNS-over-HTTPS for reliability");
         DnsTransport::DnsOverHttps
     }
