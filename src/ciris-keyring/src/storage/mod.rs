@@ -1,7 +1,7 @@
 //! Generic secure blob storage abstraction.
 //!
 //! Platform-specific implementations:
-//! - [`tpm::TpmSecureBlobStorage`] - TPM 2.0 (Linux/Windows)
+//! - `TpmSecureBlobStorage` - TPM 2.0 (Linux/Windows, requires `tpm` feature)
 //! - Android Keystore (planned)
 //! - iOS Secure Enclave (planned)
 //!
