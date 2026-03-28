@@ -2124,6 +2124,78 @@ impl MutableEd25519Signer {
             std::env::var("CIRIS_DATA_DIR").ok(),
         )
     }
+
+    /// Get the Ed25519 seed (32-byte secret key) for key derivation.
+    ///
+    /// This is used to derive child keys (e.g., secp256k1 for EVM wallets) using HKDF.
+    /// The seed is deterministic - the same Ed25519 key always produces the same seed.
+    ///
+    /// # Security
+    ///
+    /// This method exposes the secret key material. The returned seed should:
+    /// - Only be used for cryptographic key derivation (HKDF)
+    /// - Never be logged, displayed, or transmitted
+    /// - Be zeroized after use when possible
+    ///
+    /// # Returns
+    ///
+    /// `Some([u8; 32])` if a software key is loaded, `None` if:
+    /// - No key is loaded
+    /// - Key is hardware-backed (seed not accessible from hardware)
+    #[must_use]
+    pub fn get_seed(&self) -> Option<[u8; 32]> {
+        // On Android, try hardware wrapper first
+        #[cfg(target_os = "android")]
+        {
+            if let Some(ref wrapper) = self.android_wrapper {
+                // Android hardware wrapper doesn't expose seed - return None
+                if wrapper.key_exists() {
+                    tracing::debug!("get_seed: hardware-backed key, seed not directly accessible");
+                    // For Android, we need to get the seed from the decrypted key
+                    // The wrapper stores the Ed25519 key encrypted, but we can access
+                    // the decrypted key through the inner Ed25519SoftwareSigner if loaded
+                }
+            }
+        }
+
+        // On iOS/macOS, try SE wrapper
+        #[cfg(any(target_os = "ios", target_os = "macos"))]
+        {
+            if let Some(ref wrapper) = self.se_wrapper {
+                if wrapper.key_exists() {
+                    tracing::debug!("get_seed: SE-backed key, seed not directly accessible");
+                    // Similar to Android - seed is in encrypted storage
+                }
+            }
+        }
+
+        // On TPM platforms, try TPM wrapper
+        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        {
+            if let Some(ref wrapper) = self.tpm_wrapper {
+                if wrapper.key_exists() {
+                    tracing::debug!("get_seed: TPM-backed key, seed not directly accessible");
+                    // TPM wrapper stores encrypted Ed25519 key
+                }
+            }
+        }
+
+        // Software fallback - get seed from inner signer
+        let inner = self.inner.read().ok()?;
+
+        // Don't return seed if hardware marker is set
+        if inner.is_hardware_marker_set() {
+            tracing::warn!(
+                marker = ?inner.hardware_key_fingerprint(),
+                "get_seed: hardware marker set, cannot access seed from software"
+            );
+            return None;
+        }
+
+        let signing_key = inner.signing_key.as_ref()?;
+        let seed_bytes = signing_key.to_bytes();
+        Some(seed_bytes)
+    }
 }
 
 #[cfg(test)]

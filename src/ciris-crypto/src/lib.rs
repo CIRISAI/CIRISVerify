@@ -40,6 +40,10 @@ mod ecdsa;
 #[cfg(feature = "ed25519")]
 mod ed25519;
 
+// secp256k1 for EVM wallet signing
+#[cfg(feature = "secp256k1")]
+pub mod secp256k1;
+
 // PQC implementations behind feature flags
 #[cfg(feature = "pqc-ml-dsa")]
 mod ml_dsa;

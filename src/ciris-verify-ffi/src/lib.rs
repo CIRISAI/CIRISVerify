@@ -6050,6 +6050,822 @@ mod android {
     }
 }
 
+// =============================================================================
+// SECP256K1 WALLET SIGNING (v1.3.0)
+// =============================================================================
+//
+// These functions provide EVM-compatible wallet signing capabilities.
+// The secp256k1 key is deterministically derived from the Ed25519 root identity
+// using HKDF, ensuring a single hardware-protected root key can generate
+// consistent wallet addresses across sessions.
+
+/// Derive a secp256k1 public key from the Ed25519 seed.
+///
+/// The derivation is deterministic: the same Ed25519 seed will always produce
+/// the same secp256k1 public key. This is used for EVM wallet address derivation.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `pubkey_data` - Output pointer for 65-byte uncompressed public key (caller must free with `ciris_verify_free`)
+/// * `pubkey_len` - Output pointer for key length (always 65)
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `pubkey_data` and `pubkey_len` must be valid pointers
+#[cfg(feature = "secp256k1")]
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_derive_secp256k1_pubkey(
+    handle: *mut CirisVerifyHandle,
+    pubkey_data: *mut *mut u8,
+    pubkey_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_derive_secp256k1_pubkey", {
+        derive_secp256k1_pubkey_inner(handle, pubkey_data, pubkey_len)
+    })
+}
+
+#[cfg(feature = "secp256k1")]
+unsafe fn derive_secp256k1_pubkey_inner(
+    handle: *mut CirisVerifyHandle,
+    pubkey_data: *mut *mut u8,
+    pubkey_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_derive_secp256k1_pubkey called");
+
+    // Check if attestation is running
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("derive_secp256k1_pubkey: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    if handle.is_null() || pubkey_data.is_null() || pubkey_len.is_null() {
+        tracing::error!("derive_secp256k1_pubkey: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Get the Ed25519 seed from the signer
+    let seed = match handle_ref.ed25519_signer.get_seed() {
+        Some(s) => s,
+        None => {
+            tracing::error!("derive_secp256k1_pubkey: no Ed25519 key loaded");
+            return CirisVerifyError::RequestFailed as i32;
+        },
+    };
+
+    // Derive secp256k1 public key
+    let pubkey = ciris_crypto::secp256k1::derive_secp256k1_public_key(&seed);
+
+    // Allocate and copy
+    let len = pubkey.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(pubkey.as_ptr(), ptr, len);
+
+    *pubkey_data = ptr;
+    *pubkey_len = len;
+
+    tracing::debug!("secp256k1 public key derived ({} bytes)", len);
+    CirisVerifyError::Success as i32
+}
+
+/// Get the EVM address from a secp256k1 public key.
+///
+/// The address is derived by taking keccak256 of the public key (without the 04 prefix)
+/// and taking the last 20 bytes.
+///
+/// # Arguments
+///
+/// * `pubkey` - 65-byte uncompressed secp256k1 public key
+/// * `pubkey_len` - Length of public key (must be 65)
+/// * `address_data` - Output pointer for 20-byte EVM address (caller must free with `ciris_verify_free`)
+/// * `address_len` - Output pointer for address length (always 20)
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `pubkey` must point to valid memory of at least `pubkey_len` bytes
+/// - `address_data` and `address_len` must be valid pointers
+#[cfg(feature = "secp256k1")]
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_get_evm_address(
+    pubkey: *const u8,
+    pubkey_len: usize,
+    address_data: *mut *mut u8,
+    address_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_get_evm_address", {
+        get_evm_address_inner(pubkey, pubkey_len, address_data, address_len)
+    })
+}
+
+#[cfg(feature = "secp256k1")]
+unsafe fn get_evm_address_inner(
+    pubkey: *const u8,
+    pubkey_len: usize,
+    address_data: *mut *mut u8,
+    address_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_get_evm_address called");
+
+    if pubkey.is_null() || address_data.is_null() || address_len.is_null() {
+        tracing::error!("get_evm_address: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    if pubkey_len != 65 {
+        tracing::error!(
+            "get_evm_address: pubkey must be 65 bytes, got {}",
+            pubkey_len
+        );
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let pubkey_bytes = std::slice::from_raw_parts(pubkey, pubkey_len);
+    let mut pubkey_array = [0u8; 65];
+    pubkey_array.copy_from_slice(pubkey_bytes);
+
+    let address = ciris_crypto::secp256k1::get_evm_address(&pubkey_array);
+
+    // Allocate and copy
+    let len = address.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(address.as_ptr(), ptr, len);
+
+    *address_data = ptr;
+    *address_len = len;
+
+    tracing::debug!("EVM address derived ({} bytes)", len);
+    CirisVerifyError::Success as i32
+}
+
+/// Get the checksummed EVM address string from a secp256k1 public key.
+///
+/// Implements EIP-55 checksum encoding.
+///
+/// # Arguments
+///
+/// * `pubkey` - 65-byte uncompressed secp256k1 public key
+/// * `pubkey_len` - Length of public key (must be 65)
+/// * `address_str` - Output pointer for null-terminated checksummed address (caller must free with `ciris_verify_free`)
+/// * `address_str_len` - Output pointer for string length (including null terminator)
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `pubkey` must point to valid memory of at least `pubkey_len` bytes
+/// - `address_str` and `address_str_len` must be valid pointers
+#[cfg(feature = "secp256k1")]
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_get_evm_address_checksummed(
+    pubkey: *const u8,
+    pubkey_len: usize,
+    address_str: *mut *mut c_char,
+    address_str_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_get_evm_address_checksummed", {
+        get_evm_address_checksummed_inner(pubkey, pubkey_len, address_str, address_str_len)
+    })
+}
+
+#[cfg(feature = "secp256k1")]
+unsafe fn get_evm_address_checksummed_inner(
+    pubkey: *const u8,
+    pubkey_len: usize,
+    address_str: *mut *mut c_char,
+    address_str_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_get_evm_address_checksummed called");
+
+    if pubkey.is_null() || address_str.is_null() || address_str_len.is_null() {
+        tracing::error!("get_evm_address_checksummed: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    if pubkey_len != 65 {
+        tracing::error!(
+            "get_evm_address_checksummed: pubkey must be 65 bytes, got {}",
+            pubkey_len
+        );
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let pubkey_bytes = std::slice::from_raw_parts(pubkey, pubkey_len);
+    let mut pubkey_array = [0u8; 65];
+    pubkey_array.copy_from_slice(pubkey_bytes);
+
+    let address = ciris_crypto::secp256k1::get_evm_address_checksummed(&pubkey_array);
+
+    // Allocate and copy with null terminator
+    let len = address.len() + 1;
+    let ptr = libc::malloc(len) as *mut c_char;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(address.as_ptr() as *const c_char, ptr, address.len());
+    *ptr.add(address.len()) = 0; // null terminator
+
+    *address_str = ptr;
+    *address_str_len = len;
+
+    tracing::debug!("Checksummed EVM address: {}", address);
+    CirisVerifyError::Success as i32
+}
+
+/// Sign a 32-byte message hash with the derived secp256k1 key.
+///
+/// The secp256k1 key is derived from the Ed25519 seed using HKDF.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `message_hash` - 32-byte hash to sign (typically keccak256)
+/// * `hash_len` - Length of hash (must be 32)
+/// * `signature_data` - Output pointer for 65-byte signature r||s||v (caller must free with `ciris_verify_free`)
+/// * `signature_len` - Output pointer for signature length (always 65)
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `message_hash` must point to valid memory of at least `hash_len` bytes
+/// - `signature_data` and `signature_len` must be valid pointers
+#[cfg(feature = "secp256k1")]
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_sign_secp256k1(
+    handle: *mut CirisVerifyHandle,
+    message_hash: *const u8,
+    hash_len: usize,
+    signature_data: *mut *mut u8,
+    signature_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_sign_secp256k1", {
+        sign_secp256k1_inner(
+            handle,
+            message_hash,
+            hash_len,
+            signature_data,
+            signature_len,
+        )
+    })
+}
+
+#[cfg(feature = "secp256k1")]
+unsafe fn sign_secp256k1_inner(
+    handle: *mut CirisVerifyHandle,
+    message_hash: *const u8,
+    hash_len: usize,
+    signature_data: *mut *mut u8,
+    signature_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_sign_secp256k1 called (hash_len={})", hash_len);
+
+    // Check if attestation is running
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("sign_secp256k1: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    if handle.is_null()
+        || message_hash.is_null()
+        || signature_data.is_null()
+        || signature_len.is_null()
+    {
+        tracing::error!("sign_secp256k1: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    if hash_len != 32 {
+        tracing::error!("sign_secp256k1: hash must be 32 bytes, got {}", hash_len);
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Get the Ed25519 seed from the signer
+    let seed = match handle_ref.ed25519_signer.get_seed() {
+        Some(s) => s,
+        None => {
+            tracing::error!("sign_secp256k1: no Ed25519 key loaded");
+            return CirisVerifyError::RequestFailed as i32;
+        },
+    };
+
+    // Derive secp256k1 keypair
+    let (signing_key, _) = ciris_crypto::secp256k1::derive_wallet_keypair(&seed);
+
+    // Parse message hash
+    let hash_bytes = std::slice::from_raw_parts(message_hash, hash_len);
+    let mut hash_array = [0u8; 32];
+    hash_array.copy_from_slice(hash_bytes);
+
+    // Sign
+    let signature = ciris_crypto::secp256k1::sign_message(&signing_key, &hash_array);
+
+    // Allocate and copy
+    let len = signature.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(signature.as_ptr(), ptr, len);
+
+    *signature_data = ptr;
+    *signature_len = len;
+
+    tracing::debug!("secp256k1 signature generated ({} bytes)", len);
+    CirisVerifyError::Success as i32
+}
+
+/// Sign an EVM transaction hash with EIP-155 replay protection.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `tx_hash` - 32-byte transaction hash
+/// * `hash_len` - Length of hash (must be 32)
+/// * `chain_id` - EVM chain ID for replay protection
+/// * `signature_data` - Output pointer for 65-byte signature (caller must free with `ciris_verify_free`)
+/// * `signature_len` - Output pointer for signature length (always 65)
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `tx_hash` must point to valid memory of at least `hash_len` bytes
+/// - `signature_data` and `signature_len` must be valid pointers
+#[cfg(feature = "secp256k1")]
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_sign_evm_transaction(
+    handle: *mut CirisVerifyHandle,
+    tx_hash: *const u8,
+    hash_len: usize,
+    chain_id: u64,
+    signature_data: *mut *mut u8,
+    signature_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_sign_evm_transaction", {
+        sign_evm_transaction_inner(
+            handle,
+            tx_hash,
+            hash_len,
+            chain_id,
+            signature_data,
+            signature_len,
+        )
+    })
+}
+
+#[cfg(feature = "secp256k1")]
+unsafe fn sign_evm_transaction_inner(
+    handle: *mut CirisVerifyHandle,
+    tx_hash: *const u8,
+    hash_len: usize,
+    chain_id: u64,
+    signature_data: *mut *mut u8,
+    signature_len: *mut usize,
+) -> i32 {
+    tracing::debug!(
+        "ciris_verify_sign_evm_transaction called (chain_id={})",
+        chain_id
+    );
+
+    // Check if attestation is running
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("sign_evm_transaction: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    if handle.is_null() || tx_hash.is_null() || signature_data.is_null() || signature_len.is_null()
+    {
+        tracing::error!("sign_evm_transaction: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    if hash_len != 32 {
+        tracing::error!(
+            "sign_evm_transaction: hash must be 32 bytes, got {}",
+            hash_len
+        );
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Get the Ed25519 seed from the signer
+    let seed = match handle_ref.ed25519_signer.get_seed() {
+        Some(s) => s,
+        None => {
+            tracing::error!("sign_evm_transaction: no Ed25519 key loaded");
+            return CirisVerifyError::RequestFailed as i32;
+        },
+    };
+
+    // Derive secp256k1 keypair
+    let (signing_key, _) = ciris_crypto::secp256k1::derive_wallet_keypair(&seed);
+
+    // Parse transaction hash
+    let hash_bytes = std::slice::from_raw_parts(tx_hash, hash_len);
+    let mut hash_array = [0u8; 32];
+    hash_array.copy_from_slice(hash_bytes);
+
+    // Sign with EIP-155
+    let signature =
+        ciris_crypto::secp256k1::sign_evm_transaction(&signing_key, &hash_array, chain_id);
+
+    // Allocate and copy
+    let len = signature.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(signature.as_ptr(), ptr, len);
+
+    *signature_data = ptr;
+    *signature_len = len;
+
+    tracing::debug!("EVM transaction signature generated ({} bytes)", len);
+    CirisVerifyError::Success as i32
+}
+
+/// Sign EIP-712 typed data.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `domain_hash` - 32-byte domain separator hash
+/// * `domain_len` - Length of domain hash (must be 32)
+/// * `message_hash` - 32-byte struct hash
+/// * `message_len` - Length of message hash (must be 32)
+/// * `signature_data` - Output pointer for 65-byte signature (caller must free with `ciris_verify_free`)
+/// * `signature_len` - Output pointer for signature length (always 65)
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `domain_hash` and `message_hash` must point to valid memory
+/// - `signature_data` and `signature_len` must be valid pointers
+#[cfg(feature = "secp256k1")]
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_sign_typed_data(
+    handle: *mut CirisVerifyHandle,
+    domain_hash: *const u8,
+    domain_len: usize,
+    message_hash: *const u8,
+    message_len: usize,
+    signature_data: *mut *mut u8,
+    signature_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_sign_typed_data", {
+        sign_typed_data_inner(
+            handle,
+            domain_hash,
+            domain_len,
+            message_hash,
+            message_len,
+            signature_data,
+            signature_len,
+        )
+    })
+}
+
+#[cfg(feature = "secp256k1")]
+unsafe fn sign_typed_data_inner(
+    handle: *mut CirisVerifyHandle,
+    domain_hash: *const u8,
+    domain_len: usize,
+    message_hash: *const u8,
+    message_len: usize,
+    signature_data: *mut *mut u8,
+    signature_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_sign_typed_data called");
+
+    // Check if attestation is running
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("sign_typed_data: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    if handle.is_null()
+        || domain_hash.is_null()
+        || message_hash.is_null()
+        || signature_data.is_null()
+        || signature_len.is_null()
+    {
+        tracing::error!("sign_typed_data: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    if domain_len != 32 {
+        tracing::error!(
+            "sign_typed_data: domain hash must be 32 bytes, got {}",
+            domain_len
+        );
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    if message_len != 32 {
+        tracing::error!(
+            "sign_typed_data: message hash must be 32 bytes, got {}",
+            message_len
+        );
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Get the Ed25519 seed from the signer
+    let seed = match handle_ref.ed25519_signer.get_seed() {
+        Some(s) => s,
+        None => {
+            tracing::error!("sign_typed_data: no Ed25519 key loaded");
+            return CirisVerifyError::RequestFailed as i32;
+        },
+    };
+
+    // Derive secp256k1 keypair
+    let (signing_key, _) = ciris_crypto::secp256k1::derive_wallet_keypair(&seed);
+
+    // Parse hashes
+    let domain_bytes = std::slice::from_raw_parts(domain_hash, domain_len);
+    let mut domain_array = [0u8; 32];
+    domain_array.copy_from_slice(domain_bytes);
+
+    let message_bytes = std::slice::from_raw_parts(message_hash, message_len);
+    let mut message_array = [0u8; 32];
+    message_array.copy_from_slice(message_bytes);
+
+    // Sign EIP-712 typed data
+    let signature =
+        ciris_crypto::secp256k1::sign_typed_data(&signing_key, &domain_array, &message_array);
+
+    // Allocate and copy
+    let len = signature.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(signature.as_ptr(), ptr, len);
+
+    *signature_data = ptr;
+    *signature_len = len;
+
+    tracing::debug!("EIP-712 typed data signature generated ({} bytes)", len);
+    CirisVerifyError::Success as i32
+}
+
+/// Recover the signer's EVM address from a signature.
+///
+/// # Arguments
+///
+/// * `message_hash` - 32-byte hash that was signed
+/// * `hash_len` - Length of hash (must be 32)
+/// * `signature` - 65-byte signature (r || s || v)
+/// * `signature_len` - Length of signature (must be 65)
+/// * `address_data` - Output pointer for 20-byte recovered address (caller must free with `ciris_verify_free`)
+/// * `address_len` - Output pointer for address length (always 20)
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+/// Returns error if recovery fails (invalid signature).
+///
+/// # Safety
+///
+/// - `message_hash` must point to valid memory of at least `hash_len` bytes
+/// - `signature` must point to valid memory of at least `signature_len` bytes
+/// - `address_data` and `address_len` must be valid pointers
+#[cfg(feature = "secp256k1")]
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_recover_evm_address(
+    message_hash: *const u8,
+    hash_len: usize,
+    signature: *const u8,
+    signature_len: usize,
+    address_data: *mut *mut u8,
+    address_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_recover_evm_address", {
+        recover_evm_address_inner(
+            message_hash,
+            hash_len,
+            signature,
+            signature_len,
+            address_data,
+            address_len,
+        )
+    })
+}
+
+#[cfg(feature = "secp256k1")]
+unsafe fn recover_evm_address_inner(
+    message_hash: *const u8,
+    hash_len: usize,
+    signature: *const u8,
+    signature_len: usize,
+    address_data: *mut *mut u8,
+    address_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_recover_evm_address called");
+
+    if message_hash.is_null()
+        || signature.is_null()
+        || address_data.is_null()
+        || address_len.is_null()
+    {
+        tracing::error!("recover_evm_address: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    if hash_len != 32 {
+        tracing::error!(
+            "recover_evm_address: hash must be 32 bytes, got {}",
+            hash_len
+        );
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    if signature_len != 65 {
+        tracing::error!(
+            "recover_evm_address: signature must be 65 bytes, got {}",
+            signature_len
+        );
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let hash_bytes = std::slice::from_raw_parts(message_hash, hash_len);
+    let mut hash_array = [0u8; 32];
+    hash_array.copy_from_slice(hash_bytes);
+
+    let sig_bytes = std::slice::from_raw_parts(signature, signature_len);
+    let mut sig_array = [0u8; 65];
+    sig_array.copy_from_slice(sig_bytes);
+
+    // Recover address
+    let address = match ciris_crypto::secp256k1::recover_address(&hash_array, &sig_array) {
+        Some(addr) => addr,
+        None => {
+            tracing::error!("recover_evm_address: recovery failed (invalid signature)");
+            return CirisVerifyError::RequestFailed as i32;
+        },
+    };
+
+    // Allocate and copy
+    let len = address.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(address.as_ptr(), ptr, len);
+
+    *address_data = ptr;
+    *address_len = len;
+
+    tracing::debug!("EVM address recovered ({} bytes)", len);
+    CirisVerifyError::Success as i32
+}
+
+/// Get wallet info JSON including derived secp256k1 public key and EVM address.
+///
+/// Returns a JSON object with wallet information for the current Ed25519 identity.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `result_json` - Output pointer for JSON wallet info (caller must free with `ciris_verify_free`)
+/// * `result_len` - Output pointer for result length
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # JSON Format
+///
+/// ```json
+/// {
+///   "secp256k1_public_key": "04...",  // 65-byte uncompressed pubkey as hex
+///   "evm_address": "0x...",           // 20-byte address as checksummed hex
+///   "derivation_path": "HKDF-SHA256(ed25519_seed, 'CIRIS-wallet-v1', 'secp256k1-evm-signing-key')"
+/// }
+/// ```
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `result_json` and `result_len` must be valid pointers
+#[cfg(feature = "secp256k1")]
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_get_wallet_info(
+    handle: *mut CirisVerifyHandle,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_get_wallet_info", {
+        get_wallet_info_inner(handle, result_json, result_len)
+    })
+}
+
+#[cfg(feature = "secp256k1")]
+unsafe fn get_wallet_info_inner(
+    handle: *mut CirisVerifyHandle,
+    result_json: *mut *mut u8,
+    result_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_get_wallet_info called");
+
+    // Check if attestation is running
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("get_wallet_info: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    if handle.is_null() || result_json.is_null() || result_len.is_null() {
+        tracing::error!("get_wallet_info: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Get the Ed25519 seed from the signer
+    let seed = match handle_ref.ed25519_signer.get_seed() {
+        Some(s) => s,
+        None => {
+            tracing::error!("get_wallet_info: no Ed25519 key loaded");
+            return CirisVerifyError::RequestFailed as i32;
+        },
+    };
+
+    // Derive secp256k1 public key
+    let pubkey = ciris_crypto::secp256k1::derive_secp256k1_public_key(&seed);
+    let evm_address = ciris_crypto::secp256k1::get_evm_address_checksummed(&pubkey);
+
+    let wallet_info = serde_json::json!({
+        "secp256k1_public_key": hex::encode(pubkey),
+        "evm_address": evm_address,
+        "derivation_path": "HKDF-SHA256(ed25519_seed, 'CIRIS-wallet-v1', 'secp256k1-evm-signing-key')"
+    });
+
+    // Serialize to JSON
+    let json_bytes = match serde_json::to_vec(&wallet_info) {
+        Ok(b) => b,
+        Err(e) => {
+            tracing::error!("get_wallet_info: failed to serialize: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    // Allocate and copy
+    let len = json_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(json_bytes.as_ptr(), ptr, len);
+
+    *result_json = ptr;
+    *result_len = len;
+
+    tracing::info!("Wallet info: {}", evm_address);
+    CirisVerifyError::Success as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
