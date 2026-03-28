@@ -56,6 +56,9 @@ mod types;
 #[cfg(feature = "software")]
 mod software;
 
+/// Generic secure blob storage abstraction.
+pub mod storage;
+
 /// Platform-specific hardware signer implementations.
 pub mod platform;
 
@@ -74,6 +77,8 @@ pub use platform::{
     create_hardware_signer, create_software_signer, detect_hardware_type, MaxTier,
     PlatformCapabilities,
 };
+
+pub use storage::{create_platform_storage, SecureBlobStorage, StorageBackend};
 
 #[cfg(feature = "keyring-storage")]
 pub use keyring_storage::{create_keyring_signer, KeyringStorageSigner};

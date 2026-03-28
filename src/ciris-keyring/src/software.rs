@@ -2162,6 +2162,191 @@ impl MutableEd25519Signer {
         let seed_bytes = signing_key.to_bytes();
         Some(seed_bytes)
     }
+
+    /// Get the wallet seed for secp256k1 key derivation.
+    ///
+    /// Unlike `get_seed()`, this method works with hardware-backed keys because
+    /// the wallet seed is stored separately in platform-specific secure storage
+    /// (TPM-encrypted on Linux/Windows, Keystore-encrypted on Android, etc.).
+    ///
+    /// If no wallet seed exists, a new one is generated and stored.
+    ///
+    /// # Returns
+    ///
+    /// `Some([u8; 32])` containing the wallet seed, or `None` if:
+    /// - Storage initialization fails
+    /// - No identity key exists (wallet requires identity first)
+    #[must_use]
+    pub fn get_wallet_seed(&self) -> Option<[u8; 32]> {
+        use crate::storage::create_platform_storage;
+
+        // Must have an identity key first
+        if !self.has_key() {
+            tracing::warn!("get_wallet_seed: no identity key loaded");
+            return None;
+        }
+
+        // Determine storage directory (same as key storage)
+        let storage_dir = self
+            .current_storage_path()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .or_else(|| {
+                // Fall back to CIRIS_DATA_DIR or default
+                std::env::var("CIRIS_DATA_DIR")
+                    .ok()
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| dirs::data_local_dir().map(|p| p.join("ciris")))
+            })?;
+
+        // Get alias from inner signer
+        let alias = {
+            let inner = self.inner.read().ok()?;
+            inner.alias.clone()
+        };
+
+        // Create storage
+        let storage = match create_platform_storage(&alias, &storage_dir) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!(error = %e, "get_wallet_seed: failed to create storage");
+                return None;
+            },
+        };
+
+        const WALLET_SEED_KEY: &str = "identity.wallet_seed";
+
+        // Try to load existing wallet seed
+        if storage.exists(WALLET_SEED_KEY) {
+            match storage.load(WALLET_SEED_KEY) {
+                Ok(data) if data.len() == 32 => {
+                    let mut seed = [0u8; 32];
+                    seed.copy_from_slice(&data);
+                    tracing::debug!(
+                        hardware_backed = storage.is_hardware_backed(),
+                        "get_wallet_seed: loaded existing wallet seed"
+                    );
+                    return Some(seed);
+                },
+                Ok(data) => {
+                    tracing::error!(
+                        len = data.len(),
+                        "get_wallet_seed: invalid wallet seed length"
+                    );
+                    // Delete corrupted seed and regenerate
+                    let _ = storage.delete(WALLET_SEED_KEY);
+                },
+                Err(e) => {
+                    tracing::error!(error = %e, "get_wallet_seed: failed to load wallet seed");
+                    return None;
+                },
+            }
+        }
+
+        // Check if we can migrate from Ed25519 seed (software-only agents pre-1.3.2)
+        // This preserves wallet address continuity for existing software-only deployments
+        let seed = if let Some(ed25519_seed) = self.get_seed() {
+            // Migration path: derive wallet seed from Ed25519 seed using same HKDF as ciris-crypto
+            // This ensures the wallet address matches what the old code would have produced
+            use hkdf::Hkdf;
+            use sha2::Sha256;
+
+            let hkdf = Hkdf::<Sha256>::new(Some(b"CIRIS-wallet-v1"), &ed25519_seed);
+            let mut derived_seed = [0u8; 32];
+            hkdf.expand(b"secp256k1-evm-signing-key", &mut derived_seed)
+                .expect("HKDF expansion should not fail for 32 bytes");
+
+            tracing::info!(
+                "get_wallet_seed: MIGRATION - derived wallet seed from Ed25519 seed (preserving wallet address)"
+            );
+            derived_seed
+        } else {
+            // Hardware-backed key: generate new random wallet seed
+            // (Pre-1.3.2 hardware agents couldn't use wallet features anyway)
+            use rand::RngCore;
+            let mut new_seed = [0u8; 32];
+            rand::thread_rng().fill_bytes(&mut new_seed);
+            tracing::info!(
+                "get_wallet_seed: generated new random wallet seed (hardware-backed key)"
+            );
+            new_seed
+        };
+
+        // Store it
+        if let Err(e) = storage.store(WALLET_SEED_KEY, &seed) {
+            tracing::error!(error = %e, "get_wallet_seed: failed to store wallet seed");
+            // Zero the seed before returning
+            let mut seed_copy = seed;
+            seed_copy.iter_mut().for_each(|b| *b = 0);
+            return None;
+        }
+
+        tracing::info!(
+            hardware_backed = storage.is_hardware_backed(),
+            "get_wallet_seed: generated and stored new wallet seed"
+        );
+
+        Some(seed)
+    }
+
+    /// Delete the wallet seed.
+    ///
+    /// This is useful for key rotation or cleanup.
+    pub fn delete_wallet_seed(&self) -> Result<(), KeyringError> {
+        use crate::storage::create_platform_storage;
+
+        let storage_dir = self
+            .current_storage_path()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .or_else(|| {
+                std::env::var("CIRIS_DATA_DIR")
+                    .ok()
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| dirs::data_local_dir().map(|p| p.join("ciris")))
+            })
+            .ok_or_else(|| KeyringError::StorageFailed {
+                reason: "Cannot determine storage directory".into(),
+            })?;
+
+        let alias = {
+            let inner = self.inner.read().map_err(|_| KeyringError::StorageFailed {
+                reason: "Failed to acquire inner lock".into(),
+            })?;
+            inner.alias.clone()
+        };
+
+        let storage = create_platform_storage(&alias, &storage_dir)?;
+        storage.delete("identity.wallet_seed")
+    }
+
+    /// Check if a wallet seed exists.
+    #[must_use]
+    pub fn has_wallet_seed(&self) -> bool {
+        use crate::storage::create_platform_storage;
+
+        let storage_dir = self
+            .current_storage_path()
+            .and_then(|p| p.parent().map(|p| p.to_path_buf()))
+            .or_else(|| {
+                std::env::var("CIRIS_DATA_DIR")
+                    .ok()
+                    .map(std::path::PathBuf::from)
+                    .or_else(|| dirs::data_local_dir().map(|p| p.join("ciris")))
+            });
+
+        let Some(storage_dir) = storage_dir else {
+            return false;
+        };
+
+        let alias = match self.inner.read() {
+            Ok(inner) => inner.alias.clone(),
+            Err(_) => return false,
+        };
+
+        match create_platform_storage(&alias, &storage_dir) {
+            Ok(storage) => storage.exists("identity.wallet_seed"),
+            Err(_) => false,
+        }
+    }
 }
 
 #[cfg(test)]

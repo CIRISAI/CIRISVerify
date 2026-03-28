@@ -6111,11 +6111,11 @@ unsafe fn derive_secp256k1_pubkey_inner(
 
     let handle_ref = &*handle;
 
-    // Get the Ed25519 seed from the signer
-    let seed = match handle_ref.ed25519_signer.get_seed() {
+    // Get the wallet seed (stored separately, works with hardware-backed keys)
+    let seed = match handle_ref.ed25519_signer.get_wallet_seed() {
         Some(s) => s,
         None => {
-            tracing::error!("derive_secp256k1_pubkey: no Ed25519 key loaded");
+            tracing::error!("derive_secp256k1_pubkey: failed to get wallet seed");
             return CirisVerifyError::RequestFailed as i32;
         },
     };
@@ -6366,11 +6366,11 @@ unsafe fn sign_secp256k1_inner(
 
     let handle_ref = &*handle;
 
-    // Get the Ed25519 seed from the signer
-    let seed = match handle_ref.ed25519_signer.get_seed() {
+    // Get the wallet seed (stored separately, works with hardware-backed keys)
+    let seed = match handle_ref.ed25519_signer.get_wallet_seed() {
         Some(s) => s,
         None => {
-            tracing::error!("sign_secp256k1: no Ed25519 key loaded");
+            tracing::error!("sign_secp256k1: failed to get wallet seed");
             return CirisVerifyError::RequestFailed as i32;
         },
     };
@@ -6480,11 +6480,11 @@ unsafe fn sign_evm_transaction_inner(
 
     let handle_ref = &*handle;
 
-    // Get the Ed25519 seed from the signer
-    let seed = match handle_ref.ed25519_signer.get_seed() {
+    // Get the wallet seed (stored separately, works with hardware-backed keys)
+    let seed = match handle_ref.ed25519_signer.get_wallet_seed() {
         Some(s) => s,
         None => {
-            tracing::error!("sign_evm_transaction: no Ed25519 key loaded");
+            tracing::error!("sign_evm_transaction: failed to get wallet seed");
             return CirisVerifyError::RequestFailed as i32;
         },
     };
@@ -6608,11 +6608,11 @@ unsafe fn sign_typed_data_inner(
 
     let handle_ref = &*handle;
 
-    // Get the Ed25519 seed from the signer
-    let seed = match handle_ref.ed25519_signer.get_seed() {
+    // Get the wallet seed (stored separately, works with hardware-backed keys)
+    let seed = match handle_ref.ed25519_signer.get_wallet_seed() {
         Some(s) => s,
         None => {
-            tracing::error!("sign_typed_data: no Ed25519 key loaded");
+            tracing::error!("sign_typed_data: failed to get wallet seed");
             return CirisVerifyError::RequestFailed as i32;
         },
     };
@@ -6822,11 +6822,11 @@ unsafe fn get_wallet_info_inner(
 
     let handle_ref = &*handle;
 
-    // Get the Ed25519 seed from the signer
-    let seed = match handle_ref.ed25519_signer.get_seed() {
+    // Get the wallet seed (stored separately, works with hardware-backed keys)
+    let seed = match handle_ref.ed25519_signer.get_wallet_seed() {
         Some(s) => s,
         None => {
-            tracing::error!("get_wallet_info: no Ed25519 key loaded");
+            tracing::error!("get_wallet_info: failed to get wallet seed");
             return CirisVerifyError::RequestFailed as i32;
         },
     };

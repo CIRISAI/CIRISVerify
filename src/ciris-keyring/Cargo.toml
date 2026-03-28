@@ -29,6 +29,12 @@ rand_core.workspace = true
 # Cross-platform data directories for key persistence
 dirs = "5"
 
+# Cryptographic primitives for secure blob storage
+rand = "0.8"
+aes-gcm = "0.10"
+hkdf = "0.12"
+sha2 = "0.10"
+
 # Hex encoding for fingerprints
 hex = "0.4"
 
@@ -49,15 +55,10 @@ core-foundation-sys = "0.8"
 objc2 = "0.6"
 objc2-foundation = "0.3"
 block2 = "0.6"
-sha2 = "0.10"
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 tss-esapi = { version = "7.4", optional = true }
-sha2 = "0.10"
 serde_json = "1.0"
-# For TPM-wrapped key encryption
-aes-gcm = "0.10"
-hkdf = "0.12"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.9"
@@ -79,3 +80,4 @@ windows = { version = "0.58", features = [
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tempfile = "3"
