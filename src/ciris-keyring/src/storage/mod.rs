@@ -54,16 +54,12 @@
 //! }
 //! ```
 
-// Platform-specific implementations (planned)
-// Note: TPM secure blob storage is temporarily disabled while API
-// compatibility issues are resolved. The core TpmSigner for Ed25519
-// identity keys works correctly.
-//
-// #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
-// pub mod tpm;
-//
-// #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
-// pub use tpm::TpmSecureBlobStorage;
+// Platform-specific implementations
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+pub mod tpm;
+
+#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+pub use tpm::TpmSecureBlobStorage;
 
 use crate::error::KeyringError;
 use std::path::PathBuf;
@@ -500,8 +496,7 @@ impl SecureBlobStorage for SoftwareSecureBlobStorage {
 
 /// Create the best available secure storage for the current platform.
 ///
-/// Currently uses software-only storage. TPM-backed storage for wallet seeds
-/// is planned for a future release.
+/// Tries hardware-backed storage first (TPM on Linux/Windows), falls back to software.
 ///
 /// # Arguments
 /// * `alias` - Prefix for stored secrets
@@ -516,15 +511,39 @@ pub fn create_platform_storage(
     let alias = alias.into();
     let storage_dir = storage_dir.into();
 
-    // TODO: Future work - implement platform-specific storage:
-    // - TpmSecureBlobStorage for Linux/Windows with TPM 2.0
+    // Try TPM on Linux/Windows
+    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    {
+        // Check if TPM is available using detection module
+        let tpm_available = crate::platform::tpm::detect_tpm()
+            .map(|(avail, _)| avail)
+            .unwrap_or(false);
+
+        if tpm_available {
+            match TpmSecureBlobStorage::new(&alias, &storage_dir) {
+                Ok(storage) => {
+                    tracing::info!(
+                        alias = %alias,
+                        "Using TPM-backed secure storage for wallet seeds"
+                    );
+                    return Ok(Box::new(storage));
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        alias = %alias,
+                        error = %e,
+                        "TPM storage initialization failed, falling back to software"
+                    );
+                },
+            }
+        }
+    }
+
+    // TODO: Implement platform-specific storage:
     // - AndroidSecureBlobStorage for Android Keystore
     // - SecureEnclaveSecureBlobStorage for iOS/macOS
-    //
-    // Note: The core identity key (Ed25519) already uses TPM via TpmSigner.
-    // This storage is for derived secrets (wallet seeds) that don't need
-    // direct TPM signing but benefit from encrypted-at-rest storage.
 
+    // Fall back to software storage
     tracing::info!(
         alias = %alias,
         "Using software-only secure storage for wallet seeds"

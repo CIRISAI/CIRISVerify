@@ -31,7 +31,7 @@ pub use keys::{
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 pub use quote::read_ek_certificate;
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
-pub use signing::extract_ecdsa_signature;
+pub use signing::{create_null_validation_ticket, extract_ecdsa_signature};
 
 // TpmQuote is always available (just a data struct)
 pub use quote::TpmQuote;
