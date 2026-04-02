@@ -790,8 +790,33 @@ impl SecureEnclaveWrappedEd25519Signer {
         }
     }
 
-    /// Generate a new SE P-256 key for ECIES wrapping.
+    /// Generate a new P-256 key for ECIES wrapping.
+    ///
+    /// On iOS, always uses Secure Enclave (entitled apps).
+    /// On macOS, tries SE first; if -34018 (errSecMissingEntitlement), falls back
+    /// to a regular keychain P-256 key (no SE, but still keychain-protected).
     fn generate_wrapper_key(&self) -> Result<(), KeyringError> {
+        // Try SE first
+        match self.generate_wrapper_key_inner(true) {
+            Ok(()) => Ok(()),
+            #[cfg(target_os = "macos")]
+            Err(ref e)
+                if e.to_string().contains("-34018")
+                    || e.to_string().contains("MissingEntitlement") =>
+            {
+                tracing::warn!(
+                    tag = %self.wrapper_key_tag,
+                    "SE key generation failed (errSecMissingEntitlement) — \
+                     macOS CLI process lacks entitlements. Falling back to keychain P-256 key."
+                );
+                self.generate_wrapper_key_inner(false)
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Inner key generation: `use_se=true` for Secure Enclave, `false` for regular keychain.
+    fn generate_wrapper_key_inner(&self, use_se: bool) -> Result<(), KeyringError> {
         use security_framework_sys::access_control::kSecAccessControlPrivateKeyUsage;
         use security_framework_sys::item::*;
 
@@ -829,10 +854,12 @@ impl SecureEnclaveWrappedEd25519Signer {
                 CFString::wrap_under_get_rule(kSecAttrKeySizeInBits).as_CFTypeRef(),
                 CFNumber::from(256_i32).as_CFTypeRef(),
             );
-            params.set(
-                CFString::wrap_under_get_rule(kSecAttrTokenID).as_CFTypeRef(),
-                CFString::wrap_under_get_rule(kSecAttrTokenIDSecureEnclave).as_CFTypeRef(),
-            );
+            if use_se {
+                params.set(
+                    CFString::wrap_under_get_rule(kSecAttrTokenID).as_CFTypeRef(),
+                    CFString::wrap_under_get_rule(kSecAttrTokenIDSecureEnclave).as_CFTypeRef(),
+                );
+            }
             params.set(
                 CFString::wrap_under_get_rule(kSecPrivateKeyAttrs).as_CFTypeRef(),
                 private_attrs.as_CFTypeRef(),
@@ -847,9 +874,15 @@ impl SecureEnclaveWrappedEd25519Signer {
             if key.is_null() {
                 let err_msg = if !error.is_null() {
                     let cf_error = core_foundation::error::CFError::wrap_under_create_rule(error);
-                    format!("SE wrapper key generation failed: {cf_error}")
+                    format!(
+                        "{} wrapper key generation failed: {cf_error}",
+                        if use_se { "SE" } else { "Keychain" }
+                    )
                 } else {
-                    "SE wrapper key generation failed".to_string()
+                    format!(
+                        "{} wrapper key generation failed",
+                        if use_se { "SE" } else { "Keychain" }
+                    )
                 };
                 return Err(KeyringError::KeyGenerationFailed { reason: err_msg });
             }
@@ -859,7 +892,8 @@ impl SecureEnclaveWrappedEd25519Signer {
 
         tracing::info!(
             tag = %self.wrapper_key_tag,
-            "SE ECIES wrapper key generated"
+            mode = if use_se { "Secure Enclave" } else { "Keychain" },
+            "ECIES wrapper key generated"
         );
 
         Ok(())

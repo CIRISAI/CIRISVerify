@@ -36,13 +36,14 @@ fn parse_single_macho(
     let mut code_section_offset = 0u64;
     let mut code_section_size = 0u64;
     let mut code_section_vaddr = 0u64;
-    let mut exec_segment_vaddr = 0u64;
+    let mut exec_segment_vaddr = None;
 
     for segment in &macho.segments {
         let segname = segment.name().unwrap_or("");
         if segname == "__TEXT" {
-            // Store segment vmaddr - this is what dyld loads
-            exec_segment_vaddr = segment.vmaddr;
+            // Store segment vmaddr - this is what dyld loads.
+            // vmaddr=0 is valid for position-independent dylibs.
+            exec_segment_vaddr = Some(segment.vmaddr);
             for (section, _) in segment.sections()? {
                 let sectname = section.name().unwrap_or("");
                 if sectname == "__text" {
@@ -59,10 +60,8 @@ fn parse_single_macho(
         return Err(ParseError::NoCodeSection);
     }
 
-    // If we couldn't find segment vaddr, fall back to section vaddr
-    if exec_segment_vaddr == 0 {
-        exec_segment_vaddr = code_section_vaddr;
-    }
+    // If __TEXT segment wasn't found at all, fall back to section vaddr
+    let exec_segment_vaddr = exec_segment_vaddr.unwrap_or(code_section_vaddr);
 
     // Extract functions from symbol table
     let mut functions = Vec::new();
