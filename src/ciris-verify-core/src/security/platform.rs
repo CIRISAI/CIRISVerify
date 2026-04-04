@@ -198,16 +198,34 @@ fn is_android_rooted() -> bool {
 }
 
 /// Check if running on Android emulator.
+///
+/// IMPORTANT: This function must NOT false-positive on real devices.
+/// Older Samsung devices (SM-J700T, etc.) have been incorrectly detected
+/// as emulators due to overly broad "generic" checks.
 #[cfg(target_os = "android")]
 fn is_android_emulator() -> bool {
     use android_system_properties::AndroidSystemProperties;
 
     let props = AndroidSystemProperties::new();
 
+    // Log key properties for debugging (only on debug builds or when tracing enabled)
+    let hardware = props.get("ro.hardware").unwrap_or_default();
+    let device = props.get("ro.product.device").unwrap_or_default();
+    let model = props.get("ro.product.model").unwrap_or_default();
+    let fingerprint = props.get("ro.build.fingerprint").unwrap_or_default();
+
+    tracing::debug!(
+        hardware = %hardware,
+        device = %device,
+        model = %model,
+        "Android emulator detection - checking properties"
+    );
+
     // Method 1: Direct emulator indicator (most reliable)
     // ro.build.characteristics=emulator is set on all official Android emulators
     if let Some(chars) = props.get("ro.build.characteristics") {
         if chars.contains("emulator") {
+            tracing::info!("Emulator detected: ro.build.characteristics contains 'emulator'");
             return true;
         }
     }
@@ -216,62 +234,64 @@ fn is_android_emulator() -> bool {
     // ro.boot.qemu=1 is set when running under QEMU
     if let Some(qemu) = props.get("ro.boot.qemu") {
         if qemu == "1" {
+            tracing::info!("Emulator detected: ro.boot.qemu=1");
             return true;
         }
     }
     if let Some(qemu) = props.get("ro.kernel.qemu") {
         if qemu == "1" {
+            tracing::info!("Emulator detected: ro.kernel.qemu=1");
             return true;
         }
     }
 
-    // Method 3: Check hardware property
-    if let Some(hw) = props.get("ro.hardware") {
-        let hw_lower = hw.to_lowercase();
-        if hw_lower.contains("goldfish")
-            || hw_lower.contains("ranchu")
-            || hw_lower.contains("vbox86")
-        {
-            return true;
-        }
+    // Method 3: Check hardware property for QEMU/emulator hardware
+    let hw_lower = hardware.to_lowercase();
+    if hw_lower.contains("goldfish") || hw_lower.contains("ranchu") || hw_lower.contains("vbox86") {
+        tracing::info!(hardware = %hardware, "Emulator detected: hardware matches emulator pattern");
+        return true;
     }
 
-    // Method 4: Check product device for emulator patterns
-    if let Some(device) = props.get("ro.product.device") {
-        let device_lower = device.to_lowercase();
-        if device_lower.contains("generic")
-            || device_lower.contains("sdk_gphone")
-            || device_lower.contains("emu64")
-            || device_lower.contains("emulator")
-            || device_lower.contains("vbox86")
-        {
-            return true;
-        }
+    // Method 4: Check product device for SPECIFIC emulator patterns
+    // NOTE: Do NOT check for just "generic" - real devices can have this!
+    // Only check for specific emulator device names.
+    let device_lower = device.to_lowercase();
+    if device_lower.contains("sdk_gphone")
+        || device_lower.contains("emu64")
+        || device_lower == "emulator"  // Exact match only
+        || device_lower.contains("vbox86")
+        || device_lower.starts_with("generic_x86")
+        || device_lower.starts_with("generic_arm")
+    {
+        tracing::info!(device = %device, "Emulator detected: device matches emulator pattern");
+        return true;
     }
 
-    // Method 5: Check product model
-    if let Some(model) = props.get("ro.product.model") {
-        let model_lower = model.to_lowercase();
-        if model_lower.contains("sdk")
-            || model_lower.contains("emulator")
-            || model_lower.contains("android sdk")
-        {
-            return true;
-        }
+    // Method 5: Check product model for SPECIFIC emulator patterns
+    // NOTE: Do NOT check for just "sdk" - real devices might have this in model names
+    let model_lower = model.to_lowercase();
+    if model_lower == "emulator"  // Exact match only
+        || model_lower == "android sdk built for x86"
+        || model_lower == "android sdk built for x86_64"
+        || model_lower == "android sdk built for arm"
+        || model_lower == "android sdk built for arm64"
+    {
+        tracing::info!(model = %model, "Emulator detected: model matches emulator pattern");
+        return true;
     }
 
-    // Method 6: Check build fingerprint
-    if let Some(fp) = props.get("ro.build.fingerprint") {
-        let fp_lower = fp.to_lowercase();
-        if fp_lower.contains("sdk_gphone")
-            || fp_lower.contains("generic")
-            || fp_lower.contains("emulator")
-        {
-            return true;
-        }
+    // Method 6: Check build fingerprint for SPECIFIC emulator patterns
+    // NOTE: Do NOT check for just "generic" - this causes false positives!
+    let fp_lower = fingerprint.to_lowercase();
+    if fp_lower.contains("sdk_gphone")
+        || fp_lower.contains("/sdk_gphone")
+        || fp_lower.contains("emulator")
+    {
+        tracing::info!("Emulator detected: fingerprint matches emulator pattern");
+        return true;
     }
 
-    // Method 7: Check for emulator-specific files (fallback)
+    // Method 7: Check for emulator-specific files (most definitive)
     let emulator_files = [
         "/dev/socket/qemud",
         "/dev/qemu_pipe",
@@ -281,10 +301,12 @@ fn is_android_emulator() -> bool {
 
     for path in emulator_files {
         if std::path::Path::new(path).exists() {
+            tracing::info!(path = %path, "Emulator detected: emulator file exists");
             return true;
         }
     }
 
+    tracing::debug!("Not an emulator - all checks passed");
     false
 }
 
