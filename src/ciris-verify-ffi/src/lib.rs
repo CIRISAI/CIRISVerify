@@ -150,6 +150,26 @@ use ciris_verify_core::unified::{
 use ciris_verify_core::LicenseEngine;
 use tokio::runtime::Runtime;
 
+/// Get the correct platform OS name.
+///
+/// On Android, `std::env::consts::OS` returns "linux" because Android
+/// uses the Linux kernel. This function returns "android" on Android
+/// for accurate platform reporting.
+fn get_platform_os() -> String {
+    #[cfg(target_os = "android")]
+    {
+        "android".to_string()
+    }
+    #[cfg(target_os = "ios")]
+    {
+        "ios".to_string()
+    }
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        std::env::consts::OS.to_string()
+    }
+}
+
 /// Get the default path to the agent signing key file.
 ///
 /// Checks multiple locations in priority order:
@@ -2934,7 +2954,16 @@ unsafe fn run_attestation_inner(
     let hw_type_str = format!("{:?}", capabilities.hardware_type);
     // On emulators, even if KeyStore API is available, it's software-emulated (no TEE/SE)
     let running_in_vm = is_emulator();
-    let hardware_backed = handle.ed25519_signer.is_hardware_backed() && !running_in_vm;
+    let signer_hw_backed = handle.ed25519_signer.is_hardware_backed();
+    let hardware_backed = signer_hw_backed && !running_in_vm;
+
+    tracing::info!(
+        signer_hw_backed = signer_hw_backed,
+        running_in_vm = running_in_vm,
+        hardware_backed = hardware_backed,
+        hardware_type = %hw_type_str,
+        "Attestation hardware detection"
+    );
     let storage_mode = match capabilities.hardware_type {
         ciris_keyring::HardwareType::AndroidKeystore => {
             "HW-AES-256-GCM (Android Keystore)".to_string()
@@ -2960,7 +2989,7 @@ unsafe fn run_attestation_inner(
         ed25519_fingerprint: ed25519_fingerprint.clone(),
         mldsa_fingerprint: None,
         registry_key_status: result.registry_key_status.clone(),
-        platform_os: std::env::consts::OS.to_string(),
+        platform_os: get_platform_os(),
     });
 
     // Inject cached device attestation result (from prior Play Integrity / App Attest call)
