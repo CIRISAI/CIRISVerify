@@ -61,6 +61,18 @@ pub mod tpm;
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 pub use tpm::TpmSecureBlobStorage;
 
+#[cfg(target_os = "android")]
+pub mod android;
+
+#[cfg(target_os = "android")]
+pub use android::AndroidKeystoreSecureBlobStorage;
+
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+pub mod ios;
+
+#[cfg(any(target_os = "ios", target_os = "macos"))]
+pub use ios::SecureEnclaveSecureBlobStorage;
+
 use crate::error::KeyringError;
 use std::path::PathBuf;
 
@@ -542,25 +554,45 @@ pub fn create_platform_storage(
     // Android Keystore (hardware-backed on supported devices)
     #[cfg(target_os = "android")]
     {
-        tracing::info!(
-            alias = %alias,
-            "Android detected - using software storage (Keystore integration via JNI in FFI layer)"
-        );
-        // Note: Full Android Keystore integration happens at the JNI/FFI layer
-        // where we have access to the Java KeyStore API. Here we use software
-        // storage as the Rust-side fallback.
+        match AndroidKeystoreSecureBlobStorage::new(&alias, &storage_dir) {
+            Ok(storage) => {
+                tracing::info!(
+                    alias = %alias,
+                    hw_backed = storage.is_hardware_backed(),
+                    "Using Android Keystore-backed secure storage for wallet seeds"
+                );
+                return Ok(Box::new(storage));
+            },
+            Err(e) => {
+                tracing::warn!(
+                    alias = %alias,
+                    error = %e,
+                    "Android Keystore storage initialization failed, falling back to software"
+                );
+            },
+        }
     }
 
-    // iOS Secure Enclave (T2/Apple Silicon)
-    #[cfg(target_os = "ios")]
+    // iOS/macOS Secure Enclave
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
     {
-        tracing::info!(
-            alias = %alias,
-            "iOS detected - using software storage (Secure Enclave integration via Swift wrapper)"
-        );
-        // Note: Full Secure Enclave integration happens at the Swift wrapper layer
-        // where we have access to the Security framework. Here we use software
-        // storage as the Rust-side fallback.
+        match SecureEnclaveSecureBlobStorage::new(&alias, &storage_dir) {
+            Ok(storage) => {
+                tracing::info!(
+                    alias = %alias,
+                    hw_backed = storage.is_hardware_backed(),
+                    "Using Secure Enclave-backed secure storage for wallet seeds"
+                );
+                return Ok(Box::new(storage));
+            },
+            Err(e) => {
+                tracing::warn!(
+                    alias = %alias,
+                    error = %e,
+                    "Secure Enclave storage initialization failed, falling back to software"
+                );
+            },
+        }
     }
 
     // Fall back to software storage

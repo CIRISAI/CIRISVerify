@@ -60,7 +60,7 @@ cargo deny check
 
 | Crate | Status | Notes |
 |-------|--------|-------|
-| `ciris-keyring` | Phase 2 Complete | HardwareSigner trait, SoftwareSigner impl, Android Keystore, TPM 2.0 (dual-key architecture) |
+| `ciris-keyring` | Phase 2 Complete | HardwareSigner trait, SoftwareSigner impl, Android Keystore, TPM 2.0 (dual-key architecture), **SecureBlobStorage for wallet seeds (v1.4.0+)** |
 | `ciris-crypto` | Phase 1 Complete | ECDSA P-256, Ed25519, ML-DSA-65 (FIPS 204), hybrid signer with bound signatures, **secp256k1 wallet signing (v1.3.0+)** |
 | `ciris-verify-core` | Phase 3-5 Active | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), Tripwire file integrity, remote attestation export, Level 2 binary self-verification, **hardware vulnerability detection (v1.2.0+)**, **offline manifest cache (v1.2.0+)** |
 | `ciris-verify-ffi` | Phase 4 Active | C FFI (27 functions), JNI bindings (Android Level 5), Swift wrapper (iOS Level 5), **wallet signing FFI (v1.3.0+)** |
@@ -79,7 +79,13 @@ cargo deny check
 
 **secp256k1 Wallet Signing (v1.3.0+)**: Deterministic EVM wallet key derivation from Ed25519 root identity using HKDF. Supports EIP-155 transaction signing, EIP-712 typed data, and address recovery. Key hierarchy: `Ed25519 Seed → HKDF-SHA256("CIRIS-wallet-v1", "secp256k1-evm-signing-key") → secp256k1 Private Key → EVM Address (keccak256)`.
 
-**256 tests passing** across all crates.
+**Hardware-Backed Wallet Seed Storage (v1.4.0+)**: `SecureBlobStorage` trait with platform implementations:
+- **Android**: `AndroidKeystoreSecureBlobStorage` - AES-256-GCM with hardware-backed key from Android Keystore (TEE/StrongBox)
+- **iOS/macOS**: `SecureEnclaveSecureBlobStorage` - ECIES with P-256 key in Secure Enclave (T2/Apple Silicon, keychain fallback on older Macs)
+- **Linux/Windows**: `TpmSecureBlobStorage` - TPM 2.0 sealed blobs
+- **Fallback**: `SoftwareSecureBlobStorage` - AES-256-GCM with derived master key
+
+**277 tests passing** across all crates.
 
 ## Development Workflow
 
