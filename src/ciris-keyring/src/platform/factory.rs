@@ -176,7 +176,7 @@ fn detect_macos_capabilities() -> PlatformCapabilities {
     // macOS with Apple Silicon has Secure Enclave
     // T2 Macs also have it
     PlatformCapabilities {
-        hardware_type: HardwareType::IosSecureEnclave, // Same as iOS
+        hardware_type: HardwareType::MacOsSecureEnclave,
         has_hardware: true,
         supports_user_auth: true, // Touch ID / Face ID
         supports_attestation: true,
@@ -311,6 +311,7 @@ mod tests {
                 | HardwareType::AndroidKeystore
                 | HardwareType::AndroidStrongbox
                 | HardwareType::IosSecureEnclave
+                | HardwareType::MacOsSecureEnclave
                 | HardwareType::TpmFirmware
                 | HardwareType::TpmDiscrete
         ));

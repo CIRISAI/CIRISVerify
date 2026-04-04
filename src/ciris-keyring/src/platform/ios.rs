@@ -817,16 +817,7 @@ impl SecureEnclaveWrappedEd25519Signer {
 
     /// Inner key generation: `use_se=true` for Secure Enclave, `false` for regular keychain.
     fn generate_wrapper_key_inner(&self, use_se: bool) -> Result<(), KeyringError> {
-        use security_framework_sys::access_control::kSecAccessControlPrivateKeyUsage;
         use security_framework_sys::item::*;
-
-        let access_control = SecAccessControl::create_with_protection(
-            Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
-            kSecAccessControlPrivateKeyUsage,
-        )
-        .map_err(|e| KeyringError::KeyGenerationFailed {
-            reason: format!("Failed to create access control: {e}"),
-        })?;
 
         let tag = CFData::from_buffer(self.wrapper_key_tag.as_bytes());
 
@@ -840,10 +831,23 @@ impl SecureEnclaveWrappedEd25519Signer {
                 CFString::wrap_under_get_rule(kSecAttrApplicationTag).as_CFTypeRef(),
                 tag.as_CFTypeRef(),
             );
-            private_attrs.set(
-                CFString::wrap_under_get_rule(kSecAttrAccessControl).as_CFTypeRef(),
-                access_control.as_CFTypeRef(),
-            );
+
+            if use_se {
+                // SE keys require access control with private key usage
+                use security_framework_sys::access_control::kSecAccessControlPrivateKeyUsage;
+                let access_control = SecAccessControl::create_with_protection(
+                    Some(ProtectionMode::AccessibleWhenUnlockedThisDeviceOnly),
+                    kSecAccessControlPrivateKeyUsage,
+                )
+                .map_err(|e| KeyringError::KeyGenerationFailed {
+                    reason: format!("Failed to create access control: {e}"),
+                })?;
+                private_attrs.set(
+                    CFString::wrap_under_get_rule(kSecAttrAccessControl).as_CFTypeRef(),
+                    access_control.as_CFTypeRef(),
+                );
+            }
+            // Non-SE keychain keys: no access control policy (avoids entitlement requirement)
 
             let mut params = CFMutableDictionary::new();
             params.set(

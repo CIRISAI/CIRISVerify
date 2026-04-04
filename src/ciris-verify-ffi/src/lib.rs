@@ -2939,7 +2939,8 @@ unsafe fn run_attestation_inner(
         ciris_keyring::HardwareType::AndroidKeystore => {
             "HW-AES-256-GCM (Android Keystore)".to_string()
         },
-        ciris_keyring::HardwareType::IosSecureEnclave => "Secure Enclave".to_string(),
+        ciris_keyring::HardwareType::IosSecureEnclave
+        | ciris_keyring::HardwareType::MacOsSecureEnclave => "Secure Enclave".to_string(),
         ciris_keyring::HardwareType::TpmDiscrete | ciris_keyring::HardwareType::TpmFirmware => {
             "TPM".to_string()
         },
@@ -2959,6 +2960,7 @@ unsafe fn run_attestation_inner(
         ed25519_fingerprint: ed25519_fingerprint.clone(),
         mldsa_fingerprint: None,
         registry_key_status: result.registry_key_status.clone(),
+        platform_os: std::env::consts::OS.to_string(),
     });
 
     // Inject cached device attestation result (from prior Play Integrity / App Attest call)

@@ -221,6 +221,9 @@ pub struct KeyAttestationResult {
     /// One of: "active", "rotated", "revoked", "not_found", "not_checked", "error:..."
     #[serde(default)]
     pub registry_key_status: String,
+    /// Platform OS (e.g., "macos", "ios", "android", "linux", "windows").
+    #[serde(default)]
+    pub platform_os: String,
 }
 
 /// Device attestation result (L2: Play Integrity on Android, App Attest on iOS).

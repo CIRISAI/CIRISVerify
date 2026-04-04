@@ -62,8 +62,11 @@ pub enum HardwareType {
     /// Higher security than standard Keystore.
     AndroidStrongbox = 2,
 
-    /// Apple Secure Enclave
+    /// Apple Secure Enclave (iOS/iPadOS)
     IosSecureEnclave = 3,
+
+    /// Apple Secure Enclave (macOS)
+    MacOsSecureEnclave = 12,
 
     /// Discrete TPM 2.0 (dedicated chip)
     /// Higher security than firmware TPM.
@@ -114,7 +117,7 @@ impl HardwareType {
             // Hardware secure elements
             Self::AndroidStrongbox => 5,
             Self::TpmDiscrete => 5,
-            Self::IosSecureEnclave => 5,
+            Self::IosSecureEnclave | Self::MacOsSecureEnclave => 5,
             // Firmware/TEE-based
             Self::TpmFirmware => 4,
             Self::IntelSgx => 4,
