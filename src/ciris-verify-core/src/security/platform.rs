@@ -308,39 +308,51 @@ fn is_android_emulator() -> bool {
         return true;
     }
 
-    // Method 7: Check for emulator-specific files
-    // NOTE: Some real Samsung devices have /dev/socket/qemud for diagnostics
-    // Only check truly emulator-specific files
-    let emulator_files = [
-        "/dev/qemu_pipe",     // QEMU virtual device pipe
-        "/dev/goldfish_pipe", // Goldfish emulator pipe
-        "/system/bin/qemu-props", // QEMU property service
-                              // NOTE: /dev/socket/qemud removed - present on some real Samsung devices
+    // Method 7: Check for DEFINITIVE emulator-specific files
+    // These files ONLY exist on actual QEMU emulators, never on real devices
+    let definitive_emulator_files = [
+        "/dev/qemu_pipe",     // QEMU virtual device pipe - never on real devices
+        "/dev/goldfish_pipe", // Goldfish emulator pipe - never on real devices
     ];
 
-    for path in emulator_files {
+    for path in definitive_emulator_files {
         if std::path::Path::new(path).exists() {
-            tracing::info!(path = %path, "Emulator detected: emulator file exists");
+            tracing::info!(path = %path, "Emulator detected: definitive emulator file exists");
             return true;
         }
     }
 
-    // Method 8: If qemud socket exists, verify it's actually QEMU by checking other indicators
-    // Some real Samsung devices have this socket for Samsung-specific diagnostics
-    if std::path::Path::new("/dev/socket/qemud").exists() {
-        // Only treat as emulator if we also have other QEMU indicators
-        let has_qemu_indicators = props.get("ro.kernel.qemu").map_or(false, |v| v == "1")
-            || props.get("ro.boot.qemu").map_or(false, |v| v == "1")
-            || hw_lower.contains("goldfish")
-            || hw_lower.contains("ranchu");
+    // Method 8: Check for QEMU-related files that MAY exist on carrier devices
+    // Samsung/T-Mobile devices can have these for carrier testing infrastructure
+    // Require corroborating QEMU indicators before treating as emulator
+    let ambiguous_qemu_files = [
+        "/system/bin/qemu-props", // Present on some Samsung carrier devices
+        "/dev/socket/qemud",      // Present on some Samsung devices for diagnostics
+    ];
 
-        if has_qemu_indicators {
-            tracing::info!("Emulator detected: qemud socket + QEMU indicators present");
-            return true;
-        } else {
-            tracing::debug!(
-                "qemud socket exists but no QEMU indicators - likely real Samsung device"
-            );
+    let has_qemu_runtime_indicators = props.get("ro.kernel.qemu").map_or(false, |v| v == "1")
+        || props.get("ro.boot.qemu").map_or(false, |v| v == "1");
+
+    let has_qemu_hardware = hw_lower.contains("goldfish") || hw_lower.contains("ranchu");
+
+    for path in ambiguous_qemu_files {
+        if std::path::Path::new(path).exists() {
+            // Only treat as emulator if we ALSO have runtime QEMU indicators
+            if has_qemu_runtime_indicators || has_qemu_hardware {
+                tracing::info!(
+                    path = %path,
+                    has_qemu_runtime = has_qemu_runtime_indicators,
+                    has_qemu_hardware = has_qemu_hardware,
+                    "Emulator detected: QEMU file + corroborating indicators"
+                );
+                return true;
+            } else {
+                tracing::debug!(
+                    path = %path,
+                    "QEMU-related file exists but no runtime indicators - \
+                     likely Samsung/carrier device, not treating as emulator"
+                );
+            }
         }
     }
 
