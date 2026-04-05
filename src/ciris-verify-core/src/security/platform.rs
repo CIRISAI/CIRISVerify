@@ -221,12 +221,29 @@ fn is_android_emulator() -> bool {
         "Android emulator detection - checking properties"
     );
 
-    // Method 1: Direct emulator indicator (most reliable)
-    // ro.build.characteristics=emulator is set on all official Android emulators
+    // Method 1: Check ro.build.characteristics for emulator
+    // NOTE: This alone is NOT reliable! Samsung/carrier devices often include "emulator"
+    // for carrier testing infrastructure (e.g., "tmo,emulator", "phone,emulator").
+    // See: https://github.com/flutter/flutter/issues/10203
+    // We only treat this as definitive if characteristics is EXACTLY "emulator" or
+    // "default,emulator" (official Android emulator patterns).
     if let Some(chars) = props.get("ro.build.characteristics") {
-        if chars.contains("emulator") {
-            tracing::info!("Emulator detected: ro.build.characteristics contains 'emulator'");
+        let chars_lower = chars.to_lowercase();
+        // Official Android emulator patterns only
+        if chars_lower == "emulator" || chars_lower == "default,emulator" {
+            tracing::info!(
+                characteristics = %chars,
+                "Emulator detected: ro.build.characteristics is official emulator pattern"
+            );
             return true;
+        }
+        // Log if "emulator" is present but not in official pattern (likely carrier device)
+        if chars_lower.contains("emulator") {
+            tracing::debug!(
+                characteristics = %chars,
+                "ro.build.characteristics contains 'emulator' but not official pattern - \
+                 likely carrier device (Samsung/T-Mobile), not treating as emulator"
+            );
         }
     }
 
