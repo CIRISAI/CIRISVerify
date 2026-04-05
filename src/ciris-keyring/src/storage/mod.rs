@@ -61,12 +61,11 @@ pub mod tpm;
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 pub use tpm::TpmSecureBlobStorage;
 
-// TODO: Enable when JNI issues are resolved
-// #[cfg(target_os = "android")]
-// pub mod android;
-//
-// #[cfg(target_os = "android")]
-// pub use android::AndroidKeystoreSecureBlobStorage;
+#[cfg(target_os = "android")]
+pub mod android;
+
+#[cfg(target_os = "android")]
+pub use android::AndroidKeystoreSecureBlobStorage;
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 pub mod ios;
@@ -553,14 +552,25 @@ pub fn create_platform_storage(
     }
 
     // Android Keystore (hardware-backed on supported devices)
-    // TODO: Enable when JNI issues are resolved
-    // The AndroidKeystoreSecureBlobStorage implementation needs JNI API fixes
     #[cfg(target_os = "android")]
     {
-        tracing::info!(
-            alias = %alias,
-            "Android detected - using software storage (Keystore blob storage pending JNI fixes)"
-        );
+        match AndroidKeystoreSecureBlobStorage::new(&alias, &storage_dir) {
+            Ok(storage) => {
+                tracing::info!(
+                    alias = %alias,
+                    hw_backed = storage.is_hardware_backed(),
+                    "Using Android Keystore-backed secure storage for wallet seeds"
+                );
+                return Ok(Box::new(storage));
+            },
+            Err(e) => {
+                tracing::warn!(
+                    alias = %alias,
+                    error = %e,
+                    "Android Keystore storage initialization failed, falling back to software"
+                );
+            },
+        }
     }
 
     // iOS/macOS Secure Enclave

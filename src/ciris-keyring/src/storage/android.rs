@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use tracing::{debug, error, info};
 
 #[cfg(target_os = "android")]
-use jni::objects::{JObject, JValue};
+use jni::objects::{JByteArray, JObject, JValue};
 
 #[cfg(target_os = "android")]
 use crate::platform::android::{get_java_vm, AndroidKeystoreSigner};
@@ -115,20 +115,128 @@ impl AndroidKeystoreSecureBlobStorage {
     }
 
     /// Check if StrongBox is available on this device.
+    ///
+    /// Uses PackageManager.hasSystemFeature(FEATURE_STRONGBOX_KEYSTORE) to detect
+    /// StrongBox support. Requires Android 9.0 (API 28) or higher.
     fn check_strongbox_available() -> bool {
         #[cfg(target_os = "android")]
         {
-            // Check via PackageManager.hasSystemFeature
-            if let Some(vm) = get_java_vm() {
-                if let Ok(mut env) = vm.attach_current_thread() {
-                    // Get PackageManager via context
-                    // For now, assume StrongBox is not available to be safe
-                    // TODO: Implement proper StrongBox detection
-                    let _ = env;
+            use jni::objects::JString;
+
+            let vm = match get_java_vm() {
+                Some(vm) => vm,
+                None => {
+                    debug!("StrongBox check: JNI not initialized");
                     return false;
-                }
+                },
+            };
+
+            let mut env = match vm.attach_current_thread() {
+                Ok(env) => env,
+                Err(e) => {
+                    debug!("StrongBox check: JNI attach failed: {}", e);
+                    return false;
+                },
+            };
+
+            // Get the ActivityThread to access the application context
+            let activity_thread_class = match env.find_class("android/app/ActivityThread") {
+                Ok(c) => c,
+                Err(_) => {
+                    debug!("StrongBox check: ActivityThread class not found");
+                    return false;
+                },
+            };
+
+            let current_app = match env.call_static_method(
+                activity_thread_class,
+                "currentApplication",
+                "()Landroid/app/Application;",
+                &[],
+            ) {
+                Ok(app) => app,
+                Err(_) => {
+                    debug!("StrongBox check: currentApplication failed");
+                    return false;
+                },
+            };
+
+            let context = match current_app.l() {
+                Ok(c) => c,
+                Err(_) => {
+                    debug!("StrongBox check: context conversion failed");
+                    return false;
+                },
+            };
+
+            if context.is_null() {
+                debug!("StrongBox check: context is null");
+                return false;
             }
-            false
+
+            // Get PackageManager from context
+            let package_manager = match env.call_method(
+                &context,
+                "getPackageManager",
+                "()Landroid/content/pm/PackageManager;",
+                &[],
+            ) {
+                Ok(pm) => pm,
+                Err(_) => {
+                    debug!("StrongBox check: getPackageManager failed");
+                    return false;
+                },
+            };
+
+            let pm = match package_manager.l() {
+                Ok(p) => p,
+                Err(_) => {
+                    debug!("StrongBox check: PackageManager conversion failed");
+                    return false;
+                },
+            };
+
+            if pm.is_null() {
+                debug!("StrongBox check: PackageManager is null");
+                return false;
+            }
+
+            // Check for FEATURE_STRONGBOX_KEYSTORE
+            let feature_name: JString = match env.new_string("android.hardware.strongbox_keystore")
+            {
+                Ok(s) => s,
+                Err(_) => {
+                    debug!("StrongBox check: string creation failed");
+                    return false;
+                },
+            };
+
+            let has_feature = match env.call_method(
+                &pm,
+                "hasSystemFeature",
+                "(Ljava/lang/String;)Z",
+                &[JValue::Object(&feature_name.into())],
+            ) {
+                Ok(result) => result,
+                Err(_) => {
+                    debug!("StrongBox check: hasSystemFeature failed");
+                    return false;
+                },
+            };
+
+            match has_feature.z() {
+                Ok(has) => {
+                    info!(
+                        strongbox_available = has,
+                        "StrongBox availability check complete"
+                    );
+                    has
+                },
+                Err(_) => {
+                    debug!("StrongBox check: boolean conversion failed");
+                    false
+                },
+            }
         }
         #[cfg(not(target_os = "android"))]
         {
@@ -482,11 +590,13 @@ impl AndroidKeystoreSecureBlobStorage {
             reason: format!("IV conversion failed: {}", e),
         })?;
 
-        let iv_bytes = env.convert_byte_array(iv.into_raw().cast()).map_err(|e| {
-            KeyringError::HardwareNotAvailable {
-                reason: format!("IV byte array conversion failed: {}", e),
-            }
-        })?;
+        // Safety: getIV returns a byte[], which is a JByteArray in JNI
+        let iv_array = unsafe { JByteArray::from_raw(iv.into_raw()) };
+        let iv_bytes =
+            env.convert_byte_array(&iv_array)
+                .map_err(|e| KeyringError::HardwareNotAvailable {
+                    reason: format!("IV byte array conversion failed: {}", e),
+                })?;
 
         // Convert plaintext to Java byte array
         let plaintext_array = env.byte_array_from_slice(plaintext).map_err(|e| {
@@ -513,11 +623,13 @@ impl AndroidKeystoreSecureBlobStorage {
                 reason: format!("Ciphertext conversion failed: {}", e),
             })?;
 
-        let ciphertext_bytes = env
-            .convert_byte_array(ciphertext.into_raw().cast())
-            .map_err(|e| KeyringError::HardwareNotAvailable {
+        // Safety: doFinal returns a byte[], which is a JByteArray in JNI
+        let ciphertext_array = unsafe { JByteArray::from_raw(ciphertext.into_raw()) };
+        let ciphertext_bytes = env.convert_byte_array(&ciphertext_array).map_err(|e| {
+            KeyringError::HardwareNotAvailable {
                 reason: format!("Ciphertext byte array conversion failed: {}", e),
-            })?;
+            }
+        })?;
 
         // Combine IV + ciphertext
         let mut result = Vec::with_capacity(iv_bytes.len() + ciphertext_bytes.len());
@@ -686,11 +798,13 @@ impl AndroidKeystoreSecureBlobStorage {
             reason: format!("Plaintext conversion failed: {}", e),
         })?;
 
-        let plaintext_bytes = env
-            .convert_byte_array(plaintext.into_raw().cast())
-            .map_err(|e| KeyringError::StorageFailed {
-                reason: format!("Plaintext byte array conversion failed: {}", e),
-            })?;
+        // Safety: doFinal returns a byte[], which is a JByteArray in JNI
+        let plaintext_array = unsafe { JByteArray::from_raw(plaintext.into_raw()) };
+        let plaintext_bytes =
+            env.convert_byte_array(&plaintext_array)
+                .map_err(|e| KeyringError::StorageFailed {
+                    reason: format!("Plaintext byte array conversion failed: {}", e),
+                })?;
 
         debug!(plaintext_len = plaintext_bytes.len(), "Blob decrypted");
 
