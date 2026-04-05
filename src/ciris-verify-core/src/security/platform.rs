@@ -291,18 +291,39 @@ fn is_android_emulator() -> bool {
         return true;
     }
 
-    // Method 7: Check for emulator-specific files (most definitive)
+    // Method 7: Check for emulator-specific files
+    // NOTE: Some real Samsung devices have /dev/socket/qemud for diagnostics
+    // Only check truly emulator-specific files
     let emulator_files = [
-        "/dev/socket/qemud",
-        "/dev/qemu_pipe",
-        "/dev/goldfish_pipe",
-        "/system/bin/qemu-props",
+        "/dev/qemu_pipe",     // QEMU virtual device pipe
+        "/dev/goldfish_pipe", // Goldfish emulator pipe
+        "/system/bin/qemu-props", // QEMU property service
+                              // NOTE: /dev/socket/qemud removed - present on some real Samsung devices
     ];
 
     for path in emulator_files {
         if std::path::Path::new(path).exists() {
             tracing::info!(path = %path, "Emulator detected: emulator file exists");
             return true;
+        }
+    }
+
+    // Method 8: If qemud socket exists, verify it's actually QEMU by checking other indicators
+    // Some real Samsung devices have this socket for Samsung-specific diagnostics
+    if std::path::Path::new("/dev/socket/qemud").exists() {
+        // Only treat as emulator if we also have other QEMU indicators
+        let has_qemu_indicators = props.get("ro.kernel.qemu").map_or(false, |v| v == "1")
+            || props.get("ro.boot.qemu").map_or(false, |v| v == "1")
+            || hw_lower.contains("goldfish")
+            || hw_lower.contains("ranchu");
+
+        if has_qemu_indicators {
+            tracing::info!("Emulator detected: qemud socket + QEMU indicators present");
+            return true;
+        } else {
+            tracing::debug!(
+                "qemud socket exists but no QEMU indicators - likely real Samsung device"
+            );
         }
     }
 
