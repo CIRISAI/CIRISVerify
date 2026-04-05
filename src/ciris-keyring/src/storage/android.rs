@@ -6,7 +6,7 @@
 use crate::error::KeyringError;
 use crate::storage::SecureBlobStorage;
 use std::path::PathBuf;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 #[cfg(target_os = "android")]
 use jni::objects::{JObject, JValue};

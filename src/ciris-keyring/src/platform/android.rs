@@ -40,7 +40,7 @@ pub fn init_jni(vm: JavaVM) -> Result<(), KeyringError> {
 
 /// Get the cached JavaVM reference.
 #[cfg(target_os = "android")]
-fn get_java_vm() -> Option<&'static JavaVM> {
+pub fn get_java_vm() -> Option<&'static JavaVM> {
     JAVA_VM.get()
 }
 
@@ -135,7 +135,7 @@ impl AndroidKeystoreSigner {
     }
 
     #[cfg(target_os = "android")]
-    fn get_keystore<'a>(env: &mut JNIEnv<'a>) -> Result<JObject<'a>, KeyringError> {
+    pub fn get_keystore<'a>(env: &mut JNIEnv<'a>) -> Result<JObject<'a>, KeyringError> {
         debug!("get_keystore: loading AndroidKeyStore");
 
         let keystore_type = env.new_string("AndroidKeyStore").map_err(|e| {
