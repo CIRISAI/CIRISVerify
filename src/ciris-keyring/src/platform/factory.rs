@@ -280,8 +280,12 @@ pub fn create_hardware_signer(
         });
     }
 
-    tracing::info!("Using software signer (no hardware security module)");
-    Ok(Box::new(SoftwareSigner::new(alias)?))
+    let key_dir = default_key_dir();
+    tracing::info!(
+        key_dir = ?key_dir,
+        "Using software signer (no hardware security module)"
+    );
+    Ok(Box::new(SoftwareSigner::new(alias, key_dir)?))
 }
 
 /// Create a software-only signer (for testing or community tier).
@@ -294,7 +298,46 @@ pub fn create_hardware_signer(
 ///
 /// Returns error if key generation fails.
 pub fn create_software_signer(alias: &str) -> Result<Box<dyn HardwareSigner>, KeyringError> {
-    Ok(Box::new(SoftwareSigner::new(alias)?))
+    let key_dir = default_key_dir();
+    Ok(Box::new(SoftwareSigner::new(alias, key_dir)?))
+}
+
+/// Get the default key storage directory.
+///
+/// Tries in order:
+/// 1. `$CIRIS_DATA_DIR` environment variable
+/// 2. Platform-specific data directory (XDG, AppSupport, LocalAppData)
+/// 3. Current directory as fallback
+fn default_key_dir() -> std::path::PathBuf {
+    // Check environment variable first
+    if let Ok(dir) = std::env::var("CIRIS_DATA_DIR") {
+        return std::path::PathBuf::from(dir);
+    }
+
+    // Platform-specific defaults
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(dir) = dirs::data_local_dir() {
+            return dir.join("ciris-verify");
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    {
+        if let Some(dir) = dirs::data_local_dir() {
+            return dir.join("ai.ciris.verify");
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(dir) = dirs::data_local_dir() {
+            return dir.join("ciris-verify");
+        }
+    }
+
+    // Fallback to current directory
+    std::path::PathBuf::from(".")
 }
 
 #[cfg(test)]
@@ -319,8 +362,11 @@ mod tests {
 
     #[test]
     fn test_software_signer_creation() {
-        let signer = create_software_signer("test_key");
+        let signer = create_software_signer("test_factory_key");
         assert!(signer.is_ok());
+        // Cleanup: delete persisted key file
+        let key_path = default_key_dir().join("test_factory_key.p256.key");
+        let _ = std::fs::remove_file(&key_path);
     }
 
     #[test]

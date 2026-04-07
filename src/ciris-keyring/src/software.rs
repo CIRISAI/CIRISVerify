@@ -28,10 +28,14 @@ use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation, Softwa
 ///
 /// # Security Warning
 ///
-/// This signer stores keys in memory (or encrypted on disk) without
-/// hardware protection. The private key CAN be extracted by an attacker
-/// with system access. Deployments using this signer are automatically
-/// limited to UNLICENSED_COMMUNITY tier.
+/// This signer stores keys on disk WITHOUT hardware protection. The private
+/// key CAN be extracted by an attacker with system access. Deployments using
+/// this signer are automatically limited to UNLICENSED_COMMUNITY tier.
+///
+/// # Storage
+///
+/// Keys are persisted to `{key_dir}/{alias}.p256.key` as raw 32-byte scalars.
+/// On creation, the signer loads an existing key or generates and saves a new one.
 ///
 /// # Use Cases
 ///
@@ -42,26 +46,129 @@ use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation, Softwa
 pub struct SoftwareSigner {
     signing_key: Option<SigningKey>,
     alias: String,
+    /// Path to the key file
+    key_path: std::path::PathBuf,
 }
 
 impl SoftwareSigner {
-    /// Create a new software signer.
+    /// Create a new software signer with persistent storage.
+    ///
+    /// Loads existing key from disk or generates and saves a new one.
     ///
     /// # Arguments
     ///
     /// * `alias` - Key alias/identifier
+    /// * `key_dir` - Directory to store the key file
     ///
     /// # Errors
     ///
-    /// Currently infallible, but returns Result for API consistency.
-    pub fn new(alias: impl Into<String>) -> Result<Self, KeyringError> {
+    /// Returns error if key generation or file I/O fails.
+    pub fn new(
+        alias: impl Into<String>,
+        key_dir: impl Into<std::path::PathBuf>,
+    ) -> Result<Self, KeyringError> {
         let alias = alias.into();
+        let key_dir = key_dir.into();
+        let key_path = key_dir.join(format!("{}.p256.key", alias));
+
         tracing::info!(
             alias = %alias,
-            "SoftwareSigner: generating ephemeral ECDSA P-256 key (no hardware binding)"
+            key_path = ?key_path,
+            "SoftwareSigner: initializing with persistent storage"
         );
 
-        let signing_key = SigningKey::random(&mut OsRng);
+        // Ensure directory exists
+        if let Some(parent) = key_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| {
+                tracing::error!("Failed to create key directory: {}", e);
+                KeyringError::StorageFailed {
+                    reason: format!("Failed to create key directory: {}", e),
+                }
+            })?;
+        }
+
+        // Try to load existing key
+        let signing_key = if key_path.exists() {
+            match std::fs::read(&key_path) {
+                Ok(bytes) if bytes.len() == 32 => {
+                    match SigningKey::from_bytes((&bytes[..]).into()) {
+                        Ok(key) => {
+                            tracing::info!(
+                                alias = %alias,
+                                key_path = ?key_path,
+                                "SoftwareSigner: loaded existing key from disk"
+                            );
+                            Some(key)
+                        },
+                        Err(e) => {
+                            tracing::warn!(
+                                alias = %alias,
+                                error = %e,
+                                "SoftwareSigner: failed to parse key file, generating new key"
+                            );
+                            None
+                        },
+                    }
+                },
+                Ok(bytes) => {
+                    tracing::warn!(
+                        alias = %alias,
+                        expected = 32,
+                        actual = bytes.len(),
+                        "SoftwareSigner: invalid key file size, generating new key"
+                    );
+                    None
+                },
+                Err(e) => {
+                    tracing::warn!(
+                        alias = %alias,
+                        error = %e,
+                        "SoftwareSigner: failed to read key file, generating new key"
+                    );
+                    None
+                },
+            }
+        } else {
+            None
+        };
+
+        // Generate new key if needed
+        let signing_key = match signing_key {
+            Some(key) => key,
+            None => {
+                tracing::info!(
+                    alias = %alias,
+                    "SoftwareSigner: generating new ECDSA P-256 key"
+                );
+                let key = SigningKey::random(&mut OsRng);
+
+                // Persist to disk
+                let key_bytes = key.to_bytes();
+                std::fs::write(&key_path, &*key_bytes).map_err(|e| {
+                    tracing::error!("Failed to write key file: {}", e);
+                    KeyringError::StorageFailed {
+                        reason: format!("Failed to write key file: {}", e),
+                    }
+                })?;
+
+                // Set restrictive permissions on Unix
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let perms = std::fs::Permissions::from_mode(0o600);
+                    if let Err(e) = std::fs::set_permissions(&key_path, perms) {
+                        tracing::warn!("Failed to set key file permissions: {}", e);
+                    }
+                }
+
+                tracing::info!(
+                    alias = %alias,
+                    key_path = ?key_path,
+                    "SoftwareSigner: new key generated and saved to disk"
+                );
+                key
+            },
+        };
 
         tracing::warn!(
             "SoftwareSigner: NO HARDWARE BINDING — limited to UNLICENSED_COMMUNITY tier"
@@ -70,26 +177,76 @@ impl SoftwareSigner {
         Ok(Self {
             signing_key: Some(signing_key),
             alias,
+            key_path,
         })
     }
 
-    /// Create a software signer with an existing key.
+    /// Create a software signer with an existing key (no persistence).
     ///
     /// # Arguments
     ///
     /// * `signing_key` - Existing ECDSA P-256 signing key
     /// * `alias` - Key alias
+    /// * `key_path` - Path where the key would be stored (for reference)
     #[must_use]
-    pub fn with_key(signing_key: SigningKey, alias: String) -> Self {
+    pub fn with_key(signing_key: SigningKey, alias: String, key_path: std::path::PathBuf) -> Self {
         Self {
             signing_key: Some(signing_key),
             alias,
+            key_path,
         }
     }
 
-    /// Generate a new random key.
-    pub fn generate_random_key(&mut self) {
-        self.signing_key = Some(SigningKey::random(&mut OsRng));
+    /// Generate a new random key and persist it.
+    pub fn generate_random_key(&mut self) -> Result<(), KeyringError> {
+        let key = SigningKey::random(&mut OsRng);
+
+        // Persist to disk
+        let key_bytes = key.to_bytes();
+        std::fs::write(&self.key_path, &*key_bytes).map_err(|e| {
+            tracing::error!("Failed to write key file: {}", e);
+            KeyringError::StorageFailed {
+                reason: format!("Failed to write key file: {}", e),
+            }
+        })?;
+
+        self.signing_key = Some(key);
+        tracing::info!(
+            alias = %self.alias,
+            key_path = ?self.key_path,
+            "SoftwareSigner: new key generated and saved"
+        );
+        Ok(())
+    }
+
+    /// Get the key file path.
+    #[must_use]
+    pub fn key_path(&self) -> &std::path::Path {
+        &self.key_path
+    }
+
+    /// Check if the key file exists on disk.
+    #[must_use]
+    pub fn key_file_exists(&self) -> bool {
+        self.key_path.exists()
+    }
+
+    /// Delete the key from disk.
+    pub fn delete_key_file(&self) -> Result<(), KeyringError> {
+        if self.key_path.exists() {
+            std::fs::remove_file(&self.key_path).map_err(|e| {
+                tracing::error!("Failed to delete key file: {}", e);
+                KeyringError::StorageFailed {
+                    reason: format!("Failed to delete key file: {}", e),
+                }
+            })?;
+            tracing::info!(
+                alias = %self.alias,
+                key_path = ?self.key_path,
+                "SoftwareSigner: key file deleted"
+            );
+        }
+        Ok(())
     }
 }
 
@@ -129,9 +286,9 @@ impl HardwareSigner for SoftwareSigner {
     async fn attestation(&self) -> Result<PlatformAttestation, KeyringError> {
         Ok(PlatformAttestation::Software(SoftwareAttestation {
             key_derivation: "random".to_string(),
-            storage: "memory".to_string(),
+            storage: format!("file:{}", self.key_path.display()),
             security_warning: "SOFTWARE_ONLY: No hardware binding available. \
-                               Private key can be extracted by attacker with system access. \
+                               Private key stored on disk without encryption. \
                                This deployment is LIMITED to UNLICENSED_COMMUNITY tier."
                 .to_string(),
         }))
@@ -144,19 +301,21 @@ impl HardwareSigner for SoftwareSigner {
             });
         }
 
-        // Note: This is a bit awkward with &self, but we maintain the trait signature
-        // In practice, you'd use interior mutability or a different pattern
-        // For now, we just validate that it would work
+        // Key is already generated and persisted in new()
         tracing::info!(
             alias = %config.alias,
-            "Software key generation requested (actual generation deferred)"
+            key_path = ?self.key_path,
+            "Software key already generated and persisted"
         );
 
         Ok(())
     }
 
     async fn key_exists(&self, alias: &str) -> Result<bool, KeyringError> {
-        Ok(self.signing_key.is_some() && self.alias == alias)
+        // Check both in-memory and on-disk
+        let in_memory = self.signing_key.is_some() && self.alias == alias;
+        let on_disk = self.key_path.exists();
+        Ok(in_memory || on_disk)
     }
 
     async fn delete_key(&self, alias: &str) -> Result<(), KeyringError> {
@@ -166,8 +325,17 @@ impl HardwareSigner for SoftwareSigner {
             });
         }
 
-        // Note: With &self we can't actually delete. See note in generate_key.
-        tracing::info!(alias = %alias, "Software key deletion requested");
+        // Delete the key file from disk
+        if self.key_path.exists() {
+            std::fs::remove_file(&self.key_path).map_err(|e| KeyringError::StorageFailed {
+                reason: format!("Failed to delete key file: {}", e),
+            })?;
+            tracing::info!(
+                alias = %alias,
+                key_path = ?self.key_path,
+                "Software key deleted from disk"
+            );
+        }
 
         Ok(())
     }
@@ -179,20 +347,28 @@ impl HardwareSigner for SoftwareSigner {
 
 /// Mutable software signer for testing and development.
 ///
-/// This version allows actual key generation and deletion.
+/// This version allows actual key generation and deletion with persistence.
 pub struct MutableSoftwareSigner {
     inner: std::sync::RwLock<SoftwareSigner>,
 }
 
 impl MutableSoftwareSigner {
-    /// Create a new mutable software signer.
-    pub fn new(alias: impl Into<String>) -> Result<Self, KeyringError> {
+    /// Create a new mutable software signer with persistent storage.
+    ///
+    /// # Arguments
+    ///
+    /// * `alias` - Key alias
+    /// * `key_dir` - Directory to store the key file
+    pub fn new(
+        alias: impl Into<String>,
+        key_dir: impl Into<std::path::PathBuf>,
+    ) -> Result<Self, KeyringError> {
         Ok(Self {
-            inner: std::sync::RwLock::new(SoftwareSigner::new(alias)?),
+            inner: std::sync::RwLock::new(SoftwareSigner::new(alias, key_dir)?),
         })
     }
 
-    /// Generate a key, actually mutating the internal state.
+    /// Generate a new key, replacing any existing one.
     pub fn generate_key_mut(&self, config: &KeyGenConfig) -> Result<(), KeyringError> {
         if config.require_hardware {
             return Err(KeyringError::HardwareError {
@@ -214,9 +390,9 @@ impl MutableSoftwareSigner {
         }
 
         inner.alias = config.alias.clone();
-        inner.generate_random_key();
+        inner.generate_random_key()?;
 
-        tracing::info!(alias = %config.alias, "Software key generated");
+        tracing::info!(alias = %config.alias, "Software key generated and persisted");
 
         Ok(())
     }
@@ -2353,17 +2529,23 @@ impl MutableEd25519Signer {
 mod tests {
     use super::*;
 
+    fn test_key_dir() -> std::path::PathBuf {
+        std::env::temp_dir().join("ciris-verify-test")
+    }
+
     #[tokio::test]
     async fn test_software_signer_hardware_type() {
-        let signer = SoftwareSigner::new("test_key").unwrap();
+        let signer = SoftwareSigner::new("test_hw_type", test_key_dir()).unwrap();
         assert_eq!(signer.hardware_type(), HardwareType::SoftwareOnly);
         assert!(!signer.hardware_type().supports_professional_license());
+        let _ = signer.delete_key_file(); // Cleanup
     }
 
     #[tokio::test]
     async fn test_software_signer_algorithm() {
-        let signer = SoftwareSigner::new("test_key").unwrap();
+        let signer = SoftwareSigner::new("test_algo", test_key_dir()).unwrap();
         assert_eq!(signer.algorithm(), ClassicalAlgorithm::EcdsaP256);
+        let _ = signer.delete_key_file(); // Cleanup
     }
 
     #[tokio::test]
@@ -2373,7 +2555,8 @@ mod tests {
         let signing_key = SigningKey::random(&mut OsRng);
         let verifying_key = *signing_key.verifying_key();
 
-        let signer = SoftwareSigner::with_key(signing_key, "test".into());
+        let key_path = test_key_dir().join("test_sign.p256.key");
+        let signer = SoftwareSigner::with_key(signing_key, "test_sign".into(), key_path.clone());
 
         let data = b"test data to sign";
         let signature_bytes = signer.sign(data).await.unwrap();
@@ -2381,42 +2564,70 @@ mod tests {
         // Verify signature
         let signature = Signature::from_slice(&signature_bytes).unwrap();
         assert!(verifying_key.verify(data, &signature).is_ok());
+
+        let _ = std::fs::remove_file(&key_path); // Cleanup
     }
 
     #[tokio::test]
     async fn test_software_signer_attestation() {
-        let signer = SoftwareSigner::new("test_key").unwrap();
+        let signer = SoftwareSigner::new("test_attest", test_key_dir()).unwrap();
         let attestation = signer.attestation().await.unwrap();
 
         match attestation {
             PlatformAttestation::Software(sa) => {
                 assert!(sa.security_warning.contains("SOFTWARE_ONLY"));
+                assert!(sa.storage.starts_with("file:"));
             },
             _ => panic!("Expected SoftwareAttestation"),
         }
+        let _ = signer.delete_key_file(); // Cleanup
     }
 
     #[tokio::test]
     async fn test_software_signer_rejects_hardware_requirement() {
-        let signer = SoftwareSigner::new("test_key").unwrap();
+        let signer = SoftwareSigner::new("test_hw_reject", test_key_dir()).unwrap();
         let config = KeyGenConfig::new("test").require_hardware(true);
 
         let result = signer.generate_key(&config).await;
         assert!(matches!(result, Err(KeyringError::HardwareError { .. })));
+        let _ = signer.delete_key_file(); // Cleanup
+    }
+
+    #[tokio::test]
+    async fn test_software_signer_persistence() {
+        let key_dir = test_key_dir();
+        let alias = "test_persist";
+
+        // Create signer and get public key
+        let pubkey1 = {
+            let signer = SoftwareSigner::new(alias, &key_dir).unwrap();
+            signer.public_key().await.unwrap()
+        };
+
+        // Create another signer with same alias - should load same key
+        let pubkey2 = {
+            let signer = SoftwareSigner::new(alias, &key_dir).unwrap();
+            signer.public_key().await.unwrap()
+        };
+
+        assert_eq!(pubkey1, pubkey2, "Persisted key should be loaded");
+
+        // Cleanup
+        let _ = std::fs::remove_file(key_dir.join(format!("{}.p256.key", alias)));
     }
 
     #[tokio::test]
     async fn test_mutable_software_signer() {
-        let signer = MutableSoftwareSigner::new("test_key").unwrap();
+        let key_dir = test_key_dir();
+        let signer = MutableSoftwareSigner::new("test_mutable", &key_dir).unwrap();
 
         // Key is auto-generated by new(), so generating with the same alias should fail
-        let config = KeyGenConfig::new("test_key").require_hardware(false);
+        let config = KeyGenConfig::new("test_mutable").require_hardware(false);
         let result = signer.generate_key_mut(&config);
         assert!(matches!(result, Err(KeyringError::KeyAlreadyExists { .. })));
 
-        // Generating with a different alias should succeed (replaces the key)
-        let config2 = KeyGenConfig::new("other_key").require_hardware(false);
-        signer.generate_key_mut(&config2).unwrap();
+        // Cleanup
+        let _ = std::fs::remove_file(key_dir.join("test_mutable.p256.key"));
     }
 
     #[tokio::test]
