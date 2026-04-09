@@ -196,15 +196,19 @@ impl TpmSecureBlobStorage {
                 reason: format!("Failed to build key template: {}", e),
             })?;
 
+        // CRITICAL: Must use execute_with_nullauth_session for TPM commands
+        // Without this, TPM returns 0x0007000b "Not enough sessions provided"
         let primary_key = context
-            .create_primary(
-                Hierarchy::Owner,
-                primary_key_template,
-                None,
-                None,
-                None,
-                None,
-            )
+            .execute_with_nullauth_session(|ctx| {
+                ctx.create_primary(
+                    Hierarchy::Owner,
+                    primary_key_template.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            })
             .map_err(|e| {
                 error!("Failed to create TPM primary key: {}", e);
                 KeyringError::HardwareError {
@@ -246,14 +250,16 @@ impl TpmSecureBlobStorage {
             })?;
 
         let signing_key_result = context
-            .create(
-                primary_key.key_handle,
-                signing_key_template,
-                None,
-                None,
-                None,
-                None,
-            )
+            .execute_with_nullauth_session(|ctx| {
+                ctx.create(
+                    primary_key.key_handle,
+                    signing_key_template.clone(),
+                    None,
+                    None,
+                    None,
+                    None,
+                )
+            })
             .map_err(|e| {
                 error!("Failed to create TPM signing key: {}", e);
                 KeyringError::HardwareError {
@@ -263,11 +269,13 @@ impl TpmSecureBlobStorage {
 
         // Load the signing key
         let signing_key_handle = context
-            .load(
-                primary_key.key_handle,
-                signing_key_result.out_private,
-                signing_key_result.out_public,
-            )
+            .execute_with_nullauth_session(|ctx| {
+                ctx.load(
+                    primary_key.key_handle,
+                    signing_key_result.out_private.clone(),
+                    signing_key_result.out_public.clone(),
+                )
+            })
             .map_err(|e| {
                 error!("Failed to load TPM signing key: {}", e);
                 KeyringError::HardwareError {
@@ -291,12 +299,14 @@ impl TpmSecureBlobStorage {
         let validation_ticket = create_null_validation_ticket()?;
 
         let signature = context
-            .sign(
-                signing_key_handle.into(),
-                digest,
-                SignatureScheme::Null,
-                validation_ticket,
-            )
+            .execute_with_nullauth_session(|ctx| {
+                ctx.sign(
+                    signing_key_handle.into(),
+                    digest.clone(),
+                    SignatureScheme::Null,
+                    validation_ticket.clone(),
+                )
+            })
             .map_err(|e| {
                 error!("Failed to sign with TPM key: {}", e);
                 KeyringError::HardwareError {
