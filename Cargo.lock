@@ -563,7 +563,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "1.4.6"
+version = "1.5.0"
 dependencies = [
  "aws-lc-rs",
  "ed25519-dalek",
@@ -587,7 +587,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "1.4.6"
+version = "1.5.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -623,7 +623,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "1.4.6"
+version = "1.5.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -643,7 +643,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "1.4.6"
+version = "1.5.0"
 dependencies = [
  "android_system_properties",
  "anyhow",
@@ -686,7 +686,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "1.4.6"
+version = "1.5.0"
 dependencies = [
  "android_logger",
  "base64 0.21.7",
@@ -696,6 +696,8 @@ dependencies = [
  "ciris-keyring",
  "ciris-verify-core",
  "ctor",
+ "dirs",
+ "ed25519-dalek",
  "getrandom 0.2.17",
  "hex",
  "jni",

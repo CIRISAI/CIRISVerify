@@ -33,6 +33,8 @@ base64.workspace = true
 libc = "0.2"
 hex.workspace = true
 getrandom = "0.2"
+ed25519-dalek = { workspace = true }
+dirs = "5"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 sha2.workspace = true
 

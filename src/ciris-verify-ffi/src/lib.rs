@@ -135,6 +135,7 @@ macro_rules! ffi_guard_ptr {
     }};
 }
 
+use ciris_keyring::storage::{create_platform_storage, SecureBlobStorage};
 use ciris_keyring::MutableEd25519Signer;
 use ciris_verify_core::config::VerifyConfig;
 use ciris_verify_core::license::LicenseStatus;
@@ -493,6 +494,9 @@ pub struct CirisVerifyHandle {
     /// Cached audit trail verification result.
     /// Populated when ciris_verify_audit_trail is called. Used by run_attestation for L5.
     audit_trail_cache: std::sync::Mutex<Option<ciris_verify_core::audit::AuditVerificationResult>>,
+    /// Secure blob storage for named keys (WA signing, sessions, etc.)
+    /// Lazily initialized on first use via get_or_init_named_storage().
+    named_key_storage: std::sync::Mutex<Option<Box<dyn SecureBlobStorage>>>,
 }
 
 impl CirisVerifyHandle {
@@ -914,8 +918,65 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
         ed25519_signer,
         device_attestation_cache: std::sync::Mutex::new(None),
         audit_trail_cache: std::sync::Mutex::new(None),
+        named_key_storage: std::sync::Mutex::new(None),
     });
     Box::into_raw(handle)
+}
+
+/// Get or initialize the named key storage.
+///
+/// Uses platform-specific hardware storage (TPM/Keystore/SecureEnclave) when available,
+/// falling back to software storage. Storage is initialized lazily on first use.
+fn get_or_init_named_storage(
+    handle: &CirisVerifyHandle,
+) -> Result<std::sync::MutexGuard<'_, Option<Box<dyn SecureBlobStorage>>>, i32> {
+    let mut storage_guard = handle.named_key_storage.lock().map_err(|_| {
+        tracing::error!("Failed to lock named_key_storage mutex");
+        CirisVerifyError::InternalError as i32
+    })?;
+
+    if storage_guard.is_none() {
+        // Get storage directory from environment or default
+        let storage_dir = std::env::var("CIRIS_DATA_DIR")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| {
+                #[cfg(target_os = "android")]
+                {
+                    PathBuf::from(".")
+                }
+                #[cfg(target_os = "ios")]
+                {
+                    dirs::home_dir()
+                        .unwrap_or_else(|| PathBuf::from("."))
+                        .join("Documents/ciris-verify")
+                }
+                #[cfg(not(any(target_os = "android", target_os = "ios")))]
+                {
+                    dirs::data_local_dir()
+                        .unwrap_or_else(|| PathBuf::from("."))
+                        .join("ciris-verify")
+                }
+            });
+
+        tracing::info!(
+            storage_dir = %storage_dir.display(),
+            "Initializing named key storage"
+        );
+
+        let storage = create_platform_storage("named_keys", &storage_dir).map_err(|e| {
+            tracing::error!("Failed to create named key storage: {}", e);
+            CirisVerifyError::InternalError as i32
+        })?;
+
+        tracing::info!(
+            hw_backed = storage.is_hardware_backed(),
+            "Named key storage initialized"
+        );
+
+        *storage_guard = Some(storage);
+    }
+
+    Ok(storage_guard)
 }
 
 /// Build a timeout response when the hard timeout fires.
@@ -6079,6 +6140,293 @@ mod android {
         ciris_verify_free(result_data as *mut libc::c_void);
         jstring
     }
+
+    // ==========================================================================
+    // Named Key Storage JNI Bindings (v1.5.0)
+    // ==========================================================================
+
+    /// Store a named Ed25519 key.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeStoreNamedKey<'local>(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+        key_id: JString<'local>,
+        seed: JByteArray<'local>,
+    ) -> jint {
+        tracing::debug!("JNI: nativeStoreNamedKey called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() || key_id.is_null() || seed.is_null() {
+            tracing::error!("JNI: nativeStoreNamedKey - null argument");
+            return CirisVerifyError::InvalidArgument as jint;
+        }
+
+        let key_id_str: String = match env.get_string(&key_id) {
+            Ok(s) => s.into(),
+            Err(e) => {
+                tracing::error!("JNI: failed to get key_id string: {}", e);
+                return CirisVerifyError::InvalidArgument as jint;
+            },
+        };
+
+        let seed_bytes = match env.convert_byte_array(&seed) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("JNI: failed to convert seed bytes: {}", e);
+                return CirisVerifyError::InvalidArgument as jint;
+            },
+        };
+
+        let c_key_id = match std::ffi::CString::new(key_id_str) {
+            Ok(cs) => cs,
+            Err(_) => return CirisVerifyError::InvalidArgument as jint,
+        };
+
+        ciris_verify_store_named_key(
+            handle,
+            c_key_id.as_ptr(),
+            seed_bytes.as_ptr(),
+            seed_bytes.len(),
+        )
+    }
+
+    /// Sign data with a named key.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeSignWithNamedKey<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+        key_id: JString<'local>,
+        data: JByteArray<'local>,
+    ) -> JByteArray<'local> {
+        tracing::debug!("JNI: nativeSignWithNamedKey called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() || key_id.is_null() || data.is_null() {
+            tracing::error!("JNI: nativeSignWithNamedKey - null argument");
+            return JByteArray::default();
+        }
+
+        let key_id_str: String = match env.get_string(&key_id) {
+            Ok(s) => s.into(),
+            Err(e) => {
+                tracing::error!("JNI: failed to get key_id string: {}", e);
+                return JByteArray::default();
+            },
+        };
+
+        let data_bytes = match env.convert_byte_array(&data) {
+            Ok(b) => b,
+            Err(e) => {
+                tracing::error!("JNI: failed to convert data bytes: {}", e);
+                return JByteArray::default();
+            },
+        };
+
+        let c_key_id = match std::ffi::CString::new(key_id_str) {
+            Ok(cs) => cs,
+            Err(_) => return JByteArray::default(),
+        };
+
+        let mut sig_data: *mut u8 = std::ptr::null_mut();
+        let mut sig_len: usize = 0;
+
+        let result = ciris_verify_sign_with_named_key(
+            handle,
+            c_key_id.as_ptr(),
+            data_bytes.as_ptr(),
+            data_bytes.len(),
+            &mut sig_data,
+            &mut sig_len,
+        );
+
+        if result != CirisVerifyError::Success as i32 || sig_data.is_null() {
+            tracing::error!("JNI: nativeSignWithNamedKey failed with code {}", result);
+            return JByteArray::default();
+        }
+
+        let sig_slice = std::slice::from_raw_parts(sig_data, sig_len);
+        let jarray = match env.byte_array_from_slice(sig_slice) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!("JNI: failed to create signature array: {}", e);
+                ciris_verify_free(sig_data as *mut libc::c_void);
+                return JByteArray::default();
+            },
+        };
+
+        ciris_verify_free(sig_data as *mut libc::c_void);
+        jarray
+    }
+
+    /// Check if a named key exists.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeHasNamedKey<'local>(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+        key_id: JString<'local>,
+    ) -> jint {
+        tracing::debug!("JNI: nativeHasNamedKey called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() || key_id.is_null() {
+            tracing::error!("JNI: nativeHasNamedKey - null argument");
+            return CirisVerifyError::InvalidArgument as jint;
+        }
+
+        let key_id_str: String = match env.get_string(&key_id) {
+            Ok(s) => s.into(),
+            Err(e) => {
+                tracing::error!("JNI: failed to get key_id string: {}", e);
+                return CirisVerifyError::InvalidArgument as jint;
+            },
+        };
+
+        let c_key_id = match std::ffi::CString::new(key_id_str) {
+            Ok(cs) => cs,
+            Err(_) => return CirisVerifyError::InvalidArgument as jint,
+        };
+
+        ciris_verify_has_named_key(handle, c_key_id.as_ptr())
+    }
+
+    /// Delete a named key.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeDeleteNamedKey<'local>(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+        key_id: JString<'local>,
+    ) -> jint {
+        tracing::debug!("JNI: nativeDeleteNamedKey called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() || key_id.is_null() {
+            tracing::error!("JNI: nativeDeleteNamedKey - null argument");
+            return CirisVerifyError::InvalidArgument as jint;
+        }
+
+        let key_id_str: String = match env.get_string(&key_id) {
+            Ok(s) => s.into(),
+            Err(e) => {
+                tracing::error!("JNI: failed to get key_id string: {}", e);
+                return CirisVerifyError::InvalidArgument as jint;
+            },
+        };
+
+        let c_key_id = match std::ffi::CString::new(key_id_str) {
+            Ok(cs) => cs,
+            Err(_) => return CirisVerifyError::InvalidArgument as jint,
+        };
+
+        ciris_verify_delete_named_key(handle, c_key_id.as_ptr())
+    }
+
+    /// Get public key for a named key.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeGetNamedKeyPublic<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+        key_id: JString<'local>,
+    ) -> JByteArray<'local> {
+        tracing::debug!("JNI: nativeGetNamedKeyPublic called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() || key_id.is_null() {
+            tracing::error!("JNI: nativeGetNamedKeyPublic - null argument");
+            return JByteArray::default();
+        }
+
+        let key_id_str: String = match env.get_string(&key_id) {
+            Ok(s) => s.into(),
+            Err(e) => {
+                tracing::error!("JNI: failed to get key_id string: {}", e);
+                return JByteArray::default();
+            },
+        };
+
+        let c_key_id = match std::ffi::CString::new(key_id_str) {
+            Ok(cs) => cs,
+            Err(_) => return JByteArray::default(),
+        };
+
+        let mut pk_data: *mut u8 = std::ptr::null_mut();
+        let mut pk_len: usize = 0;
+
+        let result =
+            ciris_verify_get_named_key_public(handle, c_key_id.as_ptr(), &mut pk_data, &mut pk_len);
+
+        if result != CirisVerifyError::Success as i32 || pk_data.is_null() {
+            tracing::error!("JNI: nativeGetNamedKeyPublic failed with code {}", result);
+            return JByteArray::default();
+        }
+
+        let pk_slice = std::slice::from_raw_parts(pk_data, pk_len);
+        let jarray = match env.byte_array_from_slice(pk_slice) {
+            Ok(arr) => arr,
+            Err(e) => {
+                tracing::error!("JNI: failed to create public key array: {}", e);
+                ciris_verify_free(pk_data as *mut libc::c_void);
+                return JByteArray::default();
+            },
+        };
+
+        ciris_verify_free(pk_data as *mut libc::c_void);
+        jarray
+    }
+
+    /// List all named keys.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeListNamedKeys<'local>(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+    ) -> JString<'local> {
+        tracing::debug!("JNI: nativeListNamedKeys called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() {
+            tracing::error!("JNI: nativeListNamedKeys - null handle");
+            return JString::default();
+        }
+
+        let mut json_out: *mut std::ffi::c_char = std::ptr::null_mut();
+        let result = ciris_verify_list_named_keys(handle, &mut json_out);
+
+        if result != CirisVerifyError::Success as i32 || json_out.is_null() {
+            tracing::error!("JNI: nativeListNamedKeys failed with code {}", result);
+            return JString::default();
+        }
+
+        let c_str = std::ffi::CStr::from_ptr(json_out);
+        let json_str = match c_str.to_str() {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("JNI: invalid UTF-8 in list result: {}", e);
+                ciris_verify_free_string(json_out);
+                return JString::default();
+            },
+        };
+
+        let jstring = match env.new_string(json_str) {
+            Ok(s) => s,
+            Err(e) => {
+                tracing::error!("JNI: failed to create list string: {}", e);
+                ciris_verify_free_string(json_out);
+                return JString::default();
+            },
+        };
+
+        ciris_verify_free_string(json_out);
+        jstring
+    }
 }
 
 // =============================================================================
@@ -6894,6 +7242,650 @@ unsafe fn get_wallet_info_inner(
     *result_len = len;
 
     tracing::info!("Wallet info: {}", evm_address);
+    CirisVerifyError::Success as i32
+}
+
+// =============================================================================
+// Named Key Storage FFI
+// =============================================================================
+//
+// These functions allow storing and signing with multiple Ed25519 keys,
+// identified by a key_id string. Use cases include:
+// - WA (Wallet Address) signing keys: key_id = "wa:{wa_id}"
+// - Session keys: key_id = "session:{session_id}"
+// - Backup keys: key_id = "backup:{timestamp}"
+//
+// Keys are stored with hardware protection (TPM/Keystore/SecureEnclave)
+// when available, using the SecureBlobStorage infrastructure.
+
+/// Store a named Ed25519 key.
+///
+/// Stores a 32-byte Ed25519 seed under the given key_id. The key is stored
+/// with hardware protection when available.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `key_id` - Null-terminated key identifier (e.g., "wa:0x1234...")
+/// * `seed` - 32-byte Ed25519 seed
+/// * `seed_len` - Length of seed (must be 32)
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `key_id` must be a valid null-terminated UTF-8 string
+/// - `seed` must point to valid memory of at least `seed_len` bytes
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_store_named_key(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+    seed: *const u8,
+    seed_len: usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_store_named_key", {
+        store_named_key_inner(handle, key_id, seed, seed_len)
+    })
+}
+
+unsafe fn store_named_key_inner(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+    seed: *const u8,
+    seed_len: usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_store_named_key called");
+
+    // Check attestation flag
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("store_named_key: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    // Validate arguments
+    if handle.is_null() || key_id.is_null() || seed.is_null() {
+        tracing::error!("store_named_key: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    if seed_len != 32 {
+        tracing::error!("store_named_key: seed must be 32 bytes, got {}", seed_len);
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Parse key_id
+    let key_id_str = match std::ffi::CStr::from_ptr(key_id).to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::error!("store_named_key: invalid key_id string");
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    // Validate key_id (non-empty, reasonable length)
+    if key_id_str.is_empty() || key_id_str.len() > 256 {
+        tracing::error!("store_named_key: key_id length invalid");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let seed_bytes = std::slice::from_raw_parts(seed, seed_len);
+
+    // Get or init storage
+    let storage_guard = match get_or_init_named_storage(handle_ref) {
+        Ok(g) => g,
+        Err(code) => return code,
+    };
+
+    let storage = match storage_guard.as_ref() {
+        Some(s) => s,
+        None => {
+            tracing::error!("store_named_key: storage not initialized");
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    // Store with "named." prefix to avoid collisions
+    let storage_key = format!("named.{}", key_id_str);
+    if let Err(e) = storage.store(&storage_key, seed_bytes) {
+        tracing::error!("store_named_key: storage failed: {}", e);
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    tracing::info!(
+        key_id = %key_id_str,
+        hw_backed = storage.is_hardware_backed(),
+        "Named key stored successfully"
+    );
+    CirisVerifyError::Success as i32
+}
+
+/// Sign data using a named Ed25519 key.
+///
+/// Loads the key seed, creates an ephemeral signer, signs the data, and
+/// returns a 64-byte Ed25519 signature.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `key_id` - Null-terminated key identifier
+/// * `data` - Data to sign
+/// * `data_len` - Length of data
+/// * `signature_data` - Output pointer for 64-byte signature (caller must free with `ciris_verify_free`)
+/// * `signature_len` - Output pointer for signature length
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `key_id` must be a valid null-terminated UTF-8 string
+/// - `data` must point to valid memory of at least `data_len` bytes
+/// - `signature_data` and `signature_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_sign_with_named_key(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+    data: *const u8,
+    data_len: usize,
+    signature_data: *mut *mut u8,
+    signature_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_sign_with_named_key", {
+        sign_with_named_key_inner(
+            handle,
+            key_id,
+            data,
+            data_len,
+            signature_data,
+            signature_len,
+        )
+    })
+}
+
+unsafe fn sign_with_named_key_inner(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+    data: *const u8,
+    data_len: usize,
+    signature_data: *mut *mut u8,
+    signature_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_sign_with_named_key called");
+
+    // Check attestation flag
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("sign_with_named_key: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    // Validate arguments
+    if handle.is_null()
+        || key_id.is_null()
+        || data.is_null()
+        || signature_data.is_null()
+        || signature_len.is_null()
+    {
+        tracing::error!("sign_with_named_key: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Parse key_id
+    let key_id_str = match std::ffi::CStr::from_ptr(key_id).to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::error!("sign_with_named_key: invalid key_id string");
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    let data_bytes = std::slice::from_raw_parts(data, data_len);
+
+    // Get storage
+    let storage_guard = match get_or_init_named_storage(handle_ref) {
+        Ok(g) => g,
+        Err(code) => return code,
+    };
+
+    let storage = match storage_guard.as_ref() {
+        Some(s) => s,
+        None => {
+            tracing::error!("sign_with_named_key: storage not initialized");
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    // Load seed
+    let storage_key = format!("named.{}", key_id_str);
+    let seed = match storage.load(&storage_key) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("sign_with_named_key: key not found: {}", e);
+            return CirisVerifyError::NoKey as i32;
+        },
+    };
+
+    if seed.len() != 32 {
+        tracing::error!(
+            "sign_with_named_key: stored seed has wrong length: {}",
+            seed.len()
+        );
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    // Create ephemeral signer and sign
+    use ed25519_dalek::{Signer, SigningKey};
+    let seed_array: [u8; 32] = match seed.as_slice().try_into() {
+        Ok(arr) => arr,
+        Err(_) => {
+            tracing::error!("sign_with_named_key: seed conversion failed");
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+    let signing_key = SigningKey::from_bytes(&seed_array);
+    let signature = signing_key.sign(data_bytes);
+    let sig_bytes = signature.to_bytes();
+
+    // Allocate and copy
+    let len = sig_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("sign_with_named_key: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(sig_bytes.as_ptr(), ptr, len);
+
+    *signature_data = ptr;
+    *signature_len = len;
+
+    tracing::debug!(
+        key_id = %key_id_str,
+        data_len = data_len,
+        "Named key signed successfully"
+    );
+    CirisVerifyError::Success as i32
+}
+
+/// Check if a named key exists.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `key_id` - Null-terminated key identifier
+///
+/// # Returns
+///
+/// 1 if key exists, 0 if not found, negative on error.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `key_id` must be a valid null-terminated UTF-8 string
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_has_named_key(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+) -> i32 {
+    ffi_guard!("ciris_verify_has_named_key", {
+        has_named_key_inner(handle, key_id)
+    })
+}
+
+unsafe fn has_named_key_inner(handle: *mut CirisVerifyHandle, key_id: *const c_char) -> i32 {
+    tracing::debug!("ciris_verify_has_named_key called");
+
+    // Check attestation flag
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("has_named_key: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    if handle.is_null() || key_id.is_null() {
+        tracing::error!("has_named_key: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Parse key_id
+    let key_id_str = match std::ffi::CStr::from_ptr(key_id).to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::error!("has_named_key: invalid key_id string");
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    // Get storage
+    let storage_guard = match get_or_init_named_storage(handle_ref) {
+        Ok(g) => g,
+        Err(code) => return code,
+    };
+
+    let storage = match storage_guard.as_ref() {
+        Some(s) => s,
+        None => {
+            tracing::error!("has_named_key: storage not initialized");
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    let storage_key = format!("named.{}", key_id_str);
+    if storage.exists(&storage_key) {
+        tracing::debug!(key_id = %key_id_str, "Named key exists");
+        1
+    } else {
+        tracing::debug!(key_id = %key_id_str, "Named key not found");
+        0
+    }
+}
+
+/// Delete a named key.
+///
+/// Removes the key from secure storage. Use for key revocation.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `key_id` - Null-terminated key identifier
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `key_id` must be a valid null-terminated UTF-8 string
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_delete_named_key(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+) -> i32 {
+    ffi_guard!("ciris_verify_delete_named_key", {
+        delete_named_key_inner(handle, key_id)
+    })
+}
+
+unsafe fn delete_named_key_inner(handle: *mut CirisVerifyHandle, key_id: *const c_char) -> i32 {
+    tracing::debug!("ciris_verify_delete_named_key called");
+
+    // Check attestation flag
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("delete_named_key: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    if handle.is_null() || key_id.is_null() {
+        tracing::error!("delete_named_key: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Parse key_id
+    let key_id_str = match std::ffi::CStr::from_ptr(key_id).to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::error!("delete_named_key: invalid key_id string");
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    // Get storage
+    let storage_guard = match get_or_init_named_storage(handle_ref) {
+        Ok(g) => g,
+        Err(code) => return code,
+    };
+
+    let storage = match storage_guard.as_ref() {
+        Some(s) => s,
+        None => {
+            tracing::error!("delete_named_key: storage not initialized");
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    let storage_key = format!("named.{}", key_id_str);
+    if let Err(e) = storage.delete(&storage_key) {
+        tracing::error!("delete_named_key: delete failed: {}", e);
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    tracing::info!(key_id = %key_id_str, "Named key deleted");
+    CirisVerifyError::Success as i32
+}
+
+/// Get the public key for a named Ed25519 key.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `key_id` - Null-terminated key identifier
+/// * `pubkey_data` - Output pointer for 32-byte public key (caller must free with `ciris_verify_free`)
+/// * `pubkey_len` - Output pointer for key length
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `key_id` must be a valid null-terminated UTF-8 string
+/// - `pubkey_data` and `pubkey_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_get_named_key_public(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+    pubkey_data: *mut *mut u8,
+    pubkey_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_get_named_key_public", {
+        get_named_key_public_inner(handle, key_id, pubkey_data, pubkey_len)
+    })
+}
+
+unsafe fn get_named_key_public_inner(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+    pubkey_data: *mut *mut u8,
+    pubkey_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_get_named_key_public called");
+
+    // Check attestation flag
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("get_named_key_public: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    if handle.is_null() || key_id.is_null() || pubkey_data.is_null() || pubkey_len.is_null() {
+        tracing::error!("get_named_key_public: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Parse key_id
+    let key_id_str = match std::ffi::CStr::from_ptr(key_id).to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::error!("get_named_key_public: invalid key_id string");
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    // Get storage
+    let storage_guard = match get_or_init_named_storage(handle_ref) {
+        Ok(g) => g,
+        Err(code) => return code,
+    };
+
+    let storage = match storage_guard.as_ref() {
+        Some(s) => s,
+        None => {
+            tracing::error!("get_named_key_public: storage not initialized");
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    // Load seed
+    let storage_key = format!("named.{}", key_id_str);
+    let seed = match storage.load(&storage_key) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("get_named_key_public: key not found: {}", e);
+            return CirisVerifyError::NoKey as i32;
+        },
+    };
+
+    if seed.len() != 32 {
+        tracing::error!(
+            "get_named_key_public: stored seed has wrong length: {}",
+            seed.len()
+        );
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    // Create signing key and get public key
+    use ed25519_dalek::SigningKey;
+    let seed_array: [u8; 32] = match seed.as_slice().try_into() {
+        Ok(arr) => arr,
+        Err(_) => {
+            tracing::error!("get_named_key_public: seed conversion failed");
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+    let signing_key = SigningKey::from_bytes(&seed_array);
+    let public_key = signing_key.verifying_key();
+    let pk_bytes = public_key.to_bytes();
+
+    // Allocate and copy
+    let len = pk_bytes.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("get_named_key_public: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(pk_bytes.as_ptr(), ptr, len);
+
+    *pubkey_data = ptr;
+    *pubkey_len = len;
+
+    tracing::debug!(key_id = %key_id_str, "Named key public key returned");
+    CirisVerifyError::Success as i32
+}
+
+/// List all named keys.
+///
+/// Returns a JSON array of key IDs (without the "named." prefix).
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `json_out` - Output pointer for JSON string (caller must free with `ciris_verify_free_string`)
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # JSON Format
+///
+/// ```json
+/// ["wa:0x1234...", "session:abc123", "backup:1234567890"]
+/// ```
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `json_out` must be a valid pointer
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_list_named_keys(
+    handle: *mut CirisVerifyHandle,
+    json_out: *mut *mut c_char,
+) -> i32 {
+    ffi_guard!("ciris_verify_list_named_keys", {
+        list_named_keys_inner(handle, json_out)
+    })
+}
+
+unsafe fn list_named_keys_inner(handle: *mut CirisVerifyHandle, json_out: *mut *mut c_char) -> i32 {
+    tracing::debug!("ciris_verify_list_named_keys called");
+
+    // Check attestation flag
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("list_named_keys: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    if handle.is_null() || json_out.is_null() {
+        tracing::error!("list_named_keys: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Get storage
+    let storage_guard = match get_or_init_named_storage(handle_ref) {
+        Ok(g) => g,
+        Err(code) => return code,
+    };
+
+    let storage = match storage_guard.as_ref() {
+        Some(s) => s,
+        None => {
+            tracing::error!("list_named_keys: storage not initialized");
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    // List all keys
+    let all_keys = match storage.list_keys() {
+        Ok(keys) => keys,
+        Err(e) => {
+            tracing::error!("list_named_keys: list failed: {}", e);
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    // Filter for "named." prefix and strip it
+    let named_keys: Vec<String> = all_keys
+        .into_iter()
+        .filter_map(|k| k.strip_prefix("named.").map(String::from))
+        .collect();
+
+    tracing::debug!("Found {} named keys", named_keys.len());
+
+    // Serialize to JSON
+    let json = match serde_json::to_string(&named_keys) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!("list_named_keys: serialization failed: {}", e);
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    // Convert to C string
+    let c_string = match std::ffi::CString::new(json) {
+        Ok(cs) => cs,
+        Err(e) => {
+            tracing::error!("list_named_keys: CString creation failed: {}", e);
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    *json_out = c_string.into_raw();
     CirisVerifyError::Success as i32
 }
 

@@ -101,6 +101,47 @@ int32_t ciris_verify_get_ed25519_public_key(
     uint8_t **key_data, size_t *key_len);
 
 // ---------------------------------------------------------------------------
+// Named Key Storage (v1.5.0)
+// ---------------------------------------------------------------------------
+
+/// Store a named Ed25519 key (32-byte seed).
+int32_t ciris_verify_store_named_key(
+    CirisVerifyHandle handle,
+    const char *key_id,
+    const uint8_t *seed, size_t seed_len);
+
+/// Sign data with a named key.
+int32_t ciris_verify_sign_with_named_key(
+    CirisVerifyHandle handle,
+    const char *key_id,
+    const uint8_t *data, size_t data_len,
+    uint8_t **signature_data, size_t *signature_len);
+
+/// Check if a named key exists. Returns 1 if exists, 0 if not.
+int32_t ciris_verify_has_named_key(
+    CirisVerifyHandle handle,
+    const char *key_id);
+
+/// Delete a named key.
+int32_t ciris_verify_delete_named_key(
+    CirisVerifyHandle handle,
+    const char *key_id);
+
+/// Get the public key for a named key (32 bytes).
+int32_t ciris_verify_get_named_key_public(
+    CirisVerifyHandle handle,
+    const char *key_id,
+    uint8_t **pubkey_data, size_t *pubkey_len);
+
+/// List all named keys. Returns JSON array of key IDs.
+int32_t ciris_verify_list_named_keys(
+    CirisVerifyHandle handle,
+    char **json_out);
+
+/// Free a string returned by ciris_verify_list_named_keys.
+void ciris_verify_free_string(char *str);
+
+// ---------------------------------------------------------------------------
 // Version
 // ---------------------------------------------------------------------------
 

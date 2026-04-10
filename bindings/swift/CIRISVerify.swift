@@ -276,6 +276,148 @@ public final class CIRISVerify {
         return Data(bytes: ptr, count: keyLen)
     }
 
+    // MARK: - Named Key Storage (v1.5.0)
+
+    /// Store a named Ed25519 key.
+    ///
+    /// Keys are stored with hardware protection (Secure Enclave) when available.
+    ///
+    /// - Parameters:
+    ///   - keyId: Key identifier (e.g. "wa:0x1234...", "session:abc123").
+    ///   - seed: 32-byte Ed25519 seed.
+    /// - Throws: `CIRISVerifyError` on failure.
+    public func storeNamedKey(_ keyId: String, seed: Data) throws {
+        guard let handle = handle else { throw CIRISVerifyError.initializationFailed }
+        guard seed.count == 32 else { throw CIRISVerifyError.invalidArgument }
+
+        let rawHandle = UnsafeMutableRawPointer(handle)
+        let result = keyId.withCString { keyIdPtr in
+            seed.withUnsafeBytes { seedBuffer -> Int32 in
+                guard let seedBase = seedBuffer.baseAddress else { return -1 }
+                return ciris_verify_store_named_key(
+                    rawHandle,
+                    keyIdPtr,
+                    seedBase.assumingMemoryBound(to: UInt8.self),
+                    seedBuffer.count
+                )
+            }
+        }
+
+        guard result == 0 else { throw CIRISVerifyError.from(code: result) }
+    }
+
+    /// Sign data with a named key.
+    ///
+    /// - Parameters:
+    ///   - keyId: Key identifier.
+    ///   - data: Data to sign.
+    /// - Returns: 64-byte Ed25519 signature.
+    /// - Throws: `CIRISVerifyError` on failure.
+    public func signWithNamedKey(_ keyId: String, data: Data) throws -> Data {
+        guard let handle = handle else { throw CIRISVerifyError.initializationFailed }
+        let rawHandle = UnsafeMutableRawPointer(handle)
+
+        var sigPtr: UnsafeMutablePointer<UInt8>?
+        var sigLen: Int = 0
+
+        let result = keyId.withCString { keyIdPtr in
+            data.withUnsafeBytes { dataBuffer -> Int32 in
+                guard let dataBase = dataBuffer.baseAddress else { return -1 }
+                return ciris_verify_sign_with_named_key(
+                    rawHandle,
+                    keyIdPtr,
+                    dataBase.assumingMemoryBound(to: UInt8.self),
+                    dataBuffer.count,
+                    &sigPtr,
+                    &sigLen
+                )
+            }
+        }
+
+        guard result == 0 else { throw CIRISVerifyError.from(code: result) }
+        guard let ptr = sigPtr else { throw CIRISVerifyError.internalError(code: -99) }
+        defer { ciris_verify_free(ptr) }
+
+        return Data(bytes: ptr, count: sigLen)
+    }
+
+    /// Check if a named key exists.
+    ///
+    /// - Parameter keyId: Key identifier.
+    /// - Returns: `true` if the key exists.
+    public func hasNamedKey(_ keyId: String) -> Bool {
+        guard let handle = handle else { return false }
+        let rawHandle = UnsafeMutableRawPointer(handle)
+
+        let result = keyId.withCString { keyIdPtr in
+            ciris_verify_has_named_key(rawHandle, keyIdPtr)
+        }
+
+        return result == 1
+    }
+
+    /// Delete a named key.
+    ///
+    /// - Parameter keyId: Key identifier.
+    /// - Throws: `CIRISVerifyError` on failure.
+    public func deleteNamedKey(_ keyId: String) throws {
+        guard let handle = handle else { throw CIRISVerifyError.initializationFailed }
+        let rawHandle = UnsafeMutableRawPointer(handle)
+
+        let result = keyId.withCString { keyIdPtr in
+            ciris_verify_delete_named_key(rawHandle, keyIdPtr)
+        }
+
+        guard result == 0 else { throw CIRISVerifyError.from(code: result) }
+    }
+
+    /// Get the public key for a named key.
+    ///
+    /// - Parameter keyId: Key identifier.
+    /// - Returns: 32-byte Ed25519 public key.
+    /// - Throws: `CIRISVerifyError` on failure.
+    public func getNamedKeyPublic(_ keyId: String) throws -> Data {
+        guard let handle = handle else { throw CIRISVerifyError.initializationFailed }
+        let rawHandle = UnsafeMutableRawPointer(handle)
+
+        var pkPtr: UnsafeMutablePointer<UInt8>?
+        var pkLen: Int = 0
+
+        let result = keyId.withCString { keyIdPtr in
+            ciris_verify_get_named_key_public(rawHandle, keyIdPtr, &pkPtr, &pkLen)
+        }
+
+        guard result == 0 else { throw CIRISVerifyError.from(code: result) }
+        guard let ptr = pkPtr else { throw CIRISVerifyError.internalError(code: -99) }
+        defer { ciris_verify_free(ptr) }
+
+        return Data(bytes: ptr, count: pkLen)
+    }
+
+    /// List all named keys.
+    ///
+    /// - Returns: Array of key identifiers.
+    /// - Throws: `CIRISVerifyError` on failure.
+    public func listNamedKeys() throws -> [String] {
+        guard let handle = handle else { throw CIRISVerifyError.initializationFailed }
+        let rawHandle = UnsafeMutableRawPointer(handle)
+
+        var jsonPtr: UnsafeMutablePointer<CChar>?
+        let result = ciris_verify_list_named_keys(rawHandle, &jsonPtr)
+
+        guard result == 0 else { throw CIRISVerifyError.from(code: result) }
+        guard let ptr = jsonPtr else { throw CIRISVerifyError.internalError(code: -99) }
+        defer { ciris_verify_free_string(ptr) }
+
+        let jsonString = String(cString: ptr)
+        guard let jsonData = jsonString.data(using: .utf8),
+              let keys = try? JSONDecoder().decode([String].self, from: jsonData) else {
+            throw CIRISVerifyError.serializationError
+        }
+
+        return keys
+    }
+
     // MARK: - 11. version (mirrors nativeVersion, static)
 
     /// Get the library version string.
