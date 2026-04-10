@@ -74,6 +74,15 @@ int32_t ciris_verify_run_attestation(
     const uint8_t *request_json, size_t request_len,
     uint8_t **result_json, size_t *result_len);
 
+/// Report device attestation failure (Play Integrity / App Attest token acquisition failed).
+/// Call this when token acquisition fails before reaching the verify endpoint.
+/// Caches the failure so run_attestation returns level_pending=false.
+int32_t ciris_verify_device_attestation_failed(
+    CirisVerifyHandle handle,
+    const char *platform,
+    int32_t error_code,
+    const char *error_message);
+
 // ---------------------------------------------------------------------------
 // Ed25519 Key Management (Portal-issued keys)
 // ---------------------------------------------------------------------------

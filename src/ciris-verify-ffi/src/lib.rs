@@ -5026,6 +5026,102 @@ pub unsafe extern "C" fn ciris_verify_app_attest(
     CirisVerifyError::Success as i32
 }
 
+/// Report a device attestation failure (Play Integrity or App Attest).
+///
+/// Call this when Play Integrity token acquisition fails (e.g., error -16) or
+/// App Attest attestation fails before reaching the verify endpoint. This caches
+/// the failure so that `run_attestation` returns `level_pending=false`.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `platform` - Platform identifier: "android" or "ios"
+/// * `error_code` - Platform-specific error code (e.g., -16 for Play Integrity)
+/// * `error_message` - Human-readable error message (can be null)
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `platform` must be a valid null-terminated string
+/// - `error_message` can be null, otherwise must be null-terminated
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_device_attestation_failed(
+    handle: *mut CirisVerifyHandle,
+    platform: *const c_char,
+    error_code: i32,
+    error_message: *const c_char,
+) -> i32 {
+    tracing::debug!("ciris_verify_device_attestation_failed called");
+
+    if handle.is_null() || platform.is_null() {
+        tracing::error!("ciris_verify_device_attestation_failed: null handle or platform");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Parse platform string
+    let platform_str = match std::ffi::CStr::from_ptr(platform).to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_device_attestation_failed: invalid platform UTF-8: {}",
+                e
+            );
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    // Validate platform
+    if platform_str != "android" && platform_str != "ios" {
+        tracing::error!("ciris_verify_device_attestation_failed: invalid platform '{}', expected 'android' or 'ios'", platform_str);
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    // Parse optional error message
+    let error_msg = if error_message.is_null() {
+        format!("Device attestation failed with error code {}", error_code)
+    } else {
+        match std::ffi::CStr::from_ptr(error_message).to_str() {
+            Ok(s) => s.to_string(),
+            Err(_) => format!("Device attestation failed with error code {}", error_code),
+        }
+    };
+
+    tracing::info!(
+        "Device attestation failure reported: platform={}, error_code={}, message={}",
+        platform_str,
+        error_code,
+        error_msg
+    );
+
+    // Cache the failure result
+    match handle_ref.device_attestation_cache.lock() {
+        Ok(mut cache) => {
+            *cache = Some(ciris_verify_core::unified::DeviceAttestationCheckResult {
+                platform: platform_str.to_string(),
+                verified: false,
+                summary: format!("Token acquisition failed (error {})", error_code),
+                error: Some(error_msg),
+            });
+            tracing::debug!("ciris_verify_device_attestation_failed: cached failure result");
+        },
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_device_attestation_failed: mutex poisoned: {}",
+                e
+            );
+            return CirisVerifyError::InternalError as i32;
+        },
+    }
+
+    CirisVerifyError::Success as i32
+}
+
 /// Verify an App Attest assertion (for ongoing requests after initial attestation).
 ///
 /// Assertions are used after the initial attestation to verify ongoing requests.
@@ -6165,6 +6261,69 @@ mod android {
 
         ciris_verify_free(result_data as *mut libc::c_void);
         jstring
+    }
+
+    /// Report device attestation failure (Play Integrity token acquisition failed).
+    ///
+    /// Call this when Play Integrity API returns an error (e.g., -16) before
+    /// the verify endpoint can be called. This caches the failure so that
+    /// `run_attestation` returns `level_pending=false`.
+    #[no_mangle]
+    pub unsafe extern "system" fn Java_ai_ciris_verify_CirisVerify_nativeDeviceAttestationFailed<
+        'local,
+    >(
+        mut env: JNIEnv<'local>,
+        _class: JClass<'local>,
+        handle: jlong,
+        platform: JString<'local>,
+        error_code: jint,
+        error_message: JString<'local>,
+    ) -> jint {
+        tracing::debug!("JNI: nativeDeviceAttestationFailed called");
+
+        let handle = handle as *mut CirisVerifyHandle;
+        if handle.is_null() || platform.is_null() {
+            tracing::error!("JNI: nativeDeviceAttestationFailed - null handle or platform");
+            return CirisVerifyError::InvalidArgument as jint;
+        }
+
+        let platform_str: String = match env.get_string(&platform) {
+            Ok(s) => s.into(),
+            Err(e) => {
+                tracing::error!("JNI: failed to get platform string: {}", e);
+                return CirisVerifyError::InvalidArgument as jint;
+            },
+        };
+
+        let c_platform = match std::ffi::CString::new(platform_str) {
+            Ok(cs) => cs,
+            Err(_) => return CirisVerifyError::InvalidArgument as jint,
+        };
+
+        // error_message can be null
+        let c_error_message = if error_message.is_null() {
+            None
+        } else {
+            match env.get_string(&error_message) {
+                Ok(s) => {
+                    let s: String = s.into();
+                    std::ffi::CString::new(s).ok()
+                },
+                Err(_) => None,
+            }
+        };
+
+        let error_msg_ptr = c_error_message
+            .as_ref()
+            .map(|cs| cs.as_ptr())
+            .unwrap_or(std::ptr::null());
+
+        super::ciris_verify_device_attestation_failed(
+            handle,
+            c_platform.as_ptr(),
+            error_code,
+            error_msg_ptr,
+        )
     }
 
     // ==========================================================================

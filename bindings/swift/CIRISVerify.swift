@@ -198,6 +198,36 @@ public final class CIRISVerify {
         }
     }
 
+    // MARK: - 5b. deviceAttestationFailed (v1.5.3)
+
+    /// Report device attestation failure (App Attest token acquisition failed).
+    ///
+    /// Call this when DCAppAttestService fails before reaching the verify endpoint.
+    /// This caches the failure so `runAttestation` returns `level_pending=false`.
+    ///
+    /// - Parameters:
+    ///   - errorCode: Platform-specific error code (e.g., DCError code).
+    ///   - errorMessage: Optional human-readable error description.
+    /// - Throws: `CIRISVerifyError` on failure.
+    public func deviceAttestationFailed(errorCode: Int32, errorMessage: String? = nil) throws {
+        guard let handle = handle else { throw CIRISVerifyError.initializationFailed }
+        let rawHandle = UnsafeMutableRawPointer(handle)
+
+        let result: Int32 = "ios".withCString { platformPtr in
+            if let message = errorMessage {
+                return message.withCString { msgPtr in
+                    ciris_verify_device_attestation_failed(rawHandle, platformPtr, errorCode, msgPtr)
+                }
+            } else {
+                return ciris_verify_device_attestation_failed(rawHandle, platformPtr, errorCode, nil)
+            }
+        }
+
+        if result != 0 {
+            throw CIRISVerifyError.from(code: result)
+        }
+    }
+
     // MARK: - 6. importKey (mirrors nativeImportKey)
 
     /// Import a 32-byte Ed25519 private key from Portal.
