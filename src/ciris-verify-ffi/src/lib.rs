@@ -3183,14 +3183,12 @@ unsafe fn run_attestation_inner(
         // Device attestation is present, so level is no longer pending
         result.level_pending = false;
     } else {
-        // No device attestation cached - this is a final state, not pending.
-        // If Play Integrity / App Attest failed or wasn't attempted, the level is final.
-        // We don't distinguish between "not yet attempted" and "failed" - both mean
-        // device attestation is not available for this session.
+        // No device attestation cached yet - app hasn't attempted Play Integrity / App Attest.
+        // Once attempted (success OR failure), the result gets cached and level_pending=false.
         #[cfg(any(target_os = "android", target_os = "ios"))]
         {
-            result.level_pending = false;
-            tracing::info!("Mobile: no device attestation cached, level_pending=false");
+            result.level_pending = true;
+            tracing::info!("Mobile: no device attestation cached yet, level_pending=true");
         }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
