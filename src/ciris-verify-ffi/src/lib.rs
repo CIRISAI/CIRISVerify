@@ -1376,6 +1376,20 @@ pub unsafe extern "C" fn ciris_verify_free(data: *mut c_void) {
     }
 }
 
+/// Free a C string returned by CIRISVerify (e.g., from `ciris_verify_list_named_keys`).
+///
+/// # Safety
+///
+/// `str_ptr` must be a pointer returned by a CIRISVerify function that returns
+/// a C string, or NULL.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_free_string(str_ptr: *mut c_char) {
+    if !str_ptr.is_null() {
+        // CString::from_raw takes ownership and deallocates when dropped
+        let _ = std::ffi::CString::from_raw(str_ptr);
+    }
+}
+
 /// Destroy the CIRISVerify handle and release resources.
 ///
 /// # Safety
@@ -6410,7 +6424,7 @@ mod android {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("JNI: invalid UTF-8 in list result: {}", e);
-                ciris_verify_free_string(json_out);
+                super::ciris_verify_free_string(json_out);
                 return JString::default();
             },
         };
@@ -6419,12 +6433,12 @@ mod android {
             Ok(s) => s,
             Err(e) => {
                 tracing::error!("JNI: failed to create list string: {}", e);
-                ciris_verify_free_string(json_out);
+                super::ciris_verify_free_string(json_out);
                 return JString::default();
             },
         };
 
-        ciris_verify_free_string(json_out);
+        super::ciris_verify_free_string(json_out);
         jstring
     }
 }
