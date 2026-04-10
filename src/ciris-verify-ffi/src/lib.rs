@@ -3183,12 +3183,14 @@ unsafe fn run_attestation_inner(
         // Device attestation is present, so level is no longer pending
         result.level_pending = false;
     } else {
-        // No device attestation cached yet
-        // On mobile platforms, level is pending until Play Integrity / App Attest completes
-        // On desktop platforms, L2 = hardware environment detected (TPM/SE)
+        // No device attestation cached - this is a final state, not pending.
+        // If Play Integrity / App Attest failed or wasn't attempted, the level is final.
+        // We don't distinguish between "not yet attempted" and "failed" - both mean
+        // device attestation is not available for this session.
         #[cfg(any(target_os = "android", target_os = "ios"))]
         {
-            result.level_pending = true;
+            result.level_pending = false;
+            tracing::info!("Mobile: no device attestation cached, level_pending=false");
         }
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         {
@@ -4569,7 +4571,19 @@ unsafe fn verify_integrity_token_inner(
             r
         },
         Err(e) => {
-            tracing::error!("Failed to verify integrity token: {}", e);
+            let error_msg = format!("Failed to verify integrity token: {}", e);
+            tracing::error!("{}", error_msg);
+            // Cache the failure so run_attestation knows device attestation was attempted
+            // and failed (not just "not yet attempted"). This makes level_pending=false.
+            if let Ok(mut cache) = handle_ref.device_attestation_cache.lock() {
+                *cache = Some(ciris_verify_core::unified::DeviceAttestationCheckResult {
+                    platform: "android".to_string(),
+                    verified: false,
+                    summary: "Play Integrity verification failed".to_string(),
+                    error: Some(error_msg),
+                });
+                tracing::debug!("verify_integrity_token: cached failure result");
+            }
             return CirisVerifyError::RequestFailed as i32;
         },
     };
