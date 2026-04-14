@@ -9,6 +9,7 @@
 # Install: scripts/install-hooks.sh
 
 set -e
+set -o pipefail
 
 # Skip when CI itself runs the hook (it's already running these jobs).
 if [ -n "$CI" ] || [ -n "$GITHUB_ACTIONS" ]; then
