@@ -20,6 +20,9 @@ mod wrapping;
 // Detection functions work on all platforms
 pub use detection::{detect_tpm, get_tpm_manufacturer};
 
+#[cfg(target_os = "windows")]
+pub use detection::probe_tbs_device_info;
+
 // TPM-specific functions require the tpm feature
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 pub use detection::create_context;

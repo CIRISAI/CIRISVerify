@@ -794,6 +794,13 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
 }
 
 /// Verify all critical functions at runtime (Windows).
+///
+/// On Windows, manifest offsets are RVAs from the **module base of the DLL**
+/// that hosts CIRISVerify (resolved via `GetModuleHandleExW(FROM_ADDRESS, ...)`).
+/// Every read is bounds-checked against `SizeOfImage` and probed with
+/// `VirtualQuery` to avoid faulting/stalling on bogus offsets — historically a
+/// manifest with absolute VAs would dereference into unmapped memory and hang
+/// the worker forever.
 #[cfg(target_os = "windows")]
 pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult {
     use sha2::{Digest, Sha256};
@@ -808,32 +815,17 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         manifest.functions.len()
     );
 
-    // Log first few function entries for debugging
-    for (i, (name, entry)) in manifest.functions.iter().take(3).enumerate() {
-        tracing::info!(
-            "verify_functions: sample[{}] name={}, offset=0x{:x}, size={}, hash={}",
-            i,
-            name,
-            entry.offset,
-            entry.size,
-            &entry.hash[..std::cmp::min(20, entry.hash.len())]
-        );
-        if entry.offset > 0x100000 {
-            tracing::warn!(
-                "verify_functions: WARNING - offset 0x{:x} is unusually large (>1MB), may be virtual address instead of relative offset",
-                entry.offset
+    let module = match get_code_base_windows() {
+        Some(m) => {
+            tracing::debug!(
+                "verify_functions: module base=0x{:x}, image_size=0x{:x}",
+                m.base,
+                m.image_size
             );
-        }
-    }
-
-    // Get code base address
-    let code_base = match get_code_base_windows() {
-        Some(base) => {
-            tracing::debug!("verify_functions: code_base=0x{:x}", base);
-            base
+            m
         },
         None => {
-            tracing::error!("verify_functions: FAILED - could not determine code base address");
+            tracing::error!("verify_functions: FAILED - could not determine module base");
             return FunctionIntegrityResult {
                 integrity_valid: false,
                 functions_checked: 0,
@@ -847,25 +839,89 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         },
     };
 
-    // Verify each function (constant-time accumulation)
+    // Without a known image size we cannot bounds-check; reject up-front rather
+    // than risk faulting on a raw pointer read.
+    if module.image_size == 0 {
+        tracing::error!(
+            "verify_functions: FAILED - module image size unknown, cannot bounds-check"
+        );
+        return FunctionIntegrityResult {
+            integrity_valid: false,
+            functions_checked: 0,
+            functions_passed: 0,
+            verified_at: timestamp,
+            failure_reason: "missing".to_string(),
+            manifest_binary_hash: manifest.binary_hash.clone(),
+            manifest_target: manifest.target.clone(),
+            code_base: format!("0x{:x}", module.base),
+        };
+    }
+
+    // Log first few function entries for debugging.
+    for (i, (name, entry)) in manifest.functions.iter().take(3).enumerate() {
+        tracing::info!(
+            "verify_functions: sample[{}] name={}, offset=0x{:x}, size={}, hash={}",
+            i,
+            name,
+            entry.offset,
+            entry.size,
+            &entry.hash[..std::cmp::min(20, entry.hash.len())]
+        );
+    }
+
+    // Verify each function (constant-time accumulation).
     let mut all_valid = true;
     let mut functions_passed = 0usize;
     let mut first_mismatch_logged = false;
+    let mut out_of_bounds = 0usize;
 
     for (name, entry) in &manifest.functions {
-        let func_bytes = unsafe {
-            let ptr = (code_base + entry.offset as usize) as *const u8;
-            if ptr.is_null() {
-                tracing::warn!(
-                    "verify_functions: null pointer for {} at offset 0x{:x}",
-                    name,
-                    entry.offset
-                );
-                all_valid = false;
-                continue;
-            }
-            std::slice::from_raw_parts(ptr, entry.size as usize)
+        // Bounds-check against the mapped image. A manifest with absolute VAs
+        // (rather than RVAs) trips this immediately and we fail closed instead
+        // of dereferencing into unmapped memory.
+        let end = (entry.offset as usize).checked_add(entry.size as usize);
+        let in_image = match end {
+            Some(e) => e <= module.image_size,
+            None => false,
         };
+        if !in_image {
+            all_valid = false;
+            out_of_bounds += 1;
+            if !first_mismatch_logged {
+                tracing::warn!(
+                    "verify_functions: OUT OF BOUNDS name={}, offset=0x{:x}, size={}, image_size=0x{:x} (manifest likely encodes VAs, not RVAs)",
+                    name,
+                    entry.offset,
+                    entry.size,
+                    module.image_size
+                );
+                first_mismatch_logged = true;
+            }
+            continue;
+        }
+
+        let ptr_addr = module.base + entry.offset as usize;
+
+        // Defense in depth: confirm every page in the range is committed and
+        // readable before we touch it. Cheap insurance against ACL/PAGE_GUARD
+        // surprises that would otherwise raise a structured exception inside
+        // the tokio worker.
+        if !windows_range_readable(ptr_addr, entry.size as usize) {
+            all_valid = false;
+            if !first_mismatch_logged {
+                tracing::warn!(
+                    "verify_functions: UNREADABLE name={}, ptr=0x{:x}, size={}",
+                    name,
+                    ptr_addr,
+                    entry.size
+                );
+                first_mismatch_logged = true;
+            }
+            continue;
+        }
+
+        let func_bytes =
+            unsafe { std::slice::from_raw_parts(ptr_addr as *const u8, entry.size as usize) };
 
         let mut hasher = Sha256::new();
         hasher.update(func_bytes);
@@ -876,8 +932,6 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         if matches {
             functions_passed += 1;
         } else if !first_mismatch_logged {
-            // Log first mismatch with diagnostic details
-            let ptr_addr = code_base + entry.offset as usize;
             let first_bytes: Vec<u8> = func_bytes.iter().take(16).copied().collect();
             tracing::warn!(
                 "verify_functions: MISMATCH (first) name={}, offset=0x{:x}, size={}, ptr=0x{:x}, first_bytes={}, expected={}, actual={}",
@@ -893,11 +947,24 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         }
     }
 
+    let failure_reason = if all_valid {
+        String::new()
+    } else if out_of_bounds == manifest.functions.len() {
+        // Every entry was out of bounds — the manifest doesn't match this
+        // module at all (wrong format or wrong build). Surface as "manifest"
+        // rather than "mismatch" so callers can distinguish.
+        "manifest".to_string()
+    } else {
+        "mismatch".to_string()
+    };
+
     tracing::info!(
-        "verify_functions: RESULT {}/{} passed, valid={}",
+        "verify_functions: RESULT {}/{} passed, valid={}, out_of_bounds={}, reason={}",
         functions_passed,
         manifest.functions.len(),
-        all_valid
+        all_valid,
+        out_of_bounds,
+        if failure_reason.is_empty() { "ok" } else { &failure_reason }
     );
 
     FunctionIntegrityResult {
@@ -905,14 +972,10 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         functions_checked: manifest.functions.len(),
         functions_passed,
         verified_at: timestamp,
-        failure_reason: if all_valid {
-            String::new()
-        } else {
-            "mismatch".to_string()
-        },
+        failure_reason,
         manifest_binary_hash: manifest.binary_hash.clone(),
         manifest_target: manifest.target.clone(),
-        code_base: format!("0x{:x}", code_base),
+        code_base: format!("0x{:x}", module.base),
     }
 }
 
@@ -1298,26 +1361,181 @@ fn get_code_base_macos() -> Option<usize> {
     }
 }
 
-/// Get the base address of the code section on Windows.
-///
-/// Uses `GetModuleHandleW(NULL)` to get the base address of the main module.
+/// Module base + image size for Windows verification.
 #[cfg(target_os = "windows")]
-fn get_code_base_windows() -> Option<usize> {
+#[derive(Debug, Clone, Copy)]
+struct WindowsModuleInfo {
+    /// Load address of the module containing CIRISVerify code (DLL or EXE).
+    base: usize,
+    /// Total mapped image size in bytes (0 if unavailable).
+    image_size: usize,
+}
+
+/// Get the base address and image size of the module containing CIRISVerify.
+///
+/// Uses `GetModuleHandleExW` with `GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS` so we
+/// resolve the **DLL** that hosts this code, not the calling executable. Manifest
+/// offsets are RVAs from this base. `GetModuleInformation` then provides
+/// `SizeOfImage` so callers can bounds-check every read against the mapped image.
+#[cfg(target_os = "windows")]
+fn get_code_base_windows() -> Option<WindowsModuleInfo> {
     use std::ptr;
+
+    const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x00000004;
+    const GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT: u32 = 0x00000002;
+
+    #[repr(C)]
+    struct ModuleInfo {
+        lp_base_of_dll: *mut std::ffi::c_void,
+        size_of_image: u32,
+        entry_point: *mut std::ffi::c_void,
+    }
 
     #[link(name = "kernel32")]
     extern "system" {
-        fn GetModuleHandleW(lpModuleName: *const u16) -> *mut std::ffi::c_void;
+        fn GetModuleHandleExW(
+            dw_flags: u32,
+            lp_module_name: *const u16,
+            ph_module: *mut *mut std::ffi::c_void,
+        ) -> i32;
+        fn GetCurrentProcess() -> *mut std::ffi::c_void;
+    }
+
+    #[link(name = "psapi")]
+    extern "system" {
+        fn GetModuleInformation(
+            h_process: *mut std::ffi::c_void,
+            h_module: *mut std::ffi::c_void,
+            lpmodinfo: *mut ModuleInfo,
+            cb: u32,
+        ) -> i32;
     }
 
     unsafe {
-        let handle = GetModuleHandleW(ptr::null());
-        if handle.is_null() {
-            None
-        } else {
-            Some(handle as usize)
+        // Address inside our own module — `get_code_base_windows` itself is
+        // guaranteed to live in the DLL/EXE that ships CIRISVerify.
+        let addr_in_module = get_code_base_windows as *const () as *const u16;
+        let mut handle: *mut std::ffi::c_void = ptr::null_mut();
+        let ok = GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            addr_in_module,
+            &mut handle,
+        );
+        if ok == 0 || handle.is_null() {
+            return None;
+        }
+
+        let mut info = ModuleInfo {
+            lp_base_of_dll: ptr::null_mut(),
+            size_of_image: 0,
+            entry_point: ptr::null_mut(),
+        };
+        let got_info = GetModuleInformation(
+            GetCurrentProcess(),
+            handle,
+            &mut info,
+            std::mem::size_of::<ModuleInfo>() as u32,
+        );
+        if got_info == 0 || info.lp_base_of_dll.is_null() {
+            // Fall back to the handle itself; image size unknown so reads will
+            // be rejected by the bounds check.
+            return Some(WindowsModuleInfo {
+                base: handle as usize,
+                image_size: 0,
+            });
+        }
+
+        Some(WindowsModuleInfo {
+            base: info.lp_base_of_dll as usize,
+            image_size: info.size_of_image as usize,
+        })
+    }
+}
+
+/// Probe a memory range with `VirtualQuery` to confirm every page is committed
+/// and readable. Returns false if any page in the range is uncommitted, guarded,
+/// or has no read access. Used as a defense-in-depth crash guard before a raw
+/// pointer read; complements the image-bounds check.
+#[cfg(target_os = "windows")]
+fn windows_range_readable(addr: usize, len: usize) -> bool {
+    use std::mem;
+
+    const PAGE_NOACCESS: u32 = 0x01;
+    const PAGE_GUARD: u32 = 0x100;
+    const MEM_COMMIT: u32 = 0x1000;
+    const READABLE_MASK: u32 = 0x02 // PAGE_READONLY
+        | 0x04   // PAGE_READWRITE
+        | 0x20   // PAGE_EXECUTE_READ
+        | 0x40   // PAGE_EXECUTE_READWRITE
+        | 0x08   // PAGE_WRITECOPY
+        | 0x80;  // PAGE_EXECUTE_WRITECOPY
+
+    #[repr(C)]
+    struct MemoryBasicInformation {
+        base_address: *mut std::ffi::c_void,
+        allocation_base: *mut std::ffi::c_void,
+        allocation_protect: u32,
+        partition_id: u16,
+        _pad: u16,
+        region_size: usize,
+        state: u32,
+        protect: u32,
+        type_: u32,
+    }
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn VirtualQuery(
+            lp_address: *const std::ffi::c_void,
+            lp_buffer: *mut MemoryBasicInformation,
+            dw_length: usize,
+        ) -> usize;
+    }
+
+    if len == 0 || addr == 0 {
+        return false;
+    }
+    let end = match addr.checked_add(len) {
+        Some(e) => e,
+        None => return false,
+    };
+
+    let mut cursor = addr;
+    while cursor < end {
+        let mut mbi: MemoryBasicInformation = unsafe { mem::zeroed() };
+        let ret = unsafe {
+            VirtualQuery(
+                cursor as *const std::ffi::c_void,
+                &mut mbi,
+                mem::size_of::<MemoryBasicInformation>(),
+            )
+        };
+        if ret == 0 {
+            return false;
+        }
+        if mbi.state != MEM_COMMIT
+            || (mbi.protect & PAGE_NOACCESS) != 0
+            || (mbi.protect & PAGE_GUARD) != 0
+            || (mbi.protect & READABLE_MASK) == 0
+        {
+            return false;
+        }
+        let region_base = mbi.base_address as usize;
+        let region_end = match region_base.checked_add(mbi.region_size) {
+            Some(e) => e,
+            None => return false,
+        };
+        if region_end <= cursor {
+            return false;
+        }
+        cursor = region_end;
+        // Defensive: bound iterations if VirtualQuery ever wraps.
+        if cursor == 0 {
+            return false;
         }
     }
+    true
 }
 
 /// Get current Unix timestamp.
@@ -1444,5 +1662,220 @@ mod tests {
         assert!(!result.integrity_valid);
         assert_eq!(result.functions_checked, 0);
         assert!(result.failure_reason.is_empty());
+    }
+
+    // ===========================================================================
+    // Windows-specific tests
+    //
+    // These exercise the bug fixed in v1.5.4: prior versions used
+    // `GetModuleHandleW(NULL)` (which returns the EXE base, not the DLL hosting
+    // CIRISVerify), then dereferenced `code_base + offset`. When the manifest
+    // encoded RVAs from a different module, that read landed in unmapped memory
+    // and faulted/stalled the tokio worker forever — the agent's
+    // `has_key_sync` call would loop on -100 (ATTESTATION_IN_PROGRESS) until
+    // the host process was killed.
+    //
+    // The fix has three parts and each gets a regression test below:
+    //   1. `get_code_base_windows` resolves OUR module via FROM_ADDRESS.
+    //   2. Every read is bounds-checked against `SizeOfImage`.
+    //   3. Every read is probed with `VirtualQuery` first.
+    // ===========================================================================
+
+    #[cfg(target_os = "windows")]
+    mod windows {
+        use super::*;
+
+        fn empty_signature() -> ManifestSignature {
+            ManifestSignature {
+                classical: String::new(),
+                classical_algorithm: "Ed25519".to_string(),
+                pqc: String::new(),
+                pqc_algorithm: "ML-DSA-65".to_string(),
+                key_id: "test".to_string(),
+            }
+        }
+
+        fn manifest_with(functions: BTreeMap<String, FunctionEntry>) -> FunctionManifest {
+            FunctionManifest {
+                version: "1.0.0".to_string(),
+                target: "x86_64-pc-windows-msvc".to_string(),
+                binary_hash: "sha256:test".to_string(),
+                binary_version: "1.5.4".to_string(),
+                generated_at: "2026-04-14T00:00:00Z".to_string(),
+                functions,
+                manifest_hash: String::new(),
+                signature: empty_signature(),
+                metadata: ManifestMetadata::default(),
+            }
+        }
+
+        #[test]
+        fn get_code_base_windows_returns_our_module() {
+            // Resolves the test binary itself, not the calling executable.
+            let info =
+                get_code_base_windows().expect("module info must be available in-process");
+            assert!(info.base != 0, "module base should be non-zero");
+            assert!(
+                info.image_size > 0,
+                "image size should be populated by GetModuleInformation"
+            );
+
+            // The address of `get_code_base_windows` itself MUST live inside
+            // the reported module range — that's the whole point of using
+            // FROM_ADDRESS. If this fails, we resolved the wrong module.
+            let fn_addr = get_code_base_windows as *const () as usize;
+            assert!(
+                fn_addr >= info.base && fn_addr < info.base + info.image_size,
+                "function address 0x{:x} must lie within module image \
+                 [0x{:x}..0x{:x})",
+                fn_addr,
+                info.base,
+                info.base + info.image_size,
+            );
+        }
+
+        #[test]
+        fn windows_range_readable_accepts_stack_memory() {
+            let buf = [0u8; 64];
+            let addr = buf.as_ptr() as usize;
+            assert!(windows_range_readable(addr, buf.len()));
+        }
+
+        #[test]
+        fn windows_range_readable_rejects_null_and_zero_len() {
+            assert!(!windows_range_readable(0, 16));
+            assert!(!windows_range_readable(0x1000, 0));
+        }
+
+        #[test]
+        fn windows_range_readable_rejects_unmapped_address() {
+            // A canonical low address that's reserved on Windows and not
+            // committed for any normal process. `VirtualQuery` either reports
+            // the region as MEM_FREE/MEM_RESERVE or fails outright.
+            assert!(!windows_range_readable(0x0001_0000, 16));
+        }
+
+        #[test]
+        fn windows_range_readable_rejects_address_space_overflow() {
+            // addr + len wraps — must reject without dereferencing.
+            assert!(!windows_range_readable(usize::MAX - 4, 16));
+        }
+
+        #[test]
+        fn verify_functions_rejects_oob_offsets_without_hanging() {
+            // Regression test for the v1.5.3 hang. A manifest whose offsets
+            // are absolute VAs (not RVAs) used to slip through and trigger an
+            // unbounded read at `code_base + 0x1574c0`. The fix: bounds-check
+            // against image size and surface "manifest" failure.
+            //
+            // The real failure mode in v1.5.3 happened because
+            // `GetModuleHandleW(NULL)` returned the EXE base, then
+            // EXE_base + DLL_RVA fell inside the EXE's image only by
+            // coincidence — and when it didn't, the read faulted and the
+            // tokio worker stalled. Test EXEs built by `cargo test` are huge
+            // (multiple MB), so we can't hard-code a "definitely OOB" offset
+            // — derive it from the actual `image_size` so the test holds for
+            // any future test-binary layout.
+            let module = get_code_base_windows().expect("module info");
+            let oob_base = (module.image_size as u64).saturating_add(0x1_0000);
+
+            let mut functions = BTreeMap::new();
+            for (i, name) in [
+                "ciris_verify_app_attest",
+                "ciris_verify_app_attest_assertion",
+                "ciris_verify_audit_trail",
+            ]
+            .iter()
+            .enumerate()
+            {
+                functions.insert(
+                    name.to_string(),
+                    FunctionEntry {
+                        name: name.to_string(),
+                        offset: oob_base + (i as u64 * 0x3000),
+                        size: 256,
+                        hash: format!("sha256:{:0>64x}", i),
+                        first_bytes: String::new(),
+                    },
+                );
+            }
+            let manifest = manifest_with(functions);
+
+            let start = std::time::Instant::now();
+            let result = verify_functions(&manifest);
+            let elapsed = start.elapsed();
+
+            assert!(!result.integrity_valid);
+            assert_eq!(result.functions_checked, 3);
+            assert_eq!(result.functions_passed, 0);
+            assert_eq!(
+                result.failure_reason, "manifest",
+                "all-OOB manifest must surface as 'manifest', not 'mismatch'"
+            );
+            assert!(
+                elapsed.as_secs() < 2,
+                "verify_functions took {:?} — bounds check should fail \
+                 instantly, not stall on a fault",
+                elapsed
+            );
+        }
+
+        #[test]
+        fn verify_functions_distinguishes_partial_oob_as_mismatch() {
+            // One in-bounds entry (whose bytes won't hash-match anything
+            // real) + one definitely-OOB entry. Failure reason must be
+            // "mismatch", not "manifest" — the manifest format itself is
+            // plausible; only one entry is bogus.
+            let module = get_code_base_windows().expect("module info");
+            // PE images on x86_64 always reserve at least the headers in the
+            // first page; pick an offset well into the .text region.
+            assert!(
+                module.image_size > 0x2000,
+                "test binary unexpectedly small"
+            );
+            let in_bounds_offset = 0x1000_u64;
+            let oob_offset = (module.image_size as u64).saturating_add(0x10_0000);
+
+            let mut functions = BTreeMap::new();
+            functions.insert(
+                "in_bounds_but_wrong_hash".to_string(),
+                FunctionEntry {
+                    name: "in_bounds_but_wrong_hash".to_string(),
+                    offset: in_bounds_offset,
+                    size: 16,
+                    hash: format!("sha256:{:0>64}", "deadbeef"),
+                    first_bytes: String::new(),
+                },
+            );
+            functions.insert(
+                "way_out_of_bounds".to_string(),
+                FunctionEntry {
+                    name: "way_out_of_bounds".to_string(),
+                    offset: oob_offset,
+                    size: 256,
+                    hash: format!("sha256:{:0>64}", "feedface"),
+                    first_bytes: String::new(),
+                },
+            );
+            let manifest = manifest_with(functions);
+
+            let result = verify_functions(&manifest);
+            assert!(!result.integrity_valid);
+            assert_eq!(
+                result.failure_reason, "mismatch",
+                "mixed pass/OOB must report 'mismatch' so callers can tell \
+                 it apart from a wholesale-bogus manifest"
+            );
+        }
+
+        #[test]
+        fn verify_functions_handles_empty_manifest() {
+            let result = verify_functions(&manifest_with(BTreeMap::new()));
+            // Vacuously valid: no functions checked, none failed.
+            assert!(result.integrity_valid);
+            assert_eq!(result.functions_checked, 0);
+            assert_eq!(result.functions_passed, 0);
+            assert!(result.failure_reason.is_empty());
+        }
     }
 }

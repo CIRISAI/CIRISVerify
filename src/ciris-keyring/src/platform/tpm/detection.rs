@@ -39,8 +39,17 @@ pub fn detect_tpm() -> Result<(bool, bool), KeyringError> {
 
     #[cfg(target_os = "windows")]
     {
-        tracing::info!("TPM: checking Windows TPM availability");
-        Ok((true, false))
+        let info = probe_tbs_device_info();
+        match info {
+            Some(version) => {
+                tracing::info!("TPM: TBS reports TPM {}", version);
+                Ok((true, false))
+            },
+            None => {
+                tracing::info!("TPM: TBS reports no TPM available");
+                Ok((false, false))
+            },
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -94,6 +103,89 @@ pub fn get_tpm_manufacturer() -> Option<String> {
 #[cfg(not(target_os = "linux"))]
 pub fn get_tpm_manufacturer() -> Option<String> {
     None
+}
+
+/// Probe Windows TBS (TPM Base Services) for TPM presence and version.
+///
+/// TBS is a user-mode API exposed by `tbs.dll` and is reachable without
+/// administrator privileges on Windows 10/11. Returns `Some("2.0")`,
+/// `Some("1.2")`, or `None` if no TPM is present (or TBS itself is missing,
+/// e.g. on stripped-down SKUs).
+///
+/// We resolve the entry point dynamically with `LoadLibraryA`/`GetProcAddress`
+/// so that the binary still loads on hosts where `tbs.dll` is absent.
+#[cfg(target_os = "windows")]
+pub fn probe_tbs_device_info() -> Option<&'static str> {
+    use std::ffi::CString;
+
+    // TBS_DEVICE_INFO struct layout per <tbs.h>. `structVersion` is set by the
+    // caller; everything else is filled by TBS.
+    #[repr(C)]
+    #[derive(Default)]
+    struct TbsDeviceInfo {
+        struct_version: u32,
+        tpm_version: u32,    // 1 = TPM 1.2, 2 = TPM 2.0
+        tpm_interface_type: u32,
+        tpm_impl_revision: u32,
+    }
+
+    type TbsiGetDeviceInfo =
+        unsafe extern "system" fn(size: u32, info: *mut TbsDeviceInfo) -> u32;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn LoadLibraryA(name: *const i8) -> *mut std::ffi::c_void;
+        fn GetProcAddress(
+            module: *mut std::ffi::c_void,
+            name: *const i8,
+        ) -> *mut std::ffi::c_void;
+        fn FreeLibrary(module: *mut std::ffi::c_void) -> i32;
+    }
+
+    let dll_name = CString::new("tbs.dll").ok()?;
+    let proc_name = CString::new("Tbsi_GetDeviceInfo").ok()?;
+
+    unsafe {
+        let module = LoadLibraryA(dll_name.as_ptr());
+        if module.is_null() {
+            tracing::debug!("TPM: tbs.dll not loadable");
+            return None;
+        }
+
+        let proc_addr = GetProcAddress(module, proc_name.as_ptr());
+        if proc_addr.is_null() {
+            FreeLibrary(module);
+            tracing::debug!("TPM: Tbsi_GetDeviceInfo not exported by tbs.dll");
+            return None;
+        }
+
+        let get_info: TbsiGetDeviceInfo = std::mem::transmute(proc_addr);
+        let mut info = TbsDeviceInfo {
+            struct_version: 1,
+            ..Default::default()
+        };
+        let result = get_info(
+            std::mem::size_of::<TbsDeviceInfo>() as u32,
+            &mut info,
+        );
+        FreeLibrary(module);
+
+        // TBS_SUCCESS == 0. Anything else (including TBS_E_TPM_NOT_FOUND
+        // 0x8028400F) means we should treat the TPM as unavailable.
+        if result != 0 {
+            tracing::debug!("TPM: Tbsi_GetDeviceInfo returned 0x{:08x}", result);
+            return None;
+        }
+
+        match info.tpm_version {
+            2 => Some("2.0"),
+            1 => Some("1.2"),
+            other => {
+                tracing::debug!("TPM: TBS reported unknown tpm_version={}", other);
+                None
+            },
+        }
+    }
 }
 
 /// Create a TPM context for the current platform.
@@ -170,5 +262,42 @@ mod tests {
             let result = create_context();
             assert!(result.is_ok(), "Failed to create context on TPM system");
         }
+    }
+
+    /// On Windows, TBS is reachable without admin. We can't assert that a TPM
+    /// is present (CI Windows runners often lack one), but the probe must
+    /// return without panicking and either Some("2.0"|"1.2") or None — never
+    /// some unexpected value.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_probe_tbs_device_info_returns_known_value() {
+        match probe_tbs_device_info() {
+            None => {} // No TPM, or stripped-down SKU — acceptable.
+            Some(version) => {
+                assert!(
+                    version == "2.0" || version == "1.2",
+                    "TBS reported unexpected TPM version: {}",
+                    version
+                );
+            }
+        }
+    }
+
+    /// detect_tpm and probe_tbs_device_info must agree on Windows. If TBS
+    /// reports a TPM, detect_tpm must mark it available; if TBS doesn't,
+    /// detect_tpm must mark it unavailable. A drift between these two would
+    /// give us a false-positive PlatformCapabilities and silently mis-tier
+    /// the agent.
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn test_detect_tpm_agrees_with_tbs_probe() {
+        let from_tbs = probe_tbs_device_info().is_some();
+        let (from_detect, _) = detect_tpm().unwrap();
+        assert_eq!(
+            from_tbs, from_detect,
+            "detect_tpm and probe_tbs_device_info disagree: \
+             tbs={}, detect={}",
+            from_tbs, from_detect
+        );
     }
 }

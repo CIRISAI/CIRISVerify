@@ -1146,8 +1146,49 @@ async fn run_list_manifests(version: &str, registry_url: &str, json: bool) {
     }
 }
 
+/// Enable ANSI escape sequence processing on Windows consoles so the CLI's
+/// colored output renders instead of printing raw `ESC[31m` garbage. No-op on
+/// other platforms and harmless when stdout/stderr aren't a tty.
+#[cfg(target_os = "windows")]
+fn enable_windows_ansi() {
+    const STD_OUTPUT_HANDLE: i32 = -11;
+    const STD_ERROR_HANDLE: i32 = -12;
+    const ENABLE_VIRTUAL_TERMINAL_PROCESSING: u32 = 0x0004;
+    const INVALID_HANDLE_VALUE: *mut std::ffi::c_void = usize::MAX as *mut _;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetStdHandle(nStdHandle: i32) -> *mut std::ffi::c_void;
+        fn GetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, lpMode: *mut u32) -> i32;
+        fn SetConsoleMode(hConsoleHandle: *mut std::ffi::c_void, dwMode: u32) -> i32;
+    }
+
+    unsafe fn enable_for(handle_id: i32) {
+        let h = GetStdHandle(handle_id);
+        if h.is_null() || h == INVALID_HANDLE_VALUE {
+            return;
+        }
+        let mut mode: u32 = 0;
+        if GetConsoleMode(h, &mut mode) == 0 {
+            // Not a console (redirected to file/pipe); leave untouched.
+            return;
+        }
+        SetConsoleMode(h, mode | ENABLE_VIRTUAL_TERMINAL_PROCESSING);
+    }
+
+    unsafe {
+        enable_for(STD_OUTPUT_HANDLE);
+        enable_for(STD_ERROR_HANDLE);
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn enable_windows_ansi() {}
+
 #[tokio::main]
 async fn main() {
+    enable_windows_ansi();
+
     let cli = Cli::parse();
 
     let json_output = cli.format == "json";

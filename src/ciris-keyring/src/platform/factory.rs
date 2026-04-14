@@ -160,14 +160,26 @@ fn detect_linux_capabilities() -> PlatformCapabilities {
 
 #[cfg(target_os = "windows")]
 fn detect_windows_capabilities() -> PlatformCapabilities {
-    // Windows TBS (TPM Base Services) is usually available
-    // Would need to actually try to access TPM to confirm
-    PlatformCapabilities {
-        hardware_type: HardwareType::TpmFirmware,
-        has_hardware: true,
-        supports_user_auth: true, // Windows Hello
-        supports_attestation: true,
-        max_tier: MaxTier::Standard,
+    // Probe TBS (user-mode, no admin needed). If TBS is missing or no TPM
+    // is present, fall back to software-only with the same posture as Linux
+    // without a TPM device node.
+    let has_tpm = crate::platform::tpm::probe_tbs_device_info().is_some();
+    if has_tpm {
+        PlatformCapabilities {
+            hardware_type: HardwareType::TpmFirmware,
+            has_hardware: true,
+            supports_user_auth: true, // Windows Hello
+            supports_attestation: true,
+            max_tier: MaxTier::Standard,
+        }
+    } else {
+        PlatformCapabilities {
+            hardware_type: HardwareType::SoftwareOnly,
+            has_hardware: false,
+            supports_user_auth: false,
+            supports_attestation: false,
+            max_tier: MaxTier::CommunityOnly,
+        }
     }
 }
 
