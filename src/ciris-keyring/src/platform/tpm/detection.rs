@@ -80,11 +80,6 @@ fn check_if_discrete_tpm() -> bool {
     false
 }
 
-#[cfg(not(target_os = "linux"))]
-fn check_if_discrete_tpm() -> bool {
-    false
-}
-
 /// Get TPM manufacturer string from sysfs.
 #[cfg(target_os = "linux")]
 pub fn get_tpm_manufacturer() -> Option<String> {
@@ -124,21 +119,17 @@ pub fn probe_tbs_device_info() -> Option<&'static str> {
     #[derive(Default)]
     struct TbsDeviceInfo {
         struct_version: u32,
-        tpm_version: u32,    // 1 = TPM 1.2, 2 = TPM 2.0
+        tpm_version: u32, // 1 = TPM 1.2, 2 = TPM 2.0
         tpm_interface_type: u32,
         tpm_impl_revision: u32,
     }
 
-    type TbsiGetDeviceInfo =
-        unsafe extern "system" fn(size: u32, info: *mut TbsDeviceInfo) -> u32;
+    type TbsiGetDeviceInfo = unsafe extern "system" fn(size: u32, info: *mut TbsDeviceInfo) -> u32;
 
     #[link(name = "kernel32")]
     extern "system" {
         fn LoadLibraryA(name: *const i8) -> *mut std::ffi::c_void;
-        fn GetProcAddress(
-            module: *mut std::ffi::c_void,
-            name: *const i8,
-        ) -> *mut std::ffi::c_void;
+        fn GetProcAddress(module: *mut std::ffi::c_void, name: *const i8) -> *mut std::ffi::c_void;
         fn FreeLibrary(module: *mut std::ffi::c_void) -> i32;
     }
 
@@ -164,10 +155,7 @@ pub fn probe_tbs_device_info() -> Option<&'static str> {
             struct_version: 1,
             ..Default::default()
         };
-        let result = get_info(
-            std::mem::size_of::<TbsDeviceInfo>() as u32,
-            &mut info,
-        );
+        let result = get_info(std::mem::size_of::<TbsDeviceInfo>() as u32, &mut info);
         FreeLibrary(module);
 
         // TBS_SUCCESS == 0. Anything else (including TBS_E_TPM_NOT_FOUND
@@ -272,14 +260,14 @@ mod tests {
     #[test]
     fn test_probe_tbs_device_info_returns_known_value() {
         match probe_tbs_device_info() {
-            None => {} // No TPM, or stripped-down SKU — acceptable.
+            None => {}, // No TPM, or stripped-down SKU — acceptable.
             Some(version) => {
                 assert!(
                     version == "2.0" || version == "1.2",
                     "TBS reported unexpected TPM version: {}",
                     version
                 );
-            }
+            },
         }
     }
 

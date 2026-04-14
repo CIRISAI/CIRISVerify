@@ -1414,7 +1414,7 @@ impl MutableEd25519Signer {
 
         #[cfg(not(unix))]
         {
-            std::fs::write(&path, &key_bytes).map_err(|e| {
+            std::fs::write(&path, key_bytes).map_err(|e| {
                 tracing::error!(path = %path.display(), error = %e, "Failed to write key file");
                 KeyringError::StorageFailed {
                     reason: format!("Failed to write key file: {}", e),

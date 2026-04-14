@@ -174,6 +174,10 @@ pub struct CodeBaseInfo {
     /// File offset from /proc/self/maps (where this segment starts in the file).
     /// Used with manifest's text_section_offset to calculate adjustment.
     pub maps_file_offset: u64,
+    /// Total mapped image size in bytes from the runtime base (0 if unknown).
+    /// Used to bounds-check function reads — anything past this is unmapped
+    /// and would fault if dereferenced.
+    pub image_size: usize,
 }
 
 /// Result of function-level integrity verification.
@@ -447,9 +451,12 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         }
     }
 
-    // Get code base address - use platform-specific function
+    // Get code base address + image size — use platform-specific function.
+    // Both platforms now return a high-water `image_size` so we can
+    // bounds-check every read and avoid faulting on a wrong-format manifest
+    // (the failure mode that hung Windows in v1.5.3, ported here defensively).
     #[cfg(target_os = "android")]
-    let (code_base, text_adjustment) = match get_code_base_android() {
+    let (code_base, text_adjustment, image_size) = match get_code_base_android() {
         Some(info) => {
             // Calculate adjustment: difference between .text file offset and maps file offset
             // This accounts for the gap between segment start and .text section start
@@ -466,19 +473,20 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
             };
 
             tracing::info!(
-                "verify_functions: base=0x{:x}, maps_file_offset=0x{:x}, text_offset=0x{:x}, adjustment=0x{:x}",
-                info.base, info.maps_file_offset, text_offset, adjustment
+                "verify_functions: base=0x{:x}, maps_file_offset=0x{:x}, text_offset=0x{:x}, adjustment=0x{:x}, image_size=0x{:x}",
+                info.base, info.maps_file_offset, text_offset, adjustment, info.image_size
             );
             logcat!(
                 ANDROID_LOG_INFO,
-                "verify_functions: base=0x{:x}, maps_offset=0x{:x}, text_offset=0x{:x}, adj=0x{:x}",
+                "verify_functions: base=0x{:x}, maps_offset=0x{:x}, text_offset=0x{:x}, adj=0x{:x}, image_size=0x{:x}",
                 info.base,
                 info.maps_file_offset,
                 text_offset,
-                adjustment
+                adjustment,
+                info.image_size
             );
 
-            (info.base, adjustment)
+            (info.base, adjustment, info.image_size)
         },
         None => {
             tracing::error!("verify_functions: FAILED - could not determine code base address");
@@ -500,12 +508,16 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     };
 
     #[cfg(all(target_os = "linux", not(target_os = "android")))]
-    let (code_base, text_adjustment) = match get_code_base_linux() {
-        Some(base) => {
-            tracing::debug!("verify_functions: code_base=0x{:x}", base);
+    let (code_base, text_adjustment, image_size) = match get_code_base_linux() {
+        Some(info) => {
+            tracing::debug!(
+                "verify_functions: code_base=0x{:x}, image_size=0x{:x}",
+                info.base,
+                info.image_size
+            );
             // Linux uses dl_iterate_phdr which gives segment base directly
             // TODO: may need similar adjustment for Linux shared libraries
-            (base, 0usize)
+            (info.base, 0usize, info.image_size)
         },
         None => {
             tracing::error!("verify_functions: FAILED - could not determine code base address");
@@ -526,8 +538,48 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     let mut all_valid = true;
     let mut functions_passed = 0usize;
     let mut first_mismatch_logged = false;
+    let mut out_of_bounds = 0usize;
 
     for (name, entry) in &manifest.functions {
+        // Bounds-check against the loaded image. Backported from Windows'
+        // v1.5.4 fix: a manifest with absolute VAs (or simply for the wrong
+        // build) would otherwise produce a pointer past the .so and fault
+        // the tokio worker. `image_size == 0` means we couldn't determine
+        // the span at load time — skip the check rather than fail-closed,
+        // preserving prior behavior.
+        if image_size > 0 {
+            // Compute everything in u64 to stay correct on 32-bit Android.
+            let image_size_u64 = image_size as u64;
+            let total_offset = (text_adjustment as u64).saturating_add(entry.offset);
+            let in_image = match total_offset.checked_add(entry.size) {
+                Some(end) => end <= image_size_u64,
+                None => false,
+            };
+            if !in_image {
+                all_valid = false;
+                out_of_bounds += 1;
+                if !first_mismatch_logged {
+                    tracing::warn!(
+                        "verify_functions: OUT OF BOUNDS name={}, offset=0x{:x}, size={}, image_size=0x{:x}",
+                        name,
+                        entry.offset,
+                        entry.size,
+                        image_size
+                    );
+                    logcat!(
+                        ANDROID_LOG_WARN,
+                        "OUT OF BOUNDS name={}, offset=0x{:x}, size={}, image_size=0x{:x}",
+                        name,
+                        entry.offset,
+                        entry.size,
+                        image_size
+                    );
+                    first_mismatch_logged = true;
+                }
+                continue;
+            }
+        }
+
         // Safety: We trust the manifest offsets for our own binary
         // ptr = base + text_adjustment + manifest_offset
         let func_bytes = unsafe {
@@ -631,11 +683,29 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         }
     }
 
+    let failure_reason = if all_valid {
+        String::new()
+    } else if image_size > 0 && out_of_bounds == manifest.functions.len() {
+        // Every entry was rejected by the bounds check — manifest doesn't
+        // describe our `.so` at all. Surface as "manifest" (vs "mismatch"
+        // for individual hash failures) so callers can tell a wrong-format
+        // manifest from a tampered binary.
+        "manifest".to_string()
+    } else {
+        "mismatch".to_string()
+    };
+
     let result_msg = format!(
-        "verify_functions: RESULT {}/{} passed, valid={}",
+        "verify_functions: RESULT {}/{} passed, valid={}, out_of_bounds={}, reason={}",
         functions_passed,
         manifest.functions.len(),
-        all_valid
+        all_valid,
+        out_of_bounds,
+        if failure_reason.is_empty() {
+            "ok"
+        } else {
+            &failure_reason
+        }
     );
     tracing::info!("{}", result_msg);
     logcat!(ANDROID_LOG_INFO, "{}", result_msg);
@@ -645,11 +715,7 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         functions_checked: manifest.functions.len(),
         functions_passed,
         verified_at: timestamp,
-        failure_reason: if all_valid {
-            String::new()
-        } else {
-            "mismatch".to_string()
-        },
+        failure_reason,
         manifest_binary_hash: manifest.binary_hash.clone(),
         manifest_target: manifest.target.clone(),
         code_base: format!("0x{:x}", code_base),
@@ -690,11 +756,19 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         }
     }
 
-    // Get code base address
-    let code_base = match get_code_base_macos() {
-        Some(base) => {
-            tracing::debug!("verify_functions: code_base=0x{:x}", base);
-            base
+    // Get module info — base + image_size for bounds-checking. Backported
+    // from Windows v1.5.4: a manifest with absolute VAs (or simply for a
+    // different build) used to dereference into unmapped memory and fault
+    // the worker. The image_size returned by `macho_image_size` excludes
+    // __PAGEZERO so the bounds check stays meaningful.
+    let (code_base, image_size) = match get_code_base_macos() {
+        Some(info) => {
+            tracing::debug!(
+                "verify_functions: code_base=0x{:x}, image_size=0x{:x}",
+                info.base,
+                info.image_size
+            );
+            (info.base, info.image_size)
         },
         None => {
             tracing::error!("verify_functions: FAILED - could not determine code base address");
@@ -715,8 +789,36 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
     let mut all_valid = true;
     let mut functions_passed = 0usize;
     let mut first_mismatch_logged = false;
+    let mut out_of_bounds = 0usize;
 
     for (name, entry) in &manifest.functions {
+        // Bounds-check against the loaded image. `image_size == 0` means we
+        // couldn't parse Mach-O load commands at startup — skip the check
+        // rather than fail-closed and risk regressing previously-working
+        // builds.
+        if image_size > 0 {
+            let image_size_u64 = image_size as u64;
+            let in_image = match entry.offset.checked_add(entry.size) {
+                Some(end) => end <= image_size_u64,
+                None => false,
+            };
+            if !in_image {
+                all_valid = false;
+                out_of_bounds += 1;
+                if !first_mismatch_logged {
+                    tracing::warn!(
+                        "verify_functions: OUT OF BOUNDS name={}, offset=0x{:x}, size={}, image_size=0x{:x}",
+                        name,
+                        entry.offset,
+                        entry.size,
+                        image_size
+                    );
+                    first_mismatch_logged = true;
+                }
+                continue;
+            }
+        }
+
         let func_bytes = unsafe {
             let ptr = (code_base + entry.offset as usize) as *const u8;
             if ptr.is_null() {
@@ -770,11 +872,26 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         }
     }
 
+    let failure_reason = if all_valid {
+        String::new()
+    } else if image_size > 0 && out_of_bounds == manifest.functions.len() {
+        // Same logic as Linux/Windows: all entries OOB → manifest mismatch.
+        "manifest".to_string()
+    } else {
+        "mismatch".to_string()
+    };
+
     tracing::info!(
-        "verify_functions: RESULT {}/{} passed, valid={}",
+        "verify_functions: RESULT {}/{} passed, valid={}, out_of_bounds={}, reason={}",
         functions_passed,
         manifest.functions.len(),
-        all_valid
+        all_valid,
+        out_of_bounds,
+        if failure_reason.is_empty() {
+            "ok"
+        } else {
+            &failure_reason
+        }
     );
 
     FunctionIntegrityResult {
@@ -782,11 +899,7 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         functions_checked: manifest.functions.len(),
         functions_passed,
         verified_at: timestamp,
-        failure_reason: if all_valid {
-            String::new()
-        } else {
-            "mismatch".to_string()
-        },
+        failure_reason,
         manifest_binary_hash: manifest.binary_hash.clone(),
         manifest_target: manifest.target.clone(),
         code_base: format!("0x{:x}", code_base),
@@ -964,7 +1077,11 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
         manifest.functions.len(),
         all_valid,
         out_of_bounds,
-        if failure_reason.is_empty() { "ok" } else { &failure_reason }
+        if failure_reason.is_empty() {
+            "ok"
+        } else {
+            &failure_reason
+        }
     );
 
     FunctionIntegrityResult {
@@ -1006,14 +1123,29 @@ pub fn verify_functions(manifest: &FunctionManifest) -> FunctionIntegrityResult 
 // Platform-specific code base detection
 // =============================================================================
 
-/// Get the base address of libciris_verify_ffi.so on Linux (not Android).
+/// Linux module info: runtime base + total mapped image span from that base.
 ///
-/// Uses `dl_iterate_phdr` to find our library's load address.
+/// `image_size` is the high-water mark across all PT_LOAD segments measured
+/// from the executable segment's vaddr. Reads at `base + offset` past this
+/// are guaranteed to fall outside our `.so` and must be rejected — see
+/// v1.5.4's Windows fix for the failure mode this prevents.
 #[cfg(all(target_os = "linux", not(target_os = "android")))]
-fn get_code_base_linux() -> Option<usize> {
+#[derive(Debug, Clone, Copy)]
+struct LinuxCodeBaseInfo {
+    base: usize,
+    image_size: usize,
+}
+
+/// Get the base address and image size of libciris_verify_ffi.so on Linux.
+///
+/// Uses `dl_iterate_phdr` to find our library's load address and to compute
+/// the high-water mark of its PT_LOAD segments.
+#[cfg(all(target_os = "linux", not(target_os = "android")))]
+fn get_code_base_linux() -> Option<LinuxCodeBaseInfo> {
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     static BASE: AtomicUsize = AtomicUsize::new(0);
+    static IMAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
     static FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     const LIB_NAME: &str = "libciris_verify_ffi.so";
@@ -1021,8 +1153,13 @@ fn get_code_base_linux() -> Option<usize> {
     // Only compute once
     if FOUND.load(Ordering::Relaxed) {
         let base = BASE.load(Ordering::Relaxed);
-        tracing::debug!("get_code_base_linux: cached base=0x{:x}", base);
-        return Some(base);
+        let image_size = IMAGE_SIZE.load(Ordering::Relaxed);
+        tracing::debug!(
+            "get_code_base_linux: cached base=0x{:x}, image_size=0x{:x}",
+            base,
+            image_size
+        );
+        return Some(LinuxCodeBaseInfo { base, image_size });
     }
 
     tracing::info!(
@@ -1056,11 +1193,12 @@ fn get_code_base_linux() -> Option<usize> {
         // Additional fields exist but we don't need them
     }
 
-    // Result struct to pass both dlpi_addr and exec segment p_vaddr
+    // Result struct: dlpi_addr, exec segment p_vaddr, image span.
     #[repr(C)]
     struct CallbackResult {
         dlpi_addr: usize,
         exec_segment_vaddr: usize,
+        image_size: usize,
         found: bool,
     }
 
@@ -1090,21 +1228,34 @@ fn get_code_base_linux() -> Option<usize> {
             if name.contains("libciris_verify_ffi.so") {
                 let result_ptr = data as *mut CallbackResult;
 
-                // Find the executable LOAD segment
+                // Find the executable LOAD segment AND compute the high-water
+                // mark across every PT_LOAD so we can bounds-check reads.
                 let phdr = (*info).dlpi_phdr;
                 let phnum = (*info).dlpi_phnum as usize;
 
-                let mut exec_vaddr: usize = 0;
+                let mut exec_vaddr: u64 = 0;
+                let mut max_end: u64 = 0;
                 for i in 0..phnum {
                     let ph = &*phdr.add(i);
-                    if ph.p_type == PT_LOAD && (ph.p_flags & PF_X) != 0 {
-                        exec_vaddr = ph.p_vaddr as usize;
-                        break;
+                    if ph.p_type != PT_LOAD {
+                        continue;
+                    }
+                    if exec_vaddr == 0 && (ph.p_flags & PF_X) != 0 {
+                        exec_vaddr = ph.p_vaddr;
+                    }
+                    let end = ph.p_vaddr.saturating_add(ph.p_memsz);
+                    if end > max_end {
+                        max_end = end;
                     }
                 }
 
+                // image_size is measured from the exec segment's vaddr
+                // because our manifest offsets are relative to that.
+                let image_size = max_end.saturating_sub(exec_vaddr) as usize;
+
                 (*result_ptr).dlpi_addr = (*info).dlpi_addr;
-                (*result_ptr).exec_segment_vaddr = exec_vaddr;
+                (*result_ptr).exec_segment_vaddr = exec_vaddr as usize;
+                (*result_ptr).image_size = image_size;
                 (*result_ptr).found = true;
                 return 1; // Stop iteration
             }
@@ -1115,6 +1266,7 @@ fn get_code_base_linux() -> Option<usize> {
     let mut result = CallbackResult {
         dlpi_addr: 0,
         exec_segment_vaddr: 0,
+        image_size: 0,
         found: false,
     };
     unsafe {
@@ -1132,15 +1284,20 @@ fn get_code_base_linux() -> Option<usize> {
         // we need: runtime_addr = dlpi_addr + segment_vaddr + offset
         let code_base = result.dlpi_addr + result.exec_segment_vaddr;
         tracing::info!(
-            "get_code_base_linux: found {} dlpi_addr=0x{:x}, exec_segment_vaddr=0x{:x}, code_base=0x{:x}",
+            "get_code_base_linux: found {} dlpi_addr=0x{:x}, exec_segment_vaddr=0x{:x}, code_base=0x{:x}, image_size=0x{:x}",
             LIB_NAME,
             result.dlpi_addr,
             result.exec_segment_vaddr,
-            code_base
+            code_base,
+            result.image_size,
         );
         BASE.store(code_base, Ordering::Relaxed);
+        IMAGE_SIZE.store(result.image_size, Ordering::Relaxed);
         FOUND.store(true, Ordering::Relaxed);
-        Some(code_base)
+        Some(LinuxCodeBaseInfo {
+            base: code_base,
+            image_size: result.image_size,
+        })
     } else {
         tracing::warn!(
             "get_code_base_linux: {} not found in loaded libraries",
@@ -1165,20 +1322,24 @@ fn get_code_base_android() -> Option<CodeBaseInfo> {
 
     static BASE: AtomicUsize = AtomicUsize::new(0);
     static MAPS_FILE_OFFSET: AtomicU64 = AtomicU64::new(0);
+    static IMAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
     static FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
     // Only compute once
     if FOUND.load(Ordering::Relaxed) {
         let base = BASE.load(Ordering::Relaxed);
         let maps_file_offset = MAPS_FILE_OFFSET.load(Ordering::Relaxed);
+        let image_size = IMAGE_SIZE.load(Ordering::Relaxed);
         tracing::debug!(
-            "get_code_base_android: cached base=0x{:x}, maps_file_offset=0x{:x}",
+            "get_code_base_android: cached base=0x{:x}, maps_file_offset=0x{:x}, image_size=0x{:x}",
             base,
-            maps_file_offset
+            maps_file_offset,
+            image_size
         );
         return Some(CodeBaseInfo {
             base,
             maps_file_offset,
+            image_size,
         });
     }
 
@@ -1208,80 +1369,202 @@ fn get_code_base_android() -> Option<CodeBaseInfo> {
 
     let reader = BufReader::new(maps_file);
 
+    // First pass: find the r-xp (executable) line for our lib AND the
+    // high-water end address across every line that names it. The end
+    // address minus the executable base = the maximum offset we can safely
+    // dereference inside our library.
+    let mut exec_base: Option<usize> = None;
+    let mut exec_maps_file_offset: u64 = 0;
+    let mut max_end: usize = 0;
+
     for line in reader.lines() {
         let line = match line {
             Ok(l) => l,
             Err(_) => continue,
         };
 
-        // Look for our library with r-xp (read-execute) permissions (code segment)
-        if line.contains(LIB_NAME) && line.contains("r-xp") {
-            // /proc/self/maps format:
-            // 7f1234567000-7f123456a000 r-xp 00000000 fd:01 1234567 /path/to/lib.so
-            // Field 0: start-end addresses
-            // Field 1: permissions
-            // Field 2: file offset (hex, no 0x prefix)
-            // Field 3: device
-            // Field 4: inode
-            // Field 5+: pathname
-            tracing::info!("get_code_base_android: maps entry: {}", line);
-            logcat!(ANDROID_LOG_INFO, "maps entry: {}", line);
+        if !line.contains(LIB_NAME) {
+            continue;
+        }
 
-            let parts: Vec<&str> = line.split_whitespace().collect();
+        // /proc/self/maps format:
+        // 7f1234567000-7f123456a000 r-xp 00000000 fd:01 1234567 /path/to/lib.so
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        let addr_range = match line.split_whitespace().next() {
+            Some(s) => s,
+            None => continue,
+        };
+        let mut bounds = addr_range.split('-');
+        let (start_str, end_str) = match (bounds.next(), bounds.next()) {
+            (Some(s), Some(e)) => (s, e),
+            _ => continue,
+        };
+        let start = match usize::from_str_radix(start_str, 16) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let end = usize::from_str_radix(end_str, 16).unwrap_or(start);
+        if end > max_end {
+            max_end = end;
+        }
 
-            if let Some(addr_str) = line.split('-').next() {
-                if let Ok(base) = usize::from_str_radix(addr_str, 16) {
-                    // Parse the file offset (field 2)
-                    let maps_file_offset = parts
-                        .get(2)
-                        .and_then(|s| u64::from_str_radix(s, 16).ok())
-                        .unwrap_or(0);
+        // Permissions live at parts[1]; "r-xp" marks the code segment.
+        let perms = parts.get(1).copied().unwrap_or("");
+        if perms.contains("x") && exec_base.is_none() {
+            tracing::info!("get_code_base_android: exec entry: {}", line);
+            logcat!(ANDROID_LOG_INFO, "exec entry: {}", line);
 
-                    tracing::info!(
-                        "get_code_base_android: found {} at base=0x{:x}, maps_file_offset=0x{:x}",
-                        LIB_NAME,
-                        base,
-                        maps_file_offset
-                    );
-                    logcat!(
-                        ANDROID_LOG_INFO,
-                        "get_code_base_android: FOUND base=0x{:x}, maps_file_offset=0x{:x}",
-                        base,
-                        maps_file_offset
-                    );
-
-                    BASE.store(base, Ordering::Relaxed);
-                    MAPS_FILE_OFFSET.store(maps_file_offset, Ordering::Relaxed);
-                    FOUND.store(true, Ordering::Relaxed);
-
-                    return Some(CodeBaseInfo {
-                        base,
-                        maps_file_offset,
-                    });
-                }
-            }
+            exec_base = Some(start);
+            exec_maps_file_offset = parts
+                .get(2)
+                .and_then(|s| u64::from_str_radix(s, 16).ok())
+                .unwrap_or(0);
         }
     }
 
+    if let Some(base) = exec_base {
+        let image_size = max_end.saturating_sub(base);
+        tracing::info!(
+            "get_code_base_android: found {} base=0x{:x}, maps_file_offset=0x{:x}, image_size=0x{:x}",
+            LIB_NAME,
+            base,
+            exec_maps_file_offset,
+            image_size,
+        );
+        logcat!(
+            ANDROID_LOG_INFO,
+            "get_code_base_android: FOUND base=0x{:x}, maps_file_offset=0x{:x}, image_size=0x{:x}",
+            base,
+            exec_maps_file_offset,
+            image_size,
+        );
+
+        BASE.store(base, Ordering::Relaxed);
+        MAPS_FILE_OFFSET.store(exec_maps_file_offset, Ordering::Relaxed);
+        IMAGE_SIZE.store(image_size, Ordering::Relaxed);
+        FOUND.store(true, Ordering::Relaxed);
+
+        return Some(CodeBaseInfo {
+            base,
+            maps_file_offset: exec_maps_file_offset,
+            image_size,
+        });
+    }
+
     tracing::warn!(
-        "get_code_base_android: {} not found in /proc/self/maps with r-xp permissions",
+        "get_code_base_android: {} not found in /proc/self/maps with executable permissions",
         LIB_NAME
     );
     logcat!(
         ANDROID_LOG_WARN,
-        "get_code_base_android: {} NOT FOUND in /proc/self/maps with r-xp",
+        "get_code_base_android: {} NOT FOUND in /proc/self/maps with x perms",
         LIB_NAME
     );
     None
 }
 
-/// Get the base address of `libciris_verify_ffi` on macOS/iOS.
+/// macOS/iOS module info: runtime base + total mapped image span.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+#[derive(Debug, Clone, Copy)]
+struct MachoCodeBaseInfo {
+    base: usize,
+    image_size: usize,
+}
+
+/// Walk the Mach-O load commands following a `mach_header_64` and return the
+/// max(vmaddr + vmsize) - header_vmaddr across all LC_SEGMENT_64 commands.
+///
+/// On macOS the runtime base IS the header address (after ASLR slide), so
+/// `image_size` measured from header_vmaddr is equivalent to `image_size`
+/// measured from the runtime base.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+unsafe fn macho_image_size(header: *const std::ffi::c_void) -> usize {
+    // mach_header_64 layout from <mach-o/loader.h>:
+    //   magic, cputype, cpusubtype, filetype, ncmds, sizeofcmds, flags, reserved
+    // Total: 32 bytes.
+    #[repr(C)]
+    struct MachHeader64 {
+        magic: u32,
+        cputype: i32,
+        cpusubtype: i32,
+        filetype: u32,
+        ncmds: u32,
+        sizeofcmds: u32,
+        flags: u32,
+        reserved: u32,
+    }
+    // load_command + segment_command_64 layout from <mach-o/loader.h>:
+    //   cmd, cmdsize, segname[16], vmaddr, vmsize, fileoff, filesize, ...
+    // We only need the first 6 fields of segment_command_64.
+    #[repr(C)]
+    struct SegmentCommand64 {
+        cmd: u32,
+        cmdsize: u32,
+        segname: [u8; 16],
+        vmaddr: u64,
+        vmsize: u64,
+        fileoff: u64,
+        filesize: u64,
+        // followed by maxprot, initprot, nsects, flags
+    }
+    const LC_SEGMENT_64: u32 = 0x19;
+    const MH_MAGIC_64: u32 = 0xfeedfacf;
+
+    if header.is_null() {
+        return 0;
+    }
+    let hdr = &*(header as *const MachHeader64);
+    if hdr.magic != MH_MAGIC_64 {
+        return 0;
+    }
+
+    // Load commands begin immediately after the 32-byte header.
+    let mut cursor = (header as *const u8).add(std::mem::size_of::<MachHeader64>());
+    let end = cursor.add(hdr.sizeofcmds as usize);
+
+    let mut header_vmaddr: u64 = u64::MAX;
+    let mut max_end: u64 = 0;
+    let mut remaining = hdr.ncmds;
+    while cursor < end && remaining > 0 {
+        // Each load_command starts with (cmd: u32, cmdsize: u32). We must
+        // not assume alignment — read the cmdsize before we cast further.
+        let cmd = std::ptr::read_unaligned(cursor as *const u32);
+        let cmdsize = std::ptr::read_unaligned((cursor as *const u32).add(1));
+        if cmdsize < 8 {
+            break;
+        }
+        if cmd == LC_SEGMENT_64 && (cmdsize as usize) >= std::mem::size_of::<SegmentCommand64>() {
+            let seg = std::ptr::read_unaligned(cursor as *const SegmentCommand64);
+            // Skip __PAGEZERO (vmaddr=0, vmsize huge) — it's a guard, not real
+            // mapped memory and would inflate image_size to ~4GB on 64-bit.
+            let is_pagezero = &seg.segname[..9] == b"__PAGEZERO";
+            if !is_pagezero && seg.vmsize > 0 {
+                if seg.vmaddr < header_vmaddr {
+                    header_vmaddr = seg.vmaddr;
+                }
+                let end = seg.vmaddr.saturating_add(seg.vmsize);
+                if end > max_end {
+                    max_end = end;
+                }
+            }
+        }
+        cursor = cursor.add(cmdsize as usize);
+        remaining -= 1;
+    }
+
+    if header_vmaddr == u64::MAX || max_end <= header_vmaddr {
+        return 0;
+    }
+    (max_end - header_vmaddr) as usize
+}
+
+/// Get the base address and image size of `libciris_verify_ffi` on macOS/iOS.
 ///
 /// Iterates loaded dyld images to find our library. When loaded as a
 /// framework/dylib, image 0 is the main executable (wrong base).
 /// Falls back to image 0 if our library name isn't found (statically linked).
 #[cfg(any(target_os = "macos", target_os = "ios"))]
-fn get_code_base_macos() -> Option<usize> {
+fn get_code_base_macos() -> Option<MachoCodeBaseInfo> {
     extern "C" {
         fn _dyld_image_count() -> u32;
         fn _dyld_get_image_header(image_index: u32) -> *const std::ffi::c_void;
@@ -1336,11 +1619,12 @@ fn get_code_base_macos() -> Option<usize> {
                 // header IS the runtime address (vmaddr + slide), so use it directly.
                 // Do NOT add slide again — that double-counts ASLR.
                 let base = header as usize;
+                let image_size = macho_image_size(header);
                 tracing::info!(
-                    "get_code_base_macos: FOUND at image[{}], base=0x{:x} (header=0x{:x}, slide=0x{:x})",
-                    i, base, header as usize, slide
+                    "get_code_base_macos: FOUND at image[{}], base=0x{:x} (header=0x{:x}, slide=0x{:x}), image_size=0x{:x}",
+                    i, base, header as usize, slide, image_size
                 );
-                return Some(base);
+                return Some(MachoCodeBaseInfo { base, image_size });
             }
         }
 
@@ -1354,10 +1638,14 @@ fn get_code_base_macos() -> Option<usize> {
         if header.is_null() {
             return None;
         }
-        // header already includes ASLR slide — do not add slide again
         let base = header as usize;
-        tracing::info!("get_code_base_macos: fallback image[0] base=0x{:x}", base);
-        Some(base)
+        let image_size = macho_image_size(header);
+        tracing::info!(
+            "get_code_base_macos: fallback image[0] base=0x{:x}, image_size=0x{:x}",
+            base,
+            image_size
+        );
+        Some(MachoCodeBaseInfo { base, image_size })
     }
 }
 
@@ -1417,8 +1705,7 @@ fn get_code_base_windows() -> Option<WindowsModuleInfo> {
         let addr_in_module = get_code_base_windows as *const () as *const u16;
         let mut handle: *mut std::ffi::c_void = ptr::null_mut();
         let ok = GetModuleHandleExW(
-            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
-                | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
             addr_in_module,
             &mut handle,
         );
@@ -1469,7 +1756,7 @@ fn windows_range_readable(addr: usize, len: usize) -> bool {
         | 0x20   // PAGE_EXECUTE_READ
         | 0x40   // PAGE_EXECUTE_READWRITE
         | 0x08   // PAGE_WRITECOPY
-        | 0x80;  // PAGE_EXECUTE_WRITECOPY
+        | 0x80; // PAGE_EXECUTE_WRITECOPY
 
     #[repr(C)]
     struct MemoryBasicInformation {
@@ -1712,8 +1999,7 @@ mod tests {
         #[test]
         fn get_code_base_windows_returns_our_module() {
             // Resolves the test binary itself, not the calling executable.
-            let info =
-                get_code_base_windows().expect("module info must be available in-process");
+            let info = get_code_base_windows().expect("module info must be available in-process");
             assert!(info.base != 0, "module base should be non-zero");
             assert!(
                 info.image_size > 0,
@@ -1829,10 +2115,7 @@ mod tests {
             let module = get_code_base_windows().expect("module info");
             // PE images on x86_64 always reserve at least the headers in the
             // first page; pick an offset well into the .text region.
-            assert!(
-                module.image_size > 0x2000,
-                "test binary unexpectedly small"
-            );
+            assert!(module.image_size > 0x2000, "test binary unexpectedly small");
             let in_bounds_offset = 0x1000_u64;
             let oob_offset = (module.image_size as u64).saturating_add(0x10_0000);
 

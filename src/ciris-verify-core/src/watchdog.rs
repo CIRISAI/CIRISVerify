@@ -274,7 +274,7 @@ impl ShutdownWatchdog {
 
     /// Stub for non-Unix platforms.
     #[cfg(not(unix))]
-    pub fn force_terminate(&self, pid: u32) -> Result<(), String> {
+    pub fn force_terminate(&self, _pid: u32) -> Result<(), String> {
         Err("force_terminate not supported on this platform".to_string())
     }
 
