@@ -26,6 +26,14 @@ ignore = [
     # thread-exit callbacks. We never install such a logger; the advisory is
     # not exploitable by our code paths. Reassess if rand publishes a fix.
     "RUSTSEC-2026-0097",
+    # rustls-webpki name constraint issues in rustls 0.21/webpki 0.101.
+    # hickory-resolver 0.24 pins rustls 0.21 internally. Upgrading to
+    # hickory-resolver 0.26 requires significant API changes.
+    # Low risk: requires attacker-controlled CA certs with specific name
+    # constraint configurations. We use bundled Mozilla CA certs only.
+    # TODO: Upgrade to hickory-resolver 0.26 when API migration is feasible.
+    "RUSTSEC-2026-0098",
+    "RUSTSEC-2026-0099",
 ]
 
 [licenses]

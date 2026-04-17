@@ -18,10 +18,10 @@ use crate::hybrid::{PqcSigner, PqcVerifier};
 use crate::types::PqcAlgorithm;
 
 #[cfg(feature = "pqc-ml-dsa")]
-use ml_dsa::{EncodedVerifyingKey, MlDsa65, Seed, Signature, SigningKey, VerifyingKey};
+use ml_dsa::{EncodedVerifyingKey, KeyGen, MlDsa65, Seed, Signature, SigningKey, VerifyingKey};
 
 #[cfg(feature = "pqc-ml-dsa")]
-use ml_dsa::signature::{Signer, Verifier};
+use ml_dsa::signature::{Keypair, Signer, Verifier};
 
 /// ML-DSA-65 signer.
 ///
@@ -81,7 +81,8 @@ impl MlDsa65Signer {
         let seed = Seed::try_from(seed)
             .map_err(|e| CryptoError::invalid_private_key(format!("Seed construction: {e}")))?;
 
-        let signing_key = SigningKey::<MlDsa65>::from_seed(&seed);
+        // ml-dsa 0.1.0-rc.8: Use KeyGen trait's from_seed method
+        let signing_key = MlDsa65::from_seed(&seed);
         let verifying_key = signing_key.verifying_key();
         Ok(Self {
             signing_key,

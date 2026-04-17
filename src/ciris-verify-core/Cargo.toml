@@ -53,6 +53,9 @@ chrono.workspace = true
 hickory-resolver.workspace = true
 
 # TLS (for DNS-over-HTTPS with bundled certs)
+# Note: hickory-resolver 0.24 pins rustls 0.21 internally.
+# We keep rustls 0.21 here for API compatibility.
+# RUSTSEC-2026-0098/0099 are ignored in deny.toml (low risk for our use case).
 rustls = { version = "0.21", default-features = false }
 webpki-roots = "0.25"
 
