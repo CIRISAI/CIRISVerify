@@ -107,6 +107,54 @@ jobs:
           if-no-files-found: error
 
   # ==========================================================================
+  # Build Release - Linux musl (Home Assistant / Alpine Linux)
+  # ==========================================================================
+  build-musl:
+    name: Build (Linux ARM64 musl)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-musl
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release-musl-aarch64
+
+      - name: Install zig
+        run: |
+          curl -sSL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz | tar xJ
+          echo "$PWD/zig-linux-x86_64-0.13.0" >> $GITHUB_PATH
+
+      - name: Install cargo-zigbuild
+        run: cargo install cargo-zigbuild
+
+      - name: Build static library
+        run: cargo zigbuild --target aarch64-unknown-linux-musl --release -p ciris-verify-ffi
+
+      - name: Link into shared library
+        run: |
+          # Rust cdylib doesn't support musl, so we link the static lib into a .so using zig
+          zig cc -target aarch64-linux-musl -shared \
+            -o target/aarch64-unknown-linux-musl/release/libciris_verify_ffi.so \
+            -Wl,--whole-archive target/aarch64-unknown-linux-musl/release/libciris_verify_ffi.a -Wl,--no-whole-archive
+
+      - name: Strip binary
+        run: |
+          zig objcopy --strip-all \
+            target/aarch64-unknown-linux-musl/release/libciris_verify_ffi.so \
+            target/aarch64-unknown-linux-musl/release/libciris_verify_ffi.so
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris-verify-aarch64-unknown-linux-musl
+          path: target/aarch64-unknown-linux-musl/release/libciris_verify_ffi.so
+          if-no-files-found: error
+
+  # ==========================================================================
   # Build Release - Android
   # ==========================================================================
   build-android:
@@ -358,7 +406,7 @@ jobs:
   # ==========================================================================
   create-release:
     name: Create Release
-    needs: [build-native, build-android, build-ios, xcframework, android-aar, generate-header, build-manifest-tool]
+    needs: [build-native, build-musl, build-android, build-ios, xcframework, android-aar, generate-header, build-manifest-tool]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -413,6 +461,7 @@ jobs:
           cd ..
           tar -czvf ciris-verify-${{ github.ref_name }}-linux-x86_64.tar.gz -C release x86_64-unknown-linux-gnu || true
           tar -czvf ciris-verify-${{ github.ref_name }}-linux-arm64.tar.gz -C release aarch64-unknown-linux-gnu || true
+          tar -czvf ciris-verify-${{ github.ref_name }}-linux-arm64-musl.tar.gz -C release aarch64-unknown-linux-musl || true
           tar -czvf ciris-verify-${{ github.ref_name }}-macos-x86_64.tar.gz -C release x86_64-apple-darwin || true
           tar -czvf ciris-verify-${{ github.ref_name }}-macos-arm64.tar.gz -C release aarch64-apple-darwin || true
           tar -czvf ciris-verify-${{ github.ref_name }}-android.tar.gz -C release android || true
