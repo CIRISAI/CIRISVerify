@@ -143,8 +143,11 @@ jobs:
 
       - name: Strip binary
         run: |
+          # zig objcopy can't strip in-place, use temp file
           zig objcopy --strip-all \
             target/aarch64-unknown-linux-musl/release/libciris_verify_ffi.so \
+            target/aarch64-unknown-linux-musl/release/libciris_verify_ffi_stripped.so
+          mv target/aarch64-unknown-linux-musl/release/libciris_verify_ffi_stripped.so \
             target/aarch64-unknown-linux-musl/release/libciris_verify_ffi.so
 
       - name: Upload artifact
