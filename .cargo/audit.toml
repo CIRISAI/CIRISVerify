@@ -3,9 +3,8 @@
 
 [advisories]
 ignore = [
-    # atty is pulled transitively; no direct dependency
+    # atty is pulled transitively via cbindgen build dep
     "RUSTSEC-2021-0145",
-    "RUSTSEC-2024-0375",
     # rand 0.8/0.9 unsound only with a custom Logger that holds RngCore across
     # thread-exit callbacks. We never install such a logger; the advisory is
     # not exploitable by our code paths. Reassess if rand publishes a fix.
