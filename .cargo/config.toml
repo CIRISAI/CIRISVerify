@@ -37,7 +37,7 @@ rustflags = ["-C", "link-arg=-Wl,-z,relro,-z,now"]
 
 [target.aarch64-unknown-linux-musl]
 # Home Assistant addon (Alpine Linux on Raspberry Pi)
-# Note: Build with `cargo zigbuild` since musl cross-toolchain isn't in apt
+# Note: Build with `cross` which uses Docker to provide proper musl toolchain with libunwind
 rustflags = ["-C", "link-arg=-Wl,-z,relro,-z,now"]
 
 [target.x86_64-pc-windows-msvc]

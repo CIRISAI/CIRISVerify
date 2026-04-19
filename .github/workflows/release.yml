@@ -137,9 +137,11 @@ jobs:
       - name: Link into shared library
         run: |
           # Rust cdylib doesn't support musl, so we link the static lib into a .so using zig
+          # -lunwind resolves _Unwind_* symbols needed for backtraces
           zig cc -target aarch64-linux-musl -shared \
             -o target/aarch64-unknown-linux-musl/release/libciris_verify_ffi.so \
-            -Wl,--whole-archive target/aarch64-unknown-linux-musl/release/libciris_verify_ffi.a -Wl,--no-whole-archive
+            -Wl,--whole-archive target/aarch64-unknown-linux-musl/release/libciris_verify_ffi.a -Wl,--no-whole-archive \
+            -lunwind
 
       - name: Strip binary
         run: |
