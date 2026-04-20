@@ -18,7 +18,7 @@ allow-unwrap-in-tests = true
 allow-print-in-tests = true
 
 # MSRVs
-msrv = "1.85"
+msrv = "1.86"
 
 # Documentation requirements
 missing-docs-in-crate-items = true

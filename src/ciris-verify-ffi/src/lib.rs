@@ -598,6 +598,8 @@ pub enum CirisVerifyError {
     SignatureInvalid = -9,
     /// Version or target mismatch.
     VersionMismatch = -10,
+    /// Decryption failed (wrong key, tampered data, or AAD mismatch).
+    DecryptionFailed = -11,
     /// Internal error.
     InternalError = -99,
     /// Attestation is currently running - retry after delay.
@@ -8071,6 +8073,547 @@ unsafe fn list_named_keys_inner(handle: *mut CirisVerifyHandle, json_out: *mut *
     };
 
     *json_out = c_string.into_raw();
+    CirisVerifyError::Success as i32
+}
+
+// =============================================================================
+// Named Key Encryption API (v1.6.0)
+// =============================================================================
+
+/// HKDF salt for deriving encryption keys from named Ed25519 seeds.
+const NAMED_KEY_ENCRYPT_SALT: &[u8] = b"CIRIS-named-key-encrypt-v1";
+
+/// AES-GCM nonce size (96 bits).
+const AES_GCM_NONCE_SIZE: usize = 12;
+
+/// Derive an AES-256 key from a named Ed25519 seed using HKDF-SHA256.
+fn derive_aes_key_from_seed(seed: &[u8], context: &[u8]) -> [u8; 32] {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+
+    let hkdf = Hkdf::<Sha256>::new(Some(NAMED_KEY_ENCRYPT_SALT), seed);
+    let mut key = [0u8; 32];
+    hkdf.expand(context, &mut key)
+        .expect("HKDF expansion should not fail for 32 bytes");
+    key
+}
+
+/// Encrypt data using a named key.
+///
+/// # Arguments
+/// * `handle` - CIRISVerify handle
+/// * `key_id` - Key identifier (e.g., "secrets:master")
+/// * `plaintext` - Data to encrypt
+/// * `plaintext_len` - Length of plaintext
+/// * `aad` - Additional Authenticated Data (can be NULL)
+/// * `aad_len` - Length of AAD
+/// * `ciphertext_out` - Output: pointer to allocated ciphertext (caller frees with ciris_verify_free)
+/// * `ciphertext_len_out` - Output: length of ciphertext
+///
+/// # Returns
+/// * 0 on success
+/// * -1 (InvalidArgument) if arguments are invalid
+/// * -5 (NoKey) if named key doesn't exist
+/// * -99 (InternalError) on encryption failure
+/// * -100 (AttestationInProgress) if attestation is running
+///
+/// # Output Format
+/// The ciphertext is formatted as: nonce (12 bytes) || ciphertext || tag (16 bytes)
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_encrypt_with_named_key(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+    plaintext: *const u8,
+    plaintext_len: usize,
+    aad: *const u8,
+    aad_len: usize,
+    ciphertext_out: *mut *mut u8,
+    ciphertext_len_out: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_encrypt_with_named_key", {
+        encrypt_with_named_key_inner(
+            handle,
+            key_id,
+            plaintext,
+            plaintext_len,
+            aad,
+            aad_len,
+            ciphertext_out,
+            ciphertext_len_out,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn encrypt_with_named_key_inner(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+    plaintext: *const u8,
+    plaintext_len: usize,
+    aad: *const u8,
+    aad_len: usize,
+    ciphertext_out: *mut *mut u8,
+    ciphertext_len_out: *mut usize,
+) -> i32 {
+    use aes_gcm::aead::Payload;
+    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+    use rand::RngCore;
+
+    tracing::debug!("ciris_verify_encrypt_with_named_key called");
+
+    // Validate arguments
+    if handle.is_null()
+        || key_id.is_null()
+        || plaintext.is_null()
+        || ciphertext_out.is_null()
+        || ciphertext_len_out.is_null()
+    {
+        tracing::error!("encrypt_with_named_key: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    // Check attestation guard
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("encrypt_with_named_key: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Parse key_id
+    let key_id_str = match std::ffi::CStr::from_ptr(key_id).to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::error!("encrypt_with_named_key: invalid key_id UTF-8");
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    // Get storage
+    let storage_guard = match get_or_init_named_storage(handle_ref) {
+        Ok(g) => g,
+        Err(code) => return code,
+    };
+
+    let storage = match storage_guard.as_ref() {
+        Some(s) => s,
+        None => {
+            tracing::error!("encrypt_with_named_key: storage not initialized");
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    // Load the seed
+    let storage_key = format!("named.{}", key_id_str);
+    let seed = match storage.load(&storage_key) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("encrypt_with_named_key: key not found: {}", e);
+            return CirisVerifyError::NoKey as i32;
+        },
+    };
+
+    if seed.len() != 32 {
+        tracing::error!("encrypt_with_named_key: invalid seed length");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    // Derive AES key using key_id as context
+    let aes_key = derive_aes_key_from_seed(&seed, key_id_str.as_bytes());
+
+    // Create cipher
+    let cipher = match Aes256Gcm::new_from_slice(&aes_key) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("encrypt_with_named_key: cipher creation failed: {}", e);
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    // Generate random nonce
+    let mut nonce_bytes = [0u8; AES_GCM_NONCE_SIZE];
+    rand::thread_rng().fill_bytes(&mut nonce_bytes);
+    let nonce = Nonce::from_slice(&nonce_bytes);
+
+    // Prepare plaintext and AAD
+    let plaintext_slice = std::slice::from_raw_parts(plaintext, plaintext_len);
+    let aad_slice = if !aad.is_null() && aad_len > 0 {
+        std::slice::from_raw_parts(aad, aad_len)
+    } else {
+        &[]
+    };
+
+    // Encrypt with AAD
+    let payload = Payload {
+        msg: plaintext_slice,
+        aad: aad_slice,
+    };
+
+    let encrypted = match cipher.encrypt(nonce, payload) {
+        Ok(e) => e,
+        Err(e) => {
+            tracing::error!("encrypt_with_named_key: encryption failed: {}", e);
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    // Build output: nonce || ciphertext+tag
+    let output_len = AES_GCM_NONCE_SIZE + encrypted.len();
+    let ptr = libc::malloc(output_len) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("encrypt_with_named_key: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(nonce_bytes.as_ptr(), ptr, AES_GCM_NONCE_SIZE);
+    std::ptr::copy_nonoverlapping(
+        encrypted.as_ptr(),
+        ptr.add(AES_GCM_NONCE_SIZE),
+        encrypted.len(),
+    );
+
+    *ciphertext_out = ptr;
+    *ciphertext_len_out = output_len;
+
+    tracing::debug!(
+        "encrypt_with_named_key: encrypted {} bytes -> {} bytes",
+        plaintext_len,
+        output_len
+    );
+
+    CirisVerifyError::Success as i32
+}
+
+/// Decrypt data using a named key.
+///
+/// # Arguments
+/// * `handle` - CIRISVerify handle
+/// * `key_id` - Key identifier
+/// * `ciphertext` - Data to decrypt (nonce || ciphertext || tag)
+/// * `ciphertext_len` - Length of ciphertext
+/// * `aad` - Additional Authenticated Data (must match what was used for encryption)
+/// * `aad_len` - Length of AAD
+/// * `plaintext_out` - Output: pointer to allocated plaintext (caller frees with ciris_verify_free)
+/// * `plaintext_len_out` - Output: length of plaintext
+///
+/// # Returns
+/// * 0 on success
+/// * -1 (InvalidArgument) if arguments are invalid
+/// * -5 (NoKey) if named key doesn't exist
+/// * -11 (DecryptionFailed) if decryption fails (wrong key, tampered, or AAD mismatch)
+/// * -99 (InternalError) on other failures
+/// * -100 (AttestationInProgress) if attestation is running
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_decrypt_with_named_key(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+    ciphertext: *const u8,
+    ciphertext_len: usize,
+    aad: *const u8,
+    aad_len: usize,
+    plaintext_out: *mut *mut u8,
+    plaintext_len_out: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_decrypt_with_named_key", {
+        decrypt_with_named_key_inner(
+            handle,
+            key_id,
+            ciphertext,
+            ciphertext_len,
+            aad,
+            aad_len,
+            plaintext_out,
+            plaintext_len_out,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn decrypt_with_named_key_inner(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+    ciphertext: *const u8,
+    ciphertext_len: usize,
+    aad: *const u8,
+    aad_len: usize,
+    plaintext_out: *mut *mut u8,
+    plaintext_len_out: *mut usize,
+) -> i32 {
+    use aes_gcm::aead::Payload;
+    use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+
+    tracing::debug!("ciris_verify_decrypt_with_named_key called");
+
+    // Validate arguments
+    if handle.is_null()
+        || key_id.is_null()
+        || ciphertext.is_null()
+        || plaintext_out.is_null()
+        || plaintext_len_out.is_null()
+    {
+        tracing::error!("decrypt_with_named_key: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    // Check minimum ciphertext length (nonce + tag minimum)
+    if ciphertext_len < AES_GCM_NONCE_SIZE + 16 {
+        tracing::error!("decrypt_with_named_key: ciphertext too short");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    // Check attestation guard
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("decrypt_with_named_key: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Parse key_id
+    let key_id_str = match std::ffi::CStr::from_ptr(key_id).to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::error!("decrypt_with_named_key: invalid key_id UTF-8");
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    // Get storage
+    let storage_guard = match get_or_init_named_storage(handle_ref) {
+        Ok(g) => g,
+        Err(code) => return code,
+    };
+
+    let storage = match storage_guard.as_ref() {
+        Some(s) => s,
+        None => {
+            tracing::error!("decrypt_with_named_key: storage not initialized");
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    // Load the seed
+    let storage_key = format!("named.{}", key_id_str);
+    let seed = match storage.load(&storage_key) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("decrypt_with_named_key: key not found: {}", e);
+            return CirisVerifyError::NoKey as i32;
+        },
+    };
+
+    if seed.len() != 32 {
+        tracing::error!("decrypt_with_named_key: invalid seed length");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    // Derive AES key using key_id as context
+    let aes_key = derive_aes_key_from_seed(&seed, key_id_str.as_bytes());
+
+    // Create cipher
+    let cipher = match Aes256Gcm::new_from_slice(&aes_key) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("decrypt_with_named_key: cipher creation failed: {}", e);
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    // Extract nonce and ciphertext
+    let ciphertext_slice = std::slice::from_raw_parts(ciphertext, ciphertext_len);
+    let nonce = Nonce::from_slice(&ciphertext_slice[..AES_GCM_NONCE_SIZE]);
+    let encrypted_data = &ciphertext_slice[AES_GCM_NONCE_SIZE..];
+
+    // Prepare AAD
+    let aad_slice = if !aad.is_null() && aad_len > 0 {
+        std::slice::from_raw_parts(aad, aad_len)
+    } else {
+        &[]
+    };
+
+    // Decrypt with AAD verification
+    let payload = Payload {
+        msg: encrypted_data,
+        aad: aad_slice,
+    };
+
+    let decrypted = match cipher.decrypt(nonce, payload) {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::error!("decrypt_with_named_key: decryption failed: {}", e);
+            return CirisVerifyError::DecryptionFailed as i32;
+        },
+    };
+
+    // Allocate output
+    let ptr = libc::malloc(decrypted.len()) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("decrypt_with_named_key: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(decrypted.as_ptr(), ptr, decrypted.len());
+
+    *plaintext_out = ptr;
+    *plaintext_len_out = decrypted.len();
+
+    tracing::debug!(
+        "decrypt_with_named_key: decrypted {} bytes -> {} bytes",
+        ciphertext_len,
+        decrypted.len()
+    );
+
+    CirisVerifyError::Success as i32
+}
+
+/// Derive a symmetric key from a named Ed25519 seed using HKDF-SHA256.
+///
+/// # Arguments
+/// * `handle` - CIRISVerify handle
+/// * `key_id` - Key identifier
+/// * `context` - HKDF info parameter (e.g., "secrets-v1")
+/// * `context_len` - Length of context
+/// * `key_length` - Desired key length (16, 32, or 64 bytes)
+/// * `key_out` - Output: pointer to allocated key (caller frees with ciris_verify_free)
+/// * `key_len_out` - Output: length of derived key
+///
+/// # Returns
+/// * 0 on success
+/// * -1 (InvalidArgument) if arguments are invalid or key_length not 16/32/64
+/// * -5 (NoKey) if named key doesn't exist
+/// * -99 (InternalError) on other failures
+/// * -100 (AttestationInProgress) if attestation is running
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_derive_symmetric_key(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+    context: *const u8,
+    context_len: usize,
+    key_length: usize,
+    key_out: *mut *mut u8,
+    key_len_out: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_derive_symmetric_key", {
+        derive_symmetric_key_inner(
+            handle,
+            key_id,
+            context,
+            context_len,
+            key_length,
+            key_out,
+            key_len_out,
+        )
+    })
+}
+
+unsafe fn derive_symmetric_key_inner(
+    handle: *mut CirisVerifyHandle,
+    key_id: *const c_char,
+    context: *const u8,
+    context_len: usize,
+    key_length: usize,
+    key_out: *mut *mut u8,
+    key_len_out: *mut usize,
+) -> i32 {
+    use hkdf::Hkdf;
+    use sha2::Sha256;
+
+    tracing::debug!("ciris_verify_derive_symmetric_key called");
+
+    // Validate arguments
+    if handle.is_null() || key_id.is_null() || key_out.is_null() || key_len_out.is_null() {
+        tracing::error!("derive_symmetric_key: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    // Validate key length
+    if key_length != 16 && key_length != 32 && key_length != 64 {
+        tracing::error!(
+            "derive_symmetric_key: invalid key_length {}, must be 16, 32, or 64",
+            key_length
+        );
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    // Check attestation guard
+    if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+        tracing::warn!("derive_symmetric_key: attestation in progress");
+        return CirisVerifyError::AttestationInProgress as i32;
+    }
+
+    let handle_ref = &*handle;
+
+    // Parse key_id
+    let key_id_str = match std::ffi::CStr::from_ptr(key_id).to_str() {
+        Ok(s) => s,
+        Err(_) => {
+            tracing::error!("derive_symmetric_key: invalid key_id UTF-8");
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    // Get storage
+    let storage_guard = match get_or_init_named_storage(handle_ref) {
+        Ok(g) => g,
+        Err(code) => return code,
+    };
+
+    let storage = match storage_guard.as_ref() {
+        Some(s) => s,
+        None => {
+            tracing::error!("derive_symmetric_key: storage not initialized");
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    // Load the seed
+    let storage_key = format!("named.{}", key_id_str);
+    let seed = match storage.load(&storage_key) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("derive_symmetric_key: key not found: {}", e);
+            return CirisVerifyError::NoKey as i32;
+        },
+    };
+
+    if seed.len() != 32 {
+        tracing::error!("derive_symmetric_key: invalid seed length");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    // Get context bytes
+    let context_slice = if !context.is_null() && context_len > 0 {
+        std::slice::from_raw_parts(context, context_len)
+    } else {
+        key_id_str.as_bytes() // Default to key_id as context
+    };
+
+    // Derive key using HKDF
+    let hkdf = Hkdf::<Sha256>::new(Some(NAMED_KEY_ENCRYPT_SALT), &seed);
+    let mut derived_key = vec![0u8; key_length];
+    if let Err(e) = hkdf.expand(context_slice, &mut derived_key) {
+        tracing::error!("derive_symmetric_key: HKDF expansion failed: {:?}", e);
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    // Allocate output
+    let ptr = libc::malloc(key_length) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("derive_symmetric_key: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+
+    std::ptr::copy_nonoverlapping(derived_key.as_ptr(), ptr, key_length);
+
+    *key_out = ptr;
+    *key_len_out = key_length;
+
+    tracing::debug!(
+        "derive_symmetric_key: derived {} byte key for '{}'",
+        key_length,
+        key_id_str
+    );
+
     CirisVerifyError::Success as i32
 }
 

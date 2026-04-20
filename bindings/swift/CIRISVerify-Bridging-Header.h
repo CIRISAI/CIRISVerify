@@ -4,7 +4,7 @@
 //  C FFI declarations for CIRISVerify hardware-rooted license verification.
 //  Import this header in your Swift project to access the native library.
 //
-//  Generated from: src/ciris-verify-ffi/src/lib.rs (v0.6.16)
+//  Generated from: src/ciris-verify-ffi/src/lib.rs (v1.6.0)
 //  License: AGPL-3.0-or-later
 //
 
@@ -149,6 +149,40 @@ int32_t ciris_verify_list_named_keys(
 
 /// Free a string returned by ciris_verify_list_named_keys.
 void ciris_verify_free_string(char *str);
+
+// ---------------------------------------------------------------------------
+// Named Key Encryption (v1.6.0)
+// ---------------------------------------------------------------------------
+
+/// Encrypt data with a named key using AES-256-GCM.
+/// Key is derived via HKDF-SHA256 from the Ed25519 seed + context.
+/// Output format: nonce (12 bytes) || ciphertext || auth_tag (16 bytes).
+/// Returns 0 on success, negative error code on failure.
+int32_t ciris_verify_encrypt_with_named_key(
+    CirisVerifyHandle handle,
+    const char *key_id,
+    const uint8_t *plaintext, size_t plaintext_len,
+    const uint8_t *aad, size_t aad_len,
+    uint8_t **ciphertext_out, size_t *ciphertext_len_out);
+
+/// Decrypt data that was encrypted with ciris_verify_encrypt_with_named_key.
+/// Input format: nonce (12 bytes) || ciphertext || auth_tag (16 bytes).
+/// Returns 0 on success, -11 (DecryptionFailed) on auth failure.
+int32_t ciris_verify_decrypt_with_named_key(
+    CirisVerifyHandle handle,
+    const char *key_id,
+    const uint8_t *ciphertext, size_t ciphertext_len,
+    const uint8_t *aad, size_t aad_len,
+    uint8_t **plaintext_out, size_t *plaintext_len_out);
+
+/// Derive a symmetric key from a named key using HKDF-SHA256.
+/// The context string provides domain separation.
+/// Returns a 32-byte key suitable for AES-256 or other symmetric algorithms.
+int32_t ciris_verify_derive_symmetric_key(
+    CirisVerifyHandle handle,
+    const char *key_id,
+    const char *context,
+    uint8_t **key_out, size_t *key_len_out);
 
 // ---------------------------------------------------------------------------
 // Version
