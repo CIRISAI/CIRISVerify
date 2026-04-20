@@ -10,6 +10,7 @@ env:
 
 permissions:
   contents: write
+  id-token: write  # For Sigstore keyless signing
 
 jobs:
   # ==========================================================================
@@ -473,15 +474,50 @@ jobs:
           tar -czvf ciris-verify-${{ github.ref_name }}-ios.tar.gz -C release ios CirisVerify.xcframework || true
           zip -r ciris-verify-${{ github.ref_name }}-windows-x86_64.zip release/x86_64-pc-windows-msvc || true
 
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign release artifacts with Sigstore
+        run: |
+          # Sign all archives with keyless signing (OIDC from GitHub Actions)
+          for file in ciris-verify-*.tar.gz ciris-verify-*.zip; do
+            if [ -f "$file" ]; then
+              echo "Signing $file..."
+              cosign sign-blob --yes --output-signature "${file}.sig" --output-certificate "${file}.pem" "$file"
+            fi
+          done
+
+          # Sign the AAR and header
+          for file in release/ciris-verify.aar release/ciris_verify.h; do
+            if [ -f "$file" ]; then
+              base=$(basename "$file")
+              echo "Signing $base..."
+              cosign sign-blob --yes --output-signature "release/${base}.sig" --output-certificate "release/${base}.pem" "$file"
+            fi
+          done
+
+          # Sign SHA256SUMS
+          cosign sign-blob --yes --output-signature release/SHA256SUMS.sig --output-certificate release/SHA256SUMS.pem release/SHA256SUMS
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
             ciris-verify-*.tar.gz
+            ciris-verify-*.tar.gz.sig
+            ciris-verify-*.tar.gz.pem
             ciris-verify-*.zip
+            ciris-verify-*.zip.sig
+            ciris-verify-*.zip.pem
             release/ciris-verify.aar
+            release/ciris-verify.aar.sig
+            release/ciris-verify.aar.pem
             release/SHA256SUMS
+            release/SHA256SUMS.sig
+            release/SHA256SUMS.pem
             release/ciris_verify.h
+            release/ciris_verify.h.sig
+            release/ciris_verify.h.pem
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref_name, '-rc') || contains(github.ref_name, '-beta') || contains(github.ref_name, '-alpha') }}
