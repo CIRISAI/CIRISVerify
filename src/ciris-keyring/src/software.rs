@@ -2151,7 +2151,7 @@ impl MutableEd25519Signer {
                                             );
                                             inner_write.clear_hardware_marker();
                                         }
-                                        return Err(KeyringError::KeyNotFound {
+                                        return Err(KeyringError::HardwareNotAvailable {
                                             reason: "Hardware key was deleted or corrupted. Please create a new signing key.".into(),
                                         });
                                     }
@@ -2216,7 +2216,7 @@ impl MutableEd25519Signer {
                                             );
                                             inner_write.clear_hardware_marker();
                                         }
-                                        return Err(KeyringError::KeyNotFound {
+                                        return Err(KeyringError::HardwareNotAvailable {
                                             reason: "Hardware key was deleted or corrupted. Please create a new signing key.".into(),
                                         });
                                     }
@@ -2278,7 +2278,7 @@ impl MutableEd25519Signer {
                                             );
                                             inner_write.clear_hardware_marker();
                                         }
-                                        return Err(KeyringError::KeyNotFound {
+                                        return Err(KeyringError::HardwareNotAvailable {
                                             reason: "Hardware key was deleted or corrupted. Please create a new signing key.".into(),
                                         });
                                     }
