@@ -1079,6 +1079,28 @@ impl SecureEnclaveWrappedEd25519Signer {
         self.encrypted_key_path().exists()
     }
 
+    /// Verify that the key is actually accessible (file exists AND SE can decrypt).
+    ///
+    /// This is a stronger check than `key_exists()` which only verifies file presence.
+    /// Use this to validate stale hardware markers before refusing software fallback.
+    pub fn key_accessible(&self) -> bool {
+        if !self.key_exists() {
+            return false;
+        }
+
+        match self.public_key() {
+            Ok(_) => true,
+            Err(e) => {
+                tracing::warn!(
+                    alias = %self.alias,
+                    error = %e,
+                    "SE key accessibility check: FAILED (file exists but cannot decrypt)"
+                );
+                false
+            },
+        }
+    }
+
     /// Get the Ed25519 public key.
     pub fn public_key(&self) -> Result<Vec<u8>, KeyringError> {
         let signing_key = self.get_signing_key()?;

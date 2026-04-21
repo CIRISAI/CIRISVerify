@@ -1115,6 +1115,25 @@ impl HardwareWrappedEd25519Signer {
         }
     }
 
+    /// Verify that the key is actually accessible (alias for key_exists on Android).
+    ///
+    /// On Android, `key_exists()` already performs a full accessibility check including
+    /// decryption verification. This method is provided for API consistency with other
+    /// platform wrappers.
+    pub async fn key_accessible(&self) -> bool {
+        match self.key_exists().await {
+            Ok(exists) => exists,
+            Err(e) => {
+                warn!(
+                    wrapper_alias = %self.wrapper_key_alias,
+                    error = %e,
+                    "key_accessible check failed"
+                );
+                false
+            },
+        }
+    }
+
     /// Generate a new Ed25519 key protected by hardware-backed AES encryption.
     pub async fn generate_key(&self) -> Result<(), KeyringError> {
         info!(

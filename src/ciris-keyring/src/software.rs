@@ -1908,6 +1908,22 @@ impl MutableEd25519Signer {
                         if let Some(e) = last_error {
                             if let Ok(inner) = self.inner.read() {
                                 if inner.is_hardware_marker_set() {
+                                    // Verify the key is still accessible (not deleted/corrupted)
+                                    let key_accessible = rt.block_on(hw.key_accessible());
+                                    if !key_accessible {
+                                        // Key is gone - clear stale marker
+                                        drop(inner); // Release read lock
+                                        if let Ok(mut inner_write) = self.inner.write() {
+                                            tracing::warn!(
+                                                marker = ?inner_write.hardware_key_fingerprint(),
+                                                "Clearing stale hardware marker - Android key no longer accessible (get_public_key)"
+                                            );
+                                            inner_write.clear_hardware_marker();
+                                        }
+                                        return None;
+                                    }
+
+                                    // Key exists but access failed - transient hardware error
                                     tracing::error!(
                                         error = %e,
                                         marker = ?inner.hardware_key_fingerprint(),
@@ -1945,9 +1961,24 @@ impl MutableEd25519Signer {
                             return Some(pubkey);
                         },
                         Err(e) => {
-                            // Check if software signer has hardware marker - if so, don't fallback
+                            // Check if software signer has hardware marker - if so, validate it's not stale
                             if let Ok(inner) = self.inner.read() {
                                 if inner.is_hardware_marker_set() {
+                                    // Verify the key is still accessible (not deleted/corrupted)
+                                    if !hw.key_accessible() {
+                                        // Key is gone - clear stale marker
+                                        drop(inner); // Release read lock
+                                        if let Ok(mut inner_write) = self.inner.write() {
+                                            tracing::warn!(
+                                                marker = ?inner_write.hardware_key_fingerprint(),
+                                                "Clearing stale hardware marker - SE key no longer accessible (get_public_key)"
+                                            );
+                                            inner_write.clear_hardware_marker();
+                                        }
+                                        return None;
+                                    }
+
+                                    // Key exists but access failed - transient hardware error
                                     tracing::error!(
                                         error = %e,
                                         marker = ?inner.hardware_key_fingerprint(),
@@ -1983,9 +2014,24 @@ impl MutableEd25519Signer {
                             return Some(pubkey);
                         },
                         Err(e) => {
-                            // Check if software signer has hardware marker - if so, don't fallback
+                            // Check if software signer has hardware marker - if so, validate it's not stale
                             if let Ok(inner) = self.inner.read() {
                                 if inner.is_hardware_marker_set() {
+                                    // Verify the key is still accessible (not deleted/corrupted)
+                                    if !tpm.key_accessible() {
+                                        // Key is gone - clear stale marker
+                                        drop(inner); // Release read lock
+                                        if let Ok(mut inner_write) = self.inner.write() {
+                                            tracing::warn!(
+                                                marker = ?inner_write.hardware_key_fingerprint(),
+                                                "Clearing stale hardware marker - TPM key no longer accessible (get_public_key)"
+                                            );
+                                            inner_write.clear_hardware_marker();
+                                        }
+                                        return None;
+                                    }
+
+                                    // Key exists but access failed - transient hardware error
                                     tracing::error!(
                                         error = %e,
                                         marker = ?inner.hardware_key_fingerprint(),
@@ -2093,6 +2139,24 @@ impl MutableEd25519Signer {
                         if let Some(e) = last_error {
                             if let Ok(inner) = self.inner.read() {
                                 if inner.is_hardware_marker_set() {
+                                    // Verify the key is still accessible (not deleted/corrupted)
+                                    let key_accessible = rt.block_on(hw.key_accessible());
+                                    if !key_accessible {
+                                        // Key is gone - clear stale marker
+                                        drop(inner); // Release read lock
+                                        if let Ok(mut inner_write) = self.inner.write() {
+                                            tracing::warn!(
+                                                marker = ?inner_write.hardware_key_fingerprint(),
+                                                "Clearing stale hardware marker - Android key no longer accessible"
+                                            );
+                                            inner_write.clear_hardware_marker();
+                                        }
+                                        return Err(KeyringError::KeyNotFound {
+                                            reason: "Hardware key was deleted or corrupted. Please create a new signing key.".into(),
+                                        });
+                                    }
+
+                                    // Key exists but sign failed - transient hardware error
                                     tracing::error!(
                                         error = %e,
                                         marker = ?inner.hardware_key_fingerprint(),
@@ -2100,13 +2164,13 @@ impl MutableEd25519Signer {
                                         "Hardware signing failed after all retries and marker is set - NOT falling back"
                                     );
                                     return Err(KeyringError::HardwareError {
-                                    reason: format!(
-                                        "Hardware key access failed after {} retries (marker={}): {}",
-                                        HW_ACCESS_MAX_RETRIES,
-                                        inner.hardware_key_fingerprint().unwrap_or("unknown"),
-                                        e
-                                    ),
-                                });
+                                        reason: format!(
+                                            "Hardware key access failed after {} retries (marker={}): {}",
+                                            HW_ACCESS_MAX_RETRIES,
+                                            inner.hardware_key_fingerprint().unwrap_or("unknown"),
+                                            e
+                                        ),
+                                    });
                                 }
                             }
                             tracing::warn!(
@@ -2138,9 +2202,26 @@ impl MutableEd25519Signer {
                             return Ok(sig);
                         },
                         Err(e) => {
-                            // Check if software signer has hardware marker - if so, don't fallback
+                            // Check if software signer has hardware marker - if so, validate it's not stale
                             if let Ok(inner) = self.inner.read() {
                                 if inner.is_hardware_marker_set() {
+                                    // Verify the key is still accessible (not deleted/corrupted)
+                                    if !hw.key_accessible() {
+                                        // Key is gone - clear stale marker
+                                        drop(inner); // Release read lock
+                                        if let Ok(mut inner_write) = self.inner.write() {
+                                            tracing::warn!(
+                                                marker = ?inner_write.hardware_key_fingerprint(),
+                                                "Clearing stale hardware marker - SE key no longer accessible"
+                                            );
+                                            inner_write.clear_hardware_marker();
+                                        }
+                                        return Err(KeyringError::KeyNotFound {
+                                            reason: "Hardware key was deleted or corrupted. Please create a new signing key.".into(),
+                                        });
+                                    }
+
+                                    // Key exists but sign failed - transient hardware error
                                     tracing::error!(
                                         error = %e,
                                         marker = ?inner.hardware_key_fingerprint(),
@@ -2183,9 +2264,26 @@ impl MutableEd25519Signer {
                             return Ok(sig);
                         },
                         Err(e) => {
-                            // Check if software signer has hardware marker - if so, don't fallback
+                            // Check if software signer has hardware marker - if so, validate it's not stale
                             if let Ok(inner) = self.inner.read() {
                                 if inner.is_hardware_marker_set() {
+                                    // Verify the key is still accessible (not deleted/corrupted)
+                                    if !tpm.key_accessible() {
+                                        // Key is gone - clear stale marker
+                                        drop(inner); // Release read lock
+                                        if let Ok(mut inner_write) = self.inner.write() {
+                                            tracing::warn!(
+                                                marker = ?inner_write.hardware_key_fingerprint(),
+                                                "Clearing stale hardware marker - TPM key no longer accessible"
+                                            );
+                                            inner_write.clear_hardware_marker();
+                                        }
+                                        return Err(KeyringError::KeyNotFound {
+                                            reason: "Hardware key was deleted or corrupted. Please create a new signing key.".into(),
+                                        });
+                                    }
+
+                                    // Key exists but sign failed - transient hardware error
                                     tracing::error!(
                                         error = %e,
                                         marker = ?inner.hardware_key_fingerprint(),

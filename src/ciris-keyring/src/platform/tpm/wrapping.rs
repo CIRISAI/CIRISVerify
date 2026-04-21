@@ -138,6 +138,38 @@ impl TpmWrappedEd25519Signer {
         true
     }
 
+    /// Verify that the key is actually accessible (file exists AND TPM can decrypt).
+    ///
+    /// This is a stronger check than `key_exists()` which only verifies file presence.
+    /// Use this to validate stale hardware markers before refusing software fallback.
+    ///
+    /// Returns `true` if the key can be successfully decrypted and used.
+    /// Returns `false` if the file doesn't exist, is corrupted, or TPM is unavailable.
+    pub fn key_accessible(&self) -> bool {
+        if !self.key_exists() {
+            return false;
+        }
+
+        // Try to actually load the key - this verifies TPM accessibility
+        match self.public_key() {
+            Ok(_) => {
+                debug!(
+                    alias = %self.alias,
+                    "TPM key accessibility check: PASSED"
+                );
+                true
+            },
+            Err(e) => {
+                warn!(
+                    alias = %self.alias,
+                    error = %e,
+                    "TPM key accessibility check: FAILED (file exists but cannot decrypt)"
+                );
+                false
+            },
+        }
+    }
+
     /// Check if the key file is in a legacy format that needs migration.
     fn needs_migration(&self) -> bool {
         // Read just the magic bytes
@@ -846,6 +878,11 @@ impl TpmWrappedEd25519Signer {
 
     /// Check if a TPM-wrapped key exists (stub - always false).
     pub fn key_exists(&self) -> bool {
+        false
+    }
+
+    /// Verify key is accessible (stub - always false).
+    pub fn key_accessible(&self) -> bool {
         false
     }
 
