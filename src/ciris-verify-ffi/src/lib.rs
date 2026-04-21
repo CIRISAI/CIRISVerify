@@ -8921,6 +8921,33 @@ mod tests {
     use super::*;
     use std::ffi::CString;
 
+    /// Run the full platform conformance test suite.
+    /// This validates all v1.6.0 features (named keys, encryption, derivation)
+    /// work correctly on this platform.
+    #[test]
+    fn test_platform_conformance_suite() {
+        // Initialize tracing for test output
+        let _ = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_test_writer()
+            .try_init();
+
+        unsafe {
+            let handle = ciris_verify_init();
+            assert!(!handle.is_null(), "Failed to initialize CIRISVerify");
+
+            let failures = ciris_verify_run_conformance_tests(handle);
+
+            ciris_verify_destroy(handle);
+
+            assert_eq!(
+                failures, 0,
+                "Platform conformance tests failed: {} failures (check logs above)",
+                failures
+            );
+        }
+    }
+
     #[test]
     fn test_get_hardware_info_returns_valid_json() {
         unsafe {
