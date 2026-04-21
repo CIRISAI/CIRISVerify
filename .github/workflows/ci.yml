@@ -280,6 +280,22 @@ jobs:
           if-no-files-found: warn
 
   # ==========================================================================
+  # Platform Conformance Tests (v1.6.2+)
+  # ==========================================================================
+  conformance-macos:
+    name: Conformance (macOS)
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build FFI library
+        run: cargo build --release -p ciris-verify-ffi
+      - name: Run macOS conformance tests
+        run: bash tests/ios/run_conformance_macos.sh
+
+  # ==========================================================================
   # Documentation
   # ==========================================================================
   docs:

@@ -29,7 +29,7 @@
 use crate::error::KeyringError;
 use crate::storage::SecureBlobStorage;
 use std::path::PathBuf;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, info, warn};
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 use core_foundation::base::TCFType;
@@ -131,6 +131,7 @@ impl SecureEnclaveSecureBlobStorage {
 
     /// Check if Secure Enclave is available.
     #[cfg(any(target_os = "ios", target_os = "macos"))]
+    #[allow(dead_code)]
     fn is_se_available() -> bool {
         // iOS always has SE on supported devices (iPhone 5s+)
         #[cfg(target_os = "ios")]
@@ -439,6 +440,7 @@ impl SecureEnclaveSecureBlobStorage {
 
     /// Delete the wrapper key from keychain.
     #[cfg(any(target_os = "ios", target_os = "macos"))]
+    #[allow(dead_code)]
     fn delete_wrapper_key(&self) -> Result<(), KeyringError> {
         use security_framework_sys::keychain_item::SecItemDelete;
 

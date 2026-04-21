@@ -1,0 +1,192 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		A1000001 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = A2000001 /* main.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		A2000001 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
+		A2000003 /* CIRISConformanceTest.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = CIRISConformanceTest.app; sourceTree = BUILT_PRODUCTS_DIR; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A3000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A4000001 = {
+			isa = PBXGroup;
+			children = (
+				A4000002 /* Sources */,
+				A4000004 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A4000002 /* Sources */ = {
+			isa = PBXGroup;
+			children = (
+				A2000001 /* main.swift */,
+			);
+			name = Sources;
+			sourceTree = "<group>";
+		};
+		A4000004 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A2000003 /* CIRISConformanceTest.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		A3000003 /* Embed CIRISVerify dylib */ = {
+			isa = PBXShellScriptBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/../../target/aarch64-apple-ios/release/libciris_verify_ffi.dylib",
+			);
+			name = "Embed CIRISVerify dylib";
+			outputPaths = (
+				"$(BUILT_PRODUCTS_DIR)/$(PRODUCT_NAME).app/Frameworks/libciris_verify_ffi.dylib",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "# Copy dylib into app bundle Frameworks/ and codesign it\nset -e\nDYLIB_SRC=\"${PROJECT_DIR}/../../target/aarch64-apple-ios/release/libciris_verify_ffi.dylib\"\nFRAMEWORKS_DIR=\"${BUILT_PRODUCTS_DIR}/${PRODUCT_NAME}.app/Frameworks\"\nmkdir -p \"${FRAMEWORKS_DIR}\"\ncp \"${DYLIB_SRC}\" \"${FRAMEWORKS_DIR}/\"\n# Re-sign the dylib with the app's signing identity\ncodesign --force --sign \"${EXPANDED_CODE_SIGN_IDENTITY}\" --timestamp=none \"${FRAMEWORKS_DIR}/libciris_verify_ffi.dylib\"\n";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXNativeTarget section */
+		A5000001 /* CIRISConformanceTest */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A7000003 /* Build configuration list for PBXNativeTarget "CIRISConformanceTest" */;
+			buildPhases = (
+				A3000002 /* Sources */,
+				A3000001 /* Frameworks */,
+				A3000003 /* Embed CIRISVerify dylib */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = CIRISConformanceTest;
+			productName = CIRISConformanceTest;
+			productReference = A2000003 /* CIRISConformanceTest.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A6000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+			};
+			buildConfigurationList = A7000001 /* Build configuration list for PBXProject "CIRISConformanceTest" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A4000001;
+			productRefGroup = A4000004 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A5000001 /* CIRISConformanceTest */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A3000002 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000001 /* main.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A7000002 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CODE_SIGN_IDENTITY = "Apple Development";
+				CODE_SIGN_STYLE = Automatic;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				DEVELOPMENT_TEAM = MHX9MGJ62V;
+				ENABLE_NS_ASSERTIONS = NO;
+				GCC_OPTIMIZATION_LEVEL = s;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = "-O";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		A7000004 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_UIApplicationSupportsIndirectInputEvents = YES;
+				INFOPLIST_KEY_UILaunchStoryboardName = "";
+				INFOPLIST_KEY_UISupportedInterfaceOrientations = UIInterfaceOrientationPortrait;
+				CODE_SIGN_ENTITLEMENTS = CIRISConformanceTest.entitlements;
+				PRODUCT_BUNDLE_IDENTIFIER = ai.ciris.conformance.test;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A7000001 /* Build configuration list for PBXProject "CIRISConformanceTest" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A7000002 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A7000003 /* Build configuration list for PBXNativeTarget "CIRISConformanceTest" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A7000004 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+	};
+	rootObject = A6000001 /* Project object */;
+}

@@ -374,11 +374,17 @@ mod ctor_impl {
 }
 
 // macOS/iOS: ctor crate
+// Wrapped in catch_unwind because the constructor runs before main() and
+// before the iOS/macOS runtime is fully initialized. A panic here would
+// abort the entire process (SIGILL under panic=abort). Verification is
+// advisory, so a caught panic just results in Unavailable status.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 #[cfg(not(any(test, debug_assertions)))]
 #[ctor::ctor]
 fn early_verify_ctor() {
-    early_verify();
+    let _ = std::panic::catch_unwind(|| {
+        early_verify();
+    });
 }
 
 // Windows: DllMain
