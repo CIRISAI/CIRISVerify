@@ -4,7 +4,7 @@
 //  C FFI declarations for CIRISVerify hardware-rooted license verification.
 //  Import this header in your Swift project to access the native library.
 //
-//  Generated from: src/ciris-verify-ffi/src/lib.rs (v1.6.0)
+//  Generated from: src/ciris-verify-ffi/src/lib.rs (v1.6.1)
 //  License: AGPL-3.0-or-later
 //
 
@@ -219,5 +219,14 @@ int32_t ciris_verify_audit_trail(
 int32_t ciris_verify_get_diagnostics(
     CirisVerifyHandle handle,
     uint8_t **diag_data, size_t *diag_len);
+
+// ---------------------------------------------------------------------------
+// Platform Conformance Testing (v1.6.1)
+// ---------------------------------------------------------------------------
+
+/// Run all platform conformance tests.
+/// Results are logged to platform logging (logcat, oslog, stdout).
+/// Returns the number of failed tests (0 = all passed).
+int32_t ciris_verify_run_conformance_tests(CirisVerifyHandle handle);
 
 #endif /* CIRIS_VERIFY_BRIDGING_HEADER_H */

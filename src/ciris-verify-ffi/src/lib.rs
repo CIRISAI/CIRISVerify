@@ -45,6 +45,7 @@
 
 #![allow(clippy::missing_safety_doc)] // FFI functions are inherently unsafe
 
+mod conformance;
 mod constructor;
 
 #[cfg(target_os = "android")]
@@ -505,6 +506,240 @@ impl CirisVerifyHandle {
     fn is_valid(&self) -> bool {
         self.magic == HANDLE_MAGIC
     }
+
+    // =========================================================================
+    // Safe wrapper methods for conformance testing
+    // =========================================================================
+
+    /// Get diagnostics information about the signer.
+    pub fn get_diagnostics(&self) -> conformance::Diagnostics {
+        let diag_str = self.ed25519_signer.diagnostics();
+        // Parse the diagnostics string to extract key info
+        // Format is typically: "Ed25519Signer { hardware: SoftwareSigner, attestation_level: SOFTWARE_ONLY }"
+        let hardware_type = if diag_str.contains("AndroidKeystore") {
+            "AndroidKeystore"
+        } else if diag_str.contains("SecureEnclave") {
+            "SecureEnclave"
+        } else if diag_str.contains("Tpm") {
+            "TPM"
+        } else {
+            "Software"
+        };
+
+        let attestation_level = if diag_str.contains("HARDWARE") {
+            "HARDWARE"
+        } else {
+            "SOFTWARE_ONLY"
+        };
+
+        conformance::Diagnostics {
+            hardware_type: hardware_type.to_string(),
+            attestation_level: attestation_level.to_string(),
+            raw: diag_str,
+        }
+    }
+
+    /// Store a named key (32-byte Ed25519 seed).
+    pub fn store_named_key(&self, key_id: &str, seed: &[u8]) -> Result<(), CirisVerifyError> {
+        if seed.len() != 32 {
+            return Err(CirisVerifyError::InvalidArgument);
+        }
+
+        let storage_guard = self
+            .named_key_storage
+            .lock()
+            .map_err(|_| CirisVerifyError::InternalError)?;
+        let storage = storage_guard.as_ref().ok_or(CirisVerifyError::NoKey)?;
+
+        storage
+            .store(key_id, seed)
+            .map_err(|_| CirisVerifyError::IoError)
+    }
+
+    /// Check if a named key exists.
+    pub fn has_named_key(&self, key_id: &str) -> Result<bool, CirisVerifyError> {
+        let storage_guard = self
+            .named_key_storage
+            .lock()
+            .map_err(|_| CirisVerifyError::InternalError)?;
+        let storage = storage_guard.as_ref().ok_or(CirisVerifyError::NoKey)?;
+
+        Ok(storage.exists(key_id))
+    }
+
+    /// Get the public key for a named key.
+    pub fn get_named_key_public(&self, key_id: &str) -> Result<Vec<u8>, CirisVerifyError> {
+        let storage_guard = self
+            .named_key_storage
+            .lock()
+            .map_err(|_| CirisVerifyError::InternalError)?;
+        let storage = storage_guard.as_ref().ok_or(CirisVerifyError::NoKey)?;
+
+        let seed = storage.load(key_id).map_err(|_| CirisVerifyError::NoKey)?;
+        let seed_arr: [u8; 32] = seed
+            .try_into()
+            .map_err(|_| CirisVerifyError::InvalidArgument)?;
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed_arr);
+        Ok(signing_key.verifying_key().to_bytes().to_vec())
+    }
+
+    /// Sign data with a named key.
+    pub fn sign_with_named_key(
+        &self,
+        key_id: &str,
+        data: &[u8],
+    ) -> Result<Vec<u8>, CirisVerifyError> {
+        use ed25519_dalek::Signer;
+
+        let storage_guard = self
+            .named_key_storage
+            .lock()
+            .map_err(|_| CirisVerifyError::InternalError)?;
+        let storage = storage_guard.as_ref().ok_or(CirisVerifyError::NoKey)?;
+
+        let seed = storage.load(key_id).map_err(|_| CirisVerifyError::NoKey)?;
+        let seed_arr: [u8; 32] = seed
+            .try_into()
+            .map_err(|_| CirisVerifyError::InvalidArgument)?;
+        let signing_key = ed25519_dalek::SigningKey::from_bytes(&seed_arr);
+        let signature = signing_key.sign(data);
+        Ok(signature.to_bytes().to_vec())
+    }
+
+    /// Delete a named key.
+    pub fn delete_named_key(&self, key_id: &str) -> Result<(), CirisVerifyError> {
+        let storage_guard = self
+            .named_key_storage
+            .lock()
+            .map_err(|_| CirisVerifyError::InternalError)?;
+        let storage = storage_guard.as_ref().ok_or(CirisVerifyError::NoKey)?;
+
+        storage
+            .delete(key_id)
+            .map_err(|_| CirisVerifyError::IoError)
+    }
+
+    /// Encrypt data with a named key using AES-256-GCM.
+    pub fn encrypt_with_named_key(
+        &self,
+        key_id: &str,
+        plaintext: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, CirisVerifyError> {
+        use aes_gcm::aead::Payload;
+        use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+        use hkdf::Hkdf;
+        use rand::RngCore;
+        use sha2::Sha256;
+
+        let storage_guard = self
+            .named_key_storage
+            .lock()
+            .map_err(|_| CirisVerifyError::InternalError)?;
+        let storage = storage_guard.as_ref().ok_or(CirisVerifyError::NoKey)?;
+
+        let seed = storage.load(key_id).map_err(|_| CirisVerifyError::NoKey)?;
+
+        // Derive AES key from seed using HKDF
+        const SALT: &[u8] = b"CIRIS-named-key-encrypt-v1";
+        let hkdf = Hkdf::<Sha256>::new(Some(SALT), &seed);
+        let mut aes_key = [0u8; 32];
+        hkdf.expand(b"aes-gcm-key", &mut aes_key)
+            .map_err(|_| CirisVerifyError::InternalError)?;
+
+        // Generate random nonce
+        let mut nonce_bytes = [0u8; 12];
+        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        let nonce = Nonce::from_slice(&nonce_bytes);
+
+        // Create cipher and encrypt
+        let cipher =
+            Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CirisVerifyError::InternalError)?;
+        let payload = Payload {
+            msg: plaintext,
+            aad,
+        };
+        let ciphertext = cipher
+            .encrypt(nonce, payload)
+            .map_err(|_| CirisVerifyError::InternalError)?;
+
+        // Return nonce || ciphertext
+        let mut output = nonce_bytes.to_vec();
+        output.extend(ciphertext);
+        Ok(output)
+    }
+
+    /// Decrypt data with a named key using AES-256-GCM.
+    pub fn decrypt_with_named_key(
+        &self,
+        key_id: &str,
+        ciphertext: &[u8],
+        aad: &[u8],
+    ) -> Result<Vec<u8>, CirisVerifyError> {
+        use aes_gcm::aead::Payload;
+        use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+
+        if ciphertext.len() < 12 + 16 {
+            return Err(CirisVerifyError::InvalidArgument);
+        }
+
+        let storage_guard = self
+            .named_key_storage
+            .lock()
+            .map_err(|_| CirisVerifyError::InternalError)?;
+        let storage = storage_guard.as_ref().ok_or(CirisVerifyError::NoKey)?;
+
+        let seed = storage.load(key_id).map_err(|_| CirisVerifyError::NoKey)?;
+
+        // Derive AES key from seed using HKDF
+        const SALT: &[u8] = b"CIRIS-named-key-encrypt-v1";
+        let hkdf = Hkdf::<Sha256>::new(Some(SALT), &seed);
+        let mut aes_key = [0u8; 32];
+        hkdf.expand(b"aes-gcm-key", &mut aes_key)
+            .map_err(|_| CirisVerifyError::InternalError)?;
+
+        // Extract nonce from ciphertext
+        let nonce = Nonce::from_slice(&ciphertext[..12]);
+        let ct = &ciphertext[12..];
+
+        // Create cipher and decrypt
+        let cipher =
+            Aes256Gcm::new_from_slice(&aes_key).map_err(|_| CirisVerifyError::InternalError)?;
+        let payload = Payload { msg: ct, aad };
+        let plaintext = cipher
+            .decrypt(nonce, payload)
+            .map_err(|_| CirisVerifyError::DecryptionFailed)?;
+
+        Ok(plaintext)
+    }
+
+    /// Derive a symmetric key using HKDF-SHA256.
+    pub fn derive_symmetric_key(
+        &self,
+        key_id: &str,
+        context: &str,
+    ) -> Result<Vec<u8>, CirisVerifyError> {
+        use hkdf::Hkdf;
+        use sha2::Sha256;
+
+        let storage_guard = self
+            .named_key_storage
+            .lock()
+            .map_err(|_| CirisVerifyError::InternalError)?;
+        let storage = storage_guard.as_ref().ok_or(CirisVerifyError::NoKey)?;
+
+        let seed = storage.load(key_id).map_err(|_| CirisVerifyError::NoKey)?;
+
+        const SALT: &[u8] = b"CIRIS-named-key-derive-v1";
+        let hkdf = Hkdf::<Sha256>::new(Some(SALT), &seed);
+        let mut derived_key = [0u8; 32];
+        hkdf.expand(context.as_bytes(), &mut derived_key)
+            .map_err(|_| CirisVerifyError::InternalError)?;
+
+        Ok(derived_key.to_vec())
+    }
 }
 
 /// Validate a handle pointer and return a reference if valid.
@@ -575,6 +810,7 @@ fn validate_ptr<T>(ptr: *const T, name: &str) -> Option<String> {
 
 /// Error codes returned by FFI functions.
 #[repr(C)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CirisVerifyError {
     /// Success.
     Success = 0,
@@ -8615,6 +8851,69 @@ unsafe fn derive_symmetric_key_inner(
     );
 
     CirisVerifyError::Success as i32
+}
+
+// =============================================================================
+// Platform Conformance Test Harness (v1.6.1)
+// =============================================================================
+
+/// Run all platform conformance tests.
+///
+/// This function runs a comprehensive test suite to verify that the CIRISVerify
+/// library is functioning correctly on the current platform. Results are logged
+/// to platform logging (logcat on Android, oslog on iOS, stdout elsewhere).
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+///
+/// # Returns
+///
+/// The number of failed tests (0 = all passed).
+///
+/// # Example
+///
+/// ```c
+/// CirisVerifyHandle handle = ciris_verify_init();
+/// int32_t failures = ciris_verify_run_conformance_tests(handle);
+/// if (failures == 0) {
+///     // All tests passed
+/// } else {
+///     // Some tests failed - check logs for details
+/// }
+/// ciris_verify_destroy(handle);
+/// ```
+///
+/// # Safety
+///
+/// Handle must be valid and not null.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_run_conformance_tests(handle: *mut CirisVerifyHandle) -> i32 {
+    ffi_guard!("ciris_verify_run_conformance_tests", {
+        run_conformance_tests_inner(handle)
+    })
+}
+
+unsafe fn run_conformance_tests_inner(handle: *mut CirisVerifyHandle) -> i32 {
+    tracing::info!("ciris_verify_run_conformance_tests called");
+
+    if handle.is_null() {
+        tracing::error!("run_conformance_tests: null handle");
+        return -1;
+    }
+
+    // First ensure named key storage is initialized
+    let handle_ref = &*handle;
+    if let Err(code) = get_or_init_named_storage(handle_ref) {
+        tracing::error!("run_conformance_tests: failed to init storage: {}", code);
+        return -1;
+    }
+
+    // Run all conformance tests
+    let report = conformance::run_all_tests(handle_ref);
+
+    // Return number of failures (0 = all passed)
+    report.failed() as i32
 }
 
 #[cfg(test)]
