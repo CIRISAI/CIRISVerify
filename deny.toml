@@ -34,6 +34,11 @@ ignore = [
     # TODO: Upgrade to hickory-resolver 0.26 when API migration is feasible.
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
+    # rustls-webpki CRL parsing panic (rustls-webpki 0.101/0.103).
+    # Same root cause as 0098/0099 — pinned by hickory-resolver 0.24.
+    # Reachable only when parsing malformed CRL from attacker-controlled CA.
+    # We use bundled Mozilla CA certs; CRL parsing not in our hot path.
+    "RUSTSEC-2026-0104",
 ]
 
 [licenses]
