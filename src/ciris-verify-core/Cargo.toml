@@ -83,8 +83,17 @@ libc = "0.2"
 # Binary parsing (Mach-O __TEXT segment hashing for iOS code-sign stability)
 goblin.workspace = true
 
-# SQLite for audit trail verification
+# SQLite for audit trail verification (desktop + Android: bundled)
+# iOS MUST use system SQLite — bundled SQLite exports duplicate sqlite3_* symbols
+# that conflict with Apple's system SQLite. Apple's SQLiteDatabaseTracking hooks
+# (SQLiteDatabaseTracking.cpp) assert-fail on connections from the foreign copy,
+# crashing the app even if CIRISVerify never calls any SQLite functions directly.
+[target.'cfg(not(target_os = "ios"))'.dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+# iOS: link against system SQLite from the iOS SDK (no symbol conflict)
+[target.'cfg(target_os = "ios")'.dependencies]
+rusqlite = { version = "0.31" }
 
 # Blocking HTTP client for Android/iOS (tokio async I/O broken on JNI/iOS threads)
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
