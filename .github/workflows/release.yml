@@ -724,14 +724,16 @@ jobs:
         if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
         env:
           REGISTRY_ADMIN_TOKEN: ${{ secrets.REGISTRY_ADMIN_TOKEN }}
+          REGISTRY_URL: ${{ vars.REGISTRY_URL }}
         run: |
+          REGISTRY_BASE="${REGISTRY_URL:-https://api.registry.ciris-services-1.ai}"
           for manifest in function-manifests/*.json; do
             if [ -f "$manifest" ]; then
               target=$(basename "$manifest" .json)
-              echo "Uploading function manifest for $target..."
+              echo "Uploading function manifest for $target to ${REGISTRY_BASE}..."
 
               curl -sf -X POST \
-                "https://api.registry.ciris-services-1.ai/v1/verify/function-manifest" \
+                "${REGISTRY_BASE}/v1/verify/function-manifest" \
                 -H "Authorization: Bearer ${REGISTRY_ADMIN_TOKEN}" \
                 -H "Content-Type: application/json" \
                 -d @"$manifest" \
@@ -740,11 +742,119 @@ jobs:
             fi
           done
 
+      # =====================================================================
+      # Dogfood: sign every function manifest as a BuildPrimitive::Verify
+      # BuildManifest using the same ciris-build-sign CLI we ship to other
+      # primitives. This is the recursive golden rule (PoB §1) made
+      # operational — CIRISVerify produces signed BuildManifests for its
+      # own builds through the same machinery it asks every consumer to use.
+      # The signed BuildManifests ship as release artifacts and as POSTs
+      # to the registry's `/v1/verify/build-manifest` endpoint when
+      # available (best-effort; falls back to a warning if endpoint 404s).
+      # =====================================================================
+      - name: Sign function manifests with ciris-build-sign (self-attestation)
+        if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
+        env:
+          CIRIS_BUILD_ED25519_SECRET: ${{ secrets.CIRIS_BUILD_ED25519_SECRET }}
+          CIRIS_BUILD_MLDSA_SECRET: ${{ secrets.CIRIS_BUILD_MLDSA_SECRET }}
+        run: |
+          set -e
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+
+          BUILD_SIGN=release/build-tool/ciris-build-sign
+          if [ ! -x "$BUILD_SIGN" ]; then
+            echo "ciris-build-sign binary missing; skipping self-attestation step"
+            exit 0
+          fi
+
+          if [ -z "${CIRIS_BUILD_ED25519_SECRET:-}" ] || [ -z "${CIRIS_BUILD_MLDSA_SECRET:-}" ]; then
+            echo "Steward secrets not present in env; skipping self-attestation"
+            exit 0
+          fi
+
+          # Steward keys are stored as base64-encoded raw seeds in GHA secrets.
+          # Decode to tmpfs with mode 0600 so they aren't readable by other
+          # workflows or in the workspace post-cleanup.
+          mkdir -p /tmp/steward-keys
+          chmod 0700 /tmp/steward-keys
+          echo "$CIRIS_BUILD_ED25519_SECRET" | base64 -d > /tmp/steward-keys/ed25519.seed
+          echo "$CIRIS_BUILD_MLDSA_SECRET" | base64 -d > /tmp/steward-keys/mldsa65.secret
+          chmod 0600 /tmp/steward-keys/*
+
+          # Sanity-check the crypto primitives are working before consuming
+          # the steward keys.
+          "$BUILD_SIGN" self-test
+
+          mkdir -p signed-build-manifests
+          for manifest in function-manifests/*.json; do
+            [ -f "$manifest" ] || continue
+            target=$(basename "$manifest" .json)
+            echo "Signing function manifest for $target as BuildPrimitive::Verify..."
+
+            "$BUILD_SIGN" sign \
+              --primitive verify \
+              --build-id "v${VERSION}" \
+              --target "$target" \
+              --binary-version "$VERSION" \
+              --manifest-from "$manifest" \
+              --ed25519-seed /tmp/steward-keys/ed25519.seed \
+              --mldsa-secret /tmp/steward-keys/mldsa65.secret \
+              --key-id "verify-steward-2026" \
+              --output "signed-build-manifests/${target}.json"
+          done
+
+          # Wipe key files immediately after signing.
+          shred -u /tmp/steward-keys/* || rm -f /tmp/steward-keys/*
+          rmdir /tmp/steward-keys || true
+
+          echo "Signed BuildManifests:"
+          ls -la signed-build-manifests/
+          echo "Total: $(ls signed-build-manifests/*.json 2>/dev/null | wc -l) signed manifests"
+
+      - name: Upload signed BuildManifests as release assets
+        if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
+        run: |
+          if [ -d signed-build-manifests ] && [ "$(ls -A signed-build-manifests 2>/dev/null)" ]; then
+            tar -czvf ciris-verify-${{ github.ref_name }}-signed-build-manifests.tar.gz \
+              signed-build-manifests/
+          else
+            echo "No signed manifests to package; skipping tarball"
+          fi
+
+      - name: Attach signed BuildManifests to GitHub release
+        if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
+        uses: softprops/action-gh-release@v1
+        with:
+          files: ciris-verify-${{ github.ref_name }}-signed-build-manifests.tar.gz
+          fail_on_unmatched_files: false
+
+      - name: Upload signed BuildManifests to Registry (best-effort)
+        if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
+        env:
+          REGISTRY_ADMIN_TOKEN: ${{ secrets.REGISTRY_ADMIN_TOKEN }}
+          REGISTRY_URL: ${{ vars.REGISTRY_URL }}
+        run: |
+          REGISTRY_BASE="${REGISTRY_URL:-https://api.registry.ciris-services-1.ai}"
+          [ -d signed-build-manifests ] || { echo "No signed manifests"; exit 0; }
+          for manifest in signed-build-manifests/*.json; do
+            [ -f "$manifest" ] || continue
+            target=$(basename "$manifest" .json)
+            echo "POSTing signed BuildManifest for $target..."
+            curl -sf -X POST "${REGISTRY_BASE}/v1/verify/build-manifest" \
+              -H "Authorization: Bearer ${REGISTRY_ADMIN_TOKEN}" \
+              -H "Content-Type: application/json" \
+              -d @"$manifest" \
+              && echo "  -> Success" \
+              || echo "  -> Warning: registry has not yet shipped /v1/verify/build-manifest endpoint (best-effort)"
+          done
+
       # Publish binary manifest to CIRISRegistry (so agents can verify binary integrity)
       - name: Register binary manifest with Registry
         if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
         env:
           REGISTRY_ADMIN_TOKEN: ${{ secrets.REGISTRY_ADMIN_TOKEN }}
+          REGISTRY_URL: ${{ vars.REGISTRY_URL }}
         run: |
           # Build the binary manifest payload for Registry API
           VERSION="${{ github.ref_name }}"
@@ -794,7 +904,8 @@ jobs:
           "
 
           # Register with CIRISRegistry (primary endpoint)
-          curl -sf -X POST "https://api.registry.ciris-services-1.ai/v1/verify/binary-manifest" \
+          REGISTRY_BASE="${REGISTRY_URL:-https://api.registry.ciris-services-1.ai}"
+          curl -sf -X POST "${REGISTRY_BASE}/v1/verify/binary-manifest" \
             -H "Authorization: Bearer ${REGISTRY_ADMIN_TOKEN}" \
             -H "Content-Type: application/json" \
             -d @registry-payload.json \

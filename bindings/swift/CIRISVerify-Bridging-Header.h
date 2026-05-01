@@ -4,7 +4,7 @@
 //  C FFI declarations for CIRISVerify hardware-rooted license verification.
 //  Import this header in your Swift project to access the native library.
 //
-//  Generated from: src/ciris-verify-ffi/src/lib.rs (v1.8.1)
+//  Generated from: src/ciris-verify-ffi/src/lib.rs (v1.8.2)
 //  License: AGPL-3.0-or-later
 //
 
