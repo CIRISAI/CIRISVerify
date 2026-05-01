@@ -57,7 +57,7 @@ The adversary is assumed to NOT have:
 
 ## 3. Attack Vectors
 
-Thirteen attack vectors organized by adversary goal. Each lists the attack, primary mitigation, secondary mitigation, and residual risk in-place. Goal-based grouping (mirrors CIRISPersist's structural pattern) makes the surface boundaries explicit:
+Fourteen attack vectors organized by adversary goal. Each lists the attack, primary mitigation, secondary mitigation, and residual risk in-place. Goal-based grouping (mirrors CIRISPersist's structural pattern) makes the surface boundaries explicit:
 
 - **§3.1 License Fraud** — adversary wants to claim a license tier they don't have (AV-1..AV-6)
 - **§3.2 Federation Identity** — adversary wants stable misidentification or evasion of longitudinal scoring (AV-7, AV-8)
@@ -65,8 +65,9 @@ Thirteen attack vectors organized by adversary goal. Each lists the attack, prim
 - **§3.4 Supply Chain** — adversary wants to ship malicious code through legitimate signing channels (AV-11, AV-12)
 - **§3.5 Hardware Trust Anchor** — adversary wants to extract or counterfeit hardware-bound signing keys (AV-13)
 - **§3.6 Operational / Reliability** — non-adversarial failure modes that still cost availability (AV-10)
+- **§3.7 Multi-Instance Cohabitation** — multiple CIRISVerify instances on one host racing on shared keyring state (AV-14)
 
-Original six vectors (AV-1..AV-6) from FSD-001; v1.7-v1.8 federation work added AV-7..AV-9; SOTA review (mid-2026) added AV-11..AV-13; v1.6.3 incident response promoted AV-10 to first-class status.
+Original six vectors (AV-1..AV-6) from FSD-001; v1.7-v1.8 federation work added AV-7..AV-9; SOTA review (mid-2026) added AV-11..AV-13; v1.6.3 incident response promoted AV-10 to first-class status; v1.8.x cohabitation analysis added AV-14.
 
 ---
 
@@ -227,6 +228,49 @@ Original six vectors (AV-1..AV-6) from FSD-001; v1.7-v1.8 federation work added 
 
 ---
 
+### 3.7 Multi-Instance Cohabitation — multiple CIRISVerify instances on one host
+
+#### AV-14: Cross-Instance Keyring Contention
+
+**Attack surface (mostly operational, adversarial in worst case)**: Multiple CIRISVerify instances coexist on one host, racing on shared keyring/HSM state. Three deployment shapes produce this:
+
+1. **In-process cohabitation** — two `.so` files loaded into one Python process (e.g., `CIRISPersist` bundles `ciris-verify-core` at compile time; the same process also imports the `ciris-verify` PyPI wheel which carries another copy of the FFI). Each `.so` has its own `static OnceLock<...>` globals — Rust-level state is NOT shared.
+2. **Same-host different-process** — agent and persist running as separate daemons on one box, both using the same keyring alias.
+3. **Misconfigured deployment** — multiple agent worker pods scaled out against shared persistent storage without an orchestrator.
+
+In all three, the **OS-level backend is the actual serialization point**: TPM via `/dev/tpm0` (single-tab, multiplexed in-kernel or via `tpm2-abrmd`), Apple Keychain via `securityd` daemon, Android Keystore via Binder IPC, Linux Secret Service via D-Bus. Multiple Rust signer instances are clients of those daemons; concurrent reads serialize cleanly. Three race windows remain in our caller code:
+
+- **Key-creation TOCTOU**: process A reads "no key for alias", calls `generate_key()`. Concurrently B does the same. Backend rejects the second create on Android Keystore (`KeyStoreException`), may silently overwrite on macOS Keychain depending on `kSecAttrAccessible`, races on TPM persistent-handle allocation.
+- **Stale-marker race**: the `HARDWARE_SECURED:fingerprint` marker file (v1.4.0+ pattern) is process-local. v1.6.3-v1.6.4 fixes the single-process stale-recovery case but doesn't lock against concurrent recovery from another process.
+- **Cache consistency**: A creates the key, B's `cached_signing_key: Option<...>` is still `None`. B fails its first `sign()` until something flushes the cache. No invalidation path.
+
+The adversarial worst case: an attacker who controls one of the cohabiting processes attempts a malicious `delete_key()` while another process is mid-attestation. The legitimate process surfaces `HardwareNotAvailable` (AV-10's fix surfaces the symptom) but the operator may not realize the deletion was hostile rather than a hardware failure.
+
+**Primary mitigation (today)**: OS-daemon-level serialization closes the **read** path. PoB §3.2 single-key-three-roles enforces same-alias semantics: two instances with the same alias are the *same identity*, not two competing identities, so cohabitation is conceptually correct as long as cold-start mutation operations don't race.
+
+**Secondary (today)**: Documentation contract — see `docs/HOW_IT_WORKS.md` "Cohabitation Contract" subsection.
+
+**Residual (open)**:
+- Cold-start key-creation race window unprotected. Fix: filesystem `flock` scope guard around mutating operations (Option B in the v1.9 plan).
+- True singleton via out-of-process verify daemon would close all three race windows by construction. Tracked as v2.0 architectural goal, gated on consumer-side process-model decisions (does the agent host the daemon, or connect to an external one?). See §10 future roadmap.
+
+#### Cohabitation contract (operator-facing)
+
+Authoritative semantics for "is multiple-CIRISVerify-on-one-host OK":
+
+| Pattern | Same alias | Different alias |
+|---|---|---|
+| Multiple read-only instances | ✅ Safe — OS serializes; same identity by PoB §3.2 | ⚠️ Conceptually wrong — two identities claiming one role |
+| Multiple instances racing on key creation (cold-start) | ⚠️ Race window — backend may reject, may overwrite, may corrupt marker | ✅ No contention but breaks single-key-three-roles |
+| Mid-runtime mutation (delete, rotate, recover stale marker) | ❌ Unsafe — caches diverge; surface `HardwareNotAvailable` storms | ⚠️ Same as above; affects only the mutating instance |
+
+**Recommended deployment posture:**
+- Cold-start serialization: don't race two processes through a fresh-deployment key-creation phase. Use a deploy-time advisory lock (e.g., systemd `ExecStartPre` with a `flock` against a known path) to ensure the first process completes the create-or-load phase before the second starts.
+- Same-alias for same identity: if your host runs both an agent AND a persist daemon, both should use the same alias to consume the same identity (PoB §3.2). Different aliases = different identities = federation confusion.
+- Mutation operations only from one process: pick an "owner" process for `generate_key`, `delete_key`, marker recovery. Other instances are read-only consumers.
+
+---
+
 ## 4. Mitigation Matrix
 
 | AV | Attack | Primary Mitigation | Secondary | Status | Fix Tracker |
@@ -244,6 +288,7 @@ Original six vectors (AV-1..AV-6) from FSD-001; v1.7-v1.8 federation work added 
 | AV-11 | Sigstore OIDC token theft | OIDC identity binding via `${workflow}@${ref}`; release notes include expected signer | Hybrid BuildManifest signature is independent of Sigstore — second trust path | 🟡 Partial — no continuous Rekor-monitor on CIRIS identity | §10 SOTA gap #2 |
 | AV-12 | Maintainer compromise / XZ-style | AGPL-3.0 source review; `cargo-audit` + `cargo-deny`; hybrid sig | None against this attack — compromised maintainer signs both classical + PQC | ⚠ **Open** — no two-person-rule, no SBOM, no reproducible builds | §10 SOTA gap #3-#5 |
 | AV-13 | TEE.fail / DDR5 bus interposition | Threat assumption §6.4 (no physical access); SoC vuln detection v1.2.0+ caps to SOFTWARE_ONLY | Defense-in-depth: HSM-anchored steward keys (FIPS 140-3 L3+) for production roles | 🟡 Mobile/SoC covered; server-class TEE attacks NOT modeled | §10 SOTA gap #7 |
+| AV-14 | Cross-instance keyring contention (multi-instance cohabitation) | OS-daemon serialization on read path; same-alias = same identity by PoB §3.2 | Documentation contract (HOW_IT_WORKS.md "Cohabitation Contract"); cold-start serialization recommended via deploy-time `flock` | 🟡 Read path safe; cold-start mutation race + mid-runtime mutation unsafe | v1.9 (Option B `flock` guards); v2.0 (singleton daemon) |
 | Audit | Audit trail tampering | Transparency log with Merkle tree | Append-only persistent storage | ✓ Mitigated | Fix 1 |
 
 **Status legend:** ✓ Mitigated • 🟡 Partial mitigation, residual tracked • ⚠ Open / planned
@@ -360,6 +405,7 @@ Per-AV residuals are documented in-place under each attack vector in §3. This s
 | AV-11 | Supply Chain | No continuous Rekor-monitor on CIRIS identity (action: §10 gap #2) |
 | AV-12 | Supply Chain | No two-person-rule, SBOM, reproducible builds (actions: §10 gaps #3, #4, #5) |
 | AV-13 | Hardware | Server-class TEE attacks (TEE.fail) not modeled; HSM-anchored steward keys for prod |
+| AV-14 | Operational | Cold-start mutation race unfixed (Option B `flock` guard targeted v1.9); cross-`.so` cache divergence transient; singleton daemon for v2.0 |
 
 ### 8.2 Cross-cutting residuals
 

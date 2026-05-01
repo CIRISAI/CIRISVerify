@@ -711,6 +711,69 @@ if not result.integrity_valid:
 
 ---
 
+## Cohabitation Contract
+
+Operator-facing rules for hosts running multiple CIRISVerify instances. See `docs/THREAT_MODEL.md` AV-14 for the threat-model angle.
+
+CIRISVerify can ship in three patterns on one host:
+1. **In-process cohabitation** — two `.so` files in one Python process (e.g., CIRISPersist statically links `ciris-verify-core` while the same process imports the `ciris-verify` PyPI wheel).
+2. **Same-host different-process** — agent and persist running as separate daemons on one box.
+3. **Multi-pod / multi-worker** — N replicas of a service against shared persistent storage.
+
+### What's safe
+
+- **Multiple READ-only instances under the same alias.** OS-daemon-level serialization (TPM via `/dev/tpm0`, Apple `securityd`, Android Binder, Linux Secret Service) handles concurrent access. PoB §3.2 single-key-three-roles makes "same alias = same identity" the correct conceptual model.
+- **Cross-`.so` in-process loading.** Each `.so` carries its own Rust globals (`OnceLock`, etc.) but they reach through the FFI to the same OS keyring. Caches diverge transiently but converge on next read.
+
+### What's unsafe today
+
+- **Cold-start key creation race.** Two processes starting simultaneously against a fresh deployment may both hit the `key_exists()` → `false` → `generate_key()` window. Backend behavior:
+  - Android Keystore: rejects the second create with `KeyStoreException`.
+  - macOS Keychain: depends on `kSecAttrAccessible`; may silently overwrite.
+  - TPM persistent handles: races on `TPM2_EvictControl`.
+  - Software seed file: last-writer-wins, prior caller's cached signing key now points at deleted material.
+- **Concurrent mutation.** `generate_key`, `delete_key`, and the v1.6.3 stale-marker recovery path are not cross-process synchronized.
+- **Different aliases on one host claiming the same role.** Two distinct identities both signing as "the agent" is a federation-level confused-deputy.
+
+### Recommended deployment posture
+
+```bash
+# systemd unit example: serialize cold-start mutation via flock
+[Service]
+ExecStartPre=/bin/sh -c 'flock -n /var/run/ciris-verify-bootstrap.lock true || sleep 5'
+ExecStart=/usr/bin/ciris-agent
+```
+
+Or with explicit ordering:
+- `bootstrap.service` runs once on first deployment, generates the key, exits.
+- `agent.service` and `persist.service` both `Requires=` and `After=bootstrap.service`. By the time they start, the key exists and they're read-only consumers.
+
+For multi-pod / Kubernetes:
+- Use an `initContainer` with `flock` against a shared `PersistentVolume` to serialize bootstrap.
+- Or pre-bootstrap the keyring as part of cluster setup, before scaling out workload pods.
+
+### Same-alias rule
+
+If your host runs **both** an agent AND a persist daemon (or any combination), they should use the **same alias** to share one identity. Different aliases = different identities = the agent's federation reputation and the persist daemon's federation reputation are tracked separately, breaking PoB §3.2's single-key-three-roles guarantee.
+
+The default alias is `ciris_verify_key` (per `KeyGenConfig::default()`). Override only if you have a deliberate reason.
+
+### Owner-process rule for mutations
+
+For deployments where multiple processes coexist, designate **one owner process** for mutation operations:
+- Generation: `generate_key()` runs once during bootstrap.
+- Deletion: `delete_key()` runs only on planned identity-rotation.
+- Stale-marker recovery: only the owner clears markers if the hardware key disappeared.
+
+Other instances are read-only consumers (`sign`, `public_key`, `attestation`). This avoids the cache-divergence and TOCTOU windows entirely without requiring cross-process synchronization primitives.
+
+### v1.9 / v2.0 roadmap
+
+- v1.9: filesystem `flock`-based scope guard around mutation ops. Closes the cold-start race window across processes without requiring an out-of-process daemon. ~30 LoC.
+- v2.0: out-of-process verify daemon (singleton). All primitives become thin clients. Single identity, single cache, single anti-rollback counter. Architectural decision still open: does the agent host the daemon or connect to an external one?
+
+---
+
 ## Mandatory Disclosure
 
 Every `LicenseStatusResponse` includes a `MandatoryDisclosure`:
