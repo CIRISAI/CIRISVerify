@@ -59,6 +59,26 @@ The tricky part? Finding "yourself" when you're a library loaded inside another 
 
 CIRISVerify holds a hardware-bound Ed25519 signing key that **is** the agent's identity. The key doesn't represent the identity — it *is* the identity, the same mechanism. Stored in secure hardware (TPM, Secure Enclave, Android Keystore), it cannot be forged, copied, or transferred. Every response the agent produces is signed with this key, proving authenticity.
 
+**Storage descriptor (v1.7+):** Every signer declares where its identity material lives via `HardwareSigner::storage_descriptor()`. Surfaced through the FFI as `ciris_verify_signer_storage_descriptor()` and through the Python/Swift bindings. Four variants:
+
+- `Hardware { hardware_type, blob_path }` — HSM-protected. `blob_path`, when present (Android Keystore-wrapped seed, Linux TPM `.tpm` envelope), is informational; the file is useless without the HSM.
+- `SoftwareFile { path }` — software seed on disk. **This is the path ephemeral-storage heuristics must check.** A path under `/tmp`, `/var/cache`, or a container writable layer without a mounted volume means the identity churns every restart and the federation's longitudinal score (PoB §2.4 S-factor, 30-day decay window) cannot accumulate.
+- `SoftwareOsKeyring { backend, scope }` — secret-service / Keychain / DPAPI. `scope` distinguishes user-session-bound (disappears at logout) from system-scoped (survives reboot).
+- `InMemory` — RAM-only by design. The signer has no persistent storage of its own; a higher-level wrapper provides persistence.
+
+Every CIRIS primitive that participates in PoB-style longitudinal scoring (agent, lens, persist, registry) should consult its signer's descriptor at boot and refuse to start if the storage looks ephemeral. Pattern (Python):
+
+```python
+from ciris_verify import CIRISVerify, StorageKind
+
+v = CIRISVerify()
+desc = v.storage_descriptor()
+if desc.kind == StorageKind.SOFTWARE_FILE:
+    path = desc.disk_path()
+    if path and any(path.startswith(p) for p in ("/tmp/", "/var/cache/")):
+        raise RuntimeError(f"identity in ephemeral storage: {path}")
+```
+
 ### 2. Registration & Inspection — Software and Hardware Integrity
 
 **Software integrity (Tripwire):** Every file in the CIRISAgent distribution is SHA-256 hashed at build time and registered in CIRISRegistry as a signed manifest. At runtime, CIRISVerify hashes files on disk and compares. **Any modification whatsoever** — except `.env`, logs, and runtime data — triggers immediate forced shutdown.
