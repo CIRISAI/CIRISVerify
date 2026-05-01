@@ -182,6 +182,42 @@ public final class CIRISVerify {
         }
     }
 
+    // MARK: - 4b. signerStorageDescriptor (v1.7)
+
+    /// Get the storage descriptor of the signer's identity material as JSON.
+    ///
+    /// Use this at boot to detect ephemeral storage before identity churn
+    /// silently breaks longitudinal scoring (PoB §2.4 S-factor decay window
+    /// cannot accumulate behind an unstable identity).
+    ///
+    /// Output JSON has a `kind` discriminator and variant-specific fields:
+    ///   `{"kind":"hardware","hardware_type":"IosSecureEnclave","blob_path":null}`
+    ///   `{"kind":"software_file","path":"/var/.../key.bin"}`
+    ///   `{"kind":"software_os_keyring","backend":"keychain","scope":"unknown"}`
+    ///   `{"kind":"in_memory"}`
+    ///
+    /// `blob_path` on `hardware` is informational. `software_file.path` is
+    /// the path callers should apply ephemeral-storage heuristics to.
+    ///
+    /// - Returns: UTF-8 encoded JSON.
+    /// - Throws: `CIRISVerifyError` on failure.
+    public func signerStorageDescriptor() throws -> Data {
+        guard let handle = handle else { throw CIRISVerifyError.initializationFailed }
+        let rawHandle = UnsafeMutableRawPointer(handle)
+
+        var dataPtr: UnsafeMutablePointer<UInt8>?
+        var dataLen: Int = 0
+
+        let result = ciris_verify_signer_storage_descriptor(
+            rawHandle, &dataPtr, &dataLen)
+
+        guard result == 0 else { throw CIRISVerifyError.from(code: result) }
+        guard let ptr = dataPtr else { throw CIRISVerifyError.internalError(code: -99) }
+        defer { ciris_verify_free(ptr) }
+
+        return Data(bytes: ptr, count: dataLen)
+    }
+
     // MARK: - 5. runAttestation (mirrors nativeRunAttestation)
 
     /// Run unified attestation (Levels 1-5).

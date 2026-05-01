@@ -47,6 +47,9 @@ from .types import (
     SecurityAdvisory,
     HardwareLimitation,
     HardwareInfo,
+    StorageDescriptor,
+    StorageKind,
+    KeyringScope,
 )
 from .exceptions import (
     CIRISVerifyError,
@@ -134,6 +137,9 @@ __all__ = [
     "SecurityAdvisory",
     "HardwareLimitation",
     "HardwareInfo",
+    "StorageDescriptor",
+    "StorageKind",
+    "KeyringScope",
     "CIRISVerifyError",
     "BinaryNotFoundError",
     "BinaryTamperedError",

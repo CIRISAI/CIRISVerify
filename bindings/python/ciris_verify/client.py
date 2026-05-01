@@ -34,6 +34,9 @@ from .types import (
     SecurityAdvisory,
     HardwareLimitation,
     HardwareInfo,
+    StorageDescriptor,
+    StorageKind,
+    KeyringScope,
 )
 from .exceptions import (
     BinaryNotFoundError,
@@ -422,6 +425,18 @@ class CIRISVerify:
             ctypes.POINTER(ctypes.c_size_t),    # proof_len (out)
         ]
         self._lib.ciris_verify_export_attestation.restype = ctypes.c_int
+
+        # ciris_verify_signer_storage_descriptor(handle, descriptor_data, descriptor_len) -> i32 (v1.7)
+        # Older libraries do not export this; gated by _has_storage_descriptor.
+        self._has_storage_descriptor = False
+        if hasattr(self._lib, "ciris_verify_signer_storage_descriptor"):
+            self._lib.ciris_verify_signer_storage_descriptor.argtypes = [
+                ctypes.c_void_p,                    # handle
+                ctypes.POINTER(ctypes.c_void_p),    # descriptor_data (out)
+                ctypes.POINTER(ctypes.c_size_t),    # descriptor_len (out)
+            ]
+            self._lib.ciris_verify_signer_storage_descriptor.restype = ctypes.c_int
+            self._has_storage_descriptor = True
 
         # ciris_verify_free(data)
         # NOTE: MUST be c_void_p, not c_char_p! c_char_p treats the pointer as a
@@ -1370,6 +1385,65 @@ class CIRISVerify:
         finally:
             if proof_data.value:
                 self._lib.ciris_verify_free(proof_data.value)
+
+    # ========================================================================
+    # Storage Descriptor (v1.7)
+    # ========================================================================
+
+    @property
+    def has_storage_descriptor_support(self) -> bool:
+        """Check if the underlying library exports the v1.7 descriptor API."""
+        return getattr(self, "_has_storage_descriptor", False)
+
+    def storage_descriptor(self) -> StorageDescriptor:
+        """Get the storage descriptor of the signer's identity material.
+
+        Use this at boot to detect ephemeral storage before identity churn
+        silently breaks longitudinal scoring (PoB §2.4 S-factor decay window
+        cannot accumulate behind an unstable identity). For an agent, the
+        check looks like:
+
+            desc = client.storage_descriptor()
+            if desc.kind == StorageKind.SOFTWARE_FILE:
+                path = desc.disk_path()
+                if path and any(path.startswith(p) for p in ("/tmp/", "/var/cache/")):
+                    raise RuntimeError(f"identity in ephemeral storage: {path}")
+
+        Returns:
+            A `StorageDescriptor` with `kind` and variant-specific fields.
+
+        Raises:
+            VerificationFailedError: If the FFI call returns non-zero.
+            RuntimeError: If the underlying library predates v1.7
+                (check `has_storage_descriptor_support` first).
+        """
+        if not self.has_storage_descriptor_support:
+            raise RuntimeError(
+                "Underlying ciris-verify library does not expose "
+                "ciris_verify_signer_storage_descriptor (added in v1.7). "
+                "Upgrade the native library."
+            )
+
+        descriptor_data = ctypes.c_void_p()
+        descriptor_len = ctypes.c_size_t()
+
+        ret = self._lib.ciris_verify_signer_storage_descriptor(
+            self._handle,
+            ctypes.byref(descriptor_data),
+            ctypes.byref(descriptor_len),
+        )
+
+        if ret != 0:
+            raise VerificationFailedError(
+                ret, f"storage_descriptor failed with code {ret}"
+            )
+
+        try:
+            payload = ctypes.string_at(descriptor_data.value, descriptor_len.value)
+            return StorageDescriptor.model_validate_json(payload)
+        finally:
+            if descriptor_data.value:
+                self._lib.ciris_verify_free(descriptor_data.value)
 
     # ========================================================================
     # Audit Trail Verification

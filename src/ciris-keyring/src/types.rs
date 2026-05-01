@@ -553,4 +553,22 @@ mod tests {
         let json: serde_json::Value = serde_json::to_value(&im).unwrap();
         assert_eq!(json["kind"], "in_memory");
     }
+
+    #[test]
+    fn test_storage_descriptor_emits_hardware_type_as_string() {
+        // FFI consumers (Python, Swift) need to know exactly what serde
+        // emits for `hardware_type`. The repr(u8) on HardwareType is for
+        // FFI integer wire formats elsewhere; with the default serde
+        // derive, unit-variant enums serialize as the variant name.
+        let hw = StorageDescriptor::Hardware {
+            hardware_type: HardwareType::TpmFirmware,
+            blob_path: None,
+        };
+        let json: serde_json::Value = serde_json::to_value(&hw).unwrap();
+        assert_eq!(
+            json["hardware_type"], "TpmFirmware",
+            "FFI doc claims hardware_type is the PascalCase variant name; \
+             if this assertion fails, update the FFI doc + Python bindings."
+        );
+    }
 }

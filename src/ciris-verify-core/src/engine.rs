@@ -19,7 +19,9 @@ use std::time::Duration;
 
 #[cfg(feature = "pqc")]
 use ciris_crypto::{MlDsa65Signer, PqcSigner};
-use ciris_keyring::{HardwareSigner, HardwareType, PlatformAttestation, SoftwareAttestation};
+use ciris_keyring::{
+    HardwareSigner, HardwareType, PlatformAttestation, SoftwareAttestation, StorageDescriptor,
+};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::cache::LicenseCache;
@@ -562,6 +564,18 @@ impl LicenseEngine {
     #[must_use]
     pub fn hardware_type(&self) -> HardwareType {
         self.hw_signer.hardware_type()
+    }
+
+    /// Get the storage descriptor of the underlying signer.
+    ///
+    /// Surfaces where the identity material lives (hardware HSM,
+    /// software seed file, OS keyring, in-memory) so callers can detect
+    /// ephemeral storage at boot and surface it on `/health`. See the
+    /// `HardwareSigner::storage_descriptor` docstring for the full
+    /// stability contract.
+    #[must_use]
+    pub fn storage_descriptor(&self) -> StorageDescriptor {
+        self.hw_signer.storage_descriptor()
     }
 
     /// Sign data using the hardware-bound private key.

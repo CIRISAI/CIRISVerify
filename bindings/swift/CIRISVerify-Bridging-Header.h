@@ -58,6 +58,23 @@ int32_t ciris_verify_get_public_key(
     uint8_t **key_data, size_t *key_len,
     uint8_t **algorithm, size_t *algorithm_len);
 
+/// Get the storage descriptor of the signer's identity material as JSON.
+///
+/// Output JSON has a "kind" discriminator and variant-specific fields:
+///   {"kind":"hardware","hardware_type":"TpmFirmware","blob_path":"/path/to/key.tpm"}
+///   {"kind":"software_file","path":"/var/lib/ciris/key.bin"}
+///   {"kind":"software_os_keyring","backend":"keychain","scope":"unknown"}
+///   {"kind":"in_memory"}
+///
+/// blob_path on "hardware" is informational — the wrapped envelope is
+/// useless without the HSM, so its presence does NOT imply ephemerality
+/// risk. software_file.path IS the path to apply ephemeral-storage
+/// heuristics to (PoB §2.4 stability contract). Caller must free the
+/// returned data with ciris_verify_free.
+int32_t ciris_verify_signer_storage_descriptor(
+    CirisVerifyHandle handle,
+    uint8_t **descriptor_data, size_t *descriptor_len);
+
 // ---------------------------------------------------------------------------
 // Attestation
 // ---------------------------------------------------------------------------

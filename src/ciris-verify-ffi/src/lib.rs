@@ -2084,6 +2084,108 @@ unsafe fn get_public_key_inner(
     CirisVerifyError::Success as i32
 }
 
+/// Get the storage descriptor of the signer's identity material as
+/// JSON.
+///
+/// The returned JSON has a `kind` discriminator and variant-specific
+/// fields:
+///
+/// ```json
+/// {"kind":"hardware","hardware_type":"TpmFirmware","blob_path":"/var/lib/ciris/key.tpm"}
+/// {"kind":"software_file","path":"/home/user/.local/share/ciris-verify/agent.p256.key"}
+/// {"kind":"software_os_keyring","backend":"secret-service","scope":"unknown"}
+/// {"kind":"in_memory"}
+/// ```
+///
+/// `blob_path` on `hardware` is informational. Some backends (Android
+/// Keystore via SecureBlobStorage, Linux TPM-wrapped Ed25519) write a
+/// hardware-wrapped envelope to disk that is useless without the HSM,
+/// so its presence does NOT imply ephemerality risk. Absence (file
+/// deleted) means "key is gone," not "ephemeral storage."
+///
+/// `software_file.path` IS the path that ephemeral-storage heuristics
+/// must check. PoB §2.4's S-factor decay window (30 days) cannot
+/// accumulate behind an unstable identity, so a path matching `/tmp`,
+/// `/var/cache`, or a container writable layer without a mounted
+/// volume is a configuration bug.
+///
+/// `software_os_keyring.scope` distinguishes user-session-bound from
+/// system-scoped storage. Most backends report `unknown` because the
+/// underlying `keyring` crate does not expose scope per-entry.
+///
+/// `in_memory` means the signer has no persistent storage of its own.
+/// A higher-level wrapper is expected to provide persistence; if used
+/// standalone the key dies with the process.
+///
+/// # Arguments
+///
+/// * `handle` - Handle from `ciris_verify_init`
+/// * `descriptor_data` - Output pointer for JSON bytes (caller must
+///   free with `ciris_verify_free`)
+/// * `descriptor_len` - Output pointer for the byte length
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `descriptor_data` and `descriptor_len` must be valid pointers
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_signer_storage_descriptor(
+    handle: *mut CirisVerifyHandle,
+    descriptor_data: *mut *mut u8,
+    descriptor_len: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_signer_storage_descriptor", {
+        signer_storage_descriptor_inner(handle, descriptor_data, descriptor_len)
+    })
+}
+
+/// Inner implementation of signer_storage_descriptor (can panic safely).
+unsafe fn signer_storage_descriptor_inner(
+    handle: *mut CirisVerifyHandle,
+    descriptor_data: *mut *mut u8,
+    descriptor_len: *mut usize,
+) -> i32 {
+    tracing::debug!("ciris_verify_signer_storage_descriptor called");
+
+    if handle.is_null() || descriptor_data.is_null() || descriptor_len.is_null() {
+        tracing::error!("ciris_verify_signer_storage_descriptor: invalid arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let handle = &*handle;
+    let descriptor = handle.engine.storage_descriptor();
+
+    let json = match serde_json::to_vec(&descriptor) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!("Failed to serialize storage descriptor: {}", e);
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    tracing::info!(
+        descriptor = ?descriptor,
+        json_len = json.len(),
+        "ciris_verify_signer_storage_descriptor: returning descriptor"
+    );
+
+    let len = json.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+    std::ptr::copy_nonoverlapping(json.as_ptr(), ptr, len);
+
+    *descriptor_data = ptr;
+    *descriptor_len = len;
+
+    CirisVerifyError::Success as i32
+}
+
 /// Export a remote attestation proof for third-party verification.
 ///
 /// The proof contains Ed25519 signature over the challenge. This function
