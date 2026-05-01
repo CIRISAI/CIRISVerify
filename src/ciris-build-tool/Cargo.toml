@@ -1,0 +1,66 @@
+[package]
+name = "ciris-build-tool"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "BuildManifest sign/verify CLIs for CIRIS PoB federation peers"
+
+[[bin]]
+name = "ciris-build-sign"
+path = "src/sign.rs"
+
+[[bin]]
+name = "ciris-build-verify"
+path = "src/verify.rs"
+
+[lib]
+name = "ciris_build_tool"
+path = "src/lib.rs"
+
+[dependencies]
+# CLI
+clap.workspace = true
+
+# Cryptography (needs PQC feature for ML-DSA-65 build manifest signing)
+ciris-crypto = { workspace = true, features = ["pqc-ml-dsa"] }
+
+# Random for keypair generation
+rand_core = { version = "0.6", features = ["std"] }
+
+# Core types
+ciris-verify-core.workspace = true
+
+# Serialization
+serde.workspace = true
+serde_json.workspace = true
+
+# Hashing
+sha2.workspace = true
+
+# Encoding
+base64.workspace = true
+hex.workspace = true
+
+# Time
+chrono = { version = "0.4", features = ["serde", "clock"] }
+
+# Error handling
+anyhow.workspace = true
+thiserror.workspace = true
+
+# Logging
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints.clippy]
+# CLI utility crate — workspace-wide pedantic/nursery lints add noise
+# without catching real bugs here. Match the pattern in other tool crates.
+all = "warn"
+pedantic = { level = "allow", priority = -1 }
+nursery = { level = "allow", priority = -1 }
+# But keep the workspace's safety-critical lints active
+unwrap_used = "warn"
+expect_used = "warn"

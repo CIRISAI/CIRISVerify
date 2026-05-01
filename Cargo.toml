@@ -6,6 +6,7 @@ members = [
     "src/ciris-verify-core",
     "src/ciris-verify-ffi",
     "src/ciris-manifest-tool",
+    "src/ciris-build-tool",
 ]
 
 [workspace.package]

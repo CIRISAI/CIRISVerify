@@ -601,6 +601,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciris-build-tool"
+version = "1.7.0"
+dependencies = [
+ "anyhow",
+ "base64 0.21.7",
+ "chrono",
+ "ciris-crypto",
+ "ciris-verify-core",
+ "clap 4.6.1",
+ "hex",
+ "rand_core 0.6.4",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 1.0.69",
+ "tracing",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "ciris-crypto"
 version = "1.7.0"
 dependencies = [

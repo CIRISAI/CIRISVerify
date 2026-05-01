@@ -407,6 +407,65 @@ Until the PoB §3.1 collapse, lens has its own primitive. After the collapse, le
 3. `BuildPrimitive::Other("future-primitive")` works without code changes if a validator is registered.
 4. The `FunctionManifest` type alias means existing v1.7 callers keep compiling.
 
+## CLI tools (`ciris-build-tool` crate)
+
+Two binaries ship in the v1.8 release for use in CI pipelines and
+manual operator workflows:
+
+### `ciris-build-sign`
+
+```bash
+# Generate a fresh test keypair (ed25519 + ML-DSA-65, 4 files in dir)
+ciris-build-sign generate-keys --output-dir ./keys/
+
+# Sign a Persist build manifest
+ciris-build-sign sign \
+    --primitive persist \
+    --build-id "v0.1.8" \
+    --target x86_64-unknown-linux-gnu \
+    --binary target/release/persist-server \
+    --binary-version 0.1.8 \
+    --extras persist-extras.json \
+    --ed25519-seed keys/ed25519.seed \
+    --mldsa-secret keys/mldsa65.secret \
+    --key-id "persist-steward-2026" \
+    --output build-manifest.json
+
+# Self-test (sanity-check the embedded crypto primitives)
+ciris-build-sign self-test
+```
+
+`--binary` (path) and `--binary-hash` (`sha256:...`) are mutually
+exclusive. Use `--binary` if the CLI should compute the hash; use
+`--binary-hash` if the calling pipeline already computed it (saves
+re-reading large artifacts).
+
+Secret-key files are written with mode `0600` on Unix.
+
+### `ciris-build-verify`
+
+```bash
+# Quiet (CI mode): exit 0 on success, non-zero on failure
+ciris-build-verify \
+    --manifest build-manifest.json \
+    --primitive persist \
+    --ed25519-pub keys/ed25519.pub \
+    --mldsa-pub keys/mldsa65.pub
+
+# Verbose (operator mode): print parsed manifest details
+ciris-build-verify \
+    --manifest build-manifest.json \
+    --primitive persist \
+    --ed25519-pub keys/ed25519.pub \
+    --mldsa-pub keys/mldsa65.pub \
+    --show
+```
+
+The verifier rejects manifests where the `primitive` field doesn't
+match `--primitive`, where either signature fails, or where the
+registered `ExtrasValidator` for the primitive errors. Three failure
+modes empirically demonstrated in the lib tests (`tests::verify_*`).
+
 ## What's left to design (during implementation)
 
 - **Versioning of extras schemas.** A primitive may evolve its extras shape. Two options: bump `manifest_schema_version` (coarse), or have each primitive's extras carry its own schema version (fine). Recommendation: fine-grained per-primitive extras versioning. Each primitive's `ExtrasValidator` decides what versions it accepts.
