@@ -104,6 +104,7 @@ proptest = "1.5"
 test-case = "3.3"
 pretty_assertions = "1.4"
 tokio-test = "0.4"
+criterion = { version = "0.5", features = ["html_reports"] }
 
 [workspace.lints.rust]
 unsafe_code = "warn"

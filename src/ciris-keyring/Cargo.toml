@@ -81,3 +81,8 @@ windows = { version = "0.58", features = [
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
+criterion.workspace = true
+
+[[bench]]
+name = "storage_descriptor"
+harness = false

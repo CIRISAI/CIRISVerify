@@ -123,3 +123,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 proptest = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = "3"
+criterion.workspace = true
+
+[[bench]]
+name = "build_manifest"
+harness = false

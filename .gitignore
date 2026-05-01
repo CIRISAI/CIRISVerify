@@ -19,6 +19,9 @@ Thumbs.db
 *.profraw
 *.profdata
 
+# QA runner output (regenerated each run; baseline lives in docs/BENCHMARKS.md)
+/QA_REPORT.md
+
 # Secrets and keys
 .env
 .env.*
