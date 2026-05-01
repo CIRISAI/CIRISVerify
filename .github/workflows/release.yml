@@ -408,11 +408,41 @@ jobs:
           if-no-files-found: error
 
   # ==========================================================================
+  # Build Build Tool (v1.8 BuildManifest CLIs)
+  # ==========================================================================
+  build-build-tool:
+    name: Build Build Tool
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: build-tool-${{ github.ref_name }}
+
+      - name: Build build-tool (sign + verify)
+        run: cargo build --release -p ciris-build-tool --features ciris-crypto/pqc-ml-dsa
+
+      - name: Upload ciris-build-sign
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris-build-sign
+          path: target/release/ciris-build-sign
+          if-no-files-found: error
+
+      - name: Upload ciris-build-verify
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris-build-verify
+          path: target/release/ciris-build-verify
+          if-no-files-found: error
+
+  # ==========================================================================
   # Create Release
   # ==========================================================================
   create-release:
     name: Create Release
-    needs: [build-native, build-musl, build-android, build-ios, xcframework, android-aar, generate-header, build-manifest-tool]
+    needs: [build-native, build-musl, build-android, build-ios, xcframework, android-aar, generate-header, build-manifest-tool, build-build-tool]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -458,6 +488,12 @@ jobs:
           cp artifacts/ciris-verify.aar/ciris-verify.aar release/ || true
           cp artifacts/ciris_verify.h/ciris_verify.h release/ || true
 
+          # Copy build-tool CLIs (v1.8 BuildManifest sign/verify)
+          mkdir -p release/build-tool
+          cp artifacts/ciris-build-sign/ciris-build-sign release/build-tool/ 2>/dev/null || true
+          cp artifacts/ciris-build-verify/ciris-build-verify release/build-tool/ 2>/dev/null || true
+          chmod +x release/build-tool/* 2>/dev/null || true
+
           # Create checksums
           cd release
           find . -type f \( -name "*.so" -o -name "*.dylib" -o -name "*.dll" -o -name "*.a" -o -name "*.aar" \) \
@@ -473,6 +509,7 @@ jobs:
           tar -czvf ciris-verify-${{ github.ref_name }}-android.tar.gz -C release android || true
           tar -czvf ciris-verify-${{ github.ref_name }}-ios.tar.gz -C release ios CirisVerify.xcframework || true
           zip -r ciris-verify-${{ github.ref_name }}-windows-x86_64.zip release/x86_64-pc-windows-msvc || true
+          tar -czvf ciris-verify-${{ github.ref_name }}-build-tool-linux-x86_64.tar.gz -C release build-tool || true
 
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
