@@ -337,23 +337,46 @@ pub fn verify_manifest_signature(
     manifest: &FunctionManifest,
     steward_pubkey: &StewardPublicKey,
 ) -> Result<bool, crate::error::VerifyError> {
+    // Backwards-compatible wrapper: factor canonical_bytes() out and
+    // delegate to the primitive-agnostic helper. The v1.8 generic
+    // BuildManifest validator calls verify_hybrid_signature directly.
+    let canonical = manifest.canonical_bytes();
+    verify_hybrid_signature(&canonical, &manifest.signature, steward_pubkey)
+}
+
+/// Verify a hybrid Ed25519 + ML-DSA-65 signature over canonical bytes.
+///
+/// Primitive-agnostic core of all CIRIS build-manifest signature
+/// verification. The PQC signature is bound to the classical
+/// signature: it covers `canonical || classical_signature`. Both
+/// signatures must verify for this function to return `Ok(true)`.
+///
+/// Used by:
+/// - `verify_manifest_signature` (legacy `FunctionManifest` path).
+/// - `verify_build_manifest` (v1.8 generic `BuildManifest` path).
+///
+/// This is the load-bearing piece of FSD-001 §2 "Hybrid Cryptography
+/// Day-1" — every build authenticity claim across the CIRIS federation
+/// flows through this routine.
+pub fn verify_hybrid_signature(
+    canonical: &[u8],
+    signature: &ManifestSignature,
+    steward_pubkey: &StewardPublicKey,
+) -> Result<bool, crate::error::VerifyError> {
     use base64::{engine::general_purpose::STANDARD, Engine};
     use ciris_crypto::{ClassicalVerifier, Ed25519Verifier, MlDsa65Verifier, PqcVerifier};
 
-    // Get canonical bytes (excludes signature field)
-    let canonical = manifest.canonical_bytes();
-
     // Decode classical signature
-    let classical_sig_bytes = STANDARD
-        .decode(&manifest.signature.classical)
-        .map_err(|e| crate::error::VerifyError::IntegrityError {
+    let classical_sig_bytes = STANDARD.decode(&signature.classical).map_err(|e| {
+        crate::error::VerifyError::IntegrityError {
             message: format!("Invalid classical signature base64: {}", e),
-        })?;
+        }
+    })?;
 
     // Verify Ed25519 signature
     let ed25519_verifier = Ed25519Verifier::new();
     let classical_valid = ed25519_verifier
-        .verify(steward_pubkey.ed25519, &canonical, &classical_sig_bytes)
+        .verify(steward_pubkey.ed25519, canonical, &classical_sig_bytes)
         .map_err(|e| crate::error::VerifyError::IntegrityError {
             message: format!("Ed25519 verification error: {}", e),
         })?;
@@ -363,14 +386,16 @@ pub fn verify_manifest_signature(
     }
 
     // Decode PQC signature
-    let pqc_sig_bytes = STANDARD.decode(&manifest.signature.pqc).map_err(|e| {
-        crate::error::VerifyError::IntegrityError {
-            message: format!("Invalid PQC signature base64: {}", e),
-        }
-    })?;
+    let pqc_sig_bytes =
+        STANDARD
+            .decode(&signature.pqc)
+            .map_err(|e| crate::error::VerifyError::IntegrityError {
+                message: format!("Invalid PQC signature base64: {}", e),
+            })?;
 
     // PQC signature covers (canonical || classical_sig) - bound signature
-    let mut bound_data = canonical.clone();
+    let mut bound_data = Vec::with_capacity(canonical.len() + classical_sig_bytes.len());
+    bound_data.extend_from_slice(canonical);
     bound_data.extend_from_slice(&classical_sig_bytes);
 
     // Verify ML-DSA-65 signature

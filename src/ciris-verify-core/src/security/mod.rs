@@ -21,6 +21,7 @@
 //! ```
 
 mod anti_tamper;
+pub mod build_manifest;
 pub mod file_integrity;
 pub mod function_integrity;
 mod platform;
