@@ -246,13 +246,13 @@ In all three, the **OS-level backend is the actual serialization point**: TPM vi
 
 The adversarial worst case: an attacker who controls one of the cohabiting processes attempts a malicious `delete_key()` while another process is mid-attestation. The legitimate process surfaces `HardwareNotAvailable` (AV-10's fix surfaces the symptom) but the operator may not realize the deletion was hostile rather than a hardware failure.
 
-**Primary mitigation (today)**: OS-daemon-level serialization closes the **read** path. PoB §3.2 single-key-three-roles enforces same-alias semantics: two instances with the same alias are the *same identity*, not two competing identities, so cohabitation is conceptually correct as long as cold-start mutation operations don't race.
+**Primary mitigation (today, inverted-pyramid doctrine)**: When CIRISPersist is in the stack, persist's `Engine::__init__` (v0.1.14+) holds a filesystem `flock` during keyring bootstrap. N consumers racing through the flock all converge on the same identity by construction. Verify is a happy passenger: by the time it calls `get_platform_signer(alias)`, the OS keyring is already populated, so no creation race is possible. PoB §3.2 single-key-three-roles enforces same-alias semantics — two instances with the same alias are the *same identity*, not two competing identities. **The dominant production case is closed by persist, not by verify.**
 
-**Secondary (today)**: Documentation contract — see `docs/HOW_IT_WORKS.md` "Cohabitation Contract" subsection.
+**Secondary (today)**: OS-daemon-level serialization (TPM via `/dev/tpm0`, Apple `securityd`, Android Binder, Linux Secret Service) closes the **read** path universally. Documentation contract — see `docs/HOW_IT_WORKS.md` "Cohabitation Contract — Inverted-Pyramid Doctrine" — gives operators the deployment patterns.
 
-**Residual (open)**:
-- Cold-start key-creation race window unprotected. Fix: filesystem `flock` scope guard around mutating operations (Option B in the v1.9 plan).
-- True singleton via out-of-process verify daemon would close all three race windows by construction. Tracked as v2.0 architectural goal, gated on consumer-side process-model decisions (does the agent host the daemon, or connect to an external one?). See §10 future roadmap.
+**Residual (open, only in verify-only stacks without persist)**:
+- Cold-start key-creation race window unprotected when persist is NOT in the stack (registry-only deployments, sovereign-mode dev, lens before the §3.1 collapse, multi-pod registry HA without an external bootstrap step). Fix paths: (a) add persist to the stack — solves it for free; (b) operator-managed pre-bootstrap (`ExecStartPre=flock`); (c) verify v1.9's planned `flock` scope guards around mutating operations (~30 LoC, lower priority since most stacks have persist).
+- v2.0 out-of-process verify daemon was originally tracked as the architecturally clean answer; the inverted pyramid makes it less compelling. Persist already provides singleton-bootstrap at a higher layer where it's more naturally located. Likely v2.0 work is "formalize persist-as-bootstrap-authority in runtime checks" rather than ship a separate daemon.
 
 #### Cohabitation contract (operator-facing)
 
@@ -288,7 +288,7 @@ Authoritative semantics for "is multiple-CIRISVerify-on-one-host OK":
 | AV-11 | Sigstore OIDC token theft | OIDC identity binding via `${workflow}@${ref}`; release notes include expected signer | Hybrid BuildManifest signature is independent of Sigstore — second trust path | 🟡 Partial — no continuous Rekor-monitor on CIRIS identity | §10 SOTA gap #2 |
 | AV-12 | Maintainer compromise / XZ-style | AGPL-3.0 source review; `cargo-audit` + `cargo-deny`; hybrid sig | None against this attack — compromised maintainer signs both classical + PQC | ⚠ **Open** — no two-person-rule, no SBOM, no reproducible builds | §10 SOTA gap #3-#5 |
 | AV-13 | TEE.fail / DDR5 bus interposition | Threat assumption §6.4 (no physical access); SoC vuln detection v1.2.0+ caps to SOFTWARE_ONLY | Defense-in-depth: HSM-anchored steward keys (FIPS 140-3 L3+) for production roles | 🟡 Mobile/SoC covered; server-class TEE attacks NOT modeled | §10 SOTA gap #7 |
-| AV-14 | Cross-instance keyring contention (multi-instance cohabitation) | OS-daemon serialization on read path; same-alias = same identity by PoB §3.2 | Documentation contract (HOW_IT_WORKS.md "Cohabitation Contract"); cold-start serialization recommended via deploy-time `flock` | 🟡 Read path safe; cold-start mutation race + mid-runtime mutation unsafe | v1.9 (Option B `flock` guards); v2.0 (singleton daemon) |
+| AV-14 | Cross-instance keyring contention (multi-instance cohabitation) | Persist's `Engine::__init__` flock owns bootstrap when persist is in the stack; OS-daemon serialization on read path universally | Documentation contract (HOW_IT_WORKS.md "Inverted-Pyramid Doctrine"); same-alias = same identity by PoB §3.2 | ✓ Closed for stacks with persist; 🟡 verify-only stacks need operator-bootstrap or v1.9 flock guards | v1.9 (verify-side `flock` for persist-less stacks) |
 | Audit | Audit trail tampering | Transparency log with Merkle tree | Append-only persistent storage | ✓ Mitigated | Fix 1 |
 
 **Status legend:** ✓ Mitigated • 🟡 Partial mitigation, residual tracked • ⚠ Open / planned
@@ -405,7 +405,7 @@ Per-AV residuals are documented in-place under each attack vector in §3. This s
 | AV-11 | Supply Chain | No continuous Rekor-monitor on CIRIS identity (action: §10 gap #2) |
 | AV-12 | Supply Chain | No two-person-rule, SBOM, reproducible builds (actions: §10 gaps #3, #4, #5) |
 | AV-13 | Hardware | Server-class TEE attacks (TEE.fail) not modeled; HSM-anchored steward keys for prod |
-| AV-14 | Operational | Cold-start mutation race unfixed (Option B `flock` guard targeted v1.9); cross-`.so` cache divergence transient; singleton daemon for v2.0 |
+| AV-14 | Operational | Closed in persist-bearing stacks (persist v0.1.14+ flock); residual in verify-only multi-process stacks pending v1.9 flock guards or operator pre-bootstrap |
 
 ### 8.2 Cross-cutting residuals
 

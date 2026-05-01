@@ -711,66 +711,70 @@ if not result.integrity_valid:
 
 ---
 
-## Cohabitation Contract
+## Cohabitation Contract — Inverted-Pyramid Doctrine
 
-Operator-facing rules for hosts running multiple CIRISVerify instances. See `docs/THREAT_MODEL.md` AV-14 for the threat-model angle.
+CIRISVerify is the lowest layer of the CIRIS stack: pure cryptographic primitives, HSM access, no persistent state of its own beyond what the OS keyring backend holds. Above verify, **CIRISPersist is the lowest *stateful* library** — its `Engine::__init__` (v0.1.14+) holds a filesystem `flock` during keyring bootstrap, making cold-start safe across N concurrent consumers by construction.
 
-CIRISVerify can ship in three patterns on one host:
-1. **In-process cohabitation** — two `.so` files in one Python process (e.g., CIRISPersist statically links `ciris-verify-core` while the same process imports the `ciris-verify` PyPI wheel).
-2. **Same-host different-process** — agent and persist running as separate daemons on one box.
-3. **Multi-pod / multi-worker** — N replicas of a service against shared persistent storage.
+The doctrinal rule:
 
-### What's safe
+> **If CIRISPersist is in your dependency stack, persist owns keyring bootstrap. Verify is a happy passenger that reads the OS keyring after persist has populated it.**
+>
+> If persist is NOT in your stack (registry-only, sovereign-mode dev, lens before the §3.1 collapse), verify's bootstrap path or an operator-managed alternative serializes cold-start.
 
-- **Multiple READ-only instances under the same alias.** OS-daemon-level serialization (TPM via `/dev/tpm0`, Apple `securityd`, Android Binder, Linux Secret Service) handles concurrent access. PoB §3.2 single-key-three-roles makes "same alias = same identity" the correct conceptual model.
-- **Cross-`.so` in-process loading.** Each `.so` carries its own Rust globals (`OnceLock`, etc.) but they reach through the FFI to the same OS keyring. Caches diverge transiently but converge on next read.
+This is an inverted pyramid: higher-stack-but-stateful libraries take precedence over lower-stack libraries for shared concerns. Verify provides the primitives; persist provides the bootstrap authority when present.
 
-### What's unsafe today
+### Why this works without explicit deferral code
 
-- **Cold-start key creation race.** Two processes starting simultaneously against a fresh deployment may both hit the `key_exists()` → `false` → `generate_key()` window. Backend behavior:
+Verify's `factory::create_hardware_signer` doesn't introspect for persist. It doesn't have to. The deferral happens implicitly through the OS keyring backend:
+
+1. Persist's `Engine::__init__` acquires the flock, calls `get_platform_signer(alias)`, generates-or-loads the key, releases the flock.
+2. Any subsequent verify call (in the same process or a different one on the same host) hits `get_platform_signer(alias)` against an already-populated keyring backend → loads existing key, no creation race.
+
+The deferral is structural: persist runs first because it's the higher-stateful layer that consumers depend on for evidence persistence. By the time anything else needs to sign, the key is there.
+
+### Cohabitation patterns and which case applies
+
+| Stack composition | Bootstrap authority | Cold-start posture |
+|---|---|---|
+| **Persist + Verify** (e.g., agent + persist co-located, lens consuming persist) | Persist's `Engine::__init__` flock | All consumers race the flock; first wins, others wait, all converge on the same identity |
+| **Verify-only, single process** (registry, simple sovereign agent) | Verify's first `get_platform_signer()` call | No race possible — single process, single bootstrap |
+| **Verify-only, multi-process** (registry HA replica set without persist) | Operator-managed (`flock` in `ExecStartPre` or pre-bootstrap step) | Verify v1.9's planned `flock` guards close the race when shipped; until then, operator runbook |
+| **Multiple aliases on one host** | N/A — this is wrong | Same identity = same alias by PoB §3.2; different aliases = different identities = federation confused-deputy |
+
+### What's safe under the inverted pyramid
+
+- **Persist + N consumers** all racing through the flock — persist's contract handles this end-to-end. Each `Engine::__init__` is safe to call concurrently from any number of workers/pods/processes.
+- **Multiple READ-only verify instances** under the same alias — OS-daemon-level serialization (TPM via `/dev/tpm0`, Apple `securityd`, Android Binder, Linux Secret Service) handles concurrent access. PoB §3.2 single-key-three-roles makes "same alias = same identity" correct.
+- **Cross-`.so` in-process loading** — each `.so` carries its own Rust globals (`OnceLock`, etc.) but they reach through the FFI to the same OS keyring. Caches diverge transiently but converge on next read.
+
+### What's still unsafe (verify-only stacks without an external bootstrap step)
+
+These are cases where neither persist's flock nor an operator-managed serialization step exists:
+
+- **Cold-start key creation race in a verify-only multi-process deployment.** Two processes starting simultaneously against a fresh deployment may both hit `key_exists()` → `false` → `generate_key()`. Backend behavior:
   - Android Keystore: rejects the second create with `KeyStoreException`.
   - macOS Keychain: depends on `kSecAttrAccessible`; may silently overwrite.
   - TPM persistent handles: races on `TPM2_EvictControl`.
   - Software seed file: last-writer-wins, prior caller's cached signing key now points at deleted material.
-- **Concurrent mutation.** `generate_key`, `delete_key`, and the v1.6.3 stale-marker recovery path are not cross-process synchronized.
-- **Different aliases on one host claiming the same role.** Two distinct identities both signing as "the agent" is a federation-level confused-deputy.
+- **Concurrent mutation** (generate, delete, stale-marker recovery) without coordination.
 
-### Recommended deployment posture
+For verify-only multi-process stacks, use one of:
+- A pre-bootstrap step (CI-time or systemd `ExecStartPre`) that creates the key once before workload processes start.
+- Verify v1.9's planned filesystem `flock` guards around mutation ops (forthcoming; ~30 LoC).
+- Add persist to your stack — it solves this for free.
 
-```bash
-# systemd unit example: serialize cold-start mutation via flock
-[Service]
-ExecStartPre=/bin/sh -c 'flock -n /var/run/ciris-verify-bootstrap.lock true || sleep 5'
-ExecStart=/usr/bin/ciris-agent
-```
+### Same-alias rule (unchanged regardless of stack composition)
 
-Or with explicit ordering:
-- `bootstrap.service` runs once on first deployment, generates the key, exits.
-- `agent.service` and `persist.service` both `Requires=` and `After=bootstrap.service`. By the time they start, the key exists and they're read-only consumers.
+If your host runs **multiple primitives** that need to sign (agent, persist, lens, registry, etc.), they should use the **same alias** to share one identity. Different aliases = different identities = each primitive's federation reputation tracked separately, breaking PoB §3.2's single-key-three-roles guarantee.
 
-For multi-pod / Kubernetes:
-- Use an `initContainer` with `flock` against a shared `PersistentVolume` to serialize bootstrap.
-- Or pre-bootstrap the keyring as part of cluster setup, before scaling out workload pods.
+The default alias is `ciris_verify_key` (per `KeyGenConfig::default()`). Override only if you have a deliberate reason — and then override consistently across all co-resident primitives.
 
-### Same-alias rule
+### v1.9 / v2.0 roadmap (verify-side)
 
-If your host runs **both** an agent AND a persist daemon (or any combination), they should use the **same alias** to share one identity. Different aliases = different identities = the agent's federation reputation and the persist daemon's federation reputation are tracked separately, breaking PoB §3.2's single-key-three-roles guarantee.
+The inverted pyramid means verify-side cohabitation work is **secondary**, not primary. Persist already solves the dominant case. Remaining work:
 
-The default alias is `ciris_verify_key` (per `KeyGenConfig::default()`). Override only if you have a deliberate reason.
-
-### Owner-process rule for mutations
-
-For deployments where multiple processes coexist, designate **one owner process** for mutation operations:
-- Generation: `generate_key()` runs once during bootstrap.
-- Deletion: `delete_key()` runs only on planned identity-rotation.
-- Stale-marker recovery: only the owner clears markers if the hardware key disappeared.
-
-Other instances are read-only consumers (`sign`, `public_key`, `attestation`). This avoids the cache-divergence and TOCTOU windows entirely without requiring cross-process synchronization primitives.
-
-### v1.9 / v2.0 roadmap
-
-- v1.9: filesystem `flock`-based scope guard around mutation ops. Closes the cold-start race window across processes without requiring an out-of-process daemon. ~30 LoC.
-- v2.0: out-of-process verify daemon (singleton). All primitives become thin clients. Single identity, single cache, single anti-rollback counter. Architectural decision still open: does the agent host the daemon or connect to an external one?
+- **v1.9** — filesystem `flock`-based scope guards around verify's mutation ops (`generate_key`, `delete_key`, stale-marker recovery). Closes the verify-only multi-process race window for stacks that don't include persist. Lower priority since most production stacks have persist.
+- **v2.0** — out-of-process verify daemon would be the architecturally pure singleton, but the inverted pyramid makes a daemon less compelling: persist already provides the singleton-bootstrap guarantee at a higher layer where it's more naturally located. Likely v2.0 work is "formalize the persist-as-bootstrap-authority pattern in docs and runtime checks" rather than ship a separate daemon.
 
 ---
 
