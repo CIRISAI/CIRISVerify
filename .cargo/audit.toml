@@ -17,4 +17,11 @@ ignore = [
     # TODO: Upgrade to hickory-resolver 0.26 when API migration is feasible.
     "RUSTSEC-2026-0098",
     "RUSTSEC-2026-0099",
+    # rustls-webpki CRL parsing panic (rustls-webpki 0.101/0.103).
+    # Same root cause as 0098/0099 — pinned by hickory-resolver 0.24.
+    "RUSTSEC-2026-0104",
+    # hickory-proto O(n²) name compression CPU exhaustion. We use
+    # hickory-resolver as an outbound client only; query names come
+    # from a configured allowlist, never attacker-controlled.
+    "RUSTSEC-2026-0119",
 ]

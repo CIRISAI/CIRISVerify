@@ -82,6 +82,11 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 criterion.workspace = true
+# serde_json is pulled transitively into the dev tree on Linux via
+# secret-service, but not on macOS where the keychain backend doesn't
+# need it. Declare explicitly so StorageDescriptor serde tests build
+# on every platform.
+serde_json.workspace = true
 
 [[bench]]
 name = "storage_descriptor"

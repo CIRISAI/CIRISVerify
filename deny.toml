@@ -39,6 +39,14 @@ ignore = [
     # Reachable only when parsing malformed CRL from attacker-controlled CA.
     # We use bundled Mozilla CA certs; CRL parsing not in our hot path.
     "RUSTSEC-2026-0104",
+    # hickory-proto O(n²) name compression CPU exhaustion. Affects
+    # encode path for outgoing DNS messages with attacker-influenced
+    # name labels. We use hickory-resolver as an outbound client for
+    # registry validation only — query names come from a fixed
+    # configured allowlist (registry endpoint hostnames), never from
+    # attacker-controlled input. Fix path requires hickory-resolver 0.26
+    # which has API breaking changes; tracked alongside 0098/0099/0104.
+    "RUSTSEC-2026-0119",
 ]
 
 [licenses]
