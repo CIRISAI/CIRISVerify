@@ -773,13 +773,59 @@ jobs:
             exit 0
           fi
 
-          # Steward keys are stored as base64-encoded raw seeds in GHA secrets.
-          # Decode to tmpfs with mode 0600 so they aren't readable by other
-          # workflows or in the workspace post-cleanup.
+          # Steward keys are stored in GHA secrets. The encoding (hex vs
+          # base64 vs raw) depends on how they were set, so try each in
+          # order. Both should decode to 32 raw bytes for an ed25519 seed
+          # and 32 raw bytes for an ML-DSA-65 seed.
           mkdir -p /tmp/steward-keys
           chmod 0700 /tmp/steward-keys
-          echo "$CIRIS_BUILD_ED25519_SECRET" | base64 -d > /tmp/steward-keys/ed25519.seed
-          echo "$CIRIS_BUILD_MLDSA_SECRET" | base64 -d > /tmp/steward-keys/mldsa65.secret
+
+          decode_secret() {
+            local secret_value="$1"
+            local out_path="$2"
+            local label="$3"
+
+            # Strip whitespace + newlines first (GHA sometimes adds them).
+            local cleaned
+            cleaned=$(printf '%s' "$secret_value" | tr -d '[:space:]')
+
+            # Try hex (64 hex chars = 32 raw bytes — common steward-key format)
+            if [ "${#cleaned}" -eq 64 ] && printf '%s' "$cleaned" | grep -qE '^[0-9a-fA-F]+$'; then
+              printf '%s' "$cleaned" | xxd -r -p > "$out_path"
+              if [ "$(wc -c < "$out_path")" -eq 32 ]; then
+                echo "  $label: decoded as hex (32 bytes)"
+                return 0
+              fi
+            fi
+
+            # Try base64 (most common alt encoding)
+            if printf '%s' "$cleaned" | base64 -d > "$out_path" 2>/dev/null && [ -s "$out_path" ]; then
+              local sz
+              sz=$(wc -c < "$out_path")
+              if [ "$sz" -eq 32 ]; then
+                echo "  $label: decoded as base64 (32 bytes)"
+                return 0
+              fi
+              echo "  $label: base64 decode produced $sz bytes (expected 32)"
+            fi
+
+            # Fall back: write raw bytes (unlikely for GHA but possible if
+            # the secret was set with `gh secret set --body $(...)` from
+            # a binary source).
+            printf '%s' "$secret_value" > "$out_path"
+            local sz
+            sz=$(wc -c < "$out_path")
+            if [ "$sz" -eq 32 ]; then
+              echo "  $label: stored as raw bytes (32 bytes)"
+              return 0
+            fi
+
+            echo "  $label: ERROR — could not decode to 32 bytes (got $sz). Check secret encoding."
+            return 1
+          }
+
+          decode_secret "$CIRIS_BUILD_ED25519_SECRET" /tmp/steward-keys/ed25519.seed "ed25519"
+          decode_secret "$CIRIS_BUILD_MLDSA_SECRET" /tmp/steward-keys/mldsa65.secret "mldsa65"
           chmod 0600 /tmp/steward-keys/*
 
           # Sanity-check the crypto primitives are working before consuming
