@@ -22,7 +22,9 @@ use p256::elliptic_curve::rand_core::OsRng;
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
-use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation, SoftwareAttestation};
+use crate::types::{
+    ClassicalAlgorithm, HardwareType, PlatformAttestation, SoftwareAttestation, StorageDescriptor,
+};
 
 /// Software-only signer for development and fallback scenarios.
 ///
@@ -342,6 +344,12 @@ impl HardwareSigner for SoftwareSigner {
 
     fn current_alias(&self) -> &str {
         &self.alias
+    }
+
+    fn storage_descriptor(&self) -> StorageDescriptor {
+        StorageDescriptor::SoftwareFile {
+            path: self.key_path.clone(),
+        }
     }
 }
 
@@ -674,6 +682,22 @@ impl HardwareSigner for Ed25519SoftwareSigner {
 
     fn current_alias(&self) -> &str {
         &self.alias
+    }
+
+    fn storage_descriptor(&self) -> StorageDescriptor {
+        // Ed25519SoftwareSigner has no persistent storage of its own:
+        // the key is held in process memory after construction (via
+        // `from_bytes` from a Portal-issued seed, etc.). Persistence,
+        // if any, is provided by a wrapping layer (e.g., MutableEd25519Signer
+        // backed by SecureBlobStorage). The wrapper is the right place to
+        // describe the actual storage location; this signer reports the
+        // truth that *it* has no on-disk file.
+        //
+        // The hardware_key_marker, when set, signals "the real key is
+        // hardware-secured by an external SecureBlobStorage." That fact
+        // belongs in the wrapper's descriptor, not here, because this
+        // signer doesn't know which hardware backend the wrapper used.
+        StorageDescriptor::InMemory
     }
 }
 
@@ -2712,6 +2736,44 @@ mod tests {
 
         // Cleanup
         let _ = std::fs::remove_file(key_dir.join(format!("{}.p256.key", alias)));
+    }
+
+    #[tokio::test]
+    async fn test_software_signer_storage_descriptor() {
+        use crate::types::StorageDescriptor;
+
+        let key_dir = test_key_dir();
+        let alias = "test_descriptor";
+        let signer = SoftwareSigner::new(alias, &key_dir).unwrap();
+
+        let descriptor = signer.storage_descriptor();
+        match descriptor {
+            StorageDescriptor::SoftwareFile { path } => {
+                assert_eq!(
+                    path,
+                    key_dir.join(format!("{}.p256.key", alias)),
+                    "SoftwareSigner descriptor must point at the key file"
+                );
+            },
+            other => panic!("Expected SoftwareFile descriptor, got {:?}", other),
+        }
+        assert!(!signer.storage_descriptor().is_hardware_backed());
+
+        // Cleanup
+        let _ = std::fs::remove_file(key_dir.join(format!("{}.p256.key", alias)));
+    }
+
+    #[tokio::test]
+    async fn test_ed25519_software_signer_storage_descriptor() {
+        use crate::types::StorageDescriptor;
+
+        let signer = Ed25519SoftwareSigner::new("test_ed25519_descriptor");
+        // Ed25519SoftwareSigner is RAM-only by design — the wrapper layer
+        // (MutableEd25519Signer + SecureBlobStorage) is what provides
+        // persistence. The bare signer reports InMemory truthfully.
+        assert_eq!(signer.storage_descriptor(), StorageDescriptor::InMemory);
+        assert!(!signer.storage_descriptor().is_hardware_backed());
+        assert_eq!(signer.storage_descriptor().disk_path(), None);
     }
 
     #[tokio::test]

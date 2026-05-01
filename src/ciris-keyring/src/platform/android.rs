@@ -8,7 +8,9 @@ use tracing::{debug, error, info, warn};
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
-use crate::types::{AndroidAttestation, ClassicalAlgorithm, HardwareType, PlatformAttestation};
+use crate::types::{
+    AndroidAttestation, ClassicalAlgorithm, HardwareType, PlatformAttestation, StorageDescriptor,
+};
 
 #[cfg(target_os = "android")]
 use std::sync::OnceLock;
@@ -955,6 +957,30 @@ impl HardwareSigner for AndroidKeystoreSigner {
 
     fn current_alias(&self) -> &str {
         &self.alias
+    }
+
+    fn storage_descriptor(&self) -> StorageDescriptor {
+        // The signing key lives entirely inside the Android Keystore
+        // (TEE-backed for `AndroidKeystore`, dedicated SE for
+        // `AndroidStrongbox`). There is no caller-visible file: the
+        // Keystore exposes its keys by alias, not as on-disk artifacts.
+        //
+        // Note: this is the bare AndroidKeystoreSigner (ECDSA P-256
+        // directly in the Keystore). The hybrid AES-wrapped Ed25519
+        // pattern (AndroidKeystoreEd25519Signer below) is a different
+        // story — it persists an encrypted blob on disk that's useless
+        // without the Keystore-resident AES key. If that signer ever
+        // implements HardwareSigner, its descriptor must report the
+        // wrapped-blob path as `blob_path`.
+        let hardware_type = if self.use_strongbox {
+            HardwareType::AndroidStrongbox
+        } else {
+            HardwareType::AndroidKeystore
+        };
+        StorageDescriptor::Hardware {
+            hardware_type,
+            blob_path: None,
+        }
     }
 }
 

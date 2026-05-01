@@ -47,7 +47,7 @@ use std::sync::Mutex;
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
-use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation};
+use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation, StorageDescriptor};
 
 #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
 use crate::types::{TpmAttestation, TpmQuoteData};
@@ -700,6 +700,24 @@ impl HardwareSigner for TpmSigner {
 
     fn current_alias(&self) -> &str {
         &self.alias
+    }
+
+    fn storage_descriptor(&self) -> StorageDescriptor {
+        // The TpmSigner's signing key lives inside the TPM itself —
+        // either at a persistent handle (survives reboot) or as a
+        // transient context-bound key. Either way, there is no
+        // caller-visible file: blob_path = None.
+        //
+        // Note: this signer signs with an in-TPM ECDSA key directly.
+        // The TPM-wrapped Ed25519 stack (TpmWrappedEd25519Signer) is a
+        // different story — it stores a `.tpm` envelope on disk and
+        // would report blob_path = Some(<envelope path>). That signer
+        // doesn't currently impl HardwareSigner; if it ever does, its
+        // descriptor must point at the envelope file.
+        StorageDescriptor::Hardware {
+            hardware_type: self.hardware_type(),
+            blob_path: None,
+        }
     }
 }
 

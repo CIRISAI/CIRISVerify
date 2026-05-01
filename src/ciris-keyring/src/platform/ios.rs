@@ -12,7 +12,9 @@ use std::sync::Mutex;
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
-use crate::types::{ClassicalAlgorithm, HardwareType, IosAttestation, PlatformAttestation};
+use crate::types::{
+    ClassicalAlgorithm, HardwareType, IosAttestation, PlatformAttestation, StorageDescriptor,
+};
 
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 use core_foundation::base::TCFType;
@@ -642,6 +644,30 @@ impl HardwareSigner for SecureEnclaveSigner {
 
     fn current_alias(&self) -> &str {
         &self.key_tag
+    }
+
+    fn storage_descriptor(&self) -> StorageDescriptor {
+        // The Secure Enclave keeps the private key entirely on-chip
+        // (T2 / Apple Silicon SE on macOS, dedicated SE on iOS). The
+        // key is referenced by tag in the Keychain but is never
+        // exposed as a file or extractable blob.
+        //
+        // Note: this is the bare SecureEnclaveSigner (P-256 in SE
+        // directly). The hybrid SE-ECIES wrapped Ed25519 stack
+        // (SecureEnclaveEd25519Signer below) is a different story —
+        // it persists an ECIES-encrypted blob that's useless without
+        // the SE-resident P-256 key. If that signer ever implements
+        // HardwareSigner, its descriptor must report the wrapped-blob
+        // path as `blob_path`.
+        let hardware_type = if cfg!(target_os = "macos") {
+            HardwareType::MacOsSecureEnclave
+        } else {
+            HardwareType::IosSecureEnclave
+        };
+        StorageDescriptor::Hardware {
+            hardware_type,
+            blob_path: None,
+        }
     }
 }
 

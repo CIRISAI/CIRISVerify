@@ -3,6 +3,8 @@
 //! These types are designed to be compatible with Veilid's CryptoKind pattern,
 //! using tagged enums for algorithm identification.
 
+use std::path::{Path, PathBuf};
+
 use serde::{Deserialize, Serialize};
 
 /// Classical cryptographic algorithm for hardware-bound signatures.
@@ -235,6 +237,139 @@ pub struct PcrValue {
     pub digest: Vec<u8>,
 }
 
+/// Where a signer's identity material is stored.
+///
+/// This descriptor lets callers detect ephemeral storage at boot time
+/// (e.g., container writable layer, `/tmp`) before identity churn starts
+/// silently breaking longitudinal scoring. PoB §2.4's S-factor decay window
+/// (30 days for trace-bearing primitives) cannot accumulate behind an
+/// unstable identity, so an identity that silently relocates each restart
+/// produces zero anti-Sybil weight by construction.
+///
+/// **Stability contract.** A signer's storage location must be stable
+/// across the score window the primitive participates in. A descriptor
+/// pointing at known-ephemeral storage (`/tmp`, `/var/cache`, container
+/// writable layer without a mounted volume) is a configuration bug, not
+/// a normal mode. Every `HardwareSigner` impl declares its descriptor
+/// through `HardwareSigner::storage_descriptor()`; consumers (boot-time
+/// logging, `/health` reporters, `--strict-storage` flags) decide what
+/// to do about it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum StorageDescriptor {
+    /// Hardware-protected key.
+    ///
+    /// `blob_path` is informational. Some hardware backends (Android
+    /// Keystore via `SecureBlobStorage`, TPM-wrapped Ed25519) write a
+    /// hardware-wrapped envelope to disk. The envelope is useless without
+    /// the underlying HSM, so its presence does NOT imply ephemerality
+    /// risk. Absence (file deleted) means "key is gone," not "ephemeral
+    /// storage." Other backends (iOS Secure Enclave, Windows Platform
+    /// Crypto Provider) keep the key entirely inside the HSM and report
+    /// `blob_path: None`.
+    Hardware {
+        /// Hardware backend type.
+        hardware_type: HardwareType,
+        /// Path to a hardware-wrapped envelope file, if the backend
+        /// stores one. `None` means the key lives entirely inside the HSM.
+        blob_path: Option<PathBuf>,
+    },
+    /// Software-protected seed file on the local filesystem.
+    ///
+    /// This is the case a "warn on ephemeral path" heuristic must match
+    /// against. If `path` is in `/tmp`, `/var/cache`, or a container
+    /// writable layer without a mounted volume, the identity will not
+    /// persist across restarts and the failure mode that motivated this
+    /// type (lens-scrub key churn) reproduces.
+    SoftwareFile {
+        /// Filesystem path to the seed.
+        path: PathBuf,
+    },
+    /// OS-managed keyring (secret-service, Keychain, DPAPI).
+    ///
+    /// Has its own ephemerality model. A user-scope keyring entry
+    /// disappears when the user session ends and is unsuitable for
+    /// longitudinal-score primitives. System-scope entries survive logout
+    /// and reboot but typically require elevated privileges to write.
+    SoftwareOsKeyring {
+        /// Backend identifier (e.g., `"secret-service"`, `"keychain"`,
+        /// `"dpapi"`).
+        backend: String,
+        /// Keyring scope.
+        scope: KeyringScope,
+    },
+    /// Key material is held only in process memory.
+    ///
+    /// The signer has no persistent storage of its own. A higher-level
+    /// wrapper (e.g., a `SecureBlobStorage`-backed manager) is expected
+    /// to provide persistence. If the signer is used standalone, the key
+    /// dies with the process.
+    ///
+    /// This is structurally distinct from `SoftwareFile`: it's not
+    /// ephemeral by accident, it's RAM-only by design (Portal-imported
+    /// keys, dev/test scenarios). A primitive consuming a bare
+    /// `InMemory` signer for longitudinal-score purposes is a bug.
+    InMemory,
+}
+
+/// Scope of an OS keyring entry.
+///
+/// Distinguishes user-session-bound storage (which disappears at logout)
+/// from system-scoped storage (which survives reboot).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyringScope {
+    /// User-session-scoped. Disappears at logout / session end.
+    /// NOT suitable for longitudinal-score primitives.
+    User,
+    /// System-scoped. Survives logout and reboot.
+    System,
+    /// Backend does not expose a scope distinction; treat as unknown.
+    Unknown,
+}
+
+impl StorageDescriptor {
+    /// Whether the underlying key is protected by a hardware security
+    /// module.
+    ///
+    /// Returns `true` only for the `Hardware` variant. Both software
+    /// variants return `false`, regardless of whether the seed is on
+    /// disk or in an OS keyring.
+    #[must_use]
+    pub fn is_hardware_backed(&self) -> bool {
+        matches!(self, Self::Hardware { .. })
+    }
+
+    /// Filesystem path the descriptor exposes, if any.
+    ///
+    /// - `Hardware`: returns the wrapped-envelope path (`blob_path`) if
+    ///   the backend stores one. The envelope is useless without the
+    ///   HSM, so this path's directory is not subject to ephemerality
+    ///   heuristics.
+    /// - `SoftwareFile`: returns the seed path. This IS the path that
+    ///   ephemeral-storage heuristics must check.
+    /// - `SoftwareOsKeyring`, `InMemory`: always return `None`.
+    #[must_use]
+    pub fn disk_path(&self) -> Option<&Path> {
+        match self {
+            Self::Hardware { blob_path, .. } => blob_path.as_deref(),
+            Self::SoftwareFile { path } => Some(path.as_path()),
+            Self::SoftwareOsKeyring { .. } | Self::InMemory => None,
+        }
+    }
+
+    /// Hardware backend type, if the descriptor is hardware-backed.
+    ///
+    /// Returns `None` for both software variants.
+    #[must_use]
+    pub fn hardware_type(&self) -> Option<HardwareType> {
+        match self {
+            Self::Hardware { hardware_type, .. } => Some(*hardware_type),
+            _ => None,
+        }
+    }
+}
+
 /// Software-only attestation (minimal).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SoftwareAttestation {
@@ -280,5 +415,142 @@ mod tests {
         assert!(HardwareType::TpmDiscrete.supports_professional_license());
         assert!(HardwareType::TpmFirmware.supports_professional_license());
         assert!(!HardwareType::SoftwareOnly.supports_professional_license());
+    }
+
+    #[test]
+    fn test_storage_descriptor_hardware_backed() {
+        let hw = StorageDescriptor::Hardware {
+            hardware_type: HardwareType::TpmFirmware,
+            blob_path: Some(PathBuf::from("/var/lib/ciris/key.tpm")),
+        };
+        let sw = StorageDescriptor::SoftwareFile {
+            path: PathBuf::from("/var/lib/ciris/key.bin"),
+        };
+        let kr = StorageDescriptor::SoftwareOsKeyring {
+            backend: "secret-service".to_string(),
+            scope: KeyringScope::User,
+        };
+
+        assert!(hw.is_hardware_backed());
+        assert!(!sw.is_hardware_backed());
+        assert!(!kr.is_hardware_backed());
+    }
+
+    #[test]
+    fn test_storage_descriptor_disk_path() {
+        let hw_with_blob = StorageDescriptor::Hardware {
+            hardware_type: HardwareType::TpmFirmware,
+            blob_path: Some(PathBuf::from("/var/lib/ciris/key.tpm")),
+        };
+        let hw_no_blob = StorageDescriptor::Hardware {
+            hardware_type: HardwareType::IosSecureEnclave,
+            blob_path: None,
+        };
+        let sw = StorageDescriptor::SoftwareFile {
+            path: PathBuf::from("/var/lib/ciris/key.bin"),
+        };
+        let kr = StorageDescriptor::SoftwareOsKeyring {
+            backend: "keychain".to_string(),
+            scope: KeyringScope::System,
+        };
+
+        assert_eq!(
+            hw_with_blob.disk_path(),
+            Some(Path::new("/var/lib/ciris/key.tpm"))
+        );
+        assert_eq!(hw_no_blob.disk_path(), None);
+        assert_eq!(sw.disk_path(), Some(Path::new("/var/lib/ciris/key.bin")));
+        assert_eq!(kr.disk_path(), None);
+    }
+
+    #[test]
+    fn test_storage_descriptor_hardware_type_accessor() {
+        let hw = StorageDescriptor::Hardware {
+            hardware_type: HardwareType::AndroidStrongbox,
+            blob_path: None,
+        };
+        let sw = StorageDescriptor::SoftwareFile {
+            path: PathBuf::from("/tmp/x"),
+        };
+
+        assert_eq!(hw.hardware_type(), Some(HardwareType::AndroidStrongbox));
+        assert_eq!(sw.hardware_type(), None);
+    }
+
+    #[test]
+    fn test_storage_descriptor_serde_roundtrip() {
+        // Hardware variant with blob path
+        let hw = StorageDescriptor::Hardware {
+            hardware_type: HardwareType::TpmDiscrete,
+            blob_path: Some(PathBuf::from("/var/lib/ciris/key.tpm")),
+        };
+        let json = serde_json::to_string(&hw).unwrap();
+        let back: StorageDescriptor = serde_json::from_str(&json).unwrap();
+        assert_eq!(hw, back);
+
+        // SoftwareFile variant
+        let sw = StorageDescriptor::SoftwareFile {
+            path: PathBuf::from("/home/u/.local/share/ciris/key.bin"),
+        };
+        let json = serde_json::to_string(&sw).unwrap();
+        let back: StorageDescriptor = serde_json::from_str(&json).unwrap();
+        assert_eq!(sw, back);
+
+        // SoftwareOsKeyring variant with all scopes
+        for scope in [
+            KeyringScope::User,
+            KeyringScope::System,
+            KeyringScope::Unknown,
+        ] {
+            let kr = StorageDescriptor::SoftwareOsKeyring {
+                backend: "secret-service".to_string(),
+                scope,
+            };
+            let json = serde_json::to_string(&kr).unwrap();
+            let back: StorageDescriptor = serde_json::from_str(&json).unwrap();
+            assert_eq!(kr, back);
+        }
+    }
+
+    #[test]
+    fn test_storage_descriptor_in_memory() {
+        let im = StorageDescriptor::InMemory;
+        assert!(!im.is_hardware_backed());
+        assert_eq!(im.disk_path(), None);
+        assert_eq!(im.hardware_type(), None);
+
+        let json = serde_json::to_string(&im).unwrap();
+        let back: StorageDescriptor = serde_json::from_str(&json).unwrap();
+        assert_eq!(im, back);
+    }
+
+    #[test]
+    fn test_storage_descriptor_serde_tag_format() {
+        // Verify the JSON tag format matches what FFI consumers expect:
+        // {"kind": "hardware", "hardware_type": ..., "blob_path": ...}
+        let hw = StorageDescriptor::Hardware {
+            hardware_type: HardwareType::TpmFirmware,
+            blob_path: None,
+        };
+        let json: serde_json::Value = serde_json::to_value(&hw).unwrap();
+        assert_eq!(json["kind"], "hardware");
+
+        let sw = StorageDescriptor::SoftwareFile {
+            path: PathBuf::from("/x"),
+        };
+        let json: serde_json::Value = serde_json::to_value(&sw).unwrap();
+        assert_eq!(json["kind"], "software_file");
+
+        let kr = StorageDescriptor::SoftwareOsKeyring {
+            backend: "dpapi".to_string(),
+            scope: KeyringScope::Unknown,
+        };
+        let json: serde_json::Value = serde_json::to_value(&kr).unwrap();
+        assert_eq!(json["kind"], "software_os_keyring");
+        assert_eq!(json["scope"], "unknown");
+
+        let im = StorageDescriptor::InMemory;
+        let json: serde_json::Value = serde_json::to_value(&im).unwrap();
+        assert_eq!(json["kind"], "in_memory");
     }
 }

@@ -69,8 +69,8 @@ pub mod keyring_storage;
 pub use error::KeyringError;
 pub use signer::{HardwareSigner, KeyGenConfig};
 pub use types::{
-    AndroidAttestation, ClassicalAlgorithm, HardwareType, IosAttestation, PlatformAttestation,
-    SoftwareAttestation, TpmAttestation,
+    AndroidAttestation, ClassicalAlgorithm, HardwareType, IosAttestation, KeyringScope,
+    PlatformAttestation, SoftwareAttestation, StorageDescriptor, TpmAttestation,
 };
 
 pub use platform::{

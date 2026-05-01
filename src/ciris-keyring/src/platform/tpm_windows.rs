@@ -12,7 +12,9 @@ use std::sync::Mutex;
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
-use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation, TpmAttestation};
+use crate::types::{
+    ClassicalAlgorithm, HardwareType, PlatformAttestation, StorageDescriptor, TpmAttestation,
+};
 
 #[cfg(all(feature = "tpm-windows", target_os = "windows"))]
 use windows::{
@@ -649,6 +651,24 @@ impl HardwareSigner for WindowsTpmSigner {
 
     fn current_alias(&self) -> &str {
         &self.alias
+    }
+
+    fn storage_descriptor(&self) -> StorageDescriptor {
+        // Windows Platform Crypto Provider keeps the signing key inside
+        // the TPM, addressed by name through NCrypt. There is no
+        // caller-visible file: PCP exposes keys by name, not as on-disk
+        // artifacts.
+        //
+        // We always report `TpmFirmware` because PCP-accessible keys are
+        // typically backed by the firmware TPM that ships with the CPU
+        // (Microsoft does not surface the discrete-vs-firmware
+        // distinction through the NCrypt API). If a host has both a
+        // firmware and discrete TPM, the OS picks one for PCP; we
+        // cannot distinguish them at this layer.
+        StorageDescriptor::Hardware {
+            hardware_type: HardwareType::TpmFirmware,
+            blob_path: None,
+        }
     }
 }
 

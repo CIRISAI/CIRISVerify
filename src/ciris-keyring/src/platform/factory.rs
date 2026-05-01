@@ -225,67 +225,99 @@ pub fn create_hardware_signer(
         });
     }
 
-    #[cfg(target_os = "android")]
-    {
-        use super::AndroidKeystoreSigner;
-        let prefer_strongbox = true; // Always prefer if available
-        return Ok(Box::new(AndroidKeystoreSigner::new(
-            alias,
-            prefer_strongbox,
-        )?));
-    }
-
-    #[cfg(target_os = "ios")]
-    {
-        // Simulator: no Secure Enclave, fall through to software signer
-        #[cfg(not(target_abi = "sim"))]
+    let signer: Box<dyn HardwareSigner> = {
+        #[cfg(target_os = "android")]
         {
-            use super::SecureEnclaveSigner;
-            return Ok(Box::new(SecureEnclaveSigner::new(alias)?));
+            use super::AndroidKeystoreSigner;
+            let prefer_strongbox = true; // Always prefer if available
+            Box::new(AndroidKeystoreSigner::new(alias, prefer_strongbox)?)
         }
-    }
 
-    #[cfg(any(target_os = "linux", target_os = "windows"))]
-    {
-        if capabilities.has_hardware {
-            use super::TpmSigner;
-            match TpmSigner::new(alias, None) {
-                Ok(signer) => {
-                    tracing::info!("Using TPM signer for hardware security");
-                    return Ok(Box::new(signer));
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        "TPM initialization failed ({}), falling back to software signer",
-                        e
-                    );
-                    // Fall through to software signer below
-                },
+        #[cfg(target_os = "ios")]
+        {
+            #[cfg(not(target_abi = "sim"))]
+            {
+                use super::SecureEnclaveSigner;
+                Box::new(SecureEnclaveSigner::new(alias)?)
+            }
+            #[cfg(target_abi = "sim")]
+            {
+                // Simulator: no Secure Enclave, fall through to software
+                fallback_software_signer(alias, require_hardware)?
             }
         }
-    }
 
-    #[cfg(target_os = "macos")]
-    {
-        if capabilities.has_hardware {
-            use super::SecureEnclaveSigner;
-            match SecureEnclaveSigner::new(alias) {
-                Ok(signer) => {
-                    tracing::info!("Using Secure Enclave signer on macOS");
-                    return Ok(Box::new(signer));
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        "macOS: Secure Enclave not available ({}), falling back to software signer",
-                        e
-                    );
-                    // Fall through to software signer below
-                },
+        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        {
+            if capabilities.has_hardware {
+                use super::TpmSigner;
+                match TpmSigner::new(alias, None) {
+                    Ok(signer) => {
+                        tracing::info!("Using TPM signer for hardware security");
+                        Box::new(signer) as Box<dyn HardwareSigner>
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            "TPM initialization failed ({}), falling back to software signer",
+                            e
+                        );
+                        fallback_software_signer(alias, require_hardware)?
+                    },
+                }
+            } else {
+                fallback_software_signer(alias, require_hardware)?
             }
         }
-    }
 
-    // Fallback to software signer
+        #[cfg(target_os = "macos")]
+        {
+            if capabilities.has_hardware {
+                use super::SecureEnclaveSigner;
+                match SecureEnclaveSigner::new(alias) {
+                    Ok(signer) => {
+                        tracing::info!("Using Secure Enclave signer on macOS");
+                        Box::new(signer) as Box<dyn HardwareSigner>
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            "macOS: Secure Enclave not available ({}), falling back to software signer",
+                            e
+                        );
+                        fallback_software_signer(alias, require_hardware)?
+                    },
+                }
+            } else {
+                fallback_software_signer(alias, require_hardware)?
+            }
+        }
+
+        #[cfg(not(any(
+            target_os = "android",
+            target_os = "ios",
+            target_os = "linux",
+            target_os = "windows",
+            target_os = "macos"
+        )))]
+        {
+            fallback_software_signer(alias, require_hardware)?
+        }
+    };
+
+    log_storage_descriptor(signer.as_ref());
+
+    Ok(signer)
+}
+
+/// Construct a software signer fallback or fail if hardware was required.
+///
+/// Some target/feature combinations (Android non-sim, iOS non-sim) never
+/// reach this path — `dead_code` is permitted so the function is
+/// available on the platforms that DO need it without per-target gating.
+#[allow(dead_code)]
+fn fallback_software_signer(
+    alias: &str,
+    require_hardware: bool,
+) -> Result<Box<dyn HardwareSigner>, KeyringError> {
     if require_hardware {
         return Err(KeyringError::HardwareNotAvailable {
             reason: "No hardware security module available on this platform".into(),
@@ -298,6 +330,25 @@ pub fn create_hardware_signer(
         "Using software signer (no hardware security module)"
     );
     Ok(Box::new(SoftwareSigner::new(alias, key_dir)?))
+}
+
+/// Log the storage descriptor of a freshly-constructed signer.
+///
+/// This makes the failure mode that motivated `StorageDescriptor`
+/// (silent ephemeral storage → identity churn → PoB §2.4 S-factor decay
+/// window perpetually resets → anti-Sybil weight zero) visible at boot
+/// in any deployment running v1.7+, even before consumers wire the
+/// descriptor into their own diagnostics.
+fn log_storage_descriptor(signer: &dyn HardwareSigner) {
+    let descriptor = signer.storage_descriptor();
+    tracing::info!(
+        alias = %signer.current_alias(),
+        hardware_type = ?signer.hardware_type(),
+        descriptor = ?descriptor,
+        is_hardware_backed = descriptor.is_hardware_backed(),
+        disk_path = ?descriptor.disk_path(),
+        "create_hardware_signer: storage descriptor declared"
+    );
 }
 
 /// Create a software-only signer (for testing or community tier).

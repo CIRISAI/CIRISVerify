@@ -7,7 +7,7 @@
 use async_trait::async_trait;
 
 use crate::error::KeyringError;
-use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation};
+use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation, StorageDescriptor};
 
 /// Configuration for key generation.
 #[derive(Debug, Clone)]
@@ -243,6 +243,30 @@ pub trait HardwareSigner: Send + Sync {
 
     /// Get the key alias currently in use.
     fn current_alias(&self) -> &str;
+
+    /// Declare where this signer stores its identity material.
+    ///
+    /// **No default implementation** — every signer variant declares its
+    /// own descriptor. This makes the contract part of the trait:
+    /// future variants are forced to answer "where does my seed live?"
+    /// before they can compile.
+    ///
+    /// The descriptor is intended for boot-time logging,
+    /// `--strict-storage` checks, and `/health` reporters that need to
+    /// distinguish hardware-protected keys from software seeds and from
+    /// OS-keyring entries with their own ephemerality model.
+    ///
+    /// **Stability contract.** A signer's storage location must be
+    /// stable across the score window the primitive participates in.
+    /// PoB §2.4's S-factor decay window (30 days for trace-bearing
+    /// primitives) cannot accumulate behind an unstable identity, so a
+    /// descriptor pointing at known-ephemeral storage (`/tmp`,
+    /// `/var/cache`, container writable layer without a mounted volume)
+    /// is a configuration bug, not a normal mode.
+    ///
+    /// Consumers decide what to do with this information; CIRISVerify
+    /// surfaces it but does not refuse to operate on the basis of it.
+    fn storage_descriptor(&self) -> StorageDescriptor;
 }
 
 #[cfg(test)]

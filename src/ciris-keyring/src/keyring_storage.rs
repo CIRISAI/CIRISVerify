@@ -19,7 +19,9 @@ use async_trait::async_trait;
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
-use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation};
+use crate::types::{
+    ClassicalAlgorithm, HardwareType, KeyringScope, PlatformAttestation, StorageDescriptor,
+};
 
 /// Keyring-backed signer that uses OS keychains for key storage
 /// and provides software-based signing.
@@ -204,6 +206,36 @@ impl HardwareSigner for KeyringStorageSigner {
 
     fn current_alias(&self) -> &str {
         &self.alias
+    }
+
+    fn storage_descriptor(&self) -> StorageDescriptor {
+        // The `keyring` crate dispatches to the platform's native OS
+        // keyring at runtime: secret-service on Linux, Keychain on
+        // macOS, Credential Manager (DPAPI) on Windows. We report the
+        // backend by target_os so consumers can apply backend-specific
+        // ephemerality reasoning (a user-session secret-service entry
+        // disappears at logout; a Keychain "login" item likewise; only
+        // system-scoped entries survive reboot, and the keyring crate
+        // does not expose scope distinctly per entry).
+        //
+        // Scope is reported as Unknown: the underlying keyring crate
+        // does not surface user-vs-system scope on a per-entry basis.
+        // Consumers needing certainty must inspect the OS configuration
+        // independently (e.g., gnome-keyring vs system-scope SecretService
+        // collection on Linux).
+        let backend = if cfg!(target_os = "linux") {
+            "secret-service"
+        } else if cfg!(target_os = "macos") {
+            "keychain"
+        } else if cfg!(target_os = "windows") {
+            "dpapi"
+        } else {
+            "keyring"
+        };
+        StorageDescriptor::SoftwareOsKeyring {
+            backend: backend.to_string(),
+            scope: KeyringScope::Unknown,
+        }
     }
 }
 
