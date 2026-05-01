@@ -452,6 +452,109 @@ impl RegistryClient {
         Ok(manifest)
     }
 
+    /// Fetch a signed function manifest published by any CIRIS PoB peer.
+    ///
+    /// This is the v1.8.4+ Path A read endpoint (per
+    /// `CIRISRegistry/docs/TRUST_CONTRACT.md` shipped at `9f8e1d7`).
+    /// Hits `GET /v1/verify/function-manifest/{ver}/{target}?project=ciris-<name>`,
+    /// no auth — public read of registry-served manifests.
+    ///
+    /// Returns the legacy `FunctionManifest` shape regardless of which
+    /// POST endpoint produced the underlying record. Inspect
+    /// `manifest.signature.key_id` to distinguish:
+    ///
+    /// - `key_id == "<primitive>-steward-YYYY"` → original CI signature
+    ///   preserved (new POST endpoint), trust chain to that primitive's
+    ///   steward key.
+    /// - `key_id` matches the registry's own steward → legacy POST path,
+    ///   registry-resigned, trust chain only to registry's pubkey.
+    ///
+    /// # Arguments
+    ///
+    /// - `project` — primitive's project name (`"ciris-verify"`,
+    ///   `"ciris-persist"`, etc. — must match the slug rule
+    ///   `^[a-z][a-z0-9-]{0,63}$` enforced server-side).
+    /// - `version` — binary version string (e.g., `"1.8.4"`).
+    /// - `target` — target triple as the runtime returns it (e.g.,
+    ///   `"x86_64-unknown-linux-gnu"`).
+    ///
+    /// # Errors
+    ///
+    /// `VerifyError::HttpsError` on transport failure or non-2xx response.
+    /// Caller is responsible for verifying the returned manifest's
+    /// signature against the appropriate trusted public key (see
+    /// `function_integrity::verify_manifest_signature`).
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    #[instrument(skip(self), fields(project = %project, version = %version, target = %target))]
+    pub async fn get_signed_function_manifest(
+        &self,
+        project: &str,
+        version: &str,
+        target: &str,
+    ) -> Result<crate::security::function_integrity::FunctionManifest, VerifyError> {
+        let url = format!(
+            "{}/v1/verify/function-manifest/{}/{}?project={}",
+            self.base_url, version, target, project
+        );
+        debug!("Fetching signed function manifest from {}", url);
+
+        let response = self
+            .client
+            .get(&url)
+            .send()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Signed function manifest request failed: {}", e),
+            })?;
+
+        if !response.status().is_success() {
+            return Err(VerifyError::HttpsError {
+                message: format!(
+                    "Signed function manifest HTTP error: {} (project={}, version={}, target={})",
+                    response.status(),
+                    project,
+                    version,
+                    target
+                ),
+            });
+        }
+
+        let manifest = response
+            .json::<crate::security::function_integrity::FunctionManifest>()
+            .await
+            .map_err(|e| VerifyError::HttpsError {
+                message: format!("Failed to parse signed function manifest: {}", e),
+            })?;
+
+        info!(
+            project = %project,
+            version = %manifest.binary_version,
+            target = %manifest.target,
+            function_count = manifest.functions.len(),
+            key_id = %manifest.signature.key_id,
+            "Fetched signed function manifest from registry"
+        );
+
+        Ok(manifest)
+    }
+
+    /// Mobile blocking variant of `get_signed_function_manifest`.
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    #[instrument(skip(self), fields(project = %project, version = %version, target = %target))]
+    pub async fn get_signed_function_manifest(
+        &self,
+        project: &str,
+        version: &str,
+        target: &str,
+    ) -> Result<crate::security::function_integrity::FunctionManifest, VerifyError> {
+        let url = format!(
+            "{}/v1/verify/function-manifest/{}/{}?project={}",
+            self.base_url, version, target, project
+        );
+        debug!("Fetching signed function manifest from {} (mobile)", url);
+        mobile_http::get_json(&self.agent, &url)
+    }
+
     /// List available target triples for function manifests.
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self), fields(version = %version))]
@@ -1707,5 +1810,63 @@ mod tests {
         )
         .unwrap();
         assert_eq!(client.base_url, "https://api.registry.ciris-services-1.ai");
+    }
+
+    #[tokio::test]
+    async fn test_signed_function_manifest_url_shape() {
+        // Run a one-off mock server that records the URL hit, returns 404.
+        // Confirms get_signed_function_manifest constructs the documented
+        // Path A URL: /v1/verify/function-manifest/{ver}/{target}?project=ciris-<name>
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let received_url: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+        let received_url_clone = received_url.clone();
+
+        let server = tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let (read_half, mut write_half) = sock.split();
+            let mut reader = BufReader::new(read_half);
+            let mut request_line = String::new();
+            reader.read_line(&mut request_line).await.unwrap();
+            // Read remaining headers to drain (don't care about content)
+            loop {
+                let mut header = String::new();
+                reader.read_line(&mut header).await.unwrap();
+                if header == "\r\n" || header.is_empty() {
+                    break;
+                }
+            }
+            *received_url_clone.lock().unwrap() = Some(request_line.trim().to_string());
+            write_half
+                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                .await
+                .unwrap();
+        });
+
+        let client =
+            RegistryClient::new(&format!("http://{}", addr), Duration::from_secs(5)).unwrap();
+
+        // Should hit our mock + receive 404. We just want to inspect the URL it constructed.
+        let _ = client
+            .get_signed_function_manifest("ciris-verify", "1.8.4", "x86_64-unknown-linux-gnu")
+            .await;
+
+        server.await.unwrap();
+
+        let url = received_url
+            .lock()
+            .unwrap()
+            .clone()
+            .expect("server received a request");
+        assert!(
+            url.contains(
+                "GET /v1/verify/function-manifest/1.8.4/x86_64-unknown-linux-gnu?project=ciris-verify"
+            ),
+            "URL did not match documented Path A shape: got '{url}'"
+        );
     }
 }

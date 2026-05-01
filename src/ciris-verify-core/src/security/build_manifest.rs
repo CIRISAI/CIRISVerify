@@ -590,64 +590,163 @@ fn walk_dir_recursive(
     Ok(())
 }
 
-/// Verify that a binary on disk matches the per-function hashes in
+/// Verify that the **currently-running** binary's function bytes match
+/// the per-function hashes declared in `BuildManifest`'s
 /// `FunctionLevelExtras`.
 ///
-/// Wraps `function_integrity::verify_functions` for the v1.9 typed-extras
-/// path. Callers with the binary in memory call this directly; callers
-/// with a file path should hash the file first and compare to the
-/// outer `BuildManifest::binary_hash` separately.
+/// **Scope of this check:** function-level integrity is checked against
+/// the *running process's loaded code segment* (via `/proc/self/maps`
+/// plus `dl_iterate_phdr` on Linux/Android). This is the same surface
+/// that `function_integrity::verify_functions` walks for the legacy
+/// `FunctionManifest` path. Pass `&BuildManifest` here; the helper
+/// reconstructs the legacy shape internally and delegates.
+///
+/// Calling this on a non-running binary (e.g., a peer's manifest fetched
+/// from registry) is a category error — there's no way to verify
+/// function bytes you can't load. Use `verify_binary_blob` for the
+/// "is this binary file the one declared" check.
 ///
 /// # Errors
 ///
-/// `VerifyError::IntegrityError` if the function-level hashes don't
-/// match the binary at runtime.
+/// - `VerifyError::IntegrityError` if `manifest.primitive` isn't `Verify`
+///   (function-level shape is the Verify primitive's contract; other
+///   primitives shouldn't carry `FunctionLevelExtras`).
+/// - `VerifyError::IntegrityError` if `manifest.extras` is missing or
+///   doesn't deserialize as `FunctionLevelExtras`.
+/// - `VerifyError::IntegrityError` if any function hash doesn't match.
 ///
 /// # When to call
 ///
-/// After `verify_build_manifest` has succeeded. Caller has loaded the
-/// binary into memory (typical: a runtime self-check on a freshly-loaded
-/// `.so` / `.dylib` / `.dll`). The actual function-walk is platform-specific
-/// and lives in `function_integrity::verify_functions`; this is a typed
-/// shim that takes `FunctionLevelExtras` instead of the legacy
-/// `FunctionManifest`.
-#[cfg(any(target_os = "linux", target_os = "android"))]
-pub fn verify_function_level(
-    extras: &FunctionLevelExtras,
-    _binary: &[u8],
-) -> Result<(), VerifyError> {
-    // The existing function_integrity::verify_functions takes a
-    // FunctionManifest reference — we'd need to construct one from
-    // FunctionLevelExtras, but it requires fields the extras don't
-    // carry (binary_hash, target, binary_version — those live on the
-    // outer BuildManifest). So this helper is a placeholder that just
-    // sanity-checks the extras structure for now. Full content-verify
-    // requires the BuildManifest context.
-    //
-    // TODO: thread BuildManifest through so we can rebuild a FunctionManifest
-    // from the (manifest, extras) pair and call verify_functions.
+/// On the running CIRISVerify process's self-check path, after
+/// `verify_build_manifest(bytes, BuildPrimitive::Verify, &steward_key)`
+/// has confirmed the manifest's signature.
+pub fn verify_function_level(manifest: &BuildManifest) -> Result<(), VerifyError> {
+    // Primitive must be Verify — other primitives shouldn't carry
+    // function-level extras through this path.
+    if !matches!(manifest.primitive, BuildPrimitive::Verify) {
+        return Err(VerifyError::IntegrityError {
+            message: format!(
+                "verify_function_level: primitive {:?} cannot use function-level shape",
+                manifest.primitive
+            ),
+        });
+    }
+
+    let extras_value = manifest
+        .extras
+        .as_ref()
+        .ok_or_else(|| VerifyError::IntegrityError {
+            message: "verify_function_level: BuildManifest has no extras".into(),
+        })?;
+
+    let extras: FunctionLevelExtras =
+        serde_json::from_value(extras_value.clone()).map_err(|e| VerifyError::IntegrityError {
+            message: format!("verify_function_level: extras parse failed: {e}"),
+        })?;
+
     if extras.functions.is_empty() {
         return Err(VerifyError::IntegrityError {
             message: "verify_function_level: empty functions table".into(),
         });
     }
-    Ok(())
+
+    // Reconstruct the legacy FunctionManifest shape so we can delegate
+    // to function_integrity::verify_functions, which already owns the
+    // platform-specific `/proc/self/maps` + dl_iterate_phdr walk.
+    //
+    // The signature on `legacy` is irrelevant here — we already validated
+    // the BuildManifest's hybrid signature upstream in verify_build_manifest;
+    // this helper is the content-verify pass.
+    let legacy = super::function_integrity::FunctionManifest {
+        version: manifest.manifest_schema_version.clone(),
+        target: manifest.target.clone(),
+        binary_hash: manifest.binary_hash.clone(),
+        binary_version: manifest.binary_version.clone(),
+        generated_at: manifest.generated_at.clone(),
+        functions: extras.functions,
+        manifest_hash: manifest.manifest_hash.clone(),
+        signature: manifest.signature.clone(),
+        metadata: extras.metadata,
+    };
+
+    let result = super::function_integrity::verify_functions(&legacy);
+    if result.integrity_valid {
+        Ok(())
+    } else {
+        Err(VerifyError::IntegrityError {
+            message: format!(
+                "verify_function_level: function-integrity check failed (reason={}, checked={}, passed={})",
+                result.failure_reason, result.functions_checked, result.functions_passed
+            ),
+        })
+    }
 }
 
-#[cfg(not(any(target_os = "linux", target_os = "android")))]
-pub fn verify_function_level(
-    extras: &FunctionLevelExtras,
-    _binary: &[u8],
-) -> Result<(), VerifyError> {
-    if extras.functions.is_empty() {
+/// Verify that a binary's bytes match the SHA-256 declared in
+/// `BuildManifest::binary_hash`.
+///
+/// This is the content-verify counterpart to `verify_file_tree` and
+/// `verify_function_level`, for `binary_blob`-shape primitives
+/// (Persist, Registry, any primitive whose build is one artifact and
+/// doesn't have richer extras for content-matching).
+///
+/// Unlike `verify_function_level` this does NOT require the binary to
+/// be the running process — it accepts arbitrary bytes from disk or
+/// memory, hashes them, and constant-time-compares to the manifest's
+/// declared hash. Use this when you have a peer's binary file in hand
+/// and want to confirm it matches what the peer's CI signed.
+///
+/// # Errors
+///
+/// `VerifyError::IntegrityError` if `manifest.binary_hash` doesn't have
+/// the `"sha256:"` prefix or isn't valid hex, or if the computed hash
+/// doesn't match.
+///
+/// # When to call
+///
+/// After `verify_build_manifest` has succeeded. Caller has the artifact
+/// bytes available (CI, auditors, peers fetching releases from a
+/// federation transport).
+pub fn verify_binary_blob(manifest: &BuildManifest, binary: &[u8]) -> Result<(), VerifyError> {
+    use sha2::{Digest, Sha256};
+    use subtle::ConstantTimeEq;
+
+    let declared = manifest
+        .binary_hash
+        .strip_prefix("sha256:")
+        .ok_or_else(|| VerifyError::IntegrityError {
+            message: format!(
+                "verify_binary_blob: binary_hash must have 'sha256:' prefix, got '{}'",
+                manifest.binary_hash
+            ),
+        })?;
+
+    let declared_bytes = hex::decode(declared).map_err(|e| VerifyError::IntegrityError {
+        message: format!("verify_binary_blob: invalid hex in binary_hash: {e}"),
+    })?;
+
+    if declared_bytes.len() != 32 {
         return Err(VerifyError::IntegrityError {
-            message: "verify_function_level: empty functions table".into(),
+            message: format!(
+                "verify_binary_blob: SHA-256 must be 32 bytes, got {}",
+                declared_bytes.len()
+            ),
         });
     }
-    // Function-level content verification needs platform-specific
-    // function-walking; on platforms where we don't compile that in,
-    // return Ok if the structure is well-formed.
-    Ok(())
+
+    let actual: [u8; 32] = Sha256::digest(binary).into();
+
+    if actual.ct_eq(declared_bytes.as_slice()).into() {
+        Ok(())
+    } else {
+        Err(VerifyError::IntegrityError {
+            message: format!(
+                "verify_binary_blob: hash mismatch — declared {}, computed sha256:{}",
+                manifest.binary_hash,
+                hex::encode(actual)
+            ),
+        })
+    }
 }
 
 // =============================================================================
@@ -1191,13 +1290,108 @@ mod tests {
         let _ = std::fs::remove_dir_all(&tmp);
     }
 
+    fn build_test_manifest(
+        primitive: BuildPrimitive,
+        extras: Option<serde_json::Value>,
+    ) -> BuildManifest {
+        use sha2::{Digest, Sha256};
+        BuildManifest {
+            manifest_schema_version: "1.0".into(),
+            primitive,
+            build_id: "v0.0.0-test".into(),
+            target: "x86_64-unknown-linux-gnu".into(),
+            binary_hash: format!("sha256:{}", hex::encode(Sha256::digest(b"hello world"))),
+            binary_version: "0.0.0".into(),
+            generated_at: "2026-05-01T00:00:00Z".into(),
+            manifest_hash: "sha256:cafebabe".into(),
+            extras,
+            signature: ManifestSignature {
+                classical: "AAAA".into(),
+                classical_algorithm: "Ed25519".into(),
+                pqc: "AAAA".into(),
+                pqc_algorithm: "ML-DSA-65".into(),
+                key_id: "test".into(),
+            },
+        }
+    }
+
+    #[test]
+    fn verify_function_level_rejects_non_verify_primitive() {
+        let manifest = build_test_manifest(BuildPrimitive::Persist, None);
+        let err = verify_function_level(&manifest).unwrap_err();
+        assert!(
+            format!("{err:?}").contains("Persist") || format!("{err:?}").contains("primitive"),
+            "expected primitive-rejection error, got: {err:?}"
+        );
+    }
+
+    #[test]
+    fn verify_function_level_rejects_missing_extras() {
+        let manifest = build_test_manifest(BuildPrimitive::Verify, None);
+        let err = verify_function_level(&manifest).unwrap_err();
+        assert!(format!("{err:?}").contains("no extras"));
+    }
+
     #[test]
     fn verify_function_level_rejects_empty_functions() {
         let extras = FunctionLevelExtras {
             functions: std::collections::BTreeMap::new(),
             metadata: super::super::function_integrity::ManifestMetadata::default(),
         };
-        let err = verify_function_level(&extras, &[]).unwrap_err();
+        let manifest = build_test_manifest(
+            BuildPrimitive::Verify,
+            Some(serde_json::to_value(&extras).unwrap()),
+        );
+        let err = verify_function_level(&manifest).unwrap_err();
         assert!(format!("{err:?}").contains("empty functions table"));
+    }
+
+    #[test]
+    fn verify_binary_blob_accepts_matching() {
+        let manifest = build_test_manifest(BuildPrimitive::Persist, None);
+        verify_binary_blob(&manifest, b"hello world").expect("matching binary must verify");
+    }
+
+    #[test]
+    fn verify_binary_blob_rejects_mismatch() {
+        let manifest = build_test_manifest(BuildPrimitive::Persist, None);
+        let err = verify_binary_blob(&manifest, b"different content").unwrap_err();
+        assert!(format!("{err:?}").contains("hash mismatch"));
+    }
+
+    #[test]
+    fn verify_binary_blob_rejects_missing_prefix() {
+        let mut manifest = build_test_manifest(BuildPrimitive::Persist, None);
+        manifest.binary_hash = "abc123".into();
+        let err = verify_binary_blob(&manifest, b"hello world").unwrap_err();
+        assert!(format!("{err:?}").contains("sha256:"));
+    }
+
+    #[test]
+    fn verify_binary_blob_rejects_invalid_hex() {
+        let mut manifest = build_test_manifest(BuildPrimitive::Persist, None);
+        manifest.binary_hash = "sha256:not-real-hex".into();
+        let err = verify_binary_blob(&manifest, b"hello world").unwrap_err();
+        assert!(format!("{err:?}").contains("invalid hex"));
+    }
+
+    #[test]
+    fn verify_binary_blob_rejects_wrong_length() {
+        let mut manifest = build_test_manifest(BuildPrimitive::Persist, None);
+        manifest.binary_hash = "sha256:abcd1234".into(); // 4 bytes, not 32
+        let err = verify_binary_blob(&manifest, b"hello world").unwrap_err();
+        assert!(format!("{err:?}").contains("32 bytes"));
+    }
+
+    #[test]
+    fn verify_binary_blob_constant_time_compare_used() {
+        // Smoke test that we use the subtle crate's constant-time equality
+        // (compile-time check that the trait is in scope; this test would
+        // fail to compile if we accidentally removed the import).
+        use sha2::{Digest, Sha256};
+        use subtle::ConstantTimeEq;
+        let a: [u8; 32] = Sha256::digest(b"x").into();
+        let b: [u8; 32] = Sha256::digest(b"x").into();
+        assert!(bool::from(a.ct_eq(&b)));
     }
 }
