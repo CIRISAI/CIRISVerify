@@ -30,9 +30,12 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use ciris_build_tool::{
-    generate_ed25519_keypair, generate_mldsa65_keypair, parse_primitive, read_key,
-    self_test_crypto, sha256_file, sign_build_manifest,
+    build_file_tree_extras, build_function_level_extras_from_file, file_tree_extras_to_value,
+    function_level_extras_to_value, generate_ed25519_keypair, generate_mldsa65_keypair,
+    parse_primitive, read_extra_hashes_file, read_key, self_test_crypto, sha256_file,
+    sign_build_manifest,
 };
+use ciris_verify_core::security::build_manifest::ExemptRules;
 use clap::{Parser, Subcommand};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -69,22 +72,53 @@ enum Cmd {
         target: String,
 
         /// Path to the binary whose SHA-256 the manifest covers.
-        /// Mutually exclusive with --binary-hash.
-        #[arg(long, conflicts_with = "binary_hash")]
+        /// Mutually exclusive with --binary-hash, --tree, --manifest-from.
+        #[arg(long, conflicts_with_all = ["binary_hash", "tree", "manifest_from"])]
         binary: Option<PathBuf>,
 
         /// Pre-computed binary hash ("sha256:..."). Mutually exclusive
-        /// with --binary.
-        #[arg(long)]
+        /// with --binary, --tree, --manifest-from.
+        #[arg(long, conflicts_with_all = ["tree", "manifest_from"])]
         binary_hash: Option<String>,
 
         /// Binary version string from the primitive's source.
         #[arg(long)]
         binary_version: String,
 
-        /// Path to extras JSON file (optional).
-        #[arg(long)]
+        /// Path to extras JSON file (optional). Conflicts with --tree
+        /// and --manifest-from since those produce typed extras.
+        #[arg(long, conflicts_with_all = ["tree", "manifest_from"])]
         extras: Option<PathBuf>,
+
+        /// File-tree mode: walk this directory, build a FileTreeExtras
+        /// from per-file SHA-256 hashes, and use the canonical tree
+        /// hash as the manifest's binary_hash.
+        #[arg(long, conflicts_with = "manifest_from")]
+        tree: Option<PathBuf>,
+
+        /// Top-level paths under --tree to include (allowlist). Empty
+        /// means walk the whole --tree root.
+        #[arg(long, num_args = 0.., requires = "tree")]
+        tree_include: Vec<String>,
+
+        /// Directory basenames to skip anywhere in --tree.
+        #[arg(long, num_args = 0.., requires = "tree")]
+        tree_exempt_dir: Vec<String>,
+
+        /// File extensions (without dot) to skip in --tree.
+        #[arg(long, num_args = 0.., requires = "tree")]
+        tree_exempt_ext: Vec<String>,
+
+        /// JSON file containing additional path→sha256 entries to merge
+        /// into the file-tree map (e.g., build-secret hashes).
+        #[arg(long, requires = "tree")]
+        tree_extra_hashes_file: Option<PathBuf>,
+
+        /// Function-level mode: ingest a ciris-manifest-tool output
+        /// JSON file (function table + metadata) and pack it into
+        /// FunctionLevelExtras.
+        #[arg(long)]
+        manifest_from: Option<PathBuf>,
 
         /// Path to raw 32-byte Ed25519 seed file.
         #[arg(long)]
@@ -141,6 +175,12 @@ fn main() -> Result<()> {
             binary_hash,
             binary_version,
             extras,
+            tree,
+            tree_include,
+            tree_exempt_dir,
+            tree_exempt_ext,
+            tree_extra_hashes_file,
+            manifest_from,
             ed25519_seed,
             mldsa_secret,
             key_id,
@@ -148,20 +188,65 @@ fn main() -> Result<()> {
         } => {
             let primitive = parse_primitive(&primitive);
 
-            let binary_hash = match (binary, binary_hash) {
-                (Some(p), None) => sha256_file(&p)?,
-                (None, Some(h)) => h,
-                (None, None) => anyhow::bail!("must specify --binary or --binary-hash"),
-                (Some(_), Some(_)) => unreachable!("clap conflicts_with"),
-            };
-
-            let extras_json = match extras {
-                Some(p) => {
-                    let s = fs::read_to_string(&p)
-                        .with_context(|| format!("read extras at {}", p.display()))?;
-                    Some(serde_json::from_str(&s).context("parse extras JSON")?)
-                },
-                None => None,
+            // Resolve binary_hash + extras based on which input mode the
+            // caller picked. Clap's conflicts_with_all enforces that at
+            // most one is set.
+            let (binary_hash, extras_json) = if let Some(tree_root) = tree {
+                let rules = ExemptRules {
+                    include_roots: tree_include,
+                    exempt_dirs: tree_exempt_dir,
+                    exempt_extensions: tree_exempt_ext,
+                };
+                let extra_hashes = match tree_extra_hashes_file {
+                    Some(p) => Some(read_extra_hashes_file(&p)?),
+                    None => None,
+                };
+                let extras = build_file_tree_extras(&tree_root, rules, extra_hashes)?;
+                eprintln!(
+                    "File-tree mode: walked {}, hashed {} files, tree_hash = {}",
+                    tree_root.display(),
+                    extras.file_count,
+                    extras.file_tree_hash
+                );
+                (
+                    extras.file_tree_hash.clone(),
+                    Some(file_tree_extras_to_value(&extras)?),
+                )
+            } else if let Some(manifest_path) = manifest_from {
+                let (extras, source) = build_function_level_extras_from_file(&manifest_path)?;
+                eprintln!(
+                    "Function-level mode: ingested {} (functions={}, source binary_hash={})",
+                    manifest_path.display(),
+                    extras.functions.len(),
+                    source.binary_hash
+                );
+                // Use the source manifest's binary_hash so federation
+                // peers can match by binary even without parsing extras.
+                (
+                    source.binary_hash.clone(),
+                    Some(function_level_extras_to_value(&extras)?),
+                )
+            } else {
+                // Binary-blob mode (existing behavior).
+                let bh = match (binary, binary_hash) {
+                    (Some(p), None) => sha256_file(&p)?,
+                    (None, Some(h)) => h,
+                    (None, None) => {
+                        anyhow::bail!(
+                            "must specify exactly one of: --binary, --binary-hash, --tree, --manifest-from"
+                        )
+                    },
+                    (Some(_), Some(_)) => unreachable!("clap conflicts_with_all"),
+                };
+                let ex = match extras {
+                    Some(p) => {
+                        let s = fs::read_to_string(&p)
+                            .with_context(|| format!("read extras at {}", p.display()))?;
+                        Some(serde_json::from_str(&s).context("parse extras JSON")?)
+                    },
+                    None => None,
+                };
+                (bh, ex)
             };
 
             let ed_seed = read_key(&ed25519_seed)?;

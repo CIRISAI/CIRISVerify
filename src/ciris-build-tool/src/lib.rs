@@ -14,9 +14,12 @@ use ciris_crypto::{
 };
 use ciris_verify_core::error::VerifyError;
 use ciris_verify_core::security::build_manifest::{
-    verify_build_manifest, BuildManifest, BuildPrimitive,
+    verify_build_manifest, walk_file_tree, BuildManifest, BuildPrimitive, ExemptRules,
+    FileTreeExtras, FunctionLevelExtras,
 };
-use ciris_verify_core::security::function_integrity::{ManifestSignature, StewardPublicKey};
+use ciris_verify_core::security::function_integrity::{
+    FunctionEntry, FunctionManifest, ManifestMetadata, ManifestSignature, StewardPublicKey,
+};
 use sha2::{Digest, Sha256};
 
 /// Parse a `BuildPrimitive` from the CLI string form (snake_case).
@@ -126,6 +129,100 @@ pub fn sign_build_manifest(
 
     serde_json::to_vec_pretty(&manifest).context("serialize signed manifest")
 }
+
+/// Build `FileTreeExtras` by walking a directory and applying exempt
+/// rules. Used by `ciris-build-sign --tree`.
+///
+/// Optionally merges in `extra_hashes` (e.g., build-secret hashes that
+/// don't exist as files on disk) — these are appended to the file map
+/// and participate in the canonical tree hash like any other entry.
+pub fn build_file_tree_extras(
+    fs_root: &Path,
+    rules: ExemptRules,
+    extra_hashes: Option<std::collections::BTreeMap<String, String>>,
+) -> Result<FileTreeExtras> {
+    let mut files =
+        walk_file_tree(fs_root, &rules).map_err(|e| anyhow!("walk_file_tree failed: {e}"))?;
+
+    if let Some(extras) = extra_hashes {
+        for (path, hash) in extras {
+            // Validate hash format ("sha256:hex" with 64 hex chars)
+            if !hash.starts_with("sha256:") || hash.len() != 7 + 64 {
+                return Err(anyhow!(
+                    "extra hash for {} must be sha256:<64 hex chars>, got {}",
+                    path,
+                    hash
+                ));
+            }
+            files.insert(path, hash);
+        }
+    }
+
+    let file_count = u32::try_from(files.len())
+        .map_err(|_| anyhow!("file count overflows u32 — that's a lot of files"))?;
+    let file_tree_hash = FileTreeExtras::compute_tree_hash(&files);
+
+    Ok(FileTreeExtras {
+        file_tree_hash,
+        file_count,
+        files,
+        exempt_rules: rules,
+    })
+}
+
+/// Build `FunctionLevelExtras` by parsing a `ciris-manifest-tool`
+/// output JSON file. Used by `ciris-build-sign --manifest-from`.
+///
+/// The input file is the output of `ciris-manifest-tool generate`
+/// (a `FunctionManifest` shape). We extract the `functions` map +
+/// `metadata`, drop the surrounding fields (target, binary_hash,
+/// signature) which the new BuildManifest carries at the outer level.
+pub fn build_function_level_extras_from_file(
+    manifest_path: &Path,
+) -> Result<(FunctionLevelExtras, FunctionManifest)> {
+    let bytes = fs::read(manifest_path)
+        .with_context(|| format!("read manifest at {}", manifest_path.display()))?;
+    let parsed: FunctionManifest = serde_json::from_slice(&bytes)
+        .with_context(|| format!("parse FunctionManifest at {}", manifest_path.display()))?;
+
+    let extras = FunctionLevelExtras {
+        functions: parsed.functions.clone(),
+        metadata: parsed.metadata.clone(),
+    };
+    Ok((extras, parsed))
+}
+
+/// Parse a JSON file containing extra-hashes (path → "sha256:hex").
+/// Used by `--tree-extra-hashes-file`.
+pub fn read_extra_hashes_file(path: &Path) -> Result<std::collections::BTreeMap<String, String>> {
+    let s = fs::read_to_string(path)
+        .with_context(|| format!("read extra hashes file at {}", path.display()))?;
+    let map: std::collections::BTreeMap<String, String> =
+        serde_json::from_str(&s).with_context(|| {
+            format!(
+                "parse extra hashes JSON at {} (expected object of path → sha256:hex)",
+                path.display()
+            )
+        })?;
+    Ok(map)
+}
+
+/// Convert `FileTreeExtras` into a `serde_json::Value` for use as
+/// `BuildManifest::extras`.
+pub fn file_tree_extras_to_value(extras: &FileTreeExtras) -> Result<serde_json::Value> {
+    serde_json::to_value(extras).context("serialize FileTreeExtras")
+}
+
+/// Convert `FunctionLevelExtras` into a `serde_json::Value` for use
+/// as `BuildManifest::extras`.
+pub fn function_level_extras_to_value(extras: &FunctionLevelExtras) -> Result<serde_json::Value> {
+    serde_json::to_value(extras).context("serialize FunctionLevelExtras")
+}
+
+// Silence dead-code warning for re-exports we use only via the lib's
+// public surface.
+#[allow(dead_code)]
+fn _re_export_check(_: FunctionEntry, _: ManifestMetadata) {}
 
 /// Verify a signed `BuildManifest` against the provided trusted public
 /// keys. Returns the parsed `BuildManifest` on success.
@@ -376,5 +473,89 @@ mod tests {
     #[test]
     fn self_test_crypto_passes() {
         self_test_crypto().expect("crypto self-test must pass");
+    }
+
+    #[test]
+    fn build_file_tree_extras_signs_and_verifies() {
+        // Create a small tree
+        let tmp = std::env::temp_dir().join("ciris_build_tool_test_tree");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("src")).unwrap();
+        std::fs::write(tmp.join("src/main.py"), b"hello world").unwrap();
+        std::fs::write(tmp.join("src/lib.py"), b"more code").unwrap();
+
+        let extras = build_file_tree_extras(&tmp, ExemptRules::default(), None)
+            .expect("build_file_tree_extras must succeed");
+
+        assert_eq!(extras.file_count, 2);
+        assert!(extras.file_tree_hash.starts_with("sha256:"));
+        assert!(extras.files.contains_key("src/main.py"));
+        assert!(extras.files.contains_key("src/lib.py"));
+
+        // Sign through the existing pipeline using the extras as a Value
+        let primitive = BuildPrimitive::Other("filetree-test".into());
+        let (ed_seed, ed_pub) = generate_ed25519_keypair().unwrap();
+        let (mldsa_secret, mldsa_pub) = generate_mldsa65_keypair().unwrap();
+
+        let extras_value = file_tree_extras_to_value(&extras).unwrap();
+        let signed = sign_build_manifest(
+            primitive.clone(),
+            "v0.0.1-tree".into(),
+            "x86_64-unknown-linux-gnu".into(),
+            extras.file_tree_hash.clone(), // binary_hash = tree_hash for this shape
+            "0.0.1".into(),
+            Some(extras_value),
+            &ed_seed,
+            &mldsa_secret,
+            "tree-test",
+        )
+        .unwrap();
+
+        // Verify signature
+        let parsed =
+            verify_build_manifest_with_keys(&signed, primitive, &ed_pub, &mldsa_pub).unwrap();
+        assert_eq!(parsed.binary_hash, extras.file_tree_hash);
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn build_file_tree_extras_with_extra_hashes() {
+        // Verify that --tree-extra-hashes-file content gets folded in
+        let tmp = std::env::temp_dir().join("ciris_build_tool_test_extras");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.py"), b"a").unwrap();
+
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert(
+            "build-secrets/jwt".into(),
+            format!("sha256:{}", "0".repeat(64)),
+        );
+
+        let extras =
+            build_file_tree_extras(&tmp, ExemptRules::default(), Some(extra.clone())).unwrap();
+
+        assert_eq!(extras.file_count, 2, "1 on-disk + 1 extra-hashes");
+        assert!(extras.files.contains_key("a.py"));
+        assert!(extras.files.contains_key("build-secrets/jwt"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn build_file_tree_extras_rejects_malformed_extra_hash() {
+        let tmp = std::env::temp_dir().join("ciris_build_tool_test_bad_hash");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        std::fs::write(tmp.join("a.py"), b"a").unwrap();
+
+        let mut extra = std::collections::BTreeMap::new();
+        extra.insert("foo".into(), "not-a-real-hash".into());
+
+        let err = build_file_tree_extras(&tmp, ExemptRules::default(), Some(extra)).unwrap_err();
+        assert!(format!("{err}").contains("must be sha256:"));
+
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 }
