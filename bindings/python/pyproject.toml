@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ciris-verify"
-version = "1.8.5"
+version = "1.8.6"
 description = "Python bindings for CIRISVerify hardware-rooted license verification"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -44,6 +44,13 @@ Repository = "https://github.com/CIRISAI/CIRISVerify"
 Documentation = "https://github.com/CIRISAI/CIRISVerify/tree/main/bindings/python"
 Issues = "https://github.com/CIRISAI/CIRISVerify/issues"
 
+# Console scripts: thin Python shims that os.execv to the platform-specific
+# Rust binaries bundled in ciris_verify/_bin/. Wheels are platform-tagged so
+# the binary in _bin/ matches the install host.
+[project.scripts]
+ciris-build-sign = "ciris_verify._bin_sign:main"
+ciris-build-verify = "ciris_verify._bin_verify:main"
+
 [tool.setuptools.packages.find]
 include = ["ciris_verify*"]
 
@@ -53,4 +60,5 @@ ciris_verify = [
     "libciris_verify_ffi.so",
     "libciris_verify_ffi.dylib",
     "ciris_verify_ffi.dll",
+    "_bin/*",
 ]

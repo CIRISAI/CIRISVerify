@@ -1,0 +1,7 @@
+# This directory holds the platform-specific ciris-build-sign and
+# ciris-build-verify binaries that are bundled into platform-tagged wheels at
+# release time by .github/workflows/release.yml (publish-pypi job).
+#
+# Do not commit binaries here. They are downloaded as build-tool-${target}
+# artifacts during the publish-pypi job and copied in just before
+# `python -m build --wheel` runs.

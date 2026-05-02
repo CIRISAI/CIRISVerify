@@ -408,33 +408,78 @@ jobs:
           if-no-files-found: error
 
   # ==========================================================================
-  # Build Build Tool (v1.8 BuildManifest CLIs)
+  # Build Build Tool (v1.8 BuildManifest CLIs) — multi-platform for PyPI wheels
   # ==========================================================================
+  # As of v1.8.6, ciris-build-sign + ciris-build-verify ship inside the
+  # platform-tagged ciris-verify wheels (publish-pypi job) so consumers get
+  # them via `pip install ciris-verify` automatically. The matrix below
+  # mirrors the publish-pypi platform set so each wheel has a matching binary.
   build-build-tool:
-    name: Build Build Tool
-    runs-on: ubuntu-latest
+    name: Build Build Tool (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: ""
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            ext: ""
+            cross: true
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            ext: ""
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            ext: ""
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: ".exe"
+
     steps:
       - uses: actions/checkout@v4
+
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
       - uses: Swatinem/rust-cache@v2
         with:
-          key: build-tool-${{ github.ref_name }}
+          key: build-tool-${{ matrix.target }}-${{ github.ref_name }}
 
-      - name: Build build-tool (sign + verify)
-        run: cargo build --release -p ciris-build-tool --features ciris-crypto/pqc-ml-dsa
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Upload ciris-build-sign
+      - name: Build build-tool (cross)
+        if: matrix.cross
+        run: cross build --release --target ${{ matrix.target }} -p ciris-build-tool --features ciris-crypto/pqc-ml-dsa
+
+      - name: Build build-tool (native)
+        if: ${{ !matrix.cross }}
+        shell: bash
+        run: cargo build --release --target ${{ matrix.target }} -p ciris-build-tool --features ciris-crypto/pqc-ml-dsa
+
+      - name: Strip binaries
+        if: runner.os != 'Windows'
+        run: |
+          strip target/${{ matrix.target }}/release/ciris-build-sign || true
+          strip target/${{ matrix.target }}/release/ciris-build-verify || true
+
+      - name: Stage binaries for upload
+        shell: bash
+        run: |
+          mkdir -p stage
+          cp "target/${{ matrix.target }}/release/ciris-build-sign${{ matrix.ext }}" stage/
+          cp "target/${{ matrix.target }}/release/ciris-build-verify${{ matrix.ext }}" stage/
+
+      - name: Upload build-tool artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ciris-build-sign
-          path: target/release/ciris-build-sign
-          if-no-files-found: error
-
-      - name: Upload ciris-build-verify
-        uses: actions/upload-artifact@v4
-        with:
-          name: ciris-build-verify
-          path: target/release/ciris-build-verify
+          name: build-tool-${{ matrix.target }}
+          path: stage/
           if-no-files-found: error
 
   # ==========================================================================
@@ -489,9 +534,14 @@ jobs:
           cp artifacts/ciris_verify.h/ciris_verify.h release/ || true
 
           # Copy build-tool CLIs (v1.8 BuildManifest sign/verify)
+          # As of v1.8.6 the build-build-tool job is multi-platform; the
+          # linux-x86_64 binaries here populate the legacy
+          # ciris-verify-${tag}-build-tool-linux-x86_64.tar.gz release asset
+          # and the dogfood self-attestation step. The other platforms ship
+          # inside their respective PyPI wheels (publish-pypi job).
           mkdir -p release/build-tool
-          cp artifacts/ciris-build-sign/ciris-build-sign release/build-tool/ 2>/dev/null || true
-          cp artifacts/ciris-build-verify/ciris-build-verify release/build-tool/ 2>/dev/null || true
+          cp artifacts/build-tool-x86_64-unknown-linux-gnu/ciris-build-sign release/build-tool/ 2>/dev/null || true
+          cp artifacts/build-tool-x86_64-unknown-linux-gnu/ciris-build-verify release/build-tool/ 2>/dev/null || true
           chmod +x release/build-tool/* 2>/dev/null || true
 
           # Create checksums
@@ -964,7 +1014,7 @@ jobs:
   # ==========================================================================
   publish-pypi:
     name: Publish PyPI (${{ matrix.platform }})
-    needs: [build-native, create-release]
+    needs: [build-native, build-build-tool, create-release]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -973,27 +1023,37 @@ jobs:
           - os: ubuntu-latest
             platform: manylinux_x86_64
             artifact: ciris-verify-x86_64-unknown-linux-gnu
+            build_tool_artifact: build-tool-x86_64-unknown-linux-gnu
             lib_name: libciris_verify_ffi.so
+            bin_ext: ""
 
           - os: ubuntu-latest
             platform: manylinux_aarch64
             artifact: ciris-verify-aarch64-unknown-linux-gnu
+            build_tool_artifact: build-tool-aarch64-unknown-linux-gnu
             lib_name: libciris_verify_ffi.so
+            bin_ext: ""
 
           - os: macos-latest
             platform: macosx_x86_64
             artifact: ciris-verify-x86_64-apple-darwin
+            build_tool_artifact: build-tool-x86_64-apple-darwin
             lib_name: libciris_verify_ffi.dylib
+            bin_ext: ""
 
           - os: macos-latest
             platform: macosx_arm64
             artifact: ciris-verify-aarch64-apple-darwin
+            build_tool_artifact: build-tool-aarch64-apple-darwin
             lib_name: libciris_verify_ffi.dylib
+            bin_ext: ""
 
           - os: windows-latest
             platform: win_amd64
             artifact: ciris-verify-x86_64-pc-windows-msvc
+            build_tool_artifact: build-tool-x86_64-pc-windows-msvc
             lib_name: ciris_verify_ffi.dll
+            bin_ext: ".exe"
 
     steps:
       - uses: actions/checkout@v4
@@ -1008,6 +1068,12 @@ jobs:
           name: ${{ matrix.artifact }}
           path: ffi-lib
 
+      - name: Download build-tool artifact (ciris-build-sign + ciris-build-verify)
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.build_tool_artifact }}
+          path: build-tool-bin
+
       - name: Build wheel
         shell: bash
         run: |
@@ -1018,6 +1084,14 @@ jobs:
 
           # Copy the CI-built FFI library into the package
           cp ../../ffi-lib/${{ matrix.lib_name }} ciris_verify/
+
+          # Bundle ciris-build-sign + ciris-build-verify into the wheel
+          # (v1.8.6+: console scripts ciris-build-sign / ciris-build-verify
+          # are Python shims that os.execv to these binaries)
+          mkdir -p ciris_verify/_bin
+          cp ../../build-tool-bin/ciris-build-sign${{ matrix.bin_ext }} ciris_verify/_bin/
+          cp ../../build-tool-bin/ciris-build-verify${{ matrix.bin_ext }} ciris_verify/_bin/
+          chmod +x ciris_verify/_bin/* || true
 
           # Build the wheel
           python -m build --wheel
