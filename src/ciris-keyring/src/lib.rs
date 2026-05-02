@@ -56,6 +56,13 @@ mod types;
 #[cfg(feature = "software")]
 mod software;
 
+/// Post-quantum signer trait + ML-DSA-65 software implementation.
+///
+/// Parallel to `HardwareSigner` for classical algorithms. Gated behind the
+/// `pqc-ml-dsa` feature so the default build doesn't pull in the ml-dsa crate.
+#[cfg(feature = "pqc-ml-dsa")]
+pub mod pqc;
+
 /// Generic secure blob storage abstraction.
 pub mod storage;
 
@@ -87,6 +94,9 @@ pub use keyring_storage::{create_keyring_signer, KeyringStorageSigner};
 pub use software::{
     Ed25519SoftwareSigner, MutableEd25519Signer, MutableSoftwareSigner, SoftwareSigner,
 };
+
+#[cfg(feature = "pqc-ml-dsa")]
+pub use pqc::{get_platform_pqc_signer, MlDsa65SoftwareSigner, PqcAlgorithm, PqcSigner};
 
 /// Get the best available hardware signer for the current platform.
 ///
