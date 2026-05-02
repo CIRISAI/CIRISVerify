@@ -367,7 +367,7 @@ mod tests {
         let pqc_signer = MockPqcSigner {
             algorithm: PqcAlgorithm::MlDsa65,
             public_key: vec![0xBB; 1952],
-            signature: vec![0xCC; 3293],
+            signature: vec![0xCC; 3309],
         };
 
         let signer = HybridSigner::new(classical_signer, pqc_signer).unwrap();

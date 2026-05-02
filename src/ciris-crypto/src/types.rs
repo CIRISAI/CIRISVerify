@@ -79,12 +79,19 @@ impl PqcAlgorithm {
     }
 
     /// Get signature size in bytes.
+    ///
+    /// ML-DSA values are FIPS 204 final (`c_tilde_bytes` = 32/48/64 for
+    /// ML-DSA-44/65/87 respectively). The `ml-dsa = 0.1.0-rc.3` crate emits
+    /// these sizes; round-3 values would be 16 / 32 bytes shorter for
+    /// ML-DSA-65 / ML-DSA-87. The `test_pqc_signature_sizes_runtime_canary`
+    /// test (feature-gated `pqc-ml-dsa`) verifies these constants against
+    /// the live crate to catch any future drift.
     #[must_use]
     pub const fn signature_size(&self) -> usize {
         match self {
             Self::MlDsa44 => 2420,
-            Self::MlDsa65 => 3293,
-            Self::MlDsa87 => 4595,
+            Self::MlDsa65 => 3309,
+            Self::MlDsa87 => 4627,
             Self::SlhDsaSha2_128s => 7856,
             Self::SlhDsaSha2_256s => 29792,
         }
@@ -219,8 +226,39 @@ mod tests {
 
     #[test]
     fn test_pqc_signature_sizes() {
-        assert_eq!(PqcAlgorithm::MlDsa65.signature_size(), 3293);
+        assert_eq!(PqcAlgorithm::MlDsa44.signature_size(), 2420);
+        assert_eq!(PqcAlgorithm::MlDsa65.signature_size(), 3309);
+        assert_eq!(PqcAlgorithm::MlDsa87.signature_size(), 4627);
+        assert_eq!(PqcAlgorithm::MlDsa44.public_key_size(), 1312);
         assert_eq!(PqcAlgorithm::MlDsa65.public_key_size(), 1952);
+        assert_eq!(PqcAlgorithm::MlDsa87.public_key_size(), 2592);
+    }
+
+    #[cfg(feature = "pqc-ml-dsa")]
+    #[test]
+    fn test_pqc_signature_sizes_runtime_canary() {
+        use ml_dsa::signature::Signer;
+        use ml_dsa::{KeyGen, MlDsa44, MlDsa65, MlDsa87};
+
+        let seed = [0u8; 32].into();
+
+        let kp44 = MlDsa44::from_seed(&seed);
+        let sig44 = kp44.signing_key().sign(b"sig-size-canary");
+        let pk44 = kp44.signing_key().verifying_key().encode();
+        assert_eq!(sig44.encode().len(), PqcAlgorithm::MlDsa44.signature_size());
+        assert_eq!(pk44.len(), PqcAlgorithm::MlDsa44.public_key_size());
+
+        let kp65 = MlDsa65::from_seed(&seed);
+        let sig65 = kp65.signing_key().sign(b"sig-size-canary");
+        let pk65 = kp65.signing_key().verifying_key().encode();
+        assert_eq!(sig65.encode().len(), PqcAlgorithm::MlDsa65.signature_size());
+        assert_eq!(pk65.len(), PqcAlgorithm::MlDsa65.public_key_size());
+
+        let kp87 = MlDsa87::from_seed(&seed);
+        let sig87 = kp87.signing_key().sign(b"sig-size-canary");
+        let pk87 = kp87.signing_key().verifying_key().encode();
+        assert_eq!(sig87.encode().len(), PqcAlgorithm::MlDsa87.signature_size());
+        assert_eq!(pk87.len(), PqcAlgorithm::MlDsa87.public_key_size());
     }
 
     #[test]
