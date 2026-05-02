@@ -472,6 +472,25 @@ modes empirically demonstrated in the lib tests (`tests::verify_*`).
 - **Trust-key rotation.** Out of scope for v1.8. Each primitive handles its own rotation through whatever mechanism it uses today.
 - **Registry-side schema.** Coordinate with CIRISRegistry team (their issue #1) on the wire format for build records. The on-disk JSON shape above IS the registry response for `GET /v1/verify/build-manifest/{primitive}/{build_id}/{target}`.
 
+## Wire-format stability contract
+
+**Registry vendors a copy of `BuildManifest`**, not a `ciris-verify-core` dependency. The reason is a `rusqlite` ↔ `sqlx-sqlite` linker conflict on the registry side that prevents direct dependency. Their vendored copy in `rust-registry/src/build_manifest.rs` matches our v1.8.0 wire format byte-for-byte; their `ciris-crypto` dep gives them the verifier primitives directly.
+
+**Implication**: when we change the `BuildManifest` wire format, the registry team needs to be told so they can update their vendored copy. Coordination protocol:
+
+1. **Backwards-compatible additive changes** (new optional `extras` shapes, new `BuildPrimitive` variants via `Other(String)`, new fields with `serde(default)`) — registry is unaffected; their canonical-bytes computation stays valid for old manifests, and new manifests they don't understand fall through to opaque-extras handling.
+
+2. **Breaking changes to canonical-bytes layout** (field order changes, new required fields, schema-version bump) — coordinate via:
+   - File a CIRISRegistry issue with the proposed wire-format diff and a `manifest_schema_version` bump (currently `"1.0"`).
+   - Their AV-26 closure machinery (`build_manifest::verify_uploaded_manifest`) needs to either accept both old and new schemas during a transition window OR coordinate a synchronized cutover.
+   - Bump `BuildManifest::manifest_schema_version` past `"1.0"` so verifiers can dispatch on schema version.
+
+3. **Hybrid signature changes** (e.g., adding a third PQC algorithm slot) — registry's `ciris-crypto` dep already provides Ed25519 + ML-DSA-65 verifiers; if we add a third algorithm, both sides need the new verifier. Coordinate the `ciris-crypto` version bump.
+
+The vendored-not-dependency choice means registry is also forced to ship hybrid-sig verification matching ours — they can't lag behind by depending on an old `ciris-verify-core`. Operationally this enforces version-lockstep on signature math.
+
+Tracked operationally via: every CIRISVerify minor-version bump triggers a check on the registry team's side ("is your `BuildManifest` still byte-compatible?"). If not, the CIRISRegistry issue is the coordination artifact.
+
 ## References
 
 - Existing v1.7 implementation: `src/ciris-verify-core/src/security/function_integrity.rs:73-336`

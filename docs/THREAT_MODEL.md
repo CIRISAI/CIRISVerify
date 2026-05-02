@@ -153,9 +153,11 @@ Original six vectors (AV-1..AV-6) from FSD-001; v1.7-v1.8 federation work added 
 
 **Primary mitigation**: `verify_build_manifest(bytes, expected_primitive, &trusted_pubkey)` validates `manifest.primitive == expected_primitive` BEFORE checking the signature. The primitive discriminant is part of the canonical bytes the hybrid signature covers, so a cross-primitive replay would have to forge a signature valid under a *different* primitive's steward key — equivalent to the original key-compromise problem, not a new attack surface.
 
-**Secondary**: Per-primitive trusted-pubkey lookup means the wrong primitive's signature wouldn't match the expected primitive's pinned key. Lookup mechanism is being formalized (CIRISRegistry#5 item 4 — `/v1/verify/trusted-primitive-keys`).
+**Secondary**: Per-primitive trusted-pubkey lookup means the wrong primitive's signature wouldn't match the expected primitive's pinned key. Lookup mechanism formalized via [`CIRISRegistry/docs/TRUST_CONTRACT.md`](https://github.com/CIRISAI/CIRISRegistry/blob/main/docs/TRUST_CONTRACT.md) §6 — admin-managed `RegisterTrustedPrimitiveKey` admin RPC writes to registry's `trusted_primitive_keys` table (cross-region replicated via Spock per CIRISRegistry#4).
 
-**Residual**: Trusted-pubkey lookup for non-`Verify` primitives still requires explicit registration via `RegisterTrustedPrimitiveKey` (registry-side, `CIRISVerify` registered today; persist/lens/agent registration coordinated when their CI migrates to `ciris-build-sign`). Until cross-region replication lands (CIRISRegistry#4), federation peers may briefly see different trusted-key sets in different regions — minor inconsistency window, not exploitable for cross-primitive forgery.
+**Long-term mitigation (persist v0.2.x federation directory)**: The trusted-pubkey lookup layer migrates from "registry-local table that the steward writes" to persist's federated `federation_keys` substrate (per [`CIRISPersist/docs/FEDERATION_DIRECTORY.md`](https://github.com/CIRISAI/CIRISPersist/blob/main/docs/FEDERATION_DIRECTORY.md)). Every `federation_keys` row carries scrub-signing four-tuple (recursive cryptographic provenance — every row signed by another row in the same table, terminating at the steward's self-signed bootstrap). Registry becomes a cache+policy layer over persist's substrate (per [`CIRISRegistry/docs/FEDERATION_CLIENT.md`](https://github.com/CIRISAI/CIRISRegistry/blob/main/docs/FEDERATION_CLIENT.md)). This resolves CIRISRegistry#5 §4 not via a new registry endpoint but by repositioning the trust-key-bootstrap layer entirely: persist stores; consumers (registry, verify, agent) compute their own trust verdicts.
+
+**Residual**: Trusted-pubkey lookup for non-`Verify` primitives currently requires explicit registration via `RegisterTrustedPrimitiveKey` (registry-side, `CIRISVerify` registered today; persist/lens/agent registration coordinated when their CI migrates to `ciris-build-sign`). The persist v0.2.x federation directory is the architecturally-cleaner long-term resolution; until it ships, registry's `trusted_primitive_keys` table is the operational source of truth.
 
 ---
 
@@ -165,10 +167,10 @@ Original six vectors (AV-1..AV-6) from FSD-001; v1.7-v1.8 federation work added 
 
 **Attack**: A registered build manifest's original CI signature is silently lost on registry round-trip. Registry's *legacy* POST endpoint flattens `BuildManifest` into the `function_manifests` table and resigns it under the registry's own steward key on GET. Per-primitive steward attribution ("CIRISVerify-steward-2026 signed this") collapses into "registry vouches for this." A federation auditor asking "which primitive's CI actually signed this binary" gets the wrong answer.
 
-**Primary mitigation (post-CIRISRegistry trust-contract docs PR `9f8e1d7`)**: The new POST endpoint preserves the original CI signature in storage. Verifiers distinguish which path served a manifest by inspecting `signature.key_id`:
+**Primary mitigation (post-CIRISRegistry trust-contract docs PR `9f8e1d7`)**: The new POST endpoint preserves the original CI signature in storage. Authoritative reference: [`CIRISRegistry/docs/TRUST_CONTRACT.md`](https://github.com/CIRISAI/CIRISRegistry/blob/main/docs/TRUST_CONTRACT.md) §2.3 documents the two POST cases definitively. Verifiers distinguish which path served a manifest by inspecting `signature.key_id`:
 
-- `signature.key_id == "verify-steward-2026"` (or any per-primitive steward key) → original CI sig preserved → trust chain to the publishing primitive's steward key
-- `signature.key_id` matching the registry's own steward key (`75c29fcc...`) → legacy POST path, registry-resigned → trust chain only back to the registry
+- `signature.key_id == "verify-steward-2026"` (or any per-primitive steward key) → original CI sig preserved → Case (i) per TRUST_CONTRACT.md §2.3 → trust chain to the publishing primitive's steward key. Registry verifies inbound hybrid signature against `trusted_primitive_keys` (their AV-26 closure, v1.3 Phase A, commit `4adc224`) before storing. Operationally validated by registry's own self-publication since `cd95a9f` 2026-05-01 21:02:44Z.
+- `signature.key_id` matching the registry's own steward key (`75c29fcc...`) → legacy POST path, registry-resigned → Case (ii) per TRUST_CONTRACT.md §2.3 → trust chain only back to the registry
 
 **Secondary (Path C, always available)**: GitHub release artifact `signed-build-manifests.tar.gz` (added v1.8.3) preserves the original CI-signed `BuildManifest` end-to-end regardless of which POST endpoint was used. Sigstore-signed alongside the binary archives.
 
@@ -197,6 +199,8 @@ Original six vectors (AV-1..AV-6) from FSD-001; v1.7-v1.8 federation work added 
 **Secondary**: None against this attack — a compromised maintainer signs both classical + PQC, so hybrid-sig is no defense; they have legitimate access to the steward key, so steward-signed BuildManifest is no defense.
 
 **Residual (open)**: No two-person-rule on releases (single-maintainer signoff is the current path). No multi-maintainer signing key. No SBOM published with releases (CISA / EU CRA gap). No reproducible builds means source-vs-binary divergence cannot be independently verified. **Action items**: §10 SOTA gaps #3 (SBOM), #4 (reproducible builds), #5 (two-person-rule).
+
+**Related (registry-side, finer-grained)**: [`CIRISRegistry/docs/THREAT_MODEL.md`](https://github.com/CIRISAI/CIRISRegistry/blob/main/docs/THREAT_MODEL.md) AV-34 ("Build-signing key compromise (CI-side, post-Phase-A surface)") catalogues the post-Phase-A surface where per-primitive build-signing keys held in GHA secrets become load-bearing trust anchors for the federation. Their dual-secret-co-requirement defense (publishing requires BOTH the build-signing key AND `REGISTRY_ADMIN_TOKEN`) and per-repo isolation (compromise of one repo's GHA can publish only that primitive's manifests) extend AV-12's mitigation surface across the federation. Their v1.4 hardening proposals (cosign verification on uploaded manifests, M-of-N signing for high-stakes primitives, SLSA attestation in extras) target the same supply-chain class that our SOTA gaps #3-#5 target.
 
 ---
 
