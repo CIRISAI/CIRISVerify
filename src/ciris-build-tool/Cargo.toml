@@ -55,14 +55,13 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
-# `register` subcommand (v1.10.0+): writes builds + binary_manifests +
-# function_manifests via Registry HTTP + gRPC endpoints. Mirrors the legacy
-# CIRISAgent register_agent_build.py + register_signed_manifest.py path that
-# was retired in agent 2.7.8.4 / 2.7.8.5 without verifying parent-row
-# coverage. See CIRISVerify#6.
+# `register` subcommand (v1.10.0+, all-HTTP since v1.10.1): writes builds
+# (POST /v1/builds, hybrid-signed) + binary_manifests + function_manifests
+# via Registry HTTP endpoints. See CIRISVerify#6. v1.10.1 dropped the gRPC
+# code path after CIRISRegistry#9 shipped POST /v1/builds with bearer auth
+# + hybrid-sig verification — that removed both the gRPC client (grpcurl
+# subprocess) and the in-process HS256 JWT minting (no more REGISTRY_JWT_SECRET).
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
-hmac = "0.12"
-uuid = { version = "1", features = ["v4"] }
 
 [lints.clippy]
 # CLI utility crate — workspace-wide pedantic/nursery lints add noise

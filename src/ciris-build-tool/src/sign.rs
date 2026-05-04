@@ -153,20 +153,15 @@ enum Cmd {
     /// Exits 0 if the underlying primitives are working.
     SelfTest,
 
-    /// Register a release with CIRISRegistry. Writes all three tables
-    /// (`builds`, `binary_manifests`, `function_manifests`) atomically by
-    /// dispatching the gRPC `RegisterBuild` + HTTP
-    /// `POST /v1/verify/binary-manifest` + HTTP
-    /// `POST /v1/verify/build-manifest` (per target) endpoints in
-    /// dependency order.
+    /// Register a release with CIRISRegistry. Writes the `builds` parent
+    /// row plus, in binary mode, `binary_manifests` and `function_manifests`
+    /// rows. File-vs-binary mode auto-detected from the per-target
+    /// BuildManifest's extras.
     ///
-    /// Reads per-target manifests produced earlier by `ciris-build-sign
-    /// sign` — does NOT re-sign them. Build hash is derived from the
-    /// per-target manifest hashes; pass --build-hash to override.
-    ///
-    /// Auth: requires both REGISTRY_ADMIN_TOKEN (for the HTTP endpoints)
-    /// and REGISTRY_JWT_SECRET (for the gRPC RegisterBuild call). Mirrors
-    /// the legacy CIRISAgent register_agent_build.py auth split.
+    /// All endpoints use HTTP with bearer auth (REGISTRY_ADMIN_TOKEN). The
+    /// gRPC `RegisterBuild` path was retired in v1.10.1 — use
+    /// `ciris-build-sign register --help` if you're upgrading from v1.10.0
+    /// and need the old flag mapping.
     ///
     /// Closes CIRISVerify#6.
     Register {
@@ -187,7 +182,9 @@ enum Cmd {
         build_id: String,
 
         /// Per-target manifest. Repeatable. Format: `name:path`, e.g.
-        /// `--target python-source-tree:./build-manifest.json`.
+        /// `--target python-source-tree:./build-manifest.json`. File mode
+        /// requires exactly one target carrying FileTreeExtras; binary
+        /// mode allows multiple targets.
         #[arg(long, value_name = "NAME:PATH", required = true)]
         target: Vec<String>,
 
@@ -209,16 +206,27 @@ enum Cmd {
         #[arg(long)]
         notes: Option<String>,
 
+        /// Path to the Ed25519 seed file (32 bytes). Used to sign the
+        /// `builds` row's CanonicalBuild. Same format as
+        /// `ciris-build-sign sign --ed25519-seed`.
+        #[arg(long)]
+        ed25519_seed: PathBuf,
+
+        /// Path to the ML-DSA-65 secret seed file (32 bytes). Used to
+        /// sign the `builds` row's CanonicalBuild. Same format as
+        /// `ciris-build-sign sign --mldsa-secret`.
+        #[arg(long)]
+        mldsa_secret: PathBuf,
+
+        /// Steward `key_id` for the signature. Stored on the `builds` row.
+        #[arg(long)]
+        key_id: String,
+
         /// Registry HTTP base URL (e.g.,
-        /// "https://api.registry.ciris-services-1.ai"). Falls back to
-        /// $REGISTRY_URL env var if not provided.
+        /// `<https://api.registry.ciris-services-1.ai>`). Falls back to
+        /// `$REGISTRY_URL` env var if not provided.
         #[arg(long)]
         registry_url: Option<String>,
-
-        /// Registry gRPC address (e.g., "207.148.13.157:50051").
-        /// Falls back to $REGISTRY_GRPC_ADDR env var if not provided.
-        #[arg(long)]
-        registry_grpc_addr: Option<String>,
 
         /// Override the derived build_hash. By default, build_hash is
         /// computed as sha256(sorted target_name:manifest_hash pairs);
@@ -402,8 +410,10 @@ fn main() -> Result<()> {
             source_commit,
             modules,
             notes,
+            ed25519_seed,
+            mldsa_secret,
+            key_id,
             registry_url,
-            registry_grpc_addr,
             build_hash,
             dry_run,
         } => {
@@ -425,8 +435,10 @@ fn main() -> Result<()> {
                 modules,
                 notes,
                 registry_url,
-                registry_grpc_addr,
                 build_hash_override: build_hash,
+                ed25519_seed_path: ed25519_seed,
+                mldsa_secret_path: mldsa_secret,
+                key_id,
                 dry_run,
             };
 

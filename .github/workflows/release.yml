@@ -925,88 +925,97 @@ jobs:
           files: ciris-verify-${{ github.ref_name }}-signed-build-manifests.tar.gz
           fail_on_unmatched_files: false
 
-      - name: Upload signed BuildManifests to Registry (best-effort)
+      # Eat our own dogfood: register all 3 registry tables atomically via
+      # the v1.10.0+ `ciris-build-sign register` subcommand. Replaces the
+      # previous per-target curl POST loop + separate manual binary-manifest
+      # construction. As of v1.10.1 the build_id row is written via the new
+      # HTTP POST /v1/builds endpoint (CIRISRegistry#9), so REGISTRY_JWT_SECRET
+      # is no longer required; only REGISTRY_ADMIN_TOKEN.
+      #
+      # Sets `--project ciris-verify` explicitly so binary_manifests rows
+      # land under the right project namespace (the previous step omitted
+      # the project field, which made the server default it to "ciris-agent"
+      # — cross-project pollution that masked v1.10.0's missing parent rows).
+      - name: Register release with CIRISRegistry (verify dogfood)
         if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
         env:
           REGISTRY_ADMIN_TOKEN: ${{ secrets.REGISTRY_ADMIN_TOKEN }}
           REGISTRY_URL: ${{ vars.REGISTRY_URL }}
+          CIRIS_BUILD_ED25519_SECRET: ${{ secrets.CIRIS_BUILD_ED25519_SECRET }}
+          CIRIS_BUILD_MLDSA_SECRET: ${{ secrets.CIRIS_BUILD_MLDSA_SECRET }}
         run: |
-          REGISTRY_BASE="${REGISTRY_URL:-https://api.registry.ciris-services-1.ai}"
-          [ -d signed-build-manifests ] || { echo "No signed manifests"; exit 0; }
+          set -e
+          VERSION="${{ github.ref_name }}"
+          VERSION="${VERSION#v}"
+
+          BUILD_SIGN=release/build-tool/ciris-build-sign
+          if [ ! -x "$BUILD_SIGN" ]; then
+            echo "ciris-build-sign binary missing; skipping register step"
+            exit 0
+          fi
+          if [ ! -d signed-build-manifests ] || [ -z "$(ls -A signed-build-manifests 2>/dev/null)" ]; then
+            echo "No signed manifests to register; skipping"
+            exit 0
+          fi
+          if [ -z "${CIRIS_BUILD_ED25519_SECRET:-}" ] || [ -z "${CIRIS_BUILD_MLDSA_SECRET:-}" ]; then
+            echo "Steward secrets missing; cannot sign CanonicalBuild for /v1/builds row"
+            exit 0
+          fi
+
+          # Reconstitute the steward keys (same hex|base64|raw decoder as the
+          # earlier sign step) so register can sign the CanonicalBuild.
+          mkdir -p /tmp/steward-keys
+          chmod 0700 /tmp/steward-keys
+          decode_secret() {
+            local secret_value="$1" out_path="$2" label="$3" cleaned
+            cleaned=$(printf '%s' "$secret_value" | tr -d '[:space:]')
+            if [ "${#cleaned}" -eq 64 ] && printf '%s' "$cleaned" | grep -qE '^[0-9a-fA-F]+$'; then
+              printf '%s' "$cleaned" | xxd -r -p > "$out_path"
+              [ "$(wc -c < "$out_path")" -eq 32 ] && return 0
+            fi
+            if printf '%s' "$cleaned" | base64 -d > "$out_path" 2>/dev/null && [ "$(wc -c < "$out_path")" -eq 32 ]; then
+              return 0
+            fi
+            printf '%s' "$secret_value" > "$out_path"
+            [ "$(wc -c < "$out_path")" -eq 32 ]
+          }
+          decode_secret "$CIRIS_BUILD_ED25519_SECRET" /tmp/steward-keys/ed25519.seed "ed25519"
+          decode_secret "$CIRIS_BUILD_MLDSA_SECRET" /tmp/steward-keys/mldsa65.secret "mldsa65"
+          chmod 0600 /tmp/steward-keys/*
+
+          # Build --target args from each signed BuildManifest
+          target_args=()
           for manifest in signed-build-manifests/*.json; do
             [ -f "$manifest" ] || continue
             target=$(basename "$manifest" .json)
-            echo "POSTing signed BuildManifest for $target..."
-            curl -sf -X POST "${REGISTRY_BASE}/v1/verify/build-manifest" \
-              -H "Authorization: Bearer ${REGISTRY_ADMIN_TOKEN}" \
-              -H "Content-Type: application/json" \
-              -d @"$manifest" \
-              && echo "  -> Success" \
-              || echo "  -> Warning: registry has not yet shipped /v1/verify/build-manifest endpoint (best-effort)"
+            target_args+=(--target "${target}:${manifest}")
           done
 
-      # Publish binary manifest to CIRISRegistry (so agents can verify binary integrity)
-      - name: Register binary manifest with Registry
-        if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
-        env:
-          REGISTRY_ADMIN_TOKEN: ${{ secrets.REGISTRY_ADMIN_TOKEN }}
-          REGISTRY_URL: ${{ vars.REGISTRY_URL }}
-        run: |
-          # Build the binary manifest payload for Registry API
-          VERSION="${{ github.ref_name }}"
-          VERSION="${VERSION#v}"  # Strip leading 'v'
+          if [ "${#target_args[@]}" -eq 0 ]; then
+            echo "No --target args derived; skipping"
+            shred -u /tmp/steward-keys/* || rm -f /tmp/steward-keys/*
+            rmdir /tmp/steward-keys || true
+            exit 0
+          fi
 
-          # Extract platform hashes from manifest.json
-          python3 -c "
-          import json, sys
-
-          with open('release/manifest.json') as f:
-              m = json.load(f)
-
-          # Convert to Registry API format
-          # For binary self-verification, prefer dylib hash (runtime binary) over static (.a)
-          binaries = {}
-          # Target names must match CIRISVerify's detect_target() at runtime
-          # Android uses ABI names, not Rust triples (see constructor.rs)
-          target_map = {
-              'linux-x86_64': 'x86_64-unknown-linux-gnu',
-              'linux-arm64': 'aarch64-unknown-linux-gnu',
-              'darwin-x86_64': 'x86_64-apple-darwin',
-              'darwin-arm64': 'aarch64-apple-darwin',
-              'windows-x86_64': 'x86_64-pc-windows-msvc',
-              'android-arm64-v8a': 'android-arm64-v8a',
-              'android-armeabi-v7a': 'android-armeabi-v7a',
-              'android-x86_64': 'android-x86_64',
-              'ios-arm64': 'aarch64-apple-ios',
-              'ios-sim-arm64': 'aarch64-apple-ios-sim',
-          }
-          for platform, libs in m.get('platforms', {}).items():
-              target = target_map.get(platform, platform)
-              # Prefer dylib > shared > dll > static (runtime binary for self-verification)
-              for pref in ['dylib', 'shared', 'dll', 'static']:
-                  if pref in libs:
-                      binaries[target] = f\"sha256:{libs[pref]['sha256']}\"
-                      break
-
-          payload = {
-              'version': '${VERSION}',
-              'binaries': binaries,
-              'generated_at': m.get('built_at', '')
-          }
-
-          print(json.dumps(payload, indent=2))
-          with open('registry-payload.json', 'w') as f:
-              json.dump(payload, f)
-          "
-
-          # Register with CIRISRegistry (primary endpoint)
           REGISTRY_BASE="${REGISTRY_URL:-https://api.registry.ciris-services-1.ai}"
-          curl -sf -X POST "${REGISTRY_BASE}/v1/verify/binary-manifest" \
-            -H "Authorization: Bearer ${REGISTRY_ADMIN_TOKEN}" \
-            -H "Content-Type: application/json" \
-            -d @registry-payload.json \
-            && echo "Binary manifest registered successfully" \
-            || echo "Warning: Failed to register binary manifest (endpoint may not be deployed yet)"
+          echo "Registering ciris-verify ${VERSION} with ${#target_args[@]} targets..."
+          "$BUILD_SIGN" register \
+            --project ciris-verify \
+            --binary-version "$VERSION" \
+            --build-id "${{ github.sha }}" \
+            --modules core \
+            --source-repo "https://github.com/CIRISAI/CIRISVerify" \
+            --source-commit "${{ github.sha }}" \
+            --ed25519-seed /tmp/steward-keys/ed25519.seed \
+            --mldsa-secret /tmp/steward-keys/mldsa65.secret \
+            --key-id "verify-steward-2026" \
+            --registry-url "$REGISTRY_BASE" \
+            "${target_args[@]}"
+
+          # Wipe key files after use.
+          shred -u /tmp/steward-keys/* || rm -f /tmp/steward-keys/*
+          rmdir /tmp/steward-keys || true
 
   # ==========================================================================
   # Publish Python Wheels to PyPI
