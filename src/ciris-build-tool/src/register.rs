@@ -317,10 +317,21 @@ pub fn run(args: RegisterArgs) -> Result<()> {
     //   1 (builds) + 1 (binary_manifests) + N (function_manifests, one per target)
     let total_steps = 2 + loaded.len();
 
-    // Build the binaries map (for binary_manifests row + build_hash derivation).
+    // Build the `binaries` map for the binary_manifests row.
+    //
+    // The semantic of `binary_manifests.binaries[target]` is the SHA-256 of
+    // the actual binary artifact for that target — what `ciris-verify
+    // self-check` and the FFI library-load self-verify (constructor.rs)
+    // compare against the running binary's hash. v1.10.0 through v1.11.0
+    // mistakenly populated this with the BuildManifest's `manifest_hash`
+    // (which is sha256 of the canonical extras blob), making
+    // self-verification ALWAYS fail because the running binary's SHA-256
+    // never equals the extras-content SHA-256. v1.11.1 corrects this to
+    // the BuildManifest's `binary_hash` field — the actual artifact's
+    // SHA-256, with the conventional `"sha256:"` prefix.
     let binaries: BTreeMap<String, String> = loaded
         .iter()
-        .map(|t| (t.name.clone(), t.manifest.manifest_hash.clone()))
+        .map(|t| (t.name.clone(), t.manifest.binary_hash.clone()))
         .collect();
 
     let build_hash = match &args.build_hash_override {
