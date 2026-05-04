@@ -152,6 +152,84 @@ enum Cmd {
     /// Run a quick crypto self-test (sign + verify on a fresh keypair).
     /// Exits 0 if the underlying primitives are working.
     SelfTest,
+
+    /// Register a release with CIRISRegistry. Writes all three tables
+    /// (`builds`, `binary_manifests`, `function_manifests`) atomically by
+    /// dispatching the gRPC `RegisterBuild` + HTTP
+    /// `POST /v1/verify/binary-manifest` + HTTP
+    /// `POST /v1/verify/build-manifest` (per target) endpoints in
+    /// dependency order.
+    ///
+    /// Reads per-target manifests produced earlier by `ciris-build-sign
+    /// sign` — does NOT re-sign them. Build hash is derived from the
+    /// per-target manifest hashes; pass --build-hash to override.
+    ///
+    /// Auth: requires both REGISTRY_ADMIN_TOKEN (for the HTTP endpoints)
+    /// and REGISTRY_JWT_SECRET (for the gRPC RegisterBuild call). Mirrors
+    /// the legacy CIRISAgent register_agent_build.py auth split.
+    ///
+    /// Closes CIRISVerify#6.
+    Register {
+        /// CIRIS primitive's project name in kebab-case
+        /// (e.g., "ciris-agent", "ciris-persist", "ciris-lens").
+        /// Must match the `project` value the trusted_primitive_keys row
+        /// is registered under.
+        #[arg(long)]
+        project: String,
+
+        /// Binary version string (e.g., "2.7.10"). Must match the
+        /// binary_version field in every per-target manifest.
+        #[arg(long)]
+        binary_version: String,
+
+        /// Build identifier (typically a git SHA).
+        #[arg(long)]
+        build_id: String,
+
+        /// Per-target manifest. Repeatable. Format: `name:path`, e.g.
+        /// `--target python-source-tree:./build-manifest.json`.
+        #[arg(long, value_name = "NAME:PATH", required = true)]
+        target: Vec<String>,
+
+        /// Source repository URL for the builds row.
+        #[arg(long, default_value = "")]
+        source_repo: String,
+
+        /// Source commit SHA for the builds row.
+        #[arg(long, default_value = "")]
+        source_commit: String,
+
+        /// Modules included in the build. Comma-separated or repeated.
+        /// Defaults to `["core"]`.
+        #[arg(long, value_delimiter = ',', default_values_t = vec!["core".to_string()])]
+        modules: Vec<String>,
+
+        /// Optional notes text persisted on the builds + binary_manifests
+        /// rows.
+        #[arg(long)]
+        notes: Option<String>,
+
+        /// Registry HTTP base URL (e.g.,
+        /// "https://api.registry.ciris-services-1.ai"). Falls back to
+        /// $REGISTRY_URL env var if not provided.
+        #[arg(long)]
+        registry_url: Option<String>,
+
+        /// Registry gRPC address (e.g., "207.148.13.157:50051").
+        /// Falls back to $REGISTRY_GRPC_ADDR env var if not provided.
+        #[arg(long)]
+        registry_grpc_addr: Option<String>,
+
+        /// Override the derived build_hash. By default, build_hash is
+        /// computed as sha256(sorted target_name:manifest_hash pairs);
+        /// pass this to inject a custom value (e.g., a git tree hash).
+        #[arg(long)]
+        build_hash: Option<String>,
+
+        /// Print intended payloads and exit without contacting the registry.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> Result<()> {
@@ -313,6 +391,46 @@ fn main() -> Result<()> {
         Cmd::SelfTest => {
             self_test_crypto()?;
             println!("ciris-build-sign self-test: OK");
+        },
+
+        Cmd::Register {
+            project,
+            binary_version,
+            build_id,
+            target,
+            source_repo,
+            source_commit,
+            modules,
+            notes,
+            registry_url,
+            registry_grpc_addr,
+            build_hash,
+            dry_run,
+        } => {
+            use ciris_build_tool::register::{run as register_run, RegisterArgs, TargetSpec};
+
+            let targets: Vec<TargetSpec> = target
+                .iter()
+                .map(|s| TargetSpec::parse(s))
+                .collect::<Result<Vec<_>>>()
+                .context("parse --target")?;
+
+            let args = RegisterArgs {
+                project,
+                binary_version,
+                build_id,
+                targets,
+                source_repo,
+                source_commit,
+                modules,
+                notes,
+                registry_url,
+                registry_grpc_addr,
+                build_hash_override: build_hash,
+                dry_run,
+            };
+
+            register_run(args).context("register subcommand")?;
         },
     }
 

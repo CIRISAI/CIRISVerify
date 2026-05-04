@@ -3,6 +3,11 @@
 //! Keeps the per-CLI binaries thin: parse args, call into here, format output.
 //! Everything in this crate is testable without spawning subprocesses.
 
+/// `register` subcommand: write builds + binary_manifests + function_manifests
+/// rows to CIRISRegistry. See module docs for the wire-format mirror back to
+/// the registry's HTTP/gRPC handlers.
+pub mod register;
+
 use std::fs;
 use std::path::Path;
 

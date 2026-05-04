@@ -55,6 +55,15 @@ thiserror.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 
+# `register` subcommand (v1.10.0+): writes builds + binary_manifests +
+# function_manifests via Registry HTTP + gRPC endpoints. Mirrors the legacy
+# CIRISAgent register_agent_build.py + register_signed_manifest.py path that
+# was retired in agent 2.7.8.4 / 2.7.8.5 without verifying parent-row
+# coverage. See CIRISVerify#6.
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+hmac = "0.12"
+uuid = { version = "1", features = ["v4"] }
+
 [lints.clippy]
 # CLI utility crate — workspace-wide pedantic/nursery lints add noise
 # without catching real bugs here. Match the pattern in other tool crates.
