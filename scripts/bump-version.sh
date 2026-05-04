@@ -99,6 +99,35 @@ cd "$REPO_ROOT"
 cargo check --quiet 2>/dev/null || cargo check
 echo -e "${GREEN}✓${NC} Cargo.lock updated"
 
+# 5. Reclaim disk: a workspace version bump invalidates every incremental
+# query key in target/debug/, but the now-stale per-version dirs are never
+# automatically removed. Without this step, six bumps in a dev session can
+# easily accumulate ~30GB of dead artifacts (a 2026-05-04 session hit 180GB
+# in target/debug/ before the filesystem ran out and shell tooling failed).
+# The next `cargo check`/`cargo build` rebuilds whatever's needed; the
+# incremental cache was dead anyway, so this is a free clean.
+#
+# Skip with BUMP_NO_CLEAN=1 if a particular bump needs to preserve target/
+# (e.g., debugging a build issue across the bump).
+if [ "${BUMP_NO_CLEAN:-0}" != "1" ]; then
+    echo ""
+    echo -e "${YELLOW}Reclaiming disk (cargo clean — incremental cache invalidated by version change)...${NC}"
+    if [ -d "$REPO_ROOT/target" ]; then
+        before=$(du -sb "$REPO_ROOT/target" 2>/dev/null | cut -f1)
+        cargo clean --quiet 2>/dev/null || cargo clean
+        after=$(du -sb "$REPO_ROOT/target" 2>/dev/null | cut -f1 || echo 0)
+        freed=$(( before - after ))
+        if command -v numfmt >/dev/null 2>&1; then
+            freed_human=$(numfmt --to=iec-i --suffix=B "$freed" 2>/dev/null || echo "${freed}B")
+        else
+            freed_human="${freed}B"
+        fi
+        echo -e "${GREEN}✓${NC} target/ cleaned (freed $freed_human)"
+    else
+        echo -e "${YELLOW}○${NC} target/ does not exist; skipping clean"
+    fi
+fi
+
 # Summary
 echo ""
 echo -e "${GREEN}========================================${NC}"

@@ -54,7 +54,15 @@ cargo fmt
 
 # Security audit
 cargo deny check
+
+# Bump version + refresh Cargo.lock + reclaim stale target/ artifacts
+./scripts/bump-version.sh 1.10.3
+
+# Periodic disk hygiene across CIRIS* repos (default 14-day cutoff)
+./scripts/clean-stale-targets.sh
 ```
+
+See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning policy (dev-profile incremental disabled, bump-time cleanup, periodic sweep) — added 2026-05-04 after a six-bump session blew `target/debug/` to ~180GB.
 
 ## Current Implementation Status
 

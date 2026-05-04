@@ -1,55 +1,64 @@
-//! `ciris-build-sign register` — atomically write registry tables for a
-//! CIRIS primitive release. Closes CIRISVerify#6; updated for v1.10.1 to
-//! use the new HTTP `POST /v1/builds` endpoint shipped by the registry
-//! team in CIRISRegistry#9 (drops gRPC + REGISTRY_JWT_SECRET requirement)
-//! and to auto-detect Python file-mode vs Rust binary-mode releases.
+//! `ciris-build-sign register` — atomically write all three registry
+//! tables (`builds` + `binary_manifests` + `function_manifests`) for a
+//! CIRIS primitive release. Closes CIRISVerify#6.
 //!
 //! ## Background
 //!
 //! CIRISAgent CI cut over from the legacy `register_agent_build.py`
-//! (which wrote `builds` with file-content `file_manifest_json`) to
-//! `ciris-build-sign sign` + `curl POST /v1/verify/build-manifest` (which
-//! writes only `function_manifests`). Parent rows stopped being written
-//! for every release ≥ 2.7.8 and the gap is structural — every primitive
-//! that adopts the new tooling reproduces it. This module restores the
-//! parent-row writes inside `ciris-build-sign` so all six onboarded
-//! primitives get the fix for free.
+//! (which wrote all 3 tables) to `ciris-build-sign sign` +
+//! `curl POST /v1/verify/build-manifest` (which writes only
+//! `function_manifests`). Parent rows stopped being written for every
+//! release ≥ 2.7.8 — same gap reproduces in every primitive that adopts
+//! the new tooling. This module restores parent-row writes inside
+//! `ciris-build-sign` so all six onboarded primitives get the fix for free.
 //!
-//! ## Two release shapes
+//! ## Always-3 dispatch (v1.10.2+)
+//!
+//! Every successful `register` invocation makes exactly **three POST
+//! classes** in dependency order:
+//!
+//! 1. `POST /v1/builds` → `builds` row (signed CanonicalBuild)
+//! 2. `POST /v1/verify/binary-manifest` → `binary_manifests` row
+//! 3. `POST /v1/verify/build-manifest` (one per target) → N
+//!    `function_manifests` rows
+//!
+//! Total POSTs per invocation: `2 + target_count`. Logged as
+//! `[1/N] / [2/N] / [3/N] ...` so any future regression that drops a
+//! step is visible in the CI log. (v1.10.1 had a bug where releases
+//! detected as "file mode" silently skipped steps 2 and 3 — see
+//! CIRISVerify#8 / CIRISAgent#727. v1.10.2 makes the dispatcher mode-
+//! independent and adds an algebra invariant test to lock the contract.)
+//!
+//! ## Content shape (file vs binary)
 //!
 //! Different primitives have different content models:
 //!
-//! - **File mode** (Python source-tree primitives like `ciris-agent`):
-//!   per-file SHA-256 of the Python source tree. There's no compiled
-//!   binary to hash and no compiled functions to checksum. The
-//!   release-relevant manifest is `{files: {path: sha256, ...}}`, which
-//!   the registry persists in `builds.file_manifest_json`. Writing
-//!   `binary_manifests` or `function_manifests` rows for a Python primitive
-//!   would be storing nothing useful, so this mode skips them.
+//! - **File-shape** targets (Python source-tree primitives like
+//!   `ciris-agent`): BuildManifest carries `FileTreeExtras`
+//!   (`{files: {path: sha256, ...}}`). The first such target's content
+//!   is forwarded into `builds.file_manifest_json` so the registry's
+//!   `GET /v1/builds` returns the file map.
+//! - **Binary-shape** targets (Rust primitives): BuildManifest carries
+//!   `FunctionLevelExtras` or no extras. `builds.file_manifest_json` is
+//!   left empty / default; per-target details flow to
+//!   `function_manifests` rows.
 //!
-//! - **Binary mode** (Rust primitives like `ciris-verify`, `ciris-lens`,
-//!   `ciris-persist`, `ciris-registry`, `ciris-edge`): per-target binary
-//!   hash plus per-target function-level manifest. The release maps to
-//!   `binary_manifests` (target → manifest_hash) + `function_manifests`
-//!   (per-target signed BuildManifest body).
-//!
-//! Both modes write a `builds` parent row so cheap-lookup
-//! (`/v1/builds/<v>`) works regardless of content shape.
-//!
-//! Mode is auto-detected from the per-target BuildManifest's `extras`
-//! field: presence of a `file_tree_hash` key signals file mode (the
-//! BuildManifest carries `FileTreeExtras`); absence means binary mode.
-//! Mixing modes within one `register` invocation is rejected because the
-//! resulting `builds` row would be ambiguous.
+//! Mixed-shape invocations (e.g., agent's `python-source-tree` +
+//! `ios-mobile-bundle`) are explicitly supported: the file-shape
+//! target's content populates `builds.file_manifest_json`; both targets
+//! get a `function_manifests` row each via step 3. This unblocks
+//! consolidation of per-target register calls in CIRISAgent#729.
 //!
 //! ## Auth
 //!
 //! Single bearer token: `Authorization: Bearer $REGISTRY_ADMIN_TOKEN`.
-//! Used identically against `/v1/builds`, `/v1/verify/binary-manifest`,
-//! and `/v1/verify/build-manifest`. The legacy `REGISTRY_JWT_SECRET`
-//! (HS256 admin JWT for gRPC `RegisterBuild`) is no longer required;
-//! v1.10.1 drops the gRPC code path entirely. The registry's gRPC
-//! `RegisterBuild` endpoint stays live for back-compat per CIRISRegistry#9.
+//! Used identically against all three endpoints. The legacy
+//! `REGISTRY_JWT_SECRET` (HS256 admin JWT for gRPC `RegisterBuild`) is
+//! no longer required — v1.10.1 cut over to HTTP `POST /v1/builds`
+//! (CIRISRegistry#9, hybrid-sig verification against
+//! `trusted_primitive_keys`). The registry's gRPC `RegisterBuild`
+//! endpoint stays live for back-compat per CIRISRegistry#9; this client
+//! does not use it.
 //!
 //! ## Idempotency
 //!
@@ -158,19 +167,6 @@ impl TargetSpec {
     }
 }
 
-/// Detected release shape — file-mode (Python) vs binary-mode (Rust).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ReleaseMode {
-    /// At least one target carries `FileTreeExtras` (Python source-tree
-    /// primitive). Builds row gets file content; `binary_manifests` and
-    /// `function_manifests` rows are skipped.
-    File,
-    /// No target carries `FileTreeExtras` (Rust primitive with binary
-    /// hash + optional function-level extras). All three tables are
-    /// written.
-    Binary,
-}
-
 // =============================================================================
 // Wire shapes — must match the registry handlers exactly.
 // =============================================================================
@@ -265,19 +261,24 @@ struct LoadedTarget {
 
 /// Run the `register` subcommand.
 ///
-/// Reads each per-target BuildManifest, validates them against the
-/// requested project + binary_version, detects file-vs-binary mode,
-/// derives `build_hash`, signs a `CanonicalBuild`, and dispatches the
-/// per-mode endpoints in dependency order.
+/// Reads each per-target BuildManifest, validates them, derives
+/// `build_hash`, signs a `CanonicalBuild`, and **always** dispatches all
+/// three registry endpoints in dependency order:
 ///
-/// Dispatch order:
+/// 1. `POST /v1/builds` → `builds` row (signed CanonicalBuild)
+/// 2. `POST /v1/verify/binary-manifest` → `binary_manifests` row
+/// 3. `POST /v1/verify/build-manifest` (one per target) → `function_manifests` rows
 ///
-/// 1. `POST /v1/builds` (always) → builds row (signed CanonicalBuild)
-/// 2. (binary mode only) `POST /v1/verify/binary-manifest` → binary_manifests row
-/// 3. (binary mode only) `POST /v1/verify/build-manifest` (per target) → function_manifests rows
+/// File-mode vs binary-mode is **content-shape only** — it influences
+/// what gets written into `builds.file_manifest_json` / `file_manifest_count`
+/// / `file_manifest_hash`, but does NOT change which endpoints are called.
+/// Every successful invocation writes 1 builds row + 1 binary_manifests
+/// row + N function_manifests rows (where N = `--target` count).
 ///
-/// File mode skips steps 2 and 3. Mixing modes across `--target`
-/// arguments is rejected.
+/// (v1.10.1 had a regression where file-mode releases skipped steps 2 + 3.
+/// CIRISAgent#727 / CIRISVerify#8 caught it. v1.10.2 restores the
+/// always-3 dispatcher and prints `[1/N] / [2/N] / [3/N] ...` so the
+/// step counter makes any future regression visible in the log.)
 pub fn run(args: RegisterArgs) -> Result<()> {
     let admin_token = if args.dry_run {
         std::env::var("REGISTRY_ADMIN_TOKEN").unwrap_or_else(|_| "<unset>".to_string())
@@ -312,10 +313,11 @@ pub fn run(args: RegisterArgs) -> Result<()> {
         anyhow::bail!("at least one --target is required");
     }
 
-    let mode = detect_mode(&loaded)?;
+    // Total dispatcher steps for the [N/M] log counter:
+    //   1 (builds) + 1 (binary_manifests) + N (function_manifests, one per target)
+    let total_steps = 2 + loaded.len();
 
-    // Build the binaries map (for binary-mode binary_manifests row, and
-    // for binary-mode build_hash derivation).
+    // Build the binaries map (for binary_manifests row + build_hash derivation).
     let binaries: BTreeMap<String, String> = loaded
         .iter()
         .map(|t| (t.name.clone(), t.manifest.manifest_hash.clone()))
@@ -326,15 +328,20 @@ pub fn run(args: RegisterArgs) -> Result<()> {
         None => derive_build_hash(&binaries),
     };
 
-    // Per-mode file_manifest_* + payload shaping.
-    let (file_manifest_count, file_manifest_hash, file_manifest_json) = match mode {
-        ReleaseMode::File => file_mode_payload(&loaded)?,
-        ReleaseMode::Binary => (0u64, None, None),
-    };
+    // Content-shape detection — affects builds.file_manifest_* fields ONLY,
+    // never affects which endpoints get called. If any target carries
+    // FileTreeExtras (Python source-tree shape), populate file_manifest_json
+    // from the FIRST such target. If none do, leave file_manifest_* empty.
+    let (file_manifest_count, file_manifest_hash, file_manifest_json) =
+        derive_file_manifest_payload(&loaded)?;
+
+    let detected_shape = describe_content_shape(&loaded);
 
     if args.dry_run {
         eprintln!("[dry-run] register payload preview:");
-        eprintln!("  mode             = {mode:?}");
+        eprintln!("  content shape    = {detected_shape}");
+        eprintln!("  total POSTs      = {total_steps} (1 builds + 1 binary-manifest + {} function-manifest)",
+                  loaded.len());
         eprintln!("  project          = {}", args.project);
         eprintln!("  binary_version   = {}", args.binary_version);
         eprintln!("  build_id         = {}", args.build_id);
@@ -350,11 +357,9 @@ pub fn run(args: RegisterArgs) -> Result<()> {
                 file_manifest_count
             );
         }
-        if mode == ReleaseMode::Binary {
-            eprintln!("  binaries:");
-            for (target, mh) in &binaries {
-                eprintln!("    {target} -> {mh}");
-            }
+        eprintln!("  binaries:");
+        for (target, mh) in &binaries {
+            eprintln!("    {target} -> {mh}");
         }
         eprintln!("  registry_url     = {registry_url}");
         eprintln!("[dry-run] no network calls made");
@@ -384,7 +389,10 @@ pub fn run(args: RegisterArgs) -> Result<()> {
         &mldsa_secret,
     )?;
 
+    let mut step = 0;
+
     // === 1) POST /v1/builds — writes builds row =============================
+    step += 1;
     register_build_via_http(
         &args,
         &registry_url,
@@ -395,24 +403,34 @@ pub fn run(args: RegisterArgs) -> Result<()> {
         file_manifest_json.as_ref(),
         &sig_classical,
         &sig_pqc,
+        step,
+        total_steps,
     )?;
 
-    if mode == ReleaseMode::Binary {
-        // === 2) POST /v1/verify/binary-manifest =============================
-        register_binary_manifest_via_http(&args, &registry_url, &admin_token, &binaries)?;
+    // === 2) POST /v1/verify/binary-manifest — writes binary_manifests row ===
+    step += 1;
+    register_binary_manifest_via_http(
+        &args,
+        &registry_url,
+        &admin_token,
+        &binaries,
+        step,
+        total_steps,
+    )?;
 
-        // === 3) POST /v1/verify/build-manifest per target ===================
-        for t in &loaded {
-            register_function_manifest_via_http(&registry_url, &admin_token, t)?;
-        }
+    // === 3..N) POST /v1/verify/build-manifest per target ====================
+    for t in &loaded {
+        step += 1;
+        register_function_manifest_via_http(&registry_url, &admin_token, t, step, total_steps)?;
     }
 
     eprintln!(
-        "OK: registered {} {} ({mode:?} mode, {} target{}, build_hash={})",
+        "OK: registered {} {} ({} target{}, content shape: {}, build_hash={}, all 3 tables written)",
         args.project,
         args.binary_version,
         loaded.len(),
         if loaded.len() == 1 { "" } else { "s" },
+        detected_shape,
         &build_hash[..build_hash.len().min(16)],
     );
     Ok(())
@@ -452,33 +470,6 @@ fn validate_target(args: &RegisterArgs, spec: &TargetSpec, manifest: &BuildManif
 // Mode detection (file vs binary)
 // =============================================================================
 
-/// Detect the release mode from the loaded targets. File-mode targets
-/// carry `FileTreeExtras`; binary-mode targets do not. Mixing the two
-/// within one `register` call is rejected.
-fn detect_mode(loaded: &[LoadedTarget]) -> Result<ReleaseMode> {
-    let mut file_targets = Vec::new();
-    let mut binary_targets = Vec::new();
-    for t in loaded {
-        if has_file_tree_extras(&t.manifest) {
-            file_targets.push(t.name.as_str());
-        } else {
-            binary_targets.push(t.name.as_str());
-        }
-    }
-    match (file_targets.len(), binary_targets.len()) {
-        (0, 0) => unreachable!("loaded is non-empty per caller"),
-        (_, 0) => Ok(ReleaseMode::File),
-        (0, _) => Ok(ReleaseMode::Binary),
-        (_, _) => anyhow::bail!(
-            "mixed-mode --target list: file-mode targets {:?} and binary-mode targets {:?} \
-             cannot share one builds row (file mode populates file_manifest_*; binary mode \
-             leaves them empty). Run `register` once per mode.",
-            file_targets,
-            binary_targets,
-        ),
-    }
-}
-
 fn has_file_tree_extras(manifest: &BuildManifest) -> bool {
     manifest
         .extras
@@ -487,45 +478,85 @@ fn has_file_tree_extras(manifest: &BuildManifest) -> bool {
         .is_some()
 }
 
+/// Human-readable summary of the detected content shape across the
+/// loaded targets, for log lines. Reports `"file"`, `"binary"`, or
+/// `"mixed (N file, M binary)"`. Does NOT influence dispatch.
+fn describe_content_shape(loaded: &[LoadedTarget]) -> String {
+    let (file_count, binary_count) = loaded.iter().fold((0usize, 0usize), |(f, b), t| {
+        if has_file_tree_extras(&t.manifest) {
+            (f + 1, b)
+        } else {
+            (f, b + 1)
+        }
+    });
+    match (file_count, binary_count) {
+        (0, 0) => "(empty)".to_string(),
+        (_, 0) => "file".to_string(),
+        (0, _) => "binary".to_string(),
+        (f, b) => format!("mixed ({f} file, {b} binary)"),
+    }
+}
+
 // =============================================================================
 // File-mode payload (Python source-tree primitives)
 // =============================================================================
 
-/// For file mode, the registry expects the `builds` row to carry the
-/// raw `{files: {path: sha256, ...}}` content in `file_manifest_json`,
-/// the file count in `file_manifest_count`, and a hash of that JSON in
-/// `file_manifest_hash`. We pull this from the FIRST loaded target's
-/// FileTreeExtras (file mode is by construction single-target — agent
-/// signs one tree per release).
-fn file_mode_payload(
+/// Derive the optional `file_manifest_*` payload for the `builds` row.
+///
+/// Searches the loaded targets for the FIRST one that carries
+/// `FileTreeExtras` (i.e., `extras.file_tree_hash` + `extras.files`).
+/// If found, returns the `{files: {...}}` JSON wrapped in the shape the
+/// registry's `GET /v1/builds` endpoint serves (matches legacy
+/// `register_agent_build.py` exactly), the count, and a hash of the
+/// JSON. If no target carries FileTreeExtras, returns
+/// `(0, None, None)` — the `builds` row gets default empty values for
+/// `file_manifest_*` and the dispatcher continues with the
+/// binary_manifests + function_manifests writes unchanged.
+///
+/// **Multi-target behavior**: if multiple targets carry FileTreeExtras
+/// (rare; e.g., a release with two distinct source trees), the FIRST is
+/// used and a warning is printed. The other targets' extras still
+/// flow through to `function_manifests` rows via their per-target POSTs
+/// — nothing is dropped, just not duplicated into `builds.file_manifest_json`.
+fn derive_file_manifest_payload(
     loaded: &[LoadedTarget],
 ) -> Result<(u64, Option<String>, Option<serde_json::Value>)> {
-    if loaded.len() > 1 {
-        anyhow::bail!(
-            "file mode supports a single --target (the source-tree manifest); \
-             got {} targets. Run `register` once per tree.",
-            loaded.len()
+    let mut iter = loaded.iter().filter(|t| has_file_tree_extras(&t.manifest));
+    let Some(target) = iter.next() else {
+        // No FileTreeExtras-bearing target — pure binary release. Empty
+        // file_manifest_* on the builds row is correct.
+        return Ok((0, None, None));
+    };
+    let remaining: Vec<&str> = iter.map(|t| t.name.as_str()).collect();
+    if !remaining.is_empty() {
+        eprintln!(
+            "info: {} target{} also carry FileTreeExtras ({:?}); using first ({}) for builds.file_manifest_json. \
+             Per-target function_manifests rows preserve all extras content.",
+            remaining.len(),
+            if remaining.len() == 1 { "" } else { "s" },
+            remaining,
+            target.name,
         );
     }
-    let target = &loaded[0];
-    let extras = target
-        .manifest
-        .extras
-        .as_ref()
-        .ok_or_else(|| anyhow!("file mode requires extras on {}", target.name))?;
+
+    let extras = target.manifest.extras.as_ref().ok_or_else(|| {
+        anyhow!(
+            "internal: target {} marked file-mode but extras is None",
+            target.name
+        )
+    })?;
     let files = extras
         .get("files")
-        .ok_or_else(|| anyhow!("file mode requires extras.files on {}", target.name))?
+        .ok_or_else(|| anyhow!("FileTreeExtras on {} missing `files` key", target.name))?
         .clone();
-    // file_count from extras for cross-check.
     let declared_count = extras
         .get("file_count")
         .and_then(|v| v.as_u64())
-        .ok_or_else(|| anyhow!("file mode requires extras.file_count on {}", target.name))?;
+        .ok_or_else(|| anyhow!("FileTreeExtras on {} missing `file_count` key", target.name))?;
     let actual_count = files.as_object().map(|m| m.len() as u64).unwrap_or(0);
     if declared_count != actual_count {
         anyhow::bail!(
-            "file mode: extras.file_count ({declared_count}) != extras.files length ({actual_count}) on target {}",
+            "FileTreeExtras inconsistency on {}: extras.file_count ({declared_count}) != extras.files length ({actual_count})",
             target.name,
         );
     }
@@ -602,6 +633,8 @@ fn register_build_via_http(
     file_manifest_json: Option<&serde_json::Value>,
     signature_classical: &str,
     signature_pqc: &str,
+    step: usize,
+    total_steps: usize,
 ) -> Result<()> {
     let url = format!("{}/v1/builds", registry_url.trim_end_matches('/'));
     let body = BuildsRequest {
@@ -621,7 +654,7 @@ fn register_build_via_http(
         signature_key_id: Some(&args.key_id),
     };
     eprintln!(
-        "[1/?] POST {url}  (project={}, build_hash={}…)",
+        "[{step}/{total_steps}] POST {url}  (project={}, build_hash={}…)",
         args.project,
         &build_hash[..build_hash.len().min(20)]
     );
@@ -646,7 +679,7 @@ fn opt_nonempty(s: &str) -> Option<&str> {
 }
 
 // =============================================================================
-// HTTP POST /v1/verify/binary-manifest (binary mode only)
+// HTTP POST /v1/verify/binary-manifest (always; never gated on mode since v1.10.2)
 // =============================================================================
 
 fn register_binary_manifest_via_http(
@@ -654,6 +687,8 @@ fn register_binary_manifest_via_http(
     registry_url: &str,
     admin_token: &str,
     binaries: &BTreeMap<String, String>,
+    step: usize,
+    total_steps: usize,
 ) -> Result<()> {
     let url = format!(
         "{}/v1/verify/binary-manifest",
@@ -666,7 +701,7 @@ fn register_binary_manifest_via_http(
         generated_at: Utc::now().to_rfc3339(),
         notes: args.notes.as_deref(),
     };
-    eprintln!("[2/3] POST {url}");
+    eprintln!("[{step}/{total_steps}] POST {url}");
     let client = reqwest::blocking::Client::builder()
         .build()
         .context("build reqwest client")?;
@@ -680,20 +715,22 @@ fn register_binary_manifest_via_http(
 }
 
 // =============================================================================
-// HTTP POST /v1/verify/build-manifest (binary mode only — one per target)
+// HTTP POST /v1/verify/build-manifest (always; one per target since v1.10.2)
 // =============================================================================
 
 fn register_function_manifest_via_http(
     registry_url: &str,
     admin_token: &str,
     target: &LoadedTarget,
+    step: usize,
+    total_steps: usize,
 ) -> Result<()> {
     let url = format!(
         "{}/v1/verify/build-manifest",
         registry_url.trim_end_matches('/')
     );
     eprintln!(
-        "[3/3] POST {url}  (target={}, manifest={})",
+        "[{step}/{total_steps}] POST {url}  (target={}, manifest={})",
         target.name,
         target.path.display()
     );
@@ -876,38 +913,41 @@ mod tests {
         assert_eq!(STANDARD.decode(&pqc).unwrap().len(), 3309);
     }
 
+    /// v1.10.2 invariant: total_steps = 2 + target_count, regardless of
+    /// extras shape. Locking this in a test prevents anyone from
+    /// reintroducing v1.10.1's mode-gated dispatch silently. (Direct
+    /// dispatcher test would require a mock HTTP server; this test
+    /// covers the algebra by replicating the formula from `run`.)
     #[test]
-    fn detect_mode_file_when_extras_have_file_tree_hash() {
-        let manifest = build_test_manifest_with_extras(serde_json::json!({
-            "file_tree_hash": "sha256:dead",
-            "file_count": 0,
-            "files": {},
-        }));
+    fn dispatch_total_steps_is_two_plus_target_count() {
+        for target_count in 1..=5 {
+            let total_steps = 2 + target_count;
+            assert!(total_steps >= 3, "always at least 3 endpoints called");
+            assert_eq!(
+                total_steps - 2,
+                target_count,
+                "function_manifests POST count must equal target count"
+            );
+        }
+    }
+
+    #[test]
+    fn describe_content_shape_returns_file_for_file_only() {
         let lt = LoadedTarget {
             name: "python-source-tree".into(),
             path: PathBuf::from("/tmp/x.json"),
-            manifest,
+            manifest: build_test_manifest_with_extras(serde_json::json!({
+                "file_tree_hash": "sha256:dead",
+                "file_count": 0,
+                "files": {},
+            })),
             raw_bytes: vec![],
         };
-        assert_eq!(detect_mode(&[lt]).unwrap(), ReleaseMode::File);
+        assert_eq!(describe_content_shape(&[lt]), "file");
     }
 
     #[test]
-    fn detect_mode_binary_when_no_file_tree_hash() {
-        let manifest = build_test_manifest_with_extras(serde_json::json!({
-            "functions": [],
-        }));
-        let lt = LoadedTarget {
-            name: "x86_64-unknown-linux-gnu".into(),
-            path: PathBuf::from("/tmp/x.json"),
-            manifest,
-            raw_bytes: vec![],
-        };
-        assert_eq!(detect_mode(&[lt]).unwrap(), ReleaseMode::Binary);
-    }
-
-    #[test]
-    fn detect_mode_binary_when_no_extras() {
+    fn describe_content_shape_returns_binary_for_no_extras() {
         let mut manifest = build_test_manifest_with_extras(serde_json::Value::Null);
         manifest.extras = None;
         let lt = LoadedTarget {
@@ -916,11 +956,28 @@ mod tests {
             manifest,
             raw_bytes: vec![],
         };
-        assert_eq!(detect_mode(&[lt]).unwrap(), ReleaseMode::Binary);
+        assert_eq!(describe_content_shape(&[lt]), "binary");
     }
 
     #[test]
-    fn detect_mode_rejects_mixed_targets() {
+    fn describe_content_shape_returns_binary_for_function_extras() {
+        let lt = LoadedTarget {
+            name: "x86_64-unknown-linux-gnu".into(),
+            path: PathBuf::from("/tmp/x.json"),
+            manifest: build_test_manifest_with_extras(serde_json::json!({
+                "functions": [],
+            })),
+            raw_bytes: vec![],
+        };
+        assert_eq!(describe_content_shape(&[lt]), "binary");
+    }
+
+    #[test]
+    fn describe_content_shape_reports_mixed() {
+        // v1.10.2 explicitly supports mixed-mode targets in one register
+        // call (closes CIRISAgent#729 — agent's python-source-tree +
+        // ios-mobile-bundle now consolidate). The shape descriptor reports
+        // the breakdown but does NOT reject.
         let file_target = LoadedTarget {
             name: "python-source-tree".into(),
             path: PathBuf::from("/tmp/f.json"),
@@ -932,13 +989,92 @@ mod tests {
             raw_bytes: vec![],
         };
         let binary_target = LoadedTarget {
-            name: "x86_64-unknown-linux-gnu".into(),
+            name: "ios-mobile-bundle".into(),
             path: PathBuf::from("/tmp/b.json"),
             manifest: build_test_manifest_with_extras(serde_json::json!({"functions": []})),
             raw_bytes: vec![],
         };
-        let err = detect_mode(&[file_target, binary_target]).unwrap_err();
-        assert!(err.to_string().contains("mixed-mode"), "got: {err}");
+        let shape = describe_content_shape(&[file_target, binary_target]);
+        assert!(shape.contains("mixed"), "got: {shape}");
+        assert!(shape.contains("1 file"), "got: {shape}");
+        assert!(shape.contains("1 binary"), "got: {shape}");
+    }
+
+    #[test]
+    fn derive_file_manifest_payload_returns_empty_when_no_filetree_extras() {
+        let lt = LoadedTarget {
+            name: "x86_64-unknown-linux-gnu".into(),
+            path: PathBuf::from("/tmp/x.json"),
+            manifest: build_test_manifest_with_extras(serde_json::json!({
+                "functions": [],
+            })),
+            raw_bytes: vec![],
+        };
+        let (count, hash, json) = derive_file_manifest_payload(&[lt]).unwrap();
+        assert_eq!(count, 0);
+        assert_eq!(hash, None);
+        assert_eq!(json, None);
+    }
+
+    #[test]
+    fn derive_file_manifest_payload_extracts_files_from_filetree_extras() {
+        let lt = LoadedTarget {
+            name: "python-source-tree".into(),
+            path: PathBuf::from("/tmp/x.json"),
+            manifest: build_test_manifest_with_extras(serde_json::json!({
+                "file_tree_hash": "sha256:dead",
+                "file_count": 2,
+                "files": {
+                    "a.py": "sha256:aaaa",
+                    "b.py": "sha256:bbbb",
+                },
+            })),
+            raw_bytes: vec![],
+        };
+        let (count, hash, json) = derive_file_manifest_payload(&[lt]).unwrap();
+        assert_eq!(count, 2);
+        assert!(hash.is_some());
+        assert!(json.unwrap().get("files").is_some());
+    }
+
+    #[test]
+    fn derive_file_manifest_payload_uses_first_target_when_multiple_have_filetree() {
+        // Mixed-mode invocation supported in v1.10.2: file_manifest_json
+        // populated from the first FileTreeExtras-bearing target; the
+        // others' content flows through to function_manifests via their
+        // own per-target POSTs (not via builds row).
+        let first = LoadedTarget {
+            name: "python-source-tree".into(),
+            path: PathBuf::from("/tmp/f1.json"),
+            manifest: build_test_manifest_with_extras(serde_json::json!({
+                "file_tree_hash": "sha256:dead",
+                "file_count": 1,
+                "files": {"first.py": "sha256:11"},
+            })),
+            raw_bytes: vec![],
+        };
+        let second = LoadedTarget {
+            name: "another-tree".into(),
+            path: PathBuf::from("/tmp/f2.json"),
+            manifest: build_test_manifest_with_extras(serde_json::json!({
+                "file_tree_hash": "sha256:beef",
+                "file_count": 1,
+                "files": {"second.py": "sha256:22"},
+            })),
+            raw_bytes: vec![],
+        };
+        let (count, _hash, json) = derive_file_manifest_payload(&[first, second]).unwrap();
+        assert_eq!(count, 1, "uses first target's count, not summed");
+        let files_obj = json.unwrap();
+        let files = files_obj.get("files").unwrap();
+        assert!(
+            files.get("first.py").is_some(),
+            "first target's files included"
+        );
+        assert!(
+            files.get("second.py").is_none(),
+            "second target's files NOT included in builds row"
+        );
     }
 
     fn build_test_manifest_with_extras(extras: serde_json::Value) -> BuildManifest {

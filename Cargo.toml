@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "1.10.1"
+version = "1.10.2"
 edition = "2021"
 rust-version = "1.86"
 license = "AGPL-3.0-or-later"
@@ -121,3 +121,21 @@ lto = true
 codegen-units = 1
 panic = "abort"
 strip = true
+
+# Dev profile: disable incremental compilation.
+#
+# The `target/debug/incremental/` query cache is hash-keyed per change and is
+# never garbage-collected — it grows monotonically. For a workspace where we
+# bump `workspace.version` frequently (every release invalidates ALL
+# incremental keys at once), the cache provides no benefit and costs the bulk
+# of `target/debug/` size. A 2026-05-04 dev session that did six bumps
+# (v1.8.5 → v1.10.2) accumulated ~180GB in `target/debug/` before the
+# filesystem ran out and shell tooling started failing. Disabling incremental
+# keeps `target/debug/` proportional to actual artifacts, not change history.
+#
+# Trade-off: clean rebuilds after every change instead of incremental rebuilds.
+# Acceptable here because (a) workspace version churn already invalidated
+# the cache anyway, and (b) `cargo check` (no codegen) covers the
+# tight-feedback-loop case faster than `cargo build` ever did.
+[profile.dev]
+incremental = false
