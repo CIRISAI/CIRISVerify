@@ -53,6 +53,18 @@ pub struct VerifyConfig {
     /// Directory for persistent cache storage.
     /// If None, uses XDG cache dir or temp directory.
     pub cache_dir: Option<PathBuf>,
+    /// CIRIS primitive project this engine speaks for (e.g., `"ciris-agent"`,
+    /// `"ciris-verify"`, `"ciris-lens"`). Threaded into the registry client
+    /// as a mandatory `?project=<project>` query string on all project-scoped
+    /// reads. Required since v1.11.0 — eliminates the years-old class of
+    /// bugs where omitting the project defaulted to `"ciris-agent"`
+    /// server-side and silently polluted namespaces.
+    ///
+    /// Default `"ciris-verify"` — verifying its OWN binary is the only
+    /// project a default-built engine can sensibly check; callers from
+    /// other primitives MUST override this. The FFI layer threads this
+    /// field through from the constructor's `project` argument.
+    pub project: String,
 }
 
 impl Default for VerifyConfig {
@@ -70,6 +82,7 @@ impl Default for VerifyConfig {
             offline_grace: Duration::from_secs(72 * 60 * 60), // 72 hours
             key_alias: "ciris_verify_key".into(),
             cache_dir: Self::default_cache_dir(),
+            project: "ciris-verify".into(),
         }
     }
 }

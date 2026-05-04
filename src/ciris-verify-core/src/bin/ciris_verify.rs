@@ -86,6 +86,11 @@ enum Commands {
         /// Registry API endpoint
         #[arg(long, default_value = "https://api.registry.ciris-services-1.ai")]
         registry: String,
+
+        /// CIRIS primitive project to query (kebab-case). Required since
+        /// v1.11.0.
+        #[arg(long, default_value = "ciris-verify")]
+        project: String,
     },
 
     /// Verify FFI function integrity against registry manifest
@@ -97,6 +102,11 @@ enum Commands {
         /// Show individual function details (normally opaque for security)
         #[arg(long)]
         show_details: bool,
+
+        /// CIRIS primitive project to query (kebab-case). Required since
+        /// v1.11.0.
+        #[arg(long, default_value = "ciris-verify")]
+        project: String,
     },
 
     /// Verify agent files against registry manifest (Level 4)
@@ -120,6 +130,12 @@ enum Commands {
         /// Number of files to check in spot-check mode
         #[arg(long, default_value = "10")]
         sample_size: usize,
+
+        /// CIRIS primitive project to query (kebab-case). Required since
+        /// v1.11.0. For agent file verification this is typically
+        /// `ciris-agent`.
+        #[arg(long, default_value = "ciris-agent")]
+        project: String,
     },
 
     /// Verify audit trail integrity (Level 5)
@@ -154,6 +170,11 @@ enum Commands {
         /// Registry API endpoint
         #[arg(long, default_value = "https://api.registry.ciris-services-1.ai")]
         registry: String,
+
+        /// CIRIS primitive project to query (kebab-case). Required since
+        /// v1.11.0.
+        #[arg(long, default_value = "ciris-verify")]
+        project: String,
     },
 }
 
@@ -437,7 +458,7 @@ async fn run_source_check(dns_us: &str, dns_eu: &str, https: &str, timeout_secs:
     }
 }
 
-async fn run_self_check(registry_url: &str, json: bool) {
+async fn run_self_check(registry_url: &str, project: &str, json: bool) {
     if !json {
         println!("\nIS THIS INSPECTION STATION CERTIFIED? (Level 2)");
         println!("================================================\n");
@@ -474,7 +495,7 @@ async fn run_self_check(registry_url: &str, json: bool) {
 
     // Try to fetch manifest from registry
     println!("Fetching manifest from registry...");
-    let client = match RegistryClient::new(registry_url, Duration::from_secs(10)) {
+    let client = match RegistryClient::new(registry_url, Duration::from_secs(10), project) {
         Ok(c) => c,
         Err(e) => {
             if json {
@@ -646,7 +667,7 @@ fn show_system_info() {
     println!("  - FFI function integrity (runtime)");
 }
 
-async fn run_function_check(registry_url: &str, show_details: bool, json: bool) {
+async fn run_function_check(registry_url: &str, project: &str, show_details: bool, json: bool) {
     if !json {
         println!("\nFUNCTION INTEGRITY CHECK");
         println!("========================\n");
@@ -666,7 +687,7 @@ async fn run_function_check(registry_url: &str, show_details: bool, json: bool) 
     }
 
     // Fetch function manifest
-    let client = match RegistryClient::new(registry_url, Duration::from_secs(10)) {
+    let client = match RegistryClient::new(registry_url, Duration::from_secs(10), project) {
         Ok(c) => c,
         Err(e) => {
             if json {
@@ -761,6 +782,7 @@ async fn run_agent_files_check(
     version: &str,
     agent_root: &str,
     registry_url: &str,
+    project: &str,
     spot_check: bool,
     sample_size: usize,
     json: bool,
@@ -805,7 +827,7 @@ async fn run_agent_files_check(
     }
 
     // Fetch file manifest from registry
-    let client = match RegistryClient::new(registry_url, Duration::from_secs(30)) {
+    let client = match RegistryClient::new(registry_url, Duration::from_secs(30), project) {
         Ok(c) => c,
         Err(e) => {
             if json {
@@ -1056,7 +1078,7 @@ fn run_audit_trail_check(
     }
 }
 
-async fn run_list_manifests(version: &str, registry_url: &str, json: bool) {
+async fn run_list_manifests(version: &str, registry_url: &str, project: &str, json: bool) {
     if !json {
         println!("\nAVAILABLE MANIFESTS");
         println!("===================\n");
@@ -1066,7 +1088,7 @@ async fn run_list_manifests(version: &str, registry_url: &str, json: bool) {
         );
     }
 
-    let client = match RegistryClient::new(registry_url, Duration::from_secs(10)) {
+    let client = match RegistryClient::new(registry_url, Duration::from_secs(10), project) {
         Ok(c) => c,
         Err(e) => {
             if json {
@@ -1267,18 +1289,19 @@ async fn main() {
                 println!("  ciris-verify sources");
             }
         },
-        Some(Commands::SelfCheck { registry }) => {
+        Some(Commands::SelfCheck { registry, project }) => {
             print_banner();
-            run_self_check(&registry, json_output).await;
+            run_self_check(&registry, &project, json_output).await;
         },
         Some(Commands::FunctionCheck {
             registry,
             show_details,
+            project,
         }) => {
             if !json_output {
                 print_banner();
             }
-            run_function_check(&registry, show_details, json_output).await;
+            run_function_check(&registry, &project, show_details, json_output).await;
         },
         Some(Commands::AgentFiles {
             version,
@@ -1286,6 +1309,7 @@ async fn main() {
             registry,
             spot_check,
             sample_size,
+            project,
         }) => {
             if !json_output {
                 print_banner();
@@ -1294,6 +1318,7 @@ async fn main() {
                 &version,
                 &agent_root,
                 &registry,
+                &project,
                 spot_check,
                 sample_size,
                 json_output,
@@ -1319,11 +1344,15 @@ async fn main() {
                 json_output,
             );
         },
-        Some(Commands::ListManifests { version, registry }) => {
+        Some(Commands::ListManifests {
+            version,
+            registry,
+            project,
+        }) => {
             if !json_output {
                 print_banner();
             }
-            run_list_manifests(&version, &registry, json_output).await;
+            run_list_manifests(&version, &registry, &project, json_output).await;
         },
         None => {
             // No command - show help

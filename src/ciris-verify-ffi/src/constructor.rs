@@ -239,15 +239,23 @@ fn run_verification() -> FunctionIntegrityStatus {
         let target = detect_target();
         let version = env!("CARGO_PKG_VERSION");
 
-        // Fetch manifest (5 second timeout)
-        let registry = match RegistryClient::new(DEFAULT_REGISTRY_URL, Duration::from_secs(5)) {
-            Ok(r) => r,
-            Err(e) => {
-                return FunctionIntegrityStatus::Unavailable {
-                    reason: format!("client:{}", e),
-                }
-            },
-        };
+        // Fetch manifest (5 second timeout). The early-verify ctor is part of
+        // the ciris-verify-ffi shared library itself — its job is to verify
+        // the running .so/.dll/.dylib against the registry. The project is
+        // statically `ciris-verify` regardless of which downstream primitive
+        // dlopen()s us. (Pre-v1.11.0 this defaulted to ciris-agent
+        // server-side, which silently misverified verify against agent's
+        // namespace for years.)
+        let registry =
+            match RegistryClient::new(DEFAULT_REGISTRY_URL, Duration::from_secs(5), "ciris-verify")
+            {
+                Ok(r) => r,
+                Err(e) => {
+                    return FunctionIntegrityStatus::Unavailable {
+                        reason: format!("client:{}", e),
+                    }
+                },
+            };
 
         let manifest = match registry.get_function_manifest(version, target).await {
             Ok(m) => m,

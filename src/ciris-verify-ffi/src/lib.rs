@@ -2563,11 +2563,7 @@ pub unsafe extern "C" fn ciris_verify_await_key_registration(
     let result = rt.block_on(async {
         use ciris_verify_core::registry::{ResilientRegistryClient, FALLBACK_REGISTRY_URLS};
 
-        let client = match ResilientRegistryClient::new(
-            "https://api.registry.ciris-services-1.ai",
-            FALLBACK_REGISTRY_URLS,
-            std::time::Duration::from_secs(5),
-        ) {
+        let client = match ResilientRegistryClient::new("https://api.registry.ciris-services-1.ai", FALLBACK_REGISTRY_URLS, std::time::Duration::from_secs(5), "ciris-verify") {
             Ok(c) => c,
             Err(e) => {
                 tracing::error!("Failed to create registry client: {}", e);
@@ -4658,6 +4654,7 @@ pub unsafe extern "C" fn ciris_verify_get_integrity_nonce(
         let client = ciris_verify_core::RegistryClient::new(
             "https://api.registry.ciris-services-1.ai",
             std::time::Duration::from_secs(10),
+            "ciris-verify",
         )?;
         client.get_integrity_nonce().await
     });
@@ -4892,6 +4889,7 @@ unsafe fn verify_integrity_token_inner(
                 let client = ciris_verify_core::RegistryClient::new(
                     "https://api.registry.ciris-services-1.ai",
                     std::time::Duration::from_secs(15),
+                    "ciris-verify",
                 )?;
                 client.verify_integrity_token(token_str, nonce_str).await
             })
@@ -5133,6 +5131,7 @@ pub unsafe extern "C" fn ciris_verify_get_app_attest_nonce(
         let client = ciris_verify_core::RegistryClient::new(
             "https://api.registry.ciris-services-1.ai",
             std::time::Duration::from_secs(10),
+            "ciris-verify",
         )?;
         client.get_app_attest_nonce().await
     });
@@ -5299,6 +5298,7 @@ pub unsafe extern "C" fn ciris_verify_app_attest(
         let client = ciris_verify_core::RegistryClient::new(
             "https://api.registry.ciris-services-1.ai",
             std::time::Duration::from_secs(30),
+            "ciris-verify",
         )?;
         client
             .verify_app_attest(&request.attestation, &request.key_id, &request.nonce)
@@ -5551,6 +5551,7 @@ pub unsafe extern "C" fn ciris_verify_app_attest_assertion(
         let client = ciris_verify_core::RegistryClient::new(
             "https://api.registry.ciris-services-1.ai",
             std::time::Duration::from_secs(30),
+            "ciris-verify",
         )?;
         client
             .verify_app_attest_assertion(
@@ -5749,6 +5750,7 @@ pub unsafe extern "C" fn ciris_verify_tpm_attestation(
         let client = ciris_verify_core::RegistryClient::new(
             "https://api.registry.ciris-services-1.ai",
             std::time::Duration::from_secs(30),
+            "ciris-verify",
         )?;
         client.verify_tpm_attestation(&request).await
     });

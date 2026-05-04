@@ -523,6 +523,7 @@ impl UnifiedAttestationEngine {
             &config.https_endpoint,
             FALLBACK_REGISTRY_URLS,
             config.timeout,
+            &config.project,
         )
         .ok();
 
