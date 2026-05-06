@@ -125,9 +125,9 @@ jobs:
           key: release-musl-aarch64
 
       - name: Install zig
-        run: |
-          curl -sSL https://ziglang.org/download/0.13.0/zig-linux-x86_64-0.13.0.tar.xz | tar xJ
-          echo "$PWD/zig-linux-x86_64-0.13.0" >> $GITHUB_PATH
+        uses: mlugg/setup-zig@v2
+        with:
+          version: 0.13.0
 
       - name: Install cargo-zigbuild
         run: cargo install cargo-zigbuild
