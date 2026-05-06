@@ -1173,15 +1173,58 @@ impl UnifiedAttestationEngine {
         // NOTE: When module_integrity is also run, we don't count python_integrity
         // toward checks_total/checks_passed because module_integrity supersedes it.
         // We still run python_integrity for diagnostics and backwards compatibility.
-        let count_python_integrity =
-            request.python_hashes.is_some() && !should_run_module_integrity;
         info!("VERIFY STEP 5/6 STARTING: Python module integrity");
-        let python_integrity = if let Some(ref hashes) = request.python_hashes {
+
+        // If the caller didn't supply python_hashes (no JSON producer on this
+        // platform — e.g. desktop, server) but did supply agent_root, walk the
+        // tree ourselves. Algorithm parity with mobile_main.py and
+        // tools/dev/regenerate_python_hashes.py — see #12.
+        let synthesized_python_hashes: Option<PythonModuleHashes> = if request
+            .python_hashes
+            .is_none()
+        {
+            request.agent_root.as_deref().and_then(|root| {
+                    match synthesize_python_hashes_from_disk(
+                        root,
+                        request.agent_version.as_deref().unwrap_or(""),
+                    ) {
+                        Ok(h) if h.module_count > 0 => Some(h),
+                        Ok(_) => {
+                            warn!("Python tree-walk produced 0 modules under {} (expected ciris_engine/ and/or ciris_adapters/ packages)", root);
+                            None
+                        },
+                        Err(e) => {
+                            warn!("Python tree-walk of {} failed: {}", root, e);
+                            None
+                        },
+                    }
+                })
+        } else {
+            None
+        };
+
+        let python_hashes_source: &'static str = if request.python_hashes.is_some() {
+            "agent-supplied"
+        } else if synthesized_python_hashes.is_some() {
+            "synthesized from agent_root"
+        } else {
+            "none"
+        };
+
+        let active_python_hashes: Option<&PythonModuleHashes> = request
+            .python_hashes
+            .as_ref()
+            .or(synthesized_python_hashes.as_ref());
+
+        let count_python_integrity = active_python_hashes.is_some() && !should_run_module_integrity;
+
+        let python_integrity = if let Some(hashes) = active_python_hashes {
             if count_python_integrity {
                 checks_total += 1;
             }
 
             diagnostics.push_str("=== PYTHON INTEGRITY ===\n");
+            diagnostics.push_str(&format!("  Hashes source: {}\n", python_hashes_source));
             diagnostics.push_str(&format!(
                 "  Modules provided: {} (total_hash: {}...)\n",
                 hashes.module_count,
@@ -1425,8 +1468,16 @@ impl UnifiedAttestationEngine {
             );
             Some(result)
         } else {
-            diagnostics.push_str("=== PYTHON INTEGRITY ===\n  SKIP (no hashes provided)\n\n");
-            info!("VERIFY STEP 5/6 COMPLETE: SKIP (no hashes provided)");
+            let skip_reason = if request.agent_root.is_none() {
+                "no python_hashes and no agent_root"
+            } else {
+                "tree-walk found no python modules under agent_root"
+            };
+            diagnostics.push_str(&format!(
+                "=== PYTHON INTEGRITY ===\n  SKIP ({})\n\n",
+                skip_reason
+            ));
+            info!("VERIFY STEP 5/6 COMPLETE: SKIP ({})", skip_reason);
             None
         };
 
@@ -2213,6 +2264,97 @@ impl UnifiedAttestationEngine {
     }
 }
 
+/// Walk `{agent_root}/{ciris_engine,ciris_adapters}` and produce a
+/// `PythonModuleHashes` byte-for-byte equivalent to what mobile_main.py and
+/// tools/dev/regenerate_python_hashes.py emit. Used as a fallback at Step 5/6
+/// when the caller didn't pass `python_hashes` (no platform JSON producer)
+/// but did pass `agent_root` — see CIRISVerify#12.
+///
+/// Algorithm:
+///   for package in ["ciris_engine", "ciris_adapters"]:
+///       for py_file in rglob "{agent_root}/{package}/**/*.py":
+///           rel = py_file relative to agent_root, '/'-normalized
+///           module_hashes[rel] = sha256(file_bytes).hex()
+///   total_hash = sha256("\n".join(sorted("{rel}:{hash}" for rel, hash in module_hashes))).hex()
+fn synthesize_python_hashes_from_disk(
+    agent_root: &str,
+    agent_version: &str,
+) -> Result<PythonModuleHashes, std::io::Error> {
+    use sha2::{Digest, Sha256};
+
+    const PACKAGES: &[&str] = &["ciris_engine", "ciris_adapters"];
+
+    let root = Path::new(agent_root);
+    let mut module_hashes: BTreeMap<String, String> = BTreeMap::new();
+    let mut all_hashes: Vec<String> = Vec::new();
+
+    for package in PACKAGES {
+        let package_path = root.join(package);
+        if !package_path.is_dir() {
+            // Mirrors mobile producer: missing optional package isn't fatal.
+            continue;
+        }
+        walk_py_files(&package_path, root, &mut |rel_str: String, bytes: &[u8]| {
+            let mut hasher = Sha256::new();
+            hasher.update(bytes);
+            let file_hash = hex::encode(hasher.finalize());
+            all_hashes.push(format!("{}:{}", rel_str, file_hash));
+            module_hashes.insert(rel_str, file_hash);
+        })?;
+    }
+
+    all_hashes.sort();
+    let combined = all_hashes.join("\n");
+    let mut hasher = Sha256::new();
+    hasher.update(combined.as_bytes());
+    let total_hash = hex::encode(hasher.finalize());
+
+    let module_count = module_hashes.len();
+    let computed_at = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+
+    Ok(PythonModuleHashes {
+        total_hash,
+        module_hashes,
+        module_count,
+        agent_version: agent_version.to_string(),
+        computed_at,
+    })
+}
+
+fn walk_py_files(
+    dir: &Path,
+    root: &Path,
+    visit: &mut dyn FnMut(String, &[u8]),
+) -> Result<(), std::io::Error> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_type = entry.file_type()?;
+        if file_type.is_dir() {
+            walk_py_files(&path, root, visit)?;
+        } else if file_type.is_file() && path.extension().and_then(|e| e.to_str()) == Some("py") {
+            let rel = path.strip_prefix(root).map_err(|_| {
+                std::io::Error::other(format!(
+                    "path {} not under root {}",
+                    path.display(),
+                    root.display()
+                ))
+            })?;
+            let rel_str = rel
+                .components()
+                .map(|c| c.as_os_str().to_string_lossy().to_string())
+                .collect::<Vec<_>>()
+                .join("/");
+            let bytes = std::fs::read(&path)?;
+            visit(rel_str, &bytes);
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2291,5 +2433,183 @@ mod tests {
         assert_eq!(summary.files_found, 50);
         assert_eq!(summary.files_missing, 50);
         assert!(summary.partial_check);
+    }
+
+    /// Algorithm parity check: synthesize_python_hashes_from_disk must produce
+    /// the same module_hashes / total_hash that mobile_main.py:_save_hashes_to_file
+    /// and tools/dev/regenerate_python_hashes.py emit for the same source tree.
+    /// Reference algorithm:
+    ///   for package in ["ciris_engine", "ciris_adapters"]:
+    ///     for py_file in (root/package).rglob("*.py"):
+    ///       rel = py_file.relative_to(root).replace("\\", "/")
+    ///       module_hashes[rel] = sha256(file.read()).hexdigest()
+    ///   total_hash = sha256("\n".join(sorted(f"{rel}:{h}" for rel,h in items))).hexdigest()
+    #[test]
+    fn synthesized_python_hashes_match_canonical_algorithm() {
+        use sha2::{Digest, Sha256};
+        use std::fs;
+
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+
+        let files: &[(&str, &[u8])] = &[
+            ("ciris_engine/__init__.py", b"# engine init\n"),
+            ("ciris_engine/core.py", b"def core():\n    return 42\n"),
+            (
+                "ciris_engine/logic/services.py",
+                b"# nested module\nclass S: pass\n",
+            ),
+            ("ciris_adapters/__init__.py", b""),
+            ("ciris_adapters/api.py", b"# adapter\n"),
+            // Non-package files MUST be ignored (parity with mobile producer).
+            ("README.md", b"# noise\n"),
+            ("ciris_engine/notes.txt", b"text noise\n"),
+            ("other_package/foo.py", b"# wrong package, ignore\n"),
+        ];
+
+        for (rel, contents) in files {
+            let path = root.join(rel);
+            fs::create_dir_all(path.parent().unwrap()).unwrap();
+            fs::write(&path, contents).unwrap();
+        }
+
+        let result = synthesize_python_hashes_from_disk(root.to_str().unwrap(), "test-1.2.3")
+            .expect("synthesize ok");
+
+        // Reference computation: only files under PACKAGES that end in .py.
+        let mut expected_module_hashes: BTreeMap<String, String> = BTreeMap::new();
+        let mut expected_all: Vec<String> = Vec::new();
+        for (rel, contents) in files {
+            let parts: Vec<&str> = rel.splitn(2, '/').collect();
+            if parts.len() != 2 {
+                continue;
+            }
+            let pkg = parts[0];
+            if pkg != "ciris_engine" && pkg != "ciris_adapters" {
+                continue;
+            }
+            if !rel.ends_with(".py") {
+                continue;
+            }
+            let mut hasher = Sha256::new();
+            hasher.update(contents);
+            let h = hex::encode(hasher.finalize());
+            expected_all.push(format!("{}:{}", rel, h));
+            expected_module_hashes.insert(rel.to_string(), h);
+        }
+        expected_all.sort();
+        let mut hasher = Sha256::new();
+        hasher.update(expected_all.join("\n").as_bytes());
+        let expected_total = hex::encode(hasher.finalize());
+
+        assert_eq!(result.module_count, 5, "must hash 5 .py files in PACKAGES");
+        assert_eq!(result.module_hashes.len(), 5);
+        assert_eq!(result.module_hashes, expected_module_hashes);
+        assert_eq!(
+            result.total_hash, expected_total,
+            "total_hash must match canonical algorithm byte-for-byte"
+        );
+        assert_eq!(result.agent_version, "test-1.2.3");
+        assert!(result.computed_at > 0);
+
+        // Non-package and non-.py files must be excluded.
+        assert!(!result.module_hashes.contains_key("README.md"));
+        assert!(!result.module_hashes.contains_key("ciris_engine/notes.txt"));
+        assert!(!result.module_hashes.contains_key("other_package/foo.py"));
+    }
+
+    #[test]
+    fn synthesize_returns_zero_modules_when_packages_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        // No ciris_engine/ or ciris_adapters/ directories at all.
+        std::fs::write(root.join("README.md"), b"# nothing here\n").unwrap();
+
+        let result = synthesize_python_hashes_from_disk(root.to_str().unwrap(), "v0")
+            .expect("synthesize ok");
+
+        assert_eq!(result.module_count, 0);
+        assert!(result.module_hashes.is_empty());
+        // Empty input → sha256("") → known constant.
+        assert_eq!(
+            result.total_hash,
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        );
+    }
+
+    /// Cross-language parity: against a real CIRISAgent source tree, our synthesizer
+    /// must produce the same total_hash and module count as the canonical Python
+    /// producer (tools/dev/regenerate_python_hashes.py / mobile_main.py).
+    ///
+    /// Ignored by default (requires CIRISAgent checkout + python-precomputed JSON).
+    /// Run with: `cargo test -p ciris-verify-core --lib unified::tests::cross_language_parity_against_real_agent_tree -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn cross_language_parity_against_real_agent_tree() {
+        let agent_root = "/home/emoore/CIRISAgent";
+        let json_path = "/home/emoore/CIRISAgent/startup_python_hashes.json";
+
+        if !Path::new(agent_root).exists() || !Path::new(json_path).exists() {
+            eprintln!("SKIP: requires {} and {}", agent_root, json_path);
+            return;
+        }
+
+        let py_json: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(json_path).expect("read python json"))
+                .expect("parse python json");
+        let py_total = py_json["total_hash"].as_str().expect("python total_hash");
+        let py_count = py_json["modules_hashed"]
+            .as_u64()
+            .expect("python modules_hashed") as usize;
+        let py_modules = py_json["module_hashes"]
+            .as_object()
+            .expect("python module_hashes");
+
+        let rust = synthesize_python_hashes_from_disk(agent_root, "parity-test")
+            .expect("rust synthesize ok");
+
+        eprintln!("python: total={} modules={}", py_total, py_count);
+        eprintln!(
+            "rust:   total={} modules={}",
+            rust.total_hash, rust.module_count
+        );
+
+        assert_eq!(rust.module_count, py_count, "module count mismatch");
+        assert_eq!(rust.total_hash, py_total, "total_hash mismatch");
+        assert_eq!(rust.module_hashes.len(), py_modules.len());
+        for (k, v) in py_modules {
+            let py_hash = v.as_str().unwrap();
+            let rust_hash = rust
+                .module_hashes
+                .get(k)
+                .unwrap_or_else(|| panic!("rust missing module {}", k));
+            assert_eq!(rust_hash, py_hash, "hash mismatch for {}", k);
+        }
+    }
+
+    #[test]
+    fn synthesize_handles_only_one_package() {
+        use sha2::{Digest, Sha256};
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        let pkg = root.join("ciris_engine");
+        std::fs::create_dir_all(&pkg).unwrap();
+        std::fs::write(pkg.join("a.py"), b"x = 1\n").unwrap();
+
+        let result = synthesize_python_hashes_from_disk(root.to_str().unwrap(), "v1")
+            .expect("synthesize ok");
+
+        assert_eq!(result.module_count, 1);
+        let mut hasher = Sha256::new();
+        hasher.update(b"x = 1\n");
+        let file_hash = hex::encode(hasher.finalize());
+        assert_eq!(
+            result.module_hashes.get("ciris_engine/a.py"),
+            Some(&file_hash)
+        );
+
+        let mut th = Sha256::new();
+        th.update(format!("ciris_engine/a.py:{}", file_hash).as_bytes());
+        assert_eq!(result.total_hash, hex::encode(th.finalize()));
     }
 }
