@@ -117,7 +117,7 @@ impl FileManifest {
 /// read method (`get_build_by_version`, `get_binary_manifest`,
 /// `get_function_manifest`, `list_function_manifest_targets`) takes
 /// `project: &str` as its first argument and validates it via
-/// [`validate_project`]. This lets a single client instance serve multiple
+/// `validate_project`. This lets a single client instance serve multiple
 /// projects in one verify cycle (e.g., L1/L2 self-attestation under
 /// `ciris-verify` + L4 agent build fetch under `ciris-agent`), which was
 /// the design flaw closed by [#10][issue-10].
@@ -228,7 +228,7 @@ impl RegistryClient {
     /// Fetch a build record by version.
     ///
     /// `project` selects the registry namespace (e.g., `"ciris-verify"`,
-    /// `"ciris-agent"`). Validated per-call via [`validate_project`].
+    /// `"ciris-agent"`). Validated per-call via `validate_project`.
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self), fields(project = %project, version = %version))]
     pub async fn get_build_by_version(
