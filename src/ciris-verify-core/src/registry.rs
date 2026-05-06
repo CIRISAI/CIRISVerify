@@ -110,6 +110,24 @@ impl FileManifest {
 /// Uses platform-appropriate HTTP:
 /// - Android/iOS: Blocking `ureq` (tokio async I/O is broken on mobile)
 /// - Desktop: Async `reqwest`
+///
+/// ## Project handling (v1.12.0+)
+///
+/// **Project is per-call, not bound at construction.** Each project-scoped
+/// read method (`get_build_by_version`, `get_binary_manifest`,
+/// `get_function_manifest`, `list_function_manifest_targets`) takes
+/// `project: &str` as its first argument and validates it via
+/// [`validate_project`]. This lets a single client instance serve multiple
+/// projects in one verify cycle (e.g., L1/L2 self-attestation under
+/// `ciris-verify` + L4 agent build fetch under `ciris-agent`), which was
+/// the design flaw closed by [#10][issue-10].
+///
+/// v1.11.0 introduced `project` as a constructor argument to close the
+/// silent server-side default-to-`ciris-agent` footgun. v1.12.0 keeps the
+/// validation but lifts it to per-call so multi-project verifiers don't
+/// have to instantiate one client per project.
+///
+/// [issue-10]: https://github.com/CIRISAI/CIRISVerify/issues/10
 pub struct RegistryClient {
     /// HTTP client (reqwest on desktop, ureq on mobile).
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -118,58 +136,56 @@ pub struct RegistryClient {
     agent: ureq::Agent,
     /// Base URL for the registry API.
     base_url: String,
-    /// CIRIS primitive project this client speaks for (e.g. `"ciris-verify"`,
-    /// `"ciris-agent"`, `"ciris-lens"`). Auto-appended as `?project=<project>`
-    /// to every project-scoped read URL. Required since v1.11.0; registry-side
-    /// default of `"ciris-agent"` was the source of years of cross-project
-    /// pollution (e.g. ciris-verify's binary_manifests rows landing under
-    /// `ciris-agent` because the field was omitted from POSTs and reads).
-    project: String,
+}
+
+/// Validate a CIRIS primitive project name.
+///
+/// Must be non-empty kebab-case ASCII (`[a-z0-9-]+`) with no leading/trailing
+/// dash, so it slots into URLs without percent-encoding.
+///
+/// Called by every project-scoped read method on [`RegistryClient`] /
+/// [`ResilientRegistryClient`]. v1.11.0 introduced this validation at
+/// construction time; v1.12.0 lifted it to per-call so a single client
+/// instance can serve multiple projects in one verify cycle (closes #10).
+pub(crate) fn validate_project(project: &str) -> Result<(), VerifyError> {
+    if project.is_empty() {
+        return Err(VerifyError::HttpsError {
+            message: "RegistryClient: project must be non-empty (e.g., \"ciris-verify\", \
+                      \"ciris-agent\"); v1.11.0 made project mandatory to prevent the \
+                      server-side default-to-ciris-agent behavior that caused cross-project \
+                      pollution"
+                .to_string(),
+        });
+    }
+    let ok = project
+        .bytes()
+        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
+    if !ok || project.starts_with('-') || project.ends_with('-') {
+        return Err(VerifyError::HttpsError {
+            message: format!(
+                "RegistryClient: project {project:?} is not kebab-case ASCII \
+                 (`[a-z0-9-]+`, no leading/trailing dash)"
+            ),
+        });
+    }
+    Ok(())
 }
 
 impl RegistryClient {
-    /// Validate a project name. Must be non-empty kebab-case ASCII
-    /// (`[a-z0-9-]+`) so it slots into URLs without escaping. Rejects
-    /// anything that would force percent-encoding.
-    fn validate_project(project: &str) -> Result<(), VerifyError> {
-        if project.is_empty() {
-            return Err(VerifyError::HttpsError {
-                message: "RegistryClient: project must be non-empty (e.g., \"ciris-verify\", \
-                          \"ciris-agent\"); v1.11.0 made project mandatory to prevent the \
-                          server-side default-to-ciris-agent behavior that caused cross-project \
-                          pollution"
-                    .to_string(),
-            });
-        }
-        let ok = project
-            .bytes()
-            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-');
-        if !ok || project.starts_with('-') || project.ends_with('-') {
-            return Err(VerifyError::HttpsError {
-                message: format!(
-                    "RegistryClient: project {project:?} is not kebab-case ASCII \
-                     (`[a-z0-9-]+`, no leading/trailing dash)"
-                ),
-            });
-        }
-        Ok(())
-    }
-
     /// Create a new registry client.
     ///
     /// # Arguments
     ///
     /// * `base_url` - Base URL for the registry API (e.g., `https://api.registry.ciris-services-1.ai`)
     /// * `timeout` - Request timeout
-    /// * `project` - CIRIS primitive name in kebab-case (e.g., `"ciris-verify"`,
-    ///   `"ciris-agent"`, `"ciris-lens"`). **Required since v1.11.0** —
-    ///   auto-appended to every project-scoped URL as `?project=<project>`.
-    ///   Eliminates the years-old class of bugs where omitting the project
-    ///   defaulted to `"ciris-agent"` server-side and silently polluted
-    ///   namespaces.
+    ///
+    /// # Project
+    ///
+    /// Project is **not** bound at construction time. Each project-scoped
+    /// read method takes `project: &str` as its first argument. See the
+    /// type-level docs for rationale (closes #10).
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    pub fn new(base_url: &str, timeout: Duration, project: &str) -> Result<Self, VerifyError> {
-        Self::validate_project(project)?;
+    pub fn new(base_url: &str, timeout: Duration) -> Result<Self, VerifyError> {
         // Use aggressive timeouts to fail fast on unreachable hosts
         // This is critical for emulators where TCP connections can hang indefinitely
         let connect_timeout = Duration::from_secs(3);
@@ -191,26 +207,18 @@ impl RegistryClient {
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
-            project: project.to_string(),
         })
     }
 
     /// Create a new registry client (mobile - blocking ureq).
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    pub fn new(base_url: &str, timeout: Duration, project: &str) -> Result<Self, VerifyError> {
-        Self::validate_project(project)?;
-        info!("RegistryClient: using mobile blocking HTTP (ureq), project={project}");
+    pub fn new(base_url: &str, timeout: Duration) -> Result<Self, VerifyError> {
+        info!("RegistryClient: using mobile blocking HTTP (ureq)");
         let agent = mobile_http::create_tls_agent(timeout)?;
         Ok(Self {
             agent,
             base_url: base_url.trim_end_matches('/').to_string(),
-            project: project.to_string(),
         })
-    }
-
-    /// Get the CIRIS primitive project this client is configured for.
-    pub fn project(&self) -> &str {
-        &self.project
     }
 
     // =========================================================================
@@ -218,12 +226,20 @@ impl RegistryClient {
     // =========================================================================
 
     /// Fetch a build record by version.
+    ///
+    /// `project` selects the registry namespace (e.g., `"ciris-verify"`,
+    /// `"ciris-agent"`). Validated per-call via [`validate_project`].
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    #[instrument(skip(self), fields(version = %version, project = %self.project))]
-    pub async fn get_build_by_version(&self, version: &str) -> Result<BuildRecord, VerifyError> {
+    #[instrument(skip(self), fields(project = %project, version = %version))]
+    pub async fn get_build_by_version(
+        &self,
+        project: &str,
+        version: &str,
+    ) -> Result<BuildRecord, VerifyError> {
+        validate_project(project)?;
         let url = format!(
             "{}/v1/builds/{}?project={}",
-            self.base_url, version, self.project
+            self.base_url, version, project
         );
         debug!("Fetching build from {}", url);
 
@@ -308,11 +324,16 @@ impl RegistryClient {
 
     /// Fetch a build record by version (mobile - blocking).
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    #[instrument(skip(self), fields(version = %version, project = %self.project))]
-    pub async fn get_build_by_version(&self, version: &str) -> Result<BuildRecord, VerifyError> {
+    #[instrument(skip(self), fields(project = %project, version = %version))]
+    pub async fn get_build_by_version(
+        &self,
+        project: &str,
+        version: &str,
+    ) -> Result<BuildRecord, VerifyError> {
+        validate_project(project)?;
         let url = format!(
             "{}/v1/builds/{}?project={}",
-            self.base_url, version, self.project
+            self.base_url, version, project
         );
         debug!("Fetching build from {} (mobile blocking)", url);
 
@@ -417,12 +438,20 @@ impl RegistryClient {
     // =========================================================================
 
     /// Fetch the binary manifest for self-verification.
+    ///
+    /// `project` selects the registry namespace (typically `"ciris-verify"`
+    /// for an L1 self-attestation read).
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    #[instrument(skip(self), fields(version = %version, project = %self.project))]
-    pub async fn get_binary_manifest(&self, version: &str) -> Result<BinaryManifest, VerifyError> {
+    #[instrument(skip(self), fields(project = %project, version = %version))]
+    pub async fn get_binary_manifest(
+        &self,
+        project: &str,
+        version: &str,
+    ) -> Result<BinaryManifest, VerifyError> {
+        validate_project(project)?;
         let url = format!(
             "{}/v1/verify/binary-manifest/{}?project={}",
-            self.base_url, version, self.project
+            self.base_url, version, project
         );
         info!("Fetching binary manifest from URL: {}", url);
 
@@ -460,16 +489,20 @@ impl RegistryClient {
     }
 
     /// Fetch the function-level integrity manifest for a specific target.
+    ///
+    /// `project` selects the registry namespace.
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    #[instrument(skip(self), fields(version = %version, target = %target))]
+    #[instrument(skip(self), fields(project = %project, version = %version, target = %target))]
     pub async fn get_function_manifest(
         &self,
+        project: &str,
         version: &str,
         target: &str,
     ) -> Result<crate::security::function_integrity::FunctionManifest, VerifyError> {
+        validate_project(project)?;
         let url = format!(
             "{}/v1/verify/function-manifest/{}/{}?project={}",
-            self.base_url, version, target, self.project
+            self.base_url, version, target, project
         );
         debug!("Fetching function manifest from {}", url);
 
@@ -614,15 +647,19 @@ impl RegistryClient {
     }
 
     /// List available target triples for function manifests.
+    ///
+    /// `project` selects the registry namespace.
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    #[instrument(skip(self), fields(version = %version))]
+    #[instrument(skip(self), fields(project = %project, version = %version))]
     pub async fn list_function_manifest_targets(
         &self,
+        project: &str,
         version: &str,
     ) -> Result<FunctionManifestTargets, VerifyError> {
+        validate_project(project)?;
         let url = format!(
             "{}/v1/verify/function-manifests/{}?project={}",
-            self.base_url, version, self.project
+            self.base_url, version, project
         );
         debug!("Listing function manifest targets from {}", url);
 
@@ -667,11 +704,16 @@ impl RegistryClient {
 
     /// Fetch the binary manifest for self-verification (mobile - blocking).
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    #[instrument(skip(self), fields(version = %version, project = %self.project))]
-    pub async fn get_binary_manifest(&self, version: &str) -> Result<BinaryManifest, VerifyError> {
+    #[instrument(skip(self), fields(project = %project, version = %version))]
+    pub async fn get_binary_manifest(
+        &self,
+        project: &str,
+        version: &str,
+    ) -> Result<BinaryManifest, VerifyError> {
+        validate_project(project)?;
         let url = format!(
             "{}/v1/verify/binary-manifest/{}?project={}",
-            self.base_url, version, self.project
+            self.base_url, version, project
         );
         info!("Fetching binary manifest from URL: {} (mobile)", url);
         mobile_http::get_json(&self.agent, &url)
@@ -679,15 +721,17 @@ impl RegistryClient {
 
     /// Fetch the function-level integrity manifest (mobile - blocking).
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    #[instrument(skip(self), fields(version = %version, target = %target, project = %self.project))]
+    #[instrument(skip(self), fields(project = %project, version = %version, target = %target))]
     pub async fn get_function_manifest(
         &self,
+        project: &str,
         version: &str,
         target: &str,
     ) -> Result<crate::security::function_integrity::FunctionManifest, VerifyError> {
+        validate_project(project)?;
         let url = format!(
             "{}/v1/verify/function-manifest/{}/{}?project={}",
-            self.base_url, version, target, self.project
+            self.base_url, version, target, project
         );
         debug!("Fetching function manifest from {} (mobile)", url);
         mobile_http::get_json(&self.agent, &url)
@@ -695,14 +739,16 @@ impl RegistryClient {
 
     /// List available target triples for function manifests (mobile - blocking).
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    #[instrument(skip(self), fields(version = %version, project = %self.project))]
+    #[instrument(skip(self), fields(project = %project, version = %version))]
     pub async fn list_function_manifest_targets(
         &self,
+        project: &str,
         version: &str,
     ) -> Result<FunctionManifestTargets, VerifyError> {
+        validate_project(project)?;
         let url = format!(
             "{}/v1/verify/function-manifests/{}?project={}",
-            self.base_url, version, self.project
+            self.base_url, version, project
         );
         debug!("Listing function manifest targets from {} (mobile)", url);
         mobile_http::get_json(&self.agent, &url)
@@ -1677,10 +1723,17 @@ pub fn verify_self_against_manifest(manifest: &BinaryManifest) -> Result<bool, V
 pub const DEFAULT_REGISTRY_URL: &str = "https://api.registry.ciris-services-1.ai";
 
 /// Fallback registry URLs for resilience.
-/// These are independent domains to survive single-domain outages or MITM attacks.
+///
+/// Independent regional hosts to survive single-host outages. v1.12.0 fixed
+/// the typoed names (`registry-us` / `registry-eu`, both NXDOMAIN) to the
+/// actually-deployed `us.registry` / `eu.registry` sub-zones — see
+/// [#11][issue-11]. CIRISBridge#1 (closed 2026-05-06) opened anonymous
+/// reads on these regional hosts so failover actually works at runtime.
+///
+/// [issue-11]: https://github.com/CIRISAI/CIRISVerify/issues/11
 pub const FALLBACK_REGISTRY_URLS: &[&str] = &[
-    "https://registry-us.ciris-services-1.ai",
-    "https://registry-eu.ciris-services-1.ai",
+    "https://us.registry.ciris-services-1.ai",
+    "https://eu.registry.ciris-services-1.ai",
 ];
 
 /// Multi-endpoint registry client with automatic failover.
@@ -1697,33 +1750,25 @@ pub struct ResilientRegistryClient {
 impl ResilientRegistryClient {
     /// Create a new resilient client with primary and fallback endpoints.
     ///
-    /// `project` is mandatory since v1.11.0 — passed through to every
-    /// inner [`RegistryClient`] so failover requests stay scoped to the
-    /// caller's primitive instead of silently landing on the registry's
-    /// `"ciris-agent"` server-side default.
+    /// Project is supplied per-call to each project-scoped read method
+    /// (v1.12.0+) — see [`RegistryClient`] type docs.
     pub fn new(
         primary_url: &str,
         fallback_urls: &[&str],
         timeout: Duration,
-        project: &str,
     ) -> Result<Self, VerifyError> {
-        let primary = RegistryClient::new(primary_url, timeout, project)?;
+        let primary = RegistryClient::new(primary_url, timeout)?;
         let fallbacks = fallback_urls
             .iter()
-            .filter_map(|url| RegistryClient::new(url, timeout, project).ok())
+            .filter_map(|url| RegistryClient::new(url, timeout).ok())
             .collect();
 
         Ok(Self { primary, fallbacks })
     }
 
     /// Create with default endpoints.
-    pub fn with_defaults(timeout: Duration, project: &str) -> Result<Self, VerifyError> {
-        Self::new(
-            DEFAULT_REGISTRY_URL,
-            FALLBACK_REGISTRY_URLS,
-            timeout,
-            project,
-        )
+    pub fn with_defaults(timeout: Duration) -> Result<Self, VerifyError> {
+        Self::new(DEFAULT_REGISTRY_URL, FALLBACK_REGISTRY_URLS, timeout)
     }
 
     /// Get the underlying primary client (for compatibility).
@@ -1732,9 +1777,13 @@ impl ResilientRegistryClient {
     }
 
     /// Fetch a build record by version with failover.
-    pub async fn get_build_by_version(&self, version: &str) -> Result<BuildRecord, VerifyError> {
+    pub async fn get_build_by_version(
+        &self,
+        project: &str,
+        version: &str,
+    ) -> Result<BuildRecord, VerifyError> {
         // Try primary first
-        match self.primary.get_build_by_version(version).await {
+        match self.primary.get_build_by_version(project, version).await {
             Ok(build) => return Ok(build),
             Err(e) => {
                 warn!("Primary registry failed for build/{}: {}", version, e);
@@ -1743,7 +1792,7 @@ impl ResilientRegistryClient {
 
         // Try fallbacks
         for (i, fallback) in self.fallbacks.iter().enumerate() {
-            match fallback.get_build_by_version(version).await {
+            match fallback.get_build_by_version(project, version).await {
                 Ok(build) => {
                     info!("Fallback[{}] succeeded for build/{}", i, version);
                     return Ok(build);
@@ -1760,8 +1809,12 @@ impl ResilientRegistryClient {
     }
 
     /// Fetch binary manifest with failover.
-    pub async fn get_binary_manifest(&self, version: &str) -> Result<BinaryManifest, VerifyError> {
-        match self.primary.get_binary_manifest(version).await {
+    pub async fn get_binary_manifest(
+        &self,
+        project: &str,
+        version: &str,
+    ) -> Result<BinaryManifest, VerifyError> {
+        match self.primary.get_binary_manifest(project, version).await {
             Ok(m) => return Ok(m),
             Err(e) => warn!(
                 "Primary registry failed for binary-manifest/{}: {}",
@@ -1770,7 +1823,7 @@ impl ResilientRegistryClient {
         }
 
         for (i, fallback) in self.fallbacks.iter().enumerate() {
-            match fallback.get_binary_manifest(version).await {
+            match fallback.get_binary_manifest(project, version).await {
                 Ok(m) => {
                     info!("Fallback[{}] succeeded for binary-manifest/{}", i, version);
                     return Ok(m);
@@ -1793,10 +1846,15 @@ impl ResilientRegistryClient {
     /// Fetch function manifest with failover.
     pub async fn get_function_manifest(
         &self,
+        project: &str,
         version: &str,
         target: &str,
     ) -> Result<crate::security::function_integrity::FunctionManifest, VerifyError> {
-        match self.primary.get_function_manifest(version, target).await {
+        match self
+            .primary
+            .get_function_manifest(project, version, target)
+            .await
+        {
             Ok(m) => return Ok(m),
             Err(e) => warn!(
                 "Primary registry failed for function-manifest/{}/{}: {}",
@@ -1805,7 +1863,10 @@ impl ResilientRegistryClient {
         }
 
         for (i, fallback) in self.fallbacks.iter().enumerate() {
-            match fallback.get_function_manifest(version, target).await {
+            match fallback
+                .get_function_manifest(project, version, target)
+                .await
+            {
                 Ok(m) => {
                     info!(
                         "Fallback[{}] succeeded for function-manifest/{}/{}",
@@ -1873,133 +1934,242 @@ impl ResilientRegistryClient {
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 mod tests {
     use super::*;
+    use std::sync::{Arc, Mutex};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::net::TcpListener;
+
+    /// Spin up a one-shot HTTP server that records the first request line
+    /// and replies 404, so we can inspect URL shape without depending on the
+    /// live registry. Multiple connections are accepted in a loop until the
+    /// caller drops the JoinHandle.
+    async fn one_shot_url_capture() -> (
+        std::net::SocketAddr,
+        Arc<Mutex<Vec<String>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let captured: Arc<Mutex<Vec<String>>> = Arc::new(Mutex::new(Vec::new()));
+        let captured_clone = captured.clone();
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let captured = captured_clone.clone();
+                tokio::spawn(async move {
+                    let (read_half, mut write_half) = sock.split();
+                    let mut reader = BufReader::new(read_half);
+                    let mut request_line = String::new();
+                    if reader.read_line(&mut request_line).await.is_err() {
+                        return;
+                    }
+                    loop {
+                        let mut header = String::new();
+                        if reader.read_line(&mut header).await.is_err() {
+                            return;
+                        }
+                        if header == "\r\n" || header.is_empty() {
+                            break;
+                        }
+                    }
+                    captured
+                        .lock()
+                        .unwrap()
+                        .push(request_line.trim().to_string());
+                    let _ = write_half
+                        .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                        .await;
+                });
+            }
+        });
+        (addr, captured, handle)
+    }
 
     #[test]
-    fn test_client_creation() {
-        let client = RegistryClient::new(
-            DEFAULT_REGISTRY_URL,
-            Duration::from_secs(30),
-            "ciris-verify",
-        );
+    fn client_construction_succeeds_without_project() {
+        // v1.12.0+: project is per-call, not bound at construction. Constructor
+        // takes only (base_url, timeout). Validating an arbitrary URL is fine.
+        let client = RegistryClient::new(DEFAULT_REGISTRY_URL, Duration::from_secs(30));
         assert!(client.is_ok());
     }
 
     #[test]
-    fn test_url_normalization() {
+    fn url_normalization_strips_trailing_slash() {
         let client = RegistryClient::new(
             "https://api.registry.ciris-services-1.ai/",
             Duration::from_secs(30),
-            "ciris-verify",
         )
         .unwrap();
         assert_eq!(client.base_url, "https://api.registry.ciris-services-1.ai");
     }
 
-    #[test]
-    fn test_project_required_and_validated() {
+    /// v1.12.0 lifted project validation from constructor to per-call. This
+    /// test locks the per-call validation behavior so we never accidentally
+    /// silence the "default-to-ciris-agent server-side" footgun again.
+    #[tokio::test]
+    async fn invalid_project_rejected_at_read_time() {
+        let client = RegistryClient::new(DEFAULT_REGISTRY_URL, Duration::from_secs(5)).unwrap();
+
         // Empty rejected.
-        assert!(RegistryClient::new(DEFAULT_REGISTRY_URL, Duration::from_secs(30), "").is_err());
+        let err = client.get_build_by_version("", "1.0.0").await.unwrap_err();
+        assert!(format!("{err}").contains("must be non-empty"), "got: {err}");
+
         // Uppercase rejected.
-        assert!(RegistryClient::new(
-            DEFAULT_REGISTRY_URL,
-            Duration::from_secs(30),
-            "CIRIS-Verify"
-        )
-        .is_err());
+        let err = client
+            .get_build_by_version("CIRIS-Verify", "1.0.0")
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("kebab-case"), "got: {err}");
+
         // Trailing dash rejected.
-        assert!(
-            RegistryClient::new(DEFAULT_REGISTRY_URL, Duration::from_secs(30), "ciris-").is_err()
-        );
+        let err = client
+            .get_build_by_version("ciris-", "1.0.0")
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("kebab-case"), "got: {err}");
+
         // Leading dash rejected.
-        assert!(
-            RegistryClient::new(DEFAULT_REGISTRY_URL, Duration::from_secs(30), "-ciris").is_err()
-        );
+        let err = client
+            .get_build_by_version("-ciris", "1.0.0")
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("kebab-case"), "got: {err}");
+
         // Underscores rejected (kebab-case only).
-        assert!(RegistryClient::new(
-            DEFAULT_REGISTRY_URL,
-            Duration::from_secs(30),
-            "ciris_verify"
-        )
-        .is_err());
-        // Valid ones accepted.
-        assert!(RegistryClient::new(
-            DEFAULT_REGISTRY_URL,
-            Duration::from_secs(30),
-            "ciris-verify"
-        )
-        .is_ok());
+        let err = client
+            .get_binary_manifest("ciris_verify", "1.0.0")
+            .await
+            .unwrap_err();
+        assert!(format!("{err}").contains("kebab-case"), "got: {err}");
+    }
+
+    /// #10 regression lock. A SINGLE client instance must be able to serve
+    /// reads against TWO different projects in the same verify cycle. This
+    /// is the design flaw v1.11.0's bound-at-construction model couldn't
+    /// support, and is the central reason for the v1.12.0 refactor.
+    #[tokio::test]
+    async fn one_client_serves_multiple_projects_correctly() {
+        let (addr, captured, _server) = one_shot_url_capture().await;
+        let client =
+            RegistryClient::new(&format!("http://{}", addr), Duration::from_secs(5)).unwrap();
+
+        // Engine reads its own L1/L2 manifest under ciris-verify ...
+        let _ = client.get_binary_manifest("ciris-verify", "1.12.0").await;
+        // ... and in the same verify cycle, the agent's L4 build under ciris-agent.
+        let _ = client.get_build_by_version("ciris-agent", "2.8.3").await;
+
+        // Brief yield so the spawned server tasks finish writing captured URLs.
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let urls = captured.lock().unwrap().clone();
+        assert!(urls.len() >= 2, "expected ≥2 captured URLs, got {urls:?}");
         assert!(
-            RegistryClient::new(DEFAULT_REGISTRY_URL, Duration::from_secs(30), "ciris-agent")
-                .is_ok()
+            urls.iter()
+                .any(|u| u.contains("GET /v1/verify/binary-manifest/1.12.0?project=ciris-verify")),
+            "missing ciris-verify binary-manifest read; got {urls:?}"
         );
         assert!(
-            RegistryClient::new(DEFAULT_REGISTRY_URL, Duration::from_secs(30), "ciris-edge")
-                .is_ok()
+            urls.iter()
+                .any(|u| u.contains("GET /v1/builds/2.8.3?project=ciris-agent")),
+            "missing ciris-agent build read; got {urls:?}"
         );
     }
 
-    #[test]
-    fn test_project_accessor_returns_stored_value() {
+    /// `get_build_by_hash` is content-keyed (build_hash uniquely identifies
+    /// the row) and is registered as project-agnostic on the server. Locking
+    /// in that the URL we construct does NOT carry a project param — adding
+    /// one would shift the endpoint's semantics.
+    #[tokio::test]
+    async fn get_build_by_hash_url_has_no_project_param() {
+        let (addr, captured, _server) = one_shot_url_capture().await;
         let client =
-            RegistryClient::new(DEFAULT_REGISTRY_URL, Duration::from_secs(30), "ciris-edge")
-                .unwrap();
-        assert_eq!(client.project(), "ciris-edge");
+            RegistryClient::new(&format!("http://{}", addr), Duration::from_secs(5)).unwrap();
+
+        let _ = client.get_build_by_hash("sha256:abcdef0123").await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let urls = captured.lock().unwrap().clone();
+        assert!(!urls.is_empty(), "expected ≥1 URL, got {urls:?}");
+        let url = &urls[0];
+        assert!(
+            url.contains("/v1/builds/hash/sha256:abcdef0123"),
+            "URL did not contain build-by-hash path: {url}"
+        );
+        assert!(
+            !url.contains("project="),
+            "build-by-hash MUST NOT include ?project= (it's content-keyed): {url}"
+        );
+    }
+
+    /// #11 hostname lock. The fallback URLs must point at the actually-
+    /// deployed regional sub-zones. Pre-v1.12.0 this list was
+    /// `registry-us` / `registry-eu` (NXDOMAIN) — failover never worked.
+    #[test]
+    fn fallback_urls_match_deployed_topology() {
+        assert!(FALLBACK_REGISTRY_URLS.contains(&"https://us.registry.ciris-services-1.ai"));
+        assert!(FALLBACK_REGISTRY_URLS.contains(&"https://eu.registry.ciris-services-1.ai"));
+        // The pre-v1.12.0 typoed names must NOT appear.
+        for u in FALLBACK_REGISTRY_URLS {
+            assert!(
+                !u.contains("registry-us") && !u.contains("registry-eu"),
+                "stale typoed hostname {u} is still in FALLBACK_REGISTRY_URLS"
+            );
+        }
     }
 
     #[tokio::test]
-    async fn test_signed_function_manifest_url_shape() {
-        // Run a one-off mock server that records the URL hit, returns 404.
-        // Confirms get_signed_function_manifest constructs the documented
-        // Path A URL: /v1/verify/function-manifest/{ver}/{target}?project=ciris-<name>
-        use std::sync::{Arc, Mutex};
-        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
-        use tokio::net::TcpListener;
+    async fn get_function_manifest_url_includes_project() {
+        let (addr, captured, _server) = one_shot_url_capture().await;
+        let client =
+            RegistryClient::new(&format!("http://{}", addr), Duration::from_secs(5)).unwrap();
 
-        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        let addr = listener.local_addr().unwrap();
-        let received_url: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
-        let received_url_clone = received_url.clone();
+        let _ = client
+            .get_function_manifest("ciris-edge", "0.5.0", "aarch64-apple-darwin")
+            .await;
 
-        let server = tokio::spawn(async move {
-            let (mut sock, _) = listener.accept().await.unwrap();
-            let (read_half, mut write_half) = sock.split();
-            let mut reader = BufReader::new(read_half);
-            let mut request_line = String::new();
-            reader.read_line(&mut request_line).await.unwrap();
-            // Read remaining headers to drain (don't care about content)
-            loop {
-                let mut header = String::new();
-                reader.read_line(&mut header).await.unwrap();
-                if header == "\r\n" || header.is_empty() {
-                    break;
-                }
-            }
-            *received_url_clone.lock().unwrap() = Some(request_line.trim().to_string());
-            write_half
-                .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
-                .await
-                .unwrap();
-        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let urls = captured.lock().unwrap().clone();
+        let url = urls.first().expect("URL captured");
+        assert!(
+            url.contains(
+                "GET /v1/verify/function-manifest/0.5.0/aarch64-apple-darwin?project=ciris-edge"
+            ),
+            "got {url}"
+        );
+    }
 
-        let client = RegistryClient::new(
-            &format!("http://{}", addr),
-            Duration::from_secs(5),
-            "ciris-verify",
-        )
-        .unwrap();
+    #[tokio::test]
+    async fn list_function_manifest_targets_url_includes_project() {
+        let (addr, captured, _server) = one_shot_url_capture().await;
+        let client =
+            RegistryClient::new(&format!("http://{}", addr), Duration::from_secs(5)).unwrap();
 
-        // Should hit our mock + receive 404. We just want to inspect the URL it constructed.
+        let _ = client
+            .list_function_manifest_targets("ciris-persist", "0.1.0")
+            .await;
+
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let urls = captured.lock().unwrap().clone();
+        let url = urls.first().expect("URL captured");
+        assert!(
+            url.contains("GET /v1/verify/function-manifests/0.1.0?project=ciris-persist"),
+            "got {url}"
+        );
+    }
+
+    #[tokio::test]
+    async fn signed_function_manifest_url_shape() {
+        let (addr, captured, _server) = one_shot_url_capture().await;
+        let client =
+            RegistryClient::new(&format!("http://{}", addr), Duration::from_secs(5)).unwrap();
+
         let _ = client
             .get_signed_function_manifest("ciris-verify", "1.8.4", "x86_64-unknown-linux-gnu")
             .await;
 
-        server.await.unwrap();
-
-        let url = received_url
-            .lock()
-            .unwrap()
-            .clone()
-            .expect("server received a request");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        let urls = captured.lock().unwrap().clone();
+        let url = urls.first().expect("URL captured");
         assert!(
             url.contains(
                 "GET /v1/verify/function-manifest/1.8.4/x86_64-unknown-linux-gnu?project=ciris-verify"

@@ -71,7 +71,10 @@ impl Default for VerifyConfig {
     fn default() -> Self {
         Self {
             dns_us_host: "us.registry.ciris-services-1.ai".into(),
-            dns_eu_host: "eu.registry.ciris-services-eu-1.com".into(),
+            // v1.12.0 fix (#11): was eu.registry.ciris-services-eu-1.com
+            // (NXDOMAIN — wrong sub-zone AND TLD). Actually-deployed name
+            // is eu.registry.ciris-services-1.ai.
+            dns_eu_host: "eu.registry.ciris-services-1.ai".into(),
             https_endpoint: "https://api.registry.ciris-services-1.ai".into(),
             https_endpoints: Vec::new(),
             trust_model: TrustModel::HttpsAuthoritative,

@@ -179,8 +179,7 @@ impl LicenseEngine {
             "LicenseEngine: creating registry client → {}",
             config.https_endpoint
         );
-        let registry_client =
-            RegistryClient::new(&config.https_endpoint, config.timeout, &config.project).ok();
+        let registry_client = RegistryClient::new(&config.https_endpoint, config.timeout).ok();
 
         info!(
             hardware_type = ?hw_signer.hardware_type(),
@@ -244,8 +243,7 @@ impl LicenseEngine {
         #[cfg(feature = "pqc")]
         let pqc_signer = MlDsa65Signer::new().ok();
 
-        let registry_client =
-            RegistryClient::new(&config.https_endpoint, config.timeout, &config.project).ok();
+        let registry_client = RegistryClient::new(&config.https_endpoint, config.timeout).ok();
 
         Ok(Self {
             config,
@@ -752,7 +750,12 @@ impl LicenseEngine {
             return status;
         };
 
-        let manifest = match client.get_binary_manifest(version).await {
+        // Engine self-verify reads its OWN binary manifest, so project is
+        // the engine's own configured identity (typically "ciris-verify").
+        let manifest = match client
+            .get_binary_manifest(&self.config.project, version)
+            .await
+        {
             Ok(m) => m,
             Err(e) => {
                 let status = BinaryIntegrityStatus {

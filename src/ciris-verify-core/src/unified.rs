@@ -110,6 +110,17 @@ pub struct FullAttestationRequest {
     /// If provided along with python_hashes, verifies total_hash matches.
     #[serde(default)]
     pub expected_python_hash: Option<String>,
+    /// CIRIS primitive project under which the agent's build is registered.
+    ///
+    /// Independent of the engine's own configured project — the engine
+    /// (typically `"ciris-verify"`) reads its own L1/L2 manifests under
+    /// `engine.config.project`, and reads the agent's L4 build record
+    /// under `agent_project`. v1.12.0 split (closes #10).
+    ///
+    /// Defaults to `"ciris-agent"` when None for backward compatibility
+    /// with pre-v1.12.0 callers.
+    #[serde(default)]
+    pub agent_project: Option<String>,
 }
 
 /// Result of full attestation.
@@ -518,12 +529,15 @@ impl UnifiedAttestationEngine {
             config.cert_pin.clone(),
         );
 
-        // Use resilient client with fallback endpoints
+        // Use resilient client with fallback endpoints. Project is per-call
+        // (v1.12.0+) — this single client serves both the engine's own
+        // L1/L2 reads (config.project, typically "ciris-verify") AND the
+        // agent's L4 build fetch (request.agent_project, typically
+        // "ciris-agent"). See #10.
         let registry_client = ResilientRegistryClient::new(
             &config.https_endpoint,
             FALLBACK_REGISTRY_URLS,
             config.timeout,
-            &config.project,
         )
         .ok();
 
@@ -612,6 +626,13 @@ impl UnifiedAttestationEngine {
         let verify_version = env!("CARGO_PKG_VERSION");
         let target = crate::registry::current_target();
 
+        // Project routing (v1.12.0+, closes #10):
+        // - L1/L2 self-attestation reads: engine's own configured project.
+        // - L4 agent build record fetch: caller-supplied agent_project,
+        //   defaulting to "ciris-agent" for backward compat.
+        let engine_project = self.config.project.as_str();
+        let agent_project: &str = request.agent_project.as_deref().unwrap_or("ciris-agent");
+
         // =======================================================================
         // PHASE 1: Fetch ALL manifests + run validations IN PARALLEL
         // Critical for mobile where each network call blocks the thread
@@ -629,7 +650,10 @@ impl UnifiedAttestationEngine {
             async {
                 info!("VERIFY STEP 1/5 STARTING: Binary manifest fetch");
                 if let Some(ref client) = self.registry_client {
-                    match client.get_binary_manifest(verify_version).await {
+                    match client
+                        .get_binary_manifest(engine_project, verify_version)
+                        .await
+                    {
                         Ok(m) => {
                             info!(
                                 "VERIFY STEP 1/5 COMPLETE: OK ({} targets)",
@@ -651,7 +675,10 @@ impl UnifiedAttestationEngine {
             async {
                 info!("VERIFY STEP 2/5 STARTING: Function manifest fetch");
                 if let Some(ref client) = self.registry_client {
-                    match client.get_function_manifest(verify_version, target).await {
+                    match client
+                        .get_function_manifest(engine_project, verify_version, target)
+                        .await
+                    {
                         Ok(m) => {
                             info!(
                                 "VERIFY STEP 2/5 COMPLETE: OK ({} functions)",
@@ -669,12 +696,18 @@ impl UnifiedAttestationEngine {
                     None
                 }
             },
-            // 3. Agent build record (agent version) - for file/module/python integrity
+            // 3. Agent build record (agent version) - for file/module/python integrity.
+            // CRITICAL: queries under `agent_project` (foreign project), NOT
+            // engine_project (self project). Reusing the engine's own project
+            // here is the v1.11.x bug closed by #10 in v1.12.0.
             async {
-                info!("VERIFY STEP 3/5 STARTING: Agent build record fetch");
+                info!(
+                    "VERIFY STEP 3/5 STARTING: Agent build record fetch (project={})",
+                    agent_project
+                );
                 if let Some(ref version) = request.agent_version {
                     if let Some(ref client) = self.registry_client {
-                        match client.get_build_by_version(version).await {
+                        match client.get_build_by_version(agent_project, version).await {
                             Ok(b) => {
                                 info!(
                                     "VERIFY STEP 3/5 COMPLETE: OK ({} files)",

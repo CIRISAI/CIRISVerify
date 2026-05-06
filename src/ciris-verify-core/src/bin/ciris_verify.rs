@@ -7,11 +7,12 @@ use std::path::Path;
 use std::time::Duration;
 
 use ciris_verify_core::audit::{read_audit_from_jsonl, read_audit_from_sqlite, AuditVerifier};
-use ciris_verify_core::config::TrustModel;
+use ciris_verify_core::config::{TrustModel, VerifyConfig};
 use ciris_verify_core::registry::{compute_self_hash, current_target, RegistryClient};
 use ciris_verify_core::security::file_integrity::{
     check_full, check_spot, FileManifest as AgentFileManifest,
 };
+use ciris_verify_core::unified::{FullAttestationRequest, UnifiedAttestationEngine};
 use ciris_verify_core::validation::ConsensusValidator;
 use clap::{Parser, Subcommand};
 
@@ -55,7 +56,7 @@ enum Commands {
         dns_us: String,
 
         /// DNS EU host
-        #[arg(long, default_value = "eu.registry.ciris-services-eu-1.com")]
+        #[arg(long, default_value = "eu.registry.ciris-services-1.ai")]
         dns_eu: String,
 
         /// HTTPS endpoint
@@ -79,6 +80,22 @@ enum Commands {
         /// Agent root directory
         #[arg(long)]
         agent_root: Option<String>,
+
+        /// CIRIS primitive project under which the agent's build is registered.
+        /// Independent of `--project` (which scopes the engine's own L1/L2
+        /// self-attestation reads). v1.12.0+ supports both projects in one
+        /// verify cycle from a single client (closes #10).
+        #[arg(long, default_value = "ciris-agent")]
+        agent_project: String,
+
+        /// CIRIS primitive project for the engine's own L1/L2 self-verify.
+        /// Typically `ciris-verify`. v1.12.0+ — see `--agent-project`.
+        #[arg(long, default_value = "ciris-verify")]
+        project: String,
+
+        /// Registry API endpoint
+        #[arg(long, default_value = "https://api.registry.ciris-services-1.ai")]
+        registry: String,
     },
 
     /// Verify this binary's integrity against registry (Level 2)
@@ -495,7 +512,7 @@ async fn run_self_check(registry_url: &str, project: &str, json: bool) {
 
     // Try to fetch manifest from registry
     println!("Fetching manifest from registry...");
-    let client = match RegistryClient::new(registry_url, Duration::from_secs(10), project) {
+    let client = match RegistryClient::new(registry_url, Duration::from_secs(10)) {
         Ok(c) => c,
         Err(e) => {
             if json {
@@ -520,7 +537,7 @@ async fn run_self_check(registry_url: &str, project: &str, json: bool) {
         },
     };
 
-    match client.get_binary_manifest(VERSION).await {
+    match client.get_binary_manifest(project, VERSION).await {
         Ok(manifest) => match manifest.binaries.get(target) {
             Some(expected_hash) => {
                 let expected = expected_hash
@@ -687,7 +704,7 @@ async fn run_function_check(registry_url: &str, project: &str, show_details: boo
     }
 
     // Fetch function manifest
-    let client = match RegistryClient::new(registry_url, Duration::from_secs(10), project) {
+    let client = match RegistryClient::new(registry_url, Duration::from_secs(10)) {
         Ok(c) => c,
         Err(e) => {
             if json {
@@ -699,7 +716,7 @@ async fn run_function_check(registry_url: &str, project: &str, show_details: boo
         },
     };
 
-    match client.get_function_manifest(version, target).await {
+    match client.get_function_manifest(project, version, target).await {
         Ok(manifest) => {
             if json {
                 let output = serde_json::json!({
@@ -827,7 +844,7 @@ async fn run_agent_files_check(
     }
 
     // Fetch file manifest from registry
-    let client = match RegistryClient::new(registry_url, Duration::from_secs(30), project) {
+    let client = match RegistryClient::new(registry_url, Duration::from_secs(30)) {
         Ok(c) => c,
         Err(e) => {
             if json {
@@ -839,7 +856,7 @@ async fn run_agent_files_check(
         },
     };
 
-    match client.get_build_by_version(version).await {
+    match client.get_build_by_version(project, version).await {
         Ok(build) => {
             if !json {
                 println!("\x1b[32m[OK]\x1b[0m Build manifest fetched");
@@ -1078,6 +1095,121 @@ fn run_audit_trail_check(
     }
 }
 
+/// Run a full unified attestation through `UnifiedAttestationEngine`.
+///
+/// This exercises the full end-to-end verify path including the cross-project
+/// agent build fetch — same engine instance reads its OWN L1/L2 manifests
+/// under `--project` AND the agent's L4 build under `--agent-project`.
+///
+/// Used in the post-release CI gate as the #10 regression lock against the
+/// live registry.
+async fn run_attest(
+    version: Option<&str>,
+    agent_root: Option<&str>,
+    agent_project: &str,
+    project: &str,
+    registry_url: &str,
+    json: bool,
+) {
+    if !json {
+        println!("\nFULL ATTESTATION (Levels 1-5)");
+        println!("=============================\n");
+        println!("Engine project (self):  {}", project);
+        println!("Agent project (target): {}", agent_project);
+        println!("Registry:               {}", registry_url);
+        if let Some(v) = version {
+            println!("Agent version:          {}", v);
+        }
+        if let Some(r) = agent_root {
+            println!("Agent root:             {}", r);
+        }
+        println!();
+    }
+
+    // Construct a config matching CLI flags. Reuse VerifyConfig::default()'s
+    // DNS hosts + cert pin, but override project + endpoint from flags.
+    let config = VerifyConfig {
+        project: project.to_string(),
+        https_endpoint: registry_url.to_string(),
+        ..VerifyConfig::default()
+    };
+
+    let engine = match UnifiedAttestationEngine::new(config) {
+        Ok(e) => e,
+        Err(e) => {
+            if json {
+                println!(r#"{{"status":"error","message":"{}"}}"#, e);
+            } else {
+                println!("\x1b[31m[ERROR]\x1b[0m Failed to initialize engine: {}", e);
+            }
+            return;
+        },
+    };
+
+    // Generate a 32-byte challenge nonce — required by FullAttestationRequest.
+    use rand::RngCore;
+    let mut challenge = vec![0u8; 32];
+    rand::thread_rng().fill_bytes(&mut challenge);
+
+    let request = FullAttestationRequest {
+        challenge,
+        agent_version: version.map(String::from),
+        agent_root: agent_root.map(String::from),
+        spot_check_count: 0,
+        audit_entries: None,
+        portal_key_id: None,
+        skip_registry: false,
+        skip_file_integrity: agent_root.is_none(),
+        skip_audit: true,
+        key_fingerprint: None,
+        partial_file_check: false,
+        python_hashes: None,
+        expected_python_hash: None,
+        agent_project: Some(agent_project.to_string()),
+    };
+
+    match engine.run_attestation(request).await {
+        Ok(result) => {
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&result).unwrap_or_default()
+                );
+            } else {
+                let level = result.level;
+                let valid = result.valid;
+                println!(
+                    "{} level = {} (valid={}) — checks {}/{}",
+                    if valid {
+                        "\x1b[32m[PASS]\x1b[0m"
+                    } else {
+                        "\x1b[31m[FAIL]\x1b[0m"
+                    },
+                    level,
+                    valid,
+                    result.checks_passed,
+                    result.checks_total,
+                );
+                if !result.errors.is_empty() {
+                    println!("\nErrors:");
+                    for e in &result.errors {
+                        println!("  - {}", e);
+                    }
+                }
+                println!();
+                println!("Diagnostics:\n{}", result.diagnostics);
+            }
+        },
+        Err(e) => {
+            if json {
+                println!(r#"{{"status":"error","message":"{}"}}"#, e);
+            } else {
+                println!("\x1b[31m[ERROR]\x1b[0m Attestation failed: {}", e);
+            }
+        },
+    }
+}
+
 async fn run_list_manifests(version: &str, registry_url: &str, project: &str, json: bool) {
     if !json {
         println!("\nAVAILABLE MANIFESTS");
@@ -1088,7 +1220,7 @@ async fn run_list_manifests(version: &str, registry_url: &str, project: &str, js
         );
     }
 
-    let client = match RegistryClient::new(registry_url, Duration::from_secs(10), project) {
+    let client = match RegistryClient::new(registry_url, Duration::from_secs(10)) {
         Ok(c) => c,
         Err(e) => {
             if json {
@@ -1103,25 +1235,28 @@ async fn run_list_manifests(version: &str, registry_url: &str, project: &str, js
     let target = current_target();
 
     // Check binary manifest
-    let binary_status = match client.get_binary_manifest(version).await {
+    let binary_status = match client.get_binary_manifest(project, version).await {
         Ok(m) => format!("Available ({} targets)", m.binaries.len()),
         Err(_) => "Not found".to_string(),
     };
 
     // Check file manifest (build record)
-    let file_status = match client.get_build_by_version(version).await {
+    let file_status = match client.get_build_by_version(project, version).await {
         Ok(b) => format!("Available ({} files)", b.file_manifest_count),
         Err(_) => "Not found".to_string(),
     };
 
     // Check function manifest for current target
-    let function_status = match client.get_function_manifest(version, target).await {
+    let function_status = match client.get_function_manifest(project, version, target).await {
         Ok(m) => format!("Available ({} functions)", m.functions.len()),
         Err(_) => "Not found for this target".to_string(),
     };
 
     // List all available function manifest targets
-    let available_targets = match client.list_function_manifest_targets(version).await {
+    let available_targets = match client
+        .list_function_manifest_targets(project, version)
+        .await
+    {
         Ok(t) => t.targets,
         Err(_) => vec![],
     };
@@ -1253,41 +1388,22 @@ async fn main() {
         Some(Commands::Attest {
             version,
             agent_root,
+            agent_project,
+            project,
+            registry,
         }) => {
-            print_banner();
-            println!("\nFULL ATTESTATION");
-            println!("================\n");
-
-            if version.is_none() && agent_root.is_none() {
-                println!("Full attestation requires agent context.");
-                println!();
-                println!("Usage:");
-                println!("  ciris-verify attest --version 1.0.0 --agent-root /path/to/agent");
-                println!();
-                println!("This command verifies:");
-                println!("  1. Source validation (DNS/HTTPS)");
-                println!("  2. File integrity against registry manifest");
-                println!("  3. Key attestation (if hardware available)");
-                println!("  4. Audit trail integrity (if provided)");
-                println!();
-                println!("For standalone source validation, use:");
-                println!("  ciris-verify sources");
-            } else {
-                println!(
-                    "Agent Version: {}",
-                    version.as_deref().unwrap_or("not specified")
-                );
-                println!(
-                    "Agent Root: {}",
-                    agent_root.as_deref().unwrap_or("not specified")
-                );
-                println!();
-                println!("Full attestation with file integrity checking is not yet");
-                println!("implemented in the CLI. Use the library API or Python bindings.");
-                println!();
-                println!("For now, you can run source validation:");
-                println!("  ciris-verify sources");
+            if !json_output {
+                print_banner();
             }
+            run_attest(
+                version.as_deref(),
+                agent_root.as_deref(),
+                &agent_project,
+                &project,
+                &registry,
+                json_output,
+            )
+            .await;
         },
         Some(Commands::SelfCheck { registry, project }) => {
             print_banner();

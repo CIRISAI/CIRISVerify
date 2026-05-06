@@ -1,0 +1,98 @@
+# Post-release live-registry verification.
+#
+# Runs AFTER the Release workflow succeeds on a tag push. Pulls the
+# just-published wheel from PyPI (not from the run's artifact store) and
+# exercises it against the live registry. This is the gate that makes a
+# release truly "shipped" — green here means downstream pip-install users
+# get a working artifact end-to-end.
+#
+# Specifically this locks:
+#  - v1.12.0+ #10 fix: one client serves multiple projects in one verify
+#    cycle. Engine reads its own L1/L2 manifest under ciris-verify AND
+#    the agent's L4 build under ciris-agent; both must succeed.
+#  - v1.12.0+ #11 fix: regional fallback hosts (us./eu.registry...) resolve.
+#  - Wheel bundling: bundled .so SHA-256 == registered binary_hash for the
+#    tag's version.
+#
+# A failure here flags the tag's checks as red but does NOT yank the
+# already-published wheels — recovery is a manual yank + bug fix. By
+# design the published artifacts stay live so users with `==<tag>` pins
+# don't suddenly break.
+
+name: Post-Release Live Verify
+on:
+  workflow_run:
+    workflows: ["Release"]
+    types: [completed]
+
+jobs:
+  live-verify:
+    if: >
+      github.event.workflow_run.conclusion == 'success' &&
+      startsWith(github.event.workflow_run.head_branch, 'v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Resolve published version
+        id: ver
+        run: |
+          # workflow_run's head_branch is the tag name (e.g. "v1.12.0").
+          VER="${{ github.event.workflow_run.head_branch }}"
+          VER="${VER#v}"
+          echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "Verifying v$VER end-to-end against live registry"
+
+      - name: Wait for PyPI propagation
+        # Mirror lag — wheels usually propagate in 30-60s after the Release
+        # workflow's Upload to PyPI step finishes.
+        run: sleep 90
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install ciris-verify from PyPI (not from artifact)
+        run: pip install "ciris-verify==${{ steps.ver.outputs.version }}"
+
+      - name: Wheel version round-trip
+        run: |
+          set -eux
+          INSTALLED=$(python -c "from ciris_verify import get_library_version; print(get_library_version())")
+          test "$INSTALLED" = "${{ steps.ver.outputs.version }}"
+
+      - name: L1/L2 self-verify (project=ciris-verify)
+        # Asserts the bundled .so SHA-256 matches the registered binary_hash
+        # for THIS tag, under THIS project, fetched live from the registry.
+        run: ciris-verify self-check --project ciris-verify
+
+      - name: Cross-project attestation (#10 lock)
+        # Single engine instance reads:
+        #   - its own L1/L2 manifests under ?project=ciris-verify
+        #   - the agent's L4 build under ?project=ciris-agent
+        # Pre-v1.12.0 this 404'd because the engine reused self.registry_client
+        # (project=ciris-verify) for the agent fetch. v1.12.0 made project
+        # per-call, so one client serves both.
+        #
+        # 2.8.3 is the live ciris-agent registered version as of 2026-05-06.
+        # If that version is later marked deprecated/removed, bump this.
+        run: |
+          OUT=$(ciris-verify attest --version 2.8.3 \
+                                    --agent-project ciris-agent \
+                                    --project ciris-verify 2>&1)
+          echo "$OUT"
+          # Step 3/5 must report OK against ?project=ciris-agent. Anything
+          # else (FAILED, 404, NotFound) means #10 has regressed.
+          echo "$OUT" | grep -E "VERIFY STEP 3/5 COMPLETE: OK"
+
+      - name: Failover hostname resolution (#11 lock)
+        # Each regional fallback host must resolve. Pre-v1.12.0 these were
+        # `registry-us` / `registry-eu` (NXDOMAIN) and `eu.registry.ciris-
+        # services-eu-1.com` (also NXDOMAIN — wrong sub-zone AND TLD).
+        run: |
+          set -eux
+          for h in us.registry.ciris-services-1.ai \
+                   eu.registry.ciris-services-1.ai \
+                   api.registry.ciris-services-1.ai; do
+              getent hosts "$h"
+          done
