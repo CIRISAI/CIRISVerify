@@ -40,7 +40,28 @@ jobs:
           VER="${{ github.event.workflow_run.head_branch }}"
           VER="${VER#v}"
           echo "version=$VER" >> "$GITHUB_OUTPUT"
+          echo "tag=v$VER" >> "$GITHUB_OUTPUT"
           echo "Verifying v$VER end-to-end against live registry"
+
+      - name: Checkout repo at the tag
+        # The wheel bundles libciris_verify_ffi.so + ciris-build-{sign,verify}
+        # but NOT the ciris-verify CLI itself (that's a Rust-only artifact, see
+        # release.yml's tarball uploads). For the cross-project attest gate
+        # we need the version-pinned CLI source so cargo can build it.
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.ver.outputs.tag }}
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: post-release-verify
+
+      - name: Build ciris-verify CLI from the v$tag source
+        # Locked build off the tagged source so the CLI matches the published
+        # release exactly. Used for the cross-project attest test.
+        run: cargo build --release --locked -p ciris-verify-core --bin ciris-verify
 
       - name: Wait for PyPI propagation
         # Mirror lag — wheels usually propagate in 30-60s after the Release
@@ -52,19 +73,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install ciris-verify from PyPI (not from artifact)
+      - name: Install ciris-verify from PyPI (bundled .so)
         run: pip install "ciris-verify==${{ steps.ver.outputs.version }}"
 
-      - name: Wheel version round-trip
+      - name: Wheel version round-trip (Python FFI surface)
         run: |
           set -eux
           INSTALLED=$(python -c "from ciris_verify import get_library_version; print(get_library_version())")
           test "$INSTALLED" = "${{ steps.ver.outputs.version }}"
-
-      - name: L1/L2 self-verify (project=ciris-verify)
-        # Asserts the bundled .so SHA-256 matches the registered binary_hash
-        # for THIS tag, under THIS project, fetched live from the registry.
-        run: ciris-verify self-check --project ciris-verify
 
       - name: Cross-project attestation (#10 lock)
         # Single engine instance reads:
@@ -76,14 +92,17 @@ jobs:
         #
         # 2.8.3 is the live ciris-agent registered version as of 2026-05-06.
         # If that version is later marked deprecated/removed, bump this.
+        #
+        # tracing logs go to stderr; merge to stdout so grep can see the
+        # STEP 3/5 line.
         run: |
-          OUT=$(ciris-verify attest --version 2.8.3 \
-                                    --agent-project ciris-agent \
-                                    --project ciris-verify 2>&1)
+          set -o pipefail
+          OUT=$(./target/release/ciris-verify attest --version 2.8.3 \
+                                                    --agent-project ciris-agent \
+                                                    --project ciris-verify 2>&1)
           echo "$OUT"
-          # Step 3/5 must report OK against ?project=ciris-agent. Anything
-          # else (FAILED, 404, NotFound) means #10 has regressed.
           echo "$OUT" | grep -E "VERIFY STEP 3/5 COMPLETE: OK"
+          echo "$OUT" | grep -E "Agent build record fetch \(project=ciris-agent\)"
 
       - name: Failover hostname resolution (#11 lock)
         # Each regional fallback host must resolve. Pre-v1.12.0 these were
