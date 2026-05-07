@@ -275,6 +275,21 @@ class CIRISVerify:
 
         return None
 
+    @staticmethod
+    def _get_platform_binary_suffixes(system: str) -> list:
+        """Return loader suffix preference order for the host platform.
+
+        Mixed-bundle dev hosts (macOS with both .dylib and a Linux .so
+        present in a single search dir) hit the wrong-platform binary
+        first when the iteration order is fixed. Platform-aware ordering
+        returns the correct one first. See CIRISVerify#13.
+        """
+        if system == "Darwin":
+            return [".dylib", ".so"]
+        if system == "Windows":
+            return [".dll"]
+        return [".so", ".dylib"]
+
     def _find_binary(self, explicit_path: Optional[str]) -> Path:
         """Find CIRISVerify binary."""
         if explicit_path:
@@ -312,12 +327,39 @@ class CIRISVerify:
             if path.exists():
                 return path
 
+        # Platform-preferred suffix order (CIRISVerify#13). On Darwin this
+        # returns [".dylib", ".so"], so a stray Linux .so in the same dir
+        # doesn't get loaded ahead of the macOS .dylib.
+        suffixes = self._get_platform_binary_suffixes(system)
+
         # Also check relative to this module
         module_dir = Path(__file__).parent
-        for suffix in [".so", ".dylib", ".dll"]:
+        for suffix in suffixes:
             candidate = module_dir / f"libciris_verify_ffi{suffix}"
             if candidate.exists():
                 return candidate
+
+        # Site-packages fallback (CIRISVerify#13). Useful for downstream
+        # consumers that load CIRISVerify from a directory other than the
+        # wheel's own (embedded bindings, agent wrappers, test harnesses
+        # with custom sys.path manipulation). When the wheel IS the loader,
+        # pkg_dir == module_dir and the loop above already hit, so the
+        # `pkg_dir != module_dir` guard makes this branch a no-op for
+        # wheel-internal use.
+        try:
+            import ciris_verify as _ciris_verify_pkg
+
+            pkg_file = getattr(_ciris_verify_pkg, "__file__", None)
+            if pkg_file:
+                pkg_dir = Path(pkg_file).parent
+                if pkg_dir != module_dir:
+                    for suffix in suffixes:
+                        candidate = pkg_dir / f"libciris_verify_ffi{suffix}"
+                        if candidate.exists():
+                            return candidate
+        except ImportError:
+            # ciris_verify not on sys.path — fall through to the raise.
+            pass
 
         raise BinaryNotFoundError(f"Searched: {paths}")
 
