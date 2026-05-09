@@ -9014,6 +9014,159 @@ unsafe fn run_conformance_tests_inner(handle: *mut CirisVerifyHandle) -> i32 {
     report.failed() as i32
 }
 
+// =============================================================================
+// Runtime tree-walking verifier (CIRISVerify#9, v1.13.0+)
+// =============================================================================
+//
+// Free FFI function (no handle): walks a source tree on disk and compares
+// against the registered file_manifest_json. Used by CIRISAgent's
+// attestation startup to retire startup_python_hashes.json.
+//
+// JSON-in / JSON-out. Caller passes a TreeVerifyRequest as JSON, gets a
+// TreeVerifyResult JSON back. Registry URL is a separate parameter so
+// the request struct stays portable across deployment topologies.
+
+/// Walk a source tree on disk and compare against the registered manifest.
+///
+/// # Arguments
+///
+/// * `request_json` — UTF-8 NUL-terminated JSON of `TreeVerifyRequest`:
+///   `{ "root", "include_roots", "exempt_dirs", "exempt_extensions", "project", "binary_version" }`.
+/// * `registry_url` — UTF-8 NUL-terminated registry base URL
+///   (e.g. `"https://api.registry.ciris-services-1.ai"`).
+/// * `result_out` — set to a heap-allocated UTF-8 NUL-terminated JSON
+///   of `TreeVerifyResult` on success. Caller MUST free with
+///   `ciris_verify_free_string`.
+///
+/// # Returns
+///
+/// 0 on success (inspect `result_out` JSON for verdict).
+/// `CirisVerifyError::InvalidArgument (-2)` for null/invalid args.
+/// `CirisVerifyError::InternalError (-1)` for walk failures, JSON parse
+/// failures, or runtime construction failures (no `result_out`).
+///
+/// Registry-reachability failures populate `registry_error` in the
+/// result JSON and still return 0 — that's a verdict, not a runtime
+/// error.
+///
+/// # Safety
+///
+/// - `request_json` and `registry_url` must be valid NUL-terminated UTF-8.
+/// - `result_out` must be a valid pointer to `*mut c_char`.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_tree(
+    request_json: *const c_char,
+    registry_url: *const c_char,
+    result_out: *mut *mut c_char,
+) -> i32 {
+    ffi_guard!("ciris_verify_tree", {
+        ciris_verify_tree_inner(request_json, registry_url, result_out)
+    })
+}
+
+unsafe fn ciris_verify_tree_inner(
+    request_json: *const c_char,
+    registry_url: *const c_char,
+    result_out: *mut *mut c_char,
+) -> i32 {
+    if request_json.is_null() || registry_url.is_null() || result_out.is_null() {
+        tracing::error!("ciris_verify_tree: null argument");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let req_cstr = std::ffi::CStr::from_ptr(request_json);
+    let req_str = match req_cstr.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("ciris_verify_tree: request_json not UTF-8: {}", e);
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    let url_cstr = std::ffi::CStr::from_ptr(registry_url);
+    let url_str = match url_cstr.to_str() {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("ciris_verify_tree: registry_url not UTF-8: {}", e);
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    let request: ciris_verify_core::tree_verify::TreeVerifyRequest =
+        match serde_json::from_str(req_str) {
+            Ok(r) => r,
+            Err(e) => {
+                tracing::error!("ciris_verify_tree: parse request_json: {}", e);
+                return CirisVerifyError::InvalidArgument as i32;
+            },
+        };
+
+    tracing::info!(
+        project = %request.project,
+        binary_version = %request.binary_version,
+        root = %request.root,
+        "ciris_verify_tree invoked"
+    );
+
+    let rt = match tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+    {
+        Ok(rt) => rt,
+        Err(e) => {
+            tracing::error!("ciris_verify_tree: build runtime: {}", e);
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    let outcome = rt.block_on(async {
+        let registry = ciris_verify_core::registry::RegistryClient::new(
+            url_str,
+            std::time::Duration::from_secs(30),
+        )
+        .map_err(|e| format!("RegistryClient::new: {}", e))?;
+        ciris_verify_core::tree_verify::verify_tree(&request, &registry)
+            .await
+            .map_err(|e| format!("verify_tree: {}", e))
+    });
+
+    let result = match outcome {
+        Ok(r) => r,
+        Err(msg) => {
+            tracing::error!("ciris_verify_tree: {}", msg);
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    let json = match serde_json::to_string(&result) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!("ciris_verify_tree: serialize result: {}", e);
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+
+    let cstring = match std::ffi::CString::new(json) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::error!("ciris_verify_tree: CString::new: {}", e);
+            return CirisVerifyError::InternalError as i32;
+        },
+    };
+    *result_out = cstring.into_raw();
+
+    tracing::info!(
+        valid = result.valid,
+        registry_match = result.registry_match,
+        files_checked = result.files_checked,
+        files_passed = result.files_passed,
+        failed = result.failed_files.len(),
+        "ciris_verify_tree complete"
+    );
+
+    CirisVerifyError::Success as i32
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

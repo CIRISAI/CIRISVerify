@@ -70,6 +70,7 @@ pub mod revocation;
 pub mod security;
 pub mod tpm_attest;
 pub mod transparency;
+pub mod tree_verify;
 pub mod types;
 pub mod unified;
 pub mod validation;
@@ -106,6 +107,9 @@ pub use registry::{
     compute_ed25519_fingerprint, compute_self_hash, current_target, verify_self_against_manifest,
     BinaryManifest, BuildRecord, FileManifest as RegistryManifest, KeyVerificationResponse,
     RegistryClient,
+};
+pub use tree_verify::{
+    verify_tree, FailedFile, FailedFileKind, TreeVerifyRequest, TreeVerifyResult,
 };
 pub use unified::{
     FullAttestationRequest, FullAttestationResult, IntegrityCheckResult, PythonIntegrityResult,

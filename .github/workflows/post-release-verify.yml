@@ -115,3 +115,92 @@ jobs:
                    api.registry.ciris-services-1.ai; do
               getent hosts "$h"
           done
+
+      - name: Runtime tree verifier — Python FFI (#9 lock, v1.13.0+)
+        # Gates the public verify_tree() API against the live registry.
+        # Two assertions:
+        #   (a) Walk a synthetic tree, query a non-existent version. The
+        #       walk must succeed (total_hash populated, sha256: prefix);
+        #       the registry compare must surface the 404 in
+        #       registry_error rather than crashing.
+        #   (b) Walk a fake tree against the live ciris-agent 2.8.3
+        #       manifest. expected_total_hash must populate (proves
+        #       wire-format end-to-end), registry_match must be False
+        #       (proves the diff loop categorizes drift correctly), and
+        #       failed_files must include both MISSING (every real
+        #       agent file) and EXTRA (our fake.py).
+        #
+        # CIRIS_SKIP_EARLY_VERIFY suppresses the .init_array constructor's
+        # network fetch which can deadlock on dlopen() in some runtime
+        # contexts (Python/FFI). Documented in constructor.rs.
+        #
+        # Skipped pre-v1.13.0 — the verify_tree symbol won't exist in
+        # earlier wheels and the import would fail.
+        env:
+          CIRIS_SKIP_EARLY_VERIFY: "1"
+          PUBLISHED_VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          set -eux
+          python - <<'PYEOF'
+          import os, sys, tempfile
+
+          v = os.environ["PUBLISHED_VERSION"]
+          parts = [int(p.split('-')[0]) for p in v.split('.')[:3]]
+          if tuple(parts) < (1, 13, 0):
+              print(f"SKIP: verify_tree() landed in 1.13.0; this is {v}")
+              sys.exit(0)
+
+          from ciris_verify import verify_tree, TreeVerifyRequest
+
+          # (a) walk-only: synthetic tree, registry returns 404
+          with tempfile.TemporaryDirectory() as tmp:
+              os.makedirs(os.path.join(tmp, "pkg"))
+              with open(os.path.join(tmp, "pkg", "a.py"), "w") as f:
+                  f.write("# a\n")
+              with open(os.path.join(tmp, "pkg", "b.py"), "w") as f:
+                  f.write("# b\n")
+              r = verify_tree(TreeVerifyRequest(
+                  root=tmp,
+                  include_roots=["pkg"],
+                  exempt_dirs=["__pycache__"],
+                  exempt_extensions=["pyc"],
+                  project="ciris-agent",
+                  binary_version="99.99.99-not-a-real-version",
+              ))
+              assert r.files_checked == 2, f"expected 2 files, got {r.files_checked}"
+              assert r.total_hash.startswith("sha256:"), r.total_hash
+              assert len(r.total_hash) == 7 + 64, r.total_hash
+              assert r.valid is False
+              assert r.registry_match is False
+              assert r.registry_error is not None, "expected 404 in registry_error"
+              err_low = r.registry_error.lower()
+              assert "404" in r.registry_error or "not found" in err_low, r.registry_error
+              assert r.expected_total_hash is None
+              print(f"(a) walk-only OK: total={r.total_hash[:24]}...")
+
+          # (b) live registry: ciris-agent 2.8.3 expected_total_hash populated
+          with tempfile.TemporaryDirectory() as tmp:
+              os.makedirs(os.path.join(tmp, "ciris_engine"))
+              with open(os.path.join(tmp, "ciris_engine", "fake.py"), "w") as f:
+                  f.write("# not the real agent\n")
+              r = verify_tree(TreeVerifyRequest(
+                  root=tmp,
+                  include_roots=["ciris_engine"],
+                  exempt_dirs=[],
+                  exempt_extensions=[],
+                  project="ciris-agent",
+                  binary_version="2.8.3",
+              ))
+              assert r.registry_error is None, \
+                  f"live registry should be reachable: {r.registry_error}"
+              assert r.expected_total_hash is not None
+              assert r.expected_total_hash.startswith("sha256:")
+              assert r.registry_match is False
+              assert len(r.failed_files) >= 1000, \
+                  f"expected many MISSING, got {len(r.failed_files)}"
+              kinds = {f.kind.value for f in r.failed_files}
+              assert "missing" in kinds, kinds
+              assert "extra" in kinds, kinds
+              print(f"(b) live registry OK: expected={r.expected_total_hash[:24]}..., "
+                    f"failed_files={len(r.failed_files)}")
+          PYEOF

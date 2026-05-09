@@ -63,6 +63,9 @@ tracing-subscriber.workspace = true
 # subprocess) and the in-process HS256 JWT minting (no more REGISTRY_JWT_SECRET).
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
 
+[dev-dependencies]
+tempfile = "3"
+
 [lints.clippy]
 # CLI utility crate — workspace-wide pedantic/nursery lints add noise
 # without catching real bugs here. Match the pattern in other tool crates.

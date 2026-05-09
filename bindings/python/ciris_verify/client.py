@@ -37,6 +37,10 @@ from .types import (
     StorageDescriptor,
     StorageKind,
     KeyringScope,
+    TreeVerifyRequest,
+    TreeVerifyResult,
+    FailedFile,
+    FailedFileKind,
 )
 from .exceptions import (
     BinaryNotFoundError,
@@ -3170,6 +3174,130 @@ class CIRISVerify:
         finally:
             if json_out.value:
                 self._lib.ciris_verify_free_string(json_out)
+
+
+# =============================================================================
+# Runtime tree-walking verifier (CIRISVerify#9, v1.13.0+)
+# =============================================================================
+
+# Default registry URL — matches the production deployment used by all
+# downstream consumers. Override via the `registry_url=` parameter when
+# pointing at a regional fallback or a staging registry.
+DEFAULT_REGISTRY_URL = "https://api.registry.ciris-services-1.ai"
+
+# Cached CDLL handle for `verify_tree`. Loaded lazily on first call so
+# callers don't pay for `ctypes.CDLL` unless they need it. Keyed on the
+# resolved binary path so an explicit override after the default load
+# would re-load — but in practice the path is stable per-process.
+_VERIFY_TREE_LIB: Optional[ctypes.CDLL] = None
+_VERIFY_TREE_LIB_PATH: Optional[Path] = None
+
+
+def _load_verify_tree_lib(binary_path: Optional[str] = None) -> ctypes.CDLL:
+    """Lazy-load the FFI binary and bind the `ciris_verify_tree` symbol.
+
+    Reuses `CIRISVerify._find_binary` for binary discovery (the same
+    platform-aware suffix order + site-packages fallback wired up for
+    CIRISVerify#13). The function is callable without instantiating
+    `CIRISVerify`, which is what the agent's startup-attestation path
+    needs (it doesn't need keys / keyring init just to walk a tree).
+    """
+    global _VERIFY_TREE_LIB, _VERIFY_TREE_LIB_PATH
+
+    # Use the existing binary discovery without running CIRISVerify.__init__
+    # (which loads keys + sets up keyring). Same trick the test suite uses.
+    finder = CIRISVerify.__new__(CIRISVerify)
+    path = finder._find_binary(binary_path)
+
+    if _VERIFY_TREE_LIB is not None and _VERIFY_TREE_LIB_PATH == path:
+        return _VERIFY_TREE_LIB
+
+    lib = ctypes.CDLL(str(path))
+
+    if not hasattr(lib, "ciris_verify_tree"):
+        raise RuntimeError(
+            f"verify_tree not available in this library version "
+            f"(requires ciris-verify >= 1.13.0). Loaded: {path}"
+        )
+
+    # ciris_verify_tree(request_json, registry_url, result_out) -> i32
+    lib.ciris_verify_tree.argtypes = [
+        ctypes.c_char_p,                  # request_json (NUL-terminated)
+        ctypes.c_char_p,                  # registry_url (NUL-terminated)
+        ctypes.POINTER(ctypes.c_char_p),  # result_out
+    ]
+    lib.ciris_verify_tree.restype = ctypes.c_int
+
+    # ciris_verify_free_string(ptr) — caller frees the result_out
+    lib.ciris_verify_free_string.argtypes = [ctypes.c_char_p]
+    lib.ciris_verify_free_string.restype = None
+
+    _VERIFY_TREE_LIB = lib
+    _VERIFY_TREE_LIB_PATH = path
+    return lib
+
+
+def verify_tree(
+    request: TreeVerifyRequest,
+    registry_url: str = DEFAULT_REGISTRY_URL,
+    binary_path: Optional[str] = None,
+) -> TreeVerifyResult:
+    """Walk a source tree on disk and compare against the registered manifest.
+
+    This is the runtime tree-walking verifier (CIRISVerify#9, v1.13.0+).
+    It uses the same canonical algorithm `ciris-build-sign sign --tree`
+    used at registration time, so what gets walked here is byte-comparable
+    to what's stored in the registry's `file_manifest_json`.
+
+    Args:
+        request: Filesystem root + exempt rules + project/binary_version.
+            The exempt rules MUST match the rules used at sign time
+            (the `--tree-include`/`--tree-exempt-dir`/`--tree-exempt-ext`
+            flags passed to `ciris-build-sign sign --tree`).
+        registry_url: Registry base URL. Defaults to the production
+            registry; pass a regional fallback or staging URL when needed.
+        binary_path: Override path to `libciris_verify_ffi.so`. Defaults
+            to the wheel-bundled binary.
+
+    Returns:
+        TreeVerifyResult. `valid=True` means the on-disk tree matches the
+        registered manifest byte-for-byte AND the registry was reachable.
+        Inspect `failed_files` for per-file divergences and `registry_error`
+        to distinguish a tampered tree from a network failure.
+
+    Raises:
+        BinaryNotFoundError: If `libciris_verify_ffi.so` cannot be located.
+        RuntimeError: If the loaded library predates v1.13.0 (no
+            `ciris_verify_tree` symbol).
+        VerificationFailedError: If the underlying walk fails (root
+            missing, unreadable file, JSON parse failure).
+    """
+    lib = _load_verify_tree_lib(binary_path)
+
+    request_json = request.model_dump_json().encode("utf-8")
+    registry_url_bytes = registry_url.encode("utf-8")
+
+    result_ptr = ctypes.c_char_p()
+    rc = lib.ciris_verify_tree(
+        request_json,
+        registry_url_bytes,
+        ctypes.byref(result_ptr),
+    )
+
+    if rc != 0:
+        raise VerificationFailedError(
+            rc, f"ciris_verify_tree failed with code {rc}"
+        )
+
+    try:
+        if not result_ptr.value:
+            raise VerificationFailedError(0, "ciris_verify_tree returned empty result")
+        result_json = result_ptr.value.decode("utf-8")
+    finally:
+        if result_ptr.value:
+            lib.ciris_verify_free_string(result_ptr)
+
+    return TreeVerifyResult.model_validate_json(result_json)
 
 
 class MockCIRISVerify(CIRISVerify):
