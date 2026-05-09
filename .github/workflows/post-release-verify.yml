@@ -89,6 +89,22 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Install libtss2 runtime (Linux wheel TPM dep)
+        # The Linux x86_64 wheel is built with `--features tpm` (see
+        # release.yml), so its bundled libciris_verify_ffi.so dlopen()s
+        # libtss2-tctildr.so.0 at load time. Stock Ubuntu runners don't
+        # carry libtss2; without this step `ctypes.CDLL(...)` raises
+        # OSError before any verify_tree work can run.
+        # NB: downstream consumers of the Linux wheel hit the same
+        # requirement — this isn't CI-specific. Tracked as a follow-up
+        # to consider a no-TPM wheel for non-TPM hosts.
+        run: |
+          sudo apt-get update
+          # libtss2-dev pulls in all the runtime libtss2-* packages as
+          # transitive deps. Matches what release.yml uses for the build
+          # step, so the runtime exactly mirrors the build environment.
+          sudo apt-get install -y libtss2-dev
+
       - name: Install ciris-verify from PyPI (bundled .so)
         run: pip install "ciris-verify==${{ steps.ver.outputs.version }}"
 
