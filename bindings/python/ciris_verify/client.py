@@ -54,6 +54,12 @@ from .exceptions import (
 # FFI error codes
 CIRIS_ERROR_ATTESTATION_IN_PROGRESS = -100
 
+# Repeated error messages — single-source so we don't drift across raise sites.
+# Surfaces when the loaded libciris_verify_ffi.so is older than the feature
+# this client expects.
+_NO_ED25519_MSG = "Ed25519 key functions not available in this library version."
+_NO_NAMED_KEY_MSG = "Named key functions not available (library version < 1.5.0)"
+
 
 # Default paths for the CIRISVerify binary by platform
 DEFAULT_BINARY_PATHS = {
@@ -2322,8 +2328,7 @@ class CIRISVerify:
         """
         if not self._has_ed25519_support:
             raise NotImplementedError(
-                "Ed25519 key functions not available in this library version. "
-                "Update to ciris-verify >= 0.4.0 for Portal key support."
+                f"{_NO_ED25519_MSG} Update to ciris-verify >= 0.4.0 for Portal key support."
             )
         if len(key_bytes) != 32:
             raise ValueError(f"Ed25519 key must be 32 bytes, got {len(key_bytes)}")
@@ -2369,9 +2374,7 @@ class CIRISVerify:
                 attestation = verifier.attestation_with_challenge(challenge)
         """
         if not self._has_ed25519_support:
-            raise NotImplementedError(
-                "Ed25519 key functions not available in this library version."
-            )
+            raise NotImplementedError(_NO_ED25519_MSG)
 
         # Check if the FFI function exists
         if not hasattr(self._lib, "ciris_verify_await_key_registration"):
@@ -2424,9 +2427,7 @@ class CIRISVerify:
             AttestationInProgressError: If attestation is currently running.
         """
         if not self._has_ed25519_support:
-            raise NotImplementedError(
-                "Ed25519 key functions not available in this library version."
-            )
+            raise NotImplementedError(_NO_ED25519_MSG)
         ret = self._lib.ciris_verify_has_key(self._handle)
         if ret == CIRIS_ERROR_ATTESTATION_IN_PROGRESS:
             raise AttestationInProgressError("has_key")
@@ -2443,9 +2444,7 @@ class CIRISVerify:
             AttestationInProgressError: If attestation is currently running.
         """
         if not self._has_ed25519_support:
-            raise NotImplementedError(
-                "Ed25519 key functions not available in this library version."
-            )
+            raise NotImplementedError(_NO_ED25519_MSG)
         ret = self._lib.ciris_verify_delete_key(self._handle)
         if ret == CIRIS_ERROR_ATTESTATION_IN_PROGRESS:
             raise AttestationInProgressError("delete_key")
@@ -2481,9 +2480,7 @@ class CIRISVerify:
             # attestation["key_attestation"]["key_type"] == "ephemeral"
         """
         if not self._has_ed25519_support:
-            raise NotImplementedError(
-                "Ed25519 key functions not available in this library version."
-            )
+            raise NotImplementedError(_NO_ED25519_MSG)
 
         # Check if the FFI function exists
         if not hasattr(self._lib, "ciris_verify_generate_key"):
@@ -2515,9 +2512,7 @@ class CIRISVerify:
             AttestationInProgressError: If attestation is currently running.
         """
         if not self._has_ed25519_support:
-            raise NotImplementedError(
-                "Ed25519 key functions not available in this library version."
-            )
+            raise NotImplementedError(_NO_ED25519_MSG)
         sig_data = ctypes.c_void_p()
         sig_len = ctypes.c_size_t()
 
@@ -2552,9 +2547,7 @@ class CIRISVerify:
             AttestationInProgressError: If attestation is currently running.
         """
         if not self._has_ed25519_support:
-            raise NotImplementedError(
-                "Ed25519 key functions not available in this library version."
-            )
+            raise NotImplementedError(_NO_ED25519_MSG)
         key_data = ctypes.c_void_p()
         key_len = ctypes.c_size_t()
 
@@ -2988,9 +2981,7 @@ class CIRISVerify:
             AttestationInProgressError: If attestation is currently running.
         """
         if not self._has_named_key_support:
-            raise NotImplementedError(
-                "Named key functions not available (library version < 1.5.0)"
-            )
+            raise NotImplementedError(_NO_NAMED_KEY_MSG)
         if len(seed) != 32:
             raise ValueError(f"seed must be 32 bytes, got {len(seed)}")
 
@@ -3019,9 +3010,7 @@ class CIRISVerify:
             AttestationInProgressError: If attestation is currently running.
         """
         if not self._has_named_key_support:
-            raise NotImplementedError(
-                "Named key functions not available (library version < 1.5.0)"
-            )
+            raise NotImplementedError(_NO_NAMED_KEY_MSG)
 
         sig_data = ctypes.c_void_p()
         sig_len = ctypes.c_size_t()
@@ -3063,9 +3052,7 @@ class CIRISVerify:
             AttestationInProgressError: If attestation is currently running.
         """
         if not self._has_named_key_support:
-            raise NotImplementedError(
-                "Named key functions not available (library version < 1.5.0)"
-            )
+            raise NotImplementedError(_NO_NAMED_KEY_MSG)
 
         key_id_bytes = key_id.encode("utf-8")
         ret = self._lib.ciris_verify_has_named_key(self._handle, key_id_bytes)
@@ -3088,9 +3075,7 @@ class CIRISVerify:
             AttestationInProgressError: If attestation is currently running.
         """
         if not self._has_named_key_support:
-            raise NotImplementedError(
-                "Named key functions not available (library version < 1.5.0)"
-            )
+            raise NotImplementedError(_NO_NAMED_KEY_MSG)
 
         key_id_bytes = key_id.encode("utf-8")
         ret = self._lib.ciris_verify_delete_named_key(self._handle, key_id_bytes)
@@ -3114,9 +3099,7 @@ class CIRISVerify:
             AttestationInProgressError: If attestation is currently running.
         """
         if not self._has_named_key_support:
-            raise NotImplementedError(
-                "Named key functions not available (library version < 1.5.0)"
-            )
+            raise NotImplementedError(_NO_NAMED_KEY_MSG)
 
         pk_data = ctypes.c_void_p()
         pk_len = ctypes.c_size_t()
@@ -3154,9 +3137,7 @@ class CIRISVerify:
             AttestationInProgressError: If attestation is currently running.
         """
         if not self._has_named_key_support:
-            raise NotImplementedError(
-                "Named key functions not available (library version < 1.5.0)"
-            )
+            raise NotImplementedError(_NO_NAMED_KEY_MSG)
 
         json_out = ctypes.c_char_p()
         ret = self._lib.ciris_verify_list_named_keys(
@@ -3330,6 +3311,10 @@ class MockCIRISVerify(CIRISVerify):
         self._timeout = 10.0
         # Don't call parent __init__ - no binary needed
 
+    # The four overrides below are intentional no-ops: MockCIRISVerify
+    # has no native binary, no key material, no library handle, so the
+    # CIRISVerify lifecycle hooks (find / verify / load / destruct) all
+    # short-circuit. The real behavior lives on the CIRISVerify base.
     def _find_binary(self, path):
         return None
 
