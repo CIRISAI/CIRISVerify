@@ -4,12 +4,12 @@
 //! against its registered `file_manifest_json` in the registry. The
 //! canonical algorithm matches `ciris-build-sign sign --tree`:
 //!
-//!   1. Walk the tree via [`security::build_manifest::walk_file_tree`],
-//!      honoring [`ExemptRules`] (`include_roots`, `exempt_dirs`,
+//!   1. Walk the tree via `security::build_manifest::walk_file_tree`,
+//!      honoring `ExemptRules` (`include_roots`, `exempt_dirs`,
 //!      `exempt_extensions`).
 //!   2. Each surviving file is hashed `sha256:<hex>`.
 //!   3. The canonical total is
-//!      [`FileTreeExtras::compute_tree_hash`] over the BTreeMap-ordered
+//!      `FileTreeExtras::compute_tree_hash` over the BTreeMap-ordered
 //!      `path:value\n` concatenation, prefixed `sha256:`.
 //!
 //! By construction, what `verify_tree` walks at runtime is byte-for-byte
@@ -26,7 +26,7 @@
 //! total). That path is retained for backward compatibility (Android
 //! mobile producer ships pre-walked JSON). Algorithm B caps at L3
 //! by construction because it cannot match the registered manifest's
-//! `sha256:`-prefixed Algorithm A bytes. New code uses [`verify_tree`]
+//! `sha256:`-prefixed Algorithm A bytes. New code uses `verify_tree`
 //! to reach L4.
 
 use crate::error::VerifyError;
