@@ -1,6 +1,7 @@
 # Runtime tree-walking verifier (`verify_tree`)
 
-**Status:** Stable since v1.13.0 (CIRISVerify#9).
+**Status:** Stable since v1.13.0 (CIRISVerify#9). Verdict semantics
+refined in v1.14.0 (CIRISVerify#15) — see "Verdict semantics" below.
 
 The runtime tree-walking verifier walks a source tree on disk and compares
 it byte-for-byte against the registered `file_manifest_json` for a
@@ -54,14 +55,15 @@ verdict will diverge accordingly.
 
 | field                  | type                  | meaning                                                                 |
 | ---------------------- | --------------------- | ----------------------------------------------------------------------- |
-| `valid`                | `bool`                | Top-level verdict — `registry_match` AND no failed files AND registry reachable. |
+| `valid`                | `bool`                | **Tampering verdict.** No `Mismatch`, no `Extra`, registry reachable. **Does NOT gate on `Missing`** (v1.14.0+). |
 | `files_checked`        | `int`                 | Files walked on disk.                                                   |
 | `files_passed`         | `int`                 | Files whose disk hash matched the registered hash.                      |
-| `failed_files`         | `list[FailedFile]`    | Per-file divergences (see below).                                       |
+| `failed_files`         | `list[FailedFile]`    | `Mismatch` + `Extra` only (v1.14.0+). Empty iff `valid == True`.        |
+| `missing_files`        | `list[FailedFile]`    | **v1.14.0+.** Files in registry, absent on disk. Informational — does NOT gate `valid`. |
 | `total_hash`           | `str`                 | Canonical computed total `sha256:<hex>`. Always populated.              |
-| `expected_total_hash`  | `str | None`          | Registered `file_manifest_hash`. `None` when registry fetch failed.     |
-| `registry_match`       | `bool`                | `total_hash == expected_total_hash` AND `failed_files == []`.           |
-| `registry_error`       | `str | None`          | Set when registry fetch failed (network down, 404, parse error, …).    |
+| `expected_total_hash`  | `str \| None`         | Registered `file_manifest_hash`. `None` when registry fetch failed.     |
+| `registry_match`       | `bool`                | **Strict literal-equality.** `total_hash == expected_total_hash` AND no `failed_files` AND no `missing_files` (v1.14.0+). |
+| `registry_error`       | `str \| None`         | Set when registry fetch failed (network down, 404, parse error, …).    |
 | `project`              | `str`                 | Echoed.                                                                 |
 | `binary_version`       | `str`                 | Echoed.                                                                 |
 
@@ -73,6 +75,54 @@ verdict will diverge accordingly.
 | `kind`           | `FailedFileKind` | `"missing"`, `"extra"`, or `"mismatch"`.                    |
 | `computed_hash`  | `str | None`   | Disk hash (`sha256:<hex>`); `None` for `missing`.             |
 | `expected_hash`  | `str | None`   | Registered hash (`sha256:<hex>`); `None` for `extra`.         |
+
+## Verdict semantics (v1.14.0+, CIRISVerify#15)
+
+**Missing files are not a tampering signal.** An agent missing critical
+code doesn't run — that's a broken-not-tampered failure mode caught at
+boot, not by attestation. The common case driving this is platform-
+asymmetric build artifacts: e.g. CIRISAgent's
+`ciris_adapters/wallet/providers/_build_secrets.py` is bundled into
+mobile AABs (where the wallet provider needs it at runtime) but
+explicitly excluded from desktop wheels by `setup.py` (don't ship
+secrets via pip). The signed manifest covers it (so mobile installs
+can verify it); a desktop wheel walking against that manifest will
+flag it as `Missing`. Pre-v1.14.0 that capped desktop L4 at L3.
+
+Two verdicts on `TreeVerifyResult`:
+
+- **`valid`** — the operational tampering verdict, what desktop
+  callers gate on. `True` iff no `Mismatch`, no `Extra`, registry
+  reachable. Insensitive to `Missing`.
+- **`registry_match`** — strict literal "100% byte-identical to
+  registered." Mobile callers gate on this because mobile bundles
+  ship every signed file, so any `Missing` IS tampering. Requires
+  `total_hash == expected_total_hash` AND no `failed_files` AND
+  no `missing_files`.
+
+Recommended call pattern:
+
+```python
+result = verify_tree(...)
+
+if result.registry_error:
+    # Registry was unreachable. Distinguish from a tampered tree.
+    log.warning("registry unreachable: %s", result.registry_error)
+
+if not result.valid:
+    # Tampering signal — Mismatch or Extra. Hard fail.
+    raise IntegrityError(f"tampered: {result.failed_files}")
+
+# At this point: install is operationally sound on this platform.
+# Mobile may also want the strict signal:
+if not result.registry_match and is_mobile_platform():
+    raise IntegrityError(f"missing on mobile: {result.missing_files}")
+
+# Desktop: log missing files as informational, don't gate.
+if result.missing_files:
+    log.debug("platform-asymmetric missing: %s",
+              [f.path for f in result.missing_files])
+```
 
 ## Canonical algorithm (Algorithm A)
 

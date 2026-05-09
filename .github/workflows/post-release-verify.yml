@@ -210,7 +210,11 @@ jobs:
               assert r.expected_total_hash is None
               print(f"(a) walk-only OK: total={r.total_hash[:24]}...")
 
-          # (b) live registry: ciris-agent 2.8.3 expected_total_hash populated
+          # (b) live registry: ciris-agent 2.8.3 expected_total_hash populated.
+          # v1.14.0+ split: Mismatch + Extra in failed_files; Missing in
+          # missing_files. Fake tree has 1 file (fake.py) → 1 EXTRA + 1630
+          # MISSING. registry_match=False (strict: missing != 0); valid=False
+          # (Extra IS a tampering signal, fails valid).
           with tempfile.TemporaryDirectory() as tmp:
               os.makedirs(os.path.join(tmp, "ciris_engine"))
               with open(os.path.join(tmp, "ciris_engine", "fake.py"), "w") as f:
@@ -227,12 +231,49 @@ jobs:
                   f"live registry should be reachable: {r.registry_error}"
               assert r.expected_total_hash is not None
               assert r.expected_total_hash.startswith("sha256:")
-              assert r.registry_match is False
-              assert len(r.failed_files) >= 1000, \
-                  f"expected many MISSING, got {len(r.failed_files)}"
-              kinds = {f.kind.value for f in r.failed_files}
-              assert "missing" in kinds, kinds
-              assert "extra" in kinds, kinds
-              print(f"(b) live registry OK: expected={r.expected_total_hash[:24]}..., "
-                    f"failed_files={len(r.failed_files)}")
+              assert r.registry_match is False, \
+                  "strict registry_match must reject the fake tree"
+              # v1.14.0+ wire shape: missing_files separate. Pre-1.14 wheels
+              # land Missing in failed_files together with Mismatch+Extra.
+              if tuple(parts) >= (1, 14, 0):
+                  assert len(r.missing_files) >= 1000, \
+                      f"expected many MISSING, got {len(r.missing_files)}"
+                  missing_kinds = {f.kind.value for f in r.missing_files}
+                  assert missing_kinds == {"missing"}, missing_kinds
+                  failed_kinds = {f.kind.value for f in r.failed_files}
+                  # The fake.py we planted should show up as Extra.
+                  assert "extra" in failed_kinds, failed_kinds
+                  assert "missing" not in failed_kinds, \
+                      "v1.14: Missing must NOT be in failed_files"
+                  # And valid must be False because of the Extra (tampering signal).
+                  assert r.valid is False, \
+                      "valid must be False when Extra is present"
+                  print(f"(b) live registry OK (v1.14+ split): "
+                        f"expected={r.expected_total_hash[:24]}..., "
+                        f"failed={len(r.failed_files)} missing={len(r.missing_files)}")
+              else:
+                  # Pre-v1.14.0 (1.13.x) wheels: Missing still in failed_files.
+                  assert len(r.failed_files) >= 1000, \
+                      f"expected many MISSING in failed_files (1.13.x), got {len(r.failed_files)}"
+                  kinds = {f.kind.value for f in r.failed_files}
+                  assert "missing" in kinds, kinds
+                  assert "extra" in kinds, kinds
+                  print(f"(b) live registry OK (1.13.x): "
+                        f"expected={r.expected_total_hash[:24]}..., "
+                        f"failed_files={len(r.failed_files)}")
+
+          # (c) v1.14.0+: missing-only must keep valid=True (the desktop
+          # platform-asymmetric case CIRISAgent#15 was about). Synthesize
+          # by hand-walking against a directory that's a STRICT SUBSET of
+          # the registered manifest — every disk file matches its
+          # registered hash; some registered files are absent.
+          if tuple(parts) >= (1, 14, 0):
+              # We'd need a real ciris-agent install for a clean
+              # subset-test. The fake.py path can't reach this state
+              # (it's an Extra, not a subset). For the gate, the unit
+              # tests in tree_verify::tests cover this invariant; here
+              # we just confirm v1.14 has the missing_files field
+              # populated when it should be.
+              print(f"(c) v1.14.0 verdict semantics — missing_files field "
+                    f"present and populated correctly above")
           PYEOF

@@ -277,7 +277,8 @@ class TestTreeVerifyTypes:
         assert back == req
 
     def test_result_round_trip(self):
-        # Mirrors the JSON the FFI produces.
+        # Mirrors the JSON the FFI produces (v1.14.0+: Missing is split
+        # into its own bucket; Mismatch + Extra remain in failed_files).
         payload = {
             "valid": False,
             "files_checked": 3,
@@ -290,14 +291,16 @@ class TestTreeVerifyTypes:
                     "expected_hash": "sha256:bb",
                 },
                 {
-                    "path": "missing.py",
-                    "kind": "missing",
-                    "expected_hash": "sha256:cc",
-                },
-                {
                     "path": "extra.py",
                     "kind": "extra",
                     "computed_hash": "sha256:dd",
+                },
+            ],
+            "missing_files": [
+                {
+                    "path": "missing.py",
+                    "kind": "missing",
+                    "expected_hash": "sha256:cc",
                 },
             ],
             "total_hash": "sha256:ee",
@@ -307,9 +310,58 @@ class TestTreeVerifyTypes:
             "binary_version": "2.8.3",
         }
         r = TreeVerifyResult.model_validate(payload)
-        assert len(r.failed_files) == 3
-        kinds = {f.kind for f in r.failed_files}
-        assert kinds == {FailedFileKind.MISMATCH, FailedFileKind.MISSING, FailedFileKind.EXTRA}
+        assert len(r.failed_files) == 2
+        failed_kinds = {f.kind for f in r.failed_files}
+        assert failed_kinds == {FailedFileKind.MISMATCH, FailedFileKind.EXTRA}
+        assert FailedFileKind.MISSING not in failed_kinds
+        assert len(r.missing_files) == 1
+        assert r.missing_files[0].kind == FailedFileKind.MISSING
+
+    def test_result_legacy_v1_13_payload_no_missing_files_field(self):
+        # Pre-v1.14.0 wire shape — `missing_files` field absent. Pydantic
+        # default = []. Forward-compatible deserialization.
+        payload = {
+            "valid": True,
+            "files_checked": 5,
+            "files_passed": 5,
+            "failed_files": [],
+            "total_hash": "sha256:abc",
+            "expected_total_hash": "sha256:abc",
+            "registry_match": True,
+            "project": "ciris-verify",
+            "binary_version": "1.13.3",
+        }
+        r = TreeVerifyResult.model_validate(payload)
+        assert r.missing_files == []
+        assert r.valid
+
+    def test_missing_only_is_valid_true(self):
+        """v1.14.0+: a Missing-only result should report valid=True
+        (tampering verdict clean) but registry_match=False (strict
+        literal-equality fails). This is the platform-asymmetric desktop
+        case that the agent's L4 was capping on pre-1.14.0."""
+        r = TreeVerifyResult(
+            valid=True,
+            files_checked=1499,
+            files_passed=1499,
+            failed_files=[],
+            missing_files=[
+                FailedFile(
+                    path="ciris_adapters/wallet/providers/_build_secrets.py",
+                    kind=FailedFileKind.MISSING,
+                    expected_hash="sha256:abcd",
+                ),
+            ],
+            total_hash="sha256:walk",
+            expected_total_hash="sha256:registered",
+            registry_match=False,
+            project="ciris-agent",
+            binary_version="2.8.7",
+        )
+        assert r.valid is True
+        assert r.registry_match is False
+        assert len(r.missing_files) == 1
+        assert r.failed_files == []
 
     def test_result_registry_unreachable(self):
         # Registry-down case: no expected_total_hash, registry_error set.
