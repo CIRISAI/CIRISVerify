@@ -234,10 +234,10 @@ This reframing has consequences throughout the document. §8.4 redefines the cos
 
 | Primitive | Property | Filled by | Status |
 |-----------|----------|-----------|--------|
-| C0 RNG | foundational | OS RNG (`getrandom`) + ring/`OsRng` in `ciris-crypto` | **Deployed** (implicit; no formal RNG-quality contract or startup health-check — see §3.3 Gap H) |
+| C0 RNG | foundational | `ciris_crypto::random` (v2.0+; OsRng facade — Linux `getrandom(2)`, macOS `SecRandomCopyBytes`, Windows `BCryptGenRandom`) | **Deployed** — formalized API in v2.0 (federation crypto authority pattern, §3.5); startup health-check still pending (see §3.3 Gap H, partial closure) |
 | C1 hardware identity | P1 | `CIRISKeyring` + TPM 2.0 / Secure Enclave / Android Keystore | **Deployed** |
 | C2 hybrid signing | P2 | `CIRISCrypto` (Ed25519 + ML-DSA-65) | **Deployed** |
-| C3 build attestation | P3 | `CIRISVerify` BuildManifest validator | **Deployed** (v1.8.4) |
+| C3 build attestation | P3 | `CIRISVerify` BuildManifest validator + `verify_tree` runtime walk | **Deployed** (v1.8.4 build; v1.13+ runtime walk) |
 | C4 hybrid KEX + KDF | P7 | — | **Spec** only — no implementation; harvest-now-decrypt-later vulnerable (Gap C) |
 | S1 signed evidence | P4 | `CIRISPersist` scrub envelope | **Deployed** (v0.1.3+) |
 | S2 federated directory | P5 | `CIRISRegistry` → `CIRISPersist` v0.2.x | **Deployed** (registry-authoritative); persist v0.2.x federation tables are **Spec/partial Impl** |
@@ -248,7 +248,7 @@ This reframing has consequences throughout the document. §8.4 redefines the cos
 | Q1 quorum-based availability + CAP | P11 | 2-of-3 advisory consensus exists; CAP model does not | **Spec partial** — consensus implemented; bounded-staleness contract proposed not specified (Gap B) |
 
 **Coverage by status**:
-- **Deployed**: C0 (implicit), C1, C2, C3, S1, S2 (registry path), S3.
+- **Deployed**: C0 (formalized v2.0), C1, C2, C3, S1, S2 (registry path), S3.
 - **Spec partial / in transition**: S2 (persist path), R1, Q1.
 - **Spec only / unfilled**: C4, N1, N2.
 
@@ -298,8 +298,8 @@ Bridge is currently a single human. There is no implemented multi-party-steward 
 **Gap G: Threat-model artifact integrity unfilled.**
 This document is markdown in a git repo. It is not signed; there is no two-person-rule on edits; no commit signing requirement. v2 §12 specifies the signing requirement; implementation pending.
 
-**Gap H: C0 RNG not formally treated.**
-The codebase uses `OsRng` / `getrandom`, which is correct for current platforms. There is no documented RNG-quality contract — no "fail-secure on RNG-test failure," no startup health-check. A platform-specific RNG bug (vTPM PRNG seeding bug, embedded-platform low-entropy boot) currently has no detection mechanism. Per-primitive operational hardening recommended.
+**Gap H: C0 RNG formalized but no startup health-check (v2.0 partial closure).**
+v2.0 (2026-05) ships `ciris_crypto::random` as the canonical RNG facade — every federation primitive that needs random bytes now routes through one audit point (federation crypto authority pattern, §3.5). The underlying source is `OsRng` (Linux `getrandom(2)` blocks until kernel CSPRNG seeded; macOS `SecRandomCopyBytes`; Windows `BCryptGenRandom`), correct for federation deployment targets (server / mobile / desktop). What remains: no startup health-check (FIPS-mode draws, hardware-entropy-mixing, NIST SP 800-90B-class entropy estimation). A platform-specific RNG bug (vTPM PRNG seeding bug at boot, embedded-platform low-entropy boot) still has no detection mechanism. The "fail-secure on RNG-test failure" contract is unspecified. Tracked in `CIRISVerify/docs/THREAT_MODEL.md` AV-39 (severity: low for primary deployment targets, medium for embedded if/when those land).
 
 ### 3.4 Out-of-scope artifacts
 
@@ -309,6 +309,63 @@ The following exist in the CIRIS ecosystem but are not federation primitives or 
 - **Documentation** (`docs/*.md`, `FSD/*.md`) — informational, with the exception of *this document* whose integrity is now in scope per §6.7 / §12.
 - **Build tooling** (`ciris-build-tool`, `ciris-build-sign`, `ciris-build-verify`) — produces C3 BuildManifests but is itself a trusted-input artifact, covered in CIRISVerify `THREAT_MODEL.md` §3.4 (Supply Chain).
 - **CI/CD** — produces C3 attestations; covered in CIRISVerify `THREAT_MODEL.md` §3.4 + AV-34 (build-signing key compromise) and parallel registry doc.
+
+### 3.5 Federation crypto authority pattern (v2.0+)
+
+**This is not a new primitive. It is a meta-organizational property of the federation: every CIRIS primitive that needs cryptographic operations routes through `ciris-crypto`.** The pattern formalized in CIRISVerify v2.0 (2026-05).
+
+#### What the pattern covers
+
+| Operation class | Federation primitive(s) it serves | Implementation in `ciris-crypto` |
+|-----------------|----------------------------------|----------------------------------|
+| Hybrid signing (Ed25519 + ML-DSA-65) | C2 (P2) | `HybridSigner` / `HybridVerifier` (v1.x stable) |
+| secp256k1 wallet signing (EVM, EIP-155, EIP-712) | actor-behavior over S2 (on-chain attestations) | `secp256k1` module (v1.3+) |
+| Cryptographic randomness | C0 (foundational) | `random::fill` / `random::bytes` (v2.0+, OsRng facade) |
+| Symmetric AEAD (AES-256-GCM) | implementation surface for actor-managed at-rest secrets (CIRISPersist secrets table, CIRISEdge#3) | `aes_gcm::encrypt` / `decrypt` (v2.0+) |
+| Key derivation (PBKDF2, HKDF) | implementation surface for software-master + hardware-master (deferred) symmetric derivation | `kdf::pbkdf2_hmac_sha256` / `kdf::hkdf_sha256` (v2.0+) |
+| MAC (HMAC-SHA256) + constant-time compare | implementation surface for `EncryptedSecretRecord.edge_hmac` integrity | `hmac::sha256` + `hmac::util::ct_eq` (v2.0+) |
+| Hardware-bound key operations | C1 (P1) | `ciris-keyring` (separate crate; ciris-crypto consumes it for HardwareSigner) |
+
+The first two rows pre-date v2.0; rows 3-6 are the v2.0 federation crypto authority surface.
+
+#### Why a meta-organizational property and not a primitive
+
+Adding C5 "Federation symmetric crypto authority" to the §2.2 primitive set was considered. Rejected because:
+
+1. **The §2.3 boundary defense for C0 (RNG)** argues RNG is a separately-validatable component — Dual_EC-style reasoning. The same boundary defense doesn't apply to AEAD/MAC/KDF: their compromise is more localized than RNG's (an AES-GCM break is bad for AES-GCM consumers, not federation-wide). Lumping them into one primitive C5 weakens the precision §2.3 argued for.
+2. **AEAD / MAC / KDF aren't federation-emergent properties.** They're implementation choices for actor-behaviors (CIRISPersist's SecretsService, CIRISEdge's at-rest crypto). The federation TM models substrate primitives that actors operate over; specific symmetric algorithm choices are an implementation layer below.
+3. **The pattern's load-bearing claim is organizational, not algorithmic.** "All federation primitives go through ciris-crypto" is the auditable property. Which symmetric algorithm ciris-crypto picks (AES-GCM today, ChaCha20-Poly1305 tomorrow if AES-NI fades, AES-GCM-SIV if nonce-misuse becomes a real threat) is a versioning concern under that umbrella, not a primitive change.
+
+Treating it as meta-organizational lets the federation TM stay stable across symmetric-algorithm churn while still capturing the "single audit point" property that makes the pattern load-bearing.
+
+#### What the pattern enforces
+
+**Federation policy**: downstream consumers (CIRISPersist, CIRISEdge, CIRISLens, etc.) MUST NOT add direct dependencies on RustCrypto crates that ciris-crypto already covers (`aes-gcm`, `hkdf`, `pbkdf2`, `hmac`, `getrandom`). Direct deps bypass:
+
+- The federation's algorithm-choice audit point (which crates are in scope, which versions, which feature flags).
+- The federation's KAT-vector locking (NIST GCM, RFC 5869 HKDF, RFC 4231 HMAC tested in `ciris-crypto/src/{aes_gcm,kdf,hmac}.rs`).
+- The federation's error-variant standardization (`CryptoError::AesGcm` / `KdfParameter` — single match site for callers).
+- The federation's upgrade path (a Dual_EC-class break, an AES-256 cryptanalysis advance, an OsRng platform regression — all become single-PR fixes propagating to all consumers via the dep graph).
+
+Enforcement today is convention + PR-time review. Future enforcement: `cargo-deny` baseline at the federation level (`[bans]` config banning the wrapped crates everywhere except ciris-crypto), tracked in `CIRISVerify/docs/THREAT_MODEL.md` AV-40.
+
+#### Boundary respect
+
+The pattern explicitly does NOT cover:
+
+- **Transport-layer encryption** — CIRISEdge integrates Reticulum-rs and TLS for transport confidentiality (`CIRISEdge/FSD/CIRIS_EDGE.md` §AV-15: "edge does not add a third encryption layer"). Transport KEX, AEAD, and MAC are inside reticulum-rs / rustls; not federation crypto authority territory.
+- **Hardware-bound key operations** — those are C1 (CIRISKeyring), with its own per-platform implementation per §3.1.
+- **Forward-secret session establishment** — C4 (P7), still spec-only at the federation level. When implemented, it's a separate primitive with its own algorithm choices (X25519 + ML-KEM-768 likely).
+
+#### Threat-model implications
+
+The federation crypto authority pattern is itself an attack surface. Three new F-AVs declared here as part of the v2.0 update; **§6 catalog promotion deferred to next federation TM cycle** (this is a §3 structural addition; §6's per-F-AV detail format requires the full RATCHET-signal / Class taxonomy / Status / Owner block which is out of scope for this update):
+
+- **F-AV-CRYPTO-AUTH (new in v1.0+v2.0)**: a compromise of `ciris-crypto`'s release artifact (XZ-class, AV-12) propagates to every federation primitive simultaneously. Mitigation: same as F-AV-MAINT — AGPL source review, hybrid-signed releases, post-release-verify CI gate, future reproducible builds (Gap 4 in CIRISVerify TM §10).
+- **F-AV-CRYPTO-DRIFT (new in v1.0+v2.0)**: a federation primitive that bypasses ciris-crypto with a direct RustCrypto dep escapes the upgrade path. The federation crypto authority's "single PR fixes everyone" property fails for that primitive. Mitigation: §3.5 Federation policy + AV-40 in CIRISVerify TM.
+- **F-AV-RNG-CONTRACT (new in v1.0+v2.0; related to Gap H)**: v2.0 closes the API formalization but not the startup health-check. A Dual_EC-class compromise of OsRng under the v2.0 facade is detectable only post-hoc. Mitigation: convention + future startup-health-check work.
+
+Cross-link: full per-AV catalog in `CIRISVerify/docs/THREAT_MODEL.md` §3.8 (AV-35..AV-41) and federation role coverage in `CIRISVerify/docs/THREAT_MODEL.md` §11.
 
 ---
 
