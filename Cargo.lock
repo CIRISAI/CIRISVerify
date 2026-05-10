@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-build-tool"
-version = "1.14.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -624,15 +624,18 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "1.14.0"
+version = "2.0.0"
 dependencies = [
+ "aes-gcm",
  "aws-lc-rs",
  "ed25519-dalek",
  "hex",
  "hkdf",
+ "hmac",
  "k256",
  "ml-dsa",
  "p256",
+ "pbkdf2",
  "pretty_assertions",
  "proptest",
  "rand_chacha 0.3.1",
@@ -648,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "1.14.0"
+version = "2.0.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -686,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "1.14.0"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -706,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "1.14.0"
+version = "2.0.0"
 dependencies = [
  "android_system_properties",
  "anyhow",
@@ -750,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "1.14.0"
+version = "2.0.0"
 dependencies = [
  "aes-gcm",
  "android_logger",
@@ -2765,6 +2768,16 @@ dependencies = [
  "redox_syscall",
  "smallvec",
  "windows-link",
+]
+
+[[package]]
+name = "pbkdf2"
+version = "0.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f8ed6a7761f76e3b9f92dfb0a60a6a6477c61024b775147ff0973a02653abaf2"
+dependencies = [
+ "digest 0.10.7",
+ "hmac",
 ]
 
 [[package]]

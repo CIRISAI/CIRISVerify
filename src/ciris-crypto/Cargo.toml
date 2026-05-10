@@ -17,6 +17,16 @@ secp256k1 = ["k256"]
 pqc-ml-dsa = ["ml-dsa", "rand_chacha"]
 pqc-aws-lc = ["aws-lc-rs"]
 
+# v2.0+ — federation symmetric / KDF / MAC / RNG primitives. Each is
+# its own feature so consumers (CIRISPersist#19's federated SecretsService,
+# CIRISEdge#3's at-rest crypto, etc.) can pick the surface they need.
+# The federation's threat model centralizes these in ciris-crypto so
+# consumers never reach into RustCrypto crates directly. See CIRISVerify#7.
+aes-gcm = ["dep:aes-gcm"]
+kdf = ["dep:pbkdf2"]   # hkdf is already a non-optional dep (used by secp256k1 wallet)
+hmac = ["dep:hmac"]
+random = []  # uses rand_core::OsRng — already pulled in by rand_core dep
+
 [dependencies]
 thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
@@ -39,6 +49,13 @@ hex = "0.4"    # Hex encoding for EVM addresses
 # Post-quantum (choose one via feature flag)
 ml-dsa = { version = "0.1.0-rc.3", optional = true }
 aws-lc-rs = { version = "1.5", features = ["unstable"], optional = true }
+
+# v2.0+ — symmetric / MAC primitives (RustCrypto). All optional, gated
+# by their feature flag above. PBKDF2 is a separate dep from hkdf
+# because RustCrypto split them across crates.
+aes-gcm = { version = "0.10", optional = true }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"], optional = true }
+hmac = { version = "0.12", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

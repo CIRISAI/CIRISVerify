@@ -48,6 +48,21 @@ pub mod secp256k1;
 #[cfg(feature = "pqc-ml-dsa")]
 mod ml_dsa;
 
+// v2.0+ federation symmetric / KDF / MAC / RNG primitives. Each is
+// gated by its own feature so consumers pull in only what they need.
+// See CIRISVerify#7.
+#[cfg(feature = "aes-gcm")]
+pub mod aes_gcm;
+
+#[cfg(feature = "kdf")]
+pub mod kdf;
+
+#[cfg(feature = "hmac")]
+pub mod hmac;
+
+#[cfg(feature = "random")]
+pub mod random;
+
 pub use error::CryptoError;
 pub use hybrid::{
     ClassicalSigner, ClassicalVerifier, HybridSigner, HybridVerifier, PqcSigner, PqcVerifier,

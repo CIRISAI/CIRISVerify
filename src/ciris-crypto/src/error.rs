@@ -93,6 +93,25 @@ pub enum CryptoError {
     /// Serialization error.
     #[error("Serialization error: {0}")]
     SerializationError(String),
+
+    // v2.0+ — federation symmetric / KDF errors. Kept distinct from
+    // signature variants so callers can match on tampering vs.
+    // operational failure cleanly.
+    /// AES-256-GCM operation failed (encrypt or decrypt).
+    /// Decrypt failures most commonly mean tampered ciphertext; encrypt
+    /// failures are operational (allocation, etc.).
+    #[error("AES-256-GCM {operation} failed: {reason}")]
+    AesGcm {
+        /// `"encrypt"` or `"decrypt"`.
+        operation: &'static str,
+        /// Underlying reason from the AEAD library or the caller's input.
+        reason: String,
+    },
+
+    /// KDF parameters out of range. HKDF refuses outputs longer than
+    /// `255 * HashLen` per RFC 5869; PBKDF2 refuses zero iterations.
+    #[error("KDF parameter error: {0}")]
+    KdfParameter(String),
 }
 
 impl CryptoError {
