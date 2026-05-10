@@ -277,6 +277,96 @@ Authoritative semantics for "is multiple-CIRISVerify-on-one-host OK":
 
 ---
 
+### 3.8 Federation Crypto Authority — adversary wants to bypass or subvert the v2.0 symmetric / KDF / MAC / RNG surface
+
+Threats specific to v2.0's promotion of `ciris-crypto` from "hybrid signing only" to "federation-wide crypto authority." These cover the AES-256-GCM AEAD, KDF (PBKDF2-HMAC-SHA256 + HKDF-SHA256), HMAC-SHA256, and `OsRng`-facade modules introduced in v2.0.0. Signature-side threats (AV-1..AV-34) are unchanged.
+
+Federation policy: every CIRIS primitive that needs symmetric crypto, KDF, MAC, or random bytes routes through `ciris-crypto`. Direct dependencies on RustCrypto crates (`aes-gcm`, `hkdf`, `pbkdf2`, `hmac`, `getrandom`) from downstream consumers are policy violations — the audit point exists so violations are tractable.
+
+#### AV-35: AES-GCM nonce reuse with same key
+
+**Attack surface (catastrophic class)**: GCM is a counter-mode AEAD. Nonce reuse with the same key allows an adversary observing two ciphertexts under the same `(key, nonce)` to: recover the XOR of the two plaintexts (immediate confidentiality break), recover the GCM polynomial-MAC authentication key `H` (full forgery capability for that key going forward).
+
+The library does NOT detect or prevent reuse. The federation's threat model assumes well-behaved callers (the audit point centralizes nonce-management code review at the consumer side, not at the library boundary).
+
+**Primary mitigation**: spec'd policy in `aes_gcm.rs` module docs — caller MUST use random nonces (12 bytes from `ciris_crypto::random::fill`) or strict per-key counter. Random nonces give a ~2³² messages-per-key birthday bound (NIST SP 800-38D §8.3); counter nonces require strict per-key persistent state.
+
+**Secondary**: federation incident channel — observed nonce reuse is reported as a key-compromise event, triggering rotation. Same-host process boundaries should not share AES keys (per AV-14 cohabitation contract: same alias = same identity, so same key — but symmetric keys derived from per-secret salts are different per row, so reuse only matters within a single secret's lifetime).
+
+**Status**: ⚠ Open at the library layer (caller-managed); ✓ Policy documented.
+
+#### AV-36: PBKDF2 iteration count too low
+
+**Attack surface**: A captured PBKDF2 ciphertext + salt allows offline brute-force of the master password. The cost is `iters × hash_ops` per guess; too-low `iters` shifts the cost into adversary-feasible range. OWASP 2026 recommends 600,000 PBKDF2-HMAC-SHA256 rounds.
+
+**Primary mitigation**: spec'd minimum `iters = 100,000` in CIRISPersist#19 (matches CIRISAgent's existing `ciris_engine/logic/secrets/encryption.py` config, established 2025). `iters = 0` rejected with `CryptoError::KdfParameter`. Future bump tracked separately.
+
+**Secondary**: defense-in-depth via hardware-master mode (CIRISPersist#19 `secrets-hw` feature) skips PBKDF2 entirely — symmetric keys derive via HKDF from a hardware-bound master, no password to brute-force. Only software-master mode is exposed to this AV.
+
+**Status**: 🟡 100k iters is the floor; 600k bump scheduled for the v2.x cycle; hardware-master mode not yet wired (deferred from v2.0).
+
+#### AV-37: HKDF context confusion (cross-domain key reuse)
+
+**Attack surface**: Same `(IKM, salt)` used to derive keys for different purposes via colliding `info` strings → key reuse across protocol domains. An adversary who compromises one domain's encryption key can decrypt the other domain's ciphertexts if the keys are identical.
+
+Concrete instance: if persist derives an AES-GCM key with `info = b"ciris-secret"` and an HMAC key with `info = b"ciris-secret"` from the same master, both keys are identical bytes. AES key compromise via cryptanalysis (theoretical) → MAC forgery (immediate).
+
+**Primary mitigation**: federation namespacing convention — `info = b"ciris-<purpose>-v<n>"` where `<purpose>` is unique per cryptographic role and `<n>` is the format version. CIRISPersist documents its info strings in `secrets/encryption.py`. The convention is also the migration knob — bumping `<n>` rotates the derived key family without rotating IKM.
+
+**Secondary**: code review at PR time + cargo-deny lints in downstream consumers banning direct HKDF deps (forces routing through `ciris_crypto::kdf::hkdf_sha256` where the convention is documented).
+
+**Status**: 🟡 Open at the library layer (caller-managed); ✓ Policy documented; ⏳ runtime enforcement (info-string registry validator) tracked as future work.
+
+#### AV-38: HMAC key reused as KDF master (cross-protocol attack)
+
+**Attack surface**: A federation primitive uses one root secret as both an HMAC key (for `EncryptedSecretRecord.edge_hmac`) AND as a PBKDF2 master (for software-master per-secret derivation). The two algorithms make different assumptions about key entropy distribution; combining them creates cross-protocol attacks where partial information from one operation leaks into the security of the other.
+
+**Primary mitigation**: federation policy — derived keys per purpose, never reuse roots across MAC + AEAD + KDF. Two-step derivation: root → HKDF-SHA256(root, salt, b"ciris-mac-v1") → MAC key; root → HKDF-SHA256(root, salt, b"ciris-aead-v1") → AEAD key. Documented in v2.0 release notes; downstream cargo-deny configs flag direct RustCrypto MAC/KDF deps that would bypass policy.
+
+**Status**: ⚠ Open at the library layer (caller-managed); ✓ Policy documented + structurally supported via the existing HKDF surface.
+
+#### AV-39: OsRng entropy degradation
+
+**Attack surface**: `getrandom(2)` on Linux blocks until the kernel CSPRNG is seeded; on first-boot containers and embedded devices the seed pool can be shallow for the first few seconds. Pre-seeded `/dev/urandom` is theoretically nondeterministic but in practice replays predictable patterns until kernel collection catches up.
+
+**Primary mitigation**: `ciris_crypto::random` wraps `OsRng`, which on Linux/Android delegates to `getrandom(2)` (blocking until seeded), on macOS/iOS to `SecRandomCopyBytes`, on Windows to `BCryptGenRandom`. The blocking semantics on Linux are the kernel's mitigation — `getrandom(2)` waits for `random.fasync_init` rather than returning entropy-weak bytes.
+
+**Secondary**: deployment guidance — containers should include an `ExecStartPre` that reads from `/dev/random` (the blocking variant) or uses `--random-source` mounts to inherit host entropy. Embedded targets get hardware-RNG mixing once we have a concrete embedded consumer (none today; CIRIS deployment targets are server / mobile / desktop).
+
+**Status**: ✓ Mitigated for primary deployment targets (server / mobile / desktop on platforms with a maintained kernel CSPRNG); 🟡 future hardening (FIPS-mode draws, hardware-entropy mixing) tracked as v2.x work if/when embedded targets surface.
+
+#### AV-40: Federation-policy violation (bypassing ciris-crypto)
+
+**Attack surface (process-level)**: A consumer reaches into RustCrypto crates directly (`aes-gcm`, `hkdf`, `pbkdf2`, `hmac`, `getrandom`) for primitives that ciris-crypto already provides. This bypasses the federation's audit point — vuln assessment, KAT vector locking, error-variant standardization, and policy convention all happen at the ciris-crypto boundary; direct deps escape.
+
+**Primary mitigation**: documented in v2.0 release notes — CIRISVerify is the federation crypto authority; consumers MUST go through it. `cargo-deny` config in downstream `Cargo.toml` bans the direct deps:
+
+```toml
+[bans]
+deny = [
+    { name = "aes-gcm", wrappers = ["ciris-crypto"] },
+    { name = "hkdf",    wrappers = ["ciris-crypto"] },
+    { name = "pbkdf2",  wrappers = ["ciris-crypto"] },
+    { name = "hmac",    wrappers = ["ciris-crypto"] },
+]
+```
+
+**Secondary**: PR-time review — federation primitives' Cargo.toml is reviewed for "does this dep belong here." A new direct RustCrypto dep is a red flag.
+
+**Status**: 🟡 Convention; ⏳ CI-side enforcement tracked as future work once we have a federation-wide cargo-deny baseline (today each repo has its own).
+
+#### AV-41: Hardware-bound master derivation gap
+
+**Attack surface**: Mobile keystores (Android, iOS Secure Enclave) DON'T expose native HKDF as a keystore primitive. v2.0 does NOT ship `HardwareSigner::derive_symmetric_key`. Persist consumers running on mobile fall through to software-master mode — the master sits in process memory long enough to feed HKDF, then is zeroed. The window between "master in memory" and "zero" is a residual surface (heap dump, debugger, OOM core dump) that a hardware-bound derivation method would close.
+
+**Primary mitigation (today)**: persist's software-master mode uses ciris-crypto's `kdf::pbkdf2_hmac_sha256` + `kdf::hkdf_sha256` directly with caller-managed master lifecycle. The master is constructed from a hardware-bound seed (signed challenge from `HardwareSigner::sign`) plus a per-process salt; the derived per-secret key never goes back to disk in cleartext.
+
+**Secondary**: v2.x work — `HardwareSigner::derive_symmetric_key` lands when CIRISPersist#19's `secrets-hw` feature is exercised. Honest design: software-only signers implement it via internal HKDF; mobile signers return `Unsupported`; TPM signers implement it via TPM-side HKDF (TPM 2.0 supports `TPM2_KDFa` for some derivation patterns).
+
+**Status**: 🟡 Software-master mode covered; ⏳ hardware-master derivation deferred to v2.x.
+
+---
+
 ## 4. Mitigation Matrix
 
 | AV | Attack | Primary Mitigation | Secondary | Status | Fix Tracker |
@@ -295,6 +385,13 @@ Authoritative semantics for "is multiple-CIRISVerify-on-one-host OK":
 | AV-12 | Maintainer compromise / XZ-style | AGPL-3.0 source review; `cargo-audit` + `cargo-deny`; hybrid sig | None against this attack — compromised maintainer signs both classical + PQC | ⚠ **Open** — no two-person-rule, no SBOM, no reproducible builds | §10 SOTA gap #3-#5 |
 | AV-13 | TEE.fail / DDR5 bus interposition | Threat assumption §6.4 (no physical access); SoC vuln detection v1.2.0+ caps to SOFTWARE_ONLY | Defense-in-depth: HSM-anchored steward keys (FIPS 140-3 L3+) for production roles | 🟡 Mobile/SoC covered; server-class TEE attacks NOT modeled | §10 SOTA gap #7 |
 | AV-14 | Cross-instance keyring contention (multi-instance cohabitation) | Persist-as-interface: one verify instance per process by construction in persist-bearing stacks; OS-daemon serialization on read path universally | Documentation contract (HOW_IT_WORKS.md "When Persist Is the Interface"); same-alias = same identity by PoB §3.2 | ✓ Surface vanishes in dominant production pattern (persist-bearing); 🟡 multi-process verify-only stacks need operator-bootstrap or v1.9 flock guards (uncommon pattern) | v1.9 (verify-side `flock` for persist-less stacks) |
+| AV-35 | AES-GCM nonce reuse with same key | Caller-managed nonce policy (random 96-bit via `random::fill` OR strict per-key counter); doc'd in `aes_gcm.rs` module | Federation incident channel — observed reuse triggers key rotation | ⚠ Open at library layer (caller-managed); ✓ Policy doc'd in v2.0 | §3.8 AV-35 |
+| AV-36 | PBKDF2 iteration count too low | Spec'd minimum 100k iters in CIRISPersist#19 (matches CIRISAgent's existing config); `iters=0` rejected as `KdfParameter` | Hardware-master mode (when shipped) skips PBKDF2 entirely | 🟡 100k is current floor; 600k bump scheduled v2.x | OWASP 2026 |
+| AV-37 | HKDF context confusion (cross-domain key reuse) | Federation namespacing convention `info = b"ciris-<purpose>-v<n>"`; doc'd in v2.0 release notes; CIRISPersist documents per-purpose info strings | cargo-deny lints in downstream consumers banning direct hkdf deps | 🟡 Open at library layer (caller-managed); ⏳ runtime info-string registry validator | future |
+| AV-38 | HMAC key reused as KDF master (cross-protocol) | Federation policy: derived keys per purpose via HKDF — `root → hkdf(.., b"ciris-mac-v1")`, `root → hkdf(.., b"ciris-aead-v1")` | Documented in v2.0 release notes + cargo-deny direct-hmac/kdf bans | ⚠ Open at library layer (caller-managed); ✓ Policy doc'd | §3.8 AV-38 |
+| AV-39 | OsRng entropy degradation | `ciris_crypto::random` wraps `OsRng` (Linux `getrandom(2)` blocks until seeded; macOS `SecRandomCopyBytes`; Windows `BCryptGenRandom`) | Container/embedded deployment guidance — `ExecStartPre` entropy seed; future hardware-entropy mixing | ✓ Server/mobile/desktop covered; 🟡 future FIPS-mode + embedded hardening | v2.x |
+| AV-40 | Federation-policy violation (bypassing ciris-crypto direct RustCrypto deps) | v2.0 release notes documenting "ciris-crypto is THE crypto authority"; cargo-deny `[bans]` config in downstream consumers banning `aes-gcm`/`hkdf`/`pbkdf2`/`hmac` direct deps | PR-time review; new direct RustCrypto dep is a red flag | 🟡 Convention; ⏳ federation-wide cargo-deny baseline | future |
+| AV-41 | Hardware-bound master derivation gap | Software-master mode uses ciris-crypto KDF directly with caller-managed master lifecycle; master is zeroed after derivation | `HardwareSigner::derive_symmetric_key` lands when CIRISPersist#19's `secrets-hw` is exercised | 🟡 Software-master covered; ⏳ hardware-master deferred to v2.x | CIRISPersist#19 |
 | Audit | Audit trail tampering | Transparency log with Merkle tree | Append-only persistent storage | ✓ Mitigated | Fix 1 |
 
 **Status legend:** ✓ Mitigated • 🟡 Partial mitigation, residual tracked • ⚠ Open / planned
@@ -523,7 +620,90 @@ A SOTA review (mid-2026) against current best-practice in software-supply-chain 
 
 ---
 
-## 11. Update Cadence
+### Peer comparison (2026-mid SOTA review for v2.0)
+
+The v2.0 cycle promotes ciris-crypto to "federation crypto authority," which makes the question "where do we sit relative to peers in the same shape?" load-bearing. Peers are not direct competitors — most occupy adjacent niches — but each illustrates an axis of the design space we should know our position on.
+
+| Peer | Niche | What we cover that they don't | What they cover that we don't | Our position |
+|------|-------|-------------------------------|-------------------------------|--------------|
+| **Sigstore + Cosign + Rekor** | Software-supply-chain signed-build attestation via OIDC + transparency log | Hybrid PQC signing, hardware-bound runtime identity, runtime tree-walk verification, license tier enforcement, hardware vuln detection | Continuous Rekor monitoring (Gap 2), keyless OIDC ephemeral signing, federated transparency log peers | Adjacent — we already use Sigstore for the build attestation layer; Rekor monitoring is the residual we know we need to close. |
+| **TUF (The Update Framework)** | Hierarchical metadata signing for software updates with role separation (root/targets/snapshot/timestamp) | Hardware-rooted device identity, runtime integrity verification, federation policy enforcement, hybrid-PQC signing | Multi-role signing with key-rotation safety, threshold signatures within roles, freeze-before-publish ordering | Adjacent — TUF's role separation is a model we could borrow if the steward-key model migrates to multi-operator. Today we're a single-role signer. |
+| **in-toto + SLSA** | Supply-chain provenance attestation framework | Hybrid-PQC signed provenance, runtime integrity, hardware-rooted identity, license tier integration | Reproducible builds (Gap 4), formal SLSA L3+ attestation (Gap 1), step-by-step build-graph attestation | Adjacent — we partially implement (SLSA L2 effective); SLSA L3 + reproducibility is the v2.0 promise we still owe. |
+| **Keylime** | Linux/TPM remote attestation runtime with continuous-attestation policy engine | Mobile attestation (Android Keystore, iOS Secure Enclave), hybrid-PQC signing, license tier integration, runtime tree verifier | IMA boot-time integrity policy, continuous-attestation event stream, OpenStack/Kubernetes integration | Cousin — Keylime is the closest analog for runtime integrity on Linux/TPM. We're broader (mobile) but they're deeper on Linux server-class. |
+| **Veilid** | Mesh-network identity + crypto authority + DHT addressing | License tier enforcement, build-manifest provenance, runtime tree-walk verification, hybrid-PQC | DHT-based naming, Veilid-protocol-specific transports, BLAKE3-based identity | Upstream — `keyring-manager` pattern explicitly extends Veilid (see CLAUDE.md). Not competitors; we adopt their patterns where they fit. |
+| **Reticulum** | Mesh-transport with native link encryption + identity (X25519 + Ed25519 + AES-256-CBC) | Application-substrate primitives, build attestation, federation policy | Link-layer encryption, mesh routing, addressing-IS-identity at the transport layer | Substrate / transport split — CIRISEdge integrates Reticulum-rs for transport (per `CIRISEdge/FSD/CIRIS_EDGE.md` §AV-15: "edge does not add a third encryption layer"); we're substrate, they're transport. No overlap. |
+| **Signal Protocol / libsignal** | E2E messaging with forward secrecy + post-compromise security via Double Ratchet | Federation substrate primitives, hardware identity, build attestation, license tier enforcement | Forward-secret session establishment, Double Ratchet for post-compromise security, X3DH key agreement | Different threat model — Signal is 1:1 + groups with PFS/PCS as the headline; we're substrate-attestation with hybrid signing as the headline. X25519 KEX investigated for v2.0; dropped per edge's transport-encryption delegation. |
+| **Matrix Olm/Megolm** | Federation E2E messaging + key transparency | Federation substrate, hardware-bound identity, build attestation | Key-transparency log (different model than build-manifest log), cross-signing for device ownership | Different model — Matrix's KT proves "this device belongs to this user"; ours proves "this binary was signed by this build authority." |
+| **FIDO2 / WebAuthn** | Hardware-bound user authentication with attestation | Federation substrate, hybrid-PQC, build attestation, runtime integrity | Browser/WebAuthn integration, Resident Keys, Discoverable Credentials, attestation chain to known root CAs | Adjacent — same hardware identity primitive at a different layer. WebAuthn is user → service; we're agent → federation. Same TPM/SE/StrongBox underneath. |
+
+### What this comparison says about our position
+
+- **Build attestation tier**: we're broadly comparable to Sigstore/in-toto/SLSA but lag on continuous monitoring (Gap 2) and reproducibility (Gap 4). Both are explicit v2.x roadmap items.
+- **Runtime integrity tier**: comparable to Keylime on Linux + broader by covering mobile. No peer covers desktop/server/mobile in one substrate the way verify_tree does.
+- **Federation crypto authority tier (new in v2.0)**: no direct peer with the same "single audit point for federation primitives" framing. Closest analog is Veilid's `keyring-manager` (which we extend) — but Veilid is a mesh substrate, not a federation crypto authority.
+- **Identity tier**: TPM/SE/StrongBox bindings are commodity (FIDO2/Veilid/Keylime/etc all use the same hardware roots); our differentiator is the hybrid-PQC binding on top.
+- **Transport tier**: explicitly out of scope — delegated to CIRISEdge + Reticulum-rs. We don't compete with Signal/Matrix/Reticulum on the wire.
+
+The federation crypto authority framing is the v2.0 differentiator. No peer is doing exactly this combination — most do one or two of the tiers; none do all five (build + runtime + identity + symmetric authority + license enforcement) in one substrate.
+
+---
+
+## 11. Federation Role Coverage (v2.0)
+
+The federation expects CIRISVerify to be the **substrate-level crypto authority** — every primitive that needs cryptographic operations routes through this crate. Self-assessment of coverage as of v2.0.0:
+
+### 11.1 Covered
+
+- ✅ **Hybrid signing** (Ed25519 + ML-DSA-65 with bound classical-inside-PQC signatures) — `HybridSigner`/`HybridVerifier` stable since v1.x; PQC binding tested against signature-stripping attacks.
+- ✅ **Hardware-bound identity** (TPM 2.0 with EK certificate + dual-key architecture, Android Keystore / StrongBox, iOS Secure Enclave / Apple T2, software fallback) — `HardwareSigner` trait, `StorageDescriptor` for transparency about identity material location.
+- ✅ **Build attestation** (BuildManifest validator, function-level integrity, file-tree integrity, multi-target sign + register) — registry round-trip locked by post-release-verify CI; Sigstore + GitHub Actions OIDC for CI signing.
+- ✅ **Runtime integrity** (`verify_tree`, Algorithm A canonical algorithm shared with `ciris-build-sign sign --tree`, missing/extra/mismatch verdict semantics post-v1.14.0) — Python FFI exposed; live-registry CI gate.
+- ✅ **License tier enforcement + mandatory disclosure** — `LicenseEngine`, fail-secure degradation (LOCKDOWN / RESTRICTED / COMMUNITY), capability gating against `PROHIBITED_CAPABILITIES`.
+- ✅ **Federation symmetric authority (v2.0)** — AES-256-GCM, PBKDF2, HKDF, HMAC-SHA256, OsRng — single audit point. NIST GCM + RFC 5869 + RFC 4231 vectors locked.
+- ✅ **Wallet signing** (secp256k1 EVM, EIP-155, EIP-712, address recovery) — for federation primitives that interact with on-chain attestations.
+- ✅ **Hardware vulnerability detection** (CVE-2026-20435 MediaTek, CVE-2026-21385 Qualcomm) — caps attestation to SOFTWARE_ONLY for known-bad chips.
+
+### 11.2 Deferred / Roadmap (scheduled work, not blind spots)
+
+- ⏳ **Reproducible builds** (Gap 4) — promised at v2.0, not yet shipped. Targets dropping the "trust the GitHub Actions runner" residual to "trust two independent rebuilders agreeing." Cargo determinism work + cross-rebuilder verification.
+- ⏳ **SBOM publishing** (Gap 3) — `cargo-cyclonedx` integration scheduled. SPDX 3.0 + CycloneDX 1.6 dual format per CISA minimum elements + EU CRA Dec 2027 mandate.
+- ⏳ **Continuous Rekor monitoring** (Gap 2) — `rekor-monitor` against CIRISVerify's identity, alarm on rogue entries.
+- ⏳ **Two-person release rule** (Gap 5) — branch protection requiring 2+ approvers on release-tag-creating PRs; key-ceremony procedure for steward-key rotation.
+- ⏳ **PQC algorithm-agility** (Gap 6) — designated SLH-DSA fallback (FIPS 205, hash-based, conservative-trust); rotation procedure documented.
+- ⏳ **Hardware-master symmetric derivation** (AV-41) — `HardwareSigner::derive_symmetric_key` lands when CIRISPersist#19 exercises the `secrets-hw` path. Software-master mode covers the v2.0 surface.
+- ⏳ **PBKDF2 iteration bump** (AV-36) — 100k → 600k+ as compute baselines rise; tracked separately.
+
+### 11.3 Out of scope by design (boundary defense, not omission)
+
+These are NOT gaps. They are deliberate boundary choices respecting adjacent primitives' domains:
+
+- ❌ **Forward-secret session establishment (X25519 KEX)** — investigated for v2.0; dropped after auditing CIRISEdge `FSD/CIRIS_EDGE.md` §AV-15 ("edge does not add a third encryption layer") and CIRISPersist's per-secret encryption shape (one-shot, not session-based). Reticulum / TLS handle transport-layer KEX; we don't duplicate at the substrate layer.
+- ❌ **Streaming AEAD** — investigated for v2.0; dropped because persist's encrypted records are tens-to-hundreds of bytes per row, not multi-MB blobs. No concrete consumer.
+- ❌ **Threshold signatures / federation quorum** (FROST, BLS aggregation) — not in scope; no concrete demand. Federation today uses hybrid-signed singletons, not quorum sigs. If steward-key model migrates to multi-operator key-ceremony, this becomes scoped — until then, deferring matches the demand-driven principle.
+- ❌ **Zero-knowledge proofs / homomorphic encryption** — speculative; no concrete privacy-preserving attestation use case in the federation today. HE is 100-1000× overhead at the state of the art; not federation-ready.
+- ❌ **Application-layer transport** — that's CIRISEdge's role with Reticulum-rs (Phase 1) + Leviculum / LoRa / I²P / Serial (Phase 3). We're substrate; they're transport. Different layer, different ownership.
+- ❌ **Operator UX for manual verification** — that's CIRISPortal's role. We expose machine-readable attestation; humans interact via portal.
+
+### 11.4 Net assessment
+
+**Federation role is fully covered for v2.0's spec.**
+
+The deferred items (§11.2) are scheduled work or dependency-blocked, not blind spots — every one of them is in a roadmap doc with an action item. The out-of-scope items (§11.3) are intentionally bounded to respect adjacent primitives' domains; reaching into them would be over-stepping into CIRISEdge / CIRISPortal / CIRISRegistry territory.
+
+The **largest residual** is reproducible builds (Gap 4). Until two independent rebuilders agree, "the binary matches what GitHub Actions built" is an undeclared trust assumption inherited from CI. This is the single remaining axis where the SOTA peer comparison (§10) shows us trailing — Sigstore's Rekor + reproducibility patterns are mature; we're committed to the target but haven't shipped.
+
+The **second residual** is multi-operator release controls (Gap 5). XZ-3094 demonstrated single-maintainer trust is insufficient for substrate-level dependencies. Branch protection + key ceremony are tractable; just need the operator coordination.
+
+Where the federation could push us further (if the substrate threat model evolves):
+
+- **Threshold signatures** if steward-key model migrates to multi-operator key-ceremony (§11.3 #3).
+- **Hardware-master symmetric derivation** when persist#19 actually wires `secrets-hw` (§11.2 #6).
+- **FIPS-mode RNG draws** if FedRAMP / CMMC compliance becomes a federation requirement (AV-39 secondary).
+- **Streaming AEAD** if a federation primitive ever needs multi-MB at-rest blob encryption (currently nobody does — §11.3 #2).
+
+---
+
+## 12. Update Cadence
 
 This threat model is **updated on every minor version bump** (v1.X → v1.X+1). New attack vectors land here when:
 
