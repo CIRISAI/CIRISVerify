@@ -65,24 +65,32 @@ jobs:
 
       - name: Wait for PyPI propagation
         # Mirror lag — wheels usually propagate in 30-60s after the Release
-        # workflow's Upload to PyPI step finishes, but v1.13.0 hit a tail
-        # case where it took >90s and `pip install ==1.13.0` 404'd. Poll
-        # until the version appears on PyPI's JSON API (or hard-fail at
-        # 5 min). More resilient than a fixed sleep.
+        # workflow's Upload to PyPI step finishes. Two PyPI endpoints have
+        # independent propagation paths:
+        #   - /pypi/<name>/<ver>/json  ← JSON API (faster propagation)
+        #   - /simple/<name>/          ← simple index (what `pip install` uses)
+        # v2.0.2's PRLV hit the case where the JSON API had the version
+        # but the simple index didn't yet, and `pip install ==2.0.2`
+        # 404'd. Poll the SIMPLE INDEX (the one pip actually consults)
+        # so the gate passes only when the install will work.
         run: |
           set -eux
           DEADLINE=$((SECONDS + 300))
+          VER="${{ steps.ver.outputs.version }}"
           while [ $SECONDS -lt $DEADLINE ]; do
-              if curl -fsS "https://pypi.org/pypi/ciris-verify/${{ steps.ver.outputs.version }}/json" > /dev/null 2>&1; then
-                  echo "ciris-verify ${{ steps.ver.outputs.version }} is on PyPI"
+              if curl -fsS "https://pypi.org/simple/ciris-verify/" 2>/dev/null | grep -qE "ciris.verify-${VER//./\\.}\b"; then
+                  echo "ciris-verify $VER is on the PyPI simple index"
                   break
               fi
-              echo "waiting for PyPI propagation..."
+              echo "waiting for PyPI simple-index propagation..."
               sleep 15
           done
-          # Final sanity-check; if the loop fell through we want a
-          # clean error rather than letting `pip install` 404.
-          curl -fsS "https://pypi.org/pypi/ciris-verify/${{ steps.ver.outputs.version }}/json" > /dev/null
+          # Final sanity-check; if the loop fell through we want a clean
+          # error rather than letting `pip install` 404.
+          curl -fsS "https://pypi.org/simple/ciris-verify/" 2>/dev/null | grep -qE "ciris.verify-${VER//./\\.}\b" || {
+              echo "::error::ciris-verify $VER never appeared on PyPI simple index within 5 min"
+              exit 1
+          }
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
