@@ -14,7 +14,7 @@ ecdsa-p256 = ["p256"]
 ed25519 = ["ed25519-dalek"]
 secp256k1 = ["k256"]
 # PQC feature - enable one of these
-pqc-ml-dsa = ["ml-dsa", "rand_chacha"]
+pqc-ml-dsa = ["ml-dsa", "rand_chacha", "dep:pkcs8"]
 pqc-aws-lc = ["aws-lc-rs"]
 
 # v2.0+ — federation symmetric / KDF / MAC / RNG primitives. Each is
@@ -54,6 +54,21 @@ hex = "0.4"    # Hex encoding for EVM addresses
 # against rc.8 (matches the Cargo.lock at the v2.0.0 release). See
 # CIRISVerify#18 for the incident writeup.
 ml-dsa = { version = "=0.1.0-rc.8", optional = true }
+
+# v2.0.2: ml-dsa rc.8 transitively pulls pkcs8 via `^0.11.0-rc.11`, which
+# caret-resolves to `pkcs8 0.11.0` (stable, 2026-04-27). Between rc.11
+# (2026-02-11) and rc.12+stable (2026-04-27), pkcs8 changed
+# `Error::KeyMalformed` from a unit variant to a function-like variant
+# `KeyMalformed(KeyError)`. ml-dsa rc.8 still uses it as the unit form
+# in `.map_err(|_| ::pkcs8::Error::KeyMalformed)?,` at its lib.rs:200-206,
+# which under rc.12+/stable produces a function-pointer Result that `?`
+# can't convert. The last working point on the 0.11.x line is rc.11.
+# Forcing the resolver to pick rc.11 via this explicit top-level dep is
+# the federation crypto authority pattern in action: we own the
+# resolution of every crypto-transitive in one place. Tested: with this
+# pin, `rm -f Cargo.lock && cargo build` fresh-resolves cleanly. See
+# CIRISVerify#18 (reopened comment-stream).
+pkcs8 = { version = "=0.11.0-rc.11", optional = true, default-features = false }
 aws-lc-rs = { version = "1.5", features = ["unstable"], optional = true }
 
 # v2.0+ — symmetric / MAC primitives (RustCrypto). All optional, gated
