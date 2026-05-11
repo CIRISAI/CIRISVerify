@@ -47,7 +47,13 @@ hkdf = "0.12"  # Key derivation
 hex = "0.4"    # Hex encoding for EVM addresses
 
 # Post-quantum (choose one via feature flag)
-ml-dsa = { version = "0.1.0-rc.3", optional = true }
+# Pre-1.0 RC: pin EXACT (=). Caret semantics on a pre-1.0 crate allow
+# patch-level breaks, and ml-dsa rc.11 (2026-05-11) realized that risk —
+# removed `KeyGen` trait + `MlDsa65::from_seed` mid-stream, breaking every
+# downstream consumer that fresh-resolves Cargo deps. We compile and KAT-test
+# against rc.8 (matches the Cargo.lock at the v2.0.0 release). See
+# CIRISVerify#18 for the incident writeup.
+ml-dsa = { version = "=0.1.0-rc.8", optional = true }
 aws-lc-rs = { version = "1.5", features = ["unstable"], optional = true }
 
 # v2.0+ — symmetric / MAC primitives (RustCrypto). All optional, gated

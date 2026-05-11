@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "2.0.0"
+version = "2.0.1"
 edition = "2021"
 rust-version = "1.86"
 license = "AGPL-3.0-or-later"
@@ -119,7 +119,14 @@ nursery = "warn"
 [profile.release]
 lto = true
 codegen-units = 1
-panic = "abort"
+# v2.0.1+: panic = "unwind" so the 57 `ffi_guard!`/`catch_unwind` sites in
+# ciris-verify-ffi actually catch — under panic = "abort" they're no-ops
+# and a panic SIGABRTs the host process. Long-lived embedders (Python via
+# Chaquopy / iOS bindings / Node-FFI) get a typed error instead of a
+# worker reset. See CIRISVerify#18 + persist's incident writeup for the
+# pattern (CIRISPersist#25/#26/#27). Cost: marginally larger binary,
+# negligible runtime overhead.
+panic = "unwind"
 strip = true
 
 # Dev profile: disable incremental compilation.

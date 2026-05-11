@@ -602,7 +602,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-build-tool"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -624,7 +624,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "aes-gcm",
  "aws-lc-rs",
@@ -651,7 +651,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -689,7 +689,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "android_system_properties",
  "anyhow",
@@ -753,7 +753,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "2.0.0"
+version = "2.0.1"
 dependencies = [
  "aes-gcm",
  "android_logger",
