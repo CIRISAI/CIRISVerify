@@ -181,6 +181,10 @@ impl TargetSpec {
 struct BuildsRequest<'a> {
     project: &'a str,
     version: &'a str,
+    /// v2 wire contract (v2.0.3+): `target` is a top-level required
+    /// field on `POST /v1/builds`. Same value flows into the signed
+    /// `CanonicalBuild` below. Registry returns 400 if absent/empty.
+    target: &'a str,
     build_hash: &'a str,
     build_id: &'a str,
     modules: &'a [String],
@@ -206,10 +210,18 @@ struct BuildsRequest<'a> {
 /// Canonical signed-bytes representation. Field order is the
 /// inter-implementation contract — must match the registry's
 /// `CanonicalBuild` exactly. Don't sort, don't reorder.
+///
+/// v2 (CIRISVerify v2.0.3+, CIRISRegistry/main 449bf5f): `target` is
+/// included in the signed bytes between `version` and `build_hash`.
+/// Two registrations with the same `(project, version)` but different
+/// `target` produce different canonical bytes → different signatures →
+/// non-conflicting `builds` rows. Mirrors the registry's primary key:
+/// `(project, version, target)`.
 #[derive(Debug, Serialize)]
 struct CanonicalBuild<'a> {
     project: &'a str,
     version: &'a str,
+    target: &'a str,
     build_hash: &'a str,
     build_id: &'a str,
     modules: &'a [String],
@@ -314,8 +326,8 @@ pub fn run(args: RegisterArgs) -> Result<()> {
     }
 
     // Total dispatcher steps for the [N/M] log counter:
-    //   1 (builds) + 1 (binary_manifests) + N (function_manifests, one per target)
-    let total_steps = 2 + loaded.len();
+    //   N (builds, one per target — v2.0.3+) + 1 (binary_manifests) + N (function_manifests, one per target)
+    let total_steps = 2 * loaded.len() + 1;
 
     // Build the `binaries` map for the binary_manifests row.
     //
@@ -339,34 +351,41 @@ pub fn run(args: RegisterArgs) -> Result<()> {
         None => derive_build_hash(&binaries),
     };
 
-    // Content-shape detection — affects builds.file_manifest_* fields ONLY,
-    // never affects which endpoints get called. If any target carries
-    // FileTreeExtras (Python source-tree shape), populate file_manifest_json
-    // from the FIRST such target. If none do, leave file_manifest_* empty.
-    let (file_manifest_count, file_manifest_hash, file_manifest_json) =
-        derive_file_manifest_payload(&loaded)?;
+    // v2.0.3+: file_manifest_* is now per-target. Each target's `builds`
+    // row owns its own file_manifest payload (or empty for binary-only
+    // targets). Pre-v2.0.3's "first FileTreeExtras-bearing target wins,
+    // rest dropped" quirk goes away — the primary key
+    // `(project, version, target)` makes each row legitimately distinct.
+    let per_target_payloads: Vec<(u64, Option<String>, Option<serde_json::Value>)> = loaded
+        .iter()
+        .map(per_target_file_manifest_payload)
+        .collect::<Result<Vec<_>>>()?;
 
     let detected_shape = describe_content_shape(&loaded);
 
     if args.dry_run {
         eprintln!("[dry-run] register payload preview:");
         eprintln!("  content shape    = {detected_shape}");
-        eprintln!("  total POSTs      = {total_steps} (1 builds + 1 binary-manifest + {} function-manifest)",
-                  loaded.len());
+        eprintln!(
+            "  total POSTs      = {total_steps} ({} builds + 1 binary-manifest + {} function-manifest)",
+            loaded.len(),
+            loaded.len()
+        );
         eprintln!("  project          = {}", args.project);
         eprintln!("  binary_version   = {}", args.binary_version);
         eprintln!("  build_id         = {}", args.build_id);
         eprintln!("  build_hash       = {build_hash}");
         eprintln!("  modules          = {:?}", args.modules);
-        eprintln!("  file_manifest_count = {file_manifest_count}");
-        if let Some(h) = &file_manifest_hash {
-            eprintln!("  file_manifest_hash  = {h}");
-        }
-        if file_manifest_json.is_some() {
-            eprintln!(
-                "  file_manifest_json  = (present, {} entries)",
-                file_manifest_count
-            );
+        eprintln!("  per-target builds rows:");
+        for (t, (count, hash, json)) in loaded.iter().zip(per_target_payloads.iter()) {
+            eprintln!("    target = {}", t.name);
+            eprintln!("      file_manifest_count = {count}");
+            if let Some(h) = hash {
+                eprintln!("      file_manifest_hash  = {h}");
+            }
+            if json.is_some() {
+                eprintln!("      file_manifest_json  = (present, {count} entries)");
+            }
         }
         eprintln!("  binaries:");
         for (target, mh) in &binaries {
@@ -387,38 +406,58 @@ pub fn run(args: RegisterArgs) -> Result<()> {
         )
     })?;
 
-    let (sig_classical, sig_pqc) = sign_canonical_build(
-        &CanonicalBuild {
-            project: &args.project,
-            version: &args.binary_version,
-            build_hash: &build_hash,
-            build_id: &args.build_id,
-            modules: &args.modules,
-            file_manifest_count,
-        },
-        &ed_seed,
-        &mldsa_secret,
-    )?;
-
     let mut step = 0;
 
-    // === 1) POST /v1/builds — writes builds row =============================
-    step += 1;
-    register_build_via_http(
-        &args,
-        &registry_url,
-        &admin_token,
-        &build_hash,
-        file_manifest_count,
-        file_manifest_hash.as_deref(),
-        file_manifest_json.as_ref(),
-        &sig_classical,
-        &sig_pqc,
-        step,
-        total_steps,
-    )?;
+    // === 1..N) POST /v1/builds — one row per target =========================
+    //
+    // v2.0.3+ wire contract: each target gets its own signed
+    // CanonicalBuild with `target` embedded in the canonical bytes, and
+    // posts its own `builds` row. Registry primary key is
+    // `(project, version, target)` so concurrent multi-target releases
+    // (python-source-tree + ios-mobile-bundle + future android-mobile-
+    // bundle) land in non-conflicting rows.
+    for (t, (file_manifest_count, file_manifest_hash, file_manifest_json)) in
+        loaded.iter().zip(per_target_payloads.iter())
+    {
+        let (sig_classical, sig_pqc) = sign_canonical_build(
+            &CanonicalBuild {
+                project: &args.project,
+                version: &args.binary_version,
+                target: &t.name,
+                build_hash: &build_hash,
+                build_id: &args.build_id,
+                modules: &args.modules,
+                file_manifest_count: *file_manifest_count,
+            },
+            &ed_seed,
+            &mldsa_secret,
+        )?;
+        step += 1;
+        register_build_via_http(
+            &args,
+            &registry_url,
+            &admin_token,
+            &t.name,
+            &build_hash,
+            *file_manifest_count,
+            file_manifest_hash.as_deref(),
+            file_manifest_json.as_ref(),
+            &sig_classical,
+            &sig_pqc,
+            step,
+            total_steps,
+        )?;
+    }
 
-    // === 2) POST /v1/verify/binary-manifest — writes binary_manifests row ===
+    // === N+1) POST /v1/verify/binary-manifest — single binary_manifests row =
+    //
+    // The binary_manifests row is keyed `(project, version)` (no target
+    // dimension) and carries a `{target -> binary_hash}` map covering
+    // all targets at once. This is correct because binary self-verify
+    // (constructor.rs) only needs project+version to look up its own
+    // hash — the running binary IS associated with one target by
+    // construction (you can't load a python-source-tree manifest into
+    // an ios-mobile-bundle FFI process).
     step += 1;
     register_binary_manifest_via_http(
         &args,
@@ -429,7 +468,7 @@ pub fn run(args: RegisterArgs) -> Result<()> {
         total_steps,
     )?;
 
-    // === 3..N) POST /v1/verify/build-manifest per target ====================
+    // === N+2..2N+1) POST /v1/verify/build-manifest per target ===============
     for t in &loaded {
         step += 1;
         register_function_manifest_via_http(&registry_url, &admin_token, t, step, total_steps)?;
@@ -512,42 +551,30 @@ fn describe_content_shape(loaded: &[LoadedTarget]) -> String {
 // File-mode payload (Python source-tree primitives)
 // =============================================================================
 
-/// Derive the optional `file_manifest_*` payload for the `builds` row.
+/// Derive the optional `file_manifest_*` payload for one target's
+/// `builds` row (v2.0.3+ per-target).
 ///
-/// Searches the loaded targets for the FIRST one that carries
-/// `FileTreeExtras` (i.e., `extras.file_tree_hash` + `extras.files`).
-/// If found, returns the `{files: {...}}` JSON wrapped in the shape the
-/// registry's `GET /v1/builds` endpoint serves (matches legacy
-/// `register_agent_build.py` exactly), the count, and a hash of the
-/// JSON. If no target carries FileTreeExtras, returns
-/// `(0, None, None)` — the `builds` row gets default empty values for
-/// `file_manifest_*` and the dispatcher continues with the
-/// binary_manifests + function_manifests writes unchanged.
+/// If the target carries `FileTreeExtras` (`extras.file_tree_hash` plus
+/// `extras.files`), returns the `{files: {...}}` JSON wrapped in the
+/// shape the registry's `GET /v1/builds` endpoint serves (matches
+/// legacy `register_agent_build.py` exactly), the count, and a hash
+/// of the JSON. If the target doesn't carry `FileTreeExtras` (e.g., a
+/// pure binary target), returns `(0, None, None)` and the target's
+/// `builds` row gets empty `file_manifest_*` fields — the registry
+/// accepts that for binary-shaped builds.
 ///
-/// **Multi-target behavior**: if multiple targets carry FileTreeExtras
-/// (rare; e.g., a release with two distinct source trees), the FIRST is
-/// used and a warning is printed. The other targets' extras still
-/// flow through to `function_manifests` rows via their per-target POSTs
-/// — nothing is dropped, just not duplicated into `builds.file_manifest_json`.
-fn derive_file_manifest_payload(
-    loaded: &[LoadedTarget],
+/// Pre-v2.0.3 (single builds row across all targets): used the FIRST
+/// `FileTreeExtras`-bearing target's data and warned about the others.
+/// v2.0.3 splits per target so each target owns its own
+/// `file_manifest_*` payload. No more "first wins, rest dropped" shape
+/// quirk; the `builds` row primary key `(project, version, target)`
+/// means each row legitimately gets its own payload.
+fn per_target_file_manifest_payload(
+    target: &LoadedTarget,
 ) -> Result<(u64, Option<String>, Option<serde_json::Value>)> {
-    let mut iter = loaded.iter().filter(|t| has_file_tree_extras(&t.manifest));
-    let Some(target) = iter.next() else {
-        // No FileTreeExtras-bearing target — pure binary release. Empty
-        // file_manifest_* on the builds row is correct.
+    if !has_file_tree_extras(&target.manifest) {
+        // Pure binary target — empty file_manifest_* on its builds row.
         return Ok((0, None, None));
-    };
-    let remaining: Vec<&str> = iter.map(|t| t.name.as_str()).collect();
-    if !remaining.is_empty() {
-        eprintln!(
-            "info: {} target{} also carry FileTreeExtras ({:?}); using first ({}) for builds.file_manifest_json. \
-             Per-target function_manifests rows preserve all extras content.",
-            remaining.len(),
-            if remaining.len() == 1 { "" } else { "s" },
-            remaining,
-            target.name,
-        );
     }
 
     let extras = target.manifest.extras.as_ref().ok_or_else(|| {
@@ -638,6 +665,7 @@ fn register_build_via_http(
     args: &RegisterArgs,
     registry_url: &str,
     admin_token: &str,
+    target: &str,
     build_hash: &str,
     file_manifest_count: u64,
     file_manifest_hash: Option<&str>,
@@ -651,6 +679,7 @@ fn register_build_via_http(
     let body = BuildsRequest {
         project: &args.project,
         version: &args.binary_version,
+        target,
         build_hash,
         build_id: &args.build_id,
         modules: &args.modules,
@@ -665,7 +694,7 @@ fn register_build_via_http(
         signature_key_id: Some(&args.key_id),
     };
     eprintln!(
-        "[{step}/{total_steps}] POST {url}  (project={}, build_hash={}…)",
+        "[{step}/{total_steps}] POST {url}  (project={}, target={target}, build_hash={}…)",
         args.project,
         &build_hash[..build_hash.len().min(20)]
     );
@@ -866,15 +895,18 @@ mod tests {
         assert!(hex_part.chars().all(|c| c.is_ascii_hexdigit()));
     }
 
-    /// Field order in CanonicalBuild is the inter-implementation contract
-    /// with the registry. Asserting the serialized JSON layout catches any
-    /// future field-reorder drift between client and server.
+    /// v2.0.3+: Field order in CanonicalBuild is the inter-implementation
+    /// contract with CIRISRegistry/main (449bf5f). `target` is inserted
+    /// between `version` and `build_hash`. Asserting the serialized JSON
+    /// layout catches any future field-reorder drift between client and
+    /// server.
     #[test]
     fn canonical_build_field_order_locked() {
         let modules = vec!["core".to_string(), "ios".to_string()];
         let cb = CanonicalBuild {
             project: "ciris-agent",
             version: "2.7.10",
+            target: "python-source-tree",
             build_hash: "sha256:abc",
             build_id: "deadbeef",
             modules: &modules,
@@ -884,7 +916,7 @@ mod tests {
         let s = String::from_utf8(bytes).unwrap();
         // serde_json emits fields in declaration order; the literal substring
         // is the canonicalization contract.
-        let expected = r#"{"project":"ciris-agent","version":"2.7.10","build_hash":"sha256:abc","build_id":"deadbeef","modules":["core","ios"],"file_manifest_count":1655}"#;
+        let expected = r#"{"project":"ciris-agent","version":"2.7.10","target":"python-source-tree","build_hash":"sha256:abc","build_id":"deadbeef","modules":["core","ios"],"file_manifest_count":1655}"#;
         assert_eq!(s, expected, "CanonicalBuild field order changed");
     }
 
@@ -894,6 +926,7 @@ mod tests {
         let cb = CanonicalBuild {
             project: "p",
             version: "v",
+            target: "t",
             build_hash: "h",
             build_id: "i",
             modules: &modules,
@@ -901,6 +934,48 @@ mod tests {
         };
         let s = serde_json::to_string(&cb).unwrap();
         assert!(s.contains(r#""modules":[]"#), "got: {s}");
+    }
+
+    /// CIRISVerify#8 acceptance criterion: two registrations with the
+    /// same (project, version) but different `target` must produce
+    /// different canonical bytes → different signatures → non-conflicting
+    /// `builds` rows under the (project, version, target) primary key.
+    #[test]
+    fn canonical_bytes_distinguishes_targets() {
+        let modules = vec!["core".to_string()];
+        let py = CanonicalBuild {
+            project: "ciris-agent",
+            version: "2.8.10",
+            target: "python-source-tree",
+            build_hash: "sha256:abc",
+            build_id: "build-id-1",
+            modules: &modules,
+            file_manifest_count: 1530,
+        };
+        let ios = CanonicalBuild {
+            project: "ciris-agent",
+            version: "2.8.10",
+            target: "ios-mobile-bundle",
+            build_hash: "sha256:abc",
+            build_id: "build-id-1",
+            modules: &modules,
+            file_manifest_count: 1530,
+        };
+        let py_bytes = serde_json::to_vec(&py).unwrap();
+        let ios_bytes = serde_json::to_vec(&ios).unwrap();
+        assert_ne!(
+            py_bytes, ios_bytes,
+            "same project+version+rest but different target MUST differ in canonical bytes"
+        );
+
+        // And signatures differ too — confirms the target field is
+        // load-bearing in the signed payload, not just the request envelope.
+        let ed_seed = [42u8; 32];
+        let mldsa_seed = [7u8; 32];
+        let (py_cls, py_pqc) = sign_canonical_build(&py, &ed_seed, &mldsa_seed).unwrap();
+        let (ios_cls, ios_pqc) = sign_canonical_build(&ios, &ed_seed, &mldsa_seed).unwrap();
+        assert_ne!(py_cls, ios_cls, "classical sig must distinguish targets");
+        assert_ne!(py_pqc, ios_pqc, "PQC sig must distinguish targets");
     }
 
     #[test]
@@ -912,6 +987,7 @@ mod tests {
         let cb = CanonicalBuild {
             project: "ciris-test",
             version: "0.0.0",
+            target: "python-source-tree",
             build_hash: "sha256:0000",
             build_id: "test",
             modules: &modules,
@@ -924,20 +1000,21 @@ mod tests {
         assert_eq!(STANDARD.decode(&pqc).unwrap().len(), 3309);
     }
 
-    /// v1.10.2 invariant: total_steps = 2 + target_count, regardless of
-    /// extras shape. Locking this in a test prevents anyone from
-    /// reintroducing v1.10.1's mode-gated dispatch silently. (Direct
-    /// dispatcher test would require a mock HTTP server; this test
-    /// covers the algebra by replicating the formula from `run`.)
+    /// v2.0.3+ invariant: total_steps = 2N + 1 where N = target_count.
+    /// N builds POSTs (one per target, each with target-bearing
+    /// CanonicalBuild) + 1 binary_manifests POST (single row covering
+    /// all targets) + N function_manifests POSTs (one per target).
+    /// Pre-v2.0.3 was 2 + N (single builds row); the per-target builds
+    /// row is the wire-contract change CIRISRegistry#11 mandates.
     #[test]
-    fn dispatch_total_steps_is_two_plus_target_count() {
+    fn dispatch_total_steps_is_two_times_target_count_plus_one() {
         for target_count in 1..=5 {
-            let total_steps = 2 + target_count;
+            let total_steps = 2 * target_count + 1;
             assert!(total_steps >= 3, "always at least 3 endpoints called");
             assert_eq!(
-                total_steps - 2,
+                (total_steps - 1) / 2,
                 target_count,
-                "function_manifests POST count must equal target count"
+                "builds-row count must equal target count (v2.0.3+)"
             );
         }
     }
@@ -1012,7 +1089,7 @@ mod tests {
     }
 
     #[test]
-    fn derive_file_manifest_payload_returns_empty_when_no_filetree_extras() {
+    fn per_target_file_manifest_payload_returns_empty_when_no_filetree_extras() {
         let lt = LoadedTarget {
             name: "x86_64-unknown-linux-gnu".into(),
             path: PathBuf::from("/tmp/x.json"),
@@ -1021,14 +1098,14 @@ mod tests {
             })),
             raw_bytes: vec![],
         };
-        let (count, hash, json) = derive_file_manifest_payload(&[lt]).unwrap();
+        let (count, hash, json) = per_target_file_manifest_payload(&lt).unwrap();
         assert_eq!(count, 0);
         assert_eq!(hash, None);
         assert_eq!(json, None);
     }
 
     #[test]
-    fn derive_file_manifest_payload_extracts_files_from_filetree_extras() {
+    fn per_target_file_manifest_payload_extracts_files_from_filetree_extras() {
         let lt = LoadedTarget {
             name: "python-source-tree".into(),
             path: PathBuf::from("/tmp/x.json"),
@@ -1042,18 +1119,19 @@ mod tests {
             })),
             raw_bytes: vec![],
         };
-        let (count, hash, json) = derive_file_manifest_payload(&[lt]).unwrap();
+        let (count, hash, json) = per_target_file_manifest_payload(&lt).unwrap();
         assert_eq!(count, 2);
         assert!(hash.is_some());
         assert!(json.unwrap().get("files").is_some());
     }
 
+    /// v2.0.3+: each target owns its own file_manifest payload. Two
+    /// FileTreeExtras-bearing targets in one register invocation now
+    /// produce two non-conflicting `builds` rows under the
+    /// (project, version, target) primary key — no more "first wins,
+    /// rest dropped" quirk.
     #[test]
-    fn derive_file_manifest_payload_uses_first_target_when_multiple_have_filetree() {
-        // Mixed-mode invocation supported in v1.10.2: file_manifest_json
-        // populated from the first FileTreeExtras-bearing target; the
-        // others' content flows through to function_manifests via their
-        // own per-target POSTs (not via builds row).
+    fn per_target_file_manifest_payload_independent_per_target() {
         let first = LoadedTarget {
             name: "python-source-tree".into(),
             path: PathBuf::from("/tmp/f1.json"),
@@ -1065,27 +1143,26 @@ mod tests {
             raw_bytes: vec![],
         };
         let second = LoadedTarget {
-            name: "another-tree".into(),
+            name: "ios-mobile-bundle".into(),
             path: PathBuf::from("/tmp/f2.json"),
             manifest: build_test_manifest_with_extras(serde_json::json!({
                 "file_tree_hash": "sha256:beef",
-                "file_count": 1,
-                "files": {"second.py": "sha256:22"},
+                "file_count": 2,
+                "files": {"first.py": "sha256:11", "second.py": "sha256:22"},
             })),
             raw_bytes: vec![],
         };
-        let (count, _hash, json) = derive_file_manifest_payload(&[first, second]).unwrap();
-        assert_eq!(count, 1, "uses first target's count, not summed");
-        let files_obj = json.unwrap();
-        let files = files_obj.get("files").unwrap();
-        assert!(
-            files.get("first.py").is_some(),
-            "first target's files included"
-        );
-        assert!(
-            files.get("second.py").is_none(),
-            "second target's files NOT included in builds row"
-        );
+        let (c1, _, j1) = per_target_file_manifest_payload(&first).unwrap();
+        let (c2, _, j2) = per_target_file_manifest_payload(&second).unwrap();
+        assert_eq!(c1, 1, "first target's count is its own");
+        assert_eq!(c2, 2, "second target's count is its own");
+        // Each target's files dict is independent.
+        let f1 = j1.unwrap();
+        let f2 = j2.unwrap();
+        assert!(f1.get("files").unwrap().get("first.py").is_some());
+        assert!(f1.get("files").unwrap().get("second.py").is_none());
+        assert!(f2.get("files").unwrap().get("first.py").is_some());
+        assert!(f2.get("files").unwrap().get("second.py").is_some());
     }
 
     fn build_test_manifest_with_extras(extras: serde_json::Value) -> BuildManifest {
