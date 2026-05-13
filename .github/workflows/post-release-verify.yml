@@ -64,31 +64,35 @@ jobs:
         run: cargo build --release --locked -p ciris-verify-core --bin ciris-verify
 
       - name: Wait for PyPI propagation
-        # Mirror lag — wheels usually propagate in 30-60s after the Release
-        # workflow's Upload to PyPI step finishes. Two PyPI endpoints have
-        # independent propagation paths:
-        #   - /pypi/<name>/<ver>/json  ← JSON API (faster propagation)
-        #   - /simple/<name>/          ← simple index (what `pip install` uses)
-        # v2.0.2's PRLV hit the case where the JSON API had the version
-        # but the simple index didn't yet, and `pip install ==2.0.2`
-        # 404'd. Poll the SIMPLE INDEX (the one pip actually consults)
-        # so the gate passes only when the install will work.
+        # Three PyPI endpoints have independent propagation paths:
+        #   - /pypi/<name>/<ver>/json    ← JSON API (fastest)
+        #   - /simple/<name>/             ← simple index (raw HTML listing)
+        #   - pip's own resolution cache  ← what `pip install` actually consults
+        # v2.0.2 failed because JSON had it but simple-index didn't.
+        # v2.0.5 failed because simple-index (via curl) had it but pip's
+        # resolution didn't. The endpoints lag relative to each other.
+        # Robust fix: probe with `pip install --dry-run` itself — that
+        # uses pip's actual resolution path, so "ready" means
+        # "install will succeed." Retry until success or 5 min.
         run: |
           set -eux
           DEADLINE=$((SECONDS + 300))
           VER="${{ steps.ver.outputs.version }}"
           while [ $SECONDS -lt $DEADLINE ]; do
-              if curl -fsS "https://pypi.org/simple/ciris-verify/" 2>/dev/null | grep -qE "ciris.verify-${VER//./\\.}\b"; then
-                  echo "ciris-verify $VER is on the PyPI simple index"
+              # --dry-run does the full resolution without downloading.
+              # --no-cache-dir bypasses pip's local metadata cache so
+              # we hit the freshest upstream state on each attempt.
+              # --quiet keeps the log readable across retries.
+              if pip install --dry-run --no-cache-dir --quiet "ciris-verify==$VER" 2>/dev/null; then
+                  echo "ciris-verify $VER is installable via pip"
                   break
               fi
-              echo "waiting for PyPI simple-index propagation..."
+              echo "waiting for pip to see $VER..."
               sleep 15
           done
-          # Final sanity-check; if the loop fell through we want a clean
-          # error rather than letting `pip install` 404.
-          curl -fsS "https://pypi.org/simple/ciris-verify/" 2>/dev/null | grep -qE "ciris.verify-${VER//./\\.}\b" || {
-              echo "::error::ciris-verify $VER never appeared on PyPI simple index within 5 min"
+          # Final hard check.
+          pip install --dry-run --no-cache-dir "ciris-verify==$VER" || {
+              echo "::error::pip never resolved ciris-verify==$VER within 5 min"
               exit 1
           }
 
