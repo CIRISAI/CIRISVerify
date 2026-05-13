@@ -1935,16 +1935,28 @@ impl MutableEd25519Signer {
                                     // Verify the key is still accessible (not deleted/corrupted)
                                     let key_accessible = rt.block_on(hw.key_accessible());
                                     if !key_accessible {
-                                        // Key is gone - clear stale marker
+                                        // Key is gone (reinstall/wipe) — marker is orphaned.
+                                        // Self-heal: clear marker and regenerate a new HW-bound key.
                                         drop(inner); // Release read lock
                                         if let Ok(mut inner_write) = self.inner.write() {
                                             tracing::warn!(
                                                 marker = ?inner_write.hardware_key_fingerprint(),
-                                                "Clearing stale hardware marker - Android key no longer accessible (get_public_key)"
+                                                "Clearing stale hardware marker - Android key no longer accessible (get_public_key). \
+                                                 Will regenerate a new hardware-bound key."
                                             );
                                             inner_write.clear_hardware_marker();
                                         }
-                                        return None;
+                                        // Regenerate: create a fresh HW-bound key
+                                        match self.generate_key() {
+                                            Ok(()) => {
+                                                tracing::info!("Self-healed: new Android HW-backed key generated after stale marker (get_public_key)");
+                                                return rt.block_on(hw.public_key()).ok();
+                                            },
+                                            Err(regen_err) => {
+                                                tracing::error!(error = %regen_err, "Self-heal failed: could not regenerate key");
+                                                return None;
+                                            },
+                                        }
                                     }
 
                                     // Key exists but access failed - transient hardware error
@@ -1990,16 +2002,29 @@ impl MutableEd25519Signer {
                                 if inner.is_hardware_marker_set() {
                                     // Verify the key is still accessible (not deleted/corrupted)
                                     if !hw.key_accessible() {
-                                        // Key is gone - clear stale marker
+                                        // Key is gone (reinstall/wipe) — marker is orphaned.
+                                        // Self-heal: clear marker and regenerate a new HW-bound key.
                                         drop(inner); // Release read lock
                                         if let Ok(mut inner_write) = self.inner.write() {
                                             tracing::warn!(
                                                 marker = ?inner_write.hardware_key_fingerprint(),
-                                                "Clearing stale hardware marker - SE key no longer accessible (get_public_key)"
+                                                "Clearing stale hardware marker - SE key no longer accessible (get_public_key). \
+                                                 Will regenerate a new hardware-bound key."
                                             );
                                             inner_write.clear_hardware_marker();
                                         }
-                                        return None;
+                                        // Regenerate: create a fresh HW-bound key
+                                        match self.generate_key() {
+                                            Ok(()) => {
+                                                tracing::info!("Self-healed: new SE-backed key generated after stale marker (get_public_key)");
+                                                // Retry with the new key
+                                                return hw.public_key().ok();
+                                            },
+                                            Err(regen_err) => {
+                                                tracing::error!(error = %regen_err, "Self-heal failed: could not regenerate key");
+                                                return None;
+                                            },
+                                        }
                                     }
 
                                     // Key exists but access failed - transient hardware error
@@ -2043,16 +2068,28 @@ impl MutableEd25519Signer {
                                 if inner.is_hardware_marker_set() {
                                     // Verify the key is still accessible (not deleted/corrupted)
                                     if !tpm.key_accessible() {
-                                        // Key is gone - clear stale marker
+                                        // Key is gone — marker is orphaned.
+                                        // Self-heal: clear marker and regenerate a new HW-bound key.
                                         drop(inner); // Release read lock
                                         if let Ok(mut inner_write) = self.inner.write() {
                                             tracing::warn!(
                                                 marker = ?inner_write.hardware_key_fingerprint(),
-                                                "Clearing stale hardware marker - TPM key no longer accessible (get_public_key)"
+                                                "Clearing stale hardware marker - TPM key no longer accessible (get_public_key). \
+                                                 Will regenerate a new hardware-bound key."
                                             );
                                             inner_write.clear_hardware_marker();
                                         }
-                                        return None;
+                                        // Regenerate: create a fresh HW-bound key
+                                        match self.generate_key() {
+                                            Ok(()) => {
+                                                tracing::info!("Self-healed: new TPM-backed key generated after stale marker (get_public_key)");
+                                                return tpm.public_key().ok();
+                                            },
+                                            Err(regen_err) => {
+                                                tracing::error!(error = %regen_err, "Self-heal failed: could not regenerate key");
+                                                return None;
+                                            },
+                                        }
                                     }
 
                                     // Key exists but access failed - transient hardware error
@@ -2166,18 +2203,32 @@ impl MutableEd25519Signer {
                                     // Verify the key is still accessible (not deleted/corrupted)
                                     let key_accessible = rt.block_on(hw.key_accessible());
                                     if !key_accessible {
-                                        // Key is gone - clear stale marker
+                                        // Key is gone (reinstall/wipe) — marker is orphaned.
+                                        // Self-heal: clear marker and regenerate a new HW-bound key.
                                         drop(inner); // Release read lock
                                         if let Ok(mut inner_write) = self.inner.write() {
                                             tracing::warn!(
                                                 marker = ?inner_write.hardware_key_fingerprint(),
-                                                "Clearing stale hardware marker - Android key no longer accessible"
+                                                "Clearing stale hardware marker - Android key no longer accessible (sign). \
+                                                 Will regenerate a new hardware-bound key."
                                             );
                                             inner_write.clear_hardware_marker();
                                         }
-                                        return Err(KeyringError::HardwareNotAvailable {
-                                            reason: "Hardware key was deleted or corrupted. Please create a new signing key.".into(),
-                                        });
+                                        // Regenerate: create a fresh HW-bound key
+                                        match self.generate_key() {
+                                            Ok(()) => {
+                                                tracing::info!("Self-healed: new Android HW-backed key generated after stale marker (sign)");
+                                                return rt.block_on(hw.sign(data)).map_err(|sign_err| KeyringError::HardwareError {
+                                                    reason: format!("Sign failed after key regeneration: {}", sign_err),
+                                                });
+                                            },
+                                            Err(regen_err) => {
+                                                tracing::error!(error = %regen_err, "Self-heal failed: could not regenerate key");
+                                                return Err(KeyringError::HardwareNotAvailable {
+                                                    reason: format!("Hardware key lost and regeneration failed: {}", regen_err),
+                                                });
+                                            },
+                                        }
                                     }
 
                                     // Key exists but sign failed - transient hardware error
@@ -2231,18 +2282,33 @@ impl MutableEd25519Signer {
                                 if inner.is_hardware_marker_set() {
                                     // Verify the key is still accessible (not deleted/corrupted)
                                     if !hw.key_accessible() {
-                                        // Key is gone - clear stale marker
+                                        // Key is gone (reinstall/wipe) — marker is orphaned.
+                                        // Self-heal: clear marker and regenerate a new HW-bound key.
                                         drop(inner); // Release read lock
                                         if let Ok(mut inner_write) = self.inner.write() {
                                             tracing::warn!(
                                                 marker = ?inner_write.hardware_key_fingerprint(),
-                                                "Clearing stale hardware marker - SE key no longer accessible"
+                                                "Clearing stale hardware marker - SE key no longer accessible (sign). \
+                                                 Will regenerate a new hardware-bound key."
                                             );
                                             inner_write.clear_hardware_marker();
                                         }
-                                        return Err(KeyringError::HardwareNotAvailable {
-                                            reason: "Hardware key was deleted or corrupted. Please create a new signing key.".into(),
-                                        });
+                                        // Regenerate: create a fresh HW-bound key
+                                        match self.generate_key() {
+                                            Ok(()) => {
+                                                tracing::info!("Self-healed: new SE-backed key generated after stale marker (sign)");
+                                                // Retry sign with the new key
+                                                return hw.sign(data).map_err(|sign_err| KeyringError::HardwareError {
+                                                    reason: format!("Sign failed after key regeneration: {}", sign_err),
+                                                });
+                                            },
+                                            Err(regen_err) => {
+                                                tracing::error!(error = %regen_err, "Self-heal failed: could not regenerate key");
+                                                return Err(KeyringError::HardwareNotAvailable {
+                                                    reason: format!("Hardware key lost and regeneration failed: {}", regen_err),
+                                                });
+                                            },
+                                        }
                                     }
 
                                     // Key exists but sign failed - transient hardware error
@@ -2293,18 +2359,32 @@ impl MutableEd25519Signer {
                                 if inner.is_hardware_marker_set() {
                                     // Verify the key is still accessible (not deleted/corrupted)
                                     if !tpm.key_accessible() {
-                                        // Key is gone - clear stale marker
+                                        // Key is gone — marker is orphaned.
+                                        // Self-heal: clear marker and regenerate a new HW-bound key.
                                         drop(inner); // Release read lock
                                         if let Ok(mut inner_write) = self.inner.write() {
                                             tracing::warn!(
                                                 marker = ?inner_write.hardware_key_fingerprint(),
-                                                "Clearing stale hardware marker - TPM key no longer accessible"
+                                                "Clearing stale hardware marker - TPM key no longer accessible (sign). \
+                                                 Will regenerate a new hardware-bound key."
                                             );
                                             inner_write.clear_hardware_marker();
                                         }
-                                        return Err(KeyringError::HardwareNotAvailable {
-                                            reason: "Hardware key was deleted or corrupted. Please create a new signing key.".into(),
-                                        });
+                                        // Regenerate: create a fresh HW-bound key
+                                        match self.generate_key() {
+                                            Ok(()) => {
+                                                tracing::info!("Self-healed: new TPM-backed key generated after stale marker (sign)");
+                                                return tpm.sign(data).map_err(|sign_err| KeyringError::HardwareError {
+                                                    reason: format!("Sign failed after key regeneration: {}", sign_err),
+                                                });
+                                            },
+                                            Err(regen_err) => {
+                                                tracing::error!(error = %regen_err, "Self-heal failed: could not regenerate key");
+                                                return Err(KeyringError::HardwareNotAvailable {
+                                                    reason: format!("Hardware key lost and regeneration failed: {}", regen_err),
+                                                });
+                                            },
+                                        }
                                     }
 
                                     // Key exists but sign failed - transient hardware error
