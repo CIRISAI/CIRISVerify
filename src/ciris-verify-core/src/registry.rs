@@ -1332,8 +1332,6 @@ pub struct FunctionManifestTargets {
 /// - iOS: Discovers dylib via `_dyld_image_count()` / `_dyld_get_image_name()`
 /// - macOS/Windows: Uses `std::env::current_exe()` (standalone binary usage)
 pub fn compute_self_hash() -> Result<String, VerifyError> {
-    use sha2::{Digest, Sha256};
-
     // On Android, current_exe() returns /system/bin/app_process64 which is the
     // Android runtime, not our library. We need to find libciris_verify_ffi.so.
     #[cfg(target_os = "android")]
@@ -1416,98 +1414,13 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
         message: format!("Cannot read executable for hashing: {}", e),
     })?;
 
-    // On iOS/macOS, hash only the code portion of __TEXT (after header + load commands).
-    // Code signing modifies load command fields (e.g. LC_CODE_SIGNATURE offset at 0x709)
-    // but never touches actual code sections (__text, __stubs, __stub_helper).
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    let hash_bytes = {
-        match extract_text_code_region(&file_bytes) {
-            Some((offset, size)) => {
-                tracing::debug!(
-                    "compute_self_hash: hashing __TEXT code region (offset=0x{:x}, size=0x{:x}, file_size=0x{:x})",
-                    offset, size, file_bytes.len()
-                );
-                &file_bytes[offset..offset + size]
-            },
-            None => {
-                tracing::warn!(
-                    "compute_self_hash: could not extract __TEXT code region, hashing full file (size=0x{:x})",
-                    file_bytes.len()
-                );
-                &file_bytes[..]
-            },
-        }
-    };
-
-    #[cfg(not(any(target_os = "ios", target_os = "macos")))]
-    let hash_bytes = &file_bytes[..];
-
-    let mut hasher = Sha256::new();
-    hasher.update(hash_bytes);
-    let hash = hasher.finalize();
+    // v2.0.5+: federation-wide canonical binary hash via
+    // `binary_format::canonical_binary_hash` (CIRISVerify#19). On Mach-O
+    // (iOS/macOS) this is the __TEXT page-aligned region, code-sign-stable.
+    // On ELF/PE/everything else it's the whole-file hash. Single source of
+    // truth shared with sign-time (ciris-manifest-tool).
+    let hash = crate::binary_format::canonical_binary_hash(&file_bytes);
     Ok(hex::encode(hash))
-}
-
-/// Extract the hashable code region from a Mach-O __TEXT segment.
-///
-/// Returns `(file_offset, size)` of the code-only portion of __TEXT,
-/// skipping the Mach-O header and load commands. Code signing modifies
-/// fields in the load commands (e.g. LC_CODE_SIGNATURE) but never
-/// touches the actual code sections (__text, __stubs, __stub_helper).
-/// By starting after header + sizeofcmds we get a hash stable across signing.
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-fn extract_text_code_region(data: &[u8]) -> Option<(usize, usize)> {
-    use goblin::mach::Mach;
-
-    match Mach::parse(data) {
-        Ok(Mach::Binary(macho)) => extract_text_code_from_macho(&macho),
-        Ok(Mach::Fat(fat)) => {
-            tracing::info!(
-                "extract_text_code_region: fat binary with {} arches",
-                fat.narches
-            );
-            if let Ok(goblin::mach::SingleArch::MachO(macho)) = fat.get(0) {
-                extract_text_code_from_macho(&macho)
-            } else {
-                tracing::warn!("extract_text_code_region: fat arch[0] is not MachO");
-                None
-            }
-        },
-        Err(e) => {
-            tracing::warn!("extract_text_code_region: Mach-O parse error: {}", e);
-            None
-        },
-    }
-}
-
-/// Helper: extract code region from a parsed MachO.
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-fn extract_text_code_from_macho(macho: &goblin::mach::MachO) -> Option<(usize, usize)> {
-    // Header + load commands = mutable area modified by code signing.
-    // Code signing adds LC_CODE_SIGNATURE (16 bytes), changing sizeofcmds.
-    // Page-align to 4096 so the hash start is identical regardless of
-    // whether LC_CODE_SIGNATURE is present (padding is always zeros).
-    let header_size: usize = if macho.is_64 { 32 } else { 28 };
-    let cmds_end = header_size + macho.header.sizeofcmds as usize;
-    let page_aligned = (cmds_end + 0xFFF) & !0xFFF; // round up to 4096
-
-    for seg in &macho.segments {
-        let name = seg.name().unwrap_or("");
-        if name == "__TEXT" {
-            let seg_start = seg.fileoff as usize;
-            let seg_end = seg_start + seg.filesize as usize;
-            // Hash from page-aligned boundary to end of __TEXT segment
-            let hash_start = page_aligned.max(seg_start);
-            let hash_size = seg_end.saturating_sub(hash_start);
-            tracing::info!(
-                "extract_text_code_region: __TEXT=0x{:x}..0x{:x}, cmds_end=0x{:x}, page_aligned=0x{:x}, hashing 0x{:x}..0x{:x} ({} bytes)",
-                seg_start, seg_end, cmds_end, page_aligned, hash_start, hash_start + hash_size, hash_size
-            );
-            return Some((hash_start, hash_size));
-        }
-    }
-    tracing::warn!("extract_text_code_region: no __TEXT segment found");
-    None
 }
 
 /// Find a loaded library's path by parsing /proc/self/maps.

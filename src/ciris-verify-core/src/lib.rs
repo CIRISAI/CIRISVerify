@@ -52,6 +52,7 @@
 
 pub mod app_attest;
 pub mod audit;
+pub mod binary_format;
 pub mod cache;
 pub mod config;
 pub mod dns;

@@ -114,10 +114,24 @@ fn compute_hash(data: &[u8]) -> String {
     format!("sha256:{}", hex::encode(hash))
 }
 
-/// Compute SHA-256 hash of a file.
+/// Compute the canonical `binary_hash` for a binary file.
+///
+/// v2.0.5+ (CIRISVerify#19): federation-wide single source of truth via
+/// `ciris_verify_core::binary_format::canonical_binary_hash`. For
+/// Mach-O `.dylib` (iOS / macOS) this hashes the `__TEXT` page-aligned
+/// code region — code-sign-stable and byte-equal to what runtime
+/// `compute_self_hash` produces. For ELF / PE / everything else this
+/// is the whole-file hash, unchanged from pre-v2.0.5.
+///
+/// Pre-v2.0.5 this function unconditionally hashed the whole file
+/// (`std::fs::read` + `sha256`). That worked for ELF / PE but produced
+/// `binary_hash` values for Mach-O that the runtime side could never
+/// match — every iOS / macOS release had a structural L2 self-verify
+/// mismatch. See CIRISVerify#19 + CIRISRegistry#12.
 fn compute_file_hash(path: &Path) -> Result<String, ManifestError> {
     let data = std::fs::read(path)?;
-    Ok(compute_hash(&data))
+    let hash = ciris_verify_core::binary_format::canonical_binary_hash(&data);
+    Ok(format!("sha256:{}", hex::encode(hash)))
 }
 
 /// Compute the manifest hash from function hashes.

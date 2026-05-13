@@ -48,7 +48,10 @@ CARGO_TOML="$REPO_ROOT/Cargo.toml"
 if [ -f "$CARGO_TOML" ]; then
     OLD_VERSION=$(grep -E '^version = "[0-9]+\.[0-9]+\.[0-9]+"' "$CARGO_TOML" | head -1 | sed 's/version = "\(.*\)"/\1/')
     if [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
-        sed -i '' "s/^version = \"$OLD_VERSION\"/version = \"$NEW_VERSION\"/" "$CARGO_TOML"
+        # Portable in-place sed across BSD (macOS) and GNU (Linux) —
+        # `-i.bak` works on both, then remove the .bak. v2.0.5 fix:
+        # commit 2910072 switched to BSD-only `-i ''` which broke Linux.
+        sed -i.bak "s/^version = \"$OLD_VERSION\"/version = \"$NEW_VERSION\"/" "$CARGO_TOML" && rm -f "$CARGO_TOML.bak"
         CHANGES+=("Cargo.toml: $OLD_VERSION -> $NEW_VERSION")
         echo -e "${GREEN}✓${NC} Cargo.toml: $OLD_VERSION -> $NEW_VERSION"
     else
@@ -63,7 +66,7 @@ PYPROJECT="$REPO_ROOT/bindings/python/pyproject.toml"
 if [ -f "$PYPROJECT" ]; then
     OLD_VERSION=$(grep -E '^version = "[0-9]+\.[0-9]+\.[0-9]+"' "$PYPROJECT" | head -1 | sed 's/version = "\(.*\)"/\1/')
     if [ -n "$OLD_VERSION" ] && [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
-        sed -i '' "s/^version = \"$OLD_VERSION\"/version = \"$NEW_VERSION\"/" "$PYPROJECT"
+        sed -i.bak "s/^version = \"$OLD_VERSION\"/version = \"$NEW_VERSION\"/" "$PYPROJECT" && rm -f "$PYPROJECT.bak"
         CHANGES+=("pyproject.toml: $OLD_VERSION -> $NEW_VERSION")
         echo -e "${GREEN}✓${NC} pyproject.toml: $OLD_VERSION -> $NEW_VERSION"
     elif [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
@@ -80,7 +83,7 @@ INIT_PY="$REPO_ROOT/bindings/python/ciris_verify/__init__.py"
 if [ -f "$INIT_PY" ]; then
     OLD_VERSION=$(grep -E '^__version__ = "[0-9]+\.[0-9]+\.[0-9]+"' "$INIT_PY" | sed 's/__version__ = "\(.*\)"/\1/')
     if [ -n "$OLD_VERSION" ] && [ "$OLD_VERSION" != "$NEW_VERSION" ]; then
-        sed -i '' "s/^__version__ = \"$OLD_VERSION\"/__version__ = \"$NEW_VERSION\"/" "$INIT_PY"
+        sed -i.bak "s/^__version__ = \"$OLD_VERSION\"/__version__ = \"$NEW_VERSION\"/" "$INIT_PY" && rm -f "$INIT_PY.bak"
         CHANGES+=("__init__.py: $OLD_VERSION -> $NEW_VERSION")
         echo -e "${GREEN}✓${NC} __init__.py: $OLD_VERSION -> $NEW_VERSION"
     elif [ "$OLD_VERSION" = "$NEW_VERSION" ]; then
