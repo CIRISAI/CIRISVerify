@@ -67,6 +67,11 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
       # Note: --all-features excluded because TPM feature requires system libs
       - run: cargo clippy --all-targets -- -D warnings
 
@@ -79,8 +84,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
+      # CI hardening (v2.1.1+): retry on transient timeout only.
+      # Real install failures (404, auth, typo) still fail immediately.
+      - name: Install cargo-audit (retry on timeout)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 2
+          retry_wait_seconds: 30
+          retry_on: timeout
+          command: cargo install cargo-audit
       - name: Run security audit
         run: cargo audit
 
@@ -110,6 +123,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
       - name: Build
@@ -164,13 +182,24 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
         with:
           key: ${{ matrix.target }}
 
       # Install cross for ARM64 Linux
-      - name: Install cross
+      - name: Install cross (retry on timeout)
         if: matrix.cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 2
+          retry_wait_seconds: 30
+          retry_on: timeout
+          command: cargo install cross --git https://github.com/cross-rs/cross
 
       # Build with cross for ARM64 Linux
       - name: Build (cross)
@@ -215,6 +244,11 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
         with:
           key: android-${{ matrix.abi }}
 
@@ -230,8 +264,14 @@ jobs:
           echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
-      - name: Install cargo-ndk
-        run: cargo install cargo-ndk
+      - name: Install cargo-ndk (retry on timeout)
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 2
+          retry_wait_seconds: 30
+          retry_on: timeout
+          command: cargo install cargo-ndk
 
       - name: Build for Android
         run: cargo ndk -t ${{ matrix.abi }} build --release -p ciris-verify-ffi --features android
@@ -266,6 +306,11 @@ jobs:
           targets: ${{ matrix.target }}
 
       - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
         with:
           key: ios-${{ matrix.target }}
 
@@ -290,6 +335,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
       - name: Build FFI library
         run: cargo build --release -p ciris-verify-ffi
       - name: Run macOS conformance tests
@@ -305,6 +355,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
       - name: Build docs
         run: cargo doc --no-deps
         env:
@@ -320,6 +375,11 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@1.86
       - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
       - run: cargo check
 
   # ==========================================================================
@@ -336,6 +396,11 @@ jobs:
         with:
           components: llvm-tools-preview
       - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage

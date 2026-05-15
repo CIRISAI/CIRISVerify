@@ -55,6 +55,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore failures degrade to
+        # fresh-build, not job-abort. See ci.yml note for rationale.
+        continue-on-error: true
         with:
           key: post-release-verify
 
@@ -117,8 +120,21 @@ jobs:
           # step, so the runtime exactly mirrors the build environment.
           sudo apt-get install -y libtss2-dev
 
-      - name: Install ciris-verify from PyPI (bundled .so)
-        run: pip install "ciris-verify==${{ steps.ver.outputs.version }}"
+      - name: Install ciris-verify from PyPI (bundled .so, retry on timeout)
+        # CI hardening (v2.1.1+): the propagation poll above already
+        # bounded-retries until pip can resolve the version, but there
+        # can be a tiny window between dry-run success and real install
+        # (e.g. CDN cache eviction between the two requests). Wrap the
+        # actual install in retry-on-timeout — 2 attempts, 30s backoff.
+        # Doesn't retry on real install errors (auth, 404 for a typoed
+        # version, dep resolution failure); those still surface immediately.
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 5
+          max_attempts: 2
+          retry_wait_seconds: 30
+          retry_on: timeout
+          command: pip install "ciris-verify==${{ steps.ver.outputs.version }}"
 
       - name: Wheel version round-trip (Python FFI surface)
         run: |
