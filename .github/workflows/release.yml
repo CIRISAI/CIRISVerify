@@ -59,6 +59,14 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore failures degrade to
+        # fresh-build, not job-abort. See ci.yml note for rationale.
+        continue-on-error: true
+        with:
+          # Include git tag in cache key to bust cache on version bumps
+          key: release-${{ matrix.target }}-${{ github.ref_name }}
+
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -74,14 +82,6 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore failures degrade to
-        # fresh-build, not job-abort. See ci.yml note for rationale.
-        continue-on-error: true
-        with:
-          # Include git tag in cache key to bust cache on version bumps
-          key: release-${{ matrix.target }}-${{ github.ref_name }}
 
       # Install TPM development libraries (Linux native only, not cross-compile)
       - name: Install TPM libs (Linux)
@@ -146,6 +146,13 @@ jobs:
         with:
           targets: aarch64-unknown-linux-musl
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore failures degrade to
+        # fresh-build, not job-abort. See ci.yml note for rationale.
+        continue-on-error: true
+        with:
+          key: release-musl-aarch64
+
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -161,13 +168,6 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore failures degrade to
-        # fresh-build, not job-abort. See ci.yml note for rationale.
-        continue-on-error: true
-        with:
-          key: release-musl-aarch64
 
       - name: Install zig
         uses: mlugg/setup-zig@v2
@@ -235,6 +235,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore failures degrade to
+        # fresh-build, not job-abort. See ci.yml note for rationale.
+        continue-on-error: true
+        with:
+          key: release-android-${{ matrix.abi }}
+
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -250,13 +257,6 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore failures degrade to
-        # fresh-build, not job-abort. See ci.yml note for rationale.
-        continue-on-error: true
-        with:
-          key: release-android-${{ matrix.abi }}
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -316,6 +316,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore failures degrade to
+        # fresh-build, not job-abort. See ci.yml note for rationale.
+        continue-on-error: true
+        with:
+          key: release-ios-${{ matrix.target }}
+
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -331,13 +338,6 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore failures degrade to
-        # fresh-build, not job-abort. See ci.yml note for rationale.
-        continue-on-error: true
-        with:
-          key: release-ios-${{ matrix.target }}
 
       - name: Build for iOS
         run: |
@@ -461,6 +461,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore failures degrade to
+        # fresh-build, not job-abort. See ci.yml note for rationale.
+        continue-on-error: true
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -476,10 +480,6 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore failures degrade to
-        # fresh-build, not job-abort. See ci.yml note for rationale.
-        continue-on-error: true
 
       - name: Install cbindgen (retry on timeout)
         uses: nick-fields/retry@v3
@@ -512,6 +512,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore failures degrade to
+        # fresh-build, not job-abort. See ci.yml note for rationale.
+        continue-on-error: true
+        with:
+          # IMPORTANT: Include tag to bust cache on version bumps
+          # Without this, stale manifest-tool binary may be used (missing metadata field)
+          key: manifest-tool-${{ github.ref_name }}
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -527,14 +535,6 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore failures degrade to
-        # fresh-build, not job-abort. See ci.yml note for rationale.
-        continue-on-error: true
-        with:
-          # IMPORTANT: Include tag to bust cache on version bumps
-          # Without this, stale manifest-tool binary may be used (missing metadata field)
-          key: manifest-tool-${{ github.ref_name }}
 
       - name: Build manifest tool
         run: cargo build --release -p ciris-manifest-tool
@@ -584,6 +584,13 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore failures degrade to
+        # fresh-build, not job-abort. See ci.yml note for rationale.
+        continue-on-error: true
+        with:
+          key: build-tool-${{ matrix.target }}-${{ github.ref_name }}
+
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -599,13 +606,6 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore failures degrade to
-        # fresh-build, not job-abort. See ci.yml note for rationale.
-        continue-on-error: true
-        with:
-          key: build-tool-${{ matrix.target }}-${{ github.ref_name }}
 
       - name: Install cross (retry on timeout)
         if: matrix.cross

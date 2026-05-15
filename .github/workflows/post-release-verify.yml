@@ -54,6 +54,13 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore failures degrade to
+        # fresh-build, not job-abort. See ci.yml note for rationale.
+        continue-on-error: true
+        with:
+          key: post-release-verify
+
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -69,13 +76,6 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore failures degrade to
-        # fresh-build, not job-abort. See ci.yml note for rationale.
-        continue-on-error: true
-        with:
-          key: post-release-verify
 
       - name: Build ciris-verify CLI from the v$tag source
         # Locked build off the tagged source so the CLI matches the published

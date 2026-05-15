@@ -83,6 +83,13 @@ jobs:
         with:
           components: clippy
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
+      # Note: --all-features excluded because TPM feature requires system libs
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -98,13 +105,6 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore is a speedup, not a
-        # correctness gate. A flaky runner / Actions infra hiccup should
-        # downgrade to "build from scratch this run", not abort the job.
-        # Real test/lint/compile failures still fail as before.
-        continue-on-error: true
-      # Note: --all-features excluded because TPM feature requires system libs
       - run: cargo clippy --all-targets -- -D warnings
 
   # ==========================================================================
@@ -171,6 +171,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -186,12 +192,7 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore is a speedup, not a
-        # correctness gate. A flaky runner / Actions infra hiccup should
-        # downgrade to "build from scratch this run", not abort the job.
-        # Real test/lint/compile failures still fail as before.
-        continue-on-error: true
+
       - name: Install cargo-nextest
         uses: taiki-e/install-action@nextest
       - name: Build
@@ -245,6 +246,17 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
+        with:
+          key: ${{ matrix.target }}
+
+      # Install cross for ARM64 Linux
+
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -260,17 +272,6 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore is a speedup, not a
-        # correctness gate. A flaky runner / Actions infra hiccup should
-        # downgrade to "build from scratch this run", not abort the job.
-        # Real test/lint/compile failures still fail as before.
-        continue-on-error: true
-        with:
-          key: ${{ matrix.target }}
-
-      # Install cross for ARM64 Linux
       - name: Install cross (retry on timeout)
         if: matrix.cross
         uses: nick-fields/retry@v3
@@ -323,6 +324,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
+        with:
+          key: android-${{ matrix.abi }}
+
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -338,15 +348,6 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore is a speedup, not a
-        # correctness gate. A flaky runner / Actions infra hiccup should
-        # downgrade to "build from scratch this run", not abort the job.
-        # Real test/lint/compile failures still fail as before.
-        continue-on-error: true
-        with:
-          key: android-${{ matrix.abi }}
 
       - name: Setup Android NDK
         uses: nttld/setup-ndk@v1
@@ -401,6 +402,15 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
+        with:
+          key: ios-${{ matrix.target }}
+
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -416,15 +426,6 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore is a speedup, not a
-        # correctness gate. A flaky runner / Actions infra hiccup should
-        # downgrade to "build from scratch this run", not abort the job.
-        # Real test/lint/compile failures still fail as before.
-        continue-on-error: true
-        with:
-          key: ios-${{ matrix.target }}
 
       - name: Build for iOS
         run: cargo build --release --target ${{ matrix.target }} -p ciris-verify-ffi --features ios
@@ -447,6 +448,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -462,12 +469,7 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore is a speedup, not a
-        # correctness gate. A flaky runner / Actions infra hiccup should
-        # downgrade to "build from scratch this run", not abort the job.
-        # Real test/lint/compile failures still fail as before.
-        continue-on-error: true
+
       - name: Build FFI library
         run: cargo build --release -p ciris-verify-ffi
       - name: Run macOS conformance tests
@@ -483,6 +485,12 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -498,12 +506,7 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore is a speedup, not a
-        # correctness gate. A flaky runner / Actions infra hiccup should
-        # downgrade to "build from scratch this run", not abort the job.
-        # Real test/lint/compile failures still fail as before.
-        continue-on-error: true
+
       - name: Build docs
         run: cargo doc --no-deps
         env:
@@ -540,6 +543,12 @@ jobs:
         with:
           components: llvm-tools-preview
 
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
       - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
         # v2.1.2+: a recurring macOS-x86_64 runner-image regression
         # ships a `cargo` binary that's actually rustup-init's shim
@@ -555,12 +564,7 @@ jobs:
         run: |
           rustup default stable
           cargo --version
-      - uses: Swatinem/rust-cache@v2
-        # CI hardening (v2.1.1+): cache restore is a speedup, not a
-        # correctness gate. A flaky runner / Actions infra hiccup should
-        # downgrade to "build from scratch this run", not abort the job.
-        # Real test/lint/compile failures still fail as before.
-        continue-on-error: true
+
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
       - name: Generate coverage
