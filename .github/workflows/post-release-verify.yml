@@ -59,23 +59,34 @@ jobs:
         # fresh-build, not job-abort. See ci.yml note for rationale.
         continue-on-error: true
         with:
+          # v2.1.4+: exclude ~/.cargo/bin to prevent rustup-init shadow
+          # poisoning. See ci.yml comment block above.
+          cache-bin: false
           key: post-release-verify
 
-      - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
-        # v2.1.2+: a recurring macOS-x86_64 runner-image regression
-        # ships a `cargo` binary that's actually rustup-init's shim
-        # with the toolchain not yet installed — `cargo build` then
-        # prints rustup-init usage instead of building. The dtolnay
-        # action above appears to "succeed" but doesn't actually
-        # install the toolchain. `rustup default stable` is a no-op
-        # when the toolchain is already installed; if not, it triggers
-        # the actual install. ~1s overhead on healthy runners,
-        # self-repair on broken-pool runners.
-        # Seen on Build (x86_64-apple-darwin) + Build (iOS aarch64-apple-ios)
-        # at v2.1.1 (run 25894815013); aarch64 macOS unaffected.
+      - name: Repair toolchain if rustup-init shadow (cache-poison heal)
+        # v2.1.2 detected; v2.1.3 moved after cache restore; v2.1.4 active heal.
+        # macOS runners occasionally cache a `~/.cargo/bin/cargo` that IS the
+        # rustup-init shim binary. The shim passes `cargo --version` through
+        # (any CLI accepts --version), but `cargo build` triggers the shim's
+        # argv parser and fails with "unexpected argument 'build' found".
+        # Passive `rustup default stable` doesn't help because the rustup
+        # binary may share the same shim. Active heal: probe via
+        # `cargo build --help` output, nuke ~/.cargo/bin, reinstall toolchain.
+        # Seen on x86_64 + arm64 macOS (v2.1.1 run 25894815013;
+        # v2.1.3 run 25895938932 Test/macos-latest). The cache-bin: false on
+        # the Swatinem step above prevents future poison-then-restore cycles.
         run: |
+          if cargo build --help 2>&1 | grep -q "rustup-init"; then
+            echo "::warning::Detected rustup-init shadow in ~/.cargo/bin; reinstalling toolchain"
+            rm -rf "$HOME/.cargo/bin"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+              sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
           rustup default stable
           cargo --version
+          cargo build --help >/dev/null
 
       - name: Build ciris-verify CLI from the v$tag source
         # Locked build off the tagged source so the CLI matches the published
