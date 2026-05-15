@@ -59,6 +59,22 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
+        # v2.1.2+: a recurring macOS-x86_64 runner-image regression
+        # ships a `cargo` binary that's actually rustup-init's shim
+        # with the toolchain not yet installed — `cargo build` then
+        # prints rustup-init usage instead of building. The dtolnay
+        # action above appears to "succeed" but doesn't actually
+        # install the toolchain. `rustup default stable` is a no-op
+        # when the toolchain is already installed; if not, it triggers
+        # the actual install. ~1s overhead on healthy runners,
+        # self-repair on broken-pool runners.
+        # Seen on Build (x86_64-apple-darwin) + Build (iOS aarch64-apple-ios)
+        # at v2.1.1 (run 25894815013); aarch64 macOS unaffected.
+        run: |
+          rustup default stable
+          cargo --version
+
       - uses: Swatinem/rust-cache@v2
         # CI hardening (v2.1.1+): cache restore failures degrade to
         # fresh-build, not job-abort. See ci.yml note for rationale.
@@ -129,6 +145,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-unknown-linux-musl
+
+      - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
+        # v2.1.2+: a recurring macOS-x86_64 runner-image regression
+        # ships a `cargo` binary that's actually rustup-init's shim
+        # with the toolchain not yet installed — `cargo build` then
+        # prints rustup-init usage instead of building. The dtolnay
+        # action above appears to "succeed" but doesn't actually
+        # install the toolchain. `rustup default stable` is a no-op
+        # when the toolchain is already installed; if not, it triggers
+        # the actual install. ~1s overhead on healthy runners,
+        # self-repair on broken-pool runners.
+        # Seen on Build (x86_64-apple-darwin) + Build (iOS aarch64-apple-ios)
+        # at v2.1.1 (run 25894815013); aarch64 macOS unaffected.
+        run: |
+          rustup default stable
+          cargo --version
 
       - uses: Swatinem/rust-cache@v2
         # CI hardening (v2.1.1+): cache restore failures degrade to
@@ -203,6 +235,22 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
+      - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
+        # v2.1.2+: a recurring macOS-x86_64 runner-image regression
+        # ships a `cargo` binary that's actually rustup-init's shim
+        # with the toolchain not yet installed — `cargo build` then
+        # prints rustup-init usage instead of building. The dtolnay
+        # action above appears to "succeed" but doesn't actually
+        # install the toolchain. `rustup default stable` is a no-op
+        # when the toolchain is already installed; if not, it triggers
+        # the actual install. ~1s overhead on healthy runners,
+        # self-repair on broken-pool runners.
+        # Seen on Build (x86_64-apple-darwin) + Build (iOS aarch64-apple-ios)
+        # at v2.1.1 (run 25894815013); aarch64 macOS unaffected.
+        run: |
+          rustup default stable
+          cargo --version
+
       - uses: Swatinem/rust-cache@v2
         # CI hardening (v2.1.1+): cache restore failures degrade to
         # fresh-build, not job-abort. See ci.yml note for rationale.
@@ -267,6 +315,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
+        # v2.1.2+: a recurring macOS-x86_64 runner-image regression
+        # ships a `cargo` binary that's actually rustup-init's shim
+        # with the toolchain not yet installed — `cargo build` then
+        # prints rustup-init usage instead of building. The dtolnay
+        # action above appears to "succeed" but doesn't actually
+        # install the toolchain. `rustup default stable` is a no-op
+        # when the toolchain is already installed; if not, it triggers
+        # the actual install. ~1s overhead on healthy runners,
+        # self-repair on broken-pool runners.
+        # Seen on Build (x86_64-apple-darwin) + Build (iOS aarch64-apple-ios)
+        # at v2.1.1 (run 25894815013); aarch64 macOS unaffected.
+        run: |
+          rustup default stable
+          cargo --version
 
       - uses: Swatinem/rust-cache@v2
         # CI hardening (v2.1.1+): cache restore failures degrade to
@@ -396,6 +460,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
+        # v2.1.2+: a recurring macOS-x86_64 runner-image regression
+        # ships a `cargo` binary that's actually rustup-init's shim
+        # with the toolchain not yet installed — `cargo build` then
+        # prints rustup-init usage instead of building. The dtolnay
+        # action above appears to "succeed" but doesn't actually
+        # install the toolchain. `rustup default stable` is a no-op
+        # when the toolchain is already installed; if not, it triggers
+        # the actual install. ~1s overhead on healthy runners,
+        # self-repair on broken-pool runners.
+        # Seen on Build (x86_64-apple-darwin) + Build (iOS aarch64-apple-ios)
+        # at v2.1.1 (run 25894815013); aarch64 macOS unaffected.
+        run: |
+          rustup default stable
+          cargo --version
       - uses: Swatinem/rust-cache@v2
         # CI hardening (v2.1.1+): cache restore failures degrade to
         # fresh-build, not job-abort. See ci.yml note for rationale.
@@ -431,6 +511,22 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
+
+      - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
+        # v2.1.2+: a recurring macOS-x86_64 runner-image regression
+        # ships a `cargo` binary that's actually rustup-init's shim
+        # with the toolchain not yet installed — `cargo build` then
+        # prints rustup-init usage instead of building. The dtolnay
+        # action above appears to "succeed" but doesn't actually
+        # install the toolchain. `rustup default stable` is a no-op
+        # when the toolchain is already installed; if not, it triggers
+        # the actual install. ~1s overhead on healthy runners,
+        # self-repair on broken-pool runners.
+        # Seen on Build (x86_64-apple-darwin) + Build (iOS aarch64-apple-ios)
+        # at v2.1.1 (run 25894815013); aarch64 macOS unaffected.
+        run: |
+          rustup default stable
+          cargo --version
       - uses: Swatinem/rust-cache@v2
         # CI hardening (v2.1.1+): cache restore failures degrade to
         # fresh-build, not job-abort. See ci.yml note for rationale.
@@ -487,6 +583,22 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
+
+      - name: Verify Rust toolchain (defang macOS x86_64 rustup-init shadow regression)
+        # v2.1.2+: a recurring macOS-x86_64 runner-image regression
+        # ships a `cargo` binary that's actually rustup-init's shim
+        # with the toolchain not yet installed — `cargo build` then
+        # prints rustup-init usage instead of building. The dtolnay
+        # action above appears to "succeed" but doesn't actually
+        # install the toolchain. `rustup default stable` is a no-op
+        # when the toolchain is already installed; if not, it triggers
+        # the actual install. ~1s overhead on healthy runners,
+        # self-repair on broken-pool runners.
+        # Seen on Build (x86_64-apple-darwin) + Build (iOS aarch64-apple-ios)
+        # at v2.1.1 (run 25894815013); aarch64 macOS unaffected.
+        run: |
+          rustup default stable
+          cargo --version
 
       - uses: Swatinem/rust-cache@v2
         # CI hardening (v2.1.1+): cache restore failures degrade to
