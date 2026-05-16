@@ -2342,8 +2342,8 @@ unsafe fn export_attestation_inner(
 
     // Get transparency log state from engine
     let tlog = handle.engine.transparency_log();
-    let merkle_root = tlog.merkle_root();
-    let log_entry_count = tlog.entry_count();
+    let merkle_root = tlog.merkle_root().unwrap_or([0u8; 32]);
+    let log_entry_count = tlog.entry_count().unwrap_or(0);
 
     // PQC (ML-DSA-65) is always compiled in — it's a default feature of ciris-verify-core
     let pqc_available = true;

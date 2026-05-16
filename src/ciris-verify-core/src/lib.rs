@@ -90,7 +90,11 @@ pub use security::file_integrity::{
     FileIntegrityResult, FileManifest,
 };
 pub use security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
-pub use transparency::{MerkleProof, ProofChain, TransparencyEntry, TransparencyLog};
+pub use transparency::{
+    verify_consistency, verify_inclusion, ConsistencyProof, InMemoryTransparencyStore, MerkleProof,
+    ProofChain, SignedTreeHead, TransparencyEntry, TransparencyError, TransparencyLeaf,
+    TransparencyLog, TransparencyStore, WitnessSignature,
+};
 pub use types::{
     AttestationProof, BinaryIntegrityStatus, CapabilityCheckRequest, CapabilityCheckResponse,
     EnforcementAction, LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure,

@@ -31,7 +31,7 @@ use crate::https::HttpsClient;
 use crate::license::{LicenseDetails, LicenseStatus, LicenseType};
 use crate::registry::{self, RegistryClient};
 use crate::revocation::RevocationChecker;
-use crate::transparency::TransparencyLog;
+use crate::transparency::{TransparencyEntry, TransparencyLog};
 use crate::types::{
     AttestationProof, BinaryIntegrityStatus, CapabilityCheckResponse, DisclosureSeverity,
     EnforcementAction, LicenseStatusRequest, LicenseStatusResponse, MandatoryDisclosure,
@@ -61,8 +61,8 @@ pub struct LicenseEngine {
     pqc_signer: Option<MlDsa65Signer>,
     /// Binary integrity flag (set at startup).
     integrity_valid: bool,
-    /// Transparency log for tamper-evident audit trail.
-    transparency_log: TransparencyLog,
+    /// Transparency log for tamper-evident audit trail (license domain).
+    transparency_log: TransparencyLog<TransparencyEntry>,
     /// Shutdown watchdog for enforcing covenant invocations.
     watchdog: ShutdownWatchdog,
     /// Registry client for fetching manifests.
@@ -198,7 +198,10 @@ impl LicenseEngine {
             #[cfg(feature = "pqc")]
             pqc_signer,
             integrity_valid,
-            transparency_log: TransparencyLog::new(None),
+            transparency_log: TransparencyLog::<TransparencyEntry>::new_license_log(
+                "ciris-license-log",
+                None,
+            ),
             watchdog: ShutdownWatchdog::new(),
             registry_client,
             binary_integrity_cache: std::sync::RwLock::new(None),
@@ -254,7 +257,10 @@ impl LicenseEngine {
             #[cfg(feature = "pqc")]
             pqc_signer,
             integrity_valid: true, // Assume valid for testing
-            transparency_log: TransparencyLog::new(None),
+            transparency_log: TransparencyLog::<TransparencyEntry>::new_license_log(
+                "ciris-license-log",
+                None,
+            ),
             watchdog: ShutdownWatchdog::new(),
             registry_client,
             binary_integrity_cache: std::sync::RwLock::new(None),
@@ -486,7 +492,7 @@ impl LicenseEngine {
 
         // 9. Append to transparency log (non-fatal on failure)
         let rev = validation.consensus_revocation_revision.unwrap_or(0);
-        if let Err(e) = self.transparency_log.append(
+        if let Err(e) = self.transparency_log.append_license(
             &request.deployment_id,
             response.status,
             validation.status,
@@ -680,8 +686,8 @@ impl LicenseEngine {
             challenge: challenge.to_vec(),
             classical_signature,
             pqc_signature,
-            merkle_root: self.transparency_log.merkle_root(),
-            log_entry_count: self.transparency_log.entry_count(),
+            merkle_root: self.transparency_log.merkle_root().unwrap_or([0u8; 32]),
+            log_entry_count: self.transparency_log.entry_count().unwrap_or(0),
             generated_at: chrono::Utc::now().timestamp(),
             binary_version: env!("CARGO_PKG_VERSION").to_string(),
             hardware_type: format!("{:?}", self.hw_signer.hardware_type()),
@@ -1001,7 +1007,7 @@ impl LicenseEngine {
     }
 
     /// Get the transparency log.
-    pub fn transparency_log(&self) -> &TransparencyLog {
+    pub fn transparency_log(&self) -> &TransparencyLog<TransparencyEntry> {
         &self.transparency_log
     }
 
