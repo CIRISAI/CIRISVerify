@@ -263,8 +263,16 @@ jobs:
               assert r.valid is False
               assert r.registry_match is False
               assert r.registry_error is not None, "expected 404 in registry_error"
+              # v2.2.0+ #21: structured NotFound surfaces as "not_yet_registered: <url>".
+              # v2.1.x and earlier surfaced "HTTPS error: ... 404 Not Found".
+              # Accept either shape so this gate works across the wire-format
+              # transition without flapping on whichever wheel is published.
               err_low = r.registry_error.lower()
-              assert "404" in r.registry_error or "not found" in err_low, r.registry_error
+              assert (
+                  "not_yet_registered" in r.registry_error
+                  or "404" in r.registry_error
+                  or "not found" in err_low
+              ), r.registry_error
               assert r.expected_total_hash is None
               print(f"(a) walk-only OK: total={r.total_hash[:24]}...")
 
