@@ -171,6 +171,41 @@ pub(crate) fn validate_project(project: &str) -> Result<(), VerifyError> {
     Ok(())
 }
 
+/// Map an HTTP status code (and optional `Retry-After` value) to a
+/// structured [`VerifyError`]. Returns `Ok(())` for 2xx responses.
+///
+/// v2.2.0+ for issue #21: distinguish 404 (resource genuinely absent —
+/// fallback won't help) and 429 (rate-limited — fallback should wait
+/// the indicated interval) from generic [`VerifyError::HttpsError`].
+fn status_to_error(
+    status_code: u16,
+    url: &str,
+    retry_after_secs: Option<u64>,
+) -> Result<(), VerifyError> {
+    match status_code {
+        200..=299 => Ok(()),
+        404 => Err(VerifyError::NotFound {
+            url: url.to_string(),
+        }),
+        429 => Err(VerifyError::RateLimited {
+            url: url.to_string(),
+            retry_after_secs,
+        }),
+        _ => Err(VerifyError::HttpsError {
+            message: format!("Registry HTTP error: {} ({})", status_code, url),
+        }),
+    }
+}
+
+/// Parse a `Retry-After` header value into seconds, per RFC 7231 §7.1.3.
+///
+/// Supports the integer-seconds form (`"30"`). The HTTP-date form
+/// (`"Wed, 21 Oct 2015 07:28:00 GMT"`) returns `None` — too rare in
+/// practice to be worth the parse-and-clock-skew complexity.
+pub(crate) fn parse_retry_after(value: &str) -> Option<u64> {
+    value.trim().parse::<u64>().ok()
+}
+
 impl RegistryClient {
     /// Create a new registry client.
     ///
@@ -252,11 +287,12 @@ impl RegistryClient {
                 message: format!("Registry request failed: {}", e),
             })?;
 
-        if !response.status().is_success() {
-            return Err(VerifyError::HttpsError {
-                message: format!("Registry HTTP error: {}", response.status()),
-            });
-        }
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_retry_after);
+        status_to_error(response.status().as_u16(), &url, retry_after)?;
 
         let build = response
             .json::<BuildRecord>()
@@ -290,11 +326,12 @@ impl RegistryClient {
                 message: format!("Registry request failed: {}", e),
             })?;
 
-        if !response.status().is_success() {
-            return Err(VerifyError::HttpsError {
-                message: format!("Registry HTTP error: {}", response.status()),
-            });
-        }
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_retry_after);
+        status_to_error(response.status().as_u16(), &url, retry_after)?;
 
         response
             .json::<BuildRecord>()
@@ -462,14 +499,12 @@ impl RegistryClient {
             }
         })?;
 
-        if !response.status().is_success() {
-            return Err(VerifyError::HttpsError {
-                message: format!(
-                    "Binary manifest HTTP error: {} (route may not be implemented)",
-                    response.status()
-                ),
-            });
-        }
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_retry_after);
+        status_to_error(response.status().as_u16(), &url, retry_after)?;
 
         let manifest =
             response
@@ -515,16 +550,12 @@ impl RegistryClient {
                 message: format!("Function manifest request failed: {}", e),
             })?;
 
-        if !response.status().is_success() {
-            return Err(VerifyError::HttpsError {
-                message: format!(
-                    "Function manifest HTTP error: {} (version={}, target={})",
-                    response.status(),
-                    version,
-                    target
-                ),
-            });
-        }
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_retry_after);
+        status_to_error(response.status().as_u16(), &url, retry_after)?;
 
         let manifest = response
             .json::<crate::security::function_integrity::FunctionManifest>()
@@ -1198,11 +1229,12 @@ impl RegistryClient {
                 message: format!("Key verification request failed: {}", e),
             })?;
 
-        if !response.status().is_success() {
-            return Err(VerifyError::HttpsError {
-                message: format!("Key verification HTTP error: {}", response.status()),
-            });
-        }
+        let retry_after = response
+            .headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(parse_retry_after);
+        status_to_error(response.status().as_u16(), &url, retry_after)?;
 
         let result = response
             .json::<KeyVerificationResponse>()
@@ -1653,11 +1685,26 @@ pub const FALLBACK_REGISTRY_URLS: &[&str] = &[
 ///
 /// Tries the primary endpoint first, then falls back to secondary endpoints
 /// on network errors (similar to DoH fallback pattern).
+///
+/// ## Rate-limit cooldown gate (v2.2.0+, issue #21)
+///
+/// When any probe gets HTTP 429, the parsed `Retry-After` value (or a
+/// default of 1s when the header is absent) is written into a shared
+/// atomic cooldown timestamp. Every probe — including concurrent
+/// in-flight probes in the same `tokio::join!` flow — checks this gate
+/// on entry and sleeps until it clears before sending. This prevents
+/// the "first 429 triggers immediate full-speed fallback retry"
+/// cascade that wiped 5 manifests + 1 key check in ~700ms before the
+/// fix.
 pub struct ResilientRegistryClient {
     /// Primary registry client.
     primary: RegistryClient,
     /// Fallback registry clients.
     fallbacks: Vec<RegistryClient>,
+    /// Shared rate-limit cooldown gate (Unix millis when probes may
+    /// resume). Updated by any probe that sees 429; read by every
+    /// probe on entry. v2.2.0+.
+    cooldown_until_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl ResilientRegistryClient {
@@ -1676,7 +1723,11 @@ impl ResilientRegistryClient {
             .filter_map(|url| RegistryClient::new(url, timeout).ok())
             .collect();
 
-        Ok(Self { primary, fallbacks })
+        Ok(Self {
+            primary,
+            fallbacks,
+            cooldown_until_ms: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        })
     }
 
     /// Create with default endpoints.
@@ -1689,26 +1740,102 @@ impl ResilientRegistryClient {
         &self.primary
     }
 
+    /// Block until the shared rate-limit cooldown (set by an earlier
+    /// 429 in this run) has elapsed. Capped at 30s so a misbehaving
+    /// registry can't park us indefinitely. v2.2.0+.
+    async fn wait_for_cooldown(&self) {
+        let cooldown_ms = self
+            .cooldown_until_ms
+            .load(std::sync::atomic::Ordering::Acquire);
+        if cooldown_ms == 0 {
+            return;
+        }
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        if now_ms < cooldown_ms {
+            let sleep_ms = (cooldown_ms - now_ms).min(30_000);
+            debug!("Honoring rate-limit cooldown: sleeping {}ms", sleep_ms);
+            tokio::time::sleep(Duration::from_millis(sleep_ms)).await;
+        }
+    }
+
+    /// Raise the shared cooldown to at least `now + secs * 1000` millis.
+    /// `fetch_max` ensures concurrent bumps converge to the latest
+    /// (longest) value. v2.2.0+.
+    fn bump_cooldown(&self, secs: u64) {
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+            .unwrap_or(0);
+        let target_ms = now_ms.saturating_add(secs.saturating_mul(1000));
+        self.cooldown_until_ms
+            .fetch_max(target_ms, std::sync::atomic::Ordering::AcqRel);
+    }
+
     /// Fetch a build record by version with failover.
+    ///
+    /// v2.2.0+ behavior:
+    /// - **404 on primary**: returns `VerifyError::NotFound` immediately
+    ///   without trying fallbacks (the resource genuinely doesn't exist;
+    ///   fallbacks won't have what primary doesn't).
+    /// - **429 on any endpoint**: parses `Retry-After`, raises the shared
+    ///   cooldown gate, sleeps the indicated interval, then tries the
+    ///   next endpoint.
     pub async fn get_build_by_version(
         &self,
         project: &str,
         version: &str,
     ) -> Result<BuildRecord, VerifyError> {
-        // Try primary first
+        self.wait_for_cooldown().await;
         match self.primary.get_build_by_version(project, version).await {
             Ok(build) => return Ok(build),
+            Err(VerifyError::NotFound { url }) => {
+                info!(
+                    "Primary registry: build/{} not found ({}); skipping fallbacks",
+                    version, url
+                );
+                return Err(VerifyError::NotFound { url });
+            },
+            Err(VerifyError::RateLimited {
+                url,
+                retry_after_secs,
+            }) => {
+                warn!(
+                    "Primary registry rate-limited for build/{} ({}): retry-after={:?}s",
+                    version, url, retry_after_secs
+                );
+                self.bump_cooldown(retry_after_secs.unwrap_or(1));
+            },
             Err(e) => {
                 warn!("Primary registry failed for build/{}: {}", version, e);
             },
         }
 
-        // Try fallbacks
         for (i, fallback) in self.fallbacks.iter().enumerate() {
+            self.wait_for_cooldown().await;
             match fallback.get_build_by_version(project, version).await {
                 Ok(build) => {
                     info!("Fallback[{}] succeeded for build/{}", i, version);
                     return Ok(build);
+                },
+                Err(VerifyError::NotFound { url }) => {
+                    info!(
+                        "Fallback[{}] also reports build/{} not found ({})",
+                        i, version, url
+                    );
+                    return Err(VerifyError::NotFound { url });
+                },
+                Err(VerifyError::RateLimited {
+                    url,
+                    retry_after_secs,
+                }) => {
+                    warn!(
+                        "Fallback[{}] rate-limited for build/{} ({}): retry-after={:?}s",
+                        i, version, url, retry_after_secs
+                    );
+                    self.bump_cooldown(retry_after_secs.unwrap_or(1));
                 },
                 Err(e) => {
                     warn!("Fallback[{}] failed for build/{}: {}", i, version, e);
@@ -1721,14 +1848,33 @@ impl ResilientRegistryClient {
         })
     }
 
-    /// Fetch binary manifest with failover.
+    /// Fetch binary manifest with failover. See [`Self::get_build_by_version`]
+    /// for the v2.2.0+ NotFound/RateLimited semantics.
     pub async fn get_binary_manifest(
         &self,
         project: &str,
         version: &str,
     ) -> Result<BinaryManifest, VerifyError> {
+        self.wait_for_cooldown().await;
         match self.primary.get_binary_manifest(project, version).await {
             Ok(m) => return Ok(m),
+            Err(VerifyError::NotFound { url }) => {
+                info!(
+                    "Primary registry: binary-manifest/{} not found ({}); skipping fallbacks",
+                    version, url
+                );
+                return Err(VerifyError::NotFound { url });
+            },
+            Err(VerifyError::RateLimited {
+                url,
+                retry_after_secs,
+            }) => {
+                warn!(
+                    "Primary registry rate-limited for binary-manifest/{} ({}): retry-after={:?}s",
+                    version, url, retry_after_secs
+                );
+                self.bump_cooldown(retry_after_secs.unwrap_or(1));
+            },
             Err(e) => warn!(
                 "Primary registry failed for binary-manifest/{}: {}",
                 version, e
@@ -1736,10 +1882,28 @@ impl ResilientRegistryClient {
         }
 
         for (i, fallback) in self.fallbacks.iter().enumerate() {
+            self.wait_for_cooldown().await;
             match fallback.get_binary_manifest(project, version).await {
                 Ok(m) => {
                     info!("Fallback[{}] succeeded for binary-manifest/{}", i, version);
                     return Ok(m);
+                },
+                Err(VerifyError::NotFound { url }) => {
+                    info!(
+                        "Fallback[{}] also reports binary-manifest/{} not found ({})",
+                        i, version, url
+                    );
+                    return Err(VerifyError::NotFound { url });
+                },
+                Err(VerifyError::RateLimited {
+                    url,
+                    retry_after_secs,
+                }) => {
+                    warn!(
+                        "Fallback[{}] rate-limited for binary-manifest/{} ({}): retry-after={:?}s",
+                        i, version, url, retry_after_secs
+                    );
+                    self.bump_cooldown(retry_after_secs.unwrap_or(1));
                 },
                 Err(e) => warn!(
                     "Fallback[{}] failed for binary-manifest/{}: {}",
@@ -1756,19 +1920,38 @@ impl ResilientRegistryClient {
         })
     }
 
-    /// Fetch function manifest with failover.
+    /// Fetch function manifest with failover. See [`Self::get_build_by_version`]
+    /// for the v2.2.0+ NotFound/RateLimited semantics.
     pub async fn get_function_manifest(
         &self,
         project: &str,
         version: &str,
         target: &str,
     ) -> Result<crate::security::function_integrity::FunctionManifest, VerifyError> {
+        self.wait_for_cooldown().await;
         match self
             .primary
             .get_function_manifest(project, version, target)
             .await
         {
             Ok(m) => return Ok(m),
+            Err(VerifyError::NotFound { url }) => {
+                info!(
+                    "Primary registry: function-manifest/{}/{} not found ({}); skipping fallbacks",
+                    version, target, url
+                );
+                return Err(VerifyError::NotFound { url });
+            },
+            Err(VerifyError::RateLimited {
+                url,
+                retry_after_secs,
+            }) => {
+                warn!(
+                    "Primary registry rate-limited for function-manifest/{}/{} ({}): retry-after={:?}s",
+                    version, target, url, retry_after_secs
+                );
+                self.bump_cooldown(retry_after_secs.unwrap_or(1));
+            },
             Err(e) => warn!(
                 "Primary registry failed for function-manifest/{}/{}: {}",
                 version, target, e
@@ -1776,6 +1959,7 @@ impl ResilientRegistryClient {
         }
 
         for (i, fallback) in self.fallbacks.iter().enumerate() {
+            self.wait_for_cooldown().await;
             match fallback
                 .get_function_manifest(project, version, target)
                 .await
@@ -1786,6 +1970,23 @@ impl ResilientRegistryClient {
                         i, version, target
                     );
                     return Ok(m);
+                },
+                Err(VerifyError::NotFound { url }) => {
+                    info!(
+                        "Fallback[{}] also reports function-manifest/{}/{} not found ({})",
+                        i, version, target, url
+                    );
+                    return Err(VerifyError::NotFound { url });
+                },
+                Err(VerifyError::RateLimited {
+                    url,
+                    retry_after_secs,
+                }) => {
+                    warn!(
+                        "Fallback[{}] rate-limited for function-manifest/{}/{} ({}): retry-after={:?}s",
+                        i, version, target, url, retry_after_secs
+                    );
+                    self.bump_cooldown(retry_after_secs.unwrap_or(1));
                 },
                 Err(e) => warn!(
                     "Fallback[{}] failed for function-manifest/{}/{}: {}",
@@ -1802,13 +2003,32 @@ impl ResilientRegistryClient {
         })
     }
 
-    /// Verify key by fingerprint with failover.
+    /// Verify key by fingerprint with failover. See [`Self::get_build_by_version`]
+    /// for the v2.2.0+ NotFound/RateLimited semantics.
     pub async fn verify_key_by_fingerprint(
         &self,
         fingerprint: &str,
     ) -> Result<KeyVerificationResponse, VerifyError> {
+        self.wait_for_cooldown().await;
         match self.primary.verify_key_by_fingerprint(fingerprint).await {
             Ok(r) => return Ok(r),
+            Err(VerifyError::NotFound { url }) => {
+                info!(
+                    "Primary registry: verify/key/{} not found ({}); skipping fallbacks",
+                    fingerprint, url
+                );
+                return Err(VerifyError::NotFound { url });
+            },
+            Err(VerifyError::RateLimited {
+                url,
+                retry_after_secs,
+            }) => {
+                warn!(
+                    "Primary registry rate-limited for verify/key/{} ({}): retry-after={:?}s",
+                    fingerprint, url, retry_after_secs
+                );
+                self.bump_cooldown(retry_after_secs.unwrap_or(1));
+            },
             Err(e) => warn!(
                 "Primary registry failed for verify/key/{}: {}",
                 fingerprint, e
@@ -1816,10 +2036,28 @@ impl ResilientRegistryClient {
         }
 
         for (i, fallback) in self.fallbacks.iter().enumerate() {
+            self.wait_for_cooldown().await;
             match fallback.verify_key_by_fingerprint(fingerprint).await {
                 Ok(r) => {
                     info!("Fallback[{}] succeeded for verify/key/{}", i, fingerprint);
                     return Ok(r);
+                },
+                Err(VerifyError::NotFound { url }) => {
+                    info!(
+                        "Fallback[{}] also reports verify/key/{} not found ({})",
+                        i, fingerprint, url
+                    );
+                    return Err(VerifyError::NotFound { url });
+                },
+                Err(VerifyError::RateLimited {
+                    url,
+                    retry_after_secs,
+                }) => {
+                    warn!(
+                        "Fallback[{}] rate-limited for verify/key/{} ({}): retry-after={:?}s",
+                        i, fingerprint, url, retry_after_secs
+                    );
+                    self.bump_cooldown(retry_after_secs.unwrap_or(1));
                 },
                 Err(e) => warn!(
                     "Fallback[{}] failed for verify/key/{}: {}",
@@ -2067,6 +2305,210 @@ mod tests {
         assert!(
             url.contains("GET /v1/verify/function-manifests/0.1.0?project=ciris-persist"),
             "got {url}"
+        );
+    }
+
+    // =========================================================================
+    // v2.2.0 #21 fix: 404 → NotFound, 429 → RateLimited, shared cooldown
+    // =========================================================================
+
+    #[test]
+    fn parse_retry_after_seconds_form() {
+        assert_eq!(parse_retry_after("30"), Some(30));
+        assert_eq!(parse_retry_after("  10  "), Some(10));
+        assert_eq!(parse_retry_after("0"), Some(0));
+    }
+
+    #[test]
+    fn parse_retry_after_rejects_http_date_and_garbage() {
+        // HTTP-date form (RFC 7231 §7.1.3) intentionally unsupported.
+        assert_eq!(parse_retry_after("Wed, 21 Oct 2015 07:28:00 GMT"), None);
+        assert_eq!(parse_retry_after(""), None);
+        assert_eq!(parse_retry_after("foo"), None);
+        // Negative not valid for u64.
+        assert_eq!(parse_retry_after("-1"), None);
+    }
+
+    #[test]
+    fn status_to_error_maps_404_and_429_distinctly() {
+        let r = status_to_error(404, "https://api/v1/builds/2.0", None).unwrap_err();
+        assert!(matches!(r, VerifyError::NotFound { ref url } if url.contains("builds/2.0")));
+
+        let r = status_to_error(429, "https://api/x", Some(7)).unwrap_err();
+        assert!(matches!(
+            r,
+            VerifyError::RateLimited {
+                retry_after_secs: Some(7),
+                ..
+            }
+        ));
+
+        let r = status_to_error(429, "https://api/x", None).unwrap_err();
+        assert!(matches!(
+            r,
+            VerifyError::RateLimited {
+                retry_after_secs: None,
+                ..
+            }
+        ));
+
+        // 500 → generic HttpsError preserved.
+        let r = status_to_error(500, "https://api/x", None).unwrap_err();
+        assert!(matches!(r, VerifyError::HttpsError { .. }));
+
+        // 2xx → Ok.
+        assert!(status_to_error(200, "https://api/x", None).is_ok());
+        assert!(status_to_error(204, "https://api/x", None).is_ok());
+    }
+
+    /// Spin up a mock server that always returns the given status + headers.
+    /// `extra_header` is appended verbatim after the status line.
+    async fn one_shot_status_server(
+        status_line: &'static str,
+        extra_header: &'static str,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                tokio::spawn(async move {
+                    let (read_half, mut write_half) = sock.split();
+                    let mut reader = BufReader::new(read_half);
+                    let mut line = String::new();
+                    if reader.read_line(&mut line).await.is_err() {
+                        return;
+                    }
+                    loop {
+                        let mut h = String::new();
+                        if reader.read_line(&mut h).await.is_err() {
+                            return;
+                        }
+                        if h == "\r\n" || h.is_empty() {
+                            break;
+                        }
+                    }
+                    let response = format!(
+                        "{}\r\n{}Content-Length: 0\r\n\r\n",
+                        status_line, extra_header
+                    );
+                    let _ = write_half.write_all(response.as_bytes()).await;
+                });
+            }
+        });
+        (addr, handle)
+    }
+
+    /// Lock: 404 on `get_build_by_version` is a structured `NotFound`, not
+    /// the legacy `HttpsError`. Callers (tree_verify, agent flows) gate
+    /// "not yet registered" UX on this.
+    #[tokio::test]
+    async fn get_build_by_version_returns_structured_not_found_on_404() {
+        let (addr, _h) = one_shot_status_server("HTTP/1.1 404 Not Found", "").await;
+        let client =
+            RegistryClient::new(&format!("http://{}", addr), Duration::from_secs(5)).unwrap();
+        let err = client
+            .get_build_by_version("ciris-agent", "9.9.9")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, VerifyError::NotFound { ref url } if url.contains("/v1/builds/9.9.9")),
+            "got: {err:?}"
+        );
+    }
+
+    /// Lock: 429 with `Retry-After: 5` parses to `RateLimited{retry_after_secs: Some(5)}`.
+    #[tokio::test]
+    async fn get_binary_manifest_returns_structured_rate_limited_with_retry_after() {
+        let (addr, _h) =
+            one_shot_status_server("HTTP/1.1 429 Too Many Requests", "Retry-After: 5\r\n").await;
+        let client =
+            RegistryClient::new(&format!("http://{}", addr), Duration::from_secs(5)).unwrap();
+        let err = client
+            .get_binary_manifest("ciris-verify", "2.2.0")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                err,
+                VerifyError::RateLimited {
+                    retry_after_secs: Some(5),
+                    ..
+                }
+            ),
+            "got: {err:?}"
+        );
+    }
+
+    /// Lock: `ResilientRegistryClient` returns `NotFound` after the primary
+    /// 404s WITHOUT issuing fallback probes. This is the core #21 fix —
+    /// before v2.2.0, every fallback would also be tried and likely 429'd
+    /// during a rate-limit cascade.
+    #[tokio::test]
+    async fn resilient_short_circuits_on_404_no_fallback_probes() {
+        // Two servers: primary returns 404, fallback would return 500 (sentinel
+        // for "I should not have been called"). If we incorrectly fail over to
+        // the fallback, we'd get HttpsError; with the fix, we should see NotFound.
+        let (primary_addr, _h1) = one_shot_status_server("HTTP/1.1 404 Not Found", "").await;
+        let (fallback_addr, _h2) =
+            one_shot_status_server("HTTP/1.1 500 Internal Server Error", "").await;
+
+        let fallback_url = format!("http://{}", fallback_addr);
+        let resilient = ResilientRegistryClient::new(
+            &format!("http://{}", primary_addr),
+            &[fallback_url.as_str()],
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        let err = resilient
+            .get_build_by_version("ciris-agent", "9.9.9")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, VerifyError::NotFound { .. }),
+            "expected NotFound short-circuit; got: {err:?}"
+        );
+    }
+
+    /// Lock: on 429, `ResilientRegistryClient` honors the `Retry-After`
+    /// hint by raising its shared cooldown gate. Concurrent or
+    /// subsequent probes in the same flow see a non-zero cooldown.
+    #[tokio::test]
+    async fn resilient_bumps_cooldown_on_429() {
+        // Primary 429s with Retry-After: 2. We expect the cooldown timestamp
+        // to be raised to ≈ now + 2000ms after the call.
+        let (primary_addr, _h1) =
+            one_shot_status_server("HTTP/1.1 429 Too Many Requests", "Retry-After: 2\r\n").await;
+        // Fallback also 429s so the call terminates via the all-endpoints-failed path.
+        let (fallback_addr, _h2) =
+            one_shot_status_server("HTTP/1.1 429 Too Many Requests", "Retry-After: 2\r\n").await;
+
+        let fallback_url = format!("http://{}", fallback_addr);
+        let resilient = ResilientRegistryClient::new(
+            &format!("http://{}", primary_addr),
+            &[fallback_url.as_str()],
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        let before_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis() as u64;
+
+        // Both 429s, so we should exit via "all endpoints failed". The
+        // important assertion is the cooldown gate is now raised.
+        let _ = resilient.get_binary_manifest("ciris-verify", "2.2.0").await;
+
+        let cooldown = resilient
+            .cooldown_until_ms
+            .load(std::sync::atomic::Ordering::Acquire);
+        assert!(
+            cooldown >= before_ms + 1500,
+            "cooldown should be raised ≥1.5s into the future; got cooldown={cooldown} before_ms={before_ms}"
         );
     }
 

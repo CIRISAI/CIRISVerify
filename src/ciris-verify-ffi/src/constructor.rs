@@ -202,6 +202,34 @@ fn early_verify() {
     });
 }
 
+/// Resolve the bootstrap-trusted steward set, preferring the v2.2.0+
+/// packaged keyset over the v2.1.x hardcoded constants. Cached for the
+/// process lifetime — load+decode cost is paid at most once.
+fn get_trusted_stewards() -> &'static [crate::bootstrap_keyset::LoadedSteward] {
+    static CACHE: OnceLock<Vec<crate::bootstrap_keyset::LoadedSteward>> = OnceLock::new();
+    CACHE.get_or_init(|| match crate::bootstrap_keyset::load_keyset() {
+        Ok(keys) => {
+            tracing::info!(
+                "Bootstrap keyset loaded: {} steward(s) — primary key_id={}",
+                keys.len(),
+                keys[0].key_id
+            );
+            keys
+        },
+        Err(e) => {
+            tracing::warn!(
+                "Bootstrap keyset load failed ({}); falling back to v2.1.x hardcoded steward",
+                e
+            );
+            vec![crate::bootstrap_keyset::LoadedSteward {
+                key_id: "ciris-registry-main-v1-hardcoded-fallback".to_string(),
+                ed25519: STEWARD_ED25519_PUBKEY,
+                mldsa65: STEWARD_MLDSA65_PUBKEY.to_vec(),
+            }]
+        },
+    })
+}
+
 /// Perform the actual verification.
 fn run_verification() -> FunctionIntegrityStatus {
     // Check for skip flag - useful for Python/FFI contexts where blocking
@@ -212,10 +240,17 @@ fn run_verification() -> FunctionIntegrityStatus {
         };
     }
 
-    // Check if we have a valid steward key
-    if *STEWARD_PUBKEY.ed25519 == [0u8; 32] || STEWARD_PUBKEY.ml_dsa_65.is_empty() {
-        // Steward key not configured - skip verification
-        // This is expected during development/testing
+    // v2.2.0+: resolve trusted stewards from the packaged keyset.
+    // Falls back to the v2.1.x hardcoded constants if the keyset is
+    // malformed (belt-and-suspenders; v2.3.0 drops the fallback).
+    let stewards = get_trusted_stewards();
+    if stewards.is_empty() {
+        return FunctionIntegrityStatus::Unavailable {
+            reason: "no_trusted_stewards".to_string(),
+        };
+    }
+    if stewards[0].ed25519 == [0u8; 32] {
+        // Dev/test build with zeroed steward — skip verification.
         return FunctionIntegrityStatus::Unavailable {
             reason: "steward_key_not_configured".to_string(),
         };
@@ -260,14 +295,10 @@ fn run_verification() -> FunctionIntegrityStatus {
             .await
         {
             Ok(m) => m,
-            Err(ciris_verify_core::error::VerifyError::HttpsError { message }) => {
-                // Could be network timeout, 404, etc.
-                if message.contains("404") || message.contains("not found") {
-                    return FunctionIntegrityStatus::NotFound;
-                }
-                return FunctionIntegrityStatus::Unavailable {
-                    reason: format!("network:{}", message),
-                };
+            // v2.2.0+ #21: NotFound is a structured variant now, so we no
+            // longer have to string-match HttpsError messages for "404".
+            Err(ciris_verify_core::error::VerifyError::NotFound { .. }) => {
+                return FunctionIntegrityStatus::NotFound;
             },
             Err(e) => {
                 return FunctionIntegrityStatus::Unavailable {
@@ -276,11 +307,19 @@ fn run_verification() -> FunctionIntegrityStatus {
             },
         };
 
-        // Verify signature
-        match verify_manifest_signature(&manifest, &STEWARD_PUBKEY) {
-            Ok(true) => {},
-            Ok(false) => return FunctionIntegrityStatus::SignatureInvalid,
-            Err(_) => return FunctionIntegrityStatus::SignatureInvalid,
+        // v2.2.0+ #22: try each trusted steward — manifest is accepted if
+        // ANY listed steward's hybrid signature verifies. With one entry
+        // (v2.2.0 baseline) this is equivalent to the v2.1.x single-key
+        // check; the multi-entry case is the 2.9.1 decentralization path.
+        let signature_ok = stewards.iter().any(|s| {
+            let key = StewardPublicKey {
+                ed25519: &s.ed25519,
+                ml_dsa_65: &s.mldsa65,
+            };
+            matches!(verify_manifest_signature(&manifest, &key), Ok(true))
+        });
+        if !signature_ok {
+            return FunctionIntegrityStatus::SignatureInvalid;
         }
 
         // Verify function hashes
@@ -474,6 +513,31 @@ mod tests {
                 || target == "unknown",
             "Unexpected target: {}",
             target
+        );
+    }
+
+    /// v2.2.0 #22 lock: the packaged keyset's first entry decodes to
+    /// EXACTLY the v2.1.x hardcoded steward bytes. This is the "zero
+    /// behavior change for existing deployments" guarantee — the same
+    /// trusted key, just newly addressable.
+    ///
+    /// If this test fails, the keyset diverged from the hardcoded
+    /// constants. Either the JSON was regenerated incorrectly, or the
+    /// constants were updated without refreshing the JSON. Don't ship
+    /// until they agree.
+    #[test]
+    fn test_keyset_first_entry_equals_hardcoded() {
+        let stewards = crate::bootstrap_keyset::load_keyset()
+            .expect("packaged keyset must parse for v2.2.0+ deployments");
+        let first = &stewards[0];
+        assert_eq!(
+            first.ed25519, STEWARD_ED25519_PUBKEY,
+            "keyset Ed25519 must equal v2.1.x hardcoded constant"
+        );
+        assert_eq!(
+            first.mldsa65.as_slice(),
+            STEWARD_MLDSA65_PUBKEY.as_slice(),
+            "keyset ML-DSA-65 must equal v2.1.x hardcoded constant"
         );
     }
 

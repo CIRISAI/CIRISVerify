@@ -38,29 +38,55 @@ pub fn create_tls_agent(timeout: Duration) -> Result<ureq::Agent, VerifyError> {
 }
 
 /// GET request returning JSON.
+///
+/// v2.2.0+ for issue #21: maps HTTP 404 → [`VerifyError::NotFound`] and
+/// HTTP 429 → [`VerifyError::RateLimited`] (with `Retry-After` header
+/// parsed when present), so the caller can short-circuit dependent
+/// probes and honor backoff respectively. Other non-2xx statuses still
+/// flow as [`VerifyError::HttpsError`].
 pub fn get_json<T: serde::de::DeserializeOwned>(
     agent: &ureq::Agent,
     url: &str,
 ) -> Result<T, VerifyError> {
     info!("Mobile HTTP GET: {}", url);
 
-    let response = agent.get(url).call().map_err(|e| {
-        warn!("Mobile HTTP GET failed: {} - {}", url, e);
-        VerifyError::HttpsError {
-            message: format!("Request failed: {}", e),
-        }
-    })?;
-
-    let status = response.status();
-    if status < 200 || status >= 300 {
-        return Err(VerifyError::HttpsError {
-            message: format!("HTTP error: {}", status),
-        });
-    }
+    let response = match agent.get(url).call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, resp)) => {
+            // ureq returns Err for any non-2xx, with the response attached.
+            let retry_after = resp
+                .header("Retry-After")
+                .and_then(crate::registry::parse_retry_after);
+            return Err(map_mobile_status(code, url, retry_after));
+        },
+        Err(e) => {
+            warn!("Mobile HTTP GET failed: {} - {}", url, e);
+            return Err(VerifyError::HttpsError {
+                message: format!("Request failed: {}", e),
+            });
+        },
+    };
 
     response.into_json().map_err(|e| VerifyError::HttpsError {
         message: format!("JSON parse error: {}", e),
     })
+}
+
+/// Same status mapping as the desktop `status_to_error`, but ureq
+/// already gave us a u16 directly.
+fn map_mobile_status(code: u16, url: &str, retry_after_secs: Option<u64>) -> VerifyError {
+    match code {
+        404 => VerifyError::NotFound {
+            url: url.to_string(),
+        },
+        429 => VerifyError::RateLimited {
+            url: url.to_string(),
+            retry_after_secs,
+        },
+        _ => VerifyError::HttpsError {
+            message: format!("HTTP error: {} ({})", code, url),
+        },
+    }
 }
 
 /// POST request with JSON body, returning JSON.
@@ -71,25 +97,24 @@ pub fn post_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
 ) -> Result<(u16, T), VerifyError> {
     info!("Mobile HTTP POST: {}", url);
 
-    let response = agent.post(url).send_json(body).map_err(|e| {
-        // Check for specific HTTP status codes in transport errors
-        if let ureq::Error::Status(code, _) = &e {
-            return VerifyError::HttpsError {
-                message: format!("HTTP error: {}", code),
-            };
-        }
-        warn!("Mobile HTTP POST failed: {} - {}", url, e);
-        VerifyError::HttpsError {
-            message: format!("Request failed: {}", e),
-        }
-    })?;
+    let response = match agent.post(url).send_json(body) {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, resp)) => {
+            let retry_after = resp
+                .header("Retry-After")
+                .and_then(crate::registry::parse_retry_after);
+            return Err(map_mobile_status(code, url, retry_after));
+        },
+        Err(e) => {
+            warn!("Mobile HTTP POST failed: {} - {}", url, e);
+            return Err(VerifyError::HttpsError {
+                message: format!("Request failed: {}", e),
+            });
+        },
+    };
 
+    // ureq returned Ok, so the response is 2xx.
     let status = response.status();
-    if status < 200 || status >= 300 {
-        return Err(VerifyError::HttpsError {
-            message: format!("HTTP error: {}", status),
-        });
-    }
 
     let body: T = response.into_json().map_err(|e| VerifyError::HttpsError {
         message: format!("JSON parse error: {}", e),

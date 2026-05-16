@@ -236,6 +236,19 @@ pub async fn verify_tree(
         .await
     {
         Ok(b) => b,
+        // v2.2.0+: split 404 from generic HTTP error so the agent can
+        // tell "version not yet registered" (pre-release CI flow) apart
+        // from "registry unreachable / rate-limited". Both still return
+        // Ok(result) with registry_error set — verify_tree's contract is
+        // that the file walk completed, registry comparison didn't.
+        Err(crate::error::VerifyError::NotFound { url }) => {
+            info!(
+                "verify_tree: registry has no build entry for {} ({})",
+                request.binary_version, url
+            );
+            result.registry_error = Some(format!("not_yet_registered: {}", url));
+            return Ok(result);
+        },
         Err(e) => {
             warn!("verify_tree: registry fetch failed: {}", e);
             result.registry_error = Some(e.to_string());

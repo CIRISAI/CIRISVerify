@@ -66,6 +66,33 @@ pub enum VerifyError {
         message: String,
     },
 
+    /// Registry resource not found (HTTP 404).
+    ///
+    /// Distinct from `HttpsError` so callers can short-circuit dependent
+    /// probes (no point fetching a binary-manifest for a version that
+    /// doesn't exist) and cache the negative result for the run.
+    /// Introduced v2.2.0 for issue #21.
+    #[error("Registry resource not found: {url}")]
+    NotFound {
+        /// URL that returned 404.
+        url: String,
+    },
+
+    /// Registry rate-limited the request (HTTP 429).
+    ///
+    /// `retry_after_secs` is the parsed `Retry-After` header per RFC 7231
+    /// §7.1.3 — `None` if absent. The `MultiSourceRegistry` honors this
+    /// before issuing fallback probes and writes it into a shared cooldown
+    /// gate so concurrent probes in the same flow also back off.
+    /// Introduced v2.2.0 for issue #21.
+    #[error("Registry rate-limited at {url} (retry after {retry_after_secs:?}s)")]
+    RateLimited {
+        /// URL that returned 429.
+        url: String,
+        /// `Retry-After` seconds if the registry sent the header.
+        retry_after_secs: Option<u64>,
+    },
+
     /// Cache error.
     #[error("Cache error: {message}")]
     CacheError {

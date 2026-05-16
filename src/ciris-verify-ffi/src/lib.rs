@@ -45,6 +45,7 @@
 
 #![allow(clippy::missing_safety_doc)] // FFI functions are inherently unsafe
 
+mod bootstrap_keyset;
 mod conformance;
 mod constructor;
 
