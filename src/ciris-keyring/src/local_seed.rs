@@ -1,9 +1,10 @@
-//! Single-call steward seed loader (CIRISVerify#20, v2.1.0+).
+//! Single-call local signing-identity seed loader (CIRISVerify#20 v2.1.0;
+//! renamed from `steward_seed` in v2.4.0 — see "Naming" below).
 //!
 //! Returns `(Arc<dyn HardwareSigner>, Option<Arc<dyn PqcSigner>>)` from
 //! filesystem seed files in one shot. Federation consumers (CIRISEdge,
-//! CIRISPersist, CIRISLensCore, sovereign agents) each wrap these Arcs in
-//! their own domain `StewardSigner` types — before v2.1.0 each crate
+//! CIRISPersist, CIRISLensCore, sovereign agents) each wrap these Arcs
+//! in their own domain signer types — before v2.1.0 each crate
 //! reinvented the seed→Arcs glue (read 32 bytes, validate length,
 //! construct signer, optionally load PQC, fail-coherently on
 //! both-or-neither, etc.).
@@ -13,23 +14,37 @@
 //! `MlDsa65SoftwareSigner::from_seed_file` for PQC. This module is the
 //! glue.
 //!
+//! ## Naming (v2.4.0)
+//!
+//! v2.1.0 shipped this as `load_steward_seed` / `StewardSeedConfig` —
+//! incorrect vocabulary. **"Steward"** in CIRIS means a bootstrap-trusted
+//! root identity (the entries in `bootstrap_stewards.json`, e.g. the
+//! CIRISRegistry primary signing key). What this loader actually loads
+//! is a deployment's *local* signing identity (persist's signer, edge's
+//! signer, an agent's signer) — keys the deployment owns and signs its
+//! own work with, not the trust anchor it was born knowing about.
+//!
+//! v2.4.0 renames to `load_local_seed` / `LocalSeedConfig` to match
+//! CIRISPersist v1.5.1 + CIRISEdge `LocalSigner` vocabulary. The
+//! `steward_seed` module survives one minor cycle as deprecated
+//! re-exports; removal in v2.5.0.
+//!
 //! ## Config shape
 //!
-//! Mirrors the proven [`StewardSignerConfig`] pattern from CIRISPersist
-//! `src/signing/mod.rs:75`: separate `key_id` + `key_path` for classical,
-//! optional `pqc_key_id` + `pqc_key_path` for PQC. Both-or-neither on the
-//! PQC pair — caller passing one without the other gets a typed error
-//! before the file system is touched.
+//! Separate `key_id` + `key_path` for classical, optional `pqc_key_id` +
+//! `pqc_key_path` for PQC. Both-or-neither on the PQC pair — caller
+//! passing one without the other gets a typed error before the file
+//! system is touched.
 //!
 //! ## Software-only today
 //!
 //! v2.1.0 returns a software-backed `Ed25519SoftwareSigner` wrapped in
 //! `Arc<dyn HardwareSigner>`. The trait is satisfied; the implementation
-//! is software. Hardware-backed steward keys (TPM / Android Keystore /
-//! iOS Secure Enclave) are a future extension — a hardware-bound steward
-//! is identified by alias only, doesn't have an on-disk seed, and won't
-//! flow through this loader. Hardware-backed callers use
-//! [`crate::get_platform_signer`] directly.
+//! is software. Hardware-backed local signing keys (TPM / Android
+//! Keystore / iOS Secure Enclave) are a future extension — a
+//! hardware-bound identity is identified by alias only, doesn't have an
+//! on-disk seed, and won't flow through this loader. Hardware-backed
+//! callers use [`crate::get_platform_signer`] directly.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -39,34 +54,33 @@ use crate::pqc::{MlDsa65SoftwareSigner, PqcSigner};
 use crate::signer::HardwareSigner;
 use crate::software::Ed25519SoftwareSigner;
 
-/// Configuration for [`load_steward_seed`].
+/// Configuration for [`load_local_seed`].
 ///
-/// Mirrors `CIRISPersist::signing::StewardSignerConfig` exactly so persist
-/// can adopt this loader without reshaping its callers. Field semantics:
+/// Field semantics:
 ///
-/// - `key_id`: steward identity name (e.g. `"persist-steward"`,
-///   `"edge-steward"`, `"<deployment>-steward"`). Surfaced as the
+/// - `key_id`: local signing-identity name (e.g. `"persist-local"`,
+///   `"edge-local"`, `"<deployment>-local"`). Surfaced as the
 ///   `HardwareSigner::current_alias()` of the returned classical signer.
 /// - `key_path`: filesystem path to a 32-byte raw Ed25519 seed. Read
 ///   permission required; the OS handles the chmod check.
-/// - `pqc_key_id` + `pqc_key_path`: optional ML-DSA-65 steward
+/// - `pqc_key_id` + `pqc_key_path`: optional ML-DSA-65 local signing
 ///   identity. Both must be set together or both omitted — the loader
 ///   returns `KeyringError::InvalidKey` if the pair is mismatched.
 #[derive(Debug, Clone)]
-pub struct StewardSeedConfig {
-    /// Steward identity key_id for the classical signer.
+pub struct LocalSeedConfig {
+    /// Local signing-identity key_id for the classical signer.
     pub key_id: String,
     /// Filesystem path to the 32-byte raw Ed25519 seed.
     pub key_path: PathBuf,
-    /// Optional ML-DSA-65 steward identity key_id. Both-or-neither with
-    /// `pqc_key_path`.
+    /// Optional ML-DSA-65 local signing-identity key_id. Both-or-neither
+    /// with `pqc_key_path`.
     pub pqc_key_id: Option<String>,
     /// Filesystem path to the 32-byte raw ML-DSA-65 seed. Both-or-neither
     /// with `pqc_key_id`.
     pub pqc_key_path: Option<PathBuf>,
 }
 
-/// Load a steward identity from filesystem seeds and return the
+/// Load a local signing identity from filesystem seeds and return the
 /// classical + optional PQC signers as trait-object Arcs.
 ///
 /// # Behavior
@@ -100,24 +114,24 @@ pub struct StewardSeedConfig {
 ///
 /// ```no_run
 /// use std::path::PathBuf;
-/// use ciris_keyring::{load_steward_seed, StewardSeedConfig};
+/// use ciris_keyring::{load_local_seed, LocalSeedConfig};
 ///
 /// # #[tokio::main]
 /// # async fn main() -> Result<(), Box<dyn std::error::Error>> {
-/// let (classical, pqc) = load_steward_seed(StewardSeedConfig {
-///     key_id: "persist-steward".into(),
-///     key_path: PathBuf::from("/etc/ciris/persist-steward.seed"),
-///     pqc_key_id: Some("persist-steward-pqc".into()),
-///     pqc_key_path: Some(PathBuf::from("/etc/ciris/persist-steward.pqc.seed")),
+/// let (classical, pqc) = load_local_seed(LocalSeedConfig {
+///     key_id: "persist-local".into(),
+///     key_path: PathBuf::from("/etc/ciris/persist-local.seed"),
+///     pqc_key_id: Some("persist-local-pqc".into()),
+///     pqc_key_path: Some(PathBuf::from("/etc/ciris/persist-local.pqc.seed")),
 /// }).await?;
 ///
 /// assert!(pqc.is_some());
-/// // Hand classical + pqc to your domain wrapper (StewardSigner / Edge / Persist / ...).
+/// // Hand classical + pqc to your domain wrapper (LocalSigner / Edge / Persist / ...).
 /// # Ok(())
 /// # }
 /// ```
-pub async fn load_steward_seed(
-    config: StewardSeedConfig,
+pub async fn load_local_seed(
+    config: LocalSeedConfig,
 ) -> Result<(Arc<dyn HardwareSigner>, Option<Arc<dyn PqcSigner>>), KeyringError> {
     // 1. Validate PQC config pair before touching the filesystem.
     match (&config.pqc_key_id, &config.pqc_key_path) {
@@ -133,7 +147,7 @@ pub async fn load_steward_seed(
     let path_str = config.key_path.display().to_string();
     let seed_bytes =
         std::fs::read(&config.key_path).map_err(|e| KeyringError::OperationFailed {
-            reason: format!("reading Ed25519 steward seed from {path_str}: {e}"),
+            reason: format!("reading Ed25519 local seed from {path_str}: {e}"),
         })?;
 
     // 3. Construct classical signer (Ed25519SoftwareSigner validates the
@@ -142,7 +156,7 @@ pub async fn load_steward_seed(
     tracing::info!(
         key_id = config.key_id.as_str(),
         seed_path = path_str.as_str(),
-        "load_steward_seed: classical Ed25519 steward identity loaded"
+        "load_local_seed: classical Ed25519 local identity loaded"
     );
     let classical: Arc<dyn HardwareSigner> = Arc::new(classical_software);
 
@@ -154,7 +168,7 @@ pub async fn load_steward_seed(
             tracing::info!(
                 pqc_key_id = id.as_str(),
                 pqc_seed_path = path_str.as_str(),
-                "load_steward_seed: PQC ML-DSA-65 steward identity loaded"
+                "load_local_seed: PQC ML-DSA-65 local identity loaded"
             );
             Some(Arc::new(signer) as Arc<dyn PqcSigner>)
         },
@@ -178,8 +192,8 @@ mod tests {
         let seed_path = tmp.path().join("ed25519.seed");
         write_seed(&seed_path, &[0x42u8; 32]);
 
-        let (classical, pqc) = load_steward_seed(StewardSeedConfig {
-            key_id: "test-steward".into(),
+        let (classical, pqc) = load_local_seed(LocalSeedConfig {
+            key_id: "test-local".into(),
             key_path: seed_path,
             pqc_key_id: None,
             pqc_key_path: None,
@@ -188,7 +202,6 @@ mod tests {
         .expect("load ok");
 
         assert!(pqc.is_none(), "PQC should be None when both fields omitted");
-        // Classical should have a public key (Ed25519 is deterministic from seed).
         let pubkey = classical.public_key().await.expect("public_key");
         assert_eq!(pubkey.len(), 32, "Ed25519 public key is 32 bytes");
     }
@@ -201,10 +214,10 @@ mod tests {
         write_seed(&ed_path, &[0x42u8; 32]);
         write_seed(&pqc_path, &[0x07u8; 32]);
 
-        let (classical, pqc) = load_steward_seed(StewardSeedConfig {
-            key_id: "test-steward".into(),
+        let (classical, pqc) = load_local_seed(LocalSeedConfig {
+            key_id: "test-local".into(),
             key_path: ed_path,
-            pqc_key_id: Some("test-steward-pqc".into()),
+            pqc_key_id: Some("test-local-pqc".into()),
             pqc_key_path: Some(pqc_path),
         })
         .await
@@ -213,15 +226,11 @@ mod tests {
         assert_eq!(classical.public_key().await.expect("ed pubkey").len(), 32);
         let pqc = pqc.expect("PQC should be Some");
         let pqc_pub = pqc.public_key().await.expect("pqc pubkey");
-        // ML-DSA-65 public keys are 1952 bytes per FIPS 204.
         assert_eq!(pqc_pub.len(), 1952);
     }
 
-    /// Helper — `Arc<dyn Trait>` doesn't implement Debug so the standard
-    /// `.expect_err(...)` chain doesn't compile against this signature.
-    /// Match explicitly to extract the error.
-    async fn expect_err_loading(cfg: StewardSeedConfig) -> KeyringError {
-        match load_steward_seed(cfg).await {
+    async fn expect_err_loading(cfg: LocalSeedConfig) -> KeyringError {
+        match load_local_seed(cfg).await {
             Ok(_) => panic!("expected error, got Ok"),
             Err(e) => e,
         }
@@ -233,7 +242,7 @@ mod tests {
         let seed_path = tmp.path().join("ed25519.seed");
         write_seed(&seed_path, &[0u8; 32]);
 
-        let err = expect_err_loading(StewardSeedConfig {
+        let err = expect_err_loading(LocalSeedConfig {
             key_id: "test".into(),
             key_path: seed_path,
             pqc_key_id: Some("orphan".into()),
@@ -257,7 +266,7 @@ mod tests {
         write_seed(&ed_path, &[0u8; 32]);
         write_seed(&orphan_pqc, &[0u8; 32]);
 
-        let err = expect_err_loading(StewardSeedConfig {
+        let err = expect_err_loading(LocalSeedConfig {
             key_id: "test".into(),
             key_path: ed_path,
             pqc_key_id: None,
@@ -271,9 +280,9 @@ mod tests {
     async fn rejects_wrong_length_ed25519_seed() {
         let tmp = tempfile::tempdir().expect("tempdir");
         let seed_path = tmp.path().join("short.seed");
-        write_seed(&seed_path, &[0u8; 16]); // wrong length
+        write_seed(&seed_path, &[0u8; 16]);
 
-        let err = expect_err_loading(StewardSeedConfig {
+        let err = expect_err_loading(LocalSeedConfig {
             key_id: "test".into(),
             key_path: seed_path,
             pqc_key_id: None,
@@ -285,7 +294,7 @@ mod tests {
 
     #[tokio::test]
     async fn surfaces_filesystem_error_on_missing_seed() {
-        let err = expect_err_loading(StewardSeedConfig {
+        let err = expect_err_loading(LocalSeedConfig {
             key_id: "test".into(),
             key_path: PathBuf::from("/nonexistent/path/to/seed"),
             pqc_key_id: None,

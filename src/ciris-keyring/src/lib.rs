@@ -66,13 +66,22 @@ pub mod pqc;
 /// Single-call steward seed loader (v2.1.0+, CIRISVerify#20).
 ///
 /// Cross-crate convenience for federation consumers: load both classical
-/// (Ed25519) and optional PQC (ML-DSA-65) steward identities from
+/// (Ed25519) and optional PQC (ML-DSA-65) local signing identities from
 /// filesystem seeds and get back `Arc<dyn HardwareSigner>` +
 /// `Option<Arc<dyn PqcSigner>>`. Eliminates the duplicated seed-loading
 /// glue that CIRISEdge, CIRISPersist, and CIRISLensCore each wrote
 /// separately before this lands.
+///
+/// **v2.4.0 rename:** previously named `steward_seed` /
+/// `load_steward_seed` / `StewardSeedConfig`. "Steward" in CIRIS means a
+/// bootstrap-trusted root identity (`bootstrap_stewards.json`); this
+/// loader actually loads a deployment's *local* signing identity.
+/// v2.4.0 corrects the vocabulary — hard rename, no shim. Downstream
+/// imports update from `ciris_keyring::{load_steward_seed,
+/// StewardSeedConfig}` to `ciris_keyring::{load_local_seed,
+/// LocalSeedConfig}`.
 #[cfg(all(feature = "software", feature = "pqc-ml-dsa"))]
-pub mod steward_seed;
+pub mod local_seed;
 
 /// Generic secure blob storage abstraction.
 pub mod storage;
@@ -110,7 +119,7 @@ pub use software::{
 pub use pqc::{get_platform_pqc_signer, MlDsa65SoftwareSigner, PqcAlgorithm, PqcSigner};
 
 #[cfg(all(feature = "software", feature = "pqc-ml-dsa"))]
-pub use steward_seed::{load_steward_seed, StewardSeedConfig};
+pub use local_seed::{load_local_seed, LocalSeedConfig};
 
 /// Get the best available hardware signer for the current platform.
 ///
