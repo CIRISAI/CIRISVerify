@@ -690,7 +690,13 @@ jobs:
           cargo build --help >/dev/null
 
       - name: Compile benchmarks (no run)
-        run: cargo bench --workspace --no-run
+        run: |
+          # Default-feature benches.
+          cargo bench --workspace --no-run
+          # federation_crypto has required-features (skipped above) —
+          # compile it explicitly so it can't bit-rot either.
+          cargo bench -p ciris-crypto --bench federation_crypto \
+            --features aes-gcm,kdf,hmac,pqc-ml-dsa --no-run
 
   # ==========================================================================
   # MSRV Check

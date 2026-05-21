@@ -83,3 +83,13 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 hex = "0.4"
 proptest = { workspace = true }
 pretty_assertions = { workspace = true }
+criterion = { workspace = true }
+
+[[bench]]
+name = "federation_crypto"
+harness = false
+# Exercises the v2.0+ federation crypto authority surface; needs the
+# feature-gated modules. `cargo bench` with default features skips this
+# (Cargo honors required-features); bench.yml + the CI compile-check
+# pass the feature set explicitly.
+required-features = ["aes-gcm", "kdf", "hmac", "pqc-ml-dsa"]

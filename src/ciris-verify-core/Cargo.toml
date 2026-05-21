@@ -129,3 +129,11 @@ criterion.workspace = true
 [[bench]]
 name = "build_manifest"
 harness = false
+
+[[bench]]
+name = "transparency_merkle"
+harness = false
+
+[[bench]]
+name = "key_derivation"
+harness = false

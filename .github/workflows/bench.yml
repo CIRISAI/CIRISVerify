@@ -1,0 +1,83 @@
+name: Bench
+
+# Runs the criterion benchmark suite and publishes the results as an
+# artifact. NOT a PR gate — GitHub's shared runners are too noisy for
+# pass/fail performance regression detection. This job answers "what are
+# our numbers" and surfaces unexplained curve shapes (the v2.6.0
+# transparency level cache should show O(1) root / O(log N) proofs); the
+# allocation-stability leak guarantee is a regular test (`alloc_stability`)
+# that DOES gate, in ci.yml.
+#
+# The ci.yml `benches` job stays as the fast per-PR compile gate
+# (`cargo bench --no-run`). This workflow is the slow, actually-run pass.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  bench:
+    name: Criterion Benchmark Suite
+    runs-on: ubuntu-latest
+    # Benches are long; don't let a hung run burn the hour budget.
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        continue-on-error: true
+        with:
+          # v2.1.4+: exclude ~/.cargo/bin to prevent rustup-init shadow
+          # poisoning. See ci.yml comment block for the full rationale.
+          cache-bin: false
+      - name: Repair toolchain if rustup-init shadow (cache-poison heal)
+        # v2.1.4+ active heal — see ci.yml for the full story. macOS
+        # runners cache a poisoned `cargo` shim; this job is Linux-only
+        # so it's belt-and-suspenders, kept for consistency.
+        shell: bash
+        run: |
+          if cargo build --help 2>&1 | grep -q "rustup-init"; then
+            echo "::warning::Detected rustup-init shadow in ~/.cargo/bin; reinstalling toolchain"
+            rm -rf "$HOME/.cargo/bin"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+              sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup default stable
+          cargo --version
+          cargo build --help >/dev/null
+
+      # Default-feature benches: build_manifest, transparency_merkle,
+      # key_derivation (ciris-verify-core); storage_descriptor (ciris-keyring).
+      - name: Run default-feature benches
+        run: cargo bench --workspace 2>&1 | tee bench-results.txt
+
+      # federation_crypto needs the v2.0+ federation feature set
+      # (required-features in ciris-crypto/Cargo.toml — skipped by the
+      # --workspace run above).
+      - name: Run federation_crypto bench
+        run: |
+          cargo bench -p ciris-crypto --bench federation_crypto \
+            --features aes-gcm,kdf,hmac,pqc-ml-dsa 2>&1 | tee -a bench-results.txt
+
+      - name: Upload criterion report
+        uses: actions/upload-artifact@v4
+        with:
+          name: criterion-report
+          path: target/criterion/
+          if-no-files-found: warn
+
+      - name: Upload results summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: bench-results-txt
+          path: bench-results.txt
+          if-no-files-found: warn
