@@ -461,8 +461,8 @@ pub trait TransparencyStore<L: TransparencyLeaf>: Send + Sync {
 /// recursive-split MTH. Appending a leaf updates only the rightmost path
 /// (O(log N)); `root` is an O(1) read of the cache top; inclusion proofs
 /// read sibling hashes directly (O(log N)); consistency proofs read
-/// subtree roots via [`range_root`] (O(log² N)). Pre-v2.6.0 every one of
-/// these recomputed the whole tree from a flat leaf-hash vector.
+/// cached subtree roots (O(log² N)). Pre-v2.6.0 every one of these
+/// recomputed the whole tree from a flat leaf-hash vector.
 pub struct InMemoryTransparencyStore<L: TransparencyLeaf + Serialize> {
     entries: Arc<RwLock<Vec<L>>>,
     /// Cached Merkle levels. `levels[0]` = leaf hashes; the top level
