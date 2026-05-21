@@ -60,84 +60,83 @@ from the data, not merely asserted.
 
 ## v2.7.0 recorded numbers
 
-Recorded with `cargo bench` on the v2.7.0 development host (Linux,
-rustc 1.95.0 stable, `[profile.release]` lto + codegen-units=1) under
-**moderate background load** — treat absolute numbers as indicative to
-±30% and read the *shapes*. `bench.yml` re-records on a CI runner; that
-run is the forward-tracked baseline.
+The forward-tracked baseline — recorded by `bench.yml` on a GitHub
+Actions `ubuntu-latest` runner (commit `2abb4b2`), rustc 1.95.0 stable,
+`[profile.release]` lto + codegen-units=1. Criterion intervals were
+tight (a quiet runner); re-recorded on every push to `main`.
 
 ### transparency_merkle
 
 | N (leaves) | 256 | 1 024 | 4 096 | 16 384 | 65 536 |
 |---|---|---|---|---|---|
-| `merkle_root` | 13.3 ns | 12.6 ns | 12.8 ns | 16.7 ns | 21.8 ns |
-| `inclusion_proof` | 167 ns | 259 ns | 253 ns | 234 ns | 248 ns |
-| `verify_inclusion` | 698 ns | 808 ns | 984 ns | 1.45 µs | 1.95 µs |
-| `consistency_proof` | 94 ns | 117 ns | 131 ns | 150 ns | 178 ns |
-| `verify_consistency` | ~4.1 µs † | ~3.2 µs † | 1.76 µs | 1.98 µs | 2.24 µs |
-| `append` (elem/s) | 1.07 M | 1.14 M | 1.28 M | 1.15 M | 1.03 M |
-
-† host-contention noise — the 4 096+ points (tight criterion intervals)
-are the trustworthy shape.
+| `merkle_root` | 19.7 ns | 19.7 ns | 19.7 ns | 19.7 ns | 19.7 ns |
+| `inclusion_proof` | 125 ns | 155 ns | 174 ns | 169 ns | 171 ns |
+| `verify_inclusion` | 998 ns | 1.25 µs | 1.49 µs | 1.74 µs | 1.99 µs |
+| `consistency_proof` | 180 ns | 217 ns | 216 ns | 240 ns | 296 ns |
+| `verify_consistency` | 1.90 µs | 2.43 µs | 2.98 µs | 3.52 µs | 4.05 µs |
+| `append` (elem/s) | 1.26 M | 1.08 M | 0.94 M | 0.84 M | 0.75 M |
 
 **Curve explanations:**
 
-- **`merkle_root` — O(1), confirmed.** 13–22 ns, does **not** scale with
-  N. The mild 13→22 ns drift across a 256× size range is cache
-  footprint: the level cache for a 65 536-leaf tree spans ~2 MB, so
-  reaching the cached root node touches colder memory. Constant in
-  *operations*; the tiny drift is memory locality, not algorithm. This
-  is the v2.6.0 win — pre-v2.6.0 this was an O(N) recompute.
-- **`inclusion_proof` — O(log N), fixed-overhead-dominated.** ~165–260 ns,
-  effectively flat: the path length doubles 8→16 over the sweep, but
-  each extra sibling is a 33-byte `Vec` push, dwarfed by the fixed
-  per-call cost (`RwLock` read + proof `Vec` allocation). Crucially
-  **not** O(N) — pre-v2.6.0 it was.
-- **`verify_inclusion` — O(log N), textbook.** 0.70 → 1.95 µs, ≈ +80 ns
-  per tree doubling: each doubling adds one `hash_node` (SHA-256) to the
-  reconstruction walk. The cleanest curve in the suite.
-- **`consistency_proof` — O(log² N) + overhead.** Clean monotonic rise
-  94 → 178 ns. Benched with a deliberately non-aligned `from = n/2 − 1`
+- **`merkle_root` — O(1), confirmed.** 19.7 ns at *every* tree size —
+  dead flat across a 256× range, the cleanest possible confirmation of
+  the v2.6.0 O(1) cached-top read. (Pre-v2.6.0 this was an O(N)
+  recompute.)
+- **`inclusion_proof` — O(log N), fixed-overhead-dominated.** 125–174 ns:
+  the path length doubles 8→16 over the sweep, but each extra sibling is
+  a 33-byte `Vec` push, dwarfed by the fixed per-call cost (`RwLock`
+  read + proof `Vec` allocation). The slight rise then plateau is that
+  small log term against the fixed floor. Crucially **not** O(N) —
+  pre-v2.6.0 it was.
+- **`verify_inclusion` — O(log N), textbook.** 0.998 → 1.99 µs,
+  ≈ +250 ns per 4× step (≈ +125 ns per tree doubling): each doubling
+  adds one `hash_node` (SHA-256) to the reconstruction walk. A
+  ruler-straight log curve.
+- **`consistency_proof` — O(log² N) + overhead.** Monotonic rise
+  180 → 296 ns. Benched with a deliberately non-aligned `from = n/2 − 1`
   (an aligned `n/2` is a perfect subtree — the degenerate one-sibling
   case — and would hide the real shape).
-- **`verify_consistency` — O(log N) reconstruction.** ~1.8 → 2.2 µs over
-  4 096–65 536. Small-N points were measured under host contention.
-- **`append` — O(log N) incremental.** Throughput holds ~1.0–1.3 M
-  appends/s flat across the sweep. O(N) append would show throughput
-  collapsing ~1/N; it does not. The gentle decline 1.28 M → 1.03 M from
-  4 K → 64 K is the log-N term growing, exactly as expected.
+- **`verify_consistency` — O(log N) reconstruction.** Clean log curve
+  1.90 → 4.05 µs, ≈ +0.54 µs per 4× step.
+- **`append` — O(log N) incremental.** Throughput eases 1.26 M → 0.75 M
+  appends/s as the tree grows 256× — per-append cost ~0.79 µs at 256
+  leaves, ~1.33 µs at 65 536, i.e. it roughly *doubles* for a 256× size
+  increase: `log(65536)/log(256) = 2`. That is O(log N) per leaf,
+  exactly. An O(N) append would show throughput collapsing ~1/N (a 256×
+  drop); it declines by under 2×.
 
 ### federation_crypto
 
 | Operation | Time | Throughput |
 |---|---|---|
-| `hybrid_sign` (Ed25519 + ML-DSA-65) | 380 µs | — |
-| `hybrid_verify` | 379 µs | — |
-| `aes_gcm_encrypt` / 256 B | 438 ns | 557 MiB/s |
-| `aes_gcm_decrypt` / 256 B | 318 ns | 767 MiB/s |
-| `aes_gcm_encrypt` / 64 KiB | 39.7 µs | 1.54 GiB/s |
-| `aes_gcm_decrypt` / 64 KiB | 40.3 µs | 1.51 GiB/s |
-| `hkdf_sha256` | 597 ns | — |
-| `pbkdf2_hmac_sha256` (100 k iters) | 15.1 ms | — |
-| `hmac_sha256` | 251 ns | — |
+| `hybrid_sign` (Ed25519 + ML-DSA-65) | 597 µs | — |
+| `hybrid_verify` | 276 µs | — |
+| `aes_gcm_encrypt` / 256 B | 531 ns | 459 MiB/s |
+| `aes_gcm_decrypt` / 256 B | 518 ns | 471 MiB/s |
+| `aes_gcm_encrypt` / 64 KiB | 61.2 µs | 1.00 GiB/s |
+| `aes_gcm_decrypt` / 64 KiB | 60.8 µs | 1.00 GiB/s |
+| `hkdf_sha256` | 548 ns | — |
+| `pbkdf2_hmac_sha256` (100 k iters) | 14.9 ms | — |
+| `hmac_sha256` | 238 ns | — |
 
-- **`hybrid_sign` / `hybrid_verify` ≈ 380 µs** — dominated by ML-DSA-65;
-  Ed25519 is a few µs of it. This is the per-signature cost of
-  post-quantum coverage on every federation signature. Verifying 100
-  peers' STHs at boot is ~38 ms; continuous verification of thousands
+- **`hybrid_sign` 597 µs / `hybrid_verify` 276 µs** — both dominated by
+  ML-DSA-65 (Ed25519 is a few µs of each); ML-DSA signing is ~2× its
+  verification, the expected asymmetry. This is the per-signature cost
+  of post-quantum coverage on every federation signature: verifying 100
+  peers' STHs at boot is ~28 ms; continuous verification of thousands
   needs amortization.
 - **AES-GCM** — small-payload (256 B) throughput is per-call-overhead-
-  bound (557 MiB/s); at 64 KiB it reaches 1.5 GiB/s as the fixed cost
+  bound (~460 MiB/s); at 64 KiB it reaches 1.0 GiB/s as the fixed cost
   amortizes. Fully explained two-regime curve.
 - **`pbkdf2_hmac_sha256`** scales linearly with the iteration count —
-  15 ms at 100 k iters ⇒ ~150 ns/iter. Production iteration count is
+  14.9 ms at 100 k iters ⇒ ~149 ns/iter. Production iteration count is
   the caller's policy.
 
 ### key_derivation
 
 | Operation | Time |
 |---|---|
-| `derive_symmetric_key` | 5.2 µs |
+| `derive_symmetric_key` | 8.8 µs |
 
 The full public-API path CIRISPersist#87's `secrets-hw` pays per
 derivation: software-storage seed `load` (a file read — dominant) +
@@ -171,10 +170,10 @@ leaves. The axes that matter, and where we land:
 
 | Axis | SOTA (Trillian/Rekor) | CIRISVerify v2.7.0 |
 |---|---|---|
-| Inclusion-proof generation | O(log N), single-digit µs | O(log N), ~0.25 µs at 64 K leaves |
-| Consistency-proof generation | O(log N)–O(log² N) | O(log² N), ~0.18 µs at 64 K leaves |
-| Append | O(log N) incremental | O(log N) incremental, ~1 M/s |
-| Root | O(1) from cached state | O(1), ~15 ns |
+| Inclusion-proof generation | O(log N), single-digit µs | O(log N), ~0.17 µs at 64 K leaves |
+| Consistency-proof generation | O(log N)–O(log² N) | O(log² N), ~0.30 µs at 64 K leaves |
+| Append | O(log N) incremental | O(log N) incremental, ~0.75–1.3 M/s |
+| Root | O(1) from cached state | O(1), ~20 ns (flat across all N) |
 
 After v2.6.0's level-cache refactor CIRISVerify is in the **right
 complexity class on every axis** — these benchmarks are the receipts.
@@ -185,22 +184,23 @@ deployment-architecture concern, not an algorithmic one — and is exactly
 what the `TransparencyStore` trait exists to let CIRISPersist's
 PG/SQLite backends address.
 
-## Historical baselines (v1.7 / v1.8)
+### storage_descriptor (ciris-keyring)
 
-The `storage_descriptor` and `build_manifest` benches predate this suite
-(v1.7.0 / v1.8-dev). Their numbers were recorded on a **different
-reference host** (Intel i9-13900HX) and are kept here as a still-valid
-baseline for those surfaces:
+The keyring descriptor surface (v1.7.0+), same CI baseline run:
 
-- **`StorageDescriptor`** — variant construction 7–13 ns; helper methods
-  (`is_hardware_backed`, `hardware_type`, `disk_path`) sub-2 ns;
-  JSON serialize 52–57 ns, deserialize 103–144 ns;
-  `HardwareSigner::storage_descriptor()` through the trait ~12.5 ns.
-  Threshold: `storage_descriptor()` must stay under 100 ns for any
-  signer — exceeding it means a syscall snuck behind the trait method.
-- **`BuildManifest`** — `canonical_bytes` is linear in extras size
-  (191 ns no-extras → 14.2 µs at 256 entries), dominated by
-  `serde_json`; `verify_hybrid_signature` ~142–220 µs (ML-DSA-65
-  bound); full `verify_build_manifest` pipeline +3–80 µs over the bare
-  signature check (JSON parse + canonical-bytes recompute). Threshold:
-  `verify_build_manifest` for a 16–64-entry manifest under 250 µs.
+- Variant construction 18–38 ns; helper methods (`is_hardware_backed`,
+  `hardware_type`, `disk_path`) 1.4–2.8 ns; JSON serialize 80–119 ns,
+  deserialize 210–300 ns. **Threshold:** `storage_descriptor()` must
+  stay under 100 ns for any signer — exceeding it means a syscall snuck
+  behind the trait method.
+
+### build_manifest (ciris-verify-core)
+
+The `BuildManifest` validator surface (v1.8.0+), same CI baseline run:
+
+- `canonical_bytes` is linear in extras size (471 ns no-extras →
+  24.1 µs at 256 entries), dominated by `serde_json`.
+- `verify_hybrid_signature` 284–430 µs (Ed25519 + ML-DSA-65 bound);
+  full `verify_build_manifest` pipeline 294–572 µs (adds JSON parse +
+  canonical-bytes recompute + extras dispatch). **Threshold:**
+  `verify_build_manifest` for a 16–64-entry manifest under ~350 µs.
