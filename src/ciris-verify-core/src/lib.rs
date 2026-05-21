@@ -61,6 +61,7 @@ pub mod error;
 pub mod hardware_info;
 pub mod https;
 pub mod jwt;
+pub mod keys;
 pub mod license;
 pub mod manifest_cache;
 #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -82,6 +83,7 @@ pub use config::{TrustModel, VerifyConfig};
 pub use engine::LicenseEngine;
 pub use error::VerifyError;
 pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
+pub use keys::{derive_symmetric_key, DERIVED_KEY_LEN};
 pub use license::{LicenseDetails, LicenseStatus, LicenseType};
 pub use revocation::{RevocationChecker, RevocationStatus};
 pub use security::file_integrity::{

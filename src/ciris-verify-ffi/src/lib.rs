@@ -717,29 +717,30 @@ impl CirisVerifyHandle {
     }
 
     /// Derive a symmetric key using HKDF-SHA256.
+    ///
+    /// v2.5.0+ (CIRISVerify#25): delegates to
+    /// [`ciris_verify_core::keys::derive_symmetric_key`] — the algorithm
+    /// now lives in the `ciris-verify-core` rlib so Rust consumers
+    /// (CIRISPersist `secrets-hw`) can call it directly instead of
+    /// linking this `cdylib`/`staticlib` over the C ABI. The C ABI and
+    /// the derived bytes are unchanged.
     pub fn derive_symmetric_key(
         &self,
         key_id: &str,
         context: &str,
     ) -> Result<Vec<u8>, CirisVerifyError> {
-        use hkdf::Hkdf;
-        use sha2::Sha256;
-
         let storage_guard = self
             .named_key_storage
             .lock()
             .map_err(|_| CirisVerifyError::InternalError)?;
         let storage = storage_guard.as_ref().ok_or(CirisVerifyError::NoKey)?;
 
-        let seed = storage.load(key_id).map_err(|_| CirisVerifyError::NoKey)?;
-
-        const SALT: &[u8] = b"CIRIS-named-key-derive-v1";
-        let hkdf = Hkdf::<Sha256>::new(Some(SALT), &seed);
-        let mut derived_key = [0u8; 32];
-        hkdf.expand(context.as_bytes(), &mut derived_key)
-            .map_err(|_| CirisVerifyError::InternalError)?;
-
-        Ok(derived_key.to_vec())
+        ciris_verify_core::keys::derive_symmetric_key(storage.as_ref(), key_id, context).map_err(
+            |e| match e {
+                ciris_verify_core::error::VerifyError::KeyringError(_) => CirisVerifyError::NoKey,
+                _ => CirisVerifyError::InternalError,
+            },
+        )
     }
 }
 

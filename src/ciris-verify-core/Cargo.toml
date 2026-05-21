@@ -64,6 +64,7 @@ reqwest.workspace = true
 
 # Crypto utilities
 sha2.workspace = true
+hkdf = "0.12"
 base64.workspace = true
 hex.workspace = true
 ed25519-dalek.workspace = true
