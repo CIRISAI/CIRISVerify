@@ -637,6 +637,62 @@ jobs:
           RUSTDOCFLAGS: -D warnings
 
   # ==========================================================================
+  # Benchmark compile check
+  #
+  # The criterion benches (ciris-keyring/benches/, ciris-verify-core/benches/)
+  # are harness = false, so `cargo nextest run` never compiles them — they
+  # would silently bit-rot on API drift in the benched crates. This job is
+  # compile-only (`--no-run`): cheap, and it catches the rot. Not a
+  # performance-regression gate — that needs stable hardware.
+  # ==========================================================================
+  benches:
+    name: Benchmark Compile Check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        # CI hardening (v2.1.1+): cache restore is a speedup, not a
+        # correctness gate. A flaky runner / Actions infra hiccup should
+        # downgrade to "build from scratch this run", not abort the job.
+        # Real test/lint/compile failures still fail as before.
+        continue-on-error: true
+        with:
+          # v2.1.4+: exclude ~/.cargo/bin to prevent rustup-init shadow
+          # poisoning. See ci.yml comment block above.
+          cache-bin: false
+      - name: Repair toolchain if rustup-init shadow (cache-poison heal)
+        # v2.1.2 detected; v2.1.3 moved after cache restore; v2.1.4 active heal.
+        # macOS runners occasionally cache a `~/.cargo/bin/cargo` that IS the
+        # rustup-init shim binary. The shim passes `cargo --version` through
+        # (any CLI accepts --version), but `cargo build` triggers the shim's
+        # argv parser and fails with "unexpected argument 'build' found".
+        # Passive `rustup default stable` doesn't help because the rustup
+        # binary may share the same shim. Active heal: probe via
+        # `cargo build --help` output, nuke ~/.cargo/bin, reinstall toolchain.
+        # Seen on x86_64 + arm64 macOS (v2.1.1 run 25894815013;
+        # v2.1.3 run 25895938932 Test/macos-latest). The cache-bin: false on
+        # the Swatinem step above prevents future poison-then-restore cycles.
+        # shell: bash forces Git Bash on Windows runners (default is pwsh,
+        # which can't parse the if/then/fi syntax below).
+        shell: bash
+        run: |
+          if cargo build --help 2>&1 | grep -q "rustup-init"; then
+            echo "::warning::Detected rustup-init shadow in ~/.cargo/bin; reinstalling toolchain"
+            rm -rf "$HOME/.cargo/bin"
+            curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+              sh -s -- -y --default-toolchain stable --profile minimal --no-modify-path
+            export PATH="$HOME/.cargo/bin:$PATH"
+          fi
+          rustup default stable
+          cargo --version
+          cargo build --help >/dev/null
+
+      - name: Compile benchmarks (no run)
+        run: cargo bench --workspace --no-run
+
+  # ==========================================================================
   # MSRV Check
   # ==========================================================================
   msrv:

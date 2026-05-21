@@ -13,7 +13,7 @@
 //! | Log fork / split-view | [`SignedTreeHead`] + reserved [`WitnessSignature`] (witness protocol later) |
 //! | Retroactive insertion | [`ConsistencyProof`] proves append-only between two STH sizes |
 //! | Selective omission | [`MerkleProof`] against signed root |
-//! | Stale STH acceptance | STH `timestamp` field; verifier-side freshness policy |
+//! | Stale STH acceptance | STH `timestamp` + [`SignedTreeHead::is_fresh`] (verifier-side policy — a valid signature never expires, so callers MUST check freshness) |
 //! | Cross-tenant correlation | Per-`log_id` scoping ([`TransparencyLog::for_log`]) |
 //! | Cross-subsystem proof collision | RFC 6962 byte prefixes (`0x00` leaf, `0x01` node) |
 //! | Quantum break on signing | Hybrid Ed25519 + ML-DSA-65 via `ciris-crypto` |
@@ -149,25 +149,54 @@ pub struct TransparencyEntry {
     pub merkle_root: [u8; 32],
 }
 
+/// Stable wire tag for a [`LicenseStatus`] variant.
+///
+/// v2.6.0+: leaf hashing must not depend on `format!("{:?}", status)`
+/// (a variant *rename* would silently rewrite every leaf hash). These
+/// tags are an explicit wire contract — the `match` has no wildcard, so
+/// adding a `LicenseStatus` variant is a compile error until a tag is
+/// assigned here. Never renumber an existing tag.
+fn license_status_tag(s: LicenseStatus) -> u8 {
+    match s {
+        LicenseStatus::LicensedProfessional => 1,
+        LicenseStatus::LicensedCommunityPlus => 2,
+        LicenseStatus::UnlicensedCommunity => 3,
+        LicenseStatus::UnlicensedUnverified => 4,
+        LicenseStatus::ErrorBinaryTampered => 5,
+        LicenseStatus::ErrorSourcesDisagree => 6,
+        LicenseStatus::ErrorVerificationFailed => 7,
+        LicenseStatus::ErrorLicenseRevoked => 8,
+        LicenseStatus::ErrorLicenseExpired => 9,
+    }
+}
+
+/// Stable wire tag for a [`ValidationStatus`] variant. See
+/// [`license_status_tag`] for the contract.
+fn validation_status_tag(s: ValidationStatus) -> u8 {
+    match s {
+        ValidationStatus::AllSourcesAgree => 1,
+        ValidationStatus::PartialAgreement => 2,
+        ValidationStatus::SourcesDisagree => 3,
+        ValidationStatus::NoSourcesReachable => 4,
+        ValidationStatus::ValidationError => 5,
+    }
+}
+
 impl TransparencyLeaf for TransparencyEntry {
     fn canonical_bytes(&self) -> Result<Vec<u8>, TransparencyError> {
         // Field-by-field little-endian + length-prefixed strings. Avoids
         // serde's compositional ambiguity (CBOR/JSON ordering) for hashing.
-        let mut buf = Vec::with_capacity(8 + 8 + 4 + self.license_id.len() + 16 + 8 + 32);
+        //
+        // v2.6.0+: enum fields hash as explicit u8 wire tags, not Debug
+        // strings — a variant rename must not silently change leaf hashes.
+        let mut buf = Vec::with_capacity(8 + 8 + 4 + self.license_id.len() + 2 + 8 + 32);
         buf.extend_from_slice(&self.index.to_le_bytes());
         buf.extend_from_slice(&self.timestamp.to_le_bytes());
         let lid = self.license_id.as_bytes();
         buf.extend_from_slice(&(u32::try_from(lid.len()).unwrap_or(u32::MAX)).to_le_bytes());
         buf.extend_from_slice(lid);
-        // LicenseStatus and ValidationStatus are small fixed-variant enums.
-        // Hash their Debug formatting — they derive Debug deterministically.
-        // (Persisted across crate releases by the trait-derived Debug names.)
-        let status_dbg = format!("{:?}", self.status);
-        buf.extend_from_slice(&(u32::try_from(status_dbg.len()).unwrap_or(u32::MAX)).to_le_bytes());
-        buf.extend_from_slice(status_dbg.as_bytes());
-        let cs_dbg = format!("{:?}", self.consensus_status);
-        buf.extend_from_slice(&(u32::try_from(cs_dbg.len()).unwrap_or(u32::MAX)).to_le_bytes());
-        buf.extend_from_slice(cs_dbg.as_bytes());
+        buf.push(license_status_tag(self.status));
+        buf.push(validation_status_tag(self.consensus_status));
         buf.extend_from_slice(&self.revocation_revision.to_le_bytes());
         buf.extend_from_slice(&self.previous_hash);
         Ok(buf)
@@ -187,6 +216,13 @@ impl TransparencyLeaf for TransparencyEntry {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct MerkleProof {
     /// Index of the entry being proved.
+    ///
+    /// **Unauthenticated metadata.** [`verify_inclusion`] does not consume
+    /// this field — the leaf's tree position is fully determined by the
+    /// left/right direction bits in `siblings`. A caller that makes a
+    /// trust decision keyed on `entry_index` (e.g. "this proof is for
+    /// log position N") is trusting a value the proof does not bind.
+    /// Treat it as a hint; authenticate position via the leaf content.
     pub entry_index: u64,
     /// Hash of the entry (the leaf hash, post-RFC-6962-prefix).
     pub leaf_hash: [u8; 32],
@@ -280,6 +316,26 @@ impl SignedTreeHead {
         buf.extend_from_slice(&timestamp.timestamp_subsec_nanos().to_le_bytes());
         buf
     }
+
+    /// Whether this STH is fresh enough to act on, relative to `now`.
+    ///
+    /// A validly-signed but *stale* STH replays cleanly — the signature
+    /// stays valid forever. STH freshness is therefore a verifier-side
+    /// policy, not a signature property. This helper is the policy:
+    /// `now - timestamp <= max_age`, with a small tolerance for an STH
+    /// timestamped slightly in the future (clock skew between the log
+    /// signer and the verifier).
+    ///
+    /// Returns `false` if the STH is older than `max_age`, or more than
+    /// `max_age` in the future (a wildly-future timestamp is as
+    /// suspicious as a stale one). Callers gating split-view / stale-STH
+    /// defenses **must** call this — `verify_inclusion` against an STH
+    /// root proves membership, not recency.
+    #[must_use]
+    pub fn is_fresh(&self, now: DateTime<Utc>, max_age: chrono::Duration) -> bool {
+        let delta = now.signed_duration_since(self.timestamp);
+        delta >= -max_age && delta <= max_age
+    }
 }
 
 /// A witness cosignature over an STH.
@@ -327,19 +383,91 @@ pub trait TransparencyStore<L: TransparencyLeaf>: Send + Sync {
     /// want history (left to the implementor).
     fn store_sth(&self, sth: &SignedTreeHead) -> Result<(), TransparencyError>;
 
-    /// Return all leaf hashes in `[0, tree_size)`. Used by the log's
-    /// pure-Rust proof computation. Concrete stores can override with a
-    /// streaming variant when the tree is large.
+    /// Return all leaf hashes in `[0, tree_size)`. Used by the default
+    /// proof implementations below. Concrete stores can override the
+    /// proof methods to avoid materializing this.
     fn all_leaf_hashes(&self) -> Result<Vec<[u8; 32]>, TransparencyError>;
+
+    /// Current Merkle root (RFC 6962 MTH).
+    ///
+    /// Default recomputes from [`all_leaf_hashes`](Self::all_leaf_hashes)
+    /// in O(N). Stores that keep a level cache should override for O(1)
+    /// — see [`InMemoryTransparencyStore`]. Empty tree → `[0; 32]`.
+    fn root(&self) -> Result<[u8; 32], TransparencyError> {
+        Ok(compute_merkle_root(&self.all_leaf_hashes()?))
+    }
+
+    /// Generate an inclusion proof for the leaf at `index`.
+    ///
+    /// Default recomputes from [`all_leaf_hashes`](Self::all_leaf_hashes).
+    /// Stores with a level cache should override for O(log N).
+    fn inclusion_proof(&self, index: u64) -> Result<MerkleProof, TransparencyError> {
+        let leaves = self.all_leaf_hashes()?;
+        let tree_size = u64::try_from(leaves.len()).unwrap_or(u64::MAX);
+        if index >= tree_size {
+            return Err(TransparencyError::IndexOutOfRange { index, tree_size });
+        }
+        let idx = usize::try_from(index)
+            .map_err(|_| TransparencyError::Storage("index too large for platform".into()))?;
+        Ok(MerkleProof {
+            entry_index: index,
+            leaf_hash: leaves[idx],
+            siblings: compute_inclusion_path(&leaves, idx),
+            root: compute_merkle_root(&leaves),
+        })
+    }
+
+    /// Generate an RFC 6962 §2.1.2 consistency proof between two sizes.
+    ///
+    /// Default recomputes from [`all_leaf_hashes`](Self::all_leaf_hashes).
+    /// Stores with a level cache should override for O(log² N).
+    fn consistency_proof(
+        &self,
+        from_size: u64,
+        to_size: u64,
+    ) -> Result<ConsistencyProof, TransparencyError> {
+        let leaves = self.all_leaf_hashes()?;
+        let cur = u64::try_from(leaves.len()).unwrap_or(u64::MAX);
+        if from_size == 0 || from_size > to_size || to_size > cur {
+            return Err(TransparencyError::InvalidRange {
+                from_size,
+                to_size,
+                tree_size: cur,
+            });
+        }
+        let m = usize::try_from(from_size)
+            .map_err(|_| TransparencyError::Storage("from_size too large".into()))?;
+        let n = usize::try_from(to_size)
+            .map_err(|_| TransparencyError::Storage("to_size too large".into()))?;
+        Ok(ConsistencyProof {
+            old_tree_size: from_size,
+            new_tree_size: to_size,
+            proof_hashes: consistency_proof_hashes(m, &leaves[..n]),
+        })
+    }
 }
 
 /// In-memory + optional append-only file implementation of `TransparencyStore`.
 ///
 /// Backwards-compatible with the v2.2.x `TransparencyLog::new(log_path)` shape
 /// — passing `Some(path)` writes one JSON line per leaf, same on-disk format.
+///
+/// ## Level cache (v2.6.0+)
+///
+/// The Merkle tree is held as cached *levels*: `levels[0]` is the leaf
+/// hashes, `levels[j+1]` is the promote-odd pairwise reduction of
+/// `levels[j]`, and the top level holds the single root. This bottom-up
+/// promote-odd construction is provably identical to RFC 6962's
+/// recursive-split MTH. Appending a leaf updates only the rightmost path
+/// (O(log N)); `root` is an O(1) read of the cache top; inclusion proofs
+/// read sibling hashes directly (O(log N)); consistency proofs read
+/// subtree roots via [`range_root`] (O(log² N)). Pre-v2.6.0 every one of
+/// these recomputed the whole tree from a flat leaf-hash vector.
 pub struct InMemoryTransparencyStore<L: TransparencyLeaf + Serialize> {
     entries: Arc<RwLock<Vec<L>>>,
-    leaf_hashes: Arc<RwLock<Vec<[u8; 32]>>>,
+    /// Cached Merkle levels. `levels[0]` = leaf hashes; the top level
+    /// holds the root. Empty `Vec` until the first append.
+    levels: Arc<RwLock<Vec<Vec<[u8; 32]>>>>,
     latest_sth: Arc<RwLock<Option<SignedTreeHead>>>,
     log_path: Option<PathBuf>,
 }
@@ -351,7 +479,7 @@ impl<L: TransparencyLeaf + Serialize> InMemoryTransparencyStore<L> {
     pub fn new(log_path: Option<PathBuf>) -> Self {
         Self {
             entries: Arc::new(RwLock::new(Vec::new())),
-            leaf_hashes: Arc::new(RwLock::new(Vec::new())),
+            levels: Arc::new(RwLock::new(Vec::new())),
             latest_sth: Arc::new(RwLock::new(None)),
             log_path,
         }
@@ -367,10 +495,10 @@ impl<L: TransparencyLeaf + Serialize> TransparencyStore<L> for InMemoryTranspare
             .entries
             .write()
             .map_err(|_| TransparencyError::Storage("entries lock poisoned".into()))?;
-        let mut leaves = self
-            .leaf_hashes
+        let mut levels = self
+            .levels
             .write()
-            .map_err(|_| TransparencyError::Storage("leaf_hashes lock poisoned".into()))?;
+            .map_err(|_| TransparencyError::Storage("levels lock poisoned".into()))?;
 
         let index = u64::try_from(entries.len()).map_err(|_| {
             TransparencyError::Storage("tree size exceeds u64; refusing append".into())
@@ -382,7 +510,7 @@ impl<L: TransparencyLeaf + Serialize> TransparencyStore<L> for InMemoryTranspare
         }
 
         entries.push(entry);
-        leaves.push(leaf_h);
+        append_leaf_to_levels(&mut levels, leaf_h);
         Ok(index)
     }
 
@@ -397,21 +525,21 @@ impl<L: TransparencyLeaf + Serialize> TransparencyStore<L> for InMemoryTranspare
     }
 
     fn leaf_hash(&self, index: u64) -> Result<Option<[u8; 32]>, TransparencyError> {
-        let leaves = self
-            .leaf_hashes
+        let levels = self
+            .levels
             .read()
-            .map_err(|_| TransparencyError::Storage("leaf_hashes lock poisoned".into()))?;
+            .map_err(|_| TransparencyError::Storage("levels lock poisoned".into()))?;
         let idx = usize::try_from(index)
             .map_err(|_| TransparencyError::Storage("index too large for platform".into()))?;
-        Ok(leaves.get(idx).copied())
+        Ok(levels.first().and_then(|leaves| leaves.get(idx).copied()))
     }
 
     fn tree_size(&self) -> Result<u64, TransparencyError> {
-        let leaves = self
-            .leaf_hashes
+        let levels = self
+            .levels
             .read()
-            .map_err(|_| TransparencyError::Storage("leaf_hashes lock poisoned".into()))?;
-        Ok(u64::try_from(leaves.len()).unwrap_or(u64::MAX))
+            .map_err(|_| TransparencyError::Storage("levels lock poisoned".into()))?;
+        Ok(u64::try_from(levels.first().map_or(0, Vec::len)).unwrap_or(u64::MAX))
     }
 
     fn latest_sth(&self) -> Result<Option<SignedTreeHead>, TransparencyError> {
@@ -432,11 +560,73 @@ impl<L: TransparencyLeaf + Serialize> TransparencyStore<L> for InMemoryTranspare
     }
 
     fn all_leaf_hashes(&self) -> Result<Vec<[u8; 32]>, TransparencyError> {
-        let leaves = self
-            .leaf_hashes
+        let levels = self
+            .levels
             .read()
-            .map_err(|_| TransparencyError::Storage("leaf_hashes lock poisoned".into()))?;
-        Ok(leaves.clone())
+            .map_err(|_| TransparencyError::Storage("levels lock poisoned".into()))?;
+        Ok(levels.first().cloned().unwrap_or_default())
+    }
+
+    /// O(1) — reads the cached top level.
+    fn root(&self) -> Result<[u8; 32], TransparencyError> {
+        let levels = self
+            .levels
+            .read()
+            .map_err(|_| TransparencyError::Storage("levels lock poisoned".into()))?;
+        Ok(cached_root(&levels))
+    }
+
+    /// O(log N) — walks the level cache reading sibling hashes directly.
+    fn inclusion_proof(&self, index: u64) -> Result<MerkleProof, TransparencyError> {
+        let levels = self
+            .levels
+            .read()
+            .map_err(|_| TransparencyError::Storage("levels lock poisoned".into()))?;
+        let tree_size = u64::try_from(levels.first().map_or(0, Vec::len)).unwrap_or(u64::MAX);
+        if index >= tree_size {
+            return Err(TransparencyError::IndexOutOfRange { index, tree_size });
+        }
+        let idx = usize::try_from(index)
+            .map_err(|_| TransparencyError::Storage("index too large for platform".into()))?;
+        Ok(MerkleProof {
+            entry_index: index,
+            leaf_hash: levels[0][idx],
+            siblings: inclusion_path_from_levels(&levels, idx),
+            root: cached_root(&levels),
+        })
+    }
+
+    /// O(log² N) — RFC 6962 SUBPROOF over cached subtree roots.
+    fn consistency_proof(
+        &self,
+        from_size: u64,
+        to_size: u64,
+    ) -> Result<ConsistencyProof, TransparencyError> {
+        let levels = self
+            .levels
+            .read()
+            .map_err(|_| TransparencyError::Storage("levels lock poisoned".into()))?;
+        let cur = u64::try_from(levels.first().map_or(0, Vec::len)).unwrap_or(u64::MAX);
+        if from_size == 0 || from_size > to_size || to_size > cur {
+            return Err(TransparencyError::InvalidRange {
+                from_size,
+                to_size,
+                tree_size: cur,
+            });
+        }
+        let m = usize::try_from(from_size)
+            .map_err(|_| TransparencyError::Storage("from_size too large".into()))?;
+        let n = usize::try_from(to_size)
+            .map_err(|_| TransparencyError::Storage("to_size too large".into()))?;
+        let mut proof_hashes = Vec::new();
+        if m != n {
+            subproof_from_levels(m, 0, n, true, &levels, &mut proof_hashes);
+        }
+        Ok(ConsistencyProof {
+            old_tree_size: from_size,
+            new_tree_size: to_size,
+            proof_hashes,
+        })
     }
 }
 
@@ -480,10 +670,10 @@ impl<L: TransparencyLeaf> TransparencyLog<L> {
     /// Returns `[0; 32]` for an empty tree (RFC 6962 §2.1: MTH({}) =
     /// SHA-256() — we use the all-zero sentinel since the spec leaves
     /// the empty-tree hash up to the implementor and zero is the
-    /// long-standing CIRIS convention).
+    /// long-standing CIRIS convention). Delegates to the store, which
+    /// may answer in O(1) from a level cache.
     pub fn merkle_root(&self) -> Result<[u8; 32], TransparencyError> {
-        let leaves = self.store.all_leaf_hashes()?;
-        Ok(compute_merkle_root(&leaves))
+        self.store.root()
     }
 
     /// Append a leaf and return its index.
@@ -491,52 +681,21 @@ impl<L: TransparencyLeaf> TransparencyLog<L> {
         self.store.append(leaf)
     }
 
-    /// Generate an inclusion proof for the entry at `index`.
+    /// Generate an inclusion proof for the entry at `index`. Delegates to
+    /// the store (O(log N) for the level-cached in-memory store).
     pub fn inclusion_proof(&self, index: u64) -> Result<MerkleProof, TransparencyError> {
-        let leaves = self.store.all_leaf_hashes()?;
-        let tree_size = u64::try_from(leaves.len()).unwrap_or(u64::MAX);
-        if index >= tree_size {
-            return Err(TransparencyError::IndexOutOfRange { index, tree_size });
-        }
-        let idx = usize::try_from(index)
-            .map_err(|_| TransparencyError::Storage("index too large for platform".into()))?;
-        let leaf_hash = leaves[idx];
-        let siblings = compute_inclusion_path(&leaves, idx);
-        let root = compute_merkle_root(&leaves);
-        Ok(MerkleProof {
-            entry_index: index,
-            leaf_hash,
-            siblings,
-            root,
-        })
+        self.store.inclusion_proof(index)
     }
 
     /// Generate an RFC 6962 §2.1.2 consistency proof between two tree
     /// sizes. Caller must hold `0 < from_size <= to_size <= tree_size`.
+    /// Delegates to the store.
     pub fn consistency_proof(
         &self,
         from_size: u64,
         to_size: u64,
     ) -> Result<ConsistencyProof, TransparencyError> {
-        let leaves = self.store.all_leaf_hashes()?;
-        let cur = u64::try_from(leaves.len()).unwrap_or(u64::MAX);
-        if from_size == 0 || from_size > to_size || to_size > cur {
-            return Err(TransparencyError::InvalidRange {
-                from_size,
-                to_size,
-                tree_size: cur,
-            });
-        }
-        let m = usize::try_from(from_size)
-            .map_err(|_| TransparencyError::Storage("from_size too large".into()))?;
-        let n = usize::try_from(to_size)
-            .map_err(|_| TransparencyError::Storage("to_size too large".into()))?;
-        let proof_hashes = consistency_proof_hashes(m, &leaves[..n]);
-        Ok(ConsistencyProof {
-            old_tree_size: from_size,
-            new_tree_size: to_size,
-            proof_hashes,
-        })
+        self.store.consistency_proof(from_size, to_size)
     }
 
     /// Sign the current tree head with a hybrid Ed25519 + ML-DSA-65 signer.
@@ -554,8 +713,7 @@ impl<L: TransparencyLeaf> TransparencyLog<L> {
         P: ciris_crypto::PqcSigner,
     {
         let tree_size = self.store.tree_size()?;
-        let leaves = self.store.all_leaf_hashes()?;
-        let root_hash = compute_merkle_root(&leaves);
+        let root_hash = self.store.root()?;
         let timestamp = Utc::now();
         let signing_bytes =
             SignedTreeHead::signing_bytes(&self.log_id, tree_size, &root_hash, timestamp);
@@ -599,10 +757,14 @@ impl TransparencyLog<TransparencyEntry> {
     }
 
     /// Append a license verification event. Handles chain-linking
-    /// (`previous_hash` = canonical hash of the last entry's leaf bytes)
-    /// and Merkle-root stamping so engine callers don't have to.
+    /// (`previous_hash` = the previous entry's leaf hash) so engine
+    /// callers don't have to.
     ///
     /// Returns the new Merkle root after appending (matches v2.2.x).
+    ///
+    /// v2.6.0+: O(1) store reads — `tree_size`, `leaf_hash`, `root` — no
+    /// longer clones the leaf-hash vector (pre-v2.6.0 this cloned it
+    /// twice per call).
     pub fn append_license(
         &self,
         license_id: &str,
@@ -610,20 +772,20 @@ impl TransparencyLog<TransparencyEntry> {
         consensus_status: ValidationStatus,
         revocation_revision: u64,
     ) -> Result<[u8; 32], TransparencyError> {
-        let leaves_before = self.store.all_leaf_hashes()?;
-        let previous_hash = leaves_before.last().copied().unwrap_or([0u8; 32]);
-        let index = u64::try_from(leaves_before.len()).unwrap_or(u64::MAX);
+        let index = self.store.tree_size()?;
+        let previous_hash = match index {
+            0 => [0u8; 32],
+            n => self.store.leaf_hash(n - 1)?.unwrap_or([0u8; 32]),
+        };
         let timestamp = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
             .unwrap_or(0);
 
-        // Build a candidate entry with placeholder merkle_root, hash it
-        // to compute the leaf hash, recompute the new tree root, stamp
-        // the entry's merkle_root, and append. The leaf-hash that lands
-        // in the store is the one computed BEFORE stamping merkle_root
-        // (otherwise we'd have a circular dependency: leaf hash depends
-        // on merkle_root, which depends on leaf hash).
+        // `merkle_root` is a placeholder: the leaf hash is computed from
+        // canonical_bytes which deliberately excludes the merkle_root
+        // field (otherwise leaf hash would depend on the root, which
+        // depends on the leaf hash).
         let entry = TransparencyEntry {
             index,
             timestamp,
@@ -632,12 +794,11 @@ impl TransparencyLog<TransparencyEntry> {
             consensus_status,
             revocation_revision,
             previous_hash,
-            merkle_root: [0u8; 32], // canonical bytes ignore this; see note above
+            merkle_root: [0u8; 32],
         };
 
         self.store.append(entry)?;
-        let leaves_after = self.store.all_leaf_hashes()?;
-        Ok(compute_merkle_root(&leaves_after))
+        self.store.root()
     }
 
     /// Number of license entries in the log (alias for `tree_size`).
@@ -727,6 +888,15 @@ pub fn verify_consistency(
         return Ok(proof.proof_hashes.is_empty() && old_root == new_root);
     }
 
+    // A well-formed RFC 6962 consistency proof has at most ⌈log2(n)⌉ + 1
+    // hashes. `new_size` is a u64, so 65 is a hard upper bound regardless
+    // of tree size. Reject anything longer before recursing — a hostile
+    // oversized `proof_hashes` should not drive allocation or work.
+    const MAX_CONSISTENCY_PROOF_HASHES: usize = 65;
+    if proof.proof_hashes.len() > MAX_CONSISTENCY_PROOF_HASHES {
+        return Ok(false);
+    }
+
     let m = usize::try_from(old_size)
         .map_err(|_| TransparencyError::Storage("old_size too large".into()))?;
     let n = usize::try_from(new_size)
@@ -802,6 +972,141 @@ fn largest_pow2_leq(n: usize) -> usize {
         return n;
     }
     largest_pow2_lt(n)
+}
+
+// ------------------------------------------------------------------------
+// v2.6.0 level-cache helpers
+//
+// `levels[0]` is the leaf hashes; `levels[j+1]` is the promote-odd
+// pairwise reduction of `levels[j]` (adjacent pairs hashed, an unpaired
+// final node promoted unchanged). This bottom-up promote-odd tree is
+// identical to RFC 6962's recursive-split MTH for every tree size, so
+// `levels.last()[0]` is always the RFC 6962 root. These helpers let the
+// in-memory store answer root/inclusion/consistency from the cache
+// instead of recomputing the whole tree per call.
+// ------------------------------------------------------------------------
+
+/// Read the cached Merkle root: the single node at the top level.
+/// `[0; 32]` for an empty tree.
+fn cached_root(levels: &[Vec<[u8; 32]>]) -> [u8; 32] {
+    levels
+        .last()
+        .and_then(|top| top.first())
+        .copied()
+        .unwrap_or([0u8; 32])
+}
+
+/// Append one leaf hash to the level cache, updating only the rightmost
+/// path. O(log N).
+fn append_leaf_to_levels(levels: &mut Vec<Vec<[u8; 32]>>, leaf: [u8; 32]) {
+    if levels.is_empty() {
+        levels.push(Vec::new());
+    }
+    levels[0].push(leaf);
+    let mut i = 0;
+    // Each iteration: levels[i] is final post-append; recompute the tail
+    // of levels[i+1] (only its last 1-2 nodes change on an append).
+    while levels[i].len() > 1 {
+        if i + 1 == levels.len() {
+            levels.push(Vec::new());
+        }
+        let cur_len = levels[i].len();
+        let (lower, upper) = levels.split_at_mut(i + 1);
+        let cur = &lower[i];
+        let parent = &mut upper[0];
+        if cur_len % 2 == 1 {
+            // odd count: last node is promoted unchanged
+            parent.truncate((cur_len - 1) / 2);
+            parent.push(cur[cur_len - 1]);
+        } else {
+            // even count: last pair is hashed
+            parent.truncate(cur_len / 2 - 1);
+            parent.push(hash_node(&cur[cur_len - 2], &cur[cur_len - 1]));
+        }
+        i += 1;
+    }
+    // levels[i] is now the single-node root level; drop any stale higher
+    // levels (defensive — the tree only grows, so this is a no-op).
+    levels.truncate(i + 1);
+}
+
+/// Inclusion-proof sibling path from the level cache. O(log N).
+///
+/// At level `j` the proven node sits at `pos`; its sibling is `pos ^ 1`
+/// when that index exists (a promoted odd node has no sibling at its
+/// level — skipped). `pos` halves each level. Direction `true` means the
+/// sibling is on the right (proven node at an even index).
+fn inclusion_path_from_levels(levels: &[Vec<[u8; 32]>], index: usize) -> Vec<(bool, [u8; 32])> {
+    let mut siblings = Vec::new();
+    if levels.len() < 2 {
+        return siblings; // single leaf (or empty): empty path
+    }
+    let mut pos = index;
+    for level in &levels[..levels.len() - 1] {
+        let sib = pos ^ 1;
+        if sib < level.len() {
+            siblings.push((pos % 2 == 0, level[sib]));
+        }
+        pos >>= 1;
+    }
+    siblings
+}
+
+/// MTH of `leaves[start .. start+len)` read from the level cache.
+///
+/// A range that is a perfect aligned subtree of size `2^j` resolves to a
+/// single cache node `levels[j][start >> j]`; otherwise it splits
+/// RFC-6962-style and recurses. The `start + len <= leaf_count` guard
+/// ensures the cache node is a *full* perfect subtree and not a promoted
+/// partial at the tree's right edge.
+fn range_root(levels: &[Vec<[u8; 32]>], start: usize, len: usize) -> [u8; 32] {
+    if len == 0 {
+        return [0u8; 32];
+    }
+    if len == 1 {
+        return levels[0][start];
+    }
+    let leaf_count = levels.first().map_or(0, Vec::len);
+    if len.is_power_of_two() && start % len == 0 {
+        let j = len.trailing_zeros() as usize;
+        if start + len <= leaf_count && j < levels.len() {
+            let p = start >> j;
+            if p < levels[j].len() {
+                return levels[j][p];
+            }
+        }
+    }
+    let k = largest_pow2_lt(len);
+    let left = range_root(levels, start, k);
+    let right = range_root(levels, start + k, len - k);
+    hash_node(&left, &right)
+}
+
+/// RFC 6962 §2.1.2 SUBPROOF over `leaves[start .. start+len)`, reading
+/// subtree roots from the level cache via [`range_root`]. Produces the
+/// same `proof_hashes` as the slice-based [`subproof`], in O(log² N).
+fn subproof_from_levels(
+    m: usize,
+    start: usize,
+    len: usize,
+    is_top_level: bool,
+    levels: &[Vec<[u8; 32]>],
+    out: &mut Vec<[u8; 32]>,
+) {
+    if m == len {
+        if !is_top_level {
+            out.push(range_root(levels, start, len));
+        }
+        return;
+    }
+    let k = largest_pow2_lt(len);
+    if m <= k {
+        subproof_from_levels(m, start, k, is_top_level, levels, out);
+        out.push(range_root(levels, start + k, len - k));
+    } else {
+        subproof_from_levels(m - k, start + k, len - k, false, levels, out);
+        out.push(range_root(levels, start, k));
+    }
 }
 
 /// Compute the sibling path for an inclusion proof at `index`.
@@ -1360,5 +1665,184 @@ mod tests {
         assert_eq!(stored.log_id, sth.log_id);
         assert_eq!(stored.tree_size, sth.tree_size);
         assert_eq!(stored.root_hash, sth.root_hash);
+    }
+
+    // ---------------------------------------------------------------------
+    // v2.6.0 #42: level-cache equivalence with the slice-based reference
+    // ---------------------------------------------------------------------
+
+    /// The level cache (used by `InMemoryTransparencyStore`'s fast
+    /// overrides) must produce byte-identical roots, inclusion proofs,
+    /// and consistency proofs to the slice-based reference algorithm
+    /// (`compute_merkle_root` / `compute_inclusion_path` /
+    /// `consistency_proof_hashes`) that the trait's default impls use.
+    /// This is the lock that the O(log N) fast path didn't change any
+    /// wire output. Walks tree sizes 1..=64.
+    #[test]
+    fn level_cache_matches_slice_reference() {
+        for n in 1u64..=64 {
+            let log = new_log();
+            fill_log(&log, n);
+            let leaves = log.store.all_leaf_hashes().unwrap();
+
+            // root
+            let cache_root = log.merkle_root().unwrap();
+            let ref_root = compute_merkle_root(&leaves);
+            assert_eq!(cache_root, ref_root, "root mismatch at n={n}");
+
+            // inclusion proofs for every index
+            for idx in 0..n {
+                let cache_proof = log.inclusion_proof(idx).unwrap();
+                let ref_sibs = compute_inclusion_path(&leaves, usize::try_from(idx).unwrap());
+                assert_eq!(
+                    cache_proof.siblings, ref_sibs,
+                    "inclusion siblings mismatch at n={n} idx={idx}"
+                );
+                assert_eq!(cache_proof.root, ref_root);
+                assert!(
+                    verify_inclusion(&cache_proof),
+                    "inclusion proof must verify at n={n} idx={idx}"
+                );
+            }
+
+            // consistency proofs for every legal (m, n) pair
+            for m in 1u64..=n {
+                let cache_proof = log.consistency_proof(m, n).unwrap();
+                let ref_hashes = consistency_proof_hashes(
+                    usize::try_from(m).unwrap(),
+                    &leaves[..usize::try_from(n).unwrap()],
+                );
+                assert_eq!(
+                    cache_proof.proof_hashes, ref_hashes,
+                    "consistency proof_hashes mismatch at m={m} n={n}"
+                );
+            }
+        }
+    }
+
+    /// Appending leaf-by-leaf (incremental level update) must yield the
+    /// same root as computing the whole tree from scratch.
+    #[test]
+    fn incremental_append_matches_full_recompute() {
+        let log = new_log();
+        for n in 1u64..=100 {
+            log.append_license(
+                &format!("lic-{n}"),
+                LicenseStatus::LicensedProfessional,
+                ValidationStatus::AllSourcesAgree,
+                n,
+            )
+            .unwrap();
+            let leaves = log.store.all_leaf_hashes().unwrap();
+            assert_eq!(
+                log.merkle_root().unwrap(),
+                compute_merkle_root(&leaves),
+                "incremental root diverged from full recompute at n={n}"
+            );
+        }
+    }
+
+    /// Larger consistency-proof sweep — exercises multi-level proofs and
+    /// the power-of-2 implicit-old-root seeding past n=10.
+    #[test]
+    fn consistency_proof_verifies_large() {
+        let log = new_log();
+        fill_log(&log, 50);
+        let new_root = log.merkle_root().unwrap();
+        for m in 1u64..=50 {
+            let old_log = new_log();
+            fill_log(&old_log, m);
+            let old_root = old_log.merkle_root().unwrap();
+            let proof = log.consistency_proof(m, 50).unwrap();
+            assert!(
+                verify_consistency(&old_root, m, &new_root, 50, &proof).unwrap(),
+                "consistency must verify for (m={m}, n=50)"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // v2.6.0 #43: canonical_bytes stable tags, STH freshness, proof cap
+    // ---------------------------------------------------------------------
+
+    /// `canonical_bytes` must hash enum fields as stable u8 tags, not
+    /// `Debug` strings. Two entries differing only in `status` must
+    /// differ; the tag values are pinned.
+    #[test]
+    fn canonical_bytes_uses_stable_enum_tags() {
+        assert_eq!(license_status_tag(LicenseStatus::LicensedProfessional), 1);
+        assert_eq!(license_status_tag(LicenseStatus::ErrorLicenseExpired), 9);
+        assert_eq!(validation_status_tag(ValidationStatus::AllSourcesAgree), 1);
+        assert_eq!(validation_status_tag(ValidationStatus::ValidationError), 5);
+
+        let base = TransparencyEntry {
+            index: 0,
+            timestamp: 0,
+            license_id: "x".into(),
+            status: LicenseStatus::LicensedProfessional,
+            consensus_status: ValidationStatus::AllSourcesAgree,
+            revocation_revision: 0,
+            previous_hash: [0u8; 32],
+            merkle_root: [0u8; 32],
+        };
+        let mut other = base.clone();
+        other.status = LicenseStatus::UnlicensedCommunity;
+        assert_ne!(
+            base.canonical_bytes().unwrap(),
+            other.canonical_bytes().unwrap(),
+            "differing status must change canonical bytes"
+        );
+        // merkle_root is deliberately excluded from canonical bytes.
+        let mut root_differs = base.clone();
+        root_differs.merkle_root = [0xFFu8; 32];
+        assert_eq!(
+            base.canonical_bytes().unwrap(),
+            root_differs.canonical_bytes().unwrap(),
+            "merkle_root must NOT affect canonical bytes (circular-dep guard)"
+        );
+    }
+
+    #[test]
+    fn sth_is_fresh_policy() {
+        let now = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let max_age = chrono::Duration::hours(24);
+
+        // Within window.
+        assert!(sth_with_ts(now - chrono::Duration::hours(1)).is_fresh(now, max_age));
+        // Stale.
+        assert!(!sth_with_ts(now - chrono::Duration::hours(48)).is_fresh(now, max_age));
+        // Wildly future (clock-skew abuse) — also rejected.
+        assert!(!sth_with_ts(now + chrono::Duration::hours(48)).is_fresh(now, max_age));
+        // Small future skew within tolerance — accepted.
+        assert!(sth_with_ts(now + chrono::Duration::minutes(5)).is_fresh(now, max_age));
+    }
+
+    /// Build a throwaway STH carrying `ts` — only `timestamp` is read by
+    /// `is_fresh`, so the signature is a zero-filled stub.
+    fn sth_with_ts(ts: DateTime<Utc>) -> SignedTreeHead {
+        let log = new_log();
+        fill_log(&log, 1);
+        let signer = HybridSigner::new(StubClassicalSigner, StubPqcSigner).unwrap();
+        let mut sth = log.sign_head(&signer).unwrap();
+        sth.timestamp = ts;
+        sth
+    }
+
+    /// An oversized `proof_hashes` is rejected before reconstruction.
+    #[test]
+    fn verify_consistency_rejects_oversized_proof() {
+        let log = new_log();
+        fill_log(&log, 8);
+        let new_root = log.merkle_root().unwrap();
+        let old_log = new_log();
+        fill_log(&old_log, 3);
+        let old_root = old_log.merkle_root().unwrap();
+        let mut proof = log.consistency_proof(3, 8).unwrap();
+        // Pad far past the ⌈log2 n⌉+1 bound.
+        proof.proof_hashes = vec![[0u8; 32]; 200];
+        assert!(
+            !verify_consistency(&old_root, 3, &new_root, 8, &proof).unwrap(),
+            "oversized proof must be rejected"
+        );
     }
 }
