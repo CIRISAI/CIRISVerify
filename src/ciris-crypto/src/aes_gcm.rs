@@ -10,13 +10,35 @@
 //!
 //! - **Cipher**: AES-256 with 32-byte (256-bit) key.
 //! - **AEAD mode**: GCM with 12-byte (96-bit) nonce.
-//! - **Tag**: 16 bytes appended to the ciphertext (RustCrypto default).
+//! - **Tag**: 16 bytes appended to the ciphertext.
+//! - **AAD**: none (empty) — this layer encrypts opaque blobs.
+//!
+//! ## Backend (v2.8.0+, CIRISVerify#26)
+//!
+//! Implemented over [`ring`]'s `aead`. v2.0–v2.7 used RustCrypto
+//! `aes-gcm`, which measured ~1 GiB/s — 3–5× below ring/OpenSSL because
+//! RustCrypto's GHASH lacks the hand-tuned CLMUL assembly. The switch
+//! to ring buys that 3–5× **at zero build cost**: ring is already a
+//! universal dependency in this workspace — `rustls` pulls it via
+//! `reqwest` and `hickory-resolver`, and `ciris-verify-ffi` builds it
+//! explicitly for Android and iOS. Its assembly is already compiled,
+//! already cross-compiled to every target, already linked, and already
+//! trusted for every TLS handshake. Using it for AES-GCM adds no new
+//! toolchain and no new cross-compile surface.
+//!
+//! **Wire format is unchanged.** AES-256-GCM is a deterministic
+//! standard: for a given key/nonce/plaintext, ring and RustCrypto emit
+//! byte-identical `ciphertext || tag`. Blobs sealed by a ≤ v2.7 build
+//! decrypt cleanly here and vice versa. The NIST GCM known-answer test
+//! below is the lock on that guarantee.
 //!
 //! ## Nonce policy
 //!
 //! Nonce reuse with the same key is catastrophic for GCM (full plaintext
 //! recovery + forgery). This module **does not** detect or prevent reuse —
-//! that is the caller's responsibility. Recommended caller patterns:
+//! that is the caller's responsibility. ring's API names the
+//! explicit-nonce constructor [`Nonce::assume_unique_for_key`] precisely
+//! to flag that footgun. Recommended caller patterns:
 //!
 //! - **Random nonce**: 96 bits is large enough that birthday-bound reuse
 //!   probability stays acceptable for ~2³² messages per key. Use
@@ -28,13 +50,28 @@
 //! No nonce reuse detection at this layer means the federation's
 //! threat model assumes well-behaved callers; misuse is reportable as
 //! a key-compromise event, not a library bug.
+//!
+//! [`ring`]: https://docs.rs/ring
+//! [`Nonce::assume_unique_for_key`]: https://docs.rs/ring/latest/ring/aead/struct.Nonce.html
 
-use aes_gcm::{
-    aead::{Aead, KeyInit},
-    Aes256Gcm, Key, Nonce,
-};
+use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 
 use crate::error::CryptoError;
+
+/// Build a `LessSafeKey` for AES-256-GCM from raw key bytes.
+///
+/// `LessSafeKey` is ring's explicit-caller-supplied-nonce variant — the
+/// right fit here because this module's contract is caller-managed
+/// nonces (see the module-level nonce policy). The `key` length is fixed
+/// at 32 bytes by the type, so `UnboundKey::new` only fails on internal
+/// invariants — mapped to `CryptoError::AesGcm` rather than panicked.
+fn cipher(key: &[u8; 32], operation: &'static str) -> Result<LessSafeKey, CryptoError> {
+    let unbound = UnboundKey::new(&AES_256_GCM, key).map_err(|_| CryptoError::AesGcm {
+        operation,
+        reason: "AES-256-GCM key initialization failed".to_string(),
+    })?;
+    Ok(LessSafeKey::new(unbound))
+}
 
 /// Encrypt `plaintext` with `key` and `nonce` using AES-256-GCM. Returns
 /// `ciphertext || tag` (the standard appended-tag layout). Tag is 16 bytes.
@@ -44,13 +81,21 @@ use crate::error::CryptoError;
 /// `CryptoError::AesGcm { operation: "encrypt", .. }` if the cipher
 /// rejects the inputs (extremely rare for valid 32/12-byte key/nonce).
 pub fn encrypt(key: &[u8; 32], nonce: &[u8; 12], plaintext: &[u8]) -> Result<Vec<u8>, CryptoError> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
+    let cipher = cipher(key, "encrypt")?;
+    // ring seals in place and appends the 16-byte tag; `in_out` starts
+    // as the plaintext and ends as `ciphertext || tag`.
+    let mut in_out = plaintext.to_vec();
     cipher
-        .encrypt(Nonce::from_slice(nonce), plaintext)
-        .map_err(|e| CryptoError::AesGcm {
+        .seal_in_place_append_tag(
+            Nonce::assume_unique_for_key(*nonce),
+            Aad::empty(),
+            &mut in_out,
+        )
+        .map_err(|_| CryptoError::AesGcm {
             operation: "encrypt",
-            reason: e.to_string(),
-        })
+            reason: "AES-256-GCM seal failed".to_string(),
+        })?;
+    Ok(in_out)
 }
 
 /// Decrypt `ciphertext` (which must include the trailing 16-byte tag)
@@ -59,21 +104,34 @@ pub fn encrypt(key: &[u8; 32], nonce: &[u8; 12], plaintext: &[u8]) -> Result<Vec
 /// # Errors
 ///
 /// `CryptoError::AesGcm { operation: "decrypt", .. }` on tag mismatch
-/// (tampered ciphertext, wrong key, or wrong nonce). The error message
-/// does NOT distinguish these cases — that's intentional; callers
-/// shouldn't be making distinctions on a failed AEAD decrypt.
+/// (tampered ciphertext, wrong key, or wrong nonce) or a malformed
+/// ciphertext shorter than the 16-byte tag. The error message does NOT
+/// distinguish these cases — that's intentional; callers shouldn't be
+/// making distinctions on a failed AEAD decrypt.
 pub fn decrypt(
     key: &[u8; 32],
     nonce: &[u8; 12],
     ciphertext: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
-    let cipher = Aes256Gcm::new(Key::<Aes256Gcm>::from_slice(key));
-    cipher
-        .decrypt(Nonce::from_slice(nonce), ciphertext)
-        .map_err(|e| CryptoError::AesGcm {
+    let cipher = cipher(key, "decrypt")?;
+    // ring opens in place: it decrypts `in_out` and returns the
+    // plaintext sub-slice (tag stripped). We take its length, drop the
+    // borrow, then truncate `in_out` down to the plaintext — one
+    // allocation total, no second copy.
+    let mut in_out = ciphertext.to_vec();
+    let plaintext_len = cipher
+        .open_in_place(
+            Nonce::assume_unique_for_key(*nonce),
+            Aad::empty(),
+            &mut in_out,
+        )
+        .map_err(|_| CryptoError::AesGcm {
             operation: "decrypt",
-            reason: e.to_string(),
-        })
+            reason: "AES-256-GCM open failed (tag mismatch or malformed ciphertext)".to_string(),
+        })?
+        .len();
+    in_out.truncate(plaintext_len);
+    Ok(in_out)
 }
 
 #[cfg(test)]
@@ -146,10 +204,24 @@ mod tests {
         assert!(decrypt(&key, &nonce, &ct).is_err());
     }
 
-    /// NIST GCM test vector — locks against algorithm regression
-    /// across RustCrypto bumps. From NIST GCM Test Vectors,
-    /// gcmEncryptExtIV256.rsp Count=0 (Keylen=256, IVlen=96, PTlen=0,
-    /// AADlen=0, Taglen=128).
+    /// A ciphertext shorter than the 16-byte tag is malformed — decrypt
+    /// must reject it, not panic.
+    #[test]
+    fn short_ciphertext_fails_decrypt() {
+        let key = [8u8; 32];
+        let nonce = [9u8; 12];
+        assert!(decrypt(&key, &nonce, &[0u8; 8]).is_err());
+        assert!(decrypt(&key, &nonce, b"").is_err());
+    }
+
+    /// NIST GCM known-answer vector — the cross-backend wire-format lock.
+    ///
+    /// This exact vector passed under the RustCrypto `aes-gcm` backend
+    /// (v2.0–v2.7); it must still pass under `ring` (v2.8.0+). Because it
+    /// does, AES-256-GCM is byte-identical across the backend switch —
+    /// blobs sealed by an older build decrypt cleanly here, and vice
+    /// versa. From NIST GCM Test Vectors, gcmEncryptExtIV256.rsp Count=0
+    /// (Keylen=256, IVlen=96, PTlen=0, AADlen=0, Taglen=128).
     ///
     /// Source:
     /// <https://csrc.nist.gov/CSRC/media/Projects/Cryptographic-Algorithm-Validation-Program/documents/mac/gcmtestvectors.zip>

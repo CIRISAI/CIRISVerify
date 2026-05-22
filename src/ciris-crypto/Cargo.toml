@@ -22,7 +22,7 @@ pqc-aws-lc = ["aws-lc-rs"]
 # CIRISEdge#3's at-rest crypto, etc.) can pick the surface they need.
 # The federation's threat model centralizes these in ciris-crypto so
 # consumers never reach into RustCrypto crates directly. See CIRISVerify#7.
-aes-gcm = ["dep:aes-gcm"]
+aes-gcm = ["dep:ring"]   # v2.8.0+: AES-256-GCM via ring — see CIRISVerify#26
 kdf = ["dep:pbkdf2"]   # hkdf is already a non-optional dep (used by secp256k1 wallet)
 hmac = ["dep:hmac"]
 random = []  # uses rand_core::OsRng — already pulled in by rand_core dep
@@ -71,10 +71,16 @@ ml-dsa = { version = "=0.1.0-rc.8", optional = true }
 pkcs8 = { version = "=0.11.0-rc.11", optional = true, default-features = false }
 aws-lc-rs = { version = "1.5", features = ["unstable"], optional = true }
 
-# v2.0+ — symmetric / MAC primitives (RustCrypto). All optional, gated
-# by their feature flag above. PBKDF2 is a separate dep from hkdf
+# v2.0+ — symmetric / MAC primitives. PBKDF2 is a separate dep from hkdf
 # because RustCrypto split them across crates.
-aes-gcm = { version = "0.10", optional = true }
+#
+# v2.8.0+ (CIRISVerify#26): AES-256-GCM is `ring`, not RustCrypto
+# `aes-gcm`. ring's hand-tuned AES-NI + CLMUL is 3–5× faster (~1 GiB/s →
+# ~3–5 GiB/s) and adds zero build cost: ring is already a universal
+# dependency here — rustls pulls it via reqwest + hickory-resolver on
+# every target we ship. See the `aes_gcm` module docs for the full
+# rationale.
+ring = { version = "0.17", optional = true }
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"], optional = true }
 hmac = { version = "0.12", optional = true }
 

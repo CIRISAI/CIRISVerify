@@ -111,13 +111,18 @@ tight (a quiet runner); re-recorded on every push to `main`.
 |---|---|---|
 | `hybrid_sign` (Ed25519 + ML-DSA-65) | 597 µs | — |
 | `hybrid_verify` | 276 µs | — |
-| `aes_gcm_encrypt` / 256 B | 531 ns | 459 MiB/s |
-| `aes_gcm_decrypt` / 256 B | 518 ns | 471 MiB/s |
-| `aes_gcm_encrypt` / 64 KiB | 61.2 µs | 1.00 GiB/s |
-| `aes_gcm_decrypt` / 64 KiB | 60.8 µs | 1.00 GiB/s |
+| `aes_gcm_encrypt` / 256 B ‡ | 179 ns | 1.33 GiB/s |
+| `aes_gcm_decrypt` / 256 B ‡ | 145 ns | 1.64 GiB/s |
+| `aes_gcm_encrypt` / 64 KiB ‡ | 6.45 µs | 9.46 GiB/s |
+| `aes_gcm_decrypt` / 64 KiB ‡ | 6.28 µs | 9.72 GiB/s |
 | `hkdf_sha256` | 548 ns | — |
 | `pbkdf2_hmac_sha256` (100 k iters) | 14.9 ms | — |
 | `hmac_sha256` | 238 ns | — |
+
+‡ v2.8.0 — AES-GCM moved to the `ring` backend (CIRISVerify#26); these
+rows are dev-host numbers, the rest are the v2.7.0 CI baseline.
+`bench.yml` re-records the whole table on a consistent CI host on the
+v2.8.0 push.
 
 - **`hybrid_sign` 597 µs / `hybrid_verify` 276 µs** — both dominated by
   ML-DSA-65 (Ed25519 is a few µs of each); ML-DSA signing is ~2× its
@@ -125,9 +130,14 @@ tight (a quiet runner); re-recorded on every push to `main`.
   of post-quantum coverage on every federation signature: verifying 100
   peers' STHs at boot is ~28 ms; continuous verification of thousands
   needs amortization.
-- **AES-GCM** — small-payload (256 B) throughput is per-call-overhead-
-  bound (~460 MiB/s); at 64 KiB it reaches 1.0 GiB/s as the fixed cost
-  amortizes. Fully explained two-regime curve.
+- **AES-GCM** — v2.8.0 switched the backend from RustCrypto `aes-gcm` to
+  `ring` (CIRISVerify#26). Bulk throughput went **1.0 → ~9.5 GiB/s**
+  (+~9.5×); small-payload 256 B went 0.46 → ~1.5 GiB/s (+~3×, still
+  per-call-overhead-bound at that size). `ring` was already a universal
+  dependency here (rustls, via reqwest + hickory-resolver), so the
+  switch cost zero new build surface. AES-256-GCM is a deterministic
+  standard — the NIST known-answer test confirms `ring` is byte-identical
+  to the old backend, so existing encrypted blobs stay readable.
 - **`pbkdf2_hmac_sha256`** scales linearly with the iteration count —
   14.9 ms at 100 k iters ⇒ ~149 ns/iter. Production iteration count is
   the caller's policy.
