@@ -107,6 +107,20 @@ impl EnvelopePurpose {
     pub const UNSPECIFIED: EnvelopePurpose = EnvelopePurpose(0);
 }
 
+/// Verification policy for [`FederationEnvelope::verify_with_policy`] —
+/// the advisory→required rollout control (CIRISVerify#28 Phase 4).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EnvelopeVerifyPolicy {
+    /// Accept an envelope that asserts no transport identity. The
+    /// v2.9.0+ rollout state — `sender_transport_identities` is
+    /// advisory while the fleet is mixed-version.
+    Advisory,
+    /// Reject an envelope with an empty `sender_transport_identities`.
+    /// The enforced state, switched on fleet-wide once the floor
+    /// version is met (the #28 Phase 4 cutover).
+    RequireTransportBinding,
+}
+
 /// A federation message envelope: a payload plus the sender's
 /// authenticated transport-identity binding, hybrid-signed by the
 /// sender's federation key.
@@ -254,7 +268,46 @@ impl FederationEnvelope {
         C: ClassicalVerifier,
         P: PqcVerifier,
     {
+        self.verify_with_policy(verifier, EnvelopeVerifyPolicy::Advisory)
+    }
+
+    /// Verify the envelope under an explicit [`EnvelopeVerifyPolicy`] —
+    /// the enforcement-capable verify path (CIRISVerify#28 Phase 4).
+    ///
+    /// [`EnvelopeVerifyPolicy::Advisory`] (what [`Self::verify`] uses)
+    /// accepts an envelope with no `sender_transport_identities` — the
+    /// v2.9.0 rollout state. [`EnvelopeVerifyPolicy::RequireTransportBinding`]
+    /// additionally rejects an envelope that asserts no binding: it is
+    /// the verify-side half of the advisory→required cutover, to be
+    /// switched on fleet-wide once the floor version is met (#28
+    /// Phase 4). The signature check is identical under both policies;
+    /// the policy only gates the *presence* of the binding.
+    ///
+    /// # Errors
+    ///
+    /// [`VerifyError::CryptoError`] on a signature failure (as
+    /// [`Self::verify`]); [`VerifyError::IntegrityError`] if the policy
+    /// is `RequireTransportBinding` and `sender_transport_identities` is
+    /// empty.
+    pub fn verify_with_policy<C, P>(
+        &self,
+        verifier: &HybridVerifier<C, P>,
+        policy: EnvelopeVerifyPolicy,
+    ) -> Result<(), VerifyError>
+    where
+        C: ClassicalVerifier,
+        P: PqcVerifier,
+    {
         verifier.verify(&self.signing_bytes_of(), &self.signature)?;
+        if policy == EnvelopeVerifyPolicy::RequireTransportBinding
+            && self.sender_transport_identities.is_empty()
+        {
+            return Err(VerifyError::IntegrityError {
+                message: "FederationEnvelope asserts no transport identity \
+                          (policy: RequireTransportBinding)"
+                    .to_string(),
+            });
+        }
         Ok(())
     }
 
@@ -558,6 +611,62 @@ mod tests {
             env.verify(&verifier).is_ok(),
             "advisory empty binding is valid"
         );
+    }
+
+    #[test]
+    fn require_transport_binding_rejects_empty() {
+        let s = signer();
+        let verifier = HybridVerifier::new(Ed25519Verifier::new(), MlDsa65Verifier::new());
+
+        // Empty binding: ok under Advisory, rejected under enforcement.
+        let bare =
+            FederationEnvelope::seal(&s, "a", "b", EnvelopePurpose(0), 0, vec![], b"p".to_vec())
+                .unwrap();
+        assert!(bare
+            .verify_with_policy(&verifier, EnvelopeVerifyPolicy::Advisory)
+            .is_ok());
+        assert!(
+            bare.verify_with_policy(&verifier, EnvelopeVerifyPolicy::RequireTransportBinding)
+                .is_err(),
+            "an envelope asserting no binding must fail enforced verification"
+        );
+
+        // A non-empty binding passes under both policies.
+        let bound = FederationEnvelope::seal(
+            &s,
+            "a",
+            "b",
+            EnvelopePurpose(0),
+            0,
+            vec![ti(b"dest")],
+            b"p".to_vec(),
+        )
+        .unwrap();
+        assert!(bound
+            .verify_with_policy(&verifier, EnvelopeVerifyPolicy::RequireTransportBinding)
+            .is_ok());
+    }
+
+    #[test]
+    fn enforcement_policy_still_checks_the_signature() {
+        // RequireTransportBinding must not weaken the signature check:
+        // a tampered envelope fails regardless of the binding.
+        let s = signer();
+        let mut env = FederationEnvelope::seal(
+            &s,
+            "a",
+            "b",
+            EnvelopePurpose(0),
+            1,
+            vec![ti(b"dest")],
+            b"orig".to_vec(),
+        )
+        .unwrap();
+        env.payload = b"tampered".to_vec();
+        let verifier = HybridVerifier::new(Ed25519Verifier::new(), MlDsa65Verifier::new());
+        assert!(env
+            .verify_with_policy(&verifier, EnvelopeVerifyPolicy::RequireTransportBinding)
+            .is_err());
     }
 
     #[test]

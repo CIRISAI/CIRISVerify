@@ -7,7 +7,7 @@
 > and the overview at [ciris.ai/mdd](https://ciris.ai/mdd).
 
 **Version**: 1.0
-**Status**: Active — reverse-engineered against `main` at v2.8.0
+**Status**: Active — reverse-engineered against `main` at v3.0.0
 **Date**: 2026-05-22
 
 This is the reverse-engineered MDD charter for CIRISVerify: it maps the
@@ -314,10 +314,14 @@ CIRISVerify does not stand alone. The authoritative federation map is
   substrate, not a CIRISVerify-internal log: CIRISPersist's audit
   chains and CIRISEdge's transport plug into the `TransparencyStore` /
   `TransparencyLeaf` traits.
-- In-flight federation work: the authenticated transport-identity
-  binding (AV-42 / Option C′) — CIRISVerify#27 (substrate, shipped
-  v2.9.0), #28 (cross-repo waterfall), #29 (the CIRISVerify 3.0
-  "Federation Ready" milestone).
+- The authenticated transport-identity binding (AV-42 / Option C′) is
+  shipped: the `FederationEnvelope` substrate (#27, v2.9.0), the
+  `federation_keys` provenance verifier and enforcement-capable verify
+  path (#29 WS-4 / #28 Phase 4 verify-side, v2.14.0 / v3.0.0), with
+  CIRISPersist v1.12.0 (`root_binding`) and CIRISEdge v0.4.0 (the
+  authenticated `PeerResolver`) as the consumers. The remaining #28
+  Phase 4 step is the fleet-wide advisory→required enforcement cutover —
+  a coordination flip, the capability already shipped.
 
 ## 8. License-locked mission preservation
 

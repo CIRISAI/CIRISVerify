@@ -85,8 +85,8 @@ pub use config::{TrustModel, VerifyConfig};
 pub use engine::LicenseEngine;
 pub use error::VerifyError;
 pub use federation_envelope::{
-    EnvelopePurpose, FederationEnvelope, TransportEpochGuard, TransportIdentity,
-    ENVELOPE_DOMAIN_SEP, ENVELOPE_SCHEMA_VERSION,
+    EnvelopePurpose, EnvelopeVerifyPolicy, FederationEnvelope, TransportEpochGuard,
+    TransportIdentity, ENVELOPE_DOMAIN_SEP, ENVELOPE_SCHEMA_VERSION,
 };
 pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
 pub use keys::{
