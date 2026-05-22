@@ -68,6 +68,7 @@ pub mod manifest_cache;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub mod mobile_http;
 pub mod play_integrity;
+pub mod provenance;
 pub mod registry;
 pub mod revocation;
 pub mod security;
@@ -92,6 +93,10 @@ pub use keys::{
     derive_symmetric_key, derive_transport_identity, DERIVED_KEY_LEN, TRANSPORT_SEED_LEN,
 };
 pub use license::{LicenseDetails, LicenseStatus, LicenseType};
+pub use provenance::{
+    verify_provenance_chain, ProvenanceChain, ProvenanceError, ProvenanceLink,
+    MAX_PROVENANCE_DEPTH, STEWARD_IDENTITY_TYPE,
+};
 pub use revocation::{RevocationChecker, RevocationStatus};
 pub use security::file_integrity::{
     check_available as check_available_agent_integrity, check_full as check_agent_integrity,
