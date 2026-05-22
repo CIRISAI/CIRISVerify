@@ -1,0 +1,31 @@
+# cargo-nextest configuration.
+#
+# CIRISVerify CI runs `cargo nextest run --all --profile ci`. The `ci`
+# profile hardens against CI-runner-transient flakes; the `default`
+# profile (local runs) stays strict so a developer sees a real failure
+# immediately, with no retry masking it.
+
+[profile.default]
+# A test still running after 4 × 60s is treated as hung and killed —
+# makes good on "nextest detects/terminates hung tests" (CLAUDE.md).
+slow-timeout = { period = "60s", terminate-after = 4 }
+
+[profile.ci]
+# Retry a failed test up to twice (3 attempts total). A test that fails
+# then passes is reported as FLAKY, not PASSED — the signal is preserved
+# in the CI summary, never hidden.
+#
+# Scope: this is a backstop for genuine CI-infrastructure transients
+# (runner contention, a process losing a scheduler slot). It is NOT a
+# substitute for fixing nondeterministic *code* — a persistently FLAKY
+# line in the summary is the signal to investigate and root-cause it.
+#
+# Precedent: the v2.12.0 `consistency_proof_verifies_large` failure was
+# first taken for an infra transient — wrongly. It was a real bug:
+# `append_license` hashes a wall-clock timestamp into each leaf, so two
+# independently built logs diverged across a Unix-second boundary. That
+# was root-caused and fixed (deterministic `append_license_at` for
+# tests), not retried around. Retries earn their place only against
+# failures that are genuinely outside the code.
+retries = 2
+slow-timeout = { period = "60s", terminate-after = 4 }

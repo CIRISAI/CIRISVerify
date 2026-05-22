@@ -250,8 +250,10 @@ jobs:
       - name: Build
         run: cargo build
       - name: Run all tests with nextest
-        # nextest handles parallel execution properly and detects hung tests
-        run: cargo nextest run --all
+        # nextest handles parallel execution properly and detects hung tests.
+        # --profile ci: bounded retries for CI-runner-transient flakes +
+        # a hang-terminate timeout. See .config/nextest.toml.
+        run: cargo nextest run --all --profile ci
         env:
           PROPTEST_CASES: 64
 

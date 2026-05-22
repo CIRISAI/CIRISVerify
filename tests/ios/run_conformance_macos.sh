@@ -53,9 +53,19 @@ echo ""
 echo "Running Swift conformance test..."
 echo "========================================"
 
-# Use swiftc to compile and run
+# Use swiftc to compile and run.
+#
+# No -import-objc-header: ConformanceTest.swift binds every FFI symbol
+# via @_silgen_name, so it needs no Objective-C bridging header. The old
+# `-import-objc-header /dev/null` hack (an "empty" bridging header) made
+# swiftc build a bridging PCH from /dev/null — and /dev/null's mtime is
+# bumped constantly by the whole OS, so clang's mtime-based PCH staleness
+# check would intermittently reject the PCH mid-build:
+#   "file '/dev/null' has been modified since the precompiled header ...
+#    clang importer creation failed"
+# Dropping the flag removes the PCH entirely — no header, no race.
 cd "$SCRIPT_DIR"
-swiftc -O -import-objc-header /dev/null \
+swiftc -O \
     -L "$(dirname "$LIB_PATH")" \
     -lciris_verify_ffi \
     -o conformance_test_macos \

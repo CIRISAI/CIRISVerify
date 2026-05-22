@@ -896,15 +896,42 @@ impl TransparencyLog<TransparencyEntry> {
         consensus_status: ValidationStatus,
         revocation_revision: u64,
     ) -> Result<[u8; 32], TransparencyError> {
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
+            .unwrap_or(0);
+        self.append_license_at(
+            license_id,
+            status,
+            consensus_status,
+            revocation_revision,
+            timestamp,
+        )
+    }
+
+    /// Append a license entry with an explicit event `timestamp` (Unix
+    /// seconds); [`Self::append_license`] is this with `SystemTime::now()`.
+    ///
+    /// `pub(crate)` — not public API. It exists for **deterministic
+    /// tests**: the entry `timestamp` is hashed into the leaf
+    /// (`TransparencyEntry::canonical_bytes`), so two logs built
+    /// independently with `append_license` diverge whenever their
+    /// appends straddle a Unix-second boundary — which made every
+    /// consistency test that builds an independent `old_log` latently
+    /// flaky. A fixed timestamp makes leaf content reproducible.
+    pub(crate) fn append_license_at(
+        &self,
+        license_id: &str,
+        status: LicenseStatus,
+        consensus_status: ValidationStatus,
+        revocation_revision: u64,
+        timestamp: i64,
+    ) -> Result<[u8; 32], TransparencyError> {
         let index = self.store.tree_size()?;
         let previous_hash = match index {
             0 => [0u8; 32],
             n => self.store.leaf_hash(n - 1)?.unwrap_or([0u8; 32]),
         };
-        let timestamp = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| i64::try_from(d.as_secs()).unwrap_or(i64::MAX))
-            .unwrap_or(0);
 
         // `merkle_root` is a placeholder: the leaf hash is computed from
         // canonical_bytes which deliberately excludes the merkle_root
@@ -1574,11 +1601,19 @@ mod tests {
 
     fn fill_log(log: &TransparencyLog<TransparencyEntry>, n: u64) {
         for i in 0..n {
-            log.append_license(
+            // Deterministic timestamp — see `append_license_at`. With
+            // `append_license`'s wall-clock `now()`, two independently
+            // built logs diverge across a Unix-second boundary, which
+            // made `consistency_proof_verifies_*` flaky. A fixed
+            // per-index timestamp makes `fill_log` content-reproducible:
+            // an `old_log` filled to `m` exactly reproduces the main
+            // log's first `m` leaves.
+            log.append_license_at(
                 &format!("lic-{:03}", i),
                 LicenseStatus::LicensedProfessional,
                 ValidationStatus::AllSourcesAgree,
                 100 + i,
+                1_700_000_000 + i as i64,
             )
             .unwrap();
         }
