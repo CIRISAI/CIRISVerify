@@ -623,13 +623,11 @@ A SOTA review (mid-2026) against current best-practice in software-supply-chain 
 
 **Action**: GitHub branch protection requiring 2+ approvers on release-tag-creating PRs; key-ceremony procedure for steward-key rotation requiring two operators. Documented in release runbook.
 
-### Gap 6: PQC algorithm-agility plan unspecified
+### Gap 6: PQC algorithm-agility plan — ✓ CLOSED (v2.11.0, CIRISVerify#29 WS-5)
 
 **SOTA**: NIST IR 8547 deprecation timeline (quantum-vulnerable algos by 2035); algorithm-agility patterns mandate config-not-code rotation.
 
-**CIRISVerify position**: Hybrid Ed25519 + ML-DSA-65 implemented, but no specified upgrade path if ML-DSA-65 is broken. ML-DSA is lattice-based, ~2 years standardized — non-zero risk of cryptanalytic discovery.
-
-**Action**: add `signature.classical_algorithm` and `signature.pqc_algorithm` as allowlist-validated fields (already serialized in `ManifestSignature`); document rotation procedure in `docs/PQC_MIGRATION.md`; consider SLH-DSA (FIPS 205, hash-based, conservative-trust) as the designated fallback.
+**Resolution**: the v2.0 hybrid schema was already algorithm-agile — every signature is self-describing (`crypto_kind` + tagged `ClassicalAlgorithm` + tagged `PqcAlgorithm` + `SignatureMode`), and `PqcAlgorithm` already enumerates ML-DSA-44/65/87 **and SLH-DSA-128s/256s** (FIPS 205 hash-based fallback already nameable). A successor algorithm is an enum variant plus a policy decision, never a wire-format break. v2.11.0 adds the single agility gate, `HybridSignature::meets_federation_policy()`, and `docs/CRYPTO_AGILITY.md` specifies the A/B/C migration protocol (additive accept → emit → retire, with transparency-log history staying verifiable under retired algorithms). Config-not-code rotation: a transition tightens one method, touching no signed structure.
 
 ### Gap 7: Server-class TEE attacks not modeled
 
@@ -690,7 +688,7 @@ The federation expects CIRISVerify to be the **substrate-level crypto authority*
 - ⏳ **SBOM publishing** (Gap 3) — `cargo-cyclonedx` integration scheduled. SPDX 3.0 + CycloneDX 1.6 dual format per CISA minimum elements + EU CRA Dec 2027 mandate.
 - ⏳ **Continuous Rekor monitoring** (Gap 2) — `rekor-monitor` against CIRISVerify's identity, alarm on rogue entries.
 - ⏳ **Two-person release rule** (Gap 5) — branch protection requiring 2+ approvers on release-tag-creating PRs; key-ceremony procedure for steward-key rotation.
-- ⏳ **PQC algorithm-agility** (Gap 6) — designated SLH-DSA fallback (FIPS 205, hash-based, conservative-trust); rotation procedure documented.
+- ✓ **PQC algorithm-agility** (Gap 6) — **closed v2.11.0** (CIRISVerify#29 WS-5): `HybridSignature::meets_federation_policy()` + `docs/CRYPTO_AGILITY.md`. SLH-DSA-128s/256s already nameable in `PqcAlgorithm`.
 - ⏳ **Hardware-master symmetric derivation** (AV-41) — `HardwareSigner::derive_symmetric_key` lands when CIRISPersist#19 exercises the `secrets-hw` path. Software-master mode covers the v2.0 surface.
 - ⏳ **PBKDF2 iteration bump** (AV-36) — 100k → 600k+ as compute baselines rise; tracked separately.
 

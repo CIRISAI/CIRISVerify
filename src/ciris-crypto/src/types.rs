@@ -206,6 +206,28 @@ impl HybridSignature {
         bytes.push(self.mode as u8);
         bytes
     }
+
+    /// Whether this signature satisfies current federation crypto policy
+    /// (CIRISVerify#29 WS-5 — the agility gate).
+    ///
+    /// A signature is policy-compliant when:
+    /// 1. `mode` is [`SignatureMode::HybridRequired`] — both halves
+    ///    present (CIRISVerify 2.x does not accept classical-only or, yet,
+    ///    pqc-only).
+    /// 2. The PQC algorithm meets the minimum security level
+    ///    ([`PqcAlgorithm::meets_minimum_requirement`] — ML-DSA-44 is
+    ///    rejected).
+    ///
+    /// This is the **single gate an algorithm transition flips.** When a
+    /// PQC algorithm is deprecated, tightening this method (not a
+    /// schema change) retires it: the tagged-enum schema already carries
+    /// every algorithm; policy decides which are *currently acceptable*.
+    /// See `docs/CRYPTO_AGILITY.md`.
+    #[must_use]
+    pub fn meets_federation_policy(&self) -> bool {
+        matches!(self.mode, SignatureMode::HybridRequired)
+            && self.pqc.algorithm.meets_minimum_requirement()
+    }
 }
 
 #[cfg(test)]
@@ -222,6 +244,57 @@ mod tests {
         assert!(!PqcAlgorithm::MlDsa44.meets_minimum_requirement());
         assert!(PqcAlgorithm::MlDsa65.meets_minimum_requirement());
         assert!(PqcAlgorithm::MlDsa87.meets_minimum_requirement());
+    }
+
+    fn hybrid_sig(pqc_alg: PqcAlgorithm, mode: SignatureMode) -> HybridSignature {
+        HybridSignature {
+            crypto_kind: CRYPTO_KIND_CIRIS_V1,
+            classical: TaggedClassicalSignature {
+                algorithm: ClassicalAlgorithm::Ed25519,
+                signature: vec![0u8; 64],
+                public_key: vec![0u8; 32],
+            },
+            pqc: TaggedPqcSignature {
+                algorithm: pqc_alg,
+                signature: vec![0u8; 8],
+                public_key: vec![0u8; 8],
+            },
+            mode,
+        }
+    }
+
+    #[test]
+    fn federation_policy_accepts_hybrid_mldsa65() {
+        assert!(
+            hybrid_sig(PqcAlgorithm::MlDsa65, SignatureMode::HybridRequired)
+                .meets_federation_policy()
+        );
+        assert!(
+            hybrid_sig(PqcAlgorithm::MlDsa87, SignatureMode::HybridRequired)
+                .meets_federation_policy()
+        );
+    }
+
+    #[test]
+    fn federation_policy_rejects_weak_pqc() {
+        assert!(
+            !hybrid_sig(PqcAlgorithm::MlDsa44, SignatureMode::HybridRequired)
+                .meets_federation_policy(),
+            "ML-DSA-44 is below the minimum security level"
+        );
+    }
+
+    #[test]
+    fn federation_policy_rejects_non_hybrid_mode() {
+        // The agility gate also enforces hybrid coverage: a classical-only
+        // or pqc-only signature fails policy even with a strong PQC alg.
+        assert!(
+            !hybrid_sig(PqcAlgorithm::MlDsa65, SignatureMode::ClassicalOnly)
+                .meets_federation_policy()
+        );
+        assert!(
+            !hybrid_sig(PqcAlgorithm::MlDsa65, SignatureMode::PqcOnly).meets_federation_policy()
+        );
     }
 
     #[test]
