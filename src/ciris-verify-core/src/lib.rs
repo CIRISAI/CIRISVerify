@@ -88,7 +88,9 @@ pub use federation_envelope::{
     ENVELOPE_DOMAIN_SEP, ENVELOPE_SCHEMA_VERSION,
 };
 pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
-pub use keys::{derive_symmetric_key, DERIVED_KEY_LEN};
+pub use keys::{
+    derive_symmetric_key, derive_transport_identity, DERIVED_KEY_LEN, TRANSPORT_SEED_LEN,
+};
 pub use license::{LicenseDetails, LicenseStatus, LicenseType};
 pub use revocation::{RevocationChecker, RevocationStatus};
 pub use security::file_integrity::{

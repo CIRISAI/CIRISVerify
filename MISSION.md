@@ -99,7 +99,19 @@ carries the evidence; CIRISLens scores it — **CIRISVerify is what makes
 any of it *evidence* in the first place.** A trace signed by a key you
 cannot tie to un-tampered software on real hardware proves nothing.
 Without this repo, no claim from any other federation peer is
-falsifiable. CIRISVerify is the root every evidence chain reduces to.
+falsifiable. CIRISVerify is the root every federation evidence chain
+reduces to **today**.
+
+A deeper layer is planned beneath it — **CIRISOssicle**, the
+hardware-root-of-trust transduction floor (an *ossicle* is the smallest
+bone, the middle-ear transducer): the silicon-level primitive that
+CIRISVerify currently approximates through `ciris-keyring`'s
+`HardwareSigner` abstraction. It is gated on CIRISAgent 3.5/4.0 and is
+not on any `main`; until it lands, CIRISVerify *is* the floor and this
+charter describes it as such. When CIRISOssicle ships, CIRISVerify
+becomes the root of the *federation evidence chain* sitting on
+CIRISOssicle as the root of *physical trust* — and this section is
+updated, not before (the doc tracks `main`, never vaporware).
 
 ### 1.4 Apophatic bound — what CIRISVerify will not be
 
@@ -293,16 +305,19 @@ CIRISVerify does not stand alone. The authoritative federation map is
 - **CIRISAgent** reasons and emits signed traces. **CIRISPersist**
   carries them durably. **CIRISLens** scores them and runs the
   Coherence Ratchet. **CIRISRegistry** is the identity/build/license
-  directory. **CIRISVerify is the root** — every other peer's claim is
-  verifiable only because this repo establishes the identity and
-  integrity it rests on.
+  directory. **CIRISVerify is the root (today)** — every other peer's
+  claim is verifiable only because this repo establishes the identity
+  and integrity it rests on. The planned **CIRISOssicle**
+  hardware-root-of-trust floor will sit beneath it (§1.3); gated on
+  CIRISAgent 3.5/4.0, not yet on `main`.
 - The **transparency log** (`transparency.rs`) is a federation
   substrate, not a CIRISVerify-internal log: CIRISPersist's audit
   chains and CIRISEdge's transport plug into the `TransparencyStore` /
   `TransparencyLeaf` traits.
 - In-flight federation work: the authenticated transport-identity
-  binding (AV-42 / Option C′) — CIRISVerify#27 (substrate) and #28
-  (cross-repo waterfall).
+  binding (AV-42 / Option C′) — CIRISVerify#27 (substrate, shipped
+  v2.9.0), #28 (cross-repo waterfall), #29 (the CIRISVerify 3.0
+  "Federation Ready" milestone).
 
 ## 8. License-locked mission preservation
 
