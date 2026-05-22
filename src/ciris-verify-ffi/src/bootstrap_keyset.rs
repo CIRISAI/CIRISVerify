@@ -22,12 +22,18 @@
 //!   rotation no longer requires a wheel respin propagated to every
 //!   agent.
 //!
-//! ## Back-compat (v2.2.0)
+//! ## Fallback removed (v3.0.1)
 //!
-//! The v2.1.x hardcoded constants stay in `constructor.rs` as a
-//! belt-and-suspenders fallback. If keyset parse fails for any reason,
-//! the constructor falls through to the single hardcoded steward. v2.3.0
-//! will drop the fallback once downstream confirms keyset propagation.
+//! v2.2.0–v3.0.0 kept the v2.1.x hardcoded steward constants in
+//! `constructor.rs` as a belt-and-suspenders fallback for a keyset
+//! parse failure. **v3.0.1 removed them** (the #29 deferral; the drop
+//! was scheduled for v2.3.0). The embedded keyset is
+//! `include_bytes!`-baked and CI-verified parseable on every release
+//! (`tests::embedded_keyset_parses`), so "keyset propagation" cannot
+//! lag the binary — the keyset *is* the binary. If `load_keyset`
+//! nonetheless fails, `constructor::get_trusted_stewards` returns an
+//! empty set and verification reports `Unavailable` — fail-secure,
+//! never a silent fallback to a stale key.
 //!
 //! ## Deliberately NOT here: steward transport identities (CIRISVerify#27)
 //!
