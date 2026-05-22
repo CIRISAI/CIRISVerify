@@ -99,9 +99,9 @@ fn run_verification() -> FunctionIntegrityStatus {
         };
     }
 
-    // v2.2.0+: resolve trusted stewards from the packaged keyset.
-    // Falls back to the v2.1.x hardcoded constants if the keyset is
-    // malformed (belt-and-suspenders; v2.3.0 drops the fallback).
+    // Resolve trusted stewards from the packaged keyset. v3.0.1 removed
+    // the v2.1.x hardcoded-constant fallback — a keyset load failure
+    // yields an empty set, handled fail-secure just below.
     let stewards = get_trusted_stewards();
     if stewards.is_empty() {
         return FunctionIntegrityStatus::Unavailable {
