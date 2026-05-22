@@ -10,7 +10,7 @@
 //!
 //! | Threat | Mitigation |
 //! |---|---|
-//! | Log fork / split-view | [`SignedTreeHead`] + reserved [`WitnessSignature`] (witness protocol later) |
+//! | Log fork / split-view | [`SignedTreeHead`] + [`WitnessSignature`] N-of-M witness cosigning ([`SignedTreeHead::witness_quorum_met`]) |
 //! | Retroactive insertion | [`ConsistencyProof`] proves append-only between two STH sizes |
 //! | Selective omission | [`MerkleProof`] against signed root |
 //! | Stale STH acceptance | STH `timestamp` + [`SignedTreeHead::is_fresh`] (verifier-side policy — a valid signature never expires, so callers MUST check freshness) |
@@ -336,6 +336,111 @@ impl SignedTreeHead {
         let delta = now.signed_duration_since(self.timestamp);
         delta >= -max_age && delta <= max_age
     }
+
+    /// The signing bytes for this STH's own fields — what both the log
+    /// operator's signature and every witness cosignature cover.
+    #[must_use]
+    pub fn signing_bytes_of(&self) -> Vec<u8> {
+        Self::signing_bytes(
+            &self.log_id,
+            self.tree_size,
+            &self.root_hash,
+            self.timestamp,
+        )
+    }
+
+    /// Produce a witness cosignature over this STH (witness-side,
+    /// CIRISVerify#29 WS-3).
+    ///
+    /// A witness observes the log independently and cosigns the STH it
+    /// sees. The cosignature covers the same [`Self::signing_bytes_of`]
+    /// the log operator signed — so a witness vouching for an STH vouches
+    /// for an exact `(tree_size, root_hash)`.
+    ///
+    /// # Errors
+    ///
+    /// [`TransparencyError`] if the hybrid signer fails.
+    pub fn cosign<C, P>(
+        &self,
+        witness_id: impl Into<String>,
+        signer: &ciris_crypto::HybridSigner<C, P>,
+    ) -> Result<WitnessSignature, TransparencyError>
+    where
+        C: ciris_crypto::ClassicalSigner,
+        P: ciris_crypto::PqcSigner,
+    {
+        let signature = signer.sign(&self.signing_bytes_of())?;
+        Ok(WitnessSignature {
+            witness_id: witness_id.into(),
+            signature,
+        })
+    }
+
+    /// Count the **distinct trusted** witnesses that validly cosigned
+    /// this STH (verifier-side, CIRISVerify#29 WS-3).
+    ///
+    /// A witness cosignature counts only when all three hold:
+    /// 1. its `witness_id` appears in `trusted`;
+    /// 2. the public keys embedded in the cosignature match that
+    ///    witness's *pinned* keys — otherwise any key would
+    ///    self-certify (the steward-pubkey-pinning discipline);
+    /// 3. the hybrid signature verifies over [`Self::signing_bytes_of`].
+    ///
+    /// Duplicate `witness_id`s count once — M cosignatures from one
+    /// witness are not M witnesses.
+    #[must_use]
+    pub fn count_valid_witnesses<C, P>(
+        &self,
+        verifier: &ciris_crypto::HybridVerifier<C, P>,
+        trusted: &[TrustedWitness],
+    ) -> usize
+    where
+        C: ciris_crypto::ClassicalVerifier,
+        P: ciris_crypto::PqcVerifier,
+    {
+        let bytes = self.signing_bytes_of();
+        let mut counted: Vec<&str> = Vec::new();
+        for ws in &self.witness_signatures {
+            if counted.contains(&ws.witness_id.as_str()) {
+                continue;
+            }
+            let Some(tw) = trusted.iter().find(|t| t.witness_id == ws.witness_id) else {
+                continue;
+            };
+            if ws.signature.classical.public_key != tw.classical_public_key
+                || ws.signature.pqc.public_key != tw.pqc_public_key
+            {
+                continue;
+            }
+            // HybridVerifier::verify returns Err on mismatch, never
+            // Ok(false) — unwrap_or(false) folds both into "did not count".
+            if verifier.verify(&bytes, &ws.signature).unwrap_or(false) {
+                counted.push(&ws.witness_id);
+            }
+        }
+        counted.len()
+    }
+
+    /// Whether this STH meets an N-of-M witness quorum — the split-view
+    /// defense (CIRISVerify#29 WS-3).
+    ///
+    /// `quorum` distinct trusted witnesses must have validly cosigned.
+    /// A split-view log operator cannot satisfy this without colluding
+    /// witnesses, because each witness signs the exact tree it observed.
+    /// A `quorum` of 0 is vacuously met.
+    #[must_use]
+    pub fn witness_quorum_met<C, P>(
+        &self,
+        verifier: &ciris_crypto::HybridVerifier<C, P>,
+        trusted: &[TrustedWitness],
+        quorum: usize,
+    ) -> bool
+    where
+        C: ciris_crypto::ClassicalVerifier,
+        P: ciris_crypto::PqcVerifier,
+    {
+        self.count_valid_witnesses(verifier, trusted) >= quorum
+    }
 }
 
 /// A witness cosignature over an STH.
@@ -343,13 +448,32 @@ impl SignedTreeHead {
 /// Witnesses observe the log independently and cosign its STH; downstream
 /// verifiers gating on N-of-M witness agreement detect split-view attacks
 /// where a log operator serves different trees to different clients.
-/// Reserved field in v2.3.0; populated by future witness protocol.
+/// Produced by [`SignedTreeHead::cosign`], verified by
+/// [`SignedTreeHead::count_valid_witnesses`] / [`SignedTreeHead::witness_quorum_met`].
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WitnessSignature {
     /// Stable identifier for the witness.
     pub witness_id: String,
     /// Hybrid signature over the same `SignedTreeHead::signing_bytes`.
     pub signature: ciris_crypto::HybridSignature,
+}
+
+/// A pinned trusted witness — its stable id and the public keys its
+/// cosignatures must carry (CIRISVerify#29 WS-3).
+///
+/// A `WitnessSignature` whose embedded public keys do not match the
+/// pinned keys here is ignored. Trust is the *pinned* key, never a
+/// self-asserted one — the same discipline as steward-pubkey pinning.
+/// The pinned keys are sourced from the federation directory or a
+/// configured witness set; sourcing is the caller's concern.
+#[derive(Debug, Clone)]
+pub struct TrustedWitness {
+    /// Stable witness identifier (matches `WitnessSignature::witness_id`).
+    pub witness_id: String,
+    /// Pinned classical (Ed25519) public key.
+    pub classical_public_key: Vec<u8>,
+    /// Pinned PQC (ML-DSA-65) public key.
+    pub pqc_public_key: Vec<u8>,
 }
 
 // ========================================================================
@@ -1665,6 +1789,140 @@ mod tests {
         assert_eq!(stored.log_id, sth.log_id);
         assert_eq!(stored.tree_size, sth.tree_size);
         assert_eq!(stored.root_hash, sth.root_hash);
+    }
+
+    // ---------------------------------------------------------------------
+    // #29 WS-3: witness cosigning (split-view defense)
+    // ---------------------------------------------------------------------
+
+    type RealSigner =
+        ciris_crypto::HybridSigner<ciris_crypto::Ed25519Signer, ciris_crypto::MlDsa65Signer>;
+    type RealVerifier =
+        ciris_crypto::HybridVerifier<ciris_crypto::Ed25519Verifier, ciris_crypto::MlDsa65Verifier>;
+
+    fn real_signer() -> RealSigner {
+        ciris_crypto::HybridSigner::new(
+            ciris_crypto::Ed25519Signer::random(),
+            ciris_crypto::MlDsa65Signer::new().unwrap(),
+        )
+        .unwrap()
+    }
+
+    fn real_verifier() -> RealVerifier {
+        ciris_crypto::HybridVerifier::new(
+            ciris_crypto::Ed25519Verifier::new(),
+            ciris_crypto::MlDsa65Verifier::new(),
+        )
+    }
+
+    fn witness_test_sth() -> SignedTreeHead {
+        let log = new_log();
+        fill_log(&log, 4);
+        let signer = HybridSigner::new(StubClassicalSigner, StubPqcSigner).unwrap();
+        log.sign_head(&signer).unwrap()
+    }
+
+    /// Pin a witness from a cosignature it produced (the keys it embedded).
+    fn pin(ws: &WitnessSignature) -> TrustedWitness {
+        TrustedWitness {
+            witness_id: ws.witness_id.clone(),
+            classical_public_key: ws.signature.classical.public_key.clone(),
+            pqc_public_key: ws.signature.pqc.public_key.clone(),
+        }
+    }
+
+    #[test]
+    fn witness_cosign_and_verify_round_trip() {
+        let mut sth = witness_test_sth();
+        let cosig = sth.cosign("witness-1", &real_signer()).unwrap();
+        sth.witness_signatures.push(cosig.clone());
+        let trusted = [pin(&cosig)];
+        assert_eq!(sth.count_valid_witnesses(&real_verifier(), &trusted), 1);
+        assert!(sth.witness_quorum_met(&real_verifier(), &trusted, 1));
+    }
+
+    #[test]
+    fn witness_quorum_not_met_when_short() {
+        let mut sth = witness_test_sth();
+        let c1 = sth.cosign("witness-1", &real_signer()).unwrap();
+        sth.witness_signatures.push(c1.clone());
+        let trusted = [pin(&c1)];
+        // One valid witness, quorum of 2 → not met.
+        assert!(!sth.witness_quorum_met(&real_verifier(), &trusted, 2));
+    }
+
+    #[test]
+    fn witness_quorum_met_with_two_distinct() {
+        let mut sth = witness_test_sth();
+        let c1 = sth.cosign("witness-1", &real_signer()).unwrap();
+        let c2 = sth.cosign("witness-2", &real_signer()).unwrap();
+        sth.witness_signatures.push(c1.clone());
+        sth.witness_signatures.push(c2.clone());
+        let trusted = [pin(&c1), pin(&c2)];
+        assert_eq!(sth.count_valid_witnesses(&real_verifier(), &trusted), 2);
+        assert!(sth.witness_quorum_met(&real_verifier(), &trusted, 2));
+    }
+
+    #[test]
+    fn untrusted_witness_id_is_ignored() {
+        let mut sth = witness_test_sth();
+        let cosig = sth.cosign("rogue-witness", &real_signer()).unwrap();
+        sth.witness_signatures.push(cosig);
+        // Trusted set does not include "rogue-witness".
+        assert_eq!(sth.count_valid_witnesses(&real_verifier(), &[]), 0);
+    }
+
+    #[test]
+    fn witness_with_wrong_pinned_key_is_ignored() {
+        let mut sth = witness_test_sth();
+        let cosig = sth.cosign("witness-1", &real_signer()).unwrap();
+        sth.witness_signatures.push(cosig.clone());
+        // Same witness_id, but a DIFFERENT pinned key (another signer's).
+        let imposter = sth.cosign("witness-1", &real_signer()).unwrap();
+        let trusted = [pin(&imposter)];
+        assert_eq!(
+            sth.count_valid_witnesses(&real_verifier(), &trusted),
+            0,
+            "a cosignature whose keys don't match the pinned ones must not count"
+        );
+    }
+
+    #[test]
+    fn duplicate_witness_id_counts_once() {
+        let mut sth = witness_test_sth();
+        let cosig = sth.cosign("witness-1", &real_signer()).unwrap();
+        // The same witness's cosignature pushed twice.
+        sth.witness_signatures.push(cosig.clone());
+        sth.witness_signatures.push(cosig.clone());
+        let trusted = [pin(&cosig)];
+        assert_eq!(
+            sth.count_valid_witnesses(&real_verifier(), &trusted),
+            1,
+            "M cosignatures from one witness are not M witnesses"
+        );
+    }
+
+    #[test]
+    fn tampered_sth_breaks_witness_cosignature() {
+        let mut sth = witness_test_sth();
+        let cosig = sth.cosign("witness-1", &real_signer()).unwrap();
+        sth.witness_signatures.push(cosig.clone());
+        let trusted = [pin(&cosig)];
+        // The log operator presents a different tree to this verifier.
+        sth.root_hash[0] ^= 1;
+        assert_eq!(
+            sth.count_valid_witnesses(&real_verifier(), &trusted),
+            0,
+            "a witness cosigned a specific (tree_size, root_hash) — mutating it must invalidate"
+        );
+    }
+
+    #[test]
+    fn empty_witness_list_meets_zero_quorum_only() {
+        let sth = witness_test_sth();
+        assert_eq!(sth.count_valid_witnesses(&real_verifier(), &[]), 0);
+        assert!(sth.witness_quorum_met(&real_verifier(), &[], 0));
+        assert!(!sth.witness_quorum_met(&real_verifier(), &[], 1));
     }
 
     // ---------------------------------------------------------------------

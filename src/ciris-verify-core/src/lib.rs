@@ -102,7 +102,7 @@ pub use security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
 pub use transparency::{
     verify_consistency, verify_inclusion, ConsistencyProof, InMemoryTransparencyStore, MerkleProof,
     ProofChain, SignedTreeHead, TransparencyEntry, TransparencyError, TransparencyLeaf,
-    TransparencyLog, TransparencyStore, WitnessSignature,
+    TransparencyLog, TransparencyStore, TrustedWitness, WitnessSignature,
 };
 pub use types::{
     AttestationProof, BinaryIntegrityStatus, CapabilityCheckRequest, CapabilityCheckResponse,
