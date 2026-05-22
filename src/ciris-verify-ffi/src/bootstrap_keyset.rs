@@ -28,6 +28,21 @@
 //! belt-and-suspenders fallback. If keyset parse fails for any reason,
 //! the constructor falls through to the single hardcoded steward. v2.3.0
 //! will drop the fallback once downstream confirms keyset propagation.
+//!
+//! ## Deliberately NOT here: steward transport identities (CIRISVerify#27)
+//!
+//! The AV-42 transport-identity binding (`FederationEnvelope`, v2.9.0)
+//! could in principle pin each bootstrap steward's Reticulum transport
+//! identity here, giving zero-TOFU cold contact with the trust anchors.
+//! It does **not**, and must not. This keyset is `include_bytes!`-baked
+//! into the wheel; a steward's *transport* key is cheap plumbing that
+//! rotates often, and baking it in would make every transport-key
+//! rotation require a wheel respin — re-imposing exactly the rigidity
+//! issue #22 removed for the long-lived federation pubkeys. A steward's
+//! transport identity is *learned* from its first authenticated
+//! `FederationEnvelope` (or, later, carried by the v2.3.0+
+//! runtime-loadable signed keyset artifact). This file holds only the
+//! long-lived Ed25519 / ML-DSA federation pubkeys.
 
 use base64::Engine;
 use serde::Deserialize;

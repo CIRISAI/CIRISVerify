@@ -58,6 +58,7 @@ pub mod config;
 pub mod dns;
 pub mod engine;
 pub mod error;
+pub mod federation_envelope;
 pub mod hardware_info;
 pub mod https;
 pub mod jwt;
@@ -82,6 +83,10 @@ pub use cache::{CachedLicense, LicenseCache};
 pub use config::{TrustModel, VerifyConfig};
 pub use engine::LicenseEngine;
 pub use error::VerifyError;
+pub use federation_envelope::{
+    EnvelopePurpose, FederationEnvelope, TransportEpochGuard, TransportIdentity,
+    ENVELOPE_DOMAIN_SEP, ENVELOPE_SCHEMA_VERSION,
+};
 pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
 pub use keys::{derive_symmetric_key, DERIVED_KEY_LEN};
 pub use license::{LicenseDetails, LicenseStatus, LicenseType};

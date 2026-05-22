@@ -2086,6 +2086,7 @@ Total adversarial-review pressure applied before publication: ~50 findings acros
 - **G2 succession protocol** — entire protocol specification pending.
 - **Cross-federation peering** (F-AV-CROSS) — entire FSD pending; deferred to v3.
 - **Threat-model wire-format schema** (per §10.2) — implementation pending.
+- **Transport-identity ↔ federation-key binding** (AV-42) — a mesh-transport peer can announce another peer's `key_id` at its own destination and intercept. Mitigated by the `FederationEnvelope` carrying the binding as a signature-covered field (Option C′). Full treatment lives in `THREAT_MODEL.md` §3.9; the cross-repo rollout is the CIRISVerify#28 waterfall. The federation-wide *authentication ≠ trust* invariant established there (`MISSION.md` §1.4) applies to every primitive in this document: verifying a primitive authenticates origin only — trust remains a separate, operator-controlled, default-deny axis.
 
 ### A.6 What was NOT changed (and why)
 

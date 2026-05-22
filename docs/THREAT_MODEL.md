@@ -367,6 +367,26 @@ deny = [
 
 ---
 
+### 3.9 Federation Transport-Identity Binding — adversary wants to intercept mesh traffic addressed to another federation key
+
+#### AV-42: Spoofed transport-identity ↔ federation-key binding
+
+**Attack**: Mesh transports (Reticulum) address peers by a *transport identity* — `hash(x25519‖ed25519)` — distinct from the federation Ed25519 `key_id` (AV-17 keeps the federation seed out of the transport process). A sender calling `send(key_id=K, …)` must resolve `K` to a transport identity. An unauthenticated mesh *announce* (`key_id → destination`) is trust-on-first-use: any peer can announce `key_id=K` paired with its own destination, and a sender routes K's envelope to the adversary — interception (the envelope is still sender-signed, so the adversary cannot forge a reply K would accept, but it *receives and decrypts* the bytes, and legitimate delivery is denied).
+
+**Primary mitigation (Option C′)**: the binding is carried as a signature-covered field of the `FederationEnvelope` (`src/ciris-verify-core/src/federation_envelope.rs`). `sender_transport_identities` is inside the canonical bytes the hybrid signature covers, so verifying any envelope from K — which a recipient does anyway — yields an authenticated "K is reachable at T". No separate attestation artifact; no `federation_keys` schema migration. `transport_epoch`, a per-`key_id` monotonic counter enforced by `TransportEpochGuard`, blocks replay of a stale (possibly adversary-controlled) binding — anti-rollback, mirroring revocation-revision monotonicity. The `ENVELOPE_DOMAIN_SEP` prefix separates envelope bytes from every other signed primitive, so a transport-identity-shaped field elsewhere (an STH, a build manifest) can never be harvested as an envelope binding (the AV-8 confused-deputy precedent).
+
+**Secondary**: cold first-contact — before any envelope has been received from K — is rooted against the registry/`federation_keys` directory row for `K`, not trust-on-first-use. One-way broadcast classes (STH gossip, audit broadcasts) route only to already-confirmed transport identities.
+
+**Routing-only / provenance bound (finding G)**: the transport binding is **routing information, not provenance**. It lives in envelopes, deliberately *outside* the `federation_keys` recursive-scrub-signing chain. This is acceptable precisely because it confers nothing — see the invariant below. If a transport identity ever gates a security decision (rather than only addressing), it must first be promoted to a signed `federation_keys`-class row inside the provenance chain.
+
+**Anti-Sybil bound (finding J)**: longitudinal / S-factor anti-Sybil weight keys **only** off `key_id`. A federation key may present, rotate, or multi-home across many transport identities over time; that churn is invisible to scoring. Counting transport identities as identities would let an attacker inflate apparent peer count — `key_id` is the identity, the transport identity is plumbing.
+
+**Authentication ≠ trust invariant** (federation-wide, `MISSION.md` §1.4): *every federation primitive authenticates origin; none confers trust.* Verifying a `FederationEnvelope` proves "this came from key K" and nothing more. A never-before-seen `key_id` delivering a valid envelope lands at trust-degree = default-untrusted, zero history. Confirming a transport binding updates the routing table only — it never moves an entity along the trust axis. Trust is a separate, explicit, operator/policy-controlled, default-deny axis (inherited from the CIRISNodeCore trust model).
+
+**Status**: 🟡 v2.9.0 ships the CIRISVerify substrate — the `FederationEnvelope` canonical bytes, `TransportEpochGuard`, the invariant — with `sender_transport_identities` *advisory*. ⏳ Consumer wiring (CIRISEdge resolver, CIRISPersist cold-start rooting) and the advisory→required enforcement cutover are tracked in the CIRISVerify#28 waterfall.
+
+---
+
 ## 4. Mitigation Matrix
 
 | AV | Attack | Primary Mitigation | Secondary | Status | Fix Tracker |
@@ -392,6 +412,7 @@ deny = [
 | AV-39 | OsRng entropy degradation | `ciris_crypto::random` wraps `OsRng` (Linux `getrandom(2)` blocks until seeded; macOS `SecRandomCopyBytes`; Windows `BCryptGenRandom`) | Container/embedded deployment guidance — `ExecStartPre` entropy seed; future hardware-entropy mixing | ✓ Server/mobile/desktop covered; 🟡 future FIPS-mode + embedded hardening | v2.x |
 | AV-40 | Federation-policy violation (bypassing ciris-crypto direct RustCrypto deps) | v2.0 release notes documenting "ciris-crypto is THE crypto authority"; cargo-deny `[bans]` config in downstream consumers banning `aes-gcm`/`hkdf`/`pbkdf2`/`hmac` direct deps | PR-time review; new direct RustCrypto dep is a red flag | 🟡 Convention; ⏳ federation-wide cargo-deny baseline | future |
 | AV-41 | Hardware-bound master derivation gap | Software-master mode uses ciris-crypto KDF directly with caller-managed master lifecycle; master is zeroed after derivation | `HardwareSigner::derive_symmetric_key` lands when CIRISPersist#19's `secrets-hw` is exercised | 🟡 Software-master covered; ⏳ hardware-master deferred to v2.x | CIRISPersist#19 |
+| AV-42 | Spoofed transport-identity ↔ federation-key binding | Binding carried as a signature-covered field of the `FederationEnvelope` (Option C′, §3.9); `transport_epoch` anti-rollback via `TransportEpochGuard`; `domain_sep` separation from other signed primitives | Cold first-contact rooted against the `federation_keys` directory row, not TOFU; one-way broadcasts route only to confirmed identities | 🟡 v2.9.0 substrate shipped (advisory); ⏳ consumer wiring + enforcement cutover | CIRISVerify#27, #28 |
 | Audit | Audit trail tampering | Transparency log with Merkle tree | Append-only persistent storage | ✓ Mitigated | Fix 1 |
 
 **Status legend:** ✓ Mitigated • 🟡 Partial mitigation, residual tracked • ⚠ Open / planned

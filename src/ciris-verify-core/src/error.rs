@@ -109,6 +109,25 @@ pub enum VerifyError {
         last_seen: u64,
     },
 
+    /// Transport-epoch rollback (CIRISVerify#27, AV-42) — a federation
+    /// envelope carried a `transport_epoch` lower than one already seen
+    /// for the same `key_id`. A replayed older envelope must not be able
+    /// to revert a peer's transport-identity binding to a stale (and
+    /// possibly adversary-controlled) one. Mirrors `RollbackDetected`
+    /// for the transport-binding axis.
+    #[error(
+        "Transport-epoch rollback for key_id {key_id}: \
+         envelope epoch {attempted} is below highest seen {highest_seen}"
+    )]
+    TransportEpochRollback {
+        /// The federation key_id the envelope claimed to be from.
+        key_id: String,
+        /// The epoch the rejected envelope carried.
+        attempted: u64,
+        /// The highest epoch previously admitted for this key_id.
+        highest_seen: u64,
+    },
+
     /// Configuration error.
     #[error("Configuration error: {message}")]
     ConfigError {
