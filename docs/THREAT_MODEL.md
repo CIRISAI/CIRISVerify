@@ -1,6 +1,6 @@
 # CIRISVerify Threat Model
 
-**Last updated:** 2026-05-01 (post-v1.8.3, federation-substrate work shipped)
+**Last updated:** 2026-05-22 (v3.0.0 "Federation Ready" — AV-42 transport-identity binding mitigated; §10 Gap 6 closed)
 
 ## 1. Scope
 

@@ -2,7 +2,7 @@
 
 **The hardware-rooted trust anchor for AI agents.**
 
-Protocol 2.7.0 · Rust + Python · AGPL-3.0 · Post-quantum from day one
+Protocol 3.0.0 · Rust + Python · AGPL-3.0 · Post-quantum from day one
 
 CIRISVerify answers one question for any agent in the CIRIS ecosystem:
 *is this agent who and what it claims to be?* It binds an agent's

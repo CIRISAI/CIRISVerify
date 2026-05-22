@@ -1,12 +1,25 @@
 # CIRISVerify Implementation Roadmap
 
-**Status**: Active Development (Phase 0-1 Complete, Phase 3-5 In Progress)
-**Target**: Production-ready v2.0.0
+> **⚠ Historical document.** This roadmap records the **foundational
+> v1.x → v2.0 build-out** (Phases 0–7 below). That build-out is
+> **complete** — the project shipped v2.0.0 and is now at **v3.0.0
+> ("Federation Ready")**. The Phase 0–2 detail below remains accurate
+> as a record of how the crypto / hardware / engine layers were built;
+> the "🔧 IN PROGRESS" markers on Phases 3–5 are stale (that work
+> shipped long ago).
+>
+> **The live, forward-looking roadmap is the GitHub issue tracker** —
+> see **#28** (the AV-42 transport-identity waterfall; only the Phase 4
+> fleet enforcement-cutover remains) and the closed **#29** milestone
+> ("CIRISVerify 3.0 — Federation Ready"). `MISSION.md` is the current
+> architectural charter; `docs/THREAT_MODEL.md` carries the live AV
+> matrix.
+
+**Status**: Foundational build-out (Phases 0–7) — COMPLETE (shipped v2.0.0)
+**Current Version**: v3.0.0 — see the issue tracker for forward work
 **Language**: Rust
 **Upstream Alignment**: Veilid patterns for potential contribution
-**Test Suite**: 150+ tests passing
-**Last Updated**: 2026-03-25
-**Current Version**: v1.2.1
+**Header last refreshed**: 2026-05-22 (at v3.0.0)
 
 ---
 
