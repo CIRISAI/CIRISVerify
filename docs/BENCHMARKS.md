@@ -107,33 +107,32 @@ tight (a quiet runner); re-recorded on every push to `main`.
 
 ### federation_crypto
 
+v2.8.0 CI baseline (`ubuntu-latest`, commit `76598da`):
+
 | Operation | Time | Throughput |
 |---|---|---|
-| `hybrid_sign` (Ed25519 + ML-DSA-65) | 597 µs | — |
+| `hybrid_sign` (Ed25519 + ML-DSA-65) | 466 µs | — |
 | `hybrid_verify` | 276 µs | — |
-| `aes_gcm_encrypt` / 256 B ‡ | 179 ns | 1.33 GiB/s |
-| `aes_gcm_decrypt` / 256 B ‡ | 145 ns | 1.64 GiB/s |
-| `aes_gcm_encrypt` / 64 KiB ‡ | 6.45 µs | 9.46 GiB/s |
-| `aes_gcm_decrypt` / 64 KiB ‡ | 6.28 µs | 9.72 GiB/s |
+| `aes_gcm_encrypt` / 256 B | 428 ns | 570 MiB/s |
+| `aes_gcm_decrypt` / 256 B | 319 ns | 765 MiB/s |
+| `aes_gcm_encrypt` / 64 KiB | 11.2 µs | 5.45 GiB/s |
+| `aes_gcm_decrypt` / 64 KiB | 10.3 µs | 5.91 GiB/s |
 | `hkdf_sha256` | 548 ns | — |
 | `pbkdf2_hmac_sha256` (100 k iters) | 14.9 ms | — |
-| `hmac_sha256` | 238 ns | — |
+| `hmac_sha256` | 242 ns | — |
 
-‡ v2.8.0 — AES-GCM moved to the `ring` backend (CIRISVerify#26); these
-rows are dev-host numbers, the rest are the v2.7.0 CI baseline.
-`bench.yml` re-records the whole table on a consistent CI host on the
-v2.8.0 push.
-
-- **`hybrid_sign` 597 µs / `hybrid_verify` 276 µs** — both dominated by
-  ML-DSA-65 (Ed25519 is a few µs of each); ML-DSA signing is ~2× its
+- **`hybrid_sign` 466 µs / `hybrid_verify` 276 µs** — both dominated by
+  ML-DSA-65 (Ed25519 is a few µs of each); signing is heavier than
   verification, the expected asymmetry. This is the per-signature cost
   of post-quantum coverage on every federation signature: verifying 100
   peers' STHs at boot is ~28 ms; continuous verification of thousands
   needs amortization.
 - **AES-GCM** — v2.8.0 switched the backend from RustCrypto `aes-gcm` to
-  `ring` (CIRISVerify#26). Bulk throughput went **1.0 → ~9.5 GiB/s**
-  (+~9.5×); small-payload 256 B went 0.46 → ~1.5 GiB/s (+~3×, still
-  per-call-overhead-bound at that size). `ring` was already a universal
+  `ring` (CIRISVerify#26). Bulk (64 KiB) throughput went **1.0 →
+  ~5.5–5.9 GiB/s on CI** (+~5×; the dev host, a faster CPU, hits
+  ~9.5 GiB/s). Small-payload 256 B is up modestly (0.46 → ~0.6 GiB/s) —
+  that regime is per-call-overhead-bound, not throughput-bound, so the
+  win is small there by nature. `ring` was already a universal
   dependency here (rustls, via reqwest + hickory-resolver), so the
   switch cost zero new build surface. AES-256-GCM is a deterministic
   standard — the NIST known-answer test confirms `ring` is byte-identical
