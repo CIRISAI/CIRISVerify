@@ -127,6 +127,35 @@ impl BuildManifest {
         };
         serde_json::to_vec(&canonical).unwrap_or_default()
     }
+
+    /// Emit the `federation_provenance` dimensions this manifest stands
+    /// for (CIRISVerify#35, v3.4.0+). Per FSD-002 §3.2 the
+    /// build-manifest verifier owns exactly one dimension:
+    /// `provenance:build_manifest:{target}` — per-target canonical-
+    /// staged-runtime manifest hash equality, signed by the steward.
+    ///
+    /// **Call only after [`verify_build_manifest`] has returned
+    /// `Ok(self)`** — successful return from `verify_build_manifest` IS
+    /// the verdict (the hybrid signature verified, the primitive
+    /// matched, the extras dispatched cleanly). This method emits the
+    /// `PASS` entry that records what just happened; calling it on an
+    /// un-verified manifest would assert a verdict that wasn't made.
+    ///
+    /// `attester` is who signed the manifest — typically the
+    /// per-primitive steward `key_id` (`verify-steward-2026`,
+    /// `persist-steward-2026`, etc.) the caller already pinned to
+    /// produce `trusted_pubkey`.
+    #[must_use]
+    pub fn to_attestation_entries(
+        &self,
+        attester: &str,
+    ) -> Vec<crate::federation_provenance::AttestationEntry> {
+        use crate::federation_provenance::{dim, AttestationEntry};
+        vec![AttestationEntry::pass(
+            dim::provenance_build_manifest(&self.target),
+            attester,
+        )]
+    }
 }
 
 /// Canonical representation of a `BuildManifest` for signing.
@@ -1393,5 +1422,53 @@ mod tests {
         let a: [u8; 32] = Sha256::digest(b"x").into();
         let b: [u8; 32] = Sha256::digest(b"x").into();
         assert!(bool::from(a.ct_eq(&b)));
+    }
+
+    // ---- #35: to_attestation_entries (federation_provenance wiring) ----
+
+    #[test]
+    fn to_attestation_entries_emits_provenance_build_manifest_for_target() {
+        let manifest = build_test_manifest(BuildPrimitive::Verify, None);
+        let entries = manifest.to_attestation_entries("verify-steward-2026");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            entries[0].dimension,
+            "provenance:build_manifest:x86_64-unknown-linux-gnu"
+        );
+        assert_eq!(entries[0].score, 1.0);
+        assert_eq!(entries[0].attester, "verify-steward-2026");
+    }
+
+    #[test]
+    fn to_attestation_entries_dimension_tracks_target() {
+        // Different target → different dimension; the per-target shape
+        // of the FSD-002 §3.2 namespace is the load-bearing property
+        // (a consumer policy that requires
+        // `provenance:build_manifest:aarch64-apple-ios` won't be
+        // accidentally satisfied by an x86_64 manifest).
+        let mut manifest = build_test_manifest(BuildPrimitive::Verify, None);
+        manifest.target = "aarch64-apple-ios".to_string();
+        let entries = manifest.to_attestation_entries("verify-steward-2026");
+        assert_eq!(
+            entries[0].dimension,
+            "provenance:build_manifest:aarch64-apple-ios"
+        );
+    }
+
+    #[test]
+    fn to_attestation_entries_carries_per_primitive_attester() {
+        // The attester is per-primitive (each primitive's steward signs
+        // its own manifest). The same shape of entry, different attester
+        // tag, is how consumer policy distinguishes
+        // "persist's build manifest" from "verify's".
+        let manifest = build_test_manifest(BuildPrimitive::Persist, None);
+        let entries = manifest.to_attestation_entries("persist-steward-2026");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].attester, "persist-steward-2026");
+        // Target is still the canonical target string verbatim.
+        assert_eq!(
+            entries[0].dimension,
+            "provenance:build_manifest:x86_64-unknown-linux-gnu"
+        );
     }
 }
