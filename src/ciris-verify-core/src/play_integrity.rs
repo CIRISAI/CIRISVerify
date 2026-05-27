@@ -146,6 +146,30 @@ impl IntegrityVerifyResponse {
 
         format!("OK device={} app={}", device, app)
     }
+
+    /// Convert this Play Integrity verification result into the
+    /// `federation_provenance` scalar-attestation surface (v3.2.0+).
+    /// Emits one `attestation:l2:hardware` entry — `PASS` iff the
+    /// registry reported `verified=true` AND the device meets at
+    /// least device-integrity (i.e. `has_hardware_integrity()`).
+    /// CIRISVerify#34 wiring.
+    ///
+    /// `attester` is whoever did the chain validation — typically the
+    /// registry's identity / URL (the registry was what verified the
+    /// JWT against Google's public keys).
+    #[must_use]
+    pub fn to_attestation_entries(
+        &self,
+        attester: &str,
+    ) -> Vec<crate::federation_provenance::AttestationEntry> {
+        use crate::federation_provenance::{dim, AttestationEntry, Score};
+        let l2_ok = self.verified && self.has_hardware_integrity();
+        vec![AttestationEntry::new(
+            dim::L2_HARDWARE,
+            if l2_ok { Score::PASS } else { Score::FAIL },
+            attester,
+        )]
+    }
 }
 
 /// Result type for Play Integrity operations.
@@ -220,5 +244,59 @@ mod tests {
 
         assert!(!response.has_hardware_integrity());
         assert_eq!(response.summary(), "FAILED: Nonce expired");
+    }
+
+    #[test]
+    fn to_attestation_entries_emits_l2_hardware_pass_when_strong() {
+        let response = IntegrityVerifyResponse {
+            verified: true,
+            device_integrity: Some(DeviceIntegrity {
+                meets_strong_integrity: true,
+                meets_device_integrity: true,
+                meets_basic_integrity: true,
+                verdicts: vec!["MEETS_STRONG_INTEGRITY".into()],
+            }),
+            app_integrity: None,
+            account_details: None,
+            error: None,
+        };
+        let entries = response.to_attestation_entries("registry-steward-us");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].dimension, "attestation:l2:hardware");
+        assert_eq!(entries[0].score, 1.0);
+        assert_eq!(entries[0].attester, "registry-steward-us");
+    }
+
+    #[test]
+    fn to_attestation_entries_emits_l2_hardware_fail_when_basic_only() {
+        // Basic-only integrity (rooted but not emulated) is not
+        // hardware-backed — must fail L2.
+        let response = IntegrityVerifyResponse {
+            verified: true,
+            device_integrity: Some(DeviceIntegrity {
+                meets_strong_integrity: false,
+                meets_device_integrity: false,
+                meets_basic_integrity: true,
+                verdicts: vec!["MEETS_BASIC_INTEGRITY".into()],
+            }),
+            app_integrity: None,
+            account_details: None,
+            error: None,
+        };
+        let entries = response.to_attestation_entries("registry");
+        assert_eq!(entries[0].score, 0.0);
+    }
+
+    #[test]
+    fn to_attestation_entries_fail_when_unverified() {
+        let response = IntegrityVerifyResponse {
+            verified: false,
+            device_integrity: None,
+            app_integrity: None,
+            account_details: None,
+            error: Some("token invalid".into()),
+        };
+        let entries = response.to_attestation_entries("registry");
+        assert_eq!(entries[0].score, 0.0);
     }
 }

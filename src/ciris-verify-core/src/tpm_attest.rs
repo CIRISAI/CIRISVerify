@@ -129,6 +129,36 @@ impl TpmAttestVerifyResponse {
             )
         }
     }
+
+    /// Convert this TPM attestation result into the
+    /// `federation_provenance` scalar-attestation surface (v3.2.0+).
+    /// Emits one `attestation:l2:hardware` entry — `PASS` iff every
+    /// sub-check held: `verified` AND `ek_cert_valid` (EK cert chains
+    /// to a recognized manufacturer CA) AND `quote_valid` (TPMS_ATTEST
+    /// signature verifies against AK) AND `nonce_valid` (qualifying
+    /// data matches the requested challenge) AND
+    /// `pcr_assessment.pcrs_acceptable` (PCR digests within expected
+    /// range). CIRISVerify#34 wiring.
+    ///
+    /// `attester` is whoever did the chain validation — typically the
+    /// registry's identity / URL.
+    #[must_use]
+    pub fn to_attestation_entries(
+        &self,
+        attester: &str,
+    ) -> Vec<crate::federation_provenance::AttestationEntry> {
+        use crate::federation_provenance::{dim, AttestationEntry, Score};
+        let l2_ok = self.verified
+            && self.ek_cert_valid
+            && self.quote_valid
+            && self.nonce_valid
+            && self.pcr_assessment.pcrs_acceptable;
+        vec![AttestationEntry::new(
+            dim::L2_HARDWARE,
+            if l2_ok { Score::PASS } else { Score::FAIL },
+            attester,
+        )]
+    }
 }
 
 #[cfg(test)]
@@ -188,5 +218,62 @@ mod tests {
         let summary = response.summary();
         assert!(summary.contains("failed"));
         assert!(summary.contains("EK certificate chain invalid"));
+    }
+
+    #[test]
+    fn to_attestation_entries_pass_on_all_subchecks() {
+        let response = TpmAttestVerifyResponse {
+            verified: true,
+            ek_cert_valid: true,
+            ek_issuer: Some("Infineon".into()),
+            quote_valid: true,
+            nonce_valid: true,
+            pcr_assessment: PcrAssessment {
+                pcrs_checked: vec![0, 1, 2, 7],
+                pcrs_acceptable: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let entries = response.to_attestation_entries("registry-steward-us");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].dimension, "attestation:l2:hardware");
+        assert_eq!(entries[0].score, 1.0);
+    }
+
+    #[test]
+    fn to_attestation_entries_fail_on_pcr_drift() {
+        // EK + quote + nonce all good, but PCRs don't match the
+        // expected measurement → L2 fails.
+        let response = TpmAttestVerifyResponse {
+            verified: true,
+            ek_cert_valid: true,
+            ek_issuer: Some("Infineon".into()),
+            quote_valid: true,
+            nonce_valid: true,
+            pcr_assessment: PcrAssessment {
+                pcrs_checked: vec![0, 1, 2, 7],
+                pcrs_acceptable: false, // unexpected PCR values
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(response.to_attestation_entries("registry")[0].score, 0.0);
+    }
+
+    #[test]
+    fn to_attestation_entries_fail_on_ek_cert_invalid() {
+        let response = TpmAttestVerifyResponse {
+            verified: false,
+            ek_cert_valid: false, // EK doesn't chain to a manufacturer CA
+            quote_valid: true,
+            nonce_valid: true,
+            pcr_assessment: PcrAssessment {
+                pcrs_acceptable: true,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert_eq!(response.to_attestation_entries("registry")[0].score, 0.0);
     }
 }

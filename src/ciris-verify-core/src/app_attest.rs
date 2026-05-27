@@ -165,6 +165,31 @@ impl AppAttestVerifyResponse {
 
         format!("OK device={} env={}", device, env)
     }
+
+    /// Convert this App Attest verification result into the
+    /// `federation_provenance` scalar-attestation surface (v3.2.0+).
+    /// Emits one `attestation:l2:hardware` entry — `PASS` iff the
+    /// registry reported `verified=true` AND the device is genuine
+    /// Apple hardware (`has_genuine_device()`) AND the app binary
+    /// validates unmodified (`is_unmodified_app()`). CIRISVerify#34
+    /// wiring.
+    ///
+    /// `attester` is whoever did the chain validation — typically the
+    /// registry's identity / URL (the registry was what validated the
+    /// App Attest assertion against Apple's certs).
+    #[must_use]
+    pub fn to_attestation_entries(
+        &self,
+        attester: &str,
+    ) -> Vec<crate::federation_provenance::AttestationEntry> {
+        use crate::federation_provenance::{dim, AttestationEntry, Score};
+        let l2_ok = self.verified && self.has_genuine_device() && self.is_unmodified_app();
+        vec![AttestationEntry::new(
+            dim::L2_HARDWARE,
+            if l2_ok { Score::PASS } else { Score::FAIL },
+            attester,
+        )]
+    }
 }
 
 /// Request to verify an App Attest assertion (post-attestation).
@@ -351,5 +376,56 @@ mod tests {
             AppAttestError::AttestationFailed("bad cert".into()).to_string(),
             "attestation failed: bad cert"
         );
+    }
+
+    #[test]
+    fn to_attestation_entries_pass_on_genuine_unmodified() {
+        let response = AppAttestVerifyResponse {
+            verified: true,
+            device_environment: Some(DeviceEnvironment {
+                is_genuine_device: true,
+                is_unmodified_app: true,
+                environment: "production".into(),
+            }),
+            app_identity: None,
+            receipt: None,
+            error: None,
+        };
+        let entries = response.to_attestation_entries("registry-steward-eu");
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].dimension, "attestation:l2:hardware");
+        assert_eq!(entries[0].score, 1.0);
+    }
+
+    #[test]
+    fn to_attestation_entries_fail_on_modified_app() {
+        let response = AppAttestVerifyResponse {
+            verified: true,
+            device_environment: Some(DeviceEnvironment {
+                is_genuine_device: true,
+                is_unmodified_app: false, // app binary tampered
+                environment: "production".into(),
+            }),
+            app_identity: None,
+            receipt: None,
+            error: None,
+        };
+        assert_eq!(response.to_attestation_entries("registry")[0].score, 0.0);
+    }
+
+    #[test]
+    fn to_attestation_entries_fail_on_non_genuine_device() {
+        let response = AppAttestVerifyResponse {
+            verified: true,
+            device_environment: Some(DeviceEnvironment {
+                is_genuine_device: false, // simulator or jailbroken
+                is_unmodified_app: true,
+                environment: "production".into(),
+            }),
+            app_identity: None,
+            receipt: None,
+            error: None,
+        };
+        assert_eq!(response.to_attestation_entries("registry")[0].score, 0.0);
     }
 }
