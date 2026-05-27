@@ -59,6 +59,7 @@ pub mod dns;
 pub mod engine;
 pub mod error;
 pub mod federation_envelope;
+pub mod federation_keyset;
 pub mod hardware_info;
 pub mod https;
 pub mod jwt;
@@ -72,6 +73,7 @@ pub mod provenance;
 pub mod registry;
 pub mod revocation;
 pub mod security;
+pub mod threshold;
 pub mod tpm_attest;
 pub mod transparency;
 pub mod tree_verify;
@@ -87,6 +89,10 @@ pub use error::VerifyError;
 pub use federation_envelope::{
     EnvelopePurpose, EnvelopeVerifyPolicy, FederationEnvelope, TransportEpochGuard,
     TransportIdentity, ENVELOPE_DOMAIN_SEP, ENVELOPE_SCHEMA_VERSION,
+};
+pub use federation_keyset::{
+    federation_keyset_signing_bytes, FederationKeyset, FEDERATION_KEYSET_DOMAIN_SEP,
+    FEDERATION_KEYSET_SCHEMA_VERSION,
 };
 pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
 pub use keys::{
@@ -104,6 +110,9 @@ pub use security::file_integrity::{
     FileIntegrityResult, FileManifest,
 };
 pub use security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
+pub use threshold::{
+    verify_threshold_signatures, ThresholdError, ThresholdMember, ThresholdSignature,
+};
 pub use transparency::{
     verify_consistency, verify_inclusion, ConsistencyProof, InMemoryTransparencyStore, MerkleProof,
     ProofChain, SignedTreeHead, TransparencyEntry, TransparencyError, TransparencyLeaf,
