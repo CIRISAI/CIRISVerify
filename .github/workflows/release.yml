@@ -829,11 +829,43 @@ jobs:
 
       - name: Sign release artifacts with Sigstore
         run: |
+          # cosign sign-blob has no built-in retry, and Fulcio/Rekor
+          # occasionally hand back HTTP/2 stream resets / 503s under
+          # load (the v3.1.0 release hit one). Wrap each invocation in
+          # exponential backoff + jitter — AWS's standard transient-
+          # error pattern: 4 attempts, base 15s, ×2 each step (15s →
+          # 30s → 60s), ±25% jitter to avoid thundering-herd.
+          # Surgical per-file: only the file that flaked retries; the
+          # ones already signed are not re-signed (cosign is idempotent
+          # but wasted work would still cost minutes per release).
+          sign_with_retry() {
+            local file=$1 sig_path=$2 cert_path=$3
+            local attempt=1 max=4 base=15
+            while :; do
+              if cosign sign-blob --yes \
+                  --output-signature "$sig_path" \
+                  --output-certificate "$cert_path" \
+                  "$file"; then
+                return 0
+              fi
+              if [ "$attempt" -ge "$max" ]; then
+                echo "::error::cosign sign-blob failed for $file after $max attempts (likely Sigstore infra fault)"
+                return 1
+              fi
+              local backoff=$(( base * (2 ** (attempt - 1)) ))
+              local jitter=$(( (RANDOM % (backoff / 2 + 1)) - (backoff / 4) ))
+              local wait=$(( backoff + jitter ))
+              echo "::warning::cosign sign-blob attempt $attempt failed for $file; retrying in ${wait}s"
+              sleep "$wait"
+              attempt=$(( attempt + 1 ))
+            done
+          }
+
           # Sign all archives with keyless signing (OIDC from GitHub Actions)
           for file in ciris-verify-*.tar.gz ciris-verify-*.zip; do
             if [ -f "$file" ]; then
               echo "Signing $file..."
-              cosign sign-blob --yes --output-signature "${file}.sig" --output-certificate "${file}.pem" "$file"
+              sign_with_retry "$file" "${file}.sig" "${file}.pem"
             fi
           done
 
@@ -842,12 +874,12 @@ jobs:
             if [ -f "$file" ]; then
               base=$(basename "$file")
               echo "Signing $base..."
-              cosign sign-blob --yes --output-signature "release/${base}.sig" --output-certificate "release/${base}.pem" "$file"
+              sign_with_retry "$file" "release/${base}.sig" "release/${base}.pem"
             fi
           done
 
           # Sign SHA256SUMS
-          cosign sign-blob --yes --output-signature release/SHA256SUMS.sig --output-certificate release/SHA256SUMS.pem release/SHA256SUMS
+          sign_with_retry release/SHA256SUMS release/SHA256SUMS.sig release/SHA256SUMS.pem
 
       - name: Create Release
         uses: softprops/action-gh-release@v1
