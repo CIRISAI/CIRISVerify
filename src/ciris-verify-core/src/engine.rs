@@ -1158,6 +1158,7 @@ impl LicenseEngine {
             shutdown_directive: None,
             function_integrity: None, // Set by FFI layer
             binary_integrity: None,   // Set by caller for error responses
+            federation_provenance: None,
         }
     }
 
@@ -1195,6 +1196,7 @@ impl LicenseEngine {
             shutdown_directive: None,
             function_integrity: None, // Set by FFI layer
             binary_integrity: None,   // Set by caller
+            federation_provenance: None,
         }
     }
 
@@ -1221,6 +1223,7 @@ impl LicenseEngine {
             shutdown_directive: None,
             function_integrity: None, // Set by FFI layer
             binary_integrity: None,   // Set by caller
+            federation_provenance: None,
         }
     }
 

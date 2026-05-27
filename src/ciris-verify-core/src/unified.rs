@@ -2388,6 +2388,116 @@ fn walk_py_files(
     Ok(())
 }
 
+// =============================================================================
+// FullAttestationResult → FederationProvenance (#33)
+// =============================================================================
+
+impl FullAttestationResult {
+    /// Compose the existing per-level verification subresults into the
+    /// scalar-attestation surface (`federation_provenance`,
+    /// CIRISVerify#33). Per `MISSION.md` §1.4 verify *carries* the
+    /// attestation list; the consumer composes a verdict.
+    ///
+    /// Emits one [`crate::federation_provenance::AttestationEntry`] per
+    /// dimension the underlying check actually ran (an `Option::None`
+    /// field is "not checked" — not implicitly passing). The dimensions
+    /// follow FSD-002 §3.2 (the canonical namespace `attestation:l1:*`
+    /// through `attestation:l5:*`, plus `hardware_custody:{platform}`,
+    /// `transparency_log:inclusion`).
+    ///
+    /// `attester` is the entity that performed the attestation — for
+    /// verify-internal checks pass `"ciris-verify"`; for delegated
+    /// checks pass the relevant `key_id` / steward id.
+    #[must_use]
+    pub fn to_federation_provenance(
+        &self,
+        attester: &str,
+    ) -> crate::federation_provenance::FederationProvenance {
+        use crate::federation_provenance::{dim, AttestationEntry, FederationProvenance, Score};
+
+        let mut b = FederationProvenance::builder();
+
+        // L1 — self-verification ("who watches the watchmen").
+        if let Some(sv) = &self.self_verification {
+            b = b.attestation(AttestationEntry::new(
+                dim::L1_SELF_VERIFY,
+                if sv.valid { Score::PASS } else { Score::FAIL },
+                attester,
+            ));
+        }
+
+        // L2 — hardware attestation. The combined check requires the
+        // hybrid signature over the challenge AND, if device-level
+        // attestation (Play Integrity / App Attest) was also run, that
+        // it verified.
+        if let Some(ka) = &self.key_attestation {
+            let l2_ok = ka.has_valid_signature
+                && self.device_attestation.as_ref().is_none_or(|d| d.verified);
+            b = b.attestation(AttestationEntry::new(
+                dim::L2_HARDWARE,
+                if l2_ok { Score::PASS } else { Score::FAIL },
+                attester,
+            ));
+
+            // hardware_custody:{platform} — declares where the seed
+            // lives. The platform string is the lowercased
+            // hardware_type; `software_fallback` is the one variant
+            // that structurally caps at UNLICENSED_COMMUNITY.
+            if !ka.hardware_type.is_empty() {
+                let platform = ka.hardware_type.to_ascii_lowercase();
+                let valid = !platform.contains("software");
+                b = b.attestation(AttestationEntry::new(
+                    dim::hardware_custody(&platform),
+                    if valid { Score::PASS } else { Score::FAIL },
+                    attester,
+                ));
+            }
+        }
+
+        // L3 — registry consensus. 2-of-3 is the canonical bar.
+        let valid_sources = u8::from(self.sources.dns_us_valid)
+            + u8::from(self.sources.dns_eu_valid)
+            + u8::from(self.sources.https_valid);
+        b = b.attestation(AttestationEntry::new(
+            dim::L3_REGISTRY_CONSENSUS,
+            if valid_sources >= 2 {
+                Score::PASS
+            } else {
+                Score::FAIL
+            },
+            attester,
+        ));
+
+        // L5 — agent integrity. Driven by the unified `module_integrity`
+        // result. (Legacy `file_integrity` / `python_integrity` paths
+        // pre-date the unified result; callers still on those won't
+        // emit an L5 entry through this conversion until they migrate
+        // — which v1.7.0+ consumers already have.)
+        if let Some(mi) = &self.module_integrity {
+            b = b.attestation(AttestationEntry::new(
+                dim::L5_AGENT_INTEGRITY,
+                if mi.valid { Score::PASS } else { Score::FAIL },
+                attester,
+            ));
+        }
+
+        // Transparency-log inclusion — the audit-trail proof verifies.
+        if let Some(audit) = &self.audit_trail {
+            b = b.attestation(AttestationEntry::new(
+                dim::TRANSPARENCY_LOG_INCLUSION,
+                if audit.valid {
+                    Score::PASS
+                } else {
+                    Score::FAIL
+                },
+                attester,
+            ));
+        }
+
+        b.build()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

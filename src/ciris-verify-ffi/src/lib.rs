@@ -1305,6 +1305,7 @@ fn build_timeout_response(_request: &LicenseStatusRequest) -> LicenseStatusRespo
         shutdown_directive: None,
         function_integrity: None, // Will be filled in by caller
         binary_integrity: None,   // Timeout - no verification performed
+        federation_provenance: None,
     }
 }
 

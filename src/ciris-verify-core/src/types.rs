@@ -102,6 +102,19 @@ pub struct LicenseStatusResponse {
     /// This is the "who watches the watchmen" check.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub binary_integrity: Option<BinaryIntegrityStatus>,
+
+    // === Federation provenance (v3.2.0, #33) ===
+    /// Composed-attestation surface — the per-dimension attestation
+    /// list verify aggregated to produce this response. Per
+    /// `MISSION.md` §1.4, this is **data, not a verdict**: consumers
+    /// compose verdicts under their own policy from the listed
+    /// attestations. The verify-side verdict in `.status` is the
+    /// default-policy view; this field lets a consumer reapply policy.
+    ///
+    /// Additive optional field — pre-v3.2.0 callers and responses
+    /// behave unchanged. See [`crate::federation_provenance`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub federation_provenance: Option<crate::federation_provenance::FederationProvenance>,
 }
 
 /// Binary integrity verification status (v0.6.17).

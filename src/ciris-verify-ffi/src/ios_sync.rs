@@ -309,6 +309,7 @@ pub fn get_license_status_blocking(
         shutdown_directive: None,
         function_integrity: None,
         binary_integrity: None,
+        federation_provenance: None,
     }
 }
 

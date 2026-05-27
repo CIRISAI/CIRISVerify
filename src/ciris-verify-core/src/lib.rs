@@ -60,6 +60,7 @@ pub mod engine;
 pub mod error;
 pub mod federation_envelope;
 pub mod federation_keyset;
+pub mod federation_provenance;
 pub mod hardware_info;
 pub mod https;
 pub mod jwt;
@@ -93,6 +94,9 @@ pub use federation_envelope::{
 pub use federation_keyset::{
     federation_keyset_signing_bytes, FederationKeyset, FEDERATION_KEYSET_DOMAIN_SEP,
     FEDERATION_KEYSET_SCHEMA_VERSION,
+};
+pub use federation_provenance::{
+    AttestationEntry, FederationProvenance, FederationProvenanceBuilder, Score,
 };
 pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
 pub use keys::{
