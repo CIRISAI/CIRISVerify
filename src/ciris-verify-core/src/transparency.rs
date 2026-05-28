@@ -98,6 +98,14 @@ pub enum TransparencyError {
     /// STH signing failed (delegated from `ciris-crypto`).
     #[error("STH signing failed: {0}")]
     Signing(String),
+
+    /// CEG 0.2 §10.3.1 witness consistency-proof verification failed
+    /// (v4.0.0-rc2+) — shape violation (non-empty path in genesis /
+    /// identity case, `prior_tree_size > current_tree_size`,
+    /// `prior_root_hash` mismatch) or the underlying RFC 6962
+    /// consistency check did not verify.
+    #[error("witness consistency proof invalid: {0}")]
+    InvalidProof(String),
 }
 
 impl From<ciris_crypto::CryptoError> for TransparencyError {
@@ -364,27 +372,42 @@ impl SignedTreeHead {
         &self,
         witness_id: impl Into<String>,
         signer: &ciris_crypto::HybridSigner<C, P>,
+        consistency_proof: WitnessConsistencyProof,
     ) -> Result<WitnessSignature, TransparencyError>
     where
         C: ciris_crypto::ClassicalSigner,
         P: ciris_crypto::PqcSigner,
     {
+        // Per CEG 0.2 §10.3.1: a witness MUST verify the consistency
+        // proof from the prior STH it cosigned (or genesis) BEFORE
+        // signing. Defensive verification here closes the loophole
+        // where a witness blindly signs (tree_size, root_hash) strings
+        // without checking that the operator's log actually extends
+        // the witness's prior view.
+        consistency_proof.verify(self.tree_size, &self.root_hash)?;
         let signature = signer.sign(&self.signing_bytes_of())?;
         Ok(WitnessSignature {
             witness_id: witness_id.into(),
             signature,
+            consistency_proof,
         })
     }
 
     /// Count the **distinct trusted** witnesses that validly cosigned
     /// this STH (verifier-side, CIRISVerify#29 WS-3).
     ///
-    /// A witness cosignature counts only when all three hold:
+    /// A witness cosignature counts only when all four hold (CEG
+    /// 0.2 §10.3.1 added clause 4):
     /// 1. its `witness_id` appears in `trusted`;
     /// 2. the public keys embedded in the cosignature match that
     ///    witness's *pinned* keys — otherwise any key would
     ///    self-certify (the steward-pubkey-pinning discipline);
-    /// 3. the hybrid signature verifies over [`Self::signing_bytes_of`].
+    /// 3. the hybrid signature verifies over [`Self::signing_bytes_of`];
+    /// 4. **(CEG 0.2 §10.3.1, v4.0.0-rc2+)** the witness's embedded
+    ///    consistency proof verifies — proving the witness's prior
+    ///    view of the log is consistent with the STH it now cosigns.
+    ///    Cosignatures without a verifying consistency proof are
+    ///    structurally meaningless and rejected.
     ///
     /// Duplicate `witness_id`s count once — M cosignatures from one
     /// witness are not M witnesses.
@@ -409,6 +432,17 @@ impl SignedTreeHead {
             };
             if ws.signature.classical.public_key != tw.classical_public_key
                 || ws.signature.pqc.public_key != tw.pqc_public_key
+            {
+                continue;
+            }
+            // CEG 0.2 §10.3.1: consistency proof MUST verify. A
+            // cosignature where the witness's prior view doesn't
+            // chain to this STH means "quorum on a string," not
+            // "quorum on log consistency" — reject.
+            if ws
+                .consistency_proof
+                .verify(self.tree_size, &self.root_hash)
+                .is_err()
             {
                 continue;
             }
@@ -450,12 +484,127 @@ impl SignedTreeHead {
 /// where a log operator serves different trees to different clients.
 /// Produced by [`SignedTreeHead::cosign`], verified by
 /// [`SignedTreeHead::count_valid_witnesses`] / [`SignedTreeHead::witness_quorum_met`].
+///
+/// **CEG 0.2 §10.3.1 (v4.0.0-rc2+):** the `consistency_proof` field
+/// is required — it chains the witness's prior view of the log to
+/// the STH it cosigns. Without it the cosignature is "quorum on a
+/// string," not "quorum on log consistency" (§10.3.1 normative).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WitnessSignature {
     /// Stable identifier for the witness.
     pub witness_id: String,
     /// Hybrid signature over the same `SignedTreeHead::signing_bytes`.
     pub signature: ciris_crypto::HybridSignature,
+    /// Per §10.3.1: consistency proof from the witness's prior STH
+    /// (or from genesis if first cosignature). Verified on
+    /// [`SignedTreeHead::cosign`] and again on
+    /// [`SignedTreeHead::count_valid_witnesses`].
+    pub consistency_proof: WitnessConsistencyProof,
+}
+
+/// CEG 0.2 §10.3.1 witness consistency proof — the chain from the
+/// witness's prior view of the log to the STH it now cosigns.
+///
+/// Three legitimate shapes:
+/// - **Genesis** (`prior_tree_size == 0`, empty `consistency_path`):
+///   the witness's first cosignature against this log; nothing to
+///   prove against because the prior tree was empty.
+/// - **Identity** (`prior_tree_size == current_tree_size`, empty
+///   `consistency_path`, `prior_root_hash == current_root_hash`):
+///   witness re-cosigning the same STH; trivially consistent.
+/// - **Extension**: RFC 6962 consistency proof from
+///   `(prior_tree_size, prior_root_hash)` to the current STH.
+///
+/// Anything else is rejected — including a non-empty path with a
+/// genesis or identity claim, or a `prior_tree_size > current_tree_size`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct WitnessConsistencyProof {
+    /// Tree size of the prior STH the witness last cosigned. `0`
+    /// indicates the genesis case (first cosignature against this log).
+    pub prior_tree_size: u64,
+    /// Root hash of the prior STH at `prior_tree_size`. Ignored when
+    /// `prior_tree_size == 0`.
+    pub prior_root_hash: [u8; 32],
+    /// RFC 6962 consistency path from `prior_tree_size` to the
+    /// current STH's `tree_size`. MUST be empty in the genesis and
+    /// identity cases above.
+    pub consistency_path: Vec<[u8; 32]>,
+}
+
+impl WitnessConsistencyProof {
+    /// Genesis-case constructor — for a witness's first cosignature
+    /// against a log. Empty consistency path; the prior tree is the
+    /// empty tree by convention.
+    #[must_use]
+    pub fn genesis() -> Self {
+        Self {
+            prior_tree_size: 0,
+            prior_root_hash: [0u8; 32],
+            consistency_path: Vec::new(),
+        }
+    }
+
+    /// Verify the consistency proof against the current STH (per
+    /// §10.3.1). Called both by [`SignedTreeHead::cosign`] (witness
+    /// side, defensive) and by [`SignedTreeHead::count_valid_witnesses`]
+    /// (consumer side, normative).
+    pub fn verify(
+        &self,
+        current_tree_size: u64,
+        current_root: &[u8; 32],
+    ) -> Result<(), TransparencyError> {
+        if self.prior_tree_size > current_tree_size {
+            return Err(TransparencyError::InvalidProof(format!(
+                "consistency_proof prior_tree_size {} > current_tree_size {}",
+                self.prior_tree_size, current_tree_size
+            )));
+        }
+        if self.prior_tree_size == 0 {
+            // Genesis case — path MUST be empty; the empty prior
+            // tree is trivially consistent with anything.
+            if !self.consistency_path.is_empty() {
+                return Err(TransparencyError::InvalidProof(
+                    "consistency_path must be empty when prior_tree_size == 0 (genesis)".into(),
+                ));
+            }
+            return Ok(());
+        }
+        if self.prior_tree_size == current_tree_size {
+            // Identity case — same tree size, same root, empty path.
+            if &self.prior_root_hash != current_root {
+                return Err(TransparencyError::InvalidProof(
+                    "consistency_proof identity case: prior_root_hash != current_root_hash".into(),
+                ));
+            }
+            if !self.consistency_path.is_empty() {
+                return Err(TransparencyError::InvalidProof(
+                    "consistency_path must be empty when prior_tree_size == current_tree_size"
+                        .into(),
+                ));
+            }
+            return Ok(());
+        }
+        // Extension case — RFC 6962 consistency verification.
+        let proof = ConsistencyProof {
+            old_tree_size: self.prior_tree_size,
+            new_tree_size: current_tree_size,
+            proof_hashes: self.consistency_path.clone(),
+        };
+        let verified = verify_consistency(
+            &self.prior_root_hash,
+            self.prior_tree_size,
+            current_root,
+            current_tree_size,
+            &proof,
+        )?;
+        if !verified {
+            return Err(TransparencyError::InvalidProof(format!(
+                "RFC 6962 consistency proof did not verify from prior_tree_size={} to current_tree_size={}",
+                self.prior_tree_size, current_tree_size
+            )));
+        }
+        Ok(())
+    }
 }
 
 /// A pinned trusted witness — its stable id and the public keys its
@@ -1869,7 +2018,13 @@ mod tests {
     #[test]
     fn witness_cosign_and_verify_round_trip() {
         let mut sth = witness_test_sth();
-        let cosig = sth.cosign("witness-1", &real_signer()).unwrap();
+        let cosig = sth
+            .cosign(
+                "witness-1",
+                &real_signer(),
+                WitnessConsistencyProof::genesis(),
+            )
+            .unwrap();
         sth.witness_signatures.push(cosig.clone());
         let trusted = [pin(&cosig)];
         assert_eq!(sth.count_valid_witnesses(&real_verifier(), &trusted), 1);
@@ -1879,7 +2034,13 @@ mod tests {
     #[test]
     fn witness_quorum_not_met_when_short() {
         let mut sth = witness_test_sth();
-        let c1 = sth.cosign("witness-1", &real_signer()).unwrap();
+        let c1 = sth
+            .cosign(
+                "witness-1",
+                &real_signer(),
+                WitnessConsistencyProof::genesis(),
+            )
+            .unwrap();
         sth.witness_signatures.push(c1.clone());
         let trusted = [pin(&c1)];
         // One valid witness, quorum of 2 → not met.
@@ -1889,8 +2050,20 @@ mod tests {
     #[test]
     fn witness_quorum_met_with_two_distinct() {
         let mut sth = witness_test_sth();
-        let c1 = sth.cosign("witness-1", &real_signer()).unwrap();
-        let c2 = sth.cosign("witness-2", &real_signer()).unwrap();
+        let c1 = sth
+            .cosign(
+                "witness-1",
+                &real_signer(),
+                WitnessConsistencyProof::genesis(),
+            )
+            .unwrap();
+        let c2 = sth
+            .cosign(
+                "witness-2",
+                &real_signer(),
+                WitnessConsistencyProof::genesis(),
+            )
+            .unwrap();
         sth.witness_signatures.push(c1.clone());
         sth.witness_signatures.push(c2.clone());
         let trusted = [pin(&c1), pin(&c2)];
@@ -1901,7 +2074,13 @@ mod tests {
     #[test]
     fn untrusted_witness_id_is_ignored() {
         let mut sth = witness_test_sth();
-        let cosig = sth.cosign("rogue-witness", &real_signer()).unwrap();
+        let cosig = sth
+            .cosign(
+                "rogue-witness",
+                &real_signer(),
+                WitnessConsistencyProof::genesis(),
+            )
+            .unwrap();
         sth.witness_signatures.push(cosig);
         // Trusted set does not include "rogue-witness".
         assert_eq!(sth.count_valid_witnesses(&real_verifier(), &[]), 0);
@@ -1910,10 +2089,22 @@ mod tests {
     #[test]
     fn witness_with_wrong_pinned_key_is_ignored() {
         let mut sth = witness_test_sth();
-        let cosig = sth.cosign("witness-1", &real_signer()).unwrap();
+        let cosig = sth
+            .cosign(
+                "witness-1",
+                &real_signer(),
+                WitnessConsistencyProof::genesis(),
+            )
+            .unwrap();
         sth.witness_signatures.push(cosig.clone());
         // Same witness_id, but a DIFFERENT pinned key (another signer's).
-        let imposter = sth.cosign("witness-1", &real_signer()).unwrap();
+        let imposter = sth
+            .cosign(
+                "witness-1",
+                &real_signer(),
+                WitnessConsistencyProof::genesis(),
+            )
+            .unwrap();
         let trusted = [pin(&imposter)];
         assert_eq!(
             sth.count_valid_witnesses(&real_verifier(), &trusted),
@@ -1925,7 +2116,13 @@ mod tests {
     #[test]
     fn duplicate_witness_id_counts_once() {
         let mut sth = witness_test_sth();
-        let cosig = sth.cosign("witness-1", &real_signer()).unwrap();
+        let cosig = sth
+            .cosign(
+                "witness-1",
+                &real_signer(),
+                WitnessConsistencyProof::genesis(),
+            )
+            .unwrap();
         // The same witness's cosignature pushed twice.
         sth.witness_signatures.push(cosig.clone());
         sth.witness_signatures.push(cosig.clone());
@@ -1940,7 +2137,13 @@ mod tests {
     #[test]
     fn tampered_sth_breaks_witness_cosignature() {
         let mut sth = witness_test_sth();
-        let cosig = sth.cosign("witness-1", &real_signer()).unwrap();
+        let cosig = sth
+            .cosign(
+                "witness-1",
+                &real_signer(),
+                WitnessConsistencyProof::genesis(),
+            )
+            .unwrap();
         sth.witness_signatures.push(cosig.clone());
         let trusted = [pin(&cosig)];
         // The log operator presents a different tree to this verifier.
@@ -2137,5 +2340,157 @@ mod tests {
             !verify_consistency(&old_root, 3, &new_root, 8, &proof).unwrap(),
             "oversized proof must be rejected"
         );
+    }
+
+    // ----- CEG 0.2 §10.3.1 witness consistency-proof requirement (v4.0.0-rc2+) -----
+
+    /// §10.3.1: a witness's first cosignature against a log uses the
+    /// genesis case (`prior_tree_size == 0`, empty path). MUST accept.
+    #[test]
+    fn witness_consistency_genesis_case_accepts() {
+        let sth = witness_test_sth();
+        let proof = WitnessConsistencyProof::genesis();
+        assert!(proof.verify(sth.tree_size, &sth.root_hash).is_ok());
+    }
+
+    /// §10.3.1: genesis case but with a non-empty path is structurally
+    /// invalid — the empty prior tree has no path to prove. Reject.
+    #[test]
+    fn witness_consistency_genesis_with_nonempty_path_rejects() {
+        let sth = witness_test_sth();
+        let mut proof = WitnessConsistencyProof::genesis();
+        proof.consistency_path = vec![[0u8; 32]];
+        let err = proof.verify(sth.tree_size, &sth.root_hash).unwrap_err();
+        assert!(format!("{err}").contains("genesis"));
+    }
+
+    /// §10.3.1: identity case — witness re-cosigns the same STH it
+    /// last cosigned. Must hold prior_root_hash == current_root_hash
+    /// and empty path.
+    #[test]
+    fn witness_consistency_identity_case_accepts() {
+        let sth = witness_test_sth();
+        let proof = WitnessConsistencyProof {
+            prior_tree_size: sth.tree_size,
+            prior_root_hash: sth.root_hash,
+            consistency_path: vec![],
+        };
+        assert!(proof.verify(sth.tree_size, &sth.root_hash).is_ok());
+    }
+
+    /// §10.3.1: identity case with wrong root rejects — a witness
+    /// claiming to have last cosigned (size=N, root=R') where R' ≠ R
+    /// is asserting a fork.
+    #[test]
+    fn witness_consistency_identity_case_wrong_root_rejects() {
+        let sth = witness_test_sth();
+        let proof = WitnessConsistencyProof {
+            prior_tree_size: sth.tree_size,
+            prior_root_hash: [0xFFu8; 32],
+            consistency_path: vec![],
+        };
+        let err = proof.verify(sth.tree_size, &sth.root_hash).unwrap_err();
+        assert!(format!("{err}").contains("prior_root_hash"));
+    }
+
+    /// §10.3.1: prior_tree_size > current_tree_size is structurally
+    /// impossible — the log is append-only.
+    #[test]
+    fn witness_consistency_prior_larger_than_current_rejects() {
+        let sth = witness_test_sth();
+        let proof = WitnessConsistencyProof {
+            prior_tree_size: sth.tree_size + 1,
+            prior_root_hash: sth.root_hash,
+            consistency_path: vec![],
+        };
+        let err = proof.verify(sth.tree_size, &sth.root_hash).unwrap_err();
+        assert!(format!("{err}").contains("prior_tree_size"));
+    }
+
+    /// §10.3.1: extension case — witness's prior STH was at an
+    /// earlier tree_size. Must carry a verifying RFC 6962 consistency
+    /// proof between the two roots.
+    #[test]
+    fn witness_consistency_extension_case_accepts_real_proof() {
+        let log = new_log();
+        fill_log(&log, 5);
+        let old_root = log.merkle_root().unwrap();
+        fill_log(&log, 3);
+        let new_root = log.merkle_root().unwrap();
+        let proof = log.consistency_proof(5, 8).unwrap();
+        let consistency_proof = WitnessConsistencyProof {
+            prior_tree_size: 5,
+            prior_root_hash: old_root,
+            consistency_path: proof.proof_hashes,
+        };
+        assert!(consistency_proof.verify(8, &new_root).is_ok());
+    }
+
+    /// §10.3.1: extension case where the proof doesn't verify (here:
+    /// tampered path) rejects.
+    #[test]
+    fn witness_consistency_extension_case_rejects_tampered_proof() {
+        let log = new_log();
+        fill_log(&log, 5);
+        let old_root = log.merkle_root().unwrap();
+        fill_log(&log, 3);
+        let new_root = log.merkle_root().unwrap();
+        let mut proof = log.consistency_proof(5, 8).unwrap();
+        // Tamper one hash.
+        if let Some(first) = proof.proof_hashes.first_mut() {
+            first[0] ^= 0xFF;
+        }
+        let consistency_proof = WitnessConsistencyProof {
+            prior_tree_size: 5,
+            prior_root_hash: old_root,
+            consistency_path: proof.proof_hashes,
+        };
+        let err = consistency_proof.verify(8, &new_root).unwrap_err();
+        assert!(format!("{err}").contains("consistency"));
+    }
+
+    /// §10.3.1: end-to-end — `count_valid_witnesses` rejects a
+    /// witness whose consistency proof is bogus, even if the
+    /// hybrid signature itself is valid. The fourth clause of the
+    /// counting rule is what closes "quorum on a string."
+    #[test]
+    fn count_valid_witnesses_rejects_cosignature_with_invalid_consistency_proof() {
+        let mut sth = witness_test_sth();
+        // Build a normal cosignature, then mutate its embedded
+        // consistency proof to break the §10.3.1 invariant.
+        let mut cosig = sth
+            .cosign(
+                "witness-1",
+                &real_signer(),
+                WitnessConsistencyProof::genesis(),
+            )
+            .unwrap();
+        // Inject a non-empty path into the genesis claim → structural
+        // violation.
+        cosig.consistency_proof.consistency_path = vec![[0u8; 32]];
+        sth.witness_signatures.push(cosig.clone());
+        let trusted = [pin(&cosig)];
+        assert_eq!(
+            sth.count_valid_witnesses(&real_verifier(), &trusted),
+            0,
+            "§10.3.1: cosignature with invalid consistency proof MUST NOT count"
+        );
+        assert!(
+            !sth.witness_quorum_met(&real_verifier(), &trusted, 1),
+            "§10.3.1: quorum is on log consistency, not on a string"
+        );
+    }
+
+    /// §10.3.1: `cosign` itself rejects an invalid consistency proof
+    /// at signing time — defensive against a buggy witness.
+    #[test]
+    fn cosign_rejects_invalid_consistency_proof_at_signing_time() {
+        let sth = witness_test_sth();
+        let mut bad_proof = WitnessConsistencyProof::genesis();
+        bad_proof.consistency_path = vec![[0u8; 32]];
+        let err = sth
+            .cosign("witness-1", &real_signer(), bad_proof)
+            .unwrap_err();
+        assert!(format!("{err}").contains("genesis"));
     }
 }

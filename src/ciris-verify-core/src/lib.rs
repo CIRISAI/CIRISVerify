@@ -55,6 +55,7 @@ pub mod attest_bundle;
 pub mod audit;
 pub mod binary_format;
 pub mod cache;
+pub mod ceg_error;
 pub mod config;
 pub mod dns;
 pub mod engine;
@@ -63,6 +64,7 @@ pub mod federation_envelope;
 pub mod federation_keyset;
 pub mod federation_provenance;
 pub mod hardware_info;
+pub mod holds_bytes;
 pub mod https;
 pub mod jwt;
 pub mod keys;
@@ -90,6 +92,7 @@ pub use attest_bundle::{
     AttestBundle, AttestationFact, HardwareCustody, ProvenanceBlock, TransparencyLogBlock,
 };
 pub use cache::{CachedLicense, LicenseCache};
+pub use ceg_error::{CegError, CegErrorCode};
 pub use config::{TrustModel, VerifyConfig};
 pub use engine::LicenseEngine;
 pub use error::VerifyError;
@@ -104,6 +107,7 @@ pub use federation_keyset::{
 pub use federation_provenance::{
     AttestationEntry, FederationProvenance, FederationProvenanceBuilder, Score,
 };
+pub use holds_bytes::{verify_holds_bytes, HoldsBytesError};
 pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
 pub use keys::{
     derive_symmetric_key, derive_transport_identity, DERIVED_KEY_LEN, TRANSPORT_SEED_LEN,
@@ -134,7 +138,7 @@ pub use threshold::{
 pub use transparency::{
     verify_consistency, verify_inclusion, ConsistencyProof, InMemoryTransparencyStore, MerkleProof,
     ProofChain, SignedTreeHead, TransparencyEntry, TransparencyError, TransparencyLeaf,
-    TransparencyLog, TransparencyStore, TrustedWitness, WitnessSignature,
+    TransparencyLog, TransparencyStore, TrustedWitness, WitnessConsistencyProof, WitnessSignature,
 };
 pub use types::{
     AttestationProof, BinaryIntegrityStatus, CapabilityCheckRequest, CapabilityCheckResponse,
