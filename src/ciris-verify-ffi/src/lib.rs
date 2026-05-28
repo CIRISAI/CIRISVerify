@@ -3030,6 +3030,155 @@ pub extern "C" fn ciris_verify_version() -> *const libc::c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const libc::c_char
 }
 
+/// Project a `FullAttestationResult` JSON into the measurement-shaped
+/// [`AttestBundle`] JSON (CIRISVerify#36, v3.6.0+).
+///
+/// Stateless — no handle required. The caller already has the
+/// `FullAttestationResult` JSON from a prior
+/// `ciris_verify_run_attestation` call; this function only regroups
+/// the entries into named measurement fields (`self_verification`,
+/// `hardware_attestation`, `registry_consensus`, `license_validity`,
+/// `agent_integrity`, plus `provenance` / `hardware_custody` /
+/// `transparency_log` / `cert_validity`).
+///
+/// No new verification is performed; no tiers / levels are assigned
+/// here — tier/level scoring is sugar the consumer applies on top.
+///
+/// # Arguments
+///
+/// * `attestation_json` - UTF-8 JSON of a `FullAttestationResult`.
+/// * `attestation_len` - Length of `attestation_json` in bytes.
+/// * `key_id` - UTF-8 key id the bundle attests to.
+/// * `key_id_len` - Length of `key_id` in bytes.
+/// * `attester` - UTF-8 attester id (use `"ciris-verify"` for verify-
+///   internal checks).
+/// * `attester_len` - Length of `attester` in bytes.
+/// * `result_out` - Output pointer for bundle JSON. Caller must free
+///   with [`ciris_verify_free_string`].
+/// * `result_len_out` - Output pointer for bundle length in bytes.
+///
+/// # Returns
+///
+/// 0 on success, negative error code on failure.
+///
+/// # Safety
+///
+/// All `*const u8` inputs must point to valid memory of at least the
+/// declared length. `result_out` and `result_len_out` must be valid
+/// pointers.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ciris_verify_attest_bundle_from_attestation(
+    attestation_json: *const u8,
+    attestation_len: usize,
+    key_id: *const u8,
+    key_id_len: usize,
+    attester: *const u8,
+    attester_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_attest_bundle_from_attestation", {
+        attest_bundle_from_attestation_inner(
+            attestation_json,
+            attestation_len,
+            key_id,
+            key_id_len,
+            attester,
+            attester_len,
+            result_out,
+            result_len_out,
+        )
+    })
+}
+
+/// Inner impl of [`ciris_verify_attest_bundle_from_attestation`].
+#[allow(clippy::too_many_arguments)]
+unsafe fn attest_bundle_from_attestation_inner(
+    attestation_json: *const u8,
+    attestation_len: usize,
+    key_id: *const u8,
+    key_id_len: usize,
+    attester: *const u8,
+    attester_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    use ciris_verify_core::{AttestBundle, FullAttestationResult};
+
+    if attestation_json.is_null()
+        || key_id.is_null()
+        || attester.is_null()
+        || result_out.is_null()
+        || result_len_out.is_null()
+    {
+        tracing::error!("ciris_verify_attest_bundle_from_attestation: null arguments");
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let attestation_bytes = std::slice::from_raw_parts(attestation_json, attestation_len);
+    let key_id_bytes = std::slice::from_raw_parts(key_id, key_id_len);
+    let attester_bytes = std::slice::from_raw_parts(attester, attester_len);
+
+    let key_id_str = match std::str::from_utf8(key_id_bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_attest_bundle_from_attestation: invalid key_id UTF-8: {}",
+                e
+            );
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+    let attester_str = match std::str::from_utf8(attester_bytes) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_attest_bundle_from_attestation: invalid attester UTF-8: {}",
+                e
+            );
+            return CirisVerifyError::InvalidArgument as i32;
+        },
+    };
+
+    let attestation: FullAttestationResult = match serde_json::from_slice(attestation_bytes) {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_attest_bundle_from_attestation: invalid attestation JSON: {}",
+                e
+            );
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    // Pure projection — no new verification.
+    let bundle: AttestBundle = attestation.to_attest_bundle(key_id_str, attester_str);
+
+    let json = match serde_json::to_string(&bundle) {
+        Ok(j) => j,
+        Err(e) => {
+            tracing::error!(
+                "ciris_verify_attest_bundle_from_attestation: bundle serialization failed: {}",
+                e
+            );
+            return CirisVerifyError::SerializationError as i32;
+        },
+    };
+
+    let len = json.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        tracing::error!("ciris_verify_attest_bundle_from_attestation: malloc failed");
+        return CirisVerifyError::InternalError as i32;
+    }
+    std::ptr::copy_nonoverlapping(json.as_ptr(), ptr, len);
+    *result_out = ptr;
+    *result_len_out = len;
+
+    CirisVerifyError::Success as i32
+}
+
 /// Get diagnostic information about the Ed25519 signer state.
 ///
 /// Returns detailed diagnostic info including:
@@ -9395,6 +9544,154 @@ mod tests {
                 "Version should contain dots: {}",
                 version
             );
+        }
+    }
+
+    // ----- CIRISVerify#36 attest_bundle FFI smoke tests (v3.6.0+) -----
+
+    /// Minimum-viable FullAttestationResult JSON for the projection.
+    /// All other Option fields default to None.
+    fn minimal_attestation_json() -> String {
+        serde_json::json!({
+            "valid": true,
+            "level": 3,
+            "level_pending": false,
+            "self_verification": {
+                "binary_valid": true,
+                "functions_valid": true,
+                "valid": true,
+                "binary_version": "3.6.0",
+                "target": "x86_64-unknown-linux-gnu",
+                "binary_hash": "deadbeef",
+                "expected_hash": "deadbeef",
+                "functions_checked": 10,
+                "functions_passed": 10,
+                "registry_reachable": true,
+                "error": null
+            },
+            "key_attestation": {
+                "key_type": "portal",
+                "hardware_type": "tpm",
+                "has_valid_signature": true,
+                "binary_version": "3.6.0",
+                "running_in_vm": false,
+                "classical_signature": "abc",
+                "pqc_available": true,
+                "hardware_backed": true,
+                "storage_mode": "TPM",
+                "ed25519_fingerprint": "fp",
+                "mldsa_fingerprint": null,
+                "registry_key_status": "active",
+                "platform_os": "linux"
+            },
+            "registry_key_status": "active",
+            "device_attestation": null,
+            "file_integrity": null,
+            "python_integrity": null,
+            "module_integrity": null,
+            "sources": {
+                "dns_us_reachable": true,
+                "dns_us_valid": true,
+                "dns_us_error": null,
+                "dns_eu_reachable": true,
+                "dns_eu_valid": true,
+                "dns_eu_error": null,
+                "https_reachable": true,
+                "https_valid": true,
+                "https_error": null,
+                "validation_status": "AllSourcesAgree"
+            },
+            "audit_trail": null,
+            "checks_passed": 5,
+            "checks_total": 5,
+            "diagnostics": "",
+            "errors": [],
+            "timestamp": 0
+        })
+        .to_string()
+    }
+
+    #[test]
+    fn test_attest_bundle_from_attestation_returns_measurement_shape() {
+        unsafe {
+            let attestation = minimal_attestation_json();
+            let key_id = b"agent-key-1";
+            let attester = b"ciris-verify";
+
+            let mut result_ptr: *mut u8 = std::ptr::null_mut();
+            let mut result_len: usize = 0;
+
+            let ret = ciris_verify_attest_bundle_from_attestation(
+                attestation.as_ptr(),
+                attestation.len(),
+                key_id.as_ptr(),
+                key_id.len(),
+                attester.as_ptr(),
+                attester.len(),
+                &mut result_ptr,
+                &mut result_len,
+            );
+
+            assert_eq!(ret, CirisVerifyError::Success as i32);
+            assert!(!result_ptr.is_null());
+            assert!(result_len > 0);
+
+            let slice = std::slice::from_raw_parts(result_ptr, result_len);
+            let json_str = std::str::from_utf8(slice).expect("Invalid UTF-8");
+            let bundle: serde_json::Value = serde_json::from_str(json_str).expect("Invalid JSON");
+
+            // Measurement-shaped: named for what was measured.
+            assert_eq!(bundle["key_id"], "agent-key-1");
+            assert_eq!(bundle["self_verification"]["passed"], true);
+            assert_eq!(bundle["hardware_attestation"]["passed"], true);
+            assert_eq!(bundle["registry_consensus"]["passed"], true);
+            // No "ladder", no l1/l2/l3 sugar.
+            assert!(bundle.get("ladder").is_none());
+            assert!(bundle.get("l1").is_none());
+            assert_eq!(bundle["rollback_detected"], false);
+            assert_eq!(bundle["hardware_custody"]["platform"], "tpm");
+
+            libc::free(result_ptr as *mut libc::c_void);
+        }
+    }
+
+    #[test]
+    fn test_attest_bundle_from_attestation_rejects_null_args() {
+        unsafe {
+            let mut result_ptr: *mut u8 = std::ptr::null_mut();
+            let mut result_len: usize = 0;
+            // Null attestation_json.
+            let ret = ciris_verify_attest_bundle_from_attestation(
+                std::ptr::null(),
+                0,
+                b"k".as_ptr(),
+                1,
+                b"v".as_ptr(),
+                1,
+                &mut result_ptr,
+                &mut result_len,
+            );
+            assert_eq!(ret, CirisVerifyError::InvalidArgument as i32);
+        }
+    }
+
+    #[test]
+    fn test_attest_bundle_from_attestation_rejects_bad_json() {
+        unsafe {
+            let bad = b"{not valid json";
+            let mut result_ptr: *mut u8 = std::ptr::null_mut();
+            let mut result_len: usize = 0;
+            let ret = ciris_verify_attest_bundle_from_attestation(
+                bad.as_ptr(),
+                bad.len(),
+                b"k".as_ptr(),
+                1,
+                b"v".as_ptr(),
+                1,
+                &mut result_ptr,
+                &mut result_len,
+            );
+            assert_eq!(ret, CirisVerifyError::SerializationError as i32);
         }
     }
 }

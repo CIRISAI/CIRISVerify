@@ -660,6 +660,25 @@ class CIRISVerify:
         except AttributeError:
             self._has_hardware_info_support = False
 
+        # ciris_verify_attest_bundle_from_attestation (optional - added in 3.6.0)
+        # Stateless projection of a FullAttestationResult JSON into the
+        # measurement-shaped AttestBundle JSON (CIRISVerify#36).
+        try:
+            self._lib.ciris_verify_attest_bundle_from_attestation.argtypes = [
+                ctypes.c_char_p,                                  # attestation_json
+                ctypes.c_size_t,                                  # attestation_len
+                ctypes.c_char_p,                                  # key_id
+                ctypes.c_size_t,                                  # key_id_len
+                ctypes.c_char_p,                                  # attester
+                ctypes.c_size_t,                                  # attester_len
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)),   # result_out
+                ctypes.POINTER(ctypes.c_size_t),                  # result_len_out
+            ]
+            self._lib.ciris_verify_attest_bundle_from_attestation.restype = ctypes.c_int
+            self._has_attest_bundle_support = True
+        except AttributeError:
+            self._has_attest_bundle_support = False
+
         # ciris_verify_set_log_callback (optional - added in 0.9.1)
         # Register a callback to receive internal log messages
         try:
@@ -2218,6 +2237,66 @@ class CIRISVerify:
             self._lib.ciris_verify_free(result_ptr)
             parsed = json.loads(data)
             return self._parse_hardware_info(parsed)
+        except Exception:
+            return None
+
+    def attest_bundle_from_attestation(
+        self,
+        attestation: dict,
+        key_id: str,
+        attester: str = "ciris-verify",
+    ) -> Optional[dict]:
+        """Project a `FullAttestationResult` into the measurement-shaped
+        `AttestBundle` (CIRISVerify#36, v3.6.0+).
+
+        Stateless: no new verification is performed. Each bundle field
+        names *what* was measured (`self_verification`,
+        `hardware_attestation`, `registry_consensus`,
+        `license_validity`, `agent_integrity`, plus `provenance`,
+        `hardware_custody`, `transparency_log`, `cert_validity`,
+        `rollback_detected`). No tier / level scoring — that's sugar
+        the consumer adds on top.
+
+        Args:
+            attestation: Dict from a prior `run_attestation` call
+                (must be JSON-serializable as a `FullAttestationResult`).
+            key_id: The key the bundle attests to.
+            attester: Who composed the bundle (defaults to
+                `"ciris-verify"` for verify-internal projection).
+
+        Returns:
+            Dict matching the `AttestBundle` JSON shape, or `None` if
+            the FFI fn is unavailable (older library) or the
+            projection failed.
+        """
+        if not self._has_attest_bundle_support:
+            return None
+
+        attestation_bytes = json.dumps(attestation).encode("utf-8")
+        key_id_bytes = key_id.encode("utf-8")
+        attester_bytes = attester.encode("utf-8")
+
+        result_ptr = ctypes.POINTER(ctypes.c_uint8)()
+        result_len = ctypes.c_size_t()
+
+        ret = self._lib.ciris_verify_attest_bundle_from_attestation(
+            attestation_bytes,
+            len(attestation_bytes),
+            key_id_bytes,
+            len(key_id_bytes),
+            attester_bytes,
+            len(attester_bytes),
+            ctypes.byref(result_ptr),
+            ctypes.byref(result_len),
+        )
+
+        if ret != 0:
+            return None
+
+        try:
+            data = ctypes.string_at(result_ptr, result_len.value)
+            self._lib.ciris_verify_free(result_ptr)
+            return json.loads(data)
         except Exception:
             return None
 

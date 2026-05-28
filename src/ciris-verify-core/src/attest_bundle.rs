@@ -1,29 +1,34 @@
-//! UI-shaped attestation bundle for the Epistemic Commons Framework
-//! (CIRISVerify#36, v3.5.0+).
+//! Measurement-shaped attestation bundle for downstream consumers
+//! (CIRISVerify#36, v3.6.0+).
 //!
-//! [`AttestBundle`] reshapes an already-composed
-//! [`FederationProvenance`] into the named-field JSON the
-//! CIRISAgent 2.10.0 UI cards consume (ProfileScorecard,
-//! Trust Topology). The bundle adds **zero** new verification logic —
-//! it is a pure projection over the entry list verify already carries
-//! per `MISSION.md` §1.4.
+//! [`AttestBundle`] regroups an already-composed
+//! [`FederationProvenance`] into named-field measurements. Each field
+//! states **what was measured** — not where it sits in any
+//! consumer-defined trust ladder. Per `MISSION.md` §1.4, verify
+//! carries measurements; tier / level scoring is sugar the consumer
+//! applies on top.
 //!
 //! ## Composition discipline
 //!
 //! Bundle construction is *only* a regrouping of
-//! [`AttestationEntry`] items into the L1–L5 ladder + named sections
-//! (`provenance`, `custody`, `transparency_log`, `cert_validity`).
-//! No new attestations are emitted here, no verdicts are composed.
+//! [`AttestationEntry`] items into named measurement fields
+//! (`self_verification`, `hardware_attestation`, `registry_consensus`,
+//! `license_validity`, `agent_integrity`) plus the supporting
+//! sections (`provenance`, `hardware_custody`, `transparency_log`,
+//! `cert_validity`, `rollback_detected`). No new attestations are
+//! emitted here, no verdicts are composed, no levels are assigned.
 //! The full entry list remains addressable via
 //! [`AttestBundle::federation_provenance`] so consumers that need the
 //! raw shape never lose information.
 //!
-//! ## Trait discipline (PyO3 cohabitation)
+//! ## FFI / Python wiring
 //!
-//! Per the discipline comment on #36, the PyO3 surface for the bundle
-//! is a thin marshaller over this Rust type — it serializes the
-//! bundle to JSON and returns it. No orchestration on the Python
-//! side; no chain-walk logic reimplemented at the FFI boundary.
+//! The bundle is exposed through the C FFI as a stateless projection
+//! function and re-exposed in the Python binding as
+//! `attest_bundle_from_attestation(attestation_json, key_id,
+//! attester)`. Both are pure marshallers — no orchestration on the
+//! Python side; no chain-walk logic reimplemented at the FFI
+//! boundary.
 
 use std::collections::BTreeMap;
 
@@ -31,9 +36,13 @@ use serde::{Deserialize, Serialize};
 
 use crate::federation_provenance::{dim, AttestationEntry, FederationProvenance};
 
-/// One rung of the L1–L5 attestation ladder, projected for UI display.
+/// One measurement fact — the boolean-via-score result of a single
+/// attestation dimension, plus its attester and (optional) source
+/// reference. Unlike a "verdict," a fact only states what was
+/// observed; the consumer decides what (if anything) the fact
+/// implies for their trust policy.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LadderRung {
+pub struct AttestationFact {
     /// Did the underlying [`AttestationEntry`] pass under the
     /// dimension's polarity?
     pub passed: bool,
@@ -41,12 +50,12 @@ pub struct LadderRung {
     /// registry steward `key_id`).
     pub attester: String,
     /// Optional source reference — a persist row hash, registry URL,
-    /// STH hash. Lets the UI link back to the underlying record.
+    /// STH hash. Lets the consumer link back to the underlying record.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
 }
 
-impl From<&AttestationEntry> for LadderRung {
+impl From<&AttestationEntry> for AttestationFact {
     fn from(e: &AttestationEntry) -> Self {
         Self {
             passed: e.is_pass(),
@@ -56,32 +65,7 @@ impl From<&AttestationEntry> for LadderRung {
     }
 }
 
-/// The L1–L5 attestation ladder as a named-field projection.
-///
-/// Each rung is `Option<LadderRung>` — `None` means *not checked* (per
-/// FSD-002 §3.2 absence is not implicit pass). The UI renders absent
-/// rungs as neutral / "unknown", not as failures.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct AttestationLadder {
-    /// L1 self-verification ("who watches the watchmen").
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub l1: Option<LadderRung>,
-    /// L2 hardware attestation (TPM / Keystore / Secure Enclave).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub l2: Option<LadderRung>,
-    /// L3 registry consensus (2-of-3 multi-source).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub l3: Option<LadderRung>,
-    /// L4 license validity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub l4: Option<LadderRung>,
-    /// L5 agent integrity.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub l5: Option<LadderRung>,
-}
-
-/// Provenance block — SLSA build level + per-target build-manifest
-/// hashes (or source refs).
+/// SLSA + per-target build-manifest provenance.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProvenanceBlock {
     /// Maximum SLSA level attested under any `provenance:slsa:{level}`
@@ -97,14 +81,14 @@ pub struct ProvenanceBlock {
     pub build_manifest: BTreeMap<String, String>,
 }
 
-/// Hardware-custody block — where the seed lives.
+/// Hardware-custody fact — where the seed lives.
 ///
 /// `platform` is one of the FSD-002 §3.2 platforms (`tpm`,
 /// `ios_secure_enclave`, `android_keystore`, `software_fallback`).
 /// `verified` is `false` for `software_fallback` (the one variant
-/// that structurally caps at `UNLICENSED_COMMUNITY`).
+/// without hardware backing).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct CustodyBlock {
+pub struct HardwareCustody {
     /// Platform string (lowercased). Empty when no custody entry
     /// was emitted.
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -118,80 +102,66 @@ pub struct CustodyBlock {
 pub struct TransparencyLogBlock {
     /// RFC 6962 inclusion proof verdict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inclusion: Option<TransparencyLogProof>,
+    pub inclusion: Option<AttestationFact>,
     /// RFC 6962 consistency proof verdict.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub consistency: Option<TransparencyLogProof>,
+    pub consistency: Option<AttestationFact>,
 }
 
-/// One transparency-log proof verdict.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct TransparencyLogProof {
-    /// Did the proof verify?
-    pub verified: bool,
-    /// Who attested.
-    pub attester: String,
-    /// Optional source reference (e.g., STH hash).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_ref: Option<String>,
-}
-
-impl From<&AttestationEntry> for TransparencyLogProof {
-    fn from(e: &AttestationEntry) -> Self {
-        Self {
-            verified: e.is_pass(),
-            attester: e.attester.clone(),
-            source_ref: e.source_ref.clone(),
-        }
-    }
-}
-
-/// Certificate-validity entry for one authority.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct CertValidityEntry {
-    /// Did the authority's certificate validate?
-    pub valid: bool,
-    /// Who attested.
-    pub attester: String,
-    /// Optional source reference.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_ref: Option<String>,
-}
-
-impl From<&AttestationEntry> for CertValidityEntry {
-    fn from(e: &AttestationEntry) -> Self {
-        Self {
-            valid: e.is_pass(),
-            attester: e.attester.clone(),
-            source_ref: e.source_ref.clone(),
-        }
-    }
-}
-
-/// UI-shaped attestation bundle (CIRISVerify#36).
+/// Measurement-shaped attestation bundle (CIRISVerify#36, v3.6.0+).
 ///
 /// Pure projection over a [`FederationProvenance`] — no new
-/// verification, no policy. The full entry list is preserved in
+/// verification, no policy, no levels. Each field names what was
+/// measured. Consumers compose tiers / levels / verdicts under their
+/// own policy.
+///
+/// The full entry list is preserved in
 /// [`AttestBundle::federation_provenance`] for consumers that need
 /// the raw shape.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttestBundle {
     /// The key (identity, credential, etc.) this bundle attests to.
     pub key_id: String,
-    /// L1–L5 ladder.
-    pub ladder: AttestationLadder,
+
+    // ---- Direct attestation measurements ----
+    /// Self-verification: the running CIRISVerify binary attests
+    /// itself against its function manifest ("who watches the
+    /// watchmen"). FSD-002 dim `attestation:l1:self_verify`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub self_verification: Option<AttestationFact>,
+    /// Hardware-rooted attestation (TPM 2.0 / Android Keystore / iOS
+    /// Secure Enclave). FSD-002 dim `attestation:l2:hardware`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_attestation: Option<AttestationFact>,
+    /// Multi-source registry consensus (2-of-3 by default).
+    /// FSD-002 dim `attestation:l3:registry_consensus`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registry_consensus: Option<AttestationFact>,
+    /// Registry-signed, verify-verified license validity.
+    /// FSD-002 dim `attestation:l4:license_validity`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub license_validity: Option<AttestationFact>,
+    /// Agent source-tree byte-equal against registered manifest.
+    /// FSD-002 dim `attestation:l5:agent_integrity`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_integrity: Option<AttestationFact>,
+
+    // ---- Supporting measurements ----
     /// SLSA + per-target build manifest provenance.
     pub provenance: ProvenanceBlock,
-    /// Hardware custody.
-    pub custody: CustodyBlock,
-    /// Transparency-log proofs.
+    /// Where the seed lives (hardware custody).
+    pub hardware_custody: HardwareCustody,
+    /// Transparency-log inclusion / consistency proofs.
     pub transparency_log: TransparencyLogBlock,
-    /// Cert validity per authority.
+    /// Cert validity keyed by authority id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub cert_validity: BTreeMap<String, CertValidityEntry>,
-    /// Any rollback signal present? Verify owns the `rollback_detected:*`
-    /// namespace; a non-zero count is a hard signal (FSD-002 §3.2).
+    pub cert_validity: BTreeMap<String, AttestationFact>,
+    /// Was any rollback signal present? Verify owns the
+    /// `rollback_detected:*` namespace; a non-zero count is a hard
+    /// signal (FSD-002 §3.2). Polarity-negative entries don't appear
+    /// elsewhere in the bundle.
     pub rollback_detected: bool,
+
     /// The full underlying provenance carrier. Consumers needing the
     /// raw attestation list, cache age, or persist row hash read it
     /// here.
@@ -199,25 +169,30 @@ pub struct AttestBundle {
 }
 
 impl AttestBundle {
-    /// Project a [`FederationProvenance`] into a UI bundle for
-    /// `key_id`. No verification is performed — only regrouping.
+    /// Project a [`FederationProvenance`] into a measurement bundle
+    /// for `key_id`. No verification is performed — only regrouping.
     ///
-    /// When two entries cover the same ladder level (e.g. one from
-    /// the [`crate::unified::FullAttestationResult::to_federation_provenance`]
-    /// pass and a richer one from a per-attester `to_attestation_entries`
-    /// later), the **first** one wins — the bundle is composed in
-    /// emission order and entries are append-only per
+    /// When two entries cover the same dimension (e.g. one from the
+    /// [`crate::unified::FullAttestationResult::to_federation_provenance`]
+    /// pass and a richer one from a per-attester
+    /// `to_attestation_entries` later), the **first** one wins — the
+    /// bundle is composed in emission order and entries are
+    /// append-only per
     /// [`FederationProvenance::attestations_consumed`].
     #[must_use]
     pub fn from_federation_provenance(
         key_id: impl Into<String>,
         provenance: FederationProvenance,
     ) -> Self {
-        let mut ladder = AttestationLadder::default();
-        let mut custody = CustodyBlock::default();
+        let mut self_verification: Option<AttestationFact> = None;
+        let mut hardware_attestation: Option<AttestationFact> = None;
+        let mut registry_consensus: Option<AttestationFact> = None;
+        let mut license_validity: Option<AttestationFact> = None;
+        let mut agent_integrity: Option<AttestationFact> = None;
+        let mut hardware_custody = HardwareCustody::default();
         let mut transparency_log = TransparencyLogBlock::default();
         let mut build_manifest: BTreeMap<String, String> = BTreeMap::new();
-        let mut cert_validity: BTreeMap<String, CertValidityEntry> = BTreeMap::new();
+        let mut cert_validity: BTreeMap<String, AttestationFact> = BTreeMap::new();
         let mut slsa_level: Option<u8> = None;
         let mut rollback_detected = false;
 
@@ -233,35 +208,35 @@ impl AttestBundle {
             // slot wins.
             let matched_constant = match d {
                 dim::L1_SELF_VERIFY => {
-                    ladder.l1.get_or_insert_with(|| LadderRung::from(entry));
+                    self_verification.get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
                 dim::L2_HARDWARE => {
-                    ladder.l2.get_or_insert_with(|| LadderRung::from(entry));
+                    hardware_attestation.get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
                 dim::L3_REGISTRY_CONSENSUS => {
-                    ladder.l3.get_or_insert_with(|| LadderRung::from(entry));
+                    registry_consensus.get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
                 dim::L4_LICENSE_VALIDITY => {
-                    ladder.l4.get_or_insert_with(|| LadderRung::from(entry));
+                    license_validity.get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
                 dim::L5_AGENT_INTEGRITY => {
-                    ladder.l5.get_or_insert_with(|| LadderRung::from(entry));
+                    agent_integrity.get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
                 dim::TRANSPARENCY_LOG_INCLUSION => {
                     transparency_log
                         .inclusion
-                        .get_or_insert_with(|| TransparencyLogProof::from(entry));
+                        .get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
                 dim::TRANSPARENCY_LOG_CONSISTENCY => {
                     transparency_log
                         .consistency
-                        .get_or_insert_with(|| TransparencyLogProof::from(entry));
+                        .get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
                 _ => false,
@@ -283,14 +258,14 @@ impl AttestBundle {
                     .entry(target.to_string())
                     .or_insert(source_ref);
             } else if let Some(platform) = d.strip_prefix("hardware_custody:") {
-                if custody.platform.is_empty() {
-                    custody.platform = platform.to_string();
-                    custody.verified = entry.is_pass();
+                if hardware_custody.platform.is_empty() {
+                    hardware_custody.platform = platform.to_string();
+                    hardware_custody.verified = entry.is_pass();
                 }
             } else if let Some(authority) = d.strip_prefix("cert_validity:") {
                 cert_validity
                     .entry(authority.to_string())
-                    .or_insert_with(|| CertValidityEntry::from(entry));
+                    .or_insert_with(|| AttestationFact::from(entry));
             }
             // Unknown / future dimensions are preserved in
             // federation_provenance.attestations_consumed below; no
@@ -299,12 +274,16 @@ impl AttestBundle {
 
         Self {
             key_id: key_id.into(),
-            ladder,
+            self_verification,
+            hardware_attestation,
+            registry_consensus,
+            license_validity,
+            agent_integrity,
             provenance: ProvenanceBlock {
                 slsa_level,
                 build_manifest,
             },
-            custody,
+            hardware_custody,
             transparency_log,
             cert_validity,
             rollback_detected,
@@ -338,24 +317,24 @@ mod tests {
     }
 
     #[test]
-    fn empty_provenance_yields_all_none_ladder() {
+    fn empty_provenance_yields_all_none_measurements() {
         let bundle =
             AttestBundle::from_federation_provenance("k1", FederationProvenance::default());
         assert_eq!(bundle.key_id, "k1");
-        assert!(bundle.ladder.l1.is_none());
-        assert!(bundle.ladder.l2.is_none());
-        assert!(bundle.ladder.l3.is_none());
-        assert!(bundle.ladder.l4.is_none());
-        assert!(bundle.ladder.l5.is_none());
+        assert!(bundle.self_verification.is_none());
+        assert!(bundle.hardware_attestation.is_none());
+        assert!(bundle.registry_consensus.is_none());
+        assert!(bundle.license_validity.is_none());
+        assert!(bundle.agent_integrity.is_none());
         assert!(!bundle.rollback_detected);
-        assert!(bundle.custody.platform.is_empty());
+        assert!(bundle.hardware_custody.platform.is_empty());
         assert!(bundle.cert_validity.is_empty());
         assert!(bundle.provenance.build_manifest.is_empty());
         assert!(bundle.provenance.slsa_level.is_none());
     }
 
     #[test]
-    fn full_l1_l5_pass_populates_ladder() {
+    fn all_measurements_pass_populates_named_fields() {
         let prov = fp(vec![
             AttestationEntry::pass(dim::L1_SELF_VERIFY, "ciris-verify"),
             AttestationEntry::pass(dim::L2_HARDWARE, "ciris-verify"),
@@ -364,13 +343,13 @@ mod tests {
             AttestationEntry::pass(dim::L5_AGENT_INTEGRITY, "ciris-verify"),
         ]);
         let bundle = AttestBundle::from_federation_provenance("agent-key-1", prov);
-        assert!(bundle.ladder.l1.as_ref().unwrap().passed);
-        assert!(bundle.ladder.l2.as_ref().unwrap().passed);
-        assert!(bundle.ladder.l3.as_ref().unwrap().passed);
-        assert!(bundle.ladder.l4.as_ref().unwrap().passed);
-        assert!(bundle.ladder.l5.as_ref().unwrap().passed);
+        assert!(bundle.self_verification.as_ref().unwrap().passed);
+        assert!(bundle.hardware_attestation.as_ref().unwrap().passed);
+        assert!(bundle.registry_consensus.as_ref().unwrap().passed);
+        assert!(bundle.license_validity.as_ref().unwrap().passed);
+        assert!(bundle.agent_integrity.as_ref().unwrap().passed);
         assert_eq!(
-            bundle.ladder.l4.as_ref().unwrap().attester,
+            bundle.license_validity.as_ref().unwrap().attester,
             "registry-steward-us"
         );
     }
@@ -383,8 +362,8 @@ mod tests {
         ]);
         let bundle = AttestBundle::from_federation_provenance("k", prov);
         assert!(bundle.rollback_detected);
-        // Rollback entries do not appear on the ladder.
-        assert!(bundle.ladder.l1.as_ref().unwrap().passed);
+        // Rollback entries do not appear under named measurements.
+        assert!(bundle.self_verification.as_ref().unwrap().passed);
     }
 
     #[test]
@@ -424,25 +403,25 @@ mod tests {
     }
 
     #[test]
-    fn custody_populated_from_hardware_custody_entry() {
+    fn hardware_custody_populated_from_hardware_custody_entry() {
         let prov = fp(vec![AttestationEntry::pass(
             dim::hardware_custody("tpm"),
             "ciris-verify",
         )]);
         let bundle = AttestBundle::from_federation_provenance("k", prov);
-        assert_eq!(bundle.custody.platform, "tpm");
-        assert!(bundle.custody.verified);
+        assert_eq!(bundle.hardware_custody.platform, "tpm");
+        assert!(bundle.hardware_custody.verified);
     }
 
     #[test]
-    fn custody_software_fallback_is_unverified() {
+    fn hardware_custody_software_fallback_is_unverified() {
         let prov = fp(vec![AttestationEntry::fail(
             dim::hardware_custody("software_fallback"),
             "ciris-verify",
         )]);
         let bundle = AttestBundle::from_federation_provenance("k", prov);
-        assert_eq!(bundle.custody.platform, "software_fallback");
-        assert!(!bundle.custody.verified);
+        assert_eq!(bundle.hardware_custody.platform, "software_fallback");
+        assert!(!bundle.hardware_custody.verified);
     }
 
     #[test]
@@ -457,14 +436,14 @@ mod tests {
                 .cert_validity
                 .get("registry-steward-us")
                 .unwrap()
-                .valid
+                .passed
         );
         assert!(
             !bundle
                 .cert_validity
                 .get("registry-steward-eu")
                 .unwrap()
-                .valid
+                .passed
         );
     }
 
@@ -477,25 +456,25 @@ mod tests {
         ]);
         let bundle = AttestBundle::from_federation_provenance("k", prov);
         let inc = bundle.transparency_log.inclusion.as_ref().unwrap();
-        assert!(inc.verified);
+        assert!(inc.passed);
         assert_eq!(inc.source_ref.as_deref(), Some("sth:abc123"));
         let cons = bundle.transparency_log.consistency.as_ref().unwrap();
-        assert!(!cons.verified);
+        assert!(!cons.passed);
         assert_eq!(cons.attester, "witness-eu");
     }
 
     #[test]
-    fn first_entry_per_dimension_wins_on_ladder() {
-        // If two L1 entries exist (e.g. composed from two sources),
-        // the first wins. This preserves emission-order semantics.
+    fn first_entry_per_dimension_wins() {
+        // If two self_verification entries exist, the first wins.
+        // This preserves emission-order semantics.
         let prov = fp(vec![
             AttestationEntry::pass(dim::L1_SELF_VERIFY, "ciris-verify"),
             AttestationEntry::fail(dim::L1_SELF_VERIFY, "second-attester"),
         ]);
         let bundle = AttestBundle::from_federation_provenance("k", prov);
-        let l1 = bundle.ladder.l1.as_ref().unwrap();
-        assert!(l1.passed);
-        assert_eq!(l1.attester, "ciris-verify");
+        let sv = bundle.self_verification.as_ref().unwrap();
+        assert!(sv.passed);
+        assert_eq!(sv.attester, "ciris-verify");
     }
 
     #[test]
@@ -516,7 +495,7 @@ mod tests {
     }
 
     #[test]
-    fn json_shape_matches_36_proposal() {
+    fn json_shape_names_measurements_not_levels() {
         let prov = fp(vec![
             AttestationEntry::pass(dim::L1_SELF_VERIFY, "ciris-verify"),
             AttestationEntry::pass(dim::L2_HARDWARE, "ciris-verify"),
@@ -532,18 +511,21 @@ mod tests {
         let bundle = AttestBundle::from_federation_provenance("agent-key-1", prov);
         let j: serde_json::Value = serde_json::to_value(&bundle).unwrap();
         assert_eq!(j["key_id"], "agent-key-1");
-        assert_eq!(j["ladder"]["l1"]["passed"], true);
-        assert_eq!(j["ladder"]["l2"]["passed"], true);
+        // Measurements are named by what they are — no l1/l2/l3/l4/l5 sugar.
+        assert_eq!(j["self_verification"]["passed"], true);
+        assert_eq!(j["hardware_attestation"]["passed"], true);
+        // No ladder field — those keys must not exist.
+        assert!(j.get("ladder").is_none());
+        assert!(j.get("l1").is_none());
         assert_eq!(j["provenance"]["slsa_level"], 2);
         assert_eq!(
             j["provenance"]["build_manifest"]["x86_64-unknown-linux-gnu"],
             "sha256:cafef00d"
         );
-        assert_eq!(j["custody"]["platform"], "tpm");
-        assert_eq!(j["custody"]["verified"], true);
-        assert_eq!(j["cert_validity"]["registry-steward-us"]["valid"], true);
+        assert_eq!(j["hardware_custody"]["platform"], "tpm");
+        assert_eq!(j["hardware_custody"]["verified"], true);
+        assert_eq!(j["cert_validity"]["registry-steward-us"]["passed"], true);
         assert_eq!(j["rollback_detected"], false);
-        // The full provenance carrier is still addressable.
         assert!(j["federation_provenance"]["attestations_consumed"].is_array());
     }
 
@@ -575,7 +557,7 @@ mod tests {
                 binary_valid: true,
                 functions_valid: true,
                 valid: true,
-                binary_version: "3.5.0".into(),
+                binary_version: "3.6.0".into(),
                 target: "x86_64-unknown-linux-gnu".into(),
                 binary_hash: "deadbeef".into(),
                 expected_hash: Some("deadbeef".into()),
@@ -588,7 +570,7 @@ mod tests {
                 key_type: "portal".into(),
                 hardware_type: "tpm".into(),
                 has_valid_signature: true,
-                binary_version: "3.5.0".into(),
+                binary_version: "3.6.0".into(),
                 running_in_vm: false,
                 classical_signature: "abc".into(),
                 pqc_available: true,
@@ -626,10 +608,10 @@ mod tests {
 
         let bundle = r.to_attest_bundle("agent-key-1", "ciris-verify");
         assert_eq!(bundle.key_id, "agent-key-1");
-        assert!(bundle.ladder.l1.as_ref().unwrap().passed);
-        assert!(bundle.ladder.l2.as_ref().unwrap().passed);
-        assert!(bundle.ladder.l3.as_ref().unwrap().passed);
-        assert_eq!(bundle.custody.platform, "tpm");
-        assert!(bundle.custody.verified);
+        assert!(bundle.self_verification.as_ref().unwrap().passed);
+        assert!(bundle.hardware_attestation.as_ref().unwrap().passed);
+        assert!(bundle.registry_consensus.as_ref().unwrap().passed);
+        assert_eq!(bundle.hardware_custody.platform, "tpm");
+        assert!(bundle.hardware_custody.verified);
     }
 }

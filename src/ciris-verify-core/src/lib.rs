@@ -85,8 +85,7 @@ pub mod validation;
 pub mod watchdog;
 
 pub use attest_bundle::{
-    AttestBundle, AttestationLadder, CertValidityEntry, CustodyBlock, LadderRung, ProvenanceBlock,
-    TransparencyLogBlock, TransparencyLogProof,
+    AttestBundle, AttestationFact, HardwareCustody, ProvenanceBlock, TransparencyLogBlock,
 };
 pub use cache::{CachedLicense, LicenseCache};
 pub use config::{TrustModel, VerifyConfig};
