@@ -1,6 +1,6 @@
 # CIRISVerify Threat Model
 
-**Last updated:** 2026-05-22 (v3.0.0 "Federation Ready" — AV-42 transport-identity binding mitigated; §10 Gap 6 closed)
+**Last updated:** 2026-05-28 (v3.6.0 — measurement-shaped scalar-attestation surface; §1.4 invariant made structural; M-of-N threshold-signature primitive shipped)
 
 ## 1. Scope
 
@@ -158,6 +158,8 @@ Original six vectors (AV-1..AV-6) from FSD-001; v1.7-v1.8 federation work added 
 **Long-term mitigation (persist v0.2.x federation directory)**: The trusted-pubkey lookup layer migrates from "registry-local table that the steward writes" to persist's federated `federation_keys` substrate (per [`CIRISPersist/docs/FEDERATION_DIRECTORY.md`](https://github.com/CIRISAI/CIRISPersist/blob/main/docs/FEDERATION_DIRECTORY.md)). Every `federation_keys` row carries scrub-signing four-tuple (recursive cryptographic provenance — every row signed by another row in the same table, terminating at the steward's self-signed bootstrap). Registry becomes a cache+policy layer over persist's substrate (per [`CIRISRegistry/docs/FEDERATION_CLIENT.md`](https://github.com/CIRISAI/CIRISRegistry/blob/main/docs/FEDERATION_CLIENT.md)). This resolves CIRISRegistry#5 §4 not via a new registry endpoint but by repositioning the trust-key-bootstrap layer entirely: persist stores; consumers (registry, verify, agent) compute their own trust verdicts.
 
 **Residual**: Trusted-pubkey lookup for non-`Verify` primitives currently requires explicit registration via `RegisterTrustedPrimitiveKey` (registry-side, `CIRISVerify` registered today; persist/lens/agent registration coordinated when their CI migrates to `ciris-build-sign`). The persist v0.2.x federation directory is the architecturally-cleaner long-term resolution; until it ships, registry's `trusted_primitive_keys` table is the operational source of truth.
+
+**v3.4.0 strengthening**: `BuildManifest::to_attestation_entries` (v3.4.0) emits a `provenance:build_manifest:{target}` AttestationEntry signed by the per-primitive steward on successful `verify_build_manifest`. The per-primitive discriminant is now a structurally-observable federation_provenance entry (`attester` field carries the steward `key_id`) rather than only an internal verify-side check — a downstream auditor reading the bundle can confirm which primitive's steward attested the build without re-running the manifest verification themselves.
 
 ---
 
@@ -667,20 +669,24 @@ The federation crypto authority framing is the v2.0 differentiator. No peer is d
 
 ---
 
-## 11. Federation Role Coverage (v2.0)
+## 11. Federation Role Coverage (v3.6)
 
-The federation expects CIRISVerify to be the **substrate-level crypto authority** — every primitive that needs cryptographic operations routes through this crate. Self-assessment of coverage as of v2.0.0:
+The federation expects CIRISVerify to be the **substrate-level crypto authority** — every primitive that needs cryptographic operations routes through this crate. Self-assessment of coverage as of v3.6.0:
 
 ### 11.1 Covered
 
 - ✅ **Hybrid signing** (Ed25519 + ML-DSA-65 with bound classical-inside-PQC signatures) — `HybridSigner`/`HybridVerifier` stable since v1.x; PQC binding tested against signature-stripping attacks.
 - ✅ **Hardware-bound identity** (TPM 2.0 with EK certificate + dual-key architecture, Android Keystore / StrongBox, iOS Secure Enclave / Apple T2, software fallback) — `HardwareSigner` trait, `StorageDescriptor` for transparency about identity material location.
-- ✅ **Build attestation** (BuildManifest validator, function-level integrity, file-tree integrity, multi-target sign + register) — registry round-trip locked by post-release-verify CI; Sigstore + GitHub Actions OIDC for CI signing.
+- ✅ **Build attestation** (BuildManifest validator, function-level integrity, file-tree integrity, multi-target sign + register) — registry round-trip locked by post-release-verify CI; Sigstore + GitHub Actions OIDC for CI signing. v3.4.0 added `BuildManifest::to_attestation_entries` emitting the `provenance:build_manifest:{target}` dimension on successful verify.
 - ✅ **Runtime integrity** (`verify_tree`, Algorithm A canonical algorithm shared with `ciris-build-sign sign --tree`, missing/extra/mismatch verdict semantics post-v1.14.0) — Python FFI exposed; live-registry CI gate.
 - ✅ **License tier enforcement + mandatory disclosure** — `LicenseEngine`, fail-secure degradation (LOCKDOWN / RESTRICTED / COMMUNITY), capability gating against `PROHIBITED_CAPABILITIES`.
 - ✅ **Federation symmetric authority (v2.0)** — AES-256-GCM, PBKDF2, HKDF, HMAC-SHA256, OsRng — single audit point. NIST GCM + RFC 5869 + RFC 4231 vectors locked.
 - ✅ **Wallet signing** (secp256k1 EVM, EIP-155, EIP-712, address recovery) — for federation primitives that interact with on-chain attestations.
 - ✅ **Hardware vulnerability detection** (CVE-2026-20435 MediaTek, CVE-2026-21385 Qualcomm) — caps attestation to SOFTWARE_ONLY for known-bad chips.
+- ✅ **Authenticated transport-identity binding (AV-42)** — v2.9.0 `FederationEnvelope` substrate + v2.14.0 `federation_keys` provenance verifier + v3.0.0 `EnvelopeVerifyPolicy::RequireTransportBinding` enforcement-capable path + v2.10.0 deterministic `derive_transport_identity`. Advisory by default; fleet enforcement cutover is a coordination flip (#28).
+- ✅ **M-of-N threshold-signature verifier (v3.1.0)** — `verify_threshold_signatures` over hybrid signatures. Powers federation-keyset bootstrap rotation (#31 Part A) and constitutional emergency shutdown (#32 Ask 3). Mitigates single-steward compromise as a federation-wide primitive.
+- ✅ **Scalar-attestation surface (v3.2.0+)** — `federation_provenance` carries the twelve FSD-002 §3.2 dimensions as `AttestationEntry { dimension, score, attester, source_ref }` triples. Verify states what it measured; **the response composes no verdict**, structurally enforcing the §1.4 authentication ≠ trust invariant. v3.6.0 `AttestBundle` projects the same data into named measurement fields for downstream UI / scoring consumers (no L1/L2/L3/L4/L5 ladder shape — tier mapping is consumer policy).
+- ✅ **Transparency-log witness cosigning receiver (v2.12.0)** — `SignedTreeHead::cosign`, `TrustedWitness`, `witness_quorum_met`. Registry-side emitter endpoints tracked at CIRISRegistry#24.
 
 ### 11.2 Deferred / Roadmap (scheduled work, not blind spots)
 
@@ -698,14 +704,14 @@ These are NOT gaps. They are deliberate boundary choices respecting adjacent pri
 
 - ❌ **Forward-secret session establishment (X25519 KEX)** — investigated for v2.0; dropped after auditing CIRISEdge `FSD/CIRIS_EDGE.md` §AV-15 ("edge does not add a third encryption layer") and CIRISPersist's per-secret encryption shape (one-shot, not session-based). Reticulum / TLS handle transport-layer KEX; we don't duplicate at the substrate layer.
 - ❌ **Streaming AEAD** — investigated for v2.0; dropped because persist's encrypted records are tens-to-hundreds of bytes per row, not multi-MB blobs. No concrete consumer.
-- ❌ **Threshold signatures / federation quorum** (FROST, BLS aggregation) — not in scope; no concrete demand. Federation today uses hybrid-signed singletons, not quorum sigs. If steward-key model migrates to multi-operator key-ceremony, this becomes scoped — until then, deferring matches the demand-driven principle.
+- ❌ **Aggregate signature schemes** (FROST, BLS aggregation) — not in scope. v3.1.0 shipped a **generic M-of-N over hybrid singletons** (`verify_threshold_signatures` — see §11.1), which satisfies the keyset-rotation (#31) and constitutional-shutdown (#32 Ask 3) demand. True signature aggregation (one short signature standing in for N) requires either pairing-based BLS or schnorr-only FROST; neither maps cleanly onto the hybrid Ed25519 + ML-DSA-65 contract. Deferring matches the demand-driven principle — no consumer needs sub-linear signature size today.
 - ❌ **Zero-knowledge proofs / homomorphic encryption** — speculative; no concrete privacy-preserving attestation use case in the federation today. HE is 100-1000× overhead at the state of the art; not federation-ready.
 - ❌ **Application-layer transport** — that's CIRISEdge's role with Reticulum-rs (Phase 1) + Leviculum / LoRa / I²P / Serial (Phase 3). We're substrate; they're transport. Different layer, different ownership.
 - ❌ **Operator UX for manual verification** — that's CIRISPortal's role. We expose machine-readable attestation; humans interact via portal.
 
 ### 11.4 Net assessment
 
-**Federation role is fully covered for v2.0's spec.**
+**Federation role is fully covered for v3.6's spec.**
 
 The deferred items (§11.2) are scheduled work or dependency-blocked, not blind spots — every one of them is in a roadmap doc with an action item. The out-of-scope items (§11.3) are intentionally bounded to respect adjacent primitives' domains; reaching into them would be over-stepping into CIRISEdge / CIRISPortal / CIRISRegistry territory.
 
@@ -715,10 +721,11 @@ The **second residual** is multi-operator release controls (Gap 5). XZ-3094 demo
 
 Where the federation could push us further (if the substrate threat model evolves):
 
-- **Threshold signatures** if steward-key model migrates to multi-operator key-ceremony (§11.3 #3).
+- **Aggregate-signature primitive** (BLS / FROST) if some federation operation needs sub-linear signature size at scale — generic M-of-N hybrid singletons cover today's demand (§11.3 #3).
 - **Hardware-master symmetric derivation** when persist#19 actually wires `secrets-hw` (§11.2 #6).
 - **FIPS-mode RNG draws** if FedRAMP / CMMC compliance becomes a federation requirement (AV-39 secondary).
 - **Streaming AEAD** if a federation primitive ever needs multi-MB at-rest blob encryption (currently nobody does — §11.3 #2).
+- **Production population of the scalar-attestation surface** depends on four cross-repo emitters: CIRISRegistry#24 (`provenance:slsa:{level}` / `provenance:build_manifest:{target}` / `cert_validity:{authority}` emission + STH witness cosigning endpoint), CIRISAgent#801 (periodic `run_attestation` + bundle UI surfacing + AV-42 cutover commitment), CIRISPersist#108 (`persist_row_hash` on federation rows), CIRISNodeCore#14 (structurally-independent 3rd `registry_consensus` source post Agent 3.0 fold). Verify-side receivers are all shipped — the bundle's measurements populate as each downstream lands.
 
 ---
 

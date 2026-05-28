@@ -6,9 +6,9 @@
 > file. Methodology: `~/CIRISAgent/FSD/MISSION_DRIVEN_DEVELOPMENT.md`
 > and the overview at [ciris.ai/mdd](https://ciris.ai/mdd).
 
-**Version**: 1.0
-**Status**: Active — reverse-engineered against `main` at v3.0.0
-**Date**: 2026-05-22
+**Version**: 1.1
+**Status**: Active — reverse-engineered against `main` at v3.6.0
+**Date**: 2026-05-28
 
 This is the reverse-engineered MDD charter for CIRISVerify: it maps the
 four pillars — Mission (WHY) / Protocols (WHO) / Schemas (WHAT) / Logic
@@ -140,6 +140,23 @@ federation-wide:
 > the trust axis. (See CIRISVerify#27 / #28; inherited from the
 > CIRISNodeCore trust model.)
 
+**Made structural in v3.2.0; consumer-facing in v3.6.0.** The
+`federation_provenance` scalar-attestation surface
+(`src/ciris-verify-core/src/federation_provenance.rs`, FSD-002 §3.2)
+turns the invariant from a documented bound into a wire shape: verify
+emits a list of `AttestationEntry { dimension, score, attester,
+source_ref }` triples and **does not compose a verdict** — the
+response carries measurements only. The `AttestBundle` projection
+(`src/ciris-verify-core/src/attest_bundle.rs`, v3.6.0) names each
+measurement for what it is (`self_verification`,
+`hardware_attestation`, `registry_consensus`, `license_validity`,
+`agent_integrity`, plus `provenance` / `hardware_custody` /
+`transparency_log` / `cert_validity` / `rollback_detected`) — **no
+L1/L2/L3/L4/L5 ladder structure**. Tier / level mapping is the
+consumer's policy, not verify's surface. A new response shape that
+emits a verdict, a tier, or a level from verify-side state fails
+review on mission grounds.
+
 ### 1.5 Recursive golden rule — the watchman submits to its own check
 
 The verifier must itself be verifiable. CIRISVerify's **Level 1
@@ -229,27 +246,65 @@ discipline is enforced by known-answer tests (NIST GCM vectors in
 
 ## 4. LOGIC (HOW)
 
-- **The L1–L5 attestation ladder** (`CLAUDE.md` §Attestation Levels) —
-  L1 self-verification, L2 hardware, L3 registry consensus, L4 license
-  validity, L5 agent integrity. Orchestrated by
-  `UnifiedAttestationEngine` (`src/ciris-verify-core/src/unified.rs`).
+- **The five attestation measurements** (FSD-002 §3.2 canonical
+  dimensions) — `self_verification`, `hardware_attestation`,
+  `registry_consensus`, `license_validity`, `agent_integrity`.
+  Orchestrated by `UnifiedAttestationEngine`
+  (`src/ciris-verify-core/src/unified.rs`); the wire-string dimension
+  identifiers (`attestation:l1:self_verify` …
+  `attestation:l5:agent_integrity`) retain their v3.2.0 stable
+  prefixes but the response-shape field names verify exposes are
+  measurement-named (§1.4). `CLAUDE.md` §Attestation Levels still
+  documents the historical L1–L5 ladder for operator reference — that
+  ladder is internal mnemonic, not an output structure.
+- **`AttestBundle` projection** (v3.6.0,
+  `src/ciris-verify-core/src/attest_bundle.rs`) — pure regrouping of
+  `FederationProvenance` into named measurement fields for downstream
+  UI / scoring consumers. No new verification, no policy. Stateless
+  C FFI + Python wrapper (`attest_bundle_from_attestation`).
+- **`federation_provenance` scalar-attestation surface** (v3.2.0,
+  `federation_provenance.rs`) — twelve owned dimensions, the wire
+  carrier verify uses to state what it measured. The structural
+  enforcement of §1.4.
 - **`verify_tree`** (`src/ciris-verify-core/src/tree_verify.rs`) —
   Algorithm A: walks a source tree byte-for-byte against its registered
-  manifest, the runtime integrity check downstream consumers reach L4
-  through.
+  manifest, the runtime integrity check downstream consumers reach
+  `agent_integrity` through.
 - **Multi-source consensus** (`src/ciris-verify-core/src/validation.rs`,
   `registry.rs`) — HTTPS-authoritative, DNS-advisory; 2-of-3
   geo-distributed sources. Disagreement degrades to RESTRICTED (§1.6).
+  Third structurally-independent source post Agent 3.0 fold tracked at
+  CIRISNodeCore#14.
+- **M-of-N threshold-signature verifier** (v3.1.0,
+  `src/ciris-verify-core/src/threshold.rs`) — generic hybrid M-of-N
+  primitive powering federation-keyset rotation (#31) and constitutional
+  shutdown (#32 Ask 3). Mitigates single-steward compromise.
+- **`BuildManifest::to_attestation_entries`** (v3.4.0,
+  `src/ciris-verify-core/src/security/build_manifest.rs`) — emits the
+  `provenance:build_manifest:{target}` PASS entry after
+  `verify_build_manifest` returns `Ok`. Per-primitive build provenance
+  becomes a federation-wide attestation.
 - **Anti-rollback** — `engine.rs` rejects any decrease in the
   revocation revision (`VerifyError::RollbackDetected`,
-  `error.rs`); a revoked license cannot be replayed as valid.
+  `error.rs`); a revoked license cannot be replayed as valid. The
+  `rollback_detected:{revision_field}` dimension is the one
+  negative-polarity entry in the namespace (FSD-002 §3.2).
 - **Transparency log** (`transparency.rs`) — append-only RFC 6962
   Merkle tree; O(1) root, O(log N) inclusion/consistency proofs;
-  hybrid-signed tree heads. The tamper-evident substrate.
+  hybrid-signed tree heads. Witness cosigning receiver shipped v2.12.0
+  (`SignedTreeHead::cosign`, `TrustedWitness`); registry-side emitter
+  endpoint tracked at CIRISRegistry#24.
 - **Hybrid Ed25519 + ML-DSA-65** — post-quantum on day one (FIPS 204).
   Both axes covered: SHA-256 Merkle (PQ-resistant) + hybrid signing.
+  Algorithm-agility gate at `HybridSignature::meets_federation_policy()`
+  + A/B/C migration protocol in `docs/CRYPTO_AGILITY.md` (v2.11.0).
 - **Hardware-rooted signing** — TPM 2.0 / Android Keystore / iOS Secure
   Enclave via `ciris-keyring`; the seed never leaves secure hardware.
+- **Transport-identity binding** (v3.0.0, AV-42 §3.9) —
+  `FederationEnvelope` + `TransportEpochGuard` + deterministic
+  `derive_transport_identity(storage, key_id, interface)` (v2.10.0).
+  Advisory by default; `EnvelopeVerifyPolicy::RequireTransportBinding`
+  is the fleet-coordination flip (#28).
 
 ## 5. Constant alignment — the review heuristic
 
@@ -322,6 +377,19 @@ CIRISVerify does not stand alone. The authoritative federation map is
   authenticated `PeerResolver`) as the consumers. The remaining #28
   Phase 4 step is the fleet-wide advisory→required enforcement cutover —
   a coordination flip, the capability already shipped.
+- **The v3.x scalar-attestation surface** is shipped: M-of-N threshold
+  verifier (#31 Part A, v3.1.0), `federation_provenance` carrier (#33,
+  v3.2.0), per-source `to_attestation_entries` emitters on Play
+  Integrity / App Attest / TPM 2.0 (#34, v3.3.0) and on
+  `BuildManifest` (#35, v3.4.0), measurement-shaped `AttestBundle`
+  projection + FFI + Python wrapper (#36, v3.6.0). Verify is in a
+  "receivers ready, awaiting downstream emitters" state — the four
+  cross-repo asks needed to populate the bundle in production are
+  filed: CIRISRegistry#24 (provenance / cert_validity / witness
+  cosigning), CIRISAgent#801 (periodic `run_attestation` cadence +
+  AV-42 cutover commitment + bundle UI surfacing), CIRISPersist#108
+  (`persist_row_hash` on federation rows), CIRISNodeCore#14
+  (structurally-independent 3rd `registry_consensus` source).
 
 ## 8. License-locked mission preservation
 

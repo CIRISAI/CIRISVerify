@@ -2,7 +2,7 @@
 
 **The hardware-rooted trust anchor for AI agents.**
 
-Protocol 3.0.0 · Rust + Python · AGPL-3.0 · Post-quantum from day one
+Protocol 3.6.0 · Rust + Python · AGPL-3.0 · Post-quantum from day one
 
 CIRISVerify answers one question for any agent in the CIRIS ecosystem:
 *is this agent who and what it claims to be?* It binds an agent's
@@ -35,6 +35,15 @@ Where it trails Trillian is durability and horizontal scale — Trillian
 is a sharded, database-backed service; CIRISVerify is an embeddable
 library with a pluggable `TransparencyStore` (CIRISPersist supplies the
 PG/SQLite backends). That gap is deployment architecture, not algorithm.
+
+**Response shape:** verify carries **measurements**, never verdicts.
+The v3.2.0+ `federation_provenance` surface and v3.6.0+ `AttestBundle`
+project the twelve canonical attestation dimensions (FSD-002 §3.2)
+as named facts — `self_verification`, `hardware_attestation`,
+`registry_consensus`, `license_validity`, `agent_integrity`, plus
+`provenance` / `hardware_custody` / `transparency_log` / `cert_validity`
+/ `rollback_detected`. Tier / level scoring is sugar the consumer
+applies; verify never confers trust (`MISSION.md` §1.4).
 
 ## Quick start
 
