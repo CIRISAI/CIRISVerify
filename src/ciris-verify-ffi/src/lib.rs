@@ -3031,7 +3031,7 @@ pub extern "C" fn ciris_verify_version() -> *const libc::c_char {
 }
 
 /// Project a `FullAttestationResult` JSON into the measurement-shaped
-/// [`AttestBundle`] JSON (CIRISVerify#36, v3.6.0+).
+/// `AttestBundle` JSON (CIRISVerify#36, v3.6.0+).
 ///
 /// Stateless — no handle required. The caller already has the
 /// `FullAttestationResult` JSON from a prior
