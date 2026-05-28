@@ -1,10 +1,26 @@
 //! `SkillImportManifest` — community-skill import provenance verifier
-//! (CIRISVerify#37 Phase 2, v3.9.0+).
+//! (CIRISVerify#37 Phase 2, v3.9.0+; canonicalization tightened to
+//! CEG 0.2 §0.5 / §0.6 / §5.2.1 in v4.0.0).
 //!
-//! Canonical-bytes contract pinned by CIRISRegistry FSD-002 v1.4.3
-//! §3.2.1.1. A `SkillImportManifest` is the signed bytes underlying a
-//! `provenance:skill_import:{source}` attestation. Signature scheme
-//! is hybrid Ed25519 + ML-DSA-65 per FSD-002 §7 federation discipline.
+//! Canonical-bytes contract pinned by CIRISRegistry CEG 0.2 §5.2.1
+//! (supersedes FSD-002 v1.4.3 §3.2.1.1). A `SkillImportManifest` is
+//! the signed bytes underlying a `provenance:skill_import:{source}`
+//! attestation. Signature scheme is hybrid Ed25519 + ML-DSA-65 per
+//! CEG 0.2 §10.0 federation discipline.
+//!
+//! ## CEG 0.2 §0.5 date-time canonicalization (v4.0.0+)
+//!
+//! `import_timestamp` and `valid_until` MUST be canonical RFC 3339:
+//! UTC suffix `Z` (not `+00:00`, not lowercase `z`), exactly
+//! millisecond precision (3 fractional digits). Form:
+//! `YYYY-MM-DDTHH:MM:SS.sssZ`. Producers emit this form; consumers
+//! reject any other.
+//!
+//! ## CEG 0.2 §0.6 hexadecimal canonicalization (v4.0.0+)
+//!
+//! `skill_manifest_sha256` MUST be lowercase, unpadded (no `0x`
+//! prefix, no separators), exactly 64 hex characters. Producers
+//! emit lowercase; consumers reject uppercase.
 //!
 //! ## Canonical bytes (§3.2.1.1)
 //!
@@ -185,19 +201,16 @@ pub fn verify_skill_import_manifest(
     // Source-prefix discipline.
     let _source_type = manifest.source_type()?;
 
-    // skill_manifest_sha256 invariant: 64 lowercase hex chars.
-    if manifest.skill_manifest_sha256.len() != 64
-        || !manifest
-            .skill_manifest_sha256
-            .bytes()
-            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-    {
-        return Err(VerifyError::IntegrityError {
-            message: format!(
-                "SkillImportManifest skill_manifest_sha256 not 64 lowercase hex chars: {:?}",
-                truncate(&manifest.skill_manifest_sha256, 16)
-            ),
-        });
+    // CEG 0.2 §0.6 hex canonicalization: lowercase, exactly 64,
+    // no `0x` prefix, no separators.
+    check_canonical_hex64(&manifest.skill_manifest_sha256, "skill_manifest_sha256")?;
+
+    // CEG 0.2 §0.5 date-time canonicalization: import_timestamp and
+    // valid_until (if present) must be canonical RFC 3339 with `Z`
+    // suffix and exactly millisecond precision.
+    check_canonical_rfc3339(&manifest.import_timestamp, "import_timestamp")?;
+    if let Some(ref vu) = manifest.valid_until {
+        check_canonical_rfc3339(vu, "valid_until")?;
     }
 
     let canonical = manifest.canonical_bytes();
@@ -215,6 +228,97 @@ fn truncate(s: &str, n: usize) -> &str {
     s.get(..n.min(s.len())).unwrap_or(s)
 }
 
+/// CEG 0.2 §0.6: lowercase, exactly 64 hex chars, no `0x` prefix,
+/// no separators. Rejects uppercase even when otherwise well-formed.
+fn check_canonical_hex64(s: &str, field: &str) -> Result<(), VerifyError> {
+    if s.len() != 64 {
+        return Err(VerifyError::IntegrityError {
+            message: format!(
+                "{field}: §0.6 violation — expected 64 hex chars, got {} ({:?})",
+                s.len(),
+                truncate(s, 16),
+            ),
+        });
+    }
+    if s.starts_with("0x") || s.starts_with("0X") {
+        return Err(VerifyError::IntegrityError {
+            message: format!("{field}: §0.6 violation — `0x` prefix not allowed in canonical hex",),
+        });
+    }
+    if !s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f')) {
+        return Err(VerifyError::IntegrityError {
+            message: format!(
+                "{field}: §0.6 violation — non-lowercase-hex char in {:?}",
+                truncate(s, 16),
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// CEG 0.2 §0.5: `YYYY-MM-DDTHH:MM:SS.sssZ`. UTC suffix is uppercase
+/// `Z` only (no `+00:00`, no lowercase `z`). Fractional seconds are
+/// exactly 3 digits.
+///
+/// Length is exactly 24 chars. Positions:
+/// - `[0..4]` year, `[4]` `-`, `[5..7]` month, `[7]` `-`,
+///   `[8..10]` day, `[10]` `T`, `[11..13]` hour, `[13]` `:`,
+///   `[14..16]` minute, `[16]` `:`, `[17..19]` second, `[19]` `.`,
+///   `[20..23]` millis, `[23]` `Z`.
+fn check_canonical_rfc3339(s: &str, field: &str) -> Result<(), VerifyError> {
+    let bytes = s.as_bytes();
+    if bytes.len() != 24 {
+        return Err(VerifyError::IntegrityError {
+            message: format!(
+                "{field}: §0.5 violation — expected 24-char canonical form, got {} ({:?})",
+                s.len(),
+                truncate(s, 24),
+            ),
+        });
+    }
+    let want = |i: usize, c: u8, label: &str| -> Result<(), VerifyError> {
+        if bytes[i] != c {
+            return Err(VerifyError::IntegrityError {
+                message: format!(
+                    "{field}: §0.5 violation — expected {label} at position {i}, got {:?}",
+                    bytes[i] as char,
+                ),
+            });
+        }
+        Ok(())
+    };
+    want(4, b'-', "`-`")?;
+    want(7, b'-', "`-`")?;
+    want(10, b'T', "`T`")?;
+    want(13, b':', "`:`")?;
+    want(16, b':', "`:`")?;
+    want(19, b'.', "`.` (millisecond separator)")?;
+    want(23, b'Z', "`Z` (UTC suffix)")?;
+
+    let digits_at = |range: std::ops::Range<usize>| -> Result<(), VerifyError> {
+        for i in range.clone() {
+            if !bytes[i].is_ascii_digit() {
+                return Err(VerifyError::IntegrityError {
+                    message: format!(
+                        "{field}: §0.5 violation — non-digit at position {i} ({:?})",
+                        bytes[i] as char,
+                    ),
+                });
+            }
+        }
+        Ok(())
+    };
+    digits_at(0..4)?;
+    digits_at(5..7)?;
+    digits_at(8..10)?;
+    digits_at(11..13)?;
+    digits_at(14..16)?;
+    digits_at(17..19)?;
+    digits_at(20..23)?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -224,13 +328,13 @@ mod tests {
             source: "registry:ciris-registry-us".to_string(),
             skill_manifest_sha256: "a".repeat(64),
             signer_identity: "registry-steward-us".to_string(),
-            import_timestamp: "2026-05-28T17:30:00Z".to_string(),
+            import_timestamp: "2026-05-28T17:30:00.000Z".to_string(),
             capability_declaration: vec![
                 "domain:medical:triage".to_string(),
                 "beneficence:wellness_referral".to_string(),
                 "agent_files:adapter:wellness".to_string(),
             ],
-            valid_until: Some("2026-08-28T17:30:00Z".to_string()),
+            valid_until: Some("2026-08-28T17:30:00.000Z".to_string()),
             signature: ManifestSignature {
                 classical: String::new(),
                 classical_algorithm: String::new(),
@@ -376,7 +480,7 @@ mod tests {
         let bytes = serde_json::to_vec(&m).unwrap();
         let result = verify_skill_import_manifest(&bytes, &fake_pubkey());
         assert!(result.is_err());
-        assert!(format!("{:?}", result.unwrap_err()).contains("64 lowercase hex"));
+        assert!(format!("{:?}", result.unwrap_err()).contains("§0.6"));
     }
 
     #[test]
@@ -410,9 +514,9 @@ mod tests {
             source: "registry:reg1".into(),
             skill_manifest_sha256: "0".repeat(64),
             signer_identity: "signer1".into(),
-            import_timestamp: "2026-05-28T17:30:00Z".into(),
+            import_timestamp: "2026-05-28T17:30:00.000Z".into(),
             capability_declaration: vec!["c2".into(), "c1".into()],
-            valid_until: Some("2026-08-28T17:30:00Z".into()),
+            valid_until: Some("2026-08-28T17:30:00.000Z".into()),
             signature: ManifestSignature {
                 classical: String::new(),
                 classical_algorithm: String::new(),
@@ -422,9 +526,107 @@ mod tests {
             },
         };
         let expected = format!(
-            "ciris.skill_import.v1\nsource=registry:reg1\nskill_manifest_sha256={zero}\nsigner_identity=signer1\nimport_timestamp=2026-05-28T17:30:00Z\ncapability_declaration=[\"c1\",\"c2\"]\nvalid_until=2026-08-28T17:30:00Z",
+            "ciris.skill_import.v1\nsource=registry:reg1\nskill_manifest_sha256={zero}\nsigner_identity=signer1\nimport_timestamp=2026-05-28T17:30:00.000Z\ncapability_declaration=[\"c1\",\"c2\"]\nvalid_until=2026-08-28T17:30:00.000Z",
             zero = "0".repeat(64),
         );
         assert_eq!(String::from_utf8(m.canonical_bytes()).unwrap(), expected);
+    }
+
+    // ----- v4.0.0 CEG 0.2 §0.5 + §0.6 canonicalization tightening -----
+
+    #[test]
+    fn verify_rejects_uppercase_hex_per_section_0_6() {
+        let mut m = minimal_unsigned_manifest();
+        m.skill_manifest_sha256 = "A".repeat(64);
+        m.signature = fake_signature();
+        let bytes = serde_json::to_vec(&m).unwrap();
+        let result = verify_skill_import_manifest(&bytes, &fake_pubkey());
+        assert!(result.is_err());
+        assert!(format!("{:?}", result.unwrap_err()).contains("§0.6"));
+    }
+
+    #[test]
+    fn verify_rejects_0x_prefix_per_section_0_6() {
+        let mut m = minimal_unsigned_manifest();
+        // 64 chars total counting the prefix — the prefix is the
+        // rejection, regardless of length.
+        m.skill_manifest_sha256 = format!("0x{}", "a".repeat(62));
+        m.signature = fake_signature();
+        let bytes = serde_json::to_vec(&m).unwrap();
+        let result = verify_skill_import_manifest(&bytes, &fake_pubkey());
+        assert!(result.is_err());
+        assert!(format!("{:?}", result.unwrap_err()).contains("0x"));
+    }
+
+    #[test]
+    fn verify_rejects_non_canonical_offset_timezone_per_section_0_5() {
+        // `+00:00` is forbidden by §0.5 — only `Z` is canonical.
+        let mut m = minimal_unsigned_manifest();
+        m.import_timestamp = "2026-05-28T17:30:00.000+00:00".into();
+        m.signature = fake_signature();
+        let bytes = serde_json::to_vec(&m).unwrap();
+        let result = verify_skill_import_manifest(&bytes, &fake_pubkey());
+        assert!(result.is_err());
+        assert!(format!("{:?}", result.unwrap_err()).contains("§0.5"));
+    }
+
+    #[test]
+    fn verify_rejects_lowercase_z_per_section_0_5() {
+        let mut m = minimal_unsigned_manifest();
+        m.import_timestamp = "2026-05-28T17:30:00.000z".into();
+        m.signature = fake_signature();
+        let bytes = serde_json::to_vec(&m).unwrap();
+        let result = verify_skill_import_manifest(&bytes, &fake_pubkey());
+        assert!(result.is_err());
+        assert!(format!("{:?}", result.unwrap_err()).contains("§0.5"));
+    }
+
+    #[test]
+    fn verify_rejects_missing_millisecond_precision_per_section_0_5() {
+        // Pre-v4.0.0 callers using 20-char ISO 8601 (`2026-...:00Z`)
+        // without ms precision MUST be rejected under CEG 0.2 §0.5.
+        let mut m = minimal_unsigned_manifest();
+        m.import_timestamp = "2026-05-28T17:30:00Z".into();
+        m.signature = fake_signature();
+        let bytes = serde_json::to_vec(&m).unwrap();
+        let result = verify_skill_import_manifest(&bytes, &fake_pubkey());
+        assert!(result.is_err());
+        assert!(format!("{:?}", result.unwrap_err()).contains("§0.5"));
+    }
+
+    #[test]
+    fn verify_rejects_extra_precision_per_section_0_5() {
+        // Microseconds (6 fractional digits) is also rejected — §0.5
+        // mandates exactly 3.
+        let mut m = minimal_unsigned_manifest();
+        m.import_timestamp = "2026-05-28T17:30:00.000000Z".into();
+        m.signature = fake_signature();
+        let bytes = serde_json::to_vec(&m).unwrap();
+        let result = verify_skill_import_manifest(&bytes, &fake_pubkey());
+        assert!(result.is_err());
+        assert!(format!("{:?}", result.unwrap_err()).contains("§0.5"));
+    }
+
+    #[test]
+    fn verify_rejects_non_canonical_valid_until_per_section_0_5() {
+        // When `valid_until` is present it must be canonical.
+        let mut m = minimal_unsigned_manifest();
+        m.valid_until = Some("2026-08-28T17:30:00Z".into());
+        m.signature = fake_signature();
+        let bytes = serde_json::to_vec(&m).unwrap();
+        let result = verify_skill_import_manifest(&bytes, &fake_pubkey());
+        assert!(result.is_err());
+        assert!(format!("{:?}", result.unwrap_err()).contains("§0.5"));
+    }
+
+    /// CEG 0.2 §5.2 mechanism-only naming: `attestation:hardware_rooted`
+    /// is the v4.0.0 wire string (was `attestation:hardware` in
+    /// v3.7.0–v3.9.0). Lock both the const value and the wire form.
+    #[test]
+    fn ceg_0_2_hardware_rooted_wire_string() {
+        assert_eq!(
+            crate::federation_provenance::dim::HARDWARE,
+            "attestation:hardware_rooted"
+        );
     }
 }

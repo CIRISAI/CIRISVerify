@@ -168,7 +168,7 @@ impl AppAttestVerifyResponse {
 
     /// Convert this App Attest verification result into the
     /// `federation_provenance` scalar-attestation surface (v3.2.0+).
-    /// Emits one `attestation:hardware` entry — `PASS` iff the
+    /// Emits one `attestation:hardware_rooted` entry — `PASS` iff the
     /// registry reported `verified=true` AND the device is genuine
     /// Apple hardware (`has_genuine_device()`) AND the app binary
     /// validates unmodified (`is_unmodified_app()`). CIRISVerify#34
@@ -393,7 +393,7 @@ mod tests {
         };
         let entries = response.to_attestation_entries("registry-steward-eu");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].dimension, "attestation:hardware");
+        assert_eq!(entries[0].dimension, "attestation:hardware_rooted");
         assert_eq!(entries[0].score, 1.0);
     }
 

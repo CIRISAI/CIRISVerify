@@ -149,7 +149,7 @@ pub struct AttestBundle {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_verification: Option<AttestationFact>,
     /// Hardware-rooted attestation (TPM 2.0 / Android Keystore / iOS
-    /// Secure Enclave). FSD-002 dim `attestation:hardware`.
+    /// Secure Enclave). FSD-002 dim `attestation:hardware_rooted`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hardware_attestation: Option<AttestationFact>,
     /// Multi-source registry consensus (2-of-3 by default).

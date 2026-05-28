@@ -22,7 +22,7 @@
 //! | Dimension                                  | Polarity         |
 //! |--------------------------------------------|------------------|
 //! | `attestation:self_verify`                  | boolean-via-score |
-//! | `attestation:hardware`                     | boolean-via-score |
+//! | `attestation:hardware_rooted`                     | boolean-via-score |
 //! | `attestation:registry_consensus`           | boolean-via-score + Indeterminate (future) |
 //! | `attestation:license_validity`             | boolean-via-score |
 //! | `attestation:agent_integrity`              | boolean-via-score |
@@ -65,9 +65,11 @@ pub mod dim {
     /// watchmen"). The recursive golden rule.
     pub const SELF_VERIFY: &str = "attestation:self_verify";
 
-    /// Hardware attestation — hardware-rooted attestation
-    /// (TPM 2.0 / Android Keystore / iOS Secure Enclave).
-    pub const HARDWARE: &str = "attestation:hardware";
+    /// Hardware-rooted attestation (TPM 2.0 / Android Keystore /
+    /// iOS Secure Enclave). v4.0.0 wire-string realigned to CEG 0.2
+    /// §5.2 mechanism-only naming (`hardware_rooted`, not the
+    /// CEG-0.1 `attestation:hardware`).
+    pub const HARDWARE: &str = "attestation:hardware_rooted";
 
     /// Registry consensus — 2-of-3 multi-source registry consensus.
     /// May legitimately emit Indeterminate when sources disagree.
@@ -545,7 +547,7 @@ mod tests {
     #[test]
     fn dimension_constants_are_stable_wire_strings() {
         assert_eq!(dim::SELF_VERIFY, "attestation:self_verify");
-        assert_eq!(dim::HARDWARE, "attestation:hardware");
+        assert_eq!(dim::HARDWARE, "attestation:hardware_rooted");
         assert_eq!(dim::REGISTRY_CONSENSUS, "attestation:registry_consensus");
         assert_eq!(dim::LICENSE_VALIDITY, "attestation:license_validity");
         assert_eq!(dim::AGENT_INTEGRITY, "attestation:agent_integrity");

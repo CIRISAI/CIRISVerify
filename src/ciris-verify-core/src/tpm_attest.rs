@@ -132,7 +132,7 @@ impl TpmAttestVerifyResponse {
 
     /// Convert this TPM attestation result into the
     /// `federation_provenance` scalar-attestation surface (v3.2.0+).
-    /// Emits one `attestation:hardware` entry — `PASS` iff every
+    /// Emits one `attestation:hardware_rooted` entry — `PASS` iff every
     /// sub-check held: `verified` AND `ek_cert_valid` (EK cert chains
     /// to a recognized manufacturer CA) AND `quote_valid` (TPMS_ATTEST
     /// signature verifies against AK) AND `nonce_valid` (qualifying
@@ -237,7 +237,7 @@ mod tests {
         };
         let entries = response.to_attestation_entries("registry-steward-us");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].dimension, "attestation:hardware");
+        assert_eq!(entries[0].dimension, "attestation:hardware_rooted");
         assert_eq!(entries[0].score, 1.0);
     }
 

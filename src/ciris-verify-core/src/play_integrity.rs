@@ -149,7 +149,7 @@ impl IntegrityVerifyResponse {
 
     /// Convert this Play Integrity verification result into the
     /// `federation_provenance` scalar-attestation surface (v3.2.0+).
-    /// Emits one `attestation:hardware` entry — `PASS` iff the
+    /// Emits one `attestation:hardware_rooted` entry — `PASS` iff the
     /// registry reported `verified=true` AND the device meets at
     /// least device-integrity (i.e. `has_hardware_integrity()`).
     /// CIRISVerify#34 wiring.
@@ -262,7 +262,7 @@ mod tests {
         };
         let entries = response.to_attestation_entries("registry-steward-us");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].dimension, "attestation:hardware");
+        assert_eq!(entries[0].dimension, "attestation:hardware_rooted");
         assert_eq!(entries[0].score, 1.0);
         assert_eq!(entries[0].attester, "registry-steward-us");
     }

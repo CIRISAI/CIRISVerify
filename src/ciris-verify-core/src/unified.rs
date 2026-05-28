@@ -2402,7 +2402,7 @@ impl FullAttestationResult {
     /// dimension the underlying check actually ran (an `Option::None`
     /// field is "not checked" — not implicitly passing). The dimensions
     /// follow FSD-002 §3.2: `attestation:self_verify` /
-    /// `attestation:hardware` / `attestation:registry_consensus` /
+    /// `attestation:hardware_rooted` / `attestation:registry_consensus` /
     /// `attestation:license_validity` / `attestation:agent_integrity`,
     /// plus `hardware_custody:{platform}` and
     /// `transparency_log:inclusion`. v3.7.0+ dropped the L1/L2/L3/L4/L5
