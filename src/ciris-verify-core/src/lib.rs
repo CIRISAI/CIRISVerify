@@ -67,6 +67,7 @@ pub mod https;
 pub mod jwt;
 pub mod keys;
 pub mod license;
+pub mod locale_merkle;
 pub mod manifest_cache;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub mod mobile_http;
@@ -75,6 +76,7 @@ pub mod provenance;
 pub mod registry;
 pub mod revocation;
 pub mod security;
+pub mod skill_import;
 pub mod threshold;
 pub mod tpm_attest;
 pub mod transparency;
@@ -107,6 +109,11 @@ pub use keys::{
     derive_symmetric_key, derive_transport_identity, DERIVED_KEY_LEN, TRANSPORT_SEED_LEN,
 };
 pub use license::{LicenseDetails, LicenseStatus, LicenseType};
+pub use locale_merkle::{
+    locale_leaf_to_attestation_entries, merkle_root, parent_hash, verify_locale_inclusion,
+    LocaleInclusionProof, LocaleLeaf, LOCALE_LEAF_DOMAIN_PREFIX, RFC6962_LEAF_PREFIX,
+    RFC6962_PARENT_PREFIX,
+};
 pub use provenance::{
     verify_provenance_chain, ProvenanceChain, ProvenanceError, ProvenanceLink,
     MAX_PROVENANCE_DEPTH, STEWARD_IDENTITY_TYPE,
@@ -118,6 +125,9 @@ pub use security::file_integrity::{
     FileIntegrityResult, FileManifest,
 };
 pub use security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
+pub use skill_import::{
+    verify_skill_import_manifest, SkillImportManifest, SourceType, SKILL_IMPORT_DOMAIN_PREFIX,
+};
 pub use threshold::{
     verify_threshold_signatures, ThresholdError, ThresholdMember, ThresholdSignature,
 };
