@@ -51,6 +51,7 @@
 #![allow(clippy::must_use_candidate)] // Not all functions need must_use
 
 pub mod app_attest;
+pub mod attest_bundle;
 pub mod audit;
 pub mod binary_format;
 pub mod cache;
@@ -83,6 +84,10 @@ pub mod unified;
 pub mod validation;
 pub mod watchdog;
 
+pub use attest_bundle::{
+    AttestBundle, AttestationLadder, CertValidityEntry, CustodyBlock, LadderRung, ProvenanceBlock,
+    TransparencyLogBlock, TransparencyLogProof,
+};
 pub use cache::{CachedLicense, LicenseCache};
 pub use config::{TrustModel, VerifyConfig};
 pub use engine::LicenseEngine;
