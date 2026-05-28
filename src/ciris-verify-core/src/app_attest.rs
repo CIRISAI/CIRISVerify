@@ -168,7 +168,7 @@ impl AppAttestVerifyResponse {
 
     /// Convert this App Attest verification result into the
     /// `federation_provenance` scalar-attestation surface (v3.2.0+).
-    /// Emits one `attestation:l2:hardware` entry — `PASS` iff the
+    /// Emits one `attestation:hardware` entry — `PASS` iff the
     /// registry reported `verified=true` AND the device is genuine
     /// Apple hardware (`has_genuine_device()`) AND the app binary
     /// validates unmodified (`is_unmodified_app()`). CIRISVerify#34
@@ -185,7 +185,7 @@ impl AppAttestVerifyResponse {
         use crate::federation_provenance::{dim, AttestationEntry, Score};
         let l2_ok = self.verified && self.has_genuine_device() && self.is_unmodified_app();
         vec![AttestationEntry::new(
-            dim::L2_HARDWARE,
+            dim::HARDWARE,
             if l2_ok { Score::PASS } else { Score::FAIL },
             attester,
         )]
@@ -393,7 +393,7 @@ mod tests {
         };
         let entries = response.to_attestation_entries("registry-steward-eu");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].dimension, "attestation:l2:hardware");
+        assert_eq!(entries[0].dimension, "attestation:hardware");
         assert_eq!(entries[0].score, 1.0);
     }
 

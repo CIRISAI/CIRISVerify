@@ -26,7 +26,7 @@ CIRISVerify is the **hardware-rooted license verification module** for the CIRIS
 | `src/ciris-verify-core/` | Core verification logic (engine, consensus, transparency log) |
 | `src/ciris-verify-ffi/` | C FFI and mobile bindings (incl. attestation export) |
 | `bindings/python/` | Python SDK (ciris-verify PyPI package) |
-| `bindings/swift/` | Swift wrapper + bridging header (iOS Level 5 parity) |
+| `bindings/swift/` | Swift wrapper + bridging header (iOS full attestation parity) |
 
 ## Build Commands
 
@@ -70,8 +70,8 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 |-------|--------|-------|
 | `ciris-keyring` | Phase 2 Complete | HardwareSigner trait, SoftwareSigner impl, Android Keystore, TPM 2.0 (dual-key architecture), **SecureBlobStorage for wallet seeds (v1.4.0+)**, **PqcSigner trait + MlDsa65SoftwareSigner (v1.9.0+, feature `pqc-ml-dsa`)** |
 | `ciris-crypto` | Phase 1 Complete | ECDSA P-256, Ed25519, ML-DSA-65 (FIPS 204), hybrid signer with bound signatures, **secp256k1 wallet signing (v1.3.0+)** |
-| `ciris-verify-core` | Phase 3-5 Active | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), Tripwire file integrity, remote attestation export, Level 2 binary self-verification, **hardware vulnerability detection (v1.2.0+)**, **offline manifest cache (v1.2.0+)** |
-| `ciris-verify-ffi` | Phase 4 Active | C FFI (33 functions), JNI bindings (Android Level 5), Swift wrapper (iOS Level 5), **wallet signing FFI (v1.3.0+)**, **named key storage (v1.5.0+)** |
+| `ciris-verify-core` | Phase 3-5 Active | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), Tripwire file integrity, remote attestation export, binary self-verification, **hardware vulnerability detection (v1.2.0+)**, **offline manifest cache (v1.2.0+)** |
+| `ciris-verify-ffi` | Phase 4 Active | C FFI (33 functions), JNI bindings (Android full attestation), Swift wrapper (iOS full attestation), **wallet signing FFI (v1.3.0+)**, **named key storage (v1.5.0+)** |
 | `bindings/python` | Released | ciris-verify 1.5.0 on PyPI with platform wheels, **wallet signing support**, **named key storage** |
 | `bindings/swift` | Released | CIRISVerify.swift wrapper + bridging header, XCFramework build script |
 
@@ -81,7 +81,7 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 
 **Hardware Vulnerability Detection (v1.2.0+)**: Detects SoC-level vulnerabilities (CVE-2026-20435 MediaTek, CVE-2026-21385 Qualcomm) and caps attestation to SOFTWARE_ONLY for affected devices.
 
-**Offline Manifest Cache (v1.2.0+)**: Hardware-signed cache for L1 self-verification when registry is unreachable. No expiration - valid as long as hardware key exists.
+**Offline Manifest Cache (v1.2.0+)**: Hardware-signed cache for self-verification when registry is unreachable. No expiration - valid as long as hardware key exists.
 
 **TPM Key Persistence (v1.2.2+)**: The TPM wrapping module now persists signing key blobs (TPM2B_PRIVATE, TPM2B_PUBLIC) alongside encrypted Ed25519 keys. This prevents identity loss across sessions. File format: `TPM2` magic + version + blobs + signature + AES-GCM ciphertext.
 
@@ -208,10 +208,10 @@ cargo build --release -p ciris-verify-core
 # Run full verification
 ./target/release/ciris_verify run
 
-# Run Level 1 self-check (binary + function integrity)
+# Run self-check (binary + function integrity)
 ./target/release/ciris_verify self-check
 
-# Validate sources agreement (Level 3)
+# Validate registry consensus across sources
 ./target/release/ciris_verify validate-sources
 
 # Run with custom registry

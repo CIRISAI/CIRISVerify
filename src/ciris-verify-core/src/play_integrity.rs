@@ -149,7 +149,7 @@ impl IntegrityVerifyResponse {
 
     /// Convert this Play Integrity verification result into the
     /// `federation_provenance` scalar-attestation surface (v3.2.0+).
-    /// Emits one `attestation:l2:hardware` entry — `PASS` iff the
+    /// Emits one `attestation:hardware` entry — `PASS` iff the
     /// registry reported `verified=true` AND the device meets at
     /// least device-integrity (i.e. `has_hardware_integrity()`).
     /// CIRISVerify#34 wiring.
@@ -165,7 +165,7 @@ impl IntegrityVerifyResponse {
         use crate::federation_provenance::{dim, AttestationEntry, Score};
         let l2_ok = self.verified && self.has_hardware_integrity();
         vec![AttestationEntry::new(
-            dim::L2_HARDWARE,
+            dim::HARDWARE,
             if l2_ok { Score::PASS } else { Score::FAIL },
             attester,
         )]
@@ -262,7 +262,7 @@ mod tests {
         };
         let entries = response.to_attestation_entries("registry-steward-us");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].dimension, "attestation:l2:hardware");
+        assert_eq!(entries[0].dimension, "attestation:hardware");
         assert_eq!(entries[0].score, 1.0);
         assert_eq!(entries[0].attester, "registry-steward-us");
     }

@@ -126,23 +126,23 @@ pub struct AttestBundle {
     // ---- Direct attestation measurements ----
     /// Self-verification: the running CIRISVerify binary attests
     /// itself against its function manifest ("who watches the
-    /// watchmen"). FSD-002 dim `attestation:l1:self_verify`.
+    /// watchmen"). FSD-002 dim `attestation:self_verify`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub self_verification: Option<AttestationFact>,
     /// Hardware-rooted attestation (TPM 2.0 / Android Keystore / iOS
-    /// Secure Enclave). FSD-002 dim `attestation:l2:hardware`.
+    /// Secure Enclave). FSD-002 dim `attestation:hardware`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hardware_attestation: Option<AttestationFact>,
     /// Multi-source registry consensus (2-of-3 by default).
-    /// FSD-002 dim `attestation:l3:registry_consensus`.
+    /// FSD-002 dim `attestation:registry_consensus`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub registry_consensus: Option<AttestationFact>,
     /// Registry-signed, verify-verified license validity.
-    /// FSD-002 dim `attestation:l4:license_validity`.
+    /// FSD-002 dim `attestation:license_validity`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub license_validity: Option<AttestationFact>,
     /// Agent source-tree byte-equal against registered manifest.
-    /// FSD-002 dim `attestation:l5:agent_integrity`.
+    /// FSD-002 dim `attestation:agent_integrity`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_integrity: Option<AttestationFact>,
 
@@ -207,23 +207,23 @@ impl AttestBundle {
             // Constant (unparameterized) dimensions — first entry per
             // slot wins.
             let matched_constant = match d {
-                dim::L1_SELF_VERIFY => {
+                dim::SELF_VERIFY => {
                     self_verification.get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
-                dim::L2_HARDWARE => {
+                dim::HARDWARE => {
                     hardware_attestation.get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
-                dim::L3_REGISTRY_CONSENSUS => {
+                dim::REGISTRY_CONSENSUS => {
                     registry_consensus.get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
-                dim::L4_LICENSE_VALIDITY => {
+                dim::LICENSE_VALIDITY => {
                     license_validity.get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
-                dim::L5_AGENT_INTEGRITY => {
+                dim::AGENT_INTEGRITY => {
                     agent_integrity.get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
@@ -336,11 +336,11 @@ mod tests {
     #[test]
     fn all_measurements_pass_populates_named_fields() {
         let prov = fp(vec![
-            AttestationEntry::pass(dim::L1_SELF_VERIFY, "ciris-verify"),
-            AttestationEntry::pass(dim::L2_HARDWARE, "ciris-verify"),
-            AttestationEntry::pass(dim::L3_REGISTRY_CONSENSUS, "ciris-verify"),
-            AttestationEntry::pass(dim::L4_LICENSE_VALIDITY, "registry-steward-us"),
-            AttestationEntry::pass(dim::L5_AGENT_INTEGRITY, "ciris-verify"),
+            AttestationEntry::pass(dim::SELF_VERIFY, "ciris-verify"),
+            AttestationEntry::pass(dim::HARDWARE, "ciris-verify"),
+            AttestationEntry::pass(dim::REGISTRY_CONSENSUS, "ciris-verify"),
+            AttestationEntry::pass(dim::LICENSE_VALIDITY, "registry-steward-us"),
+            AttestationEntry::pass(dim::AGENT_INTEGRITY, "ciris-verify"),
         ]);
         let bundle = AttestBundle::from_federation_provenance("agent-key-1", prov);
         assert!(bundle.self_verification.as_ref().unwrap().passed);
@@ -357,7 +357,7 @@ mod tests {
     #[test]
     fn rollback_entry_sets_rollback_detected() {
         let prov = fp(vec![
-            AttestationEntry::pass(dim::L1_SELF_VERIFY, "ciris-verify"),
+            AttestationEntry::pass(dim::SELF_VERIFY, "ciris-verify"),
             AttestationEntry::rollback("license_revocation_revision", "ciris-verify"),
         ]);
         let bundle = AttestBundle::from_federation_provenance("k", prov);
@@ -468,8 +468,8 @@ mod tests {
         // If two self_verification entries exist, the first wins.
         // This preserves emission-order semantics.
         let prov = fp(vec![
-            AttestationEntry::pass(dim::L1_SELF_VERIFY, "ciris-verify"),
-            AttestationEntry::fail(dim::L1_SELF_VERIFY, "second-attester"),
+            AttestationEntry::pass(dim::SELF_VERIFY, "ciris-verify"),
+            AttestationEntry::fail(dim::SELF_VERIFY, "second-attester"),
         ]);
         let bundle = AttestBundle::from_federation_provenance("k", prov);
         let sv = bundle.self_verification.as_ref().unwrap();
@@ -480,8 +480,8 @@ mod tests {
     #[test]
     fn federation_provenance_is_preserved_losslessly() {
         let entries = vec![
-            AttestationEntry::pass(dim::L1_SELF_VERIFY, "v").with_source_ref("ref1"),
-            AttestationEntry::pass(dim::L4_LICENSE_VALIDITY, "r"),
+            AttestationEntry::pass(dim::SELF_VERIFY, "v").with_source_ref("ref1"),
+            AttestationEntry::pass(dim::LICENSE_VALIDITY, "r"),
             // An unknown dimension — must not be lost.
             AttestationEntry::pass("custom:dimension:future", "v"),
         ];
@@ -497,8 +497,8 @@ mod tests {
     #[test]
     fn json_shape_names_measurements_not_levels() {
         let prov = fp(vec![
-            AttestationEntry::pass(dim::L1_SELF_VERIFY, "ciris-verify"),
-            AttestationEntry::pass(dim::L2_HARDWARE, "ciris-verify"),
+            AttestationEntry::pass(dim::SELF_VERIFY, "ciris-verify"),
+            AttestationEntry::pass(dim::HARDWARE, "ciris-verify"),
             AttestationEntry::pass(dim::hardware_custody("tpm"), "ciris-verify"),
             AttestationEntry::pass(dim::provenance_slsa(2), "registry-steward-us"),
             AttestationEntry::pass(
@@ -532,7 +532,7 @@ mod tests {
     #[test]
     fn json_round_trip() {
         let prov = fp(vec![
-            AttestationEntry::pass(dim::L1_SELF_VERIFY, "v"),
+            AttestationEntry::pass(dim::SELF_VERIFY, "v"),
             AttestationEntry::rollback("license_revocation_revision", "v"),
         ]);
         let bundle = AttestBundle::from_federation_provenance("k", prov);

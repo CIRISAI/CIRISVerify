@@ -14,16 +14,18 @@
 //!
 //! ## The dimension namespace (FSD-002 §3.2)
 //!
-//! CIRISVerify owns twelve canonical dimensions, addressable via the
-//! [`dim`] module:
+//! CIRISVerify owns twelve canonical dimensions, named for what is
+//! measured (no L1/L2/L3/L4/L5 ladder numbering in the wire shape —
+//! the ladder is consumer policy, not verify-side framing; v3.7.0+).
+//! Addressable via the [`dim`] module:
 //!
 //! | Dimension                                  | Polarity         |
 //! |--------------------------------------------|------------------|
-//! | `attestation:l1:self_verify`               | boolean-via-score |
-//! | `attestation:l2:hardware`                  | boolean-via-score |
-//! | `attestation:l3:registry_consensus`        | boolean-via-score + Indeterminate (future) |
-//! | `attestation:l4:license_validity`          | boolean-via-score |
-//! | `attestation:l5:agent_integrity`           | boolean-via-score |
+//! | `attestation:self_verify`                  | boolean-via-score |
+//! | `attestation:hardware`                     | boolean-via-score |
+//! | `attestation:registry_consensus`           | boolean-via-score + Indeterminate (future) |
+//! | `attestation:license_validity`             | boolean-via-score |
+//! | `attestation:agent_integrity`              | boolean-via-score |
 //! | `provenance:slsa:{level}`                  | boolean-via-score |
 //! | `provenance:build_manifest:{target}`       | boolean-via-score |
 //! | `transparency_log:inclusion`               | boolean-via-score |
@@ -35,7 +37,7 @@
 //! "boolean-via-score" means a 0.0 or 1.0 score; `rollback_detected`
 //! is the one dimension that may legitimately emit a *negative* score
 //! (and only -1.0 — there is no positive direction).
-//! `attestation:l3:registry_consensus` may also emit Indeterminate
+//! `attestation:registry_consensus` may also emit Indeterminate
 //! (mapped to `Score::Indeterminate` in v3.2+; not yet wired by
 //! [`crate::unified::FullAttestationResult`]).
 //!
@@ -56,25 +58,25 @@ use serde::{Deserialize, Serialize};
 /// Parameterized dimensions use the helper functions; unparameterized
 /// ones are `&'static str` constants.
 pub mod dim {
-    /// L1 self-verification — the running CIRISVerify binary attests
+    /// Self-verification — the running CIRISVerify binary attests
     /// itself against its function manifest ("who watches the
-    /// watchmen"). If this fails, every other level is UNVERIFIED.
-    pub const L1_SELF_VERIFY: &str = "attestation:l1:self_verify";
+    /// watchmen"). The recursive golden rule.
+    pub const SELF_VERIFY: &str = "attestation:self_verify";
 
-    /// L2 hardware — hardware-rooted attestation
+    /// Hardware attestation — hardware-rooted attestation
     /// (TPM 2.0 / Android Keystore / iOS Secure Enclave).
-    pub const L2_HARDWARE: &str = "attestation:l2:hardware";
+    pub const HARDWARE: &str = "attestation:hardware";
 
-    /// L3 registry consensus — 2-of-3 multi-source registry consensus.
-    /// May legitimately be Indeterminate → RESTRICTED tier.
-    pub const L3_REGISTRY_CONSENSUS: &str = "attestation:l3:registry_consensus";
+    /// Registry consensus — 2-of-3 multi-source registry consensus.
+    /// May legitimately emit Indeterminate when sources disagree.
+    pub const REGISTRY_CONSENSUS: &str = "attestation:registry_consensus";
 
-    /// L4 license validity — registry-signed, verify-verified license.
-    pub const L4_LICENSE_VALIDITY: &str = "attestation:l4:license_validity";
+    /// License validity — registry-signed, verify-verified license.
+    pub const LICENSE_VALIDITY: &str = "attestation:license_validity";
 
-    /// L5 agent integrity — agent source-tree byte-equal against
-    /// registered manifest (Algorithm A; Algorithm B caps at L3).
-    pub const L5_AGENT_INTEGRITY: &str = "attestation:l5:agent_integrity";
+    /// Agent integrity — agent source-tree byte-equal against
+    /// registered manifest (`verify_tree` Algorithm A).
+    pub const AGENT_INTEGRITY: &str = "attestation:agent_integrity";
 
     /// RFC 6962 inclusion proof for an audit leaf.
     pub const TRANSPARENCY_LOG_INCLUSION: &str = "transparency_log:inclusion";
@@ -121,7 +123,7 @@ pub mod dim {
 /// Per FSD-002 §3.2 the polarity of `score` is dimension-defined:
 /// most dimensions are boolean-via-score (0.0 = fail, 1.0 = pass);
 /// `rollback_detected:*` is **-1 only** (anti-rollback signal).
-/// `attestation:l3:registry_consensus` may emit Indeterminate (see
+/// `attestation:registry_consensus` may emit Indeterminate (see
 /// [`Score::INDETERMINATE`]).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AttestationEntry {
@@ -149,7 +151,7 @@ impl Score {
     pub const FAIL: f64 = 0.0;
     /// `rollback_detected:*` only — a negative-direction signal.
     pub const ROLLBACK: f64 = -1.0;
-    /// L3 registry-consensus only — verdict undecidable from
+    /// `registry_consensus` only — verdict undecidable from
     /// available evidence (encoded as NaN). Tests use
     /// [`AttestationEntry::is_indeterminate`].
     pub const INDETERMINATE: f64 = f64::NAN;
@@ -191,7 +193,7 @@ impl AttestationEntry {
     }
 
     /// An indeterminate entry — verdict undecidable. Only legitimate
-    /// on `attestation:l3:registry_consensus` per FSD-002 §3.2.
+    /// on `attestation:registry_consensus` per FSD-002 §3.2.
     #[must_use]
     pub fn indeterminate(dimension: impl Into<String>, attester: impl Into<String>) -> Self {
         Self::new(dimension, Score::INDETERMINATE, attester)
@@ -289,7 +291,7 @@ impl FederationProvenance {
     }
 
     /// Number of indeterminate entries (only legitimate on
-    /// `attestation:l3:registry_consensus`).
+    /// `attestation:registry_consensus`).
     #[must_use]
     pub fn count_indeterminate(&self) -> usize {
         self.attestations_consumed
@@ -371,12 +373,12 @@ mod tests {
 
     #[test]
     fn pass_and_fail_helpers() {
-        let p = AttestationEntry::pass(dim::L4_LICENSE_VALIDITY, "registry-steward-us");
+        let p = AttestationEntry::pass(dim::LICENSE_VALIDITY, "registry-steward-us");
         assert!(p.is_pass() && !p.is_fail() && !p.is_rollback() && !p.is_indeterminate());
         assert_eq!(p.score, 1.0);
-        assert_eq!(p.dimension, "attestation:l4:license_validity");
+        assert_eq!(p.dimension, "attestation:license_validity");
 
-        let f = AttestationEntry::fail(dim::L1_SELF_VERIFY, "ciris-verify");
+        let f = AttestationEntry::fail(dim::SELF_VERIFY, "ciris-verify");
         assert!(f.is_fail() && !f.is_pass());
         assert_eq!(f.score, 0.0);
     }
@@ -392,7 +394,7 @@ mod tests {
 
     #[test]
     fn indeterminate_is_nan() {
-        let i = AttestationEntry::indeterminate(dim::L3_REGISTRY_CONSENSUS, "ciris-verify");
+        let i = AttestationEntry::indeterminate(dim::REGISTRY_CONSENSUS, "ciris-verify");
         assert!(i.is_indeterminate());
         assert!(!i.is_pass() && !i.is_fail() && !i.is_rollback());
         assert!(i.score.is_nan());
@@ -418,7 +420,7 @@ mod tests {
 
     #[test]
     fn source_ref_attaches() {
-        let e = AttestationEntry::pass(dim::L4_LICENSE_VALIDITY, "registry-steward-us")
+        let e = AttestationEntry::pass(dim::LICENSE_VALIDITY, "registry-steward-us")
             .with_source_ref("persist:sha256:deadbeef");
         assert_eq!(e.source_ref.as_deref(), Some("persist:sha256:deadbeef"));
     }
@@ -427,15 +429,12 @@ mod tests {
     fn builder_composes_a_full_provenance_block() {
         let fp = FederationProvenance::builder()
             .policy("registry-v1.4-direct-trust")
-            .attestation(AttestationEntry::pass(dim::L1_SELF_VERIFY, "ciris-verify"))
+            .attestation(AttestationEntry::pass(dim::SELF_VERIFY, "ciris-verify"))
             .attestation(AttestationEntry::pass(
-                dim::L4_LICENSE_VALIDITY,
+                dim::LICENSE_VALIDITY,
                 "registry-steward-us",
             ))
-            .attestation(AttestationEntry::fail(
-                dim::L5_AGENT_INTEGRITY,
-                "ciris-verify",
-            ))
+            .attestation(AttestationEntry::fail(dim::AGENT_INTEGRITY, "ciris-verify"))
             .cache_age_seconds(47)
             .persist_row_hash("sha256:cafef00d")
             .build();
@@ -451,25 +450,20 @@ mod tests {
     #[test]
     fn entry_for_dimension_lookup() {
         let fp = FederationProvenance::builder()
-            .attestation(AttestationEntry::pass(dim::L1_SELF_VERIFY, "ciris-verify"))
-            .attestation(AttestationEntry::fail(
-                dim::L5_AGENT_INTEGRITY,
-                "ciris-verify",
-            ))
+            .attestation(AttestationEntry::pass(dim::SELF_VERIFY, "ciris-verify"))
+            .attestation(AttestationEntry::fail(dim::AGENT_INTEGRITY, "ciris-verify"))
             .build();
+        assert!(fp.entry_for(dim::SELF_VERIFY).is_some_and(|e| e.is_pass()));
         assert!(fp
-            .entry_for(dim::L1_SELF_VERIFY)
-            .is_some_and(|e| e.is_pass()));
-        assert!(fp
-            .entry_for(dim::L5_AGENT_INTEGRITY)
+            .entry_for(dim::AGENT_INTEGRITY)
             .is_some_and(|e| e.is_fail()));
-        assert!(fp.entry_for(dim::L3_REGISTRY_CONSENSUS).is_none());
+        assert!(fp.entry_for(dim::REGISTRY_CONSENSUS).is_none());
     }
 
     #[test]
     fn has_rollback_detects_negative_polarity() {
         let fp = FederationProvenance::builder()
-            .attestation(AttestationEntry::pass(dim::L1_SELF_VERIFY, "v"))
+            .attestation(AttestationEntry::pass(dim::SELF_VERIFY, "v"))
             .attestation(AttestationEntry::rollback(
                 "license_revocation_revision",
                 "ciris-verify",
@@ -485,10 +479,10 @@ mod tests {
     fn indeterminate_count() {
         let fp = FederationProvenance::builder()
             .attestation(AttestationEntry::indeterminate(
-                dim::L3_REGISTRY_CONSENSUS,
+                dim::REGISTRY_CONSENSUS,
                 "ciris-verify",
             ))
-            .attestation(AttestationEntry::pass(dim::L4_LICENSE_VALIDITY, "registry"))
+            .attestation(AttestationEntry::pass(dim::LICENSE_VALIDITY, "registry"))
             .build();
         assert_eq!(fp.count_indeterminate(), 1);
         assert_eq!(fp.count_passing(), 1);
@@ -499,14 +493,11 @@ mod tests {
     /// that string-matched on it breaks. Lock them.
     #[test]
     fn dimension_constants_are_stable_wire_strings() {
-        assert_eq!(dim::L1_SELF_VERIFY, "attestation:l1:self_verify");
-        assert_eq!(dim::L2_HARDWARE, "attestation:l2:hardware");
-        assert_eq!(
-            dim::L3_REGISTRY_CONSENSUS,
-            "attestation:l3:registry_consensus"
-        );
-        assert_eq!(dim::L4_LICENSE_VALIDITY, "attestation:l4:license_validity");
-        assert_eq!(dim::L5_AGENT_INTEGRITY, "attestation:l5:agent_integrity");
+        assert_eq!(dim::SELF_VERIFY, "attestation:self_verify");
+        assert_eq!(dim::HARDWARE, "attestation:hardware");
+        assert_eq!(dim::REGISTRY_CONSENSUS, "attestation:registry_consensus");
+        assert_eq!(dim::LICENSE_VALIDITY, "attestation:license_validity");
+        assert_eq!(dim::AGENT_INTEGRITY, "attestation:agent_integrity");
         assert_eq!(
             dim::TRANSPARENCY_LOG_INCLUSION,
             "transparency_log:inclusion"
@@ -527,7 +518,7 @@ mod tests {
                 "registry-steward-us",
             ))
             .attestation(AttestationEntry::pass(
-                dim::L4_LICENSE_VALIDITY,
+                dim::LICENSE_VALIDITY,
                 "registry-steward-eu",
             ))
             .cache_age_seconds(47)
@@ -553,8 +544,8 @@ mod tests {
     fn json_round_trip() {
         let fp = FederationProvenance::builder()
             .policy("p1")
-            .attestation(AttestationEntry::pass(dim::L1_SELF_VERIFY, "v").with_source_ref("ref"))
-            .attestation(AttestationEntry::fail(dim::L5_AGENT_INTEGRITY, "v"))
+            .attestation(AttestationEntry::pass(dim::SELF_VERIFY, "v").with_source_ref("ref"))
+            .attestation(AttestationEntry::fail(dim::AGENT_INTEGRITY, "v"))
             .build();
         let json = serde_json::to_string(&fp).unwrap();
         let back: FederationProvenance = serde_json::from_str(&json).unwrap();

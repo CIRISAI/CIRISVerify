@@ -2393,17 +2393,21 @@ fn walk_py_files(
 // =============================================================================
 
 impl FullAttestationResult {
-    /// Compose the existing per-level verification subresults into the
-    /// scalar-attestation surface (`federation_provenance`,
+    /// Compose the existing per-measurement verification subresults
+    /// into the scalar-attestation surface (`federation_provenance`,
     /// CIRISVerify#33). Per `MISSION.md` §1.4 verify *carries* the
     /// attestation list; the consumer composes a verdict.
     ///
     /// Emits one [`crate::federation_provenance::AttestationEntry`] per
     /// dimension the underlying check actually ran (an `Option::None`
     /// field is "not checked" — not implicitly passing). The dimensions
-    /// follow FSD-002 §3.2 (the canonical namespace `attestation:l1:*`
-    /// through `attestation:l5:*`, plus `hardware_custody:{platform}`,
-    /// `transparency_log:inclusion`).
+    /// follow FSD-002 §3.2: `attestation:self_verify` /
+    /// `attestation:hardware` / `attestation:registry_consensus` /
+    /// `attestation:license_validity` / `attestation:agent_integrity`,
+    /// plus `hardware_custody:{platform}` and
+    /// `transparency_log:inclusion`. v3.7.0+ dropped the L1/L2/L3/L4/L5
+    /// numbering prefixes — that ladder is consumer policy, not
+    /// verify-side framing.
     ///
     /// `attester` is the entity that performed the attestation — for
     /// verify-internal checks pass `"ciris-verify"`; for delegated
@@ -2420,7 +2424,7 @@ impl FullAttestationResult {
         // L1 — self-verification ("who watches the watchmen").
         if let Some(sv) = &self.self_verification {
             b = b.attestation(AttestationEntry::new(
-                dim::L1_SELF_VERIFY,
+                dim::SELF_VERIFY,
                 if sv.valid { Score::PASS } else { Score::FAIL },
                 attester,
             ));
@@ -2434,7 +2438,7 @@ impl FullAttestationResult {
             let l2_ok = ka.has_valid_signature
                 && self.device_attestation.as_ref().is_none_or(|d| d.verified);
             b = b.attestation(AttestationEntry::new(
-                dim::L2_HARDWARE,
+                dim::HARDWARE,
                 if l2_ok { Score::PASS } else { Score::FAIL },
                 attester,
             ));
@@ -2459,7 +2463,7 @@ impl FullAttestationResult {
             + u8::from(self.sources.dns_eu_valid)
             + u8::from(self.sources.https_valid);
         b = b.attestation(AttestationEntry::new(
-            dim::L3_REGISTRY_CONSENSUS,
+            dim::REGISTRY_CONSENSUS,
             if valid_sources >= 2 {
                 Score::PASS
             } else {
@@ -2475,7 +2479,7 @@ impl FullAttestationResult {
         // — which v1.7.0+ consumers already have.)
         if let Some(mi) = &self.module_integrity {
             b = b.attestation(AttestationEntry::new(
-                dim::L5_AGENT_INTEGRITY,
+                dim::AGENT_INTEGRITY,
                 if mi.valid { Score::PASS } else { Score::FAIL },
                 attester,
             ));

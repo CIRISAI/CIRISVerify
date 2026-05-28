@@ -173,28 +173,37 @@ CIRISVerify includes a standalone CLI (`ciris-verify`) for running inspections m
 |---------|--------------|-------------|
 | `ciris-verify` | Show help | Read the DMV handbook |
 | `ciris-verify info` | Show system capabilities | Check what your car supports |
-| `ciris-verify self-check` | Verify binary integrity (Level 2) | Is this inspection station certified? |
-| `ciris-verify sources` | Check registry consensus (Level 3) | Cross-check 3 DMV databases |
+| `ciris-verify self-check` | Verify binary integrity | Is this inspection station certified? |
+| `ciris-verify sources` | Check registry consensus | Cross-check 3 DMV databases |
 | `ciris-verify function-check` | Verify FFI functions | Check individual inspection equipment |
-| `ciris-verify agent-files` | Verify agent file integrity (Level 4) | Full vehicle inspection |
-| `ciris-verify audit-trail` | Verify audit log integrity (Level 5) | Review complete service history |
+| `ciris-verify agent-files` | Verify agent file integrity | Full vehicle inspection |
+| `ciris-verify audit-trail` | Verify audit log integrity | Review complete service history |
 | `ciris-verify list-manifests` | List available manifests | Check what records exist |
 
-### Attestation Levels — The 5-Point Inspection
+### Attestation Measurements
 
-Like a car inspection has multiple checkpoints (brakes, lights, emissions), CIRISVerify has 5 progressive trust levels:
+Verify carries measurements, not levels. The five attestation
+dimensions in `federation_provenance::dim` (FSD-002 §3.2):
 
-| Level | The Check | Car Analogy | CLI Command |
-|-------|-----------|-------------|-------------|
-| **1** | Library Loaded | The car starts | (implicit) |
-| **2** | Binary Self-Verification | Is this a real inspection station? | `self-check` |
-| **3** | Registry Cross-Validation | Check 3 independent DMV databases | `sources` |
-| **4** | Agent File Integrity | Vehicle hasn't been modified since manufacture | `agent-files` |
-| **5** | Audit Trail Verification | Complete service history, no gaps | `audit-trail` |
+| Dimension | The Check | Car Analogy | CLI Command |
+|-----------|-----------|-------------|-------------|
+| `attestation:self_verify` | Binary + functions match registry manifest | Is this a real inspection station? | `self-check` |
+| `attestation:hardware` | Hardware-rooted key valid | Genuine VIN-locked tools | (in attest flow) |
+| `attestation:registry_consensus` | 2-of-3 multi-source registry agreement | Check 3 independent DMV databases | `sources` |
+| `attestation:license_validity` | Registry-signed license verifies | Current driver's licence on file | (in attest flow) |
+| `attestation:agent_integrity` | Agent source-tree byte-equal vs manifest | Vehicle hasn't been modified since manufacture | `agent-files` |
 
-**Critical**: If ANY level fails, ALL higher levels are UNVERIFIED (shown in yellow). A compromised inspection station (Level 2 fail) could lie about everything else.
+Each measurement is a `boolean-via-score` pass/fail with an attester.
+**Consumers compose tiers, ladders, verdicts from these data points;
+verify does not.** The L1-L5 ladder used historically was consumer-side
+framing; v3.7.0+ dropped the numbering from the wire shape.
 
-*Technical detail: See [Binary Self-Verification](./BINARY_SELF_VERIFICATION.md) for how Level 2 works on each platform.*
+**Critical**: If `attestation:self_verify` fails, every other
+measurement is UNRELIABLE — a compromised inspection station could lie
+about everything else. The recursive golden rule: the watchman submits
+to its own check first.
+
+*Technical detail: See [Binary Self-Verification](./BINARY_SELF_VERIFICATION.md) for how `attestation:self_verify` works on each platform.*
 
 ### Example Usage
 
@@ -202,10 +211,10 @@ Like a car inspection has multiple checkpoints (brakes, lights, emissions), CIRI
 # Show system info and capabilities
 ciris-verify info
 
-# Check multi-source validation (Level 3)
+# Check multi-source registry consensus
 ciris-verify sources --timeout 15
 
-# Verify binary integrity (Level 2)
+# Verify binary self-integrity
 ciris-verify self-check
 
 # List available manifests for this version
@@ -214,10 +223,10 @@ ciris-verify list-manifests
 # Verify FFI function integrity
 ciris-verify function-check --show-details
 
-# Verify agent files (Level 4)
+# Verify agent files against the registered manifest
 ciris-verify agent-files --version 2.0.0 --agent-root /path/to/agent
 
-# Verify audit trail (Level 5)
+# Verify audit trail
 ciris-verify audit-trail --db-path /path/to/ciris_audit.db
 
 # JSON output for automation
@@ -230,7 +239,7 @@ ciris-verify sources --format json
 
 CIRISRegistry hosts three types of manifests — think of them as official DMV records:
 
-### 1. Binary Manifest (Level 2) — "Is This a Real Inspection Station?"
+### 1. Binary Manifest — "Is This a Real Inspection Station?"
 
 SHA-256 fingerprints of CIRISVerify binaries for each platform. Used to verify the verifier itself.
 
@@ -249,7 +258,7 @@ SHA-256 fingerprints of CIRISVerify binaries for each platform. Used to verify t
 }
 ```
 
-### 2. File Manifest (Level 4)
+### 2. File Manifest
 
 SHA-256 hashes of all CIRISAgent files for Tripwire-style verification.
 
@@ -313,7 +322,7 @@ SHA-256 hashes of FFI export functions at the bytecode level, with hybrid signat
 
 ## Audit Trail Verification
 
-CIRISVerify validates the cryptographic integrity of an agent's audit log (Level 5).
+CIRISVerify validates the cryptographic integrity of an agent's audit log (the `attestation:agent_integrity` measurement's downstream consumer).
 
 ### Hash Chain Structure
 

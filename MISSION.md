@@ -140,35 +140,41 @@ federation-wide:
 > the trust axis. (See CIRISVerify#27 / #28; inherited from the
 > CIRISNodeCore trust model.)
 
-**Made structural in v3.2.0; consumer-facing in v3.6.0.** The
-`federation_provenance` scalar-attestation surface
-(`src/ciris-verify-core/src/federation_provenance.rs`, FSD-002 §3.2)
-turns the invariant from a documented bound into a wire shape: verify
-emits a list of `AttestationEntry { dimension, score, attester,
-source_ref }` triples and **does not compose a verdict** — the
-response carries measurements only. The `AttestBundle` projection
+**Made structural in v3.2.0; consumer-facing in v3.6.0; wire-string
+numbering dropped in v3.7.0.** The `federation_provenance`
+scalar-attestation surface (`src/ciris-verify-core/src/federation_provenance.rs`,
+FSD-002 §3.2) turns the invariant from a documented bound into a wire
+shape: verify emits a list of `AttestationEntry { dimension, score,
+attester, source_ref }` triples and **does not compose a verdict** —
+the response carries measurements only. The `AttestBundle` projection
 (`src/ciris-verify-core/src/attest_bundle.rs`, v3.6.0) names each
 measurement for what it is (`self_verification`,
 `hardware_attestation`, `registry_consensus`, `license_validity`,
 `agent_integrity`, plus `provenance` / `hardware_custody` /
-`transparency_log` / `cert_validity` / `rollback_detected`) — **no
-L1/L2/L3/L4/L5 ladder structure**. Tier / level mapping is the
-consumer's policy, not verify's surface. A new response shape that
-emits a verdict, a tier, or a level from verify-side state fails
-review on mission grounds.
+`transparency_log` / `cert_validity` / `rollback_detected`). v3.7.0
+also dropped the L1-L5 numbering from the dimension wire strings
+themselves (`attestation:l1:self_verify` → `attestation:self_verify`,
+etc.) — the ladder concept was consumer-side framing baked into
+verify's wire shape, and it had to go. **No L1/L2/L3/L4/L5 anything
+in verify's response.** Tier / level / ladder mapping is the
+consumer's policy. A new response shape that emits a verdict, a
+tier, or a level from verify-side state fails review on mission
+grounds.
 
 ### 1.5 Recursive golden rule — the watchman submits to its own check
 
-The verifier must itself be verifiable. CIRISVerify's **Level 1
-self-verification** ("who watches the watchmen", `CLAUDE.md`
-§Attestation Levels) is the recursive golden rule in this domain: the
-running CIRISVerify binary attests *itself* against its registered
-function manifest before it attests anything else
+The verifier must itself be verifiable. CIRISVerify's
+**`attestation:self_verify` measurement** ("who watches the
+watchmen", `CLAUDE.md` §Attestation Measurements) is the recursive
+golden rule in this domain: the running CIRISVerify binary attests
+*itself* against its registered function manifest before it attests
+anything else
 (`src/ciris-verify-ffi/src/constructor.rs::run_verification`,
 `src/ciris-verify-core/src/security/function_integrity.rs::verify_functions`).
-**If L1 fails, every other level is UNVERIFIED** — a compromised
-watchman could lie about everything else, so it is not permitted to
-speak until it has proven itself by the same rule it applies to others.
+**If `self_verify` fails, every other measurement is UNRELIABLE** —
+a compromised watchman could lie about everything else, so it is not
+permitted to speak until it has proven itself by the same rule it
+applies to others.
 
 ### 1.6 Fail-secure is a mission stance
 
