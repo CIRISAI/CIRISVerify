@@ -725,7 +725,7 @@ Where the federation could push us further (if the substrate threat model evolve
 - **Hardware-master symmetric derivation** when persist#19 actually wires `secrets-hw` (§11.2 #6).
 - **FIPS-mode RNG draws** if FedRAMP / CMMC compliance becomes a federation requirement (AV-39 secondary).
 - **Streaming AEAD** if a federation primitive ever needs multi-MB at-rest blob encryption (currently nobody does — §11.3 #2).
-- **Production population of the scalar-attestation surface** depends on four cross-repo emitters: CIRISRegistry#24 (`provenance:slsa:{level}` / `provenance:build_manifest:{target}` / `cert_validity:{authority}` emission + STH witness cosigning endpoint), CIRISAgent#801 (periodic `run_attestation` + bundle UI surfacing + AV-42 cutover commitment), CIRISPersist#108 (`persist_row_hash` on federation rows), CIRISNodeCore#14 (structurally-independent 3rd `registry_consensus` source post Agent 3.0 fold). Verify-side receivers are all shipped — the bundle's measurements populate as each downstream lands.
+- **Production population of the scalar-attestation surface** depends on three remaining cross-repo emitters: CIRISRegistry#24 (`provenance:slsa:{level}` / `provenance:build_manifest:{target}` / `cert_validity:{authority}` emission + STH witness cosigning endpoint), CIRISAgent#801 (periodic `run_attestation` + bundle UI surfacing + AV-42 cutover commitment), CIRISNodeCore#14 (structurally-independent 3rd `registry_consensus` source post Agent 3.0 fold). The fourth (CIRISPersist#108, `persist_row_hash` surfacing) closed same-day in persist v2.6.0. Verify-side receivers are all shipped — the bundle's measurements populate as each remaining downstream lands.
 
 ---
 

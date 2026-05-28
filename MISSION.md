@@ -383,13 +383,17 @@ CIRISVerify does not stand alone. The authoritative federation map is
   Integrity / App Attest / TPM 2.0 (#34, v3.3.0) and on
   `BuildManifest` (#35, v3.4.0), measurement-shaped `AttestBundle`
   projection + FFI + Python wrapper (#36, v3.6.0). Verify is in a
-  "receivers ready, awaiting downstream emitters" state — the four
+  "receivers ready, awaiting downstream emitters" state — the
   cross-repo asks needed to populate the bundle in production are
   filed: CIRISRegistry#24 (provenance / cert_validity / witness
   cosigning), CIRISAgent#801 (periodic `run_attestation` cadence +
-  AV-42 cutover commitment + bundle UI surfacing), CIRISPersist#108
-  (`persist_row_hash` on federation rows), CIRISNodeCore#14
+  AV-42 cutover commitment + bundle UI surfacing), CIRISNodeCore#14
   (structurally-independent 3rd `registry_consensus` source).
+  CIRISPersist#108 (`persist_row_hash` on federation rows) closed
+  same-day in persist v2.6.0 — the column existed since V001 and is
+  now surfaced on `KeyRecord` / `Attestation` / `Revocation` via
+  `FederationDirectory` reads, so `FederationProvenance::persist_row_hash`
+  populates from production reads.
 
 ## 8. License-locked mission preservation
 
