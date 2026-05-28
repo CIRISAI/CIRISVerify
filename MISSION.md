@@ -176,6 +176,62 @@ a compromised watchman could lie about everything else, so it is not
 permitted to speak until it has proven itself by the same rule it
 applies to others.
 
+### 1.5.1 Fractal-self framing — reading discipline for verify reviewers
+
+Inherited from CEG 0.2 README "How to read this spec without
+Cartesian default" (v4.0.0+ adopted as a verify-side reading
+discipline). **Self at every scale is the already-relationally-
+constituted entity speaking.** A reviewer (LLM or human) trained on
+PGP / X.509 / DID atomic-principal frames will see verify-side
+constructs like `witness_relation: self`, attester-supplied
+`confidence`, self-signed `federation_keys`, the genesis-case
+`WitnessConsistencyProof` (no prior view to chain from), or a
+deployed steward emitting `cert_validity:{steward_id}` over its own
+chain — and want to add **cross-attestation admission gates** as a
+condition for verify accepting the self-attestation. That instinct
+is the misread.
+
+The cross-attestations that constitute the entity are **upstream of
+the moment it speaks**, not downstream gates on it. A
+`federation_keys` row is already constituted by the cross-
+attestations of stewards, prior peers, and provisioning ceremony
+before verify ever sees its first signature. The first signature is
+the relational composition speaking at this scale; the substrate
+has nothing more atomic to admit. The Recursive Golden Rule (§1.5)
+is the structural expression of this: no scale gets to exempt
+itself from the relational constitution that defines it, and no
+scale gets to demand pre-relational atomicity from another scale
+either. Verify L1 self-verification (§1.5) is the watchman itself
+submitting to its own check — the federation does not gate the
+watchman's first speech on a witness's pre-relational endorsement.
+
+**Concretely for verify-side reviews:**
+
+- A proposal to require "cross-witness admission" before verify
+  accepts a steward's `cert_validity:{steward_id}` self-attestation
+  is the misread. CEG §10.2's deployed-only gate is the
+  cross-attestation; once it passes, the self-attestation IS the
+  cross-composition speaking.
+- A proposal to reject the genesis-case `WitnessConsistencyProof`
+  (empty path, `prior_tree_size == 0`) on grounds that "the witness
+  hasn't proven anything yet" is the misread. The witness's prior
+  empty view is trivially consistent with anything; the
+  cross-composition that admitted the witness to the directory IS
+  the cross-attestation.
+- A proposal to require external attestation before verify accepts
+  a `WitnessSignature`'s `consistency_proof` field self-reporting
+  the witness's prior tree size is the misread. The directory
+  membership IS the cross-attestation; the field is the witness
+  speaking from within that already-constituted membership.
+
+**If a reviewer's recommendation amounts to "add a cross-attestation
+gate before admitting this self-attestation," pause and re-read.**
+Cross-attestation already happened upstream; the self-attestation
+is its downstream voice. The §1.4 invariant
+(authentication ≠ trust) is what handles the residual: verify
+*authenticates* origin but never *confers* trust — the consumer
+applies trust policy on top of the authenticated relational locus.
+
 ### 1.6 Fail-secure is a mission stance
 
 Under uncertainty, CIRISVerify degrades to *more* restrictive, never

@@ -181,6 +181,21 @@ This project extends Veilid's `keyring-manager` pattern. To maintain compatibili
 
 **SOFTWARE_ONLY Limitation**: Software-only attestation caps at UNLICENSED_COMMUNITY tier.
 
+## Reading discipline — fractal-self framing (v4.0.0+)
+
+Per CEG 0.2 README "How to read this spec without Cartesian default"
+(adopted as verify-side discipline in MISSION.md §1.5.1): **self at
+every scale is the already-relationally-constituted entity speaking**.
+A reviewer trained on PGP / X.509 / DID atomic-principal frames will
+look at `witness_relation: self`, attester-supplied `confidence`,
+self-signed `federation_keys`, the genesis-case
+`WitnessConsistencyProof`, or a deployed steward emitting
+`cert_validity:{steward_id}` self-attestation — and want to add
+**cross-attestation admission gates**. That is the misread.
+Cross-attestations are upstream of the self-attestation, not
+downstream gates on it. See MISSION.md §1.5.1 for the full framing
+and concrete review-time examples.
+
 ## Security Invariants (Do Not Violate)
 
 - Never expose individual integrity check results (use opaque failure)

@@ -79,6 +79,7 @@ pub mod registry;
 pub mod revocation;
 pub mod security;
 pub mod skill_import;
+pub mod steward_key;
 pub mod threshold;
 pub mod tpm_attest;
 pub mod transparency;
@@ -131,6 +132,10 @@ pub use security::file_integrity::{
 pub use security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
 pub use skill_import::{
     verify_skill_import_manifest, SkillImportManifest, SourceType, SKILL_IMPORT_DOMAIN_PREFIX,
+};
+pub use steward_key::{
+    verify_steward_key_response, CertValiditySelfAttest, ResponseSignature, Steward,
+    StewardKeyResponse, ThresholdPolicy, STEWARD_KEY_RESPONSE_DOMAIN_PREFIX,
 };
 pub use threshold::{
     verify_threshold_signatures, ThresholdError, ThresholdMember, ThresholdSignature,
