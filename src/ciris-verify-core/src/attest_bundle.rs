@@ -65,7 +65,8 @@ impl From<&AttestationEntry> for AttestationFact {
     }
 }
 
-/// SLSA + per-target build-manifest provenance.
+/// SLSA + per-target build-manifest provenance + skill-import
+/// provenance + per-locale build-manifest leaves.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct ProvenanceBlock {
     /// Maximum SLSA level attested under any `provenance:slsa:{level}`
@@ -79,6 +80,24 @@ pub struct ProvenanceBlock {
     /// hash equality, the `source_ref` carries the hash itself.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub build_manifest: BTreeMap<String, String>,
+    /// Per-locale build-manifest leaves (CIRISVerify#37 / Registry#29,
+    /// v3.8.0+). Outer key is the target triple (same domain as
+    /// [`Self::build_manifest`]); inner key is the ISO `lang_code`.
+    /// The parent entry in [`Self::build_manifest`] is the Merkle root
+    /// over the per-locale leaves — when both populate, a consumer
+    /// can detect a locale-targeted attack (e.g. a Burmese doctrinal
+    /// substitution where the parent passes but the `my` leaf fails).
+    /// Empty when no per-locale dimensions were checked.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub build_manifest_per_locale: BTreeMap<String, BTreeMap<String, AttestationFact>>,
+    /// Community-skill import provenance (CIRISVerify#37 / Registry#28,
+    /// v3.8.0+). Key is the full `source` field of
+    /// `provenance:skill_import:{source}` (e.g.
+    /// `registry:ciris-registry-us`, `direct:https://example.org/skill.tar.gz`,
+    /// `local:/opt/ciris/skills/triage.tar.gz`). Empty when no
+    /// skill-import dimensions were checked.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub skill_imports: BTreeMap<String, AttestationFact>,
 }
 
 /// Hardware-custody fact — where the seed lives.
@@ -192,6 +211,9 @@ impl AttestBundle {
         let mut hardware_custody = HardwareCustody::default();
         let mut transparency_log = TransparencyLogBlock::default();
         let mut build_manifest: BTreeMap<String, String> = BTreeMap::new();
+        let mut build_manifest_per_locale: BTreeMap<String, BTreeMap<String, AttestationFact>> =
+            BTreeMap::new();
+        let mut skill_imports: BTreeMap<String, AttestationFact> = BTreeMap::new();
         let mut cert_validity: BTreeMap<String, AttestationFact> = BTreeMap::new();
         let mut slsa_level: Option<u8> = None;
         let mut rollback_detected = false;
@@ -252,11 +274,26 @@ impl AttestBundle {
                         slsa_level = Some(slsa_level.map_or(level, |cur| cur.max(level)));
                     }
                 }
-            } else if let Some(target) = d.strip_prefix("provenance:build_manifest:") {
-                let source_ref = entry.source_ref.clone().unwrap_or_default();
-                build_manifest
-                    .entry(target.to_string())
-                    .or_insert(source_ref);
+            } else if let Some(rest) = d.strip_prefix("provenance:build_manifest:") {
+                // Two sub-shapes share this prefix:
+                //   provenance:build_manifest:{target}                       — parent Merkle root
+                //   provenance:build_manifest:{target}:locale:{lang_code}    — per-locale leaf (#37)
+                // The locale suffix is detected by the literal `:locale:`
+                // delimiter, splitting `{target}` from `{lang_code}`.
+                if let Some((target, lang)) = rest.split_once(":locale:") {
+                    build_manifest_per_locale
+                        .entry(target.to_string())
+                        .or_default()
+                        .entry(lang.to_string())
+                        .or_insert_with(|| AttestationFact::from(entry));
+                } else {
+                    let source_ref = entry.source_ref.clone().unwrap_or_default();
+                    build_manifest.entry(rest.to_string()).or_insert(source_ref);
+                }
+            } else if let Some(source) = d.strip_prefix("provenance:skill_import:") {
+                skill_imports
+                    .entry(source.to_string())
+                    .or_insert_with(|| AttestationFact::from(entry));
             } else if let Some(platform) = d.strip_prefix("hardware_custody:") {
                 if hardware_custody.platform.is_empty() {
                     hardware_custody.platform = platform.to_string();
@@ -282,6 +319,8 @@ impl AttestBundle {
             provenance: ProvenanceBlock {
                 slsa_level,
                 build_manifest,
+                build_manifest_per_locale,
+                skill_imports,
             },
             hardware_custody,
             transparency_log,
@@ -527,6 +566,120 @@ mod tests {
         assert_eq!(j["cert_validity"]["registry-steward-us"]["passed"], true);
         assert_eq!(j["rollback_detected"], false);
         assert!(j["federation_provenance"]["attestations_consumed"].is_array());
+    }
+
+    // ----- CIRISVerify#37 (v3.8.0) ProvenanceBlock extensions -----
+
+    #[test]
+    fn skill_import_dimension_projects_into_skill_imports_map() {
+        let prov = fp(vec![
+            AttestationEntry::pass(
+                dim::provenance_skill_import("registry:ciris-registry-us"),
+                "registry-steward-us",
+            )
+            .with_source_ref("skill_manifest_sha256:abc123"),
+            AttestationEntry::fail(
+                dim::provenance_skill_import("direct:https://example.org/skill.tar.gz"),
+                "https-publisher-key",
+            ),
+        ]);
+        let bundle = AttestBundle::from_federation_provenance("k", prov);
+        let reg = bundle
+            .provenance
+            .skill_imports
+            .get("registry:ciris-registry-us")
+            .expect("registry source present");
+        assert!(reg.passed);
+        assert_eq!(reg.attester, "registry-steward-us");
+        assert_eq!(
+            reg.source_ref.as_deref(),
+            Some("skill_manifest_sha256:abc123")
+        );
+        let direct = bundle
+            .provenance
+            .skill_imports
+            .get("direct:https://example.org/skill.tar.gz")
+            .expect("direct source present");
+        assert!(!direct.passed);
+    }
+
+    #[test]
+    fn per_locale_build_manifest_projects_under_target_then_lang() {
+        // Parent root + two locale leaves under the same target. The
+        // parent populates `build_manifest`; the leaves populate
+        // `build_manifest_per_locale[target][lang]`.
+        let prov = fp(vec![
+            AttestationEntry::pass(
+                dim::provenance_build_manifest("ios-mobile-bundle"),
+                "verify-steward-2026",
+            )
+            .with_source_ref("sha256:parent-merkle-root"),
+            AttestationEntry::pass(
+                dim::provenance_build_manifest_locale("ios-mobile-bundle", "en"),
+                "verify-steward-2026",
+            ),
+            AttestationEntry::fail(
+                dim::provenance_build_manifest_locale("ios-mobile-bundle", "my"),
+                "verify-steward-2026",
+            ),
+        ]);
+        let bundle = AttestBundle::from_federation_provenance("k", prov);
+        // Parent populated.
+        assert_eq!(
+            bundle.provenance.build_manifest.get("ios-mobile-bundle"),
+            Some(&"sha256:parent-merkle-root".to_string())
+        );
+        // Locale leaves populated under the same target key.
+        let leaves = bundle
+            .provenance
+            .build_manifest_per_locale
+            .get("ios-mobile-bundle")
+            .expect("locale leaves under target");
+        assert!(leaves.get("en").unwrap().passed, "en leaf passes");
+        assert!(!leaves.get("my").unwrap().passed, "my leaf fails");
+    }
+
+    #[test]
+    fn locale_leaf_with_no_parent_root_still_populates() {
+        // A consumer who emitted only the locale leaf without the
+        // parent root must still have the leaf surfaced. Defensive
+        // case — out-of-order emission must not lose data.
+        let prov = fp(vec![AttestationEntry::pass(
+            dim::provenance_build_manifest_locale("python-source-tree", "id"),
+            "verify-steward-2026",
+        )]);
+        let bundle = AttestBundle::from_federation_provenance("k", prov);
+        assert!(bundle.provenance.build_manifest.is_empty());
+        let leaves = bundle
+            .provenance
+            .build_manifest_per_locale
+            .get("python-source-tree")
+            .expect("locale leaf populated even without parent");
+        assert!(leaves.get("id").unwrap().passed);
+    }
+
+    #[test]
+    fn skill_import_and_per_locale_serialize_correctly() {
+        let prov = fp(vec![
+            AttestationEntry::pass(
+                dim::provenance_skill_import("registry:ciris-registry-us"),
+                "registry-steward-us",
+            ),
+            AttestationEntry::pass(
+                dim::provenance_build_manifest_locale("ios-mobile-bundle", "en"),
+                "verify-steward-2026",
+            ),
+        ]);
+        let bundle = AttestBundle::from_federation_provenance("k", prov);
+        let j: serde_json::Value = serde_json::to_value(&bundle).unwrap();
+        assert_eq!(
+            j["provenance"]["skill_imports"]["registry:ciris-registry-us"]["passed"],
+            true
+        );
+        assert_eq!(
+            j["provenance"]["build_manifest_per_locale"]["ios-mobile-bundle"]["en"]["passed"],
+            true
+        );
     }
 
     #[test]

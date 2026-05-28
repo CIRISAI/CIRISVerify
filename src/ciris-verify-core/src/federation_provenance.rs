@@ -28,6 +28,8 @@
 //! | `attestation:agent_integrity`              | boolean-via-score |
 //! | `provenance:slsa:{level}`                  | boolean-via-score |
 //! | `provenance:build_manifest:{target}`       | boolean-via-score |
+//! | `provenance:build_manifest:{target}:locale:{lang_code}` | boolean-via-score (v3.8.0+, #37) |
+//! | `provenance:skill_import:{source}`         | boolean-via-score (v3.8.0+, #37) |
 //! | `transparency_log:inclusion`               | boolean-via-score |
 //! | `transparency_log:consistency`             | boolean-via-score |
 //! | `rollback_detected:{revision_field}`       | **-1 only** (no positive direction) |
@@ -94,6 +96,28 @@ pub mod dim {
     #[must_use]
     pub fn provenance_build_manifest(target: &str) -> String {
         format!("provenance:build_manifest:{target}")
+    }
+
+    /// Per-locale leaf under a `provenance:build_manifest:{target}`
+    /// root — for the 29-locale localized-artifact tree
+    /// (CIRISRegistry#29 / CIRISVerify#37). `lang_code` is an ISO
+    /// language code (e.g. `en`, `my`, `id`). The parent
+    /// [`provenance_build_manifest`] entry stays the Merkle root over
+    /// all per-locale leaves; this dimension carries the per-leaf
+    /// verdict.
+    #[must_use]
+    pub fn provenance_build_manifest_locale(target: &str, lang_code: &str) -> String {
+        format!("provenance:build_manifest:{target}:locale:{lang_code}")
+    }
+
+    /// Community-skill import provenance (CIRISRegistry#28 /
+    /// CIRISVerify#37). `source` is one of
+    /// `registry:{registry_id}` / `direct:{url}` / `local:{path}` —
+    /// the source-type prefix determines which trusted-emitter set
+    /// the signer identity is checked against.
+    #[must_use]
+    pub fn provenance_skill_import(source: &str) -> String {
+        format!("provenance:skill_import:{source}")
     }
 
     /// Anti-rollback signal — a decrease in a revocation revision.
@@ -416,6 +440,33 @@ mod tests {
             "cert_validity:registry-steward-us"
         );
         assert_eq!(dim::hardware_custody("tpm"), "hardware_custody:tpm");
+    }
+
+    /// CIRISVerify#37 (v3.8.0): per-locale build_manifest leaf +
+    /// skill_import helpers. Wire-string format must match the
+    /// Registry#28 / #29 specs.
+    #[test]
+    fn skill_import_and_per_locale_dimensions_format_correctly() {
+        assert_eq!(
+            dim::provenance_skill_import("registry:ciris-registry-us"),
+            "provenance:skill_import:registry:ciris-registry-us"
+        );
+        assert_eq!(
+            dim::provenance_skill_import("direct:https://example.org/skill.tar.gz"),
+            "provenance:skill_import:direct:https://example.org/skill.tar.gz"
+        );
+        assert_eq!(
+            dim::provenance_skill_import("local:/opt/ciris/skills/triage.tar.gz"),
+            "provenance:skill_import:local:/opt/ciris/skills/triage.tar.gz"
+        );
+        assert_eq!(
+            dim::provenance_build_manifest_locale("ios-mobile-bundle", "my"),
+            "provenance:build_manifest:ios-mobile-bundle:locale:my"
+        );
+        assert_eq!(
+            dim::provenance_build_manifest_locale("python-source-tree", "en"),
+            "provenance:build_manifest:python-source-tree:locale:en"
+        );
     }
 
     #[test]
