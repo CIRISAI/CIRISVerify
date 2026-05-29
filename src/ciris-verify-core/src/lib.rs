@@ -66,6 +66,7 @@ pub mod federation_provenance;
 pub mod hardware_info;
 pub mod holds_bytes;
 pub mod https;
+pub mod humanity_accord;
 pub mod jwt;
 pub mod keys;
 pub mod license;
@@ -88,6 +89,7 @@ pub mod types;
 pub mod unified;
 pub mod validation;
 pub mod watchdog;
+pub mod witness_relation;
 
 pub use attest_bundle::{
     AttestBundle, AttestationFact, HardwareCustody, ProvenanceBlock, TransparencyLogBlock,
@@ -109,6 +111,10 @@ pub use federation_provenance::{
     AttestationEntry, FederationProvenance, FederationProvenanceBuilder, Score,
 };
 pub use holds_bytes::{verify_holds_bytes, HoldsBytesError};
+pub use humanity_accord::{
+    verify_invocation, Invocation, InvocationDedup, InvocationError, InvocationKind,
+    INVOCATION_DOMAIN_PREFIX,
+};
 pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
 pub use keys::{
     derive_symmetric_key, derive_transport_identity, DERIVED_KEY_LEN, TRANSPORT_SEED_LEN,
@@ -151,6 +157,10 @@ pub use types::{
     RuntimeValidation, RuntimeViolation, ShutdownDirective, ShutdownType, ViolationSeverity,
 };
 pub use watchdog::ShutdownWatchdog;
+pub use witness_relation::{
+    admit_attestation, admit_with_declared_relation, AdmissionDecision, EnvelopeMetadata,
+    OversightMode, WitnessRelation,
+};
 
 // Audit trail verification
 pub use audit::{

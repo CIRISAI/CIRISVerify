@@ -679,6 +679,40 @@ class CIRISVerify:
         except AttributeError:
             self._has_attest_bundle_support = False
 
+        # CIRISVerify#40/#41/#42 — v4.2.0 conformance cross-wheel boundary fns
+        try:
+            self._lib.ciris_verify_admit_attestation.argtypes = [
+                ctypes.c_char_p,                                  # entry_json
+                ctypes.c_size_t,                                  # entry_len
+                ctypes.c_char_p,                                  # attested_key_id
+                ctypes.c_size_t,                                  # attested_key_id_len
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)),   # result_out
+                ctypes.POINTER(ctypes.c_size_t),                  # result_len_out
+            ]
+            self._lib.ciris_verify_admit_attestation.restype = ctypes.c_int
+
+            self._lib.ciris_verify_invocation_canonical_bytes.argtypes = [
+                ctypes.c_char_p,                                  # invocation_json
+                ctypes.c_size_t,                                  # invocation_len
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)),   # result_out
+                ctypes.POINTER(ctypes.c_size_t),                  # result_len_out
+            ]
+            self._lib.ciris_verify_invocation_canonical_bytes.restype = ctypes.c_int
+
+            self._lib.ciris_verify_sth_cosignature_consistency_proof.argtypes = [
+                ctypes.c_char_p,                                  # proof_json
+                ctypes.c_size_t,                                  # proof_len
+                ctypes.c_uint64,                                  # current_tree_size
+                ctypes.c_char_p,                                  # current_root_hash_hex
+                ctypes.c_size_t,                                  # current_root_hash_hex_len
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)),   # result_out
+                ctypes.POINTER(ctypes.c_size_t),                  # result_len_out
+            ]
+            self._lib.ciris_verify_sth_cosignature_consistency_proof.restype = ctypes.c_int
+            self._has_v4_2_conformance_support = True
+        except AttributeError:
+            self._has_v4_2_conformance_support = False
+
         # ciris_verify_set_log_callback (optional - added in 0.9.1)
         # Register a callback to receive internal log messages
         try:
@@ -2293,6 +2327,138 @@ class CIRISVerify:
         if ret != 0:
             return None
 
+        try:
+            data = ctypes.string_at(result_ptr, result_len.value)
+            self._lib.ciris_verify_free(result_ptr)
+            return json.loads(data)
+        except Exception:
+            return None
+
+    # ---- CIRISVerify#40 / #41 / #42 — v4.2.0 conformance surface ----
+
+    def admit_attestation(
+        self,
+        entry: dict,
+        attested_key_id: str,
+    ) -> Optional[dict]:
+        """CEG §0.5 fractal-self admission decision for an attestation entry
+        (CIRISVerify#40, v4.2.0+).
+
+        Per the §0.5 fractal-self framing (MISSION.md §1.5.1), admission
+        is the default — a self-attestation with zero prior cross-
+        attestations is admitted, not gated for lack of vouching.
+
+        Args:
+            entry: AttestationEntry dict
+                ({"dimension", "score", "attester", optional "source_ref"}).
+            attested_key_id: The entity being attested.
+
+        Returns:
+            AdmissionDecision dict
+                ({"admitted": bool, "witness_relation": str, "reason": str})
+            or None on FFI failure / older library.
+        """
+        if not self._has_v4_2_conformance_support:
+            return None
+        entry_bytes = json.dumps(entry).encode("utf-8")
+        key_bytes = attested_key_id.encode("utf-8")
+        result_ptr = ctypes.POINTER(ctypes.c_uint8)()
+        result_len = ctypes.c_size_t()
+        ret = self._lib.ciris_verify_admit_attestation(
+            entry_bytes,
+            len(entry_bytes),
+            key_bytes,
+            len(key_bytes),
+            ctypes.byref(result_ptr),
+            ctypes.byref(result_len),
+        )
+        if ret != 0:
+            return None
+        try:
+            data = ctypes.string_at(result_ptr, result_len.value)
+            self._lib.ciris_verify_free(result_ptr)
+            return json.loads(data)
+        except Exception:
+            return None
+
+    def invocation_canonical_bytes(self, invocation: dict) -> Optional[bytes]:
+        """CEG §9.2.1 HUMANITY_ACCORD canonical-bytes producer
+        (CIRISVerify#41, v4.2.0+).
+
+        Args:
+            invocation: Invocation dict with `invocation_kind`,
+                `invocation_id`, `nonce`, `asserted_at`, `valid_until`,
+                `payload_sha256`. Timestamps must be §0.5 canonical RFC 3339;
+                `payload_sha256` must be §0.6 canonical lowercase hex.
+
+        Returns:
+            Canonical bytes to sign (raw `bytes`), or None on failure.
+            The hybrid signature scheme per §5.2.1 signs Ed25519 over these
+            bytes and ML-DSA-65 over `bytes || ed25519_sig`.
+        """
+        if not self._has_v4_2_conformance_support:
+            return None
+        inv_bytes = json.dumps(invocation).encode("utf-8")
+        result_ptr = ctypes.POINTER(ctypes.c_uint8)()
+        result_len = ctypes.c_size_t()
+        ret = self._lib.ciris_verify_invocation_canonical_bytes(
+            inv_bytes,
+            len(inv_bytes),
+            ctypes.byref(result_ptr),
+            ctypes.byref(result_len),
+        )
+        if ret != 0:
+            return None
+        try:
+            data = ctypes.string_at(result_ptr, result_len.value)
+            self._lib.ciris_verify_free(result_ptr)
+            return data
+        except Exception:
+            return None
+
+    def verify_sth_cosignature_consistency_proof(
+        self,
+        proof: dict,
+        current_tree_size: int,
+        current_root_hash_hex: str,
+    ) -> Optional[dict]:
+        """CEG §10.3.1 STH cosignature consistency-proof verification
+        (CIRISVerify#42, v4.2.0+).
+
+        Reuses the v4.0.0-rc2 `WitnessConsistencyProof::verify` Rust
+        surface; this is the cross-wheel Python entrypoint.
+
+        Args:
+            proof: WitnessConsistencyProof dict
+                ({"prior_tree_size", "prior_root_hash", "consistency_path"}).
+                `prior_root_hash` is a JSON array of 32 bytes; `consistency_path`
+                is a JSON array of 32-byte arrays.
+            current_tree_size: The STH's tree size.
+            current_root_hash_hex: §0.6 canonical lowercase 64-char hex of the
+                current STH root hash.
+
+        Returns:
+            {"verified": true} on success;
+            {"verified": false, "error": {...}} carrying §10.0.1 envelope shape
+            on failure. None on FFI failure / older library.
+        """
+        if not self._has_v4_2_conformance_support:
+            return None
+        proof_bytes = json.dumps(proof).encode("utf-8")
+        root_bytes = current_root_hash_hex.encode("utf-8")
+        result_ptr = ctypes.POINTER(ctypes.c_uint8)()
+        result_len = ctypes.c_size_t()
+        ret = self._lib.ciris_verify_sth_cosignature_consistency_proof(
+            proof_bytes,
+            len(proof_bytes),
+            ctypes.c_uint64(current_tree_size),
+            root_bytes,
+            len(root_bytes),
+            ctypes.byref(result_ptr),
+            ctypes.byref(result_len),
+        )
+        if ret != 0:
+            return None
         try:
             data = ctypes.string_at(result_ptr, result_len.value)
             self._lib.ciris_verify_free(result_ptr)

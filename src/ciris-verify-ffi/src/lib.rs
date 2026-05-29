@@ -3179,6 +3179,283 @@ unsafe fn attest_bundle_from_attestation_inner(
     CirisVerifyError::Success as i32
 }
 
+// ============================================================================
+// CIRISVerify#40 / #41 / #42 — v4.2.0 conformance cross-wheel boundary exposure
+// ============================================================================
+
+/// CEG §0.5 fractal-self admission decision for an attestation entry
+/// (CIRISVerify#40, v4.2.0+).
+///
+/// Pure projection — no new verification logic. Input is the JSON
+/// of an `AttestationEntry` plus the `attested_key_id` the harness
+/// wants the admission decision against; output is JSON of an
+/// `AdmissionDecision`.
+///
+/// # Safety
+///
+/// All `*const u8` inputs must point to valid memory of at least
+/// the declared length. `result_out` and `result_len_out` must be
+/// valid pointers.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ciris_verify_admit_attestation(
+    entry_json: *const u8,
+    entry_len: usize,
+    attested_key_id: *const u8,
+    attested_key_id_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_admit_attestation", {
+        admit_attestation_inner(
+            entry_json,
+            entry_len,
+            attested_key_id,
+            attested_key_id_len,
+            result_out,
+            result_len_out,
+        )
+    })
+}
+
+unsafe fn admit_attestation_inner(
+    entry_json: *const u8,
+    entry_len: usize,
+    attested_key_id: *const u8,
+    attested_key_id_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    use ciris_verify_core::{admit_attestation, AttestationEntry};
+
+    if entry_json.is_null()
+        || attested_key_id.is_null()
+        || result_out.is_null()
+        || result_len_out.is_null()
+    {
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let entry_bytes = std::slice::from_raw_parts(entry_json, entry_len);
+    let key_bytes = std::slice::from_raw_parts(attested_key_id, attested_key_id_len);
+
+    let key_str = match std::str::from_utf8(key_bytes) {
+        Ok(s) => s,
+        Err(_) => return CirisVerifyError::InvalidArgument as i32,
+    };
+    let entry: AttestationEntry = match serde_json::from_slice(entry_bytes) {
+        Ok(e) => e,
+        Err(_) => return CirisVerifyError::SerializationError as i32,
+    };
+
+    let decision = admit_attestation(&entry, key_str);
+    let json = match serde_json::to_string(&decision) {
+        Ok(j) => j,
+        Err(_) => return CirisVerifyError::SerializationError as i32,
+    };
+    let len = json.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+    std::ptr::copy_nonoverlapping(json.as_ptr(), ptr, len);
+    *result_out = ptr;
+    *result_len_out = len;
+    CirisVerifyError::Success as i32
+}
+
+/// CEG §9.2.1 HUMANITY_ACCORD canonical-bytes producer
+/// (CIRISVerify#41, v4.2.0+).
+///
+/// Takes an `Invocation` JSON and returns its `canonical_bytes` —
+/// the producer-side helper the harness uses to feed into a signer.
+/// Verification uses the threshold-signature path (separate FFI fn);
+/// this fn just produces the bytes a producer must sign.
+///
+/// # Safety
+///
+/// All `*const u8` inputs must point to valid memory of at least
+/// the declared length.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_invocation_canonical_bytes(
+    invocation_json: *const u8,
+    invocation_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_invocation_canonical_bytes", {
+        invocation_canonical_bytes_inner(
+            invocation_json,
+            invocation_len,
+            result_out,
+            result_len_out,
+        )
+    })
+}
+
+unsafe fn invocation_canonical_bytes_inner(
+    invocation_json: *const u8,
+    invocation_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    use ciris_verify_core::Invocation;
+
+    if invocation_json.is_null() || result_out.is_null() || result_len_out.is_null() {
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+    let bytes = std::slice::from_raw_parts(invocation_json, invocation_len);
+    let inv: Invocation = match serde_json::from_slice(bytes) {
+        Ok(i) => i,
+        Err(_) => return CirisVerifyError::SerializationError as i32,
+    };
+    let canonical = inv.canonical_bytes();
+    let len = canonical.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+    std::ptr::copy_nonoverlapping(canonical.as_ptr(), ptr, len);
+    *result_out = ptr;
+    *result_len_out = len;
+    CirisVerifyError::Success as i32
+}
+
+/// CEG §10.3.1 STH cosignature consistency-proof verification
+/// (CIRISVerify#42, v4.2.0+).
+///
+/// Stateless seam exposing the existing v4.0.0-rc2
+/// `WitnessConsistencyProof::verify` to Python / cross-wheel
+/// callers. Takes the consistency-proof JSON + the current STH's
+/// `(tree_size, root_hash_hex)`; returns success if §10.3.1
+/// invariants hold, else a typed error envelope.
+///
+/// Output JSON: `{"verified": true}` on success; on failure the
+/// inner `error` carries the §10.0.1 wire envelope shape with
+/// `code` and `message`.
+///
+/// # Safety
+///
+/// All `*const u8` inputs must point to valid memory of at least
+/// the declared length.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn ciris_verify_sth_cosignature_consistency_proof(
+    proof_json: *const u8,
+    proof_len: usize,
+    current_tree_size: u64,
+    current_root_hash_hex: *const u8,
+    current_root_hash_hex_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_sth_cosignature_consistency_proof", {
+        sth_cosignature_consistency_proof_inner(
+            proof_json,
+            proof_len,
+            current_tree_size,
+            current_root_hash_hex,
+            current_root_hash_hex_len,
+            result_out,
+            result_len_out,
+        )
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+unsafe fn sth_cosignature_consistency_proof_inner(
+    proof_json: *const u8,
+    proof_len: usize,
+    current_tree_size: u64,
+    current_root_hash_hex: *const u8,
+    current_root_hash_hex_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    use ciris_verify_core::WitnessConsistencyProof;
+
+    if proof_json.is_null()
+        || current_root_hash_hex.is_null()
+        || result_out.is_null()
+        || result_len_out.is_null()
+    {
+        return CirisVerifyError::InvalidArgument as i32;
+    }
+
+    let proof_bytes = std::slice::from_raw_parts(proof_json, proof_len);
+    let root_bytes = std::slice::from_raw_parts(current_root_hash_hex, current_root_hash_hex_len);
+    let root_hex = match std::str::from_utf8(root_bytes) {
+        Ok(s) => s,
+        Err(_) => return CirisVerifyError::InvalidArgument as i32,
+    };
+    let proof: WitnessConsistencyProof = match serde_json::from_slice(proof_bytes) {
+        Ok(p) => p,
+        Err(_) => return CirisVerifyError::SerializationError as i32,
+    };
+
+    // Decode root_hex into [u8; 32] — §0.6 form.
+    if root_hex.len() != 64
+        || !root_hex
+            .bytes()
+            .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        let env = serde_json::json!({
+            "verified": false,
+            "error": {
+                "code": "CANONICAL_BYTES_VIOLATION",
+                "http_status": 400,
+                "message": "current_root_hash_hex not §0.6 canonical (lowercase 64-char hex)"
+            }
+        });
+        let json = env.to_string();
+        let len = json.len();
+        let ptr = libc::malloc(len) as *mut u8;
+        if ptr.is_null() {
+            return CirisVerifyError::InternalError as i32;
+        }
+        std::ptr::copy_nonoverlapping(json.as_ptr(), ptr, len);
+        *result_out = ptr;
+        *result_len_out = len;
+        return CirisVerifyError::Success as i32;
+    }
+    let mut root_bytes_32 = [0u8; 32];
+    let root_ascii = root_hex.as_bytes();
+    for (i, out) in root_bytes_32.iter_mut().enumerate() {
+        let hi = match root_ascii[i * 2] {
+            b'0'..=b'9' => root_ascii[i * 2] - b'0',
+            b => b - b'a' + 10,
+        };
+        let lo = match root_ascii[i * 2 + 1] {
+            b'0'..=b'9' => root_ascii[i * 2 + 1] - b'0',
+            b => b - b'a' + 10,
+        };
+        *out = (hi << 4) | lo;
+    }
+
+    let env = match proof.verify(current_tree_size, &root_bytes_32) {
+        Ok(()) => serde_json::json!({"verified": true}),
+        Err(e) => serde_json::json!({
+            "verified": false,
+            "error": {
+                "code": "SIGNATURE_VERIFICATION_FAILED",
+                "http_status": 422,
+                "message": format!("§10.3.1: {e}")
+            }
+        }),
+    };
+
+    let json = env.to_string();
+    let len = json.len();
+    let ptr = libc::malloc(len) as *mut u8;
+    if ptr.is_null() {
+        return CirisVerifyError::InternalError as i32;
+    }
+    std::ptr::copy_nonoverlapping(json.as_ptr(), ptr, len);
+    *result_out = ptr;
+    *result_len_out = len;
+    CirisVerifyError::Success as i32
+}
+
 /// Get diagnostic information about the Ed25519 signer state.
 ///
 /// Returns detailed diagnostic info including:
