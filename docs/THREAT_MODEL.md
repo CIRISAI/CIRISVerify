@@ -1,6 +1,6 @@
 # CIRISVerify Threat Model
 
-**Last updated:** 2026-05-28 (v3.6.0 — measurement-shaped scalar-attestation surface; §1.4 invariant made structural; M-of-N threshold-signature primitive shipped)
+**Last updated:** 2026-05-28 (v4.0.0 "CEG 0.2 Federation Conformance" — typed error envelope, full-SHA holds_bytes verifier, STH witness consistency-proof requirement, multi-steward response verifier, §0.5/§0.6 canonicalization discipline)
 
 ## 1. Scope
 
@@ -687,6 +687,12 @@ The federation expects CIRISVerify to be the **substrate-level crypto authority*
 - ✅ **M-of-N threshold-signature verifier (v3.1.0)** — `verify_threshold_signatures` over hybrid signatures. Powers federation-keyset bootstrap rotation (#31 Part A) and constitutional emergency shutdown (#32 Ask 3). Mitigates single-steward compromise as a federation-wide primitive.
 - ✅ **Scalar-attestation surface (v3.2.0+)** — `federation_provenance` carries the twelve FSD-002 §3.2 dimensions as `AttestationEntry { dimension, score, attester, source_ref }` triples. Verify states what it measured; **the response composes no verdict**, structurally enforcing the §1.4 authentication ≠ trust invariant. v3.6.0 `AttestBundle` projects the same data into named measurement fields for downstream UI / scoring consumers (no ladder structure — tier mapping is consumer policy). v3.7.0 dropped the L1-L5 numbering from the dimension wire strings (`attestation:l1:self_verify` → `attestation:self_verify`, etc.) — the ladder concept lived in `CLAUDE.md` / `HOW_IT_WORKS.md` operator narrative; now it lives only in consumer-side policy, where it belongs.
 - ✅ **Transparency-log witness cosigning receiver (v2.12.0)** — `SignedTreeHead::cosign`, `TrustedWitness`, `witness_quorum_met`. Registry-side emitter endpoints tracked at CIRISRegistry#24.
+- ✅ **CEG 0.2 §10.0.1 typed error envelope (v4.0.0)** — `ceg_error::CegErrorCode` (13 stable wire codes covering 400/401/403/404/409/422/429/500/503) + `CegError` with `From<VerifyError>` mapping. §0.5/§0.6 violations classify cleanly as `CANONICAL_BYTES_VIOLATION`; signature failures as `SIGNATURE_VERIFICATION_FAILED`; anti-rollback (a wire-shape violation, not crypto) likewise.
+- ✅ **CEG 0.2 §10.1.1 full-SHA verification before consumption (v4.0.0)** — `holds_bytes::verify_holds_bytes` enforces §0.6 hex form before hashing (short-prefix attack closed at the wire boundary) and compares digests constant-time. Closes the prefix-collision attack class on the `holds_bytes:sha256:{prefix}` directory dimension.
+- ✅ **CEG 0.2 §10.3.1 STH witness consistency-proof requirement (v4.0.0)** — `WitnessConsistencyProof` (genesis / identity / extension shapes) + `count_valid_witnesses` clause 4: cosignatures without a verifying consistency proof MUST NOT count. "Quorum on log consistency, not on a string." Wire-break on `WitnessSignature` (major-version-justifying) — no production consumers wired yet.
+- ✅ **CEG 0.2 §10.2 multi-steward response verifier (v4.0.0)** — `steward_key::verify_steward_key_response` enforces canonical_bytes_label parity, signer-in-list, deployed-only signing, and hybrid response signature. `to_attestation_entries` emits `cert_validity:{steward.key_id}` per **deployed steward only** — placeholder pubkeys structurally excluded from trust-root promotion.
+- ✅ **CEG 0.2 §0.5/§0.6 canonicalization discipline (v4.0.0)** — `check_canonical_rfc3339` enforces `YYYY-MM-DDTHH:MM:SS.sssZ`; `check_canonical_hex64` enforces lowercase, no `0x`, exactly 64 chars. Applied to `SkillImportManifest` (v3.9.0 carried forward); v4.0 adds `cert_validity_self_attest.valid_until` per §10.2.
+- ✅ **CEG 0.2 §5.2 mechanism-only wire strings (v4.0.0)** — `attestation:hardware` → `attestation:hardware_rooted` rename closes the last L-numbering misalignment from CEG 0.1.
 
 ### 11.2 Deferred / Roadmap (scheduled work, not blind spots)
 
@@ -711,7 +717,7 @@ These are NOT gaps. They are deliberate boundary choices respecting adjacent pri
 
 ### 11.4 Net assessment
 
-**Federation role is fully covered for v3.6's spec.**
+**Federation role is fully covered for v4.0's CEG 0.2 conformance spec.**
 
 The deferred items (§11.2) are scheduled work or dependency-blocked, not blind spots — every one of them is in a roadmap doc with an action item. The out-of-scope items (§11.3) are intentionally bounded to respect adjacent primitives' domains; reaching into them would be over-stepping into CIRISEdge / CIRISPortal / CIRISRegistry territory.
 

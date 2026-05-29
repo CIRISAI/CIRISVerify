@@ -7,7 +7,7 @@
 > and the overview at [ciris.ai/mdd](https://ciris.ai/mdd).
 
 **Version**: 1.1
-**Status**: Active — reverse-engineered against `main` at v3.6.0
+**Status**: Active — reverse-engineered against `main` at v4.0.0 ("CEG 0.2 Federation Conformance")
 **Date**: 2026-05-28
 
 This is the reverse-engineered MDD charter for CIRISVerify: it maps the
@@ -444,18 +444,31 @@ CIRISVerify does not stand alone. The authoritative federation map is
   v3.2.0), per-source `to_attestation_entries` emitters on Play
   Integrity / App Attest / TPM 2.0 (#34, v3.3.0) and on
   `BuildManifest` (#35, v3.4.0), measurement-shaped `AttestBundle`
-  projection + FFI + Python wrapper (#36, v3.6.0). Verify is in a
-  "receivers ready, awaiting downstream emitters" state — the
+  projection + FFI + Python wrapper (#36, v3.6.0). CIRISPersist#108
+  (`persist_row_hash` on federation rows) closed same-day in persist
+  v2.6.0; `FederationProvenance::persist_row_hash` populates from
+  production reads.
+- **CEG 0.2 conformance landed v4.0.0** (#38): §5.2 mechanism-only
+  wire strings; §0.5/§0.6 canonicalization discipline on
+  `SkillImportManifest` + `steward_key`; §10.0.1 typed error envelope
+  (`ceg_error::CegErrorCode` with 13 stable wire codes); §10.1.1
+  full-SHA verification with §0.6 hex enforcement before hashing
+  (closes the short-prefix attack on the
+  `holds_bytes:sha256:{prefix}` directory dimension); §10.2
+  multi-steward response verifier (deployed-only signing gate +
+  `cert_validity:{steward_id}` emission per deployed steward only);
+  §10.3.1 STH witness consistency-proof requirement (wire-break on
+  `WitnessSignature`, the major-version-justifying change —
+  "quorum on log consistency, not on a string"). The 3 remaining
   cross-repo asks needed to populate the bundle in production are
   filed: CIRISRegistry#24 (provenance / cert_validity / witness
   cosigning), CIRISAgent#801 (periodic `run_attestation` cadence +
   AV-42 cutover commitment + bundle UI surfacing), CIRISNodeCore#14
   (structurally-independent 3rd `registry_consensus` source).
-  CIRISPersist#108 (`persist_row_hash` on federation rows) closed
-  same-day in persist v2.6.0 — the column existed since V001 and is
-  now surfaced on `KeyRecord` / `Attestation` / `Revocation` via
-  `FederationDirectory` reads, so `FederationProvenance::persist_row_hash`
-  populates from production reads.
+- **The CEG 0.2 redesign workshop** is the forward channel for any
+  canonical-bytes tightening (TupleHash128 / domain-separation
+  labels per §5.2.1 scaffold note; strict JCS on §10.2 body
+  canonicalization). Verify joins per the §11.2 amendment process.
 
 ## 8. License-locked mission preservation
 
