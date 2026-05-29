@@ -201,7 +201,7 @@ impl StewardKeyResponse {
 /// Invariants enforced:
 /// - `response_signature.canonical_bytes_label` MUST equal
 ///   [`STEWARD_KEY_RESPONSE_DOMAIN_PREFIX`].
-/// - Outer hybrid signature MUST verify over [`canonical_bytes`].
+/// - Outer hybrid signature MUST verify over [`StewardKeyResponse::canonical_bytes`].
 /// - `signer_key_id` MUST match a deployed steward in the body
 ///   (a signer claiming to be a placeholder is rejected).
 ///
