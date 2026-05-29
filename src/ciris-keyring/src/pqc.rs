@@ -337,6 +337,85 @@ impl PqcSigner for MlDsa65SoftwareSigner {
     }
 }
 
+/// Direct `PqcSigner` impl for `ciris_crypto::MlDsa65Signer`
+/// (CIRISVerify#39, v4.1.0+).
+///
+/// Lets downstream consumers (CIRISRegistry's federation directory
+/// boot path, CIRISAgent post-fold cohabitation) pass an
+/// already-constructed `ciris_crypto::MlDsa65Signer` directly to
+/// APIs expecting `Arc<dyn ciris_keyring::PqcSigner>` —
+/// `ciris_persist::signing::LocalSigner::from_parts` is the
+/// load-bearing example. Without this impl every consumer that
+/// holds an `MlDsa65Signer` and wants the keyring trait surface
+/// must write the same async-bridging adapter.
+///
+/// **Why here and not in `ciris-crypto`?** `ciris-keyring` already
+/// depends on `ciris-crypto` (the [`MlDsa65SoftwareSigner`] above
+/// wraps `Box<ciris_crypto::MlDsa65Signer>`). A symmetric direction
+/// (`ciris-crypto` depending on `ciris-keyring` for an adapter
+/// feature) creates a cyclic dependency, so the orphan-rules-
+/// friendly home is keyring. Gated behind the existing
+/// `pqc-ml-dsa` feature — no new feature flag required.
+///
+/// **Wrapper vs direct.** [`MlDsa65SoftwareSigner`] still carries
+/// alias + optional seed_path metadata; consumers that want
+/// operator-assigned aliases / SoftwareFile storage descriptors /
+/// path-bearing attestation envelopes should keep using the
+/// wrapper. The direct impl is for the boot-time case where
+/// Registry / cohab crates already constructed the raw signer and
+/// need to pass it through a `PqcSigner` trait object.
+#[async_trait]
+impl PqcSigner for ciris_crypto::MlDsa65Signer {
+    fn algorithm(&self) -> PqcAlgorithm {
+        PqcAlgorithm::MlDsa65
+    }
+
+    fn hardware_type(&self) -> HardwareType {
+        HardwareType::SoftwareOnly
+    }
+
+    async fn public_key(&self) -> Result<Vec<u8>, KeyringError> {
+        ciris_crypto::PqcSigner::public_key(self).map_err(|e| KeyringError::HardwareError {
+            reason: format!("ML-DSA-65 public_key (direct impl): {e}"),
+        })
+    }
+
+    async fn sign(&self, data: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        ciris_crypto::PqcSigner::sign(self, data).map_err(|e| KeyringError::HardwareError {
+            reason: format!("ML-DSA-65 sign (direct impl): {e}"),
+        })
+    }
+
+    async fn attestation(&self) -> Result<PlatformAttestation, KeyringError> {
+        // The raw MlDsa65Signer has no operator-supplied seed_path
+        // — it's an in-memory keypair however the caller chose to
+        // construct it. Consumers that need disk-backed
+        // attestation should use the MlDsa65SoftwareSigner wrapper.
+        Ok(PlatformAttestation::Software(SoftwareAttestation {
+            key_derivation: "ciris_crypto::MlDsa65Signer (direct)".to_string(),
+            storage: "memory".to_string(),
+            security_warning: "SOFTWARE_ONLY: direct ciris_crypto::MlDsa65Signer has no \
+                               operator-supplied alias or seed path. Acceptable for the \
+                               cold-path PQC fill-in flow at boot when the caller already \
+                               holds the constructed signer; for richer attestation use \
+                               MlDsa65SoftwareSigner."
+                .to_string(),
+        }))
+    }
+
+    fn current_alias(&self) -> &str {
+        // No alias on the raw signer; report the type identity. A
+        // consumer that needs operator-assigned aliasing should
+        // wrap in MlDsa65SoftwareSigner.
+        "ciris_crypto::MlDsa65Signer"
+    }
+
+    fn storage_descriptor(&self) -> StorageDescriptor {
+        // Always in-memory — the raw signer doesn't track a path.
+        StorageDescriptor::InMemory
+    }
+}
+
 /// Get the platform-best PQC signer for the given algorithm.
 ///
 /// **Today (v1.9.0)**: returns [`MlDsa65SoftwareSigner`] for ML-DSA-65;
@@ -501,6 +580,96 @@ mod tests {
         assert_eq!(signer.algorithm(), PqcAlgorithm::MlDsa65);
         assert_eq!(signer.hardware_type(), HardwareType::SoftwareOnly);
         assert_eq!(signer.current_alias(), "steward-pqc");
+    }
+
+    // ----- CIRISVerify#39 (v4.1.0+) direct ciris_crypto::MlDsa65Signer ↔ PqcSigner -----
+
+    /// The whole point of the impl: an already-constructed
+    /// `ciris_crypto::MlDsa65Signer` is coercible to
+    /// `Arc<dyn ciris_keyring::PqcSigner>` without an adapter at
+    /// the call site. This is what unblocks Registry Phase 3.
+    #[test]
+    fn crypto_signer_coerces_to_arc_dyn_pqc_signer() {
+        let raw = ciris_crypto::MlDsa65Signer::new().expect("MlDsa65Signer::new");
+        let _erased: std::sync::Arc<dyn PqcSigner> = std::sync::Arc::new(raw);
+    }
+
+    #[tokio::test]
+    async fn crypto_signer_direct_sign_round_trip_through_pqc_signer_trait() {
+        use ciris_crypto::{MlDsa65Verifier, PqcVerifier};
+
+        let raw = ciris_crypto::MlDsa65Signer::new().expect("MlDsa65Signer::new");
+        let pubkey = ciris_crypto::PqcSigner::public_key(&raw).expect("public_key");
+
+        // Coerce to the keyring trait object and sign through it.
+        let signer: Box<dyn PqcSigner> = Box::new(raw);
+        let data = b"CIRISVerify#39 direct-impl round-trip";
+        let sig = signer.sign(data).await.expect("sign through PqcSigner");
+        assert_eq!(sig.len(), 3309, "ML-DSA-65 signature is 3309 bytes");
+
+        // Verify with ciris-crypto's verifier against the public key
+        // we captured before erasing the type.
+        let verifier = MlDsa65Verifier::new();
+        let valid = verifier
+            .verify(&pubkey, data, &sig)
+            .expect("verify round-trip");
+        assert!(valid, "signature must verify with the public key");
+    }
+
+    #[tokio::test]
+    async fn crypto_signer_public_key_via_pqc_trait_matches_native() {
+        let raw = ciris_crypto::MlDsa65Signer::new().expect("MlDsa65Signer::new");
+        let native = ciris_crypto::PqcSigner::public_key(&raw).expect("native pubkey");
+        let signer: Box<dyn PqcSigner> = Box::new(raw);
+        let via_trait = signer.public_key().await.expect("pubkey via trait");
+        assert_eq!(native, via_trait);
+        assert_eq!(via_trait.len(), 1952, "ML-DSA-65 public key is 1952 bytes");
+    }
+
+    #[tokio::test]
+    async fn crypto_signer_metadata_reports_software_only_inmemory() {
+        let raw = ciris_crypto::MlDsa65Signer::new().expect("MlDsa65Signer::new");
+        let signer: Box<dyn PqcSigner> = Box::new(raw);
+        assert_eq!(signer.algorithm(), PqcAlgorithm::MlDsa65);
+        assert_eq!(signer.hardware_type(), HardwareType::SoftwareOnly);
+        assert_eq!(signer.current_alias(), "ciris_crypto::MlDsa65Signer");
+        match signer.storage_descriptor() {
+            StorageDescriptor::InMemory => {},
+            other => panic!("expected InMemory storage, got {other:?}"),
+        }
+        match signer.attestation().await.expect("attestation") {
+            PlatformAttestation::Software(att) => {
+                assert!(att.security_warning.contains("SOFTWARE_ONLY"));
+                assert!(att.security_warning.contains("direct"));
+                assert_eq!(att.storage, "memory");
+            },
+            other => panic!("expected Software attestation, got {other:?}"),
+        }
+    }
+
+    /// Registry's actual call shape: pass `Arc<dyn PqcSigner>` into
+    /// a function that previously couldn't accept ciris-crypto's
+    /// signer. This test models the
+    /// `LocalSigner::from_parts(..., pqc_signer: Option<Arc<dyn
+    /// ciris_keyring::PqcSigner>>, ...)` call site that the issue
+    /// names as the block.
+    #[tokio::test]
+    async fn registry_call_shape_compiles_and_signs() {
+        async fn pretend_localsigner_from_parts(
+            pqc: Option<std::sync::Arc<dyn PqcSigner>>,
+        ) -> Option<Vec<u8>> {
+            if let Some(s) = pqc {
+                let bytes = s.sign(b"persist boot payload").await.ok()?;
+                Some(bytes)
+            } else {
+                None
+            }
+        }
+        let raw = ciris_crypto::MlDsa65Signer::new().expect("MlDsa65Signer::new");
+        let arc: std::sync::Arc<dyn PqcSigner> = std::sync::Arc::new(raw);
+        let out = pretend_localsigner_from_parts(Some(arc)).await;
+        assert!(out.is_some());
+        assert_eq!(out.unwrap().len(), 3309);
     }
 
     #[test]
