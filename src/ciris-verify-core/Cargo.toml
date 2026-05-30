@@ -132,6 +132,8 @@ rustls-mobile = { package = "rustls", version = "0.23", default-features = false
 # sandbox convention is static linking. See the rationale comment
 # before the rusqlite workspace entry for the full story.
 rusqlite = { version = "0.31", features = ["bundled"] }
+# Android system properties API (for emulator detection)
+android_system_properties = "0.1"
 
 # v4.4.1 (CIRISVerify post-v4.3.0 CI fallout): bundled is ALSO Windows
 # + macOS now. The CIRISEdge#50 cohabitation SIGSEGV was specifically
@@ -149,8 +151,6 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # SQLiteDatabaseTracking traps on duplicate sqlite3_* exports.
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 rusqlite = { version = "0.31", features = ["bundled"] }
-# Android system properties API (for emulator detection)
-android_system_properties = "0.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.52", features = [

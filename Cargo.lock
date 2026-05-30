@@ -616,7 +616,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-build-tool"
-version = "4.4.1"
+version = "4.4.2"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -638,7 +638,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "4.4.1"
+version = "4.4.2"
 dependencies = [
  "aws-lc-rs",
  "criterion",
@@ -669,7 +669,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "4.4.1"
+version = "4.4.2"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -707,7 +707,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "4.4.1"
+version = "4.4.2"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -727,7 +727,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "4.4.1"
+version = "4.4.2"
 dependencies = [
  "android_system_properties",
  "anyhow",
@@ -772,7 +772,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "4.4.1"
+version = "4.4.2"
 dependencies = [
  "aes-gcm",
  "android_logger",
