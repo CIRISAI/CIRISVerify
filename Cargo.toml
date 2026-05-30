@@ -10,7 +10,7 @@ members = [
 ]
 
 [workspace.package]
-version = "4.2.0"
+version = "4.3.0"
 edition = "2021"
 rust-version = "1.86"
 license = "AGPL-3.0-or-later"
@@ -60,8 +60,22 @@ hex = "0.4"
 thiserror = "1.0"
 anyhow = "1.0"
 
-# SQLite for audit verification
-rusqlite = { version = "0.31", features = ["bundled"] }
+# SQLite for audit verification.
+#
+# v4.3.0 (CIRISVerify#43 / CIRISPersist#132 / CIRISPersist#133):
+# `bundled` removed at workspace level. Each consuming crate enables
+# it ONLY via a target-conditional override
+# (`[target.'cfg(target_os = "android")'.dependencies]`). On every
+# other target (Linux / macOS / Windows / iOS) rusqlite links
+# dynamically against the platform's libsqlite3 → ONE library
+# instance shared across cdylibs via dlopen → no cross-cdylib SIGSEGV
+# class for downstream cohabitation consumers (CIRISEdge#50 / persist's
+# OutboundQueue + VerifyDirectory + RootingDirectory + ...).
+#
+# Pre-4.3.0 workspace default was `bundled = true` for every target,
+# which propagated through `ciris-verify-core` into every desktop
+# wheel and silently overrode persist's v3.5.2 target-narrowed override.
+rusqlite = { version = "0.31" }
 
 # Logging (Veilid-compatible)
 tracing = "0.1"
