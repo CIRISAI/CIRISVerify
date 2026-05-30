@@ -135,24 +135,28 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 # Android system properties API (for emulator detection)
 android_system_properties = "0.1"
 
-# v4.4.1 (CIRISVerify post-v4.3.0 CI fallout): bundled is ALSO Windows
-# + macOS now. The CIRISEdge#50 cohabitation SIGSEGV was specifically
-# a Linux ELF cdylib problem (each cdylib gets its own copy of
-# libsqlite3's `sqlite3GlobalConfig` static when statically linked
-# into separate .so files loaded into one Python process). Windows
-# (.dll) and macOS (.dylib) use different shared-library linkage
-# models that don't merge symbol tables the same way — the static-
-# bundle does NOT produce the same cross-cdylib NULL `xMalloc` slot
-# on those platforms. Bundling there is the conventional posture +
-# spares us a Windows MSVC linker-config nightmare (no system
-# libsqlite3 on Windows by default; vcpkg/chocolatey paths are
-# fragile in CI). Linux + iOS stay dynamic — Linux because that's
-# where the actual cohab SIGSEGV happens, iOS because Apple's
-# SQLiteDatabaseTracking traps on duplicate sqlite3_* exports.
-[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
-rusqlite = { version = "0.31", features = ["bundled"] }
-
+# v4.4.3 (CIRISVerify#45 / CIRISPersist#141): macOS dropped from the
+# bundled target table. The v4.4.1 hypothesis that the CIRISEdge#50
+# cross-cdylib SIGSEGV was Linux-ELF-only was wrong. Mach-O has the
+# same per-cdylib isolation: each `.so` statically links its own
+# libsqlite3 → its own `sqlite3GlobalConfig` static → SIGSEGV when
+# the second copy is invoked without ever being `sqlite3_initialize`d.
+# CIRISPersist#141 surfaced this on darwin × sqlite
+# (test_durable_send_enqueues_to_outbound_queue, rc=-11). macOS now
+# inherits the workspace-level dynamic entry and links against
+# `/usr/lib/libsqlite3.dylib` (ships with every macOS release) — ONE
+# library instance shared across cohab cdylibs via the dynamic loader,
+# same fix shape CIRISPersist#132/#133 applied for Linux. The iOS
+# `libRPAC.dylib` / SQLiteDatabaseTracking trap (CIRISVerify v1.6.4)
+# is iOS-specific; macOS desktop has no such framework, so dynamic
+# linkage there is safe.
+#
+# Windows stays bundled: PE/COFF has its own linkage constraints, no
+# cohab evidence for cross-cdylib SIGSEGV there yet, and there's no
+# system libsqlite3 on Windows by default (vcpkg/chocolatey paths
+# are fragile in CI).
 [target.'cfg(target_os = "windows")'.dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_System_Threading",
