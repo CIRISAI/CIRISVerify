@@ -100,7 +100,7 @@ jobs:
       # Install TPM development libraries (Linux native only, not cross-compile)
       - name: Install TPM libs (Linux)
         if: runner.os == 'Linux' && !matrix.cross
-        run: sudo apt-get update && sudo apt-get install -y libtss2-dev
+        run: sudo apt-get update && sudo apt-get install -y libtss2-dev libsqlite3-dev
 
       # Install cross for ARM64 cross-compilation
       # CI hardening (v2.1.1+): retry on transient timeout only.

@@ -132,6 +132,23 @@ rustls-mobile = { package = "rustls", version = "0.23", default-features = false
 # sandbox convention is static linking. See the rationale comment
 # before the rusqlite workspace entry for the full story.
 rusqlite = { version = "0.31", features = ["bundled"] }
+
+# v4.4.1 (CIRISVerify post-v4.3.0 CI fallout): bundled is ALSO Windows
+# + macOS now. The CIRISEdge#50 cohabitation SIGSEGV was specifically
+# a Linux ELF cdylib problem (each cdylib gets its own copy of
+# libsqlite3's `sqlite3GlobalConfig` static when statically linked
+# into separate .so files loaded into one Python process). Windows
+# (.dll) and macOS (.dylib) use different shared-library linkage
+# models that don't merge symbol tables the same way — the static-
+# bundle does NOT produce the same cross-cdylib NULL `xMalloc` slot
+# on those platforms. Bundling there is the conventional posture +
+# spares us a Windows MSVC linker-config nightmare (no system
+# libsqlite3 on Windows by default; vcpkg/chocolatey paths are
+# fragile in CI). Linux + iOS stay dynamic — Linux because that's
+# where the actual cohab SIGSEGV happens, iOS because Apple's
+# SQLiteDatabaseTracking traps on duplicate sqlite3_* exports.
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+rusqlite = { version = "0.31", features = ["bundled"] }
 # Android system properties API (for emulator detection)
 android_system_properties = "0.1"
 

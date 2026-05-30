@@ -1,0 +1,22 @@
+# cross-rs configuration (CIRISVerify v4.4.1+).
+#
+# v4.3.0 (CIRISPersist#132 / CIRISEdge#50) narrowed rusqlite's
+# `bundled` feature to Android + Windows + macOS only. Linux + iOS
+# link DYNAMICALLY against the platform's libsqlite3 — that's the
+# cohabitation-SIGSEGV fix.
+#
+# Cross-compiling aarch64-unknown-linux-gnu via `cross` runs the build
+# inside a Docker container that doesn't carry libsqlite3-dev:arm64 by
+# default. Without it the rusqlite-sys link step fails:
+#
+#     ld: cannot find -lsqlite3
+#
+# Adding `libsqlite3-dev:arm64` to the cross container fixes the link
+# step. Native ARM64 Linux runners (when we move to them) will inherit
+# the same package via the standard apt-get path in CI workflows.
+
+[target.aarch64-unknown-linux-gnu]
+pre-build = [
+    "dpkg --add-architecture $CROSS_DEB_ARCH",
+    "apt-get update && apt-get install -y libsqlite3-dev:$CROSS_DEB_ARCH",
+]
