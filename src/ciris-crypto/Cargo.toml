@@ -26,6 +26,12 @@ aes-gcm = ["dep:ring"]   # v2.8.0+: AES-256-GCM via ring — see CIRISVerify#26
 kdf = ["dep:pbkdf2"]   # hkdf is already a non-optional dep (used by secp256k1 wallet)
 hmac = ["dep:hmac"]
 random = []  # uses rand_core::OsRng — already pulled in by rand_core dep
+# v4.4.0+ (CIRISVerify#44 / CIRISNodeCore MEDIA_SHARING.md §6.3):
+# X25519 ECDH primitive + HPKE-RFC-9180-base-mode-shaped key-grant
+# wrap/unwrap (`x25519-aes256-gcm-hkdf-sha256`). Multimedia tier
+# crypto surface for restricted-group + subscription-routed content.
+x25519 = ["dep:x25519-dalek"]
+key-grant = ["x25519", "aes-gcm", "kdf", "random"]
 
 [dependencies]
 thiserror.workspace = true
@@ -38,6 +44,8 @@ subtle = "2.6"
 # Classical cryptography
 p256 = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
+# v4.4.0+: X25519 ECDH for the key-grant wrap surface (CIRISVerify#44).
+x25519-dalek = { version = "2", optional = true, default-features = false, features = ["static_secrets"] }
 signature.workspace = true
 
 # secp256k1 for EVM wallet signing
@@ -90,6 +98,8 @@ hex = "0.4"
 proptest = { workspace = true }
 pretty_assertions = { workspace = true }
 criterion = { workspace = true }
+# v4.4.0: key-grant tests round-trip the KeyGrantWrap struct through JSON.
+serde_json = "1"
 
 [[bench]]
 name = "federation_crypto"

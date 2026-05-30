@@ -63,6 +63,14 @@ pub mod hmac;
 #[cfg(feature = "random")]
 pub mod random;
 
+// v4.4.0+ — X25519 ECDH primitive + HPKE-shape key-grant wrap
+// (CIRISVerify#44 / CIRISNodeCore MEDIA_SHARING.md §6.3).
+#[cfg(feature = "x25519")]
+pub mod x25519;
+
+#[cfg(feature = "key-grant")]
+pub mod key_grant;
+
 pub use error::CryptoError;
 pub use hybrid::{
     ClassicalSigner, ClassicalVerifier, HybridSigner, HybridVerifier, PqcSigner, PqcVerifier,
