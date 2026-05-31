@@ -49,6 +49,19 @@ mod bootstrap_keyset;
 mod conformance;
 mod constructor;
 
+// v4.7.0+ wheel-surface modules (CIRISVerify#50). Each one wraps a
+// Rust crate API that lacked Python wheel exposure pre-v4.7 — the
+// "if it ain't on the wheel, it doesn't exist" gap-closure for
+// v3.8 (skill_import, locale_merkle), v4.4 (key_grant), v4.5
+// (reconsider_dos), v4.6 (hybrid_kex). Each module owns its own
+// `wheel_guard!` panic catch (sibling modules cannot see the
+// crate-root `ffi_guard!` macro without `#[macro_export]`).
+mod wheel_hybrid_kex;
+mod wheel_key_grant;
+mod wheel_locale_merkle;
+mod wheel_reconsider_dos;
+mod wheel_skill_import;
+
 #[cfg(target_os = "android")]
 mod android_sync;
 

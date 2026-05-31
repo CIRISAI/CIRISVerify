@@ -12,12 +12,24 @@ authors.workspace = true
 crate-type = ["cdylib", "staticlib"]
 
 [features]
-default = ["secp256k1"]
+default = ["secp256k1", "key-grant", "hybrid-kex"]
+# v4.7.0+ (CIRISVerify#50): wheel surface for v4.6.0 hybrid X25519 + ML-KEM-768
+# KEX — Python wheel consumers reach `ciris_crypto::hybrid_kex` through
+# `wheel_hybrid_kex.rs`'s 4 FFI fns. Always-on by default so the wheel
+# surface is unconditionally available.
+hybrid-kex = ["ciris-crypto/hybrid-kex"]
 android = ["ciris-verify-core/android"]
 ios = ["ciris-verify-core/ios"]
 tpm = ["ciris-verify-core/tpm"]
 tpm-windows = ["ciris-verify-core/tpm-windows"]  # Experimental: Windows native TPM
 secp256k1 = ["ciris-crypto/secp256k1"]  # EVM wallet signing support
+# v4.7.0+ (CIRISVerify#50): wheel surface for the v4.4.0 key_grant
+# HPKE-shape wrap/unwrap primitive — Python wheel consumers reach
+# `ciris_crypto::key_grant::{wrap_dek_for_recipient, unwrap_dek}`
+# through `wheel_key_grant.rs`'s 2 FFI fns. Always-on by default so
+# the wheel surface is unconditionally available; can be turned off
+# for size-constrained mobile builds that don't ship the media tier.
+key-grant = ["ciris-crypto/key-grant"]
 
 [dependencies]
 ciris-verify-core.workspace = true

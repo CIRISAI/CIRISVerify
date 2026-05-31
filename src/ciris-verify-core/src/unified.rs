@@ -516,6 +516,22 @@ pub struct UnifiedAttestationEngine {
 /// End-to-end timeout for attestation (15 seconds max).
 const ATTESTATION_TIMEOUT: Duration = Duration::from_secs(15);
 
+/// Network-unavailable fast-fail probe timeout (v4.7.0 / CIRISVerify#50).
+///
+/// Before launching the 5-call parallel manifest fetch, race a quick
+/// DNS resolve + HTTPS HEAD against this 2s budget. If both fail,
+/// short-circuit to a `network_unavailable` partial result without
+/// committing to the full 10s-per-call fan-out. Closes the
+/// CIRISAgent#843 budget-overshoot under CI parallel-load.
+const NETWORK_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// Network-unavailable fast-fail upper bound (v4.7.0).
+///
+/// Under any path, verify MUST return within this budget when the
+/// network is unreachable. Composes with the 2s probe + a small
+/// margin for the partial-result build.
+const NETWORK_UNAVAILABLE_BUDGET: Duration = Duration::from_secs(10);
+
 impl UnifiedAttestationEngine {
     /// Create a new unified attestation engine.
     pub fn new(config: VerifyConfig) -> Result<Self, VerifyError> {
@@ -598,12 +614,104 @@ impl UnifiedAttestationEngine {
         }
     }
 
+    /// Quick HEAD-probe against the primary registry endpoint
+    /// ([`NETWORK_PROBE_TIMEOUT`] budget). Returns `true` if the
+    /// endpoint responded within budget regardless of HTTP status;
+    /// `false` on DNS failure, connect refused, TLS error, or timeout.
+    ///
+    /// This is the "suspenders" half of the belt-and-suspenders budget
+    /// model: probe fast-fails before the 5-call parallel manifest
+    /// fan-out commits to its per-call 10s sub-budgets. The outer
+    /// [`ATTESTATION_TIMEOUT`] hard ceiling is the belt.
+    async fn probe_network_reachability(&self) -> bool {
+        let client = match reqwest::Client::builder()
+            .timeout(NETWORK_PROBE_TIMEOUT)
+            .connect_timeout(NETWORK_PROBE_TIMEOUT)
+            .build()
+        {
+            Ok(c) => c,
+            Err(_) => return false,
+        };
+
+        matches!(
+            tokio::time::timeout(
+                NETWORK_PROBE_TIMEOUT,
+                client.head(&self.config.https_endpoint).send(),
+            )
+            .await,
+            Ok(Ok(_))
+        )
+    }
+
+    /// Partial result emitted when the network-reachability probe
+    /// short-circuits before the manifest fan-out (CIRISVerify#50).
+    fn network_unavailable_result(&self, elapsed: Duration) -> FullAttestationResult {
+        FullAttestationResult {
+            valid: false,
+            level: 0,
+            level_pending: true,
+            self_verification: None,
+            key_attestation: None,
+            registry_key_status: "network_unavailable".to_string(),
+            device_attestation: None,
+            file_integrity: None,
+            python_integrity: None,
+            module_integrity: None,
+            sources: SourceCheckResult {
+                dns_us_reachable: false,
+                dns_us_valid: false,
+                dns_us_error: Some("network_unavailable".to_string()),
+                dns_eu_reachable: false,
+                dns_eu_valid: false,
+                dns_eu_error: Some("network_unavailable".to_string()),
+                https_reachable: false,
+                https_valid: false,
+                https_error: Some("network_unavailable".to_string()),
+                validation_status: "NetworkUnavailable".to_string(),
+            },
+            audit_trail: None,
+            checks_passed: 0,
+            checks_total: 0,
+            diagnostics: format!(
+                "Network unavailable - probe failed within {:?}",
+                NETWORK_PROBE_TIMEOUT
+            ),
+            errors: vec![format!("Network unreachable (probe elapsed {:?})", elapsed)],
+            timestamp: chrono::Utc::now().timestamp(),
+        }
+    }
+
     /// Inner attestation logic (called with timeout wrapper).
     async fn run_attestation_inner(
         &self,
         request: FullAttestationRequest,
     ) -> Result<FullAttestationResult, VerifyError> {
         let start = std::time::Instant::now();
+
+        // CIRISVerify#50: Network-unavailable fast-fail.
+        //
+        // Before committing to the 5-call manifest fan-out (each with
+        // its own 10s sub-budget = ~10s wall-clock under failure),
+        // race a 2s HEAD probe against the primary registry. If the
+        // probe fails the inner returns immediately with a partial
+        // `network_unavailable` result, keeping total wall-clock under
+        // `NETWORK_UNAVAILABLE_BUDGET` instead of letting the outer
+        // 15s ceiling truncate.
+        //
+        // Closes CIRISAgent#843 budget overshoot under CI parallel load.
+        if !self.probe_network_reachability().await {
+            let elapsed = start.elapsed();
+            warn!(
+                "VERIFY ATTESTATION FAST-FAIL: Network unreachable, partial result after {:?}",
+                elapsed
+            );
+            debug_assert!(
+                elapsed < NETWORK_UNAVAILABLE_BUDGET,
+                "fast-fail exceeded NETWORK_UNAVAILABLE_BUDGET"
+            );
+            return Ok(self.network_unavailable_result(elapsed));
+        }
+
         let mut errors = Vec::new();
         let mut checks_passed = 0u32;
         let mut checks_total = 0u32;
@@ -2758,5 +2866,87 @@ mod tests {
         let mut th = Sha256::new();
         th.update(format!("ciris_engine/a.py:{}", file_hash).as_bytes());
         assert_eq!(result.total_hash, hex::encode(th.finalize()));
+    }
+
+    /// CIRISVerify#50: Probe must fast-fail on a refused connection so
+    /// `run_attestation` returns well under `NETWORK_UNAVAILABLE_BUDGET`
+    /// instead of waiting for the outer 15s ceiling.
+    #[tokio::test]
+    async fn probe_returns_false_on_refused_connection_within_budget() {
+        // Unrouted port on loopback - kernel returns ECONNREFUSED immediately.
+        let config = VerifyConfig {
+            https_endpoint: "http://127.0.0.1:1/".to_string(),
+            ..VerifyConfig::default()
+        };
+        let engine = UnifiedAttestationEngine::new(config).expect("engine ok");
+
+        let start = std::time::Instant::now();
+        let reachable = engine.probe_network_reachability().await;
+        let elapsed = start.elapsed();
+
+        assert!(!reachable, "loopback:1 must not be reachable");
+        assert!(
+            elapsed < NETWORK_PROBE_TIMEOUT + Duration::from_millis(500),
+            "fast-fail must be near-instant on ECONNREFUSED, got {:?}",
+            elapsed
+        );
+    }
+
+    /// CIRISVerify#50: Probe must time out (not hang) when an endpoint
+    /// silently drops packets - bounded by `NETWORK_PROBE_TIMEOUT`.
+    #[tokio::test]
+    async fn probe_returns_false_within_budget_on_blackhole() {
+        // TEST-NET-1 (RFC 5737) - never routes anywhere on the public Internet.
+        let config = VerifyConfig {
+            https_endpoint: "http://192.0.2.1/".to_string(),
+            ..VerifyConfig::default()
+        };
+        let engine = UnifiedAttestationEngine::new(config).expect("engine ok");
+
+        let start = std::time::Instant::now();
+        let reachable = engine.probe_network_reachability().await;
+        let elapsed = start.elapsed();
+
+        assert!(!reachable, "TEST-NET-1 must not be reachable");
+        // Allow a small grace window above the probe budget for tokio
+        // scheduler overhead under CI parallel load.
+        assert!(
+            elapsed < NETWORK_PROBE_TIMEOUT + Duration::from_secs(1),
+            "probe must time-bound at NETWORK_PROBE_TIMEOUT, got {:?}",
+            elapsed
+        );
+    }
+
+    /// CIRISVerify#50: The network_unavailable partial result must
+    /// carry the canonical opaque-failure shape - same field names
+    /// the timeout-fallback uses, distinct status string.
+    #[test]
+    fn network_unavailable_result_shape_is_canonical() {
+        let engine = UnifiedAttestationEngine::new(VerifyConfig::default()).expect("engine ok");
+        let result = engine.network_unavailable_result(Duration::from_millis(1234));
+
+        assert!(!result.valid);
+        assert_eq!(result.level, 0);
+        assert!(result.level_pending);
+        assert_eq!(result.registry_key_status, "network_unavailable");
+        assert_eq!(result.sources.validation_status, "NetworkUnavailable");
+        assert_eq!(
+            result.sources.dns_us_error.as_deref(),
+            Some("network_unavailable")
+        );
+        assert_eq!(
+            result.sources.dns_eu_error.as_deref(),
+            Some("network_unavailable")
+        );
+        assert_eq!(
+            result.sources.https_error.as_deref(),
+            Some("network_unavailable")
+        );
+        assert!(!result.sources.dns_us_reachable);
+        assert!(!result.sources.dns_eu_reachable);
+        assert!(!result.sources.https_reachable);
+        assert_eq!(result.checks_passed, 0);
+        assert_eq!(result.checks_total, 0);
+        assert!(result.diagnostics.contains("Network unavailable"));
     }
 }
