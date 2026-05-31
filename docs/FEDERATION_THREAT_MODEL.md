@@ -9,7 +9,8 @@
 **v1.1 deltas vs v1.0**:
 - §3.3 Gap A (R1 timeliness): SPECIFIED — τ_normal ≤ 60s / τ_partial ≤ 300s / "most recent observed wins" merge rule (CIRISVerify#48)
 - §3.3 Gap B (Q1 quorum + CAP): SPECIFIED — quorum-write ⌈2N/3⌉ + bounded-staleness reads + merge rule + τ composition (CIRISVerify#49)
-- §6.5 new entry **F-AV-RECONSIDER-DOS** — P11 reconsideration weaponization (CIRISVerify#46)
+- §3.3 Gap C (C4 hybrid KEX + KDF): SPECIFIED + SHIPPED v4.6.0 — `hybrid-x25519-mlkem768-hkdf-sha256-v1` + classical fallback (CIRISVerify#47)
+- §6.5 new entry **F-AV-RECONSIDER-DOS** — P11 reconsideration weaponization, primitives shipped v4.5.0 (CIRISVerify#46)
 - F-AV-11 / F-AV-12 / F-AV-13 / F-AV-ROLLBACK / F-AV-FRONTRUN — cross-references updated to cite the now-specified R1 + Q1 bounds
 
 **Implementation Status Legend** (used throughout):
@@ -314,8 +315,23 @@ The structural gaps are larger than v1 indicated. Listing in priority order (mos
 
 **F-AVs that consume this contract** (cross-referenced in §6.4): F-AV-12 (the τ-window bound IS Q1's contract), F-AV-13 (bounded-staleness reads honor this contract), F-AV-ROLLBACK (merge rule is the defense surface).
 
-**Gap C: C4 hybrid KEX + KDF unfilled.**
-Today: federation peer-to-peer communications run over HTTPS (TLS 1.3, classical ECDH). This provides forward secrecy against current adversaries but is **harvest-now-decrypt-later vulnerable**: an adversary recording today's traffic decrypts everything when ~2035-era PQC cryptanalysis matures. P7 (forward secrecy with PQC) is unfilled. The federation's confidential payloads (which include peer attestations, bond purchase metadata, possibly trace contents in some payload classes) are at long-term risk.
+**Gap C: C4 hybrid KEX + KDF — SPECIFIED + SHIPPED v1.1 (CIRISVerify#47, v4.6.0+).**
+
+**Status**: hybrid KEX primitive shipped at `ciris_crypto::hybrid_kex` (CIRISVerify v4.6.0); downstream transport wiring tracked at CIRISEdge#54; cross-substrate handshake matrix test at CIRISConformance#7 Scenario 2.
+
+**Algorithm** (`wrap_algorithm: hybrid-x25519-mlkem768-hkdf-sha256-v1`):
+
+1. Initiator generates ephemeral X25519 keypair `(eph_sk, eph_pk)`.
+2. X25519 ECDH: `shared_x = X25519(eph_sk, recipient_x_pk)`.
+3. ML-KEM-768 (FIPS 203 final) encapsulate against recipient's long-term ML-KEM public key: `(mlkem_ct, shared_mlkem) = ML-KEM-768.encap(recipient_mlkem_pk)`.
+4. HKDF-SHA256: `IKM = shared_x || shared_mlkem`; `salt = eph_pk || recipient_x_pk || mlkem_ct || recipient_mlkem_pk`; `info = b"CIRIS-FED-KEX-V1"`; `L = 32` → `session_key`.
+5. Wire envelope carries `(algorithm, x25519_ephemeral_pub, mlkem768_ciphertext)`. Recipient re-derives identically.
+
+Classical fallback (`wrap_algorithm: classical-x25519-hkdf-sha256-v1`) drops the ML-KEM half — `IKM = shared_x`, distinct `info = b"CIRIS-FED-KEX-V1-CLASSICAL"`. Used when a peer doesn't advertise ML-KEM-768. **ML-KEM-only mode is rejected at v1** — both peers MUST advertise X25519 so classical fallback is always available.
+
+**Why this closes the gap**: an attacker must break BOTH X25519 AND ML-KEM-768 to recover the session key. ML-KEM-768 is intractable under known quantum attacks. Captured ciphertext today does NOT become plaintext when a sufficient quantum computer ships — the harvest-now-decrypt-later exposure is closed for transport payloads using the hybrid mode.
+
+**What remains aspirational** (deferred to v2): the long-term federation signing remains Ed25519 + ML-DSA-65 hybrid (already PQ-secure). Forward secrecy with ratcheting (Signal-style Double Ratchet on top of the KEX session key) is not in scope at v1 — the session key is single-use per handshake. v2 may layer ratcheting if multi-message transport sessions need it.
 
 **Gap D: N1 + N2 (cryptographic addressing + multi-medium transport) — threat-model coverage published 2026-05-03, implementation pending Phase 1.**
 Federation peer discovery and transport depend on DNS + HTTPS at the implementation layer today. DNS outage breaks discovery; TLS CA compromise breaks transport authenticity; the federation cannot operate over LoRa, mesh, or air-gapped channels. **`CIRISEdge` (2026-05-03) publishes the substrate's threat model and crate scaffold**: AV-6 closes N1 structurally via Reticulum destination = `sha256(public_key)[..16]`; AV-18 / AV-19 / §6 deployment-tier table cover N2 across TCP / LoRa / packet radio / serial / I²P / HTTPS-fallback. Phase 1 v0.1.0 ships HTTP transport + Reticulum behind a feature flag with the `CIRISLens` cutover from FastAPI ingest; Phase 2 adds agent + registry adoption; Phase 3 productionizes LoRa / packet-radio / serial / I²P. Until v0.1.0 lands and a peer cuts over to it, this gap remains *implementation-pending* even though substrate-coverage exists at the threat-model level.

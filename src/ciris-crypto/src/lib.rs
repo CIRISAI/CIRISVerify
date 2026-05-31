@@ -71,6 +71,15 @@ pub mod x25519;
 #[cfg(feature = "key-grant")]
 pub mod key_grant;
 
+// v4.6.0+ — ML-KEM-768 (FIPS 203) PQ-KEM primitive + hybrid KEX
+// (X25519 + ML-KEM-768 with HKDF-SHA256 binding). Closes Fed TM
+// §3.3 Gap C / CIRISVerify#47.
+#[cfg(feature = "ml-kem")]
+pub mod ml_kem;
+
+#[cfg(feature = "hybrid-kex")]
+pub mod hybrid_kex;
+
 pub use error::CryptoError;
 pub use hybrid::{
     ClassicalSigner, ClassicalVerifier, HybridSigner, HybridVerifier, PqcSigner, PqcVerifier,

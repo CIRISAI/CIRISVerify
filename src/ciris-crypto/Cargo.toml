@@ -32,6 +32,11 @@ random = []  # uses rand_core::OsRng — already pulled in by rand_core dep
 # crypto surface for restricted-group + subscription-routed content.
 x25519 = ["dep:x25519-dalek"]
 key-grant = ["x25519", "aes-gcm", "kdf", "random"]
+# v4.6.0+ (CIRISVerify#47): Gap C closure — hybrid X25519 + ML-KEM-768
+# KEX with HKDF-SHA256 binding. Closes Fed TM §3.3 Gap C (harvest-now-
+# decrypt-later vulnerability).
+ml-kem = ["dep:ml-kem"]
+hybrid-kex = ["x25519", "ml-kem", "kdf", "random"]
 
 [dependencies]
 thiserror.workspace = true
@@ -46,6 +51,10 @@ p256 = { workspace = true, optional = true }
 ed25519-dalek = { workspace = true, optional = true }
 # v4.4.0+: X25519 ECDH for the key-grant wrap surface (CIRISVerify#44).
 x25519-dalek = { version = "2", optional = true, default-features = false, features = ["static_secrets"] }
+# v4.6.0+: ML-KEM-768 (FIPS 203 final) for the hybrid KEX surface (CIRISVerify#47).
+# `getrandom` feature pulls in the convenience generate_keypair/encapsulate
+# shortcuts that use OS RNG internally.
+ml-kem = { version = "0.3", optional = true, default-features = false, features = ["getrandom"] }
 signature.workspace = true
 
 # secp256k1 for EVM wallet signing
