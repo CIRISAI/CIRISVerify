@@ -319,8 +319,8 @@ impl HarassmentClusterSignal {
 
     /// Check whether a (requester, target) pair has reached the
     /// harassment threshold. Doesn't record a new observation —
-    /// use [`Self::record`] followed by inspection of the score
-    /// or [`Self::check_after_record`] to record + check together.
+    /// use [`Self::record`] followed by [`Self::score`] for the
+    /// record-then-check pattern.
     pub fn check(
         &self,
         requester_id: &str,
