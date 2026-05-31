@@ -1,10 +1,16 @@
-# CIRIS Federation Threat Model (v1.0)
+# CIRIS Federation Threat Model (v1.1)
 
-**Status**: DRAFT for first publication (2026-05-02)
-**Version**: 1.0 (first-published version; supersedes internal drafts v1 and v2 — see Appendix A)
+**Status**: DRAFT for first publication (2026-05-02; v1.1 update 2026-05-31)
+**Version**: 1.1 (v1.0 + R1/Q1 contracts + F-AV-RECONSIDER-DOS — see Appendix A revision log; supersedes internal drafts v1 and v2)
 **Audience**: CIRIS engineering, RATCHET evaluator, federation-protocol stakeholders, external reviewers
 **Scope**: federation-emergent threats; cross-references per-repo threat models for substrate threats
-**Last updated**: 2026-05-02
+**Last updated**: 2026-05-31
+
+**v1.1 deltas vs v1.0**:
+- §3.3 Gap A (R1 timeliness): SPECIFIED — τ_normal ≤ 60s / τ_partial ≤ 300s / "most recent observed wins" merge rule (CIRISVerify#48)
+- §3.3 Gap B (Q1 quorum + CAP): SPECIFIED — quorum-write ⌈2N/3⌉ + bounded-staleness reads + merge rule + τ composition (CIRISVerify#49)
+- §6.5 new entry **F-AV-RECONSIDER-DOS** — P11 reconsideration weaponization (CIRISVerify#46)
+- F-AV-11 / F-AV-12 / F-AV-13 / F-AV-ROLLBACK / F-AV-FRONTRUN — cross-references updated to cite the now-specified R1 + Q1 bounds
 
 **Implementation Status Legend** (used throughout):
 - **Spec** = specified in this document or a referenced FSD; not implemented
@@ -277,11 +283,36 @@ Actors are not primitives. They produce activity over primitives. The threat mod
 
 The structural gaps are larger than v1 indicated. Listing in priority order (most-load-bearing first):
 
-**Gap A: R1 revocation propagation has no timeliness contract.**
-Today: registry stores revocation rows; clients fetch revocations on read with TTL-bounded staleness. There is no formal contract for how quickly a revocation propagates to all peers. F-AV-12, F-AV-13, F-AV-16, and F-AV-MAINT all assume a propagation bound that is not specified. **Until R1 has an explicit contract (e.g., "revocations propagate to all peers within 60s with high probability under bounded packet loss"), the federation's revocation security is unmeasurable.**
+**Gap A: R1 revocation propagation timeliness contract — SPECIFIED v1.1 (CIRISVerify#48).**
 
-**Gap B: Q1 quorum/CAP model not specified.**
-Today: registry uses HTTPS-authoritative + DNS-advisory + 2-of-3 consensus for some reads. There is no explicit CAP-class statement (linearizable? read-your-writes? bounded-staleness with τ-bound? eventual consistency?). F-AV-12 and F-AV-13 are exactly attacks on this gap. **Until Q1 has a formal consistency model, fail-secure behavior under partial failure is undefined.**
+**Status**: contract specified at this section; downstream instrumentation tracked at CIRISPersist#143 + CIRISRegistry#46; cross-substrate regression test at CIRISConformance#7 Scenario 3.
+
+**Contract**:
+- `τ_normal ≤ 60s` — under normal operation, a revocation is observable at any subscribed peer within 60 seconds of the originating write.
+- `τ_partial ≤ 300s` — during partial-failure windows (region-pair packet loss, cross-region partition, single-region degradation), the bound relaxes to 300 seconds.
+- **Merge rule**: "most recent observed revocation wins." A peer that observes two revocations of the same key at different timestamps prefers the later one; revocations are append-only and monotonic per the existing AV-4 anti-rollback discipline.
+- **Composition**: the τ_normal / τ_partial pair mirrors the existing fail-secure τ_grace=60s / τ_max=300s shape (§8.3), so substrate consumers don't carry a parallel bound set. The same wall-clock window admits both "is the substrate alive?" and "has the revocation reached me?" questions.
+
+**Why these numbers are feasible**: cross-ocean RTT (toy-derived from CIRISNodeCore `scale_model.rs` v0.5) is ~0.39s — 154× inside τ_normal. The bound is feasible at substrate physics; only the spec was missing pre-v1.1.
+
+**F-AVs that consume this contract** (cross-referenced in §6.4 + §6.5): F-AV-11 (post-revocation re-eval window), F-AV-12 (τ-window joint bound with Q1), F-AV-13 (short-TTL + push-invalidation), F-AV-16 (forced fail-secure recovery), F-AV-ROLLBACK (recovery time at partition heal), F-AV-FRONTRUN (revocation-of-frontrun reach).
+
+**Gap B: Q1 quorum / bounded-staleness CAP / merge rules — SPECIFIED v1.1 (CIRISVerify#49).**
+
+**Status**: contract specified at this section; downstream implementation tracked at CIRISPersist#143 + CIRISRegistry#46; cross-substrate partition+heal test at CIRISConformance#7 Scenario 3.
+
+**Contract** (4 parts):
+
+1. **Quorum-write**: a federated-directory write is not client-visible until `⌈2N/3⌉` regions acknowledge the write. With the current N=3 (us / eu / apac), `⌈2N/3⌉ = 2` — two-region acknowledgement is the visibility floor.
+2. **Bounded-staleness reads**: serve from local replica iff `staleness_window ≤ τ_partial`; otherwise transparent read-amplification to fresh-quorum. The amplification is marked in observability so operators can tune τ_partial.
+3. **Merge rule at partition heal**: "higher-quorum-weight wins" — the side that committed against more regions wins the merge. Tie-break (1): signed-timestamp (later wins, anti-rollback monotonic). Tie-break (2, exceedingly rare): canonical-bytes-hash ordering (deterministic byte-comparison).
+4. **Cross-region τ bounds**: τ_normal ≤ 60s, τ_partial ≤ 300s — composes with Gap A R1 contract so a peer carries one shared bound across both questions.
+
+**Anti-rollback**: the existing AV-4 monotonicity invariant (revocation-revision strictly non-decreasing) is enforced at quorum admission — a write attempt that would decrease a monotonic counter is rejected before quorum is asked. This makes Q1 the federation's load-bearing rollback gate.
+
+**Why these numbers are feasible**: ⌈2N/3⌉ matches the federation-key-set threshold (`FederationKeyset.threshold` in `ciris-verify-core::federation_keyset` at N=3, M=2). The federation already operates 2-of-3 thresholds on the trust-anchor key set; extending the same shape to write admission is structurally consistent.
+
+**F-AVs that consume this contract** (cross-referenced in §6.4): F-AV-12 (the τ-window bound IS Q1's contract), F-AV-13 (bounded-staleness reads honor this contract), F-AV-ROLLBACK (merge rule is the defense surface).
 
 **Gap C: C4 hybrid KEX + KDF unfilled.**
 Today: federation peer-to-peer communications run over HTTPS (TLS 1.3, classical ECDH). This provides forward secrecy against current adversaries but is **harvest-now-decrypt-later vulnerable**: an adversary recording today's traffic decrypts everything when ~2035-era PQC cryptanalysis matures. P7 (forward secrecy with PQC) is unfilled. The federation's confidential payloads (which include peer attestations, bond purchase metadata, possibly trace contents in some payload classes) are at long-term risk.
@@ -435,7 +466,7 @@ This section is a pointer table. Each row points to the per-repo threat model th
 | R1 revocation propagation | Partial — `CIRISPersist/docs/THREAT_MODEL.md` §3.1 (AV-2 covers compromised-key replay, which depends on revocation timeliness); `CIRISRegistry/docs/THREAT_MODEL.md` §3.2 (AV-11 mass-revoke abuse) | **No formal propagation-timeliness contract** — see §3.3 Gap A |
 | N1 cryptographic addressing | `CIRISEdge/docs/THREAT_MODEL.md` §4.1 (AV-6 Reticulum destination spoofing) + §1 scope ("addressing IS identity"); §7 assumption 4 (Reticulum cryptographic addressing holds) | Reticulum destination = `sha256(public_key)[..16]`; structural — forging an address requires breaking sha256 OR Ed25519. **Threat model published 2026-05-03; implementation pending Phase 1.** |
 | N2 multi-medium transport | `CIRISEdge/docs/THREAT_MODEL.md` §4.5 (AV-18 cross-medium replay, AV-19 slow-medium timing-amp, AV-20 I²P endpoint enum) + §6 (deployment-tier table covering TCP / LoRa / serial / I²P / HTTPS-fallback) | Same wire envelope round-trips byte-equivalent across all configured transports; replay window is transport-agnostic. **Threat model published 2026-05-03; HTTP fallback in Phase 1; LoRa / packet-radio / serial / I²P in Phase 3.** |
-| Q1 quorum/CAP availability | Partial — `CIRISRegistry/docs/THREAT_MODEL.md` §3.7 (AV-33 multi-master migration desync) | **No explicit CAP specification** — see §3.3 Gap B |
+| Q1 quorum/CAP availability | Partial — `CIRISRegistry/docs/THREAT_MODEL.md` §3.7 (AV-33 multi-master migration desync) | CAP specified v1.1: quorum-write ⌈2N/3⌉ + bounded-staleness reads (τ_partial ≤ 300s) + merge rule — see §3.3 Gap B |
 
 **Aggregate posture**: C1 / C2 / C3 / S1 / S3 are implemented with mature per-repo threat models. S2 has split coverage across persist + registry and is mid-transition. C0 is implicit-but-not-formally-treated. C4 is unfilled. R1 / Q1 are partial. **N1 + N2 closed at the threat-model level on 2026-05-03 with the publication of `CIRISEdge/docs/THREAT_MODEL.md`** (893-line baseline; implementation pending Phase 1 — code lands as the lens cuts over from FastAPI ingest). **The federation today has 1 unfilled primitive (C4), 2 partial primitives (R1, Q1), 1 in-transition primitive (S2), and 1 implicit primitive (C0) — meaning 5 of 12 primitives have non-trivial substrate-coverage gaps**, down from 7 at v1.0 publication. This is the honest substrate-class posture.
 
@@ -868,7 +899,7 @@ Attacks where individual primitives are correct in isolation but their compositi
 
 **Mitigation surface**. Three layers:
 
-1. **R1 revocation propagation** — when a key is revoked, all peers must invalidate that key's evidence prospectively, within bounded time T. Per §3.3 Gap A, R1 propagation timeliness is currently unspecified; this is a structural weakness.
+1. **R1 revocation propagation** — when a key is revoked, all peers must invalidate that key's evidence prospectively within `τ_normal ≤ 60s` (normal operation) or `τ_partial ≤ 300s` (partial-failure window) per the v1.1 R1 contract (§3.3 Gap A). The "most recent observed revocation wins" merge rule handles the cross-region race condition where two peers observe the same revocation at different timestamps.
 2. **Compromise-window analysis (RATCHET)** — when a revocation is logged, RATCHET re-evaluates that key's recent S1 evidence and flags identities whose weight depended on the compromised key's traces or attestations.
 3. **Recursive scrub-signing (S2)** — every S2 row is signed by another row, terminating at bootstrap. A single key compromise doesn't propagate to attestations *issued by other keys* about the compromised one.
 
@@ -876,7 +907,7 @@ Attacks where individual primitives are correct in isolation but their compositi
 
 **RATCHET signal**: post-revocation re-evaluation — identities whose weight drops significantly upon revocation of an attestation source are flagged.
 
-**Known weaknesses**: depends on R1 propagation timeliness, which is unspecified. See §3.3 Gap A.
+**Known weaknesses**: depends on R1 propagation timeliness — bound specified v1.1 at `τ_normal ≤ 60s` / `τ_partial ≤ 300s` (§3.3 Gap A). Pre-v1.1 this was an unbounded structural exposure; v1.1 reduces it to a measurement+enforcement gap (CIRISPersist#143 + CIRISRegistry#46).
 
 **Status**. **Partially mitigated**. Revocation infrastructure exists (CIRISPersist federation_revocations); R1 timeliness contract pending; RATCHET-side re-evaluation is research-grade.
 
@@ -1233,6 +1264,36 @@ Attacks where the adversary **deflates legitimate weight** by attacking substrat
 
 **Status**: **Open**. Privacy budget on S2 reads is not specified; pseudonymous-peer protocol not specified; attestation aggregation not specified. v1.0 names this F-AV class but does not propose specific defenses beyond the research directions listed.
 
+#### F-AV-RECONSIDER-DOS: P11 reconsideration weaponization
+
+**Class**: 4 (availability / coercion — inverse-Sybil; throughput collapse via legitimate-protocol-path abuse). **Added in v1.1 (CIRISVerify#46).**
+
+**Description**. An organized bloc files maximum-allowed reconsiderations against every moderation event affecting their members. Per CIRISNodeCore `MISSION.md` §4.10 recursion bound, a target may file up to 9 Reconsiderations per SlashingAttestation (3 grounds × 3 evidence-package hashes), each forcing fresh-quorum recusal + full adjudication. The §4.10 bound is **per-SlashingAttestation**, not per-event or per-actor — a bloc targeting N moderation events can emit up to 9N filings without violating the existing recursion gate.
+
+**Targets**. Moderation decision throughput; appeals pipeline integrity. `decision_throughput ∝ 1 / (1 + filings × recusal_factor)` collapses at coordinated N.
+
+**Substrate assumptions**. P11 protocol operates correctly per spec; §4.10 recursion bound is respected. Attack is on **legitimate-protocol-path saturation**, not protocol violation. The path the attacker exercises is one any honest reconsideration also walks.
+
+**Cost-asymmetry argument**. Attacker stake per targeted event: 9 filings × 100 CommonsCredits = 900. Substrate burden per targeted event: ~4500 credits-equivalent (fresh-quorum recusal × 9 + adjudication overhead). **5× cost-asymmetry favors the attacker** (toy-derived from CIRISNodeCore `scale_model.rs` v0.5 `fav_findings()`).
+
+**Mitigation surface** (three additive defenses; CIRISVerify v4.5.0+):
+
+1. **Per-event rate limit** — max `R` reconsiderations active simultaneously per moderation event across all filers. A 10th concurrent filing against the same event is rejected with `RECONSIDERATION_RATE_LIMITED`.
+2. **Per-actor cumulative budget** — rolling-window filing budget per `requester_id` across all events; depletes per filing, refills with each successful filing (a reconsideration that reverses a moderation decision restores some budget; a rejected one does not). Limits cross-event harassment from a single actor with `ACTOR_BUDGET_EXHAUSTED`.
+3. **Cross-event harassment-pattern review** — RATCHET signal on `(requester_id, targeted_actor_id)` clustering at sub-3-per-event thresholds; fires **before** §4.10's existing 3rd-unsuccessful-filing trigger. Catches the (1, target_a) + (1, target_b) + (1, target_c) pattern that §4.10 cannot.
+
+Trait surface shipped at `ciris_verify_core::reconsider_dos`; CIRISNodeCore P11 dispatcher consumes via CIRISNodeCore#28; CEG §10.0.1 error envelope codes added for the three rejection modes.
+
+**Known weaknesses**:
+- **L-02 adaptive timing**: well-paced single-shot filings (one per actor per event, spread across time) evade the harassment-pattern detector even with the sub-3 threshold. The cluster scoring is statistical, not absolute.
+- **L-05 finite sample**: harassment-pattern detector needs sufficient filing history before firing; very early-window attacks may fall below the detection floor.
+
+**RATCHET signal**: post-hoc cluster scoring on `(requester_id, targeted_actor_id)` pairs across moderation events. Pre-event signals (account creation patterns, bond-purchase timing) are out-of-scope for this F-AV but compose with F-AV-1 / F-AV-2 detection.
+
+**Status**: **Defenses specified v1.1; primitive impl in CIRISVerify v4.5.0+; downstream P11 wiring at CIRISNodeCore#28; conformance scenario at CIRISConformance#7 Scenario 1.**
+
+**Toy reference**: CIRISNodeCore `examples/scale_model.rs` v0.5 `fav_findings()` — explicit "CANDIDATE NEW F-AV" entry with the 5× cost-asymmetry numbers + §4.10 cross-reference. v1.1 promotes the candidate to the catalog.
+
 ### 6.6 Long-range and dormancy class
 
 Attacks that exploit time. Sybils that age cheaply for years before activation; replays of historical evidence; long-tail behavioral measurement gaming.
@@ -1390,7 +1451,7 @@ RATCHET's anti-Sybil evaluation is meaningful only when the following substrate 
 | **A5**: Signed evidence is durable and unmodified | S1 | RATCHET reads modified evidence; false weight |
 | **A6**: Federated directory state is consistent within τ-bound | S2 + Q1 | RATCHET sees inconsistent attestation graph (F-AV-12, F-AV-13) |
 | **A7**: Audit log is append-only and complete | S3 | RATCHET cannot detect retroactive evidence injection |
-| **A8**: Revocations propagate to all peers within bounded time T | R1 | F-AV-11, F-AV-12, F-AV-13, F-AV-16 all worsen |
+| **A8**: Revocations propagate to all peers within τ_normal ≤ 60s (or τ_partial ≤ 300s during partial-failure windows) per §3.3 Gap A v1.1 contract | R1 | F-AV-11, F-AV-12, F-AV-13, F-AV-16 all worsen if bound violated |
 | **A9**: Quorum reads return bounded-staleness state under partial failure | Q1 | Under-specification → fail-secure behavior is undefined |
 
 These assumptions are the **foundation** of RATCHET's validity. Each is owned by a per-repo threat model (§5) plus, where unfilled, a structural gap (§3.3).
@@ -1415,10 +1476,10 @@ v1.0 uses **ordinal failure tiers** with named referents instead. Numerical rate
 | A3 (build attestation) | C3 | TIER-MED | Sigstore OIDC theft, XZ-style maintainer compromise | SLSA L3 + reproducible builds + transparency log monitoring needed (currently partial) |
 | A4 (forward secrecy) | C4 | **TIER-HIGH** | Harvest-now-decrypt-later for ~2032+ PQC adversary | C4 is Spec-only; until implemented, all current peer-to-peer payloads are at long-term risk |
 | A5 (S1 durability) | S1 | TIER-LOW | Database-tier reliability + replication | Mature substrate |
-| A6 (S2 consistency) | S2 + Q1 | **TIER-HIGH** during partial failure | Q1 contract unspecified; bounded-staleness target proposed not enforced | Drops to TIER-LOW–MED once Q1 specified |
+| A6 (S2 consistency) | S2 + Q1 | TIER-MED during partial failure (v1.1) | Q1 contract specified v1.1: quorum-write ⌈2N/3⌉ + bounded-staleness reads (§3.3 Gap B); downstream enforcement at CIRISPersist#143 / CIRISRegistry#46 | TIER-LOW once impl + Conformance#7 Scenario 3 passes |
 | A7 (S3 append-only) | S3 | TIER-LOW–MED | Operational bugs (gap insertion at admin level) dominate | Cryptographic chain mature; admin-tier discipline required |
 | A8 (R1 timeliness) | R1 | **TIER-HIGH** | No timeliness contract; revocation-lag distribution unmeasured | Drops to TIER-MED once R1 specified |
-| A9 (Q1 bounded-staleness) | Q1 | **TIER-HIGH** | Q1 contract unspecified | Drops to TIER-LOW–MED once Q1 specified |
+| A9 (Q1 bounded-staleness) | Q1 | TIER-MED (v1.1) | Q1 contract specified v1.1 (§3.3 Gap B); pending downstream enforcement | TIER-LOW once impl + Conformance#7 Scenario 3 passes |
 
 **Joint-failure model**: assumptions are NOT independent. A maintainer compromise can violate A2 + A3 + A5 simultaneously (signing keys + build provenance + evidence storage all affected). A CVE-class TEE incident can violate A0 + A1 across many devices simultaneously. RATCHET output validity (§7.3) must consider the *joint* tier across correlated assumption sets, not the per-assumption tier in isolation.
 
@@ -1938,9 +1999,9 @@ PoB §3.2 specifies Reticulum; not yet implemented. F-AVs blocked: F-AV-16, F-AV
 
 No formal propagation-timeliness contract. **Open question**: what target propagation bound T is achievable + auditable? Proposed: T ≤ 60s normal operation, ≤ 300s under partial failure. Specification + measurement infrastructure pending.
 
-### 11.7 Q1 quorum/CAP model for S2 (unfilled)
+### 11.7 Q1 quorum/CAP model for S2 — SPECIFIED v1.1 (CIRISVerify#49)
 
-No explicit CAP-class statement. **Open question**: linearizable, RYW, or bounded-staleness? Proposed: bounded-staleness with τ-bound, multi-region quorum reads for high-stakes operations. Specification pending.
+CAP class: **bounded-staleness with τ-bound** (closed v1.1). Quorum-write ⌈2N/3⌉; bounded-staleness reads serve local iff staleness ≤ τ_partial; merge rule at heal is "higher-quorum-weight wins" with timestamp + hash tie-breaks; anti-rollback monotonicity enforced at admission. Full contract in §3.3 Gap B. Downstream implementation tracked at CIRISPersist#143 + CIRISRegistry#46.
 
 ### 11.8 Threat-model artifact integrity (unfilled)
 
