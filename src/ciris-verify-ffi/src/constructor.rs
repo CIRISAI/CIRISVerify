@@ -47,7 +47,14 @@ pub static FUNCTION_INTEGRITY_STATUS: OnceLock<FunctionIntegrityStatus> = OnceLo
 /// 5. Stores the result in `FUNCTION_INTEGRITY_STATUS`
 ///
 /// The function never fails - all errors result in a status being set.
-fn early_verify() {
+///
+/// Idempotent via `Once::call_once`. Made `pub(crate)` in v4.7.1 so
+/// `ciris_verify_init` can lazy-trigger it after the FFI library has
+/// finished loading - see [`CIRISVerify#51`] for the dlopen-vs-Tokio
+/// loader-lock deadlock this defers around.
+///
+/// [`CIRISVerify#51`]: https://github.com/CIRISAI/CIRISVerify/issues/51
+pub(crate) fn early_verify() {
     use std::sync::Once;
     static INIT: Once = Once::new();
 
@@ -265,20 +272,34 @@ pub fn get_function_integrity_status() -> FunctionIntegrityStatus {
 // Platform-Specific Constructors
 // =============================================================================
 
-// Linux/Android: .init_array constructor
-#[cfg(any(target_os = "linux", target_os = "android"))]
-#[cfg(not(any(test, debug_assertions)))]
-mod ctor_impl {
-    use super::early_verify;
-
-    #[link_section = ".init_array"]
-    #[used]
-    static CTOR: extern "C" fn() = early_verify_ctor;
-
-    extern "C" fn early_verify_ctor() {
-        early_verify();
-    }
-}
+// Linux/Android: DISABLED in v4.7.1 (CIRISVerify#51).
+//
+// Starting (and `block_on`-waiting on) a Tokio runtime from DT_INIT /
+// .init_array deadlocks against the glibc dynamic loader lock.
+// Sequence:
+//   1. `dlopen(libciris_verify_ffi.so)` acquires `_rtld_global`
+//      (the loader lock) and calls our constructors.
+//   2. Our ctor enters `early_verify()` → builds a Tokio current-
+//      thread runtime with `enable_io()` and calls `block_on` on a
+//      reqwest HTTPS fetch.
+//   3. Tokio's IO driver / reqwest's connection pool spawns a worker
+//      thread for DNS + TLS setup. That worker calls
+//      `__cxa_thread_atexit_impl` to register a TLS destructor,
+//      which itself needs `_rtld_global` to walk the loaded-DSO list.
+//   4. Main ctor thread parks waiting for the runtime to come up
+//      while holding the loader lock; worker parks waiting for the
+//      loader lock to register its TLS dtor. Permanent deadlock,
+//      `CIRISVerify()` never returns.
+//
+// Fix: defer early-verify to the first FFI call (`ciris_verify_init`
+// in `lib.rs`). By then `dlopen` has long since released the loader
+// lock and starting a runtime + worker threads is safe. The
+// `Once::call_once` inside `early_verify` keeps it single-shot.
+//
+// macOS/iOS still use `#[ctor::ctor]` below — dyld + Apple's TLS
+// model don't share glibc's `_rtld_global` cycle. Windows
+// `DllMain` is likewise left in place (its loader lock is held but
+// returns before any Tokio worker can register a TLS dtor).
 
 // macOS/iOS: ctor crate
 // Wrapped in catch_unwind because the constructor runs before main() and

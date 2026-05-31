@@ -871,6 +871,21 @@ pub enum CirisVerifyError {
 /// The returned handle must be freed with `ciris_verify_destroy`.
 #[no_mangle]
 pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
+    // v4.7.1 (CIRISVerify#51): Lazy-trigger early function-integrity
+    // verification HERE rather than from a `.init_array` constructor.
+    // Pre-v4.7.1 on Linux/glibc this ran from DT_INIT inside dlopen
+    // while the loader lock was held; the Tokio runtime + reqwest
+    // worker we started there blocked on `__cxa_thread_atexit_impl`,
+    // which also needs the loader lock - permanent deadlock. By the
+    // time Python's ctypes calls into here, dlopen has returned and
+    // the loader lock is released. `Once::call_once` inside makes
+    // this single-shot across re-init calls.
+    //
+    // macOS/iOS still run it from `#[ctor::ctor]` (dyld's loader
+    // semantics avoid the cycle); see `constructor.rs` for details.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    constructor::early_verify();
+
     // Initialize logging for the platform (exactly once)
     #[cfg(target_os = "android")]
     {
