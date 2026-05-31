@@ -49,6 +49,20 @@ repos:
         pass_filenames: false
         types: [rust]
 
+      # Build docs with -D warnings to catch broken intra-doc links
+      # before they fail the CI Documentation job. Three breaks in
+      # one week (v4.1 [`AttestBundle`], v4.4.x [`canonical_bytes`],
+      # v4.5.0 [`Self::check_after_record`]) all docs-only fix-
+      # forwards from CI red — this hook turns each into a pre-commit
+      # failure on the dev machine. With cached target/ this costs
+      # ~5s incrementally (deps are warm from cargo-test above).
+      - id: cargo-doc
+        name: Rust doc build (intra-doc-link check)
+        entry: bash -c 'RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --quiet'
+        language: system
+        pass_filenames: false
+        types: [rust]
+
       # Check version consistency across files
       - id: version-consistency
         name: Check version consistency
