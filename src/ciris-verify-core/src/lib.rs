@@ -76,6 +76,7 @@ pub mod manifest_cache;
 pub mod mobile_http;
 pub mod play_integrity;
 pub mod provenance;
+pub mod reconsider_dos;
 pub mod registry;
 pub mod revocation;
 pub mod security;
@@ -128,6 +129,12 @@ pub use locale_merkle::{
 pub use provenance::{
     verify_provenance_chain, ProvenanceChain, ProvenanceError, ProvenanceLink,
     MAX_PROVENANCE_DEPTH, STEWARD_IDENTITY_TYPE,
+};
+pub use reconsider_dos::{
+    ActorBudget, ActorBudgetExhausted, EventRateLimit, EventRateLimited, FilingOutcome,
+    HarassmentClusterDetected, HarassmentClusterSignal, ReconsiderDosGuard, ReconsiderRejection,
+    DEFAULT_ACTOR_BUDGET, DEFAULT_BUDGET_WINDOW_MS, DEFAULT_EVENT_RATE_LIMIT,
+    DEFAULT_HARASSMENT_CLUSTER_THRESHOLD,
 };
 pub use revocation::{RevocationChecker, RevocationStatus};
 pub use security::file_integrity::{

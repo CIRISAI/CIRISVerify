@@ -79,6 +79,18 @@ pub enum CegErrorCode {
     /// 503 — Substrate replication lag exceeds liveness bound.
     #[serde(rename = "WITNESS_DIRECTORY_UNAVAILABLE")]
     WitnessDirectoryUnavailable,
+    /// 429 — Per-event reconsideration rate limit exceeded
+    /// (CIRISVerify#46 F-AV-RECONSIDER-DOS defense; v4.5.0+).
+    #[serde(rename = "RECONSIDERATION_RATE_LIMITED")]
+    ReconsiderationRateLimited,
+    /// 429 — Per-actor cumulative filing budget exhausted
+    /// (CIRISVerify#46 F-AV-RECONSIDER-DOS defense; v4.5.0+).
+    #[serde(rename = "ACTOR_BUDGET_EXHAUSTED")]
+    ActorBudgetExhausted,
+    /// 429 — Cross-event harassment cluster detected
+    /// (CIRISVerify#46 F-AV-RECONSIDER-DOS defense; v4.5.0+).
+    #[serde(rename = "HARASSMENT_CLUSTER_DETECTED")]
+    HarassmentClusterDetected,
 }
 
 impl CegErrorCode {
@@ -94,7 +106,10 @@ impl CegErrorCode {
             Self::SignatureVerificationFailed
             | Self::ClockSkewViolation
             | Self::WitnessQuorumNotMet => 422,
-            Self::RateLimited => 429,
+            Self::RateLimited
+            | Self::ReconsiderationRateLimited
+            | Self::ActorBudgetExhausted
+            | Self::HarassmentClusterDetected => 429,
             Self::InternalError => 500,
             Self::WitnessDirectoryUnavailable => 503,
         }
@@ -117,6 +132,9 @@ impl CegErrorCode {
             Self::RateLimited => "RATE_LIMITED",
             Self::InternalError => "INTERNAL_ERROR",
             Self::WitnessDirectoryUnavailable => "WITNESS_DIRECTORY_UNAVAILABLE",
+            Self::ReconsiderationRateLimited => "RECONSIDERATION_RATE_LIMITED",
+            Self::ActorBudgetExhausted => "ACTOR_BUDGET_EXHAUSTED",
+            Self::HarassmentClusterDetected => "HARASSMENT_CLUSTER_DETECTED",
         }
     }
 }
