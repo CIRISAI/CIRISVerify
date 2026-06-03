@@ -65,6 +65,13 @@ pub struct VerifyConfig {
     /// other primitives MUST override this. The FFI layer threads this
     /// field through from the constructor's `project` argument.
     pub project: String,
+    /// Override for the v4.8.0+ network-reachability probe target list.
+    /// `None` (default) means the probe races `https_endpoint` plus
+    /// every entry in [`crate::registry::FALLBACK_REGISTRY_URLS`].
+    /// `Some(v)` replaces that list with exactly `v` — used by tests
+    /// to point the probe at known-unreachable IPs without having to
+    /// also patch the registry fallback constant.
+    pub probe_targets_override: Option<Vec<String>>,
 }
 
 impl Default for VerifyConfig {
@@ -86,6 +93,7 @@ impl Default for VerifyConfig {
             key_alias: "ciris_verify_key".into(),
             cache_dir: Self::default_cache_dir(),
             project: "ciris-verify".into(),
+            probe_targets_override: None,
         }
     }
 }

@@ -10,6 +10,7 @@
 //! The async function signatures are preserved for API compatibility.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::time::Duration;
 
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -128,6 +129,12 @@ impl FileManifest {
 /// have to instantiate one client per project.
 ///
 /// [issue-10]: https://github.com/CIRISAI/CIRISVerify/issues/10
+///
+/// `Clone` is cheap on both platforms: desktop's `reqwest::Client` is
+/// internally `Arc`-shared and ureq's `Agent` is `Arc`-shared by design.
+/// v4.8.0 added the derive so `ResilientRegistryClient` can hand owned
+/// clones into parallel race futures without lifetime contortions.
+#[derive(Clone)]
 pub struct RegistryClient {
     /// HTTP client (reqwest on desktop, ureq on mobile).
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
@@ -1681,10 +1688,20 @@ pub const FALLBACK_REGISTRY_URLS: &[&str] = &[
     "https://eu.registry.ciris-services-1.ai",
 ];
 
-/// Multi-endpoint registry client with automatic failover.
+/// Per-phase budget for [`ResilientRegistryClient`] parallel endpoint
+/// race (v4.8.0+, CIRISVerify#52). Composes with the outer 15s
+/// `ATTESTATION_TIMEOUT` and the 2s `NETWORK_PROBE_TIMEOUT` in
+/// [`crate::unified`] — see the budget hierarchy doc there.
+pub const RACE_BUDGET: Duration = Duration::from_secs(10);
+
+/// Multi-endpoint registry client with parallel race-to-first-success.
 ///
-/// Tries the primary endpoint first, then falls back to secondary endpoints
-/// on network errors (similar to DoH fallback pattern).
+/// v4.8.0+ races primary + all fallback endpoints **in parallel** under
+/// a [`RACE_BUDGET`] wall-clock cap (10s), returning the first `Ok`
+/// result and cancelling the rest. Pre-v4.8.0 this was sequential
+/// failover (primary → fallback1 → fallback2 → ...) which consumed the
+/// whole budget on a single-IP blackhole — the Galaxy S21U / Verizon
+/// LTE 90-second hang documented in CIRISVerify#50 / #52.
 ///
 /// ## Rate-limit cooldown gate (v2.2.0+, issue #21)
 ///
@@ -1696,6 +1713,21 @@ pub const FALLBACK_REGISTRY_URLS: &[&str] = &[
 /// the "first 429 triggers immediate full-speed fallback retry"
 /// cascade that wiped 5 manifests + 1 key check in ~700ms before the
 /// fix.
+///
+/// In the v4.8.0 parallel-race model the cooldown gate is still
+/// honored: all racers `wait_for_cooldown()` on entry, and any racer
+/// that sees a 429 mid-race bumps the cooldown so the NEXT call to
+/// this client (across attestation rounds) waits.
+///
+/// ## NotFound semantics
+///
+/// In v4.8.0 parallel mode, NotFound from one endpoint does NOT fail
+/// the race — we wait for other endpoints in case a regional mirror
+/// has the resource. If ALL endpoints return NotFound (or the budget
+/// expires while only NotFounds have arrived), the race resolves to
+/// the last-seen NotFound. The pre-v4.8.0 fail-fast-on-primary-404
+/// optimization is lost (small cost, ~5ms slower in the 404 case);
+/// the win is parallel resilience.
 pub struct ResilientRegistryClient {
     /// Primary registry client.
     primary: RegistryClient,
@@ -1705,6 +1737,53 @@ pub struct ResilientRegistryClient {
     /// resume). Updated by any probe that sees 429; read by every
     /// probe on entry. v2.2.0+.
     cooldown_until_ms: std::sync::Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// Raise a shared cooldown atomic by `secs * 1000` millis (v4.8.0+).
+/// Hoisted out of [`ResilientRegistryClient::bump_cooldown`] so the
+/// parallel-race per-endpoint wrapper can bump it without borrowing
+/// `&self` across the `Send + 'static` race future boundary.
+fn bump_cooldown_atomic(cooldown: &std::sync::Arc<std::sync::atomic::AtomicU64>, secs: u64) {
+    let now_ms = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
+        .unwrap_or(0);
+    let target_ms = now_ms.saturating_add(secs.saturating_mul(1000));
+    cooldown.fetch_max(target_ms, std::sync::atomic::Ordering::AcqRel);
+}
+
+/// Wrap one endpoint's call future with per-endpoint outcome logging
+/// and 429 cooldown bumping (v4.8.0+). The returned pinned future is
+/// what gets fed into [`crate::parallel_race::race_first_ok_within_budget`].
+fn wrap_endpoint_call<T>(
+    endpoint_label: String,
+    op_name: String,
+    cooldown: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    fut: impl Future<Output = Result<T, VerifyError>> + Send + 'static,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<T, VerifyError>> + Send>>
+where
+    T: Send + 'static,
+{
+    Box::pin(async move {
+        let result = fut.await;
+        match &result {
+            Ok(_) => info!("{endpoint_label}: {op_name} OK"),
+            Err(VerifyError::NotFound { url }) => {
+                info!("{endpoint_label}: {op_name} not found ({url})");
+            },
+            Err(VerifyError::RateLimited {
+                url,
+                retry_after_secs,
+            }) => {
+                warn!(
+                    "{endpoint_label}: {op_name} rate-limited ({url}): retry-after={retry_after_secs:?}s"
+                );
+                bump_cooldown_atomic(&cooldown, retry_after_secs.unwrap_or(1));
+            },
+            Err(e) => warn!("{endpoint_label}: {op_name} failed: {e}"),
+        }
+        result
+    })
 }
 
 impl ResilientRegistryClient {
@@ -1761,317 +1840,207 @@ impl ResilientRegistryClient {
         }
     }
 
-    /// Raise the shared cooldown to at least `now + secs * 1000` millis.
-    /// `fetch_max` ensures concurrent bumps converge to the latest
-    /// (longest) value. v2.2.0+.
-    fn bump_cooldown(&self, secs: u64) {
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| u64::try_from(d.as_millis()).unwrap_or(u64::MAX))
-            .unwrap_or(0);
-        let target_ms = now_ms.saturating_add(secs.saturating_mul(1000));
-        self.cooldown_until_ms
-            .fetch_max(target_ms, std::sync::atomic::Ordering::AcqRel);
+    /// Race the primary + all fallbacks in parallel for one read operation
+    /// (v4.8.0+, CIRISVerify#52).
+    ///
+    /// Each endpoint runs `make_call(client_clone)` independently. The
+    /// first `Ok` wins and pending futures are dropped. If all error or
+    /// the [`RACE_BUDGET`] expires, returns the last-seen error.
+    ///
+    /// `make_call` is invoked once per endpoint with an owned
+    /// [`RegistryClient`] clone (cheap — internally `Arc`-shared on both
+    /// reqwest and ureq backends). It MUST consume the clone into a
+    /// `'static`-bounded future (typically via `async move`) so the race
+    /// future can outlive the caller's stack frame.
+    ///
+    /// Per-endpoint logging + 429-cooldown bumping is wired here so the
+    /// caller methods stay thin.
+    async fn race_endpoints<T, F, Fut>(
+        &self,
+        op_name: String,
+        make_call: F,
+    ) -> Result<T, VerifyError>
+    where
+        T: Send + 'static,
+        F: Fn(RegistryClient) -> Fut,
+        Fut: Future<Output = Result<T, VerifyError>> + Send + 'static,
+    {
+        use futures::stream::{FuturesUnordered, StreamExt};
+
+        self.wait_for_cooldown().await;
+
+        type RaceFut<T> = std::pin::Pin<Box<dyn Future<Output = Result<T, VerifyError>> + Send>>;
+        let cooldown = std::sync::Arc::clone(&self.cooldown_until_ms);
+        let mut unordered: FuturesUnordered<RaceFut<T>> = FuturesUnordered::new();
+
+        unordered.push(wrap_endpoint_call(
+            "primary".to_string(),
+            op_name.clone(),
+            std::sync::Arc::clone(&cooldown),
+            make_call(self.primary.clone()),
+        ));
+
+        for (i, fb) in self.fallbacks.iter().enumerate() {
+            unordered.push(wrap_endpoint_call(
+                format!("fallback[{i}]"),
+                op_name.clone(),
+                std::sync::Arc::clone(&cooldown),
+                make_call(fb.clone()),
+            ));
+        }
+
+        if unordered.is_empty() {
+            return Err(VerifyError::HttpsError {
+                message: format!("No endpoints configured for {op_name}"),
+            });
+        }
+
+        // Race semantics (v4.8.0):
+        // - First `Ok` wins (other futures cancelled by drop).
+        // - First NotFound starts a 1s grace window — any endpoint
+        //   that arrives Ok inside that window still wins. After the
+        //   grace expires, NotFound is returned even if other
+        //   endpoints are still hanging (e.g. blackholed primary).
+        //   This caps the S21U-scenario wall-clock at fallback-time +
+        //   1s grace, not primary's full connect_timeout.
+        // - Errors by precedence: NotFound (registry's definitive
+        //   answer) > generic HttpsError (no opinion). Last
+        //   HttpsError is the tie-breaker when no NotFound is seen.
+        const NOT_FOUND_GRACE: Duration = Duration::from_secs(1);
+        let mut sticky_not_found: Option<VerifyError> = None;
+        let mut not_found_at: Option<std::time::Instant> = None;
+        let mut last_other_err: Option<VerifyError> = None;
+
+        let race = async {
+            loop {
+                let next = if let Some(t) = not_found_at {
+                    let remaining = NOT_FOUND_GRACE.saturating_sub(t.elapsed());
+                    if remaining.is_zero() {
+                        break;
+                    }
+                    tokio::select! {
+                        biased;
+                        r = unordered.next() => r,
+                        _ = tokio::time::sleep(remaining) => break,
+                    }
+                } else {
+                    unordered.next().await
+                };
+
+                match next {
+                    Some(Ok(value)) => return Ok(value),
+                    Some(Err(e @ VerifyError::NotFound { .. })) => {
+                        if sticky_not_found.is_none() {
+                            sticky_not_found = Some(e);
+                            not_found_at = Some(std::time::Instant::now());
+                        }
+                    },
+                    Some(Err(e)) => {
+                        last_other_err = Some(e);
+                    },
+                    None => break, // all futures resolved
+                }
+            }
+            Err(sticky_not_found
+                .take()
+                .or_else(|| last_other_err.take())
+                .unwrap_or_else(|| VerifyError::HttpsError {
+                    message: format!("All endpoints failed silently for {op_name}"),
+                }))
+        };
+
+        let op_for_budget = op_name.clone();
+        match tokio::time::timeout(RACE_BUDGET, race).await {
+            Ok(inner) => inner,
+            Err(_elapsed) => Err(sticky_not_found
+                .or(last_other_err)
+                .unwrap_or_else(|| VerifyError::HttpsError {
+                    message: format!(
+                        "Race budget exceeded ({RACE_BUDGET:?}) for {op_for_budget} — all endpoints stalled"
+                    ),
+                })),
+        }
     }
 
-    /// Fetch a build record by version with failover.
+    /// Fetch a build record by version, racing all endpoints in parallel.
     ///
-    /// v2.2.0+ behavior:
-    /// - **404 on primary**: returns `VerifyError::NotFound` immediately
-    ///   without trying fallbacks (the resource genuinely doesn't exist;
-    ///   fallbacks won't have what primary doesn't).
-    /// - **429 on any endpoint**: parses `Retry-After`, raises the shared
-    ///   cooldown gate, sleeps the indicated interval, then tries the
-    ///   next endpoint.
+    /// v4.8.0+ behavior: primary + fallbacks race under [`RACE_BUDGET`].
+    /// First `Ok` wins, rest cancelled. If all return errors (including
+    /// NotFound from one mirror), waits for the others — only reports
+    /// NotFound when ALL endpoints have settled on NotFound. The 429
+    /// cooldown is bumped per-endpoint as 429s arrive.
     pub async fn get_build_by_version(
         &self,
         project: &str,
         version: &str,
     ) -> Result<BuildRecord, VerifyError> {
-        self.wait_for_cooldown().await;
-        match self.primary.get_build_by_version(project, version).await {
-            Ok(build) => return Ok(build),
-            Err(VerifyError::NotFound { url }) => {
-                info!(
-                    "Primary registry: build/{} not found ({}); skipping fallbacks",
-                    version, url
-                );
-                return Err(VerifyError::NotFound { url });
-            },
-            Err(VerifyError::RateLimited {
-                url,
-                retry_after_secs,
-            }) => {
-                warn!(
-                    "Primary registry rate-limited for build/{} ({}): retry-after={:?}s",
-                    version, url, retry_after_secs
-                );
-                self.bump_cooldown(retry_after_secs.unwrap_or(1));
-            },
-            Err(e) => {
-                warn!("Primary registry failed for build/{}: {}", version, e);
-            },
-        }
-
-        for (i, fallback) in self.fallbacks.iter().enumerate() {
-            self.wait_for_cooldown().await;
-            match fallback.get_build_by_version(project, version).await {
-                Ok(build) => {
-                    info!("Fallback[{}] succeeded for build/{}", i, version);
-                    return Ok(build);
-                },
-                Err(VerifyError::NotFound { url }) => {
-                    info!(
-                        "Fallback[{}] also reports build/{} not found ({})",
-                        i, version, url
-                    );
-                    return Err(VerifyError::NotFound { url });
-                },
-                Err(VerifyError::RateLimited {
-                    url,
-                    retry_after_secs,
-                }) => {
-                    warn!(
-                        "Fallback[{}] rate-limited for build/{} ({}): retry-after={:?}s",
-                        i, version, url, retry_after_secs
-                    );
-                    self.bump_cooldown(retry_after_secs.unwrap_or(1));
-                },
-                Err(e) => {
-                    warn!("Fallback[{}] failed for build/{}: {}", i, version, e);
-                },
-            }
-        }
-
-        Err(VerifyError::HttpsError {
-            message: format!("All registry endpoints failed for build/{}", version),
+        let op = format!("build/{version}");
+        let project = project.to_string();
+        let version = version.to_string();
+        self.race_endpoints(op, move |client| {
+            let project = project.clone();
+            let version = version.clone();
+            async move { client.get_build_by_version(&project, &version).await }
         })
+        .await
     }
 
-    /// Fetch binary manifest with failover. See [`Self::get_build_by_version`]
-    /// for the v2.2.0+ NotFound/RateLimited semantics.
+    /// Fetch binary manifest by racing all endpoints in parallel.
+    /// See [`Self::get_build_by_version`] for v4.8.0 semantics.
     pub async fn get_binary_manifest(
         &self,
         project: &str,
         version: &str,
     ) -> Result<BinaryManifest, VerifyError> {
-        self.wait_for_cooldown().await;
-        match self.primary.get_binary_manifest(project, version).await {
-            Ok(m) => return Ok(m),
-            Err(VerifyError::NotFound { url }) => {
-                info!(
-                    "Primary registry: binary-manifest/{} not found ({}); skipping fallbacks",
-                    version, url
-                );
-                return Err(VerifyError::NotFound { url });
-            },
-            Err(VerifyError::RateLimited {
-                url,
-                retry_after_secs,
-            }) => {
-                warn!(
-                    "Primary registry rate-limited for binary-manifest/{} ({}): retry-after={:?}s",
-                    version, url, retry_after_secs
-                );
-                self.bump_cooldown(retry_after_secs.unwrap_or(1));
-            },
-            Err(e) => warn!(
-                "Primary registry failed for binary-manifest/{}: {}",
-                version, e
-            ),
-        }
-
-        for (i, fallback) in self.fallbacks.iter().enumerate() {
-            self.wait_for_cooldown().await;
-            match fallback.get_binary_manifest(project, version).await {
-                Ok(m) => {
-                    info!("Fallback[{}] succeeded for binary-manifest/{}", i, version);
-                    return Ok(m);
-                },
-                Err(VerifyError::NotFound { url }) => {
-                    info!(
-                        "Fallback[{}] also reports binary-manifest/{} not found ({})",
-                        i, version, url
-                    );
-                    return Err(VerifyError::NotFound { url });
-                },
-                Err(VerifyError::RateLimited {
-                    url,
-                    retry_after_secs,
-                }) => {
-                    warn!(
-                        "Fallback[{}] rate-limited for binary-manifest/{} ({}): retry-after={:?}s",
-                        i, version, url, retry_after_secs
-                    );
-                    self.bump_cooldown(retry_after_secs.unwrap_or(1));
-                },
-                Err(e) => warn!(
-                    "Fallback[{}] failed for binary-manifest/{}: {}",
-                    i, version, e
-                ),
-            }
-        }
-
-        Err(VerifyError::HttpsError {
-            message: format!(
-                "All registry endpoints failed for binary-manifest/{}",
-                version
-            ),
+        let op = format!("binary-manifest/{version}");
+        let project = project.to_string();
+        let version = version.to_string();
+        self.race_endpoints(op, move |client| {
+            let project = project.clone();
+            let version = version.clone();
+            async move { client.get_binary_manifest(&project, &version).await }
         })
+        .await
     }
 
-    /// Fetch function manifest with failover. See [`Self::get_build_by_version`]
-    /// for the v2.2.0+ NotFound/RateLimited semantics.
+    /// Fetch function manifest by racing all endpoints in parallel.
+    /// See [`Self::get_build_by_version`] for v4.8.0 semantics.
     pub async fn get_function_manifest(
         &self,
         project: &str,
         version: &str,
         target: &str,
     ) -> Result<crate::security::function_integrity::FunctionManifest, VerifyError> {
-        self.wait_for_cooldown().await;
-        match self
-            .primary
-            .get_function_manifest(project, version, target)
-            .await
-        {
-            Ok(m) => return Ok(m),
-            Err(VerifyError::NotFound { url }) => {
-                info!(
-                    "Primary registry: function-manifest/{}/{} not found ({}); skipping fallbacks",
-                    version, target, url
-                );
-                return Err(VerifyError::NotFound { url });
-            },
-            Err(VerifyError::RateLimited {
-                url,
-                retry_after_secs,
-            }) => {
-                warn!(
-                    "Primary registry rate-limited for function-manifest/{}/{} ({}): retry-after={:?}s",
-                    version, target, url, retry_after_secs
-                );
-                self.bump_cooldown(retry_after_secs.unwrap_or(1));
-            },
-            Err(e) => warn!(
-                "Primary registry failed for function-manifest/{}/{}: {}",
-                version, target, e
-            ),
-        }
-
-        for (i, fallback) in self.fallbacks.iter().enumerate() {
-            self.wait_for_cooldown().await;
-            match fallback
-                .get_function_manifest(project, version, target)
-                .await
-            {
-                Ok(m) => {
-                    info!(
-                        "Fallback[{}] succeeded for function-manifest/{}/{}",
-                        i, version, target
-                    );
-                    return Ok(m);
-                },
-                Err(VerifyError::NotFound { url }) => {
-                    info!(
-                        "Fallback[{}] also reports function-manifest/{}/{} not found ({})",
-                        i, version, target, url
-                    );
-                    return Err(VerifyError::NotFound { url });
-                },
-                Err(VerifyError::RateLimited {
-                    url,
-                    retry_after_secs,
-                }) => {
-                    warn!(
-                        "Fallback[{}] rate-limited for function-manifest/{}/{} ({}): retry-after={:?}s",
-                        i, version, target, url, retry_after_secs
-                    );
-                    self.bump_cooldown(retry_after_secs.unwrap_or(1));
-                },
-                Err(e) => warn!(
-                    "Fallback[{}] failed for function-manifest/{}/{}: {}",
-                    i, version, target, e
-                ),
+        let op = format!("function-manifest/{version}/{target}");
+        let project = project.to_string();
+        let version = version.to_string();
+        let target = target.to_string();
+        self.race_endpoints(op, move |client| {
+            let project = project.clone();
+            let version = version.clone();
+            let target = target.clone();
+            async move {
+                client
+                    .get_function_manifest(&project, &version, &target)
+                    .await
             }
-        }
-
-        Err(VerifyError::HttpsError {
-            message: format!(
-                "All registry endpoints failed for function-manifest/{}/{}",
-                version, target
-            ),
         })
+        .await
     }
 
-    /// Verify key by fingerprint with failover. See [`Self::get_build_by_version`]
-    /// for the v2.2.0+ NotFound/RateLimited semantics.
+    /// Verify key by fingerprint by racing all endpoints in parallel.
+    /// See [`Self::get_build_by_version`] for v4.8.0 semantics.
     pub async fn verify_key_by_fingerprint(
         &self,
         fingerprint: &str,
     ) -> Result<KeyVerificationResponse, VerifyError> {
-        self.wait_for_cooldown().await;
-        match self.primary.verify_key_by_fingerprint(fingerprint).await {
-            Ok(r) => return Ok(r),
-            Err(VerifyError::NotFound { url }) => {
-                info!(
-                    "Primary registry: verify/key/{} not found ({}); skipping fallbacks",
-                    fingerprint, url
-                );
-                return Err(VerifyError::NotFound { url });
-            },
-            Err(VerifyError::RateLimited {
-                url,
-                retry_after_secs,
-            }) => {
-                warn!(
-                    "Primary registry rate-limited for verify/key/{} ({}): retry-after={:?}s",
-                    fingerprint, url, retry_after_secs
-                );
-                self.bump_cooldown(retry_after_secs.unwrap_or(1));
-            },
-            Err(e) => warn!(
-                "Primary registry failed for verify/key/{}: {}",
-                fingerprint, e
-            ),
-        }
-
-        for (i, fallback) in self.fallbacks.iter().enumerate() {
-            self.wait_for_cooldown().await;
-            match fallback.verify_key_by_fingerprint(fingerprint).await {
-                Ok(r) => {
-                    info!("Fallback[{}] succeeded for verify/key/{}", i, fingerprint);
-                    return Ok(r);
-                },
-                Err(VerifyError::NotFound { url }) => {
-                    info!(
-                        "Fallback[{}] also reports verify/key/{} not found ({})",
-                        i, fingerprint, url
-                    );
-                    return Err(VerifyError::NotFound { url });
-                },
-                Err(VerifyError::RateLimited {
-                    url,
-                    retry_after_secs,
-                }) => {
-                    warn!(
-                        "Fallback[{}] rate-limited for verify/key/{} ({}): retry-after={:?}s",
-                        i, fingerprint, url, retry_after_secs
-                    );
-                    self.bump_cooldown(retry_after_secs.unwrap_or(1));
-                },
-                Err(e) => warn!(
-                    "Fallback[{}] failed for verify/key/{}: {}",
-                    i, fingerprint, e
-                ),
-            }
-        }
-
-        Err(VerifyError::HttpsError {
-            message: format!(
-                "All registry endpoints failed for verify/key/{}",
-                fingerprint
-            ),
+        let op = format!("verify/key/{fingerprint}");
+        let fingerprint = fingerprint.to_string();
+        self.race_endpoints(op, move |client| {
+            let fingerprint = fingerprint.clone();
+            async move { client.verify_key_by_fingerprint(&fingerprint).await }
         })
+        .await
     }
 
     /// Health check on primary endpoint.
@@ -2442,18 +2411,59 @@ mod tests {
         );
     }
 
-    /// Lock: `ResilientRegistryClient` returns `NotFound` after the primary
-    /// 404s WITHOUT issuing fallback probes. This is the core #21 fix —
-    /// before v2.2.0, every fallback would also be tried and likely 429'd
-    /// during a rate-limit cascade.
+    /// Lock (v4.8.0+, CIRISVerify#52): when the primary endpoint
+    /// silently blackholes (TEST-NET-1, never routes) and a fallback
+    /// is reachable, the race must complete via the fallback well
+    /// inside the [`RACE_BUDGET`] — the structural fix for the
+    /// S21U/Verizon LTE 90-second hang documented in #50/#52.
+    ///
+    /// Pre-v4.8.0 sequential failover would block on the primary's
+    /// full connect_timeout before trying the fallback. The parallel
+    /// race wins at fallback-response-time regardless of how badly
+    /// the primary is stuck.
     #[tokio::test]
-    async fn resilient_short_circuits_on_404_no_fallback_probes() {
-        // Two servers: primary returns 404, fallback would return 500 (sentinel
-        // for "I should not have been called"). If we incorrectly fail over to
-        // the fallback, we'd get HttpsError; with the fix, we should see NotFound.
+    async fn resilient_blackhole_primary_completes_via_fallback_under_budget() {
+        // Primary: TEST-NET-1 (RFC 5737) — silent blackhole, would
+        // consume the full connect_timeout under sequential failover.
+        // Fallback: loopback 404 responder — answers in milliseconds.
+        let (fallback_addr, _h) = one_shot_status_server("HTTP/1.1 404 Not Found", "").await;
+        let fallback_url = format!("http://{}", fallback_addr);
+
+        let resilient = ResilientRegistryClient::new(
+            "http://192.0.2.1/",
+            &[fallback_url.as_str()],
+            Duration::from_secs(5),
+        )
+        .unwrap();
+
+        let start = std::time::Instant::now();
+        let result = resilient.get_build_by_version("ciris-agent", "9.9.9").await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            matches!(result, Err(VerifyError::NotFound { .. })),
+            "fallback's 404 must surface; got: {result:?}"
+        );
+        // The race must NOT wait for the blackholed primary's full
+        // connect_timeout (3s) — fallback responds in milliseconds.
+        // Generous slack for CI scheduler jitter.
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "parallel race must win at fallback speed, not primary timeout; \
+             got elapsed = {elapsed:?}"
+        );
+    }
+
+    /// Lock (v4.8.0+): `ResilientRegistryClient` reports `NotFound` only
+    /// when ALL endpoints in the parallel race converge on 404. The
+    /// pre-v4.8.0 "primary 404 → skip fallbacks" optimization is gone
+    /// — the cost is one extra probe in the all-404 case; the win is
+    /// that primary's NotFound never silently masks a regional mirror
+    /// that has the resource.
+    #[tokio::test]
+    async fn resilient_returns_notfound_when_all_endpoints_404() {
         let (primary_addr, _h1) = one_shot_status_server("HTTP/1.1 404 Not Found", "").await;
-        let (fallback_addr, _h2) =
-            one_shot_status_server("HTTP/1.1 500 Internal Server Error", "").await;
+        let (fallback_addr, _h2) = one_shot_status_server("HTTP/1.1 404 Not Found", "").await;
 
         let fallback_url = format!("http://{}", fallback_addr);
         let resilient = ResilientRegistryClient::new(
@@ -2469,7 +2479,7 @@ mod tests {
             .unwrap_err();
         assert!(
             matches!(err, VerifyError::NotFound { .. }),
-            "expected NotFound short-circuit; got: {err:?}"
+            "all-endpoints-404 must resolve to NotFound; got: {err:?}"
         );
     }
 

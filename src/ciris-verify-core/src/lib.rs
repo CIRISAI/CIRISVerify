@@ -52,6 +52,7 @@
 
 pub mod app_attest;
 pub mod attest_bundle;
+pub mod attest_heartbeat;
 pub mod audit;
 pub mod binary_format;
 pub mod cache;
@@ -65,6 +66,7 @@ pub mod federation_keyset;
 pub mod federation_provenance;
 pub mod hardware_info;
 pub mod holds_bytes;
+pub mod http_client;
 pub mod https;
 pub mod humanity_accord;
 pub mod jwt;
@@ -74,6 +76,7 @@ pub mod locale_merkle;
 pub mod manifest_cache;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub mod mobile_http;
+pub mod parallel_race;
 pub mod play_integrity;
 pub mod provenance;
 pub mod reconsider_dos;

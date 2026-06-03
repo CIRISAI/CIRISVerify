@@ -513,6 +513,35 @@ pub struct UnifiedAttestationEngine {
     registry_client: Option<ResilientRegistryClient>,
 }
 
+// =============================================================================
+// Strict time-budget hierarchy (v4.8.0, CIRISVerify#52)
+// =============================================================================
+//
+// CIRISAgent's startup attestation budget is 15 seconds. Verify MUST
+// return within that ceiling regardless of network conditions. The
+// budget composes top-down — each inner layer's worst-case ≤ its
+// outer layer's remaining budget:
+//
+//     ATTESTATION_TIMEOUT          (15s, HARD ceiling, outer wrapper)
+//       ├─ NETWORK_PROBE_TIMEOUT   (2s, fast-fail probe before fan-out)
+//       └─ run_attestation_inner   (≤ 13s after probe)
+//            └─ PHASE 1: parallel manifest fetch + validation
+//                 ├─ ResilientRegistryClient::RACE_BUDGET   (10s, per op)
+//                 │    └─ per-endpoint connect_timeout      (≤ 3s)
+//                 │    └─ per-endpoint total_timeout        (≤ 10s)
+//                 │    └─ NotFound grace after first NF     (1s)
+//                 └─ consensus_validator parallel join      (≤ 10s)
+//            └─ PHASE 2: local verification (CPU-only, no budget)
+//
+// Composition check:
+//   2s probe + max(10s manifest-race, 10s consensus) + ~1s tail
+//     = 13s worst-case before outer 15s ceiling truncates → 2s slack.
+//
+// Heartbeat (`attest_heartbeat::HeartbeatGuard`) fires every 5s with
+// elapsed_ms + current phase string so a hang is self-diagnosing in
+// logcat / Console.app instead of producing 89.98s of silence (the
+// S21U/Verizon scenario documented in #50/#52).
+
 /// End-to-end timeout for attestation (15 seconds max).
 const ATTESTATION_TIMEOUT: Duration = Duration::from_secs(15);
 
@@ -531,6 +560,45 @@ const NETWORK_PROBE_TIMEOUT: Duration = Duration::from_secs(2);
 /// network is unreachable. Composes with the 2s probe + a small
 /// margin for the partial-result build.
 const NETWORK_UNAVAILABLE_BUDGET: Duration = Duration::from_secs(10);
+
+/// Single-endpoint reachability probe — platform-aware (v4.8.0, #52).
+///
+/// Desktop: uses the `http_client::ClientPurpose::Probe` factory
+/// (2s connect + 2s total + tcp_keepalive + happy_eyeballs-when-
+/// available). Mobile (Android/iOS): bypasses tokio's IO driver
+/// via `mobile_http::check_status` on a `spawn_blocking` task so
+/// JNI / iOS getaddrinfo quirks don't stall the probe.
+///
+/// Returns `true` if the endpoint answered at all within the probe
+/// budget (any HTTP status — we just want signal that the network
+/// path works). False on connect refused / timeout / DNS error.
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+async fn probe_single_endpoint(endpoint: String) -> bool {
+    use crate::http_client::{build_async_http_client, ClientPurpose};
+    let client = match build_async_http_client(ClientPurpose::Probe) {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    matches!(
+        tokio::time::timeout(NETWORK_PROBE_TIMEOUT, client.head(&endpoint).send()).await,
+        Ok(Ok(_))
+    )
+}
+
+#[cfg(any(target_os = "android", target_os = "ios"))]
+async fn probe_single_endpoint(endpoint: String) -> bool {
+    let result = tokio::time::timeout(
+        NETWORK_PROBE_TIMEOUT,
+        tokio::task::spawn_blocking(move || {
+            // mobile_http::check_status uses ureq's 3s timeout_connect
+            // internally; that's clamped by the outer 2s probe budget.
+            let agent = crate::mobile_http::create_tls_agent(NETWORK_PROBE_TIMEOUT).ok()?;
+            crate::mobile_http::check_status(&agent, &endpoint).ok()
+        }),
+    )
+    .await;
+    matches!(result, Ok(Ok(Some(true))))
+}
 
 impl UnifiedAttestationEngine {
     /// Create a new unified attestation engine.
@@ -614,33 +682,66 @@ impl UnifiedAttestationEngine {
         }
     }
 
-    /// Quick HEAD-probe against the primary registry endpoint
-    /// ([`NETWORK_PROBE_TIMEOUT`] budget). Returns `true` if the
-    /// endpoint responded within budget regardless of HTTP status;
-    /// `false` on DNS failure, connect refused, TLS error, or timeout.
+    /// Race a fast HEAD-probe across primary + all fallback registry
+    /// endpoints within [`NETWORK_PROBE_TIMEOUT`]. Returns `true` if
+    /// ANY endpoint responded within budget regardless of HTTP status.
+    ///
+    /// v4.8.0 — platform-aware AND multi-endpoint racing (#52):
+    /// - Desktop: each probe uses [`crate::http_client::build_async_http_client`]
+    ///   with `ClientPurpose::Probe` — connect_timeout + total_timeout +
+    ///   tcp_keepalive + (happy_eyeballs when reqwest supports it).
+    /// - Android/iOS: each probe goes through the blocking `mobile_http`
+    ///   ureq agent on a `spawn_blocking` task — bypasses tokio IO
+    ///   driver quirks under JNI / iOS getaddrinfo.
+    ///
+    /// Endpoints raced: primary `config.https_endpoint` plus every
+    /// fallback in [`registry::FALLBACK_REGISTRY_URLS`]. So a single
+    /// blackholed IP on primary doesn't falsely flag the entire
+    /// network unavailable when us.* / eu.* are reachable.
     ///
     /// This is the "suspenders" half of the belt-and-suspenders budget
     /// model: probe fast-fails before the 5-call parallel manifest
     /// fan-out commits to its per-call 10s sub-budgets. The outer
     /// [`ATTESTATION_TIMEOUT`] hard ceiling is the belt.
     async fn probe_network_reachability(&self) -> bool {
-        let client = match reqwest::Client::builder()
-            .timeout(NETWORK_PROBE_TIMEOUT)
-            .connect_timeout(NETWORK_PROBE_TIMEOUT)
-            .build()
-        {
-            Ok(c) => c,
-            Err(_) => return false,
+        let targets: Vec<String> = if let Some(ref over) = self.config.probe_targets_override {
+            over.clone()
+        } else {
+            let mut t: Vec<String> = vec![self.config.https_endpoint.clone()];
+            for url in crate::registry::FALLBACK_REGISTRY_URLS {
+                if *url != self.config.https_endpoint {
+                    t.push((*url).to_string());
+                }
+            }
+            t
         };
 
-        matches!(
-            tokio::time::timeout(
-                NETWORK_PROBE_TIMEOUT,
-                client.head(&self.config.https_endpoint).send(),
-            )
-            .await,
-            Ok(Ok(_))
-        )
+        let futures: Vec<_> = targets
+            .into_iter()
+            .map(|endpoint| Box::pin(probe_single_endpoint(endpoint)))
+            .collect();
+
+        // Race: first endpoint that responds (any HTTP status) wins.
+        // Map Ok(true)→Ok(()), anything else→Err(()), then use the
+        // parallel_race helper. If the budget expires with no Ok, the
+        // empty/budget-exceeded sentinels both collapse to false.
+        let race = crate::parallel_race::race_first_ok_within_budget::<_, (), ()>(
+            futures
+                .into_iter()
+                .map(|f| async move {
+                    if f.await {
+                        Ok(())
+                    } else {
+                        Err(())
+                    }
+                })
+                .collect(),
+            NETWORK_PROBE_TIMEOUT,
+            |_| (),
+            || (),
+        );
+
+        race.await.is_ok()
     }
 
     /// Partial result emitted when the network-reachability probe
@@ -717,6 +818,15 @@ impl UnifiedAttestationEngine {
         let mut checks_total = 0u32;
         let mut diagnostics = String::new();
 
+        // CIRISVerify#52 v4.8.0: self-diagnosing heartbeat. Every 5s a
+        // `warn!` line lands in tracing/logcat with elapsed_ms and the
+        // current phase string. Dropped (and the background task
+        // aborted) when this function returns. Without this, a long
+        // hang produced zero log output until the outer 15s ceiling
+        // truncated — see the S21U/Verizon 90s silence in #50.
+        let hb = crate::attest_heartbeat::HeartbeatGuard::spawn("attestation");
+        hb.set_phase("init");
+
         info!(
             "VERIFY ATTESTATION STARTING: Full attestation with {} checks",
             if request.skip_file_integrity {
@@ -745,6 +855,7 @@ impl UnifiedAttestationEngine {
         // PHASE 1: Fetch ALL manifests + run validations IN PARALLEL
         // Critical for mobile where each network call blocks the thread
         // =======================================================================
+        hb.set_phase("phase 1/2: parallel manifest fetch + consensus validation");
         info!("VERIFY PHASE 1/2 STARTING: Parallel manifest fetch + validation (5 network calls)");
 
         let (
@@ -962,6 +1073,7 @@ impl UnifiedAttestationEngine {
             (binary, function, build)
         };
 
+        hb.set_phase("phase 2/2: local verification (integrity + binary self-check)");
         info!("VERIFY PHASE 2/2 STARTING: Local verification (6 checks)");
 
         // =======================================================================
@@ -2868,14 +2980,17 @@ mod tests {
         assert_eq!(result.total_hash, hex::encode(th.finalize()));
     }
 
-    /// CIRISVerify#50: Probe must fast-fail on a refused connection so
-    /// `run_attestation` returns well under `NETWORK_UNAVAILABLE_BUDGET`
-    /// instead of waiting for the outer 15s ceiling.
+    /// CIRISVerify#50/#52 v4.8.0: Probe must fast-fail on a refused
+    /// connection so `run_attestation` returns well under
+    /// `NETWORK_UNAVAILABLE_BUDGET` instead of waiting for the outer
+    /// 15s ceiling. v4.8.0 uses `probe_targets_override` so the
+    /// FALLBACK_REGISTRY_URLS don't accidentally make the probe
+    /// pass via real internet endpoints in CI.
     #[tokio::test]
     async fn probe_returns_false_on_refused_connection_within_budget() {
-        // Unrouted port on loopback - kernel returns ECONNREFUSED immediately.
         let config = VerifyConfig {
-            https_endpoint: "http://127.0.0.1:1/".to_string(),
+            // All targets unreachable - kernel returns ECONNREFUSED immediately.
+            probe_targets_override: Some(vec!["http://127.0.0.1:1/".to_string()]),
             ..VerifyConfig::default()
         };
         let engine = UnifiedAttestationEngine::new(config).expect("engine ok");
@@ -2892,13 +3007,14 @@ mod tests {
         );
     }
 
-    /// CIRISVerify#50: Probe must time out (not hang) when an endpoint
-    /// silently drops packets - bounded by `NETWORK_PROBE_TIMEOUT`.
+    /// CIRISVerify#50/#52 v4.8.0: Probe must time out (not hang) when
+    /// an endpoint silently drops packets - bounded by
+    /// `NETWORK_PROBE_TIMEOUT`.
     #[tokio::test]
     async fn probe_returns_false_within_budget_on_blackhole() {
-        // TEST-NET-1 (RFC 5737) - never routes anywhere on the public Internet.
         let config = VerifyConfig {
-            https_endpoint: "http://192.0.2.1/".to_string(),
+            // TEST-NET-1 (RFC 5737) - never routes anywhere.
+            probe_targets_override: Some(vec!["http://192.0.2.1/".to_string()]),
             ..VerifyConfig::default()
         };
         let engine = UnifiedAttestationEngine::new(config).expect("engine ok");
@@ -2913,6 +3029,55 @@ mod tests {
         assert!(
             elapsed < NETWORK_PROBE_TIMEOUT + Duration::from_secs(1),
             "probe must time-bound at NETWORK_PROBE_TIMEOUT, got {:?}",
+            elapsed
+        );
+    }
+
+    /// CIRISVerify#52 v4.8.0: When one target blackholes but another
+    /// is reachable on loopback, the probe must return `true` well
+    /// under the probe budget (parallel race wins on first success).
+    /// This is the structural fix for the S21U/Verizon scenario where
+    /// `api.registry.*`'s Vultr IP blackholes but us.* / eu.* are
+    /// reachable.
+    #[tokio::test]
+    async fn probe_returns_true_when_one_of_many_targets_is_reachable() {
+        use tokio::net::TcpListener;
+        // Stand up a loopback listener (will refuse-but-respond to HEAD).
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // One accept is enough — once the connection is opened the HEAD
+        // probe sees it as "reachable" regardless of HTTP-level outcome.
+        tokio::spawn(async move {
+            if let Ok((mut s, _)) = listener.accept().await {
+                use tokio::io::AsyncWriteExt;
+                let _ = s
+                    .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+
+        let config = VerifyConfig {
+            probe_targets_override: Some(vec![
+                "http://192.0.2.1/".to_string(),     // blackhole
+                format!("http://127.0.0.1:{port}/"), // reachable
+            ]),
+            ..VerifyConfig::default()
+        };
+        let engine = UnifiedAttestationEngine::new(config).expect("engine ok");
+
+        let start = std::time::Instant::now();
+        let reachable = engine.probe_network_reachability().await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            reachable,
+            "one reachable endpoint among many must win the race"
+        );
+        // Should win on the loopback responder long before the blackhole
+        // even hits its 2s timeout.
+        assert!(
+            elapsed < Duration::from_millis(800),
+            "race winner should resolve fast, got {:?}",
             elapsed
         );
     }
