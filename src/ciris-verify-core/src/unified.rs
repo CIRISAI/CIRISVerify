@@ -3039,18 +3039,35 @@ mod tests {
     /// This is the structural fix for the S21U/Verizon scenario where
     /// `api.registry.*`'s Vultr IP blackholes but us.* / eu.* are
     /// reachable.
-    #[tokio::test]
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn probe_returns_true_when_one_of_many_targets_is_reachable() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
         use tokio::net::TcpListener;
-        // Stand up a loopback listener (will refuse-but-respond to HEAD).
+        // Stand up a loopback listener that does a real HTTP read-then-write
+        // half-duplex exchange. The hand-rolled "just write" version of this
+        // worked on Linux but raced badly on Windows under nextest — Windows
+        // requires us to consume the request bytes before the response is
+        // visible to the client. Mirrors `one_shot_status_server` in registry.rs.
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port();
-        // One accept is enough — once the connection is opened the HEAD
-        // probe sees it as "reachable" regardless of HTTP-level outcome.
         tokio::spawn(async move {
-            if let Ok((mut s, _)) = listener.accept().await {
-                use tokio::io::AsyncWriteExt;
-                let _ = s
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let (read_half, mut write_half) = sock.split();
+                let mut reader = BufReader::new(read_half);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.is_err() {
+                    return;
+                }
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).await.is_err() {
+                        return;
+                    }
+                    if h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                }
+                let _ = write_half
                     .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n")
                     .await;
             }
@@ -3073,10 +3090,10 @@ mod tests {
             reachable,
             "one reachable endpoint among many must win the race"
         );
-        // Should win on the loopback responder long before the blackhole
-        // even hits its 2s timeout.
+        // Loopback responder should beat the blackhole's 2s probe budget
+        // by a wide margin. Generous slack for Windows CI scheduler jitter.
         assert!(
-            elapsed < Duration::from_millis(800),
+            elapsed < Duration::from_millis(1500),
             "race winner should resolve fast, got {:?}",
             elapsed
         );
