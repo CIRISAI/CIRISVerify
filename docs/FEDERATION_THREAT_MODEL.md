@@ -1,17 +1,25 @@
-# CIRIS Federation Threat Model (v1.1)
+# CIRIS Federation Threat Model (v1.2)
 
-**Status**: DRAFT for first publication (2026-05-02; v1.1 update 2026-05-31)
-**Version**: 1.1 (v1.0 + R1/Q1 contracts + F-AV-RECONSIDER-DOS — see Appendix A revision log; supersedes internal drafts v1 and v2)
+**Status**: DRAFT for first publication (2026-05-02; v1.1 update 2026-05-31; v1.2 audit pass 2026-06-03)
+**Version**: 1.2 (v1.1 + completes F-AV-12 / F-AV-13 / F-AV-FRONTRUN / F-AV-ROLLBACK cross-reference sweep claimed by v1.1 changelog — see Appendix A revision log)
 **Audience**: CIRIS engineering, RATCHET evaluator, federation-protocol stakeholders, external reviewers
 **Scope**: federation-emergent threats; cross-references per-repo threat models for substrate threats
-**Last updated**: 2026-05-31
+**Last updated**: 2026-06-03
+
+**v1.2 deltas vs v1.1**: closes the F-AV consumer-body sweep the v1.1 changelog announced but only partially landed (only F-AV-11 was actually updated).
+- F-AV-12 — body now cites the v1.1 Q1 CAP contract instead of "currently a structural gap"; status moved from "Q1 CAP specification still pending" to "spec complete v1.1, downstream enforcement pending CIRISPersist#143 / CIRISRegistry#46".
+- F-AV-13 — body cites both Gap A (R1 propagation) and Gap B (bounded-staleness reads) as the v1.1 anchors for the cache-invalidation protocol it composes with.
+- F-AV-FRONTRUN — quorum-timestamp ordering now cites the v1.1 Q1 tie-break rules (signed-timestamp → canonical-bytes-hash); front-run-protection itself remains Spec.
+- F-AV-ROLLBACK — partition-merge wording moved from "v1.0 proposes" to "v1.1 specifies"; status moved from "Spec partial" to "Spec complete (v1.1) — implementation pending"; anti-rollback-monotonicity extension to non-revocation rows surfaced as a v1.2 followup work item.
+
+Closes CIRISVerify#48 + CIRISVerify#49 (the downstream tracking pointers in CIRISPersist#143 / CIRISRegistry#46 / CIRISConformance#7 Scenario 3 remain open).
 
 **v1.1 deltas vs v1.0**:
 - §3.3 Gap A (R1 timeliness): SPECIFIED — τ_normal ≤ 60s / τ_partial ≤ 300s / "most recent observed wins" merge rule (CIRISVerify#48)
 - §3.3 Gap B (Q1 quorum + CAP): SPECIFIED — quorum-write ⌈2N/3⌉ + bounded-staleness reads + merge rule + τ composition (CIRISVerify#49)
 - §3.3 Gap C (C4 hybrid KEX + KDF): SPECIFIED + SHIPPED v4.6.0 — `hybrid-x25519-mlkem768-hkdf-sha256-v1` + classical fallback (CIRISVerify#47)
 - §6.5 new entry **F-AV-RECONSIDER-DOS** — P11 reconsideration weaponization, primitives shipped v4.5.0 (CIRISVerify#46)
-- F-AV-11 / F-AV-12 / F-AV-13 / F-AV-ROLLBACK / F-AV-FRONTRUN — cross-references updated to cite the now-specified R1 + Q1 bounds
+- F-AV-11 / F-AV-12 / F-AV-13 / F-AV-ROLLBACK / F-AV-FRONTRUN — cross-references updated to cite the now-specified R1 + Q1 bounds (note: only F-AV-11 actually landed in v1.1; v1.2 closes the sweep)
 
 **Implementation Status Legend** (used throughout):
 - **Spec** = specified in this document or a referenced FSD; not implemented
@@ -256,8 +264,9 @@ This reframing has consequences throughout the document. §8.4 redefines the cos
 
 **Coverage by status**:
 - **Deployed**: C0 (formalized v2.0), C1, C2, C3, S1, S2 (registry path), S3.
-- **Spec partial / in transition**: S2 (persist path), R1, Q1.
-- **Spec only / unfilled**: C4, N1, N2.
+- **Spec complete v1.1, implementation pending**: R1, Q1 (contracts at §3.3 Gap A + Gap B; downstream tracked at CIRISPersist#143 / CIRISRegistry#46 / CIRISConformance#7 Scenario 3).
+- **Spec partial / in transition**: S2 (persist path).
+- **Spec only / unfilled**: C4 (specified v1.1 §3.3 Gap C and shipped v4.6.0), N1, N2.
 
 The gap count is real. v2 promoted RNG, KEX/KDF, revocation-propagation, and quorum/CAP from "hidden inside other primitives" to first-class primitives, which exposed 4 gaps that were previously masked. v1.0 keeps this honest framing.
 
@@ -937,20 +946,20 @@ Attacks where individual primitives are correct in isolation but their compositi
 
 **Substrate assumptions**. C0–S1 correct; S2 individual nodes correct; S2 replication is async (eventually consistent without explicit CAP specification).
 
-**Mitigation surface**. Lives in CIRISPersist federation directory + CIRISRegistry replication policy. **Requires explicit Q1 CAP model specification** (currently a structural gap, §3.3 Gap B):
+**Mitigation surface**. Lives in CIRISPersist federation directory + CIRISRegistry replication policy. **Q1 CAP model specified v1.1** (§3.3 Gap B):
 
-- **Consistency model**: target is bounded-staleness with τ-bound (proposed: τ ≤ 60s for reads under normal operation; ≤ 300s under partial failure). Linearizable reads are not feasible across regions; bounded-staleness is the right model.
-- **Read protocol**: high-stakes operations (revocation reads, bond-issuance verification) require reading from at least 2-of-N regions and confirming agreement on the revocation timestamp. **Disagreement protocol**: if region A returns "key K revoked at t1" and region B returns "key K not revoked," the resolution rule is *the most recent observed revocation wins*, with the read held until both regions converge or τ_max elapses (then fail-secure to UNVERIFIED).
-- **R1 priority propagation**: revocation rows are propagated with priority over registrations (newer revocations preempt cached state).
+- **Consistency model**: bounded-staleness with τ-bound — `τ_normal ≤ 60s` (normal operation), `τ_partial ≤ 300s` (partial-failure windows). Linearizable reads are not feasible across regions; bounded-staleness is the chosen model. Composes with the v1.1 R1 contract (§3.3 Gap A) so peers carry one shared τ_normal / τ_partial pair across both questions.
+- **Read protocol**: high-stakes operations (revocation reads, bond-issuance verification) require reading from at least `⌈2N/3⌉` regions (=2 at the current N=3) and confirming agreement on the revocation timestamp. **Disagreement protocol**: if region A returns "key K revoked at t1" and region B returns "key K not revoked," the resolution rule is *the most recent observed revocation wins* (R1 merge rule, §3.3 Gap A), with the read held until both regions converge or `τ_partial` elapses (then fail-secure to UNVERIFIED).
+- **R1 priority propagation**: revocation rows are propagated with priority over registrations (newer revocations preempt cached state) — bound by the §3.3 Gap A R1 timeliness contract.
 - **Lag oracle**: a per-region lag-measurement service publishes current-replication-lag as a signed S2 row. The lag oracle is itself replicated (preventing second-order F-AV-12 on the oracle).
 
-**Cost-asymmetry argument**. Attacker must time actions to the lag window. Defense: minimize lag (τ ≤ 60s); require multi-region read for high-stakes actions.
+**Cost-asymmetry argument**. Attacker must time actions to the lag window. Defense: bounded τ_normal=60s; require multi-region quorum read for high-stakes actions.
 
-**Known weaknesses**: today's deployment has no explicit CAP specification; the implementation is "best-effort eventual consistency with HTTPS-authoritative + 2-of-3 advisory." This is a target without a model. Until Q1 is formally specified, F-AV-12 mitigation is incomplete.
+**Known weaknesses**: pre-v1.1 had no explicit CAP specification. v1.1 specifies the contract (§3.3 Gap B) — what remains is downstream measurement+enforcement at CIRISPersist#143 / CIRISRegistry#46 and the cross-substrate gate at CIRISConformance#7 Scenario 3 (partition + heal scenario). Reduces from "structural exposure" to "measurement-gap class."
 
 **RATCHET signal**: cross-region inconsistencies in directory state at evaluation time are flagged; affected identities have weight provisionally suspended pending consistency.
 
-**Status**. **Partially mitigated by HTTPS-authoritative + 2-of-3 consensus today**; persist v0.2.x will provide stronger replication semantics. Q1 CAP specification still pending.
+**Status**. **Spec complete (v1.1) — implementation pending**. Q1 CAP contract specified at §3.3 Gap B; downstream enforcement tracked at CIRISPersist#143 / CIRISRegistry#46. HTTPS-authoritative + 2-of-3 consensus provides current partial mitigation; persist v0.2.x will provide stronger Q1-conformant replication semantics.
 
 #### F-AV-13: Cache-staleness attack
 
@@ -962,20 +971,20 @@ Attacks where individual primitives are correct in isolation but their compositi
 
 **Substrate assumptions**. S2 authoritative state (persist) correct; registry cache occasionally stale.
 
-**Mitigation surface**. CIRISRegistry caching policy. **Requires explicit invalidation protocol** (currently a structural gap):
+**Mitigation surface**. CIRISRegistry caching policy. The invalidation protocol composes with the v1.1 R1 propagation contract (§3.3 Gap A) and the v1.1 Q1 bounded-staleness reads contract (§3.3 Gap B) — both pin the τ_normal ≤ 60s / τ_partial ≤ 300s envelope the cache TTLs must respect.
 
-- **TTL bounds**: revocation rows ≤ 30s; bond rows ≤ 5min; key-registration rows ≤ 1h.
-- **Push invalidation protocol**: on revocation, persist publishes invalidation message to registry edges via authenticated pub/sub channel. **Message acknowledgement**: registry edges ACK invalidation receipt; persist retries with exponential backoff if ACK missing. **Sequence numbers**: each invalidation carries a monotonic sequence number; registry detects gaps and triggers full-state-resync.
-- **Critical operations bypass cache**: revocation reads + bond-issuance verification read directly from persist (no cache).
+- **TTL bounds**: revocation rows ≤ 30s (well inside τ_normal); bond rows ≤ 5min; key-registration rows ≤ 1h. Revocation TTL ≤ τ_normal/2 leaves headroom under the R1 contract.
+- **Push invalidation protocol**: on revocation, persist publishes invalidation message to registry edges via authenticated pub/sub channel. **Message acknowledgement**: registry edges ACK invalidation receipt; persist retries with exponential backoff if ACK missing. **Sequence numbers**: each invalidation carries a monotonic sequence number; registry detects gaps and triggers full-state-resync. The protocol itself is the implementation of the §3.3 Gap A R1 propagation bound at the cache layer.
+- **Critical operations bypass cache**: revocation reads + bond-issuance verification read directly from persist with `⌈2N/3⌉` quorum (no cache) — Q1 bounded-staleness explicitly amplifies to fresh-quorum when staleness > τ_partial.
 - **Cache-vs-authority audit**: periodic reconciliation between registry cache and persist authoritative state; discrepancies logged to S3.
 
-**Cost-asymmetry argument**. Cache TTL window is the attacker's exploit window. Defense: minimize TTL for revocation rows; bypass cache for critical operations.
+**Cost-asymmetry argument**. Cache TTL window is the attacker's exploit window. Defense: revocation TTL ≤ τ_normal/2; bypass cache for critical operations.
 
-**Known weaknesses**: today's deployment has cache-invalidation but no documented sequence-number / ACK / retry protocol. Cache-vs-authority audit is informal.
+**Known weaknesses**: the R1 + Q1 contracts are specified v1.1 (§3.3 Gap A + Gap B); cache TTL bounds compose under them. What remains: explicit sequence-number / ACK / retry protocol documentation for the push-invalidation channel, and a formalized cache-vs-authority audit cadence. Tracked at CIRISRegistry#46 alongside Q1 enforcement.
 
 **RATCHET signal**: same as F-AV-12.
 
-**Status**. **Partially mitigated by short revocation-row TTLs**; ongoing improvement as registry transitions to cache-fronting role over persist; full invalidation protocol pending specification.
+**Status**. **Partially mitigated by short revocation-row TTLs** (≤ τ_normal/2 under §3.3 Gap A); ongoing improvement as registry transitions to cache-fronting role over persist; invalidation protocol formalization tracked at CIRISRegistry#46.
 
 #### F-AV-14: PQC algorithm-agility window (with bound-signature precision)
 
@@ -1103,19 +1112,19 @@ The bootstrap key is anchored in an **external transparency log** that is not un
 
 **Mitigation surface**:
 - **Submit-then-reveal protocol** for sensitive writes: peer submits a hash-commitment to the write first; reveal is a separate transaction. Front-runner sees the commitment hash but cannot construct a competing write without knowing the contents.
-- **Quorum-acceptance ordering**: high-stakes writes require Q1 quorum acceptance; quorum members vote on inclusion ordering by signed-timestamp (with §8.3 clock-source rules). This pushes the race from "first to publish" to "earliest-signed-timestamp accepted by quorum."
-- **Anti-MEV protections** (borrowed from blockchain literature): time-locked submission queues, batch ordering by hash, fair-ordering protocols (Aequitas, Themis-style). For most CIRIS use cases, simpler quorum-timestamp ordering suffices.
+- **Quorum-acceptance ordering**: high-stakes writes require Q1 `⌈2N/3⌉` quorum acceptance (§3.3 Gap B); quorum members vote on inclusion ordering by signed-timestamp (§8.3 clock-source rules), with canonical-bytes-hash as the deterministic tie-break per the v1.1 Q1 merge rule. This pushes the race from "first to publish" to "earliest-signed-timestamp accepted by `⌈2N/3⌉` quorum, hash-tied if simultaneous."
+- **Anti-MEV protections** (borrowed from blockchain literature): time-locked submission queues, batch ordering by hash, fair-ordering protocols (Aequitas, Themis-style). For most CIRIS use cases, simpler quorum-timestamp + hash-tie ordering suffices and is already the v1.1 Q1 contract.
 
-**Cost-asymmetry argument**: front-running cost is the network observation cost (low) plus the per-action signing cost (low). Defense raises front-running cost to either (a) breaking the commitment hash, OR (b) defeating quorum-timestamp consensus on inclusion order.
+**Cost-asymmetry argument**: front-running cost is the network observation cost (low) plus the per-action signing cost (low). Defense raises front-running cost to either (a) breaking the commitment hash, OR (b) defeating Q1 quorum-timestamp consensus on inclusion order.
 
 **Known weaknesses**:
 - Submit-then-reveal adds latency to high-stakes writes; not viable for all action classes.
-- Quorum-timestamp ordering depends on Q1 specification (currently Spec partial).
+- Quorum-timestamp ordering is anchored by the v1.1 Q1 contract (§3.3 Gap B); downstream enforcement of the tie-break rules is tracked at CIRISPersist#143.
 - Identifying which actions are "high-stakes enough" to require front-run protection is a policy decision.
 
 **RATCHET signal**: write-ordering anomalies — multiple competing writes within a short window where the "winning" write is structurally favorable to one party in a way that suggests pre-knowledge.
 
-**Status**: **Spec only** — front-run protections not currently specified for any action class. Open.
+**Status**: **Spec only** — front-run protections themselves not currently specified for any action class (open). The underlying Q1 ordering rules they depend on are v1.1-specified (§3.3 Gap B).
 
 #### F-AV-ROLLBACK: State rollback via Q1 partition
 
@@ -1128,20 +1137,20 @@ The bootstrap key is anchored in an **external transparency log** that is not un
 **Substrate assumptions**. C2 signatures correct; S2 individual nodes correct; Q1 partition is the leak.
 
 **Mitigation surface**:
-- **Q1 specification with partition-merge rules**: the bounded-staleness CAP model (§3.3 Gap B) must explicitly specify what happens at partition merge. v1.0 proposes: when partitions merge, the *higher-quorum-weight* partition's state wins; minority-partition writes that conflict with majority state are rejected, with the rejected writes preserved in S3 for forensic audit.
-- **Quorum-weight tracking**: each partition tracks how many federation peers are reachable + their cumulative weight. A partition with < 1/3 federation weight cannot independently commit S2 writes (PBFT safety bound; RATCHET L-08 also applies here).
-- **Anti-rollback monotonicity**: revocation rows have monotonically-increasing revision numbers (already specified in CIRIS substrate). A partition that tries to commit a rollback (lower revision number than the majority's accepted state) is rejected by the monotonicity rule.
+- **Q1 partition-merge contract (v1.1, §3.3 Gap B)**: when partitions merge, the *higher-quorum-weight* partition's state wins; tie-break (1) signed-timestamp (later wins, anti-rollback monotonic); tie-break (2, exceedingly rare) canonical-bytes-hash ordering. Minority-partition writes that conflict with majority state are rejected with the rejected writes preserved in S3 for forensic audit.
+- **Quorum-weight tracking**: each partition tracks how many federation peers are reachable + their cumulative weight. A partition with < 1/3 federation weight cannot independently commit S2 writes (PBFT safety bound; RATCHET L-08 also applies here). The `⌈2N/3⌉` quorum-write rule (§3.3 Gap B) is what enforces this at admission.
+- **Anti-rollback monotonicity**: revocation rows have monotonically-increasing revision numbers (CIRIS substrate AV-4 invariant, enforced at Q1 quorum admission per §3.3 Gap B). A partition that tries to commit a rollback (lower revision number than the majority's accepted state) is rejected before quorum is asked.
 
 **Cost-asymmetry argument**: attacker must either (a) achieve > 1/3 federation weight (which is the F-AV-7 cost-asymmetry-collapse threshold by definition), OR (b) break the partition-merge rule cryptographically. Both are out of reach for sub-1/3 attackers.
 
 **Known weaknesses**:
-- Q1 specification is currently Spec partial; partition-merge rules are not formally specified.
-- Anti-rollback monotonicity is implemented for revocations but not uniformly for all S2 row classes.
+- Q1 partition-merge contract specified v1.1 (§3.3 Gap B); downstream enforcement of `⌈2N/3⌉` quorum-write + merge rules tracked at CIRISPersist#143 / CIRISRegistry#46.
+- Anti-rollback monotonicity is implemented for revocations but not uniformly for all S2 row classes — extending to remaining row classes (bond redemptions, attestations) is a v1.2 followup work item.
 - The 1/3-Byzantine bound is the structural limit; an attacker with > 1/3 weight breaks PBFT safety entirely (F-AV-7 territory).
 
 **RATCHET signal**: post-partition merge anomalies — large numbers of rejected writes, inconsistent S3 entries between partition timeline and merged timeline. RATCHET should be alerted to partition-merge events for additional scrutiny.
 
-**Status**: **Spec partial** — anti-rollback monotonicity exists for revocations; full Q1 partition-merge specification is pending.
+**Status**: **Spec complete (v1.1) — implementation pending**. Q1 partition-merge contract specified at §3.3 Gap B; downstream enforcement at CIRISPersist#143 / CIRISRegistry#46; cross-substrate partition+heal test at CIRISConformance#7 Scenario 3. Anti-rollback monotonicity extension to non-revocation rows is a v1.2 followup.
 
 ### 6.5 Availability and coercion class (inverse-Sybil)
 
