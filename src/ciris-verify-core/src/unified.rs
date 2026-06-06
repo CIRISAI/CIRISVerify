@@ -587,13 +587,17 @@ async fn probe_single_endpoint(endpoint: String) -> bool {
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 async fn probe_single_endpoint(endpoint: String) -> bool {
+    // v4.8.1 (#56): use `probe_reachability`, NOT `check_status`. The
+    // distinction matters — the registry returns HTTP 401 (auth
+    // required) on bare hostname GETs, which proves the network path
+    // works. `check_status` (2xx-only) misclassified that as
+    // unreachable, leaving every Android device stuck at attestation
+    // level 0 even on healthy networks. See CIRISVerify#56.
     let result = tokio::time::timeout(
         NETWORK_PROBE_TIMEOUT,
         tokio::task::spawn_blocking(move || {
-            // mobile_http::check_status uses ureq's 3s timeout_connect
-            // internally; that's clamped by the outer 2s probe budget.
             let agent = crate::mobile_http::create_tls_agent(NETWORK_PROBE_TIMEOUT).ok()?;
-            crate::mobile_http::check_status(&agent, &endpoint).ok()
+            Some(crate::mobile_http::probe_reachability(&agent, &endpoint))
         }),
     )
     .await;
@@ -746,12 +750,22 @@ impl UnifiedAttestationEngine {
 
     /// Partial result emitted when the network-reachability probe
     /// short-circuits before the manifest fan-out (CIRISVerify#50).
-    fn network_unavailable_result(&self, elapsed: Duration) -> FullAttestationResult {
+    ///
+    /// v4.8.1 (CIRISVerify#56): `self_verification` is a LOCAL operation
+    /// (hash the running binary) and MUST NOT be nulled by network
+    /// state. The caller passes the locally-computed value here so the
+    /// consumer sees a real hash even on a network-down path. Same
+    /// conflation root as CIRISAgent#862.
+    fn network_unavailable_result(
+        &self,
+        elapsed: Duration,
+        self_verification: Option<SelfVerificationResult>,
+    ) -> FullAttestationResult {
         FullAttestationResult {
             valid: false,
             level: 0,
             level_pending: true,
-            self_verification: None,
+            self_verification,
             key_attestation: None,
             registry_key_status: "network_unavailable".to_string(),
             device_attestation: None,
@@ -799,6 +813,14 @@ impl UnifiedAttestationEngine {
         // `NETWORK_UNAVAILABLE_BUDGET` instead of letting the outer
         // 15s ceiling truncate.
         //
+        // v4.8.1 (CIRISVerify#56): even on the fast-fail path, run
+        // `run_self_verification_with_manifests(None, None)`
+        // unconditionally — the local binary-hash + version + target
+        // fields populate from purely-local data, so the partial result
+        // carries a real value instead of `None`. Closes the conflation
+        // tracked in CIRISAgent#862 (registry-unreachable → binary check
+        // null → agent classifier flips L1 binary_ok True→False).
+        //
         // Closes CIRISAgent#843 budget overshoot under CI parallel load.
         if !self.probe_network_reachability().await {
             let elapsed = start.elapsed();
@@ -810,7 +832,12 @@ impl UnifiedAttestationEngine {
                 elapsed < NETWORK_UNAVAILABLE_BUDGET,
                 "fast-fail exceeded NETWORK_UNAVAILABLE_BUDGET"
             );
-            return Ok(self.network_unavailable_result(elapsed));
+            // Local-only self-verification: hashes the running binary,
+            // compares against None manifests, sets binary_valid=false +
+            // expected_hash=None but populates binary_hash with the real
+            // local computation.
+            let local_self = self.run_self_verification_with_manifests(None, None).await;
+            return Ok(self.network_unavailable_result(elapsed, Some(local_self)));
         }
 
         let mut errors = Vec::new();
@@ -3099,13 +3126,136 @@ mod tests {
         );
     }
 
+    /// CIRISVerify#56 v4.8.1: A registry endpoint that responds HTTP 401
+    /// (auth required) proves the network path works — DNS resolved,
+    /// TCP connected, TLS handshake completed, server responded. The
+    /// v4.8.0 mobile probe used `mobile_http::check_status` (2xx-only)
+    /// and misclassified 401 as "unreachable," leaving every Android
+    /// device stuck at attestation level 0 on healthy networks. This
+    /// test locks the "any HTTP response = reachable" contract on the
+    /// desktop probe path; the mobile-side fix is in
+    /// `mobile_http::probe_reachability`.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn probe_returns_true_when_endpoint_returns_401() {
+        use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+        use tokio::net::TcpListener;
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        // Loopback responder that consumes the request then returns 401
+        // (mirrors the real registry's behavior on bare-hostname GET).
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let (read_half, mut write_half) = sock.split();
+                let mut reader = BufReader::new(read_half);
+                let mut line = String::new();
+                if reader.read_line(&mut line).await.is_err() {
+                    return;
+                }
+                loop {
+                    let mut h = String::new();
+                    if reader.read_line(&mut h).await.is_err() {
+                        return;
+                    }
+                    if h == "\r\n" || h.is_empty() {
+                        break;
+                    }
+                }
+                let _ = write_half
+                    .write_all(
+                        b"HTTP/1.1 401 Unauthorized\r\n\
+                          WWW-Authenticate: Bearer\r\n\
+                          Content-Length: 0\r\n\r\n",
+                    )
+                    .await;
+            }
+        });
+
+        let config = VerifyConfig {
+            probe_targets_override: Some(vec![format!("http://127.0.0.1:{port}/")]),
+            ..VerifyConfig::default()
+        };
+        let engine = UnifiedAttestationEngine::new(config).expect("engine ok");
+
+        let reachable = engine.probe_network_reachability().await;
+        assert!(
+            reachable,
+            "HTTP 401 from the endpoint proves network reachability — \
+             registry's auth-required response is NOT 'unreachable'"
+        );
+    }
+
+    /// CIRISVerify#56 v4.8.1: When the network probe short-circuits to
+    /// "network_unavailable," `self_verification` MUST still be populated
+    /// with the locally-computed binary hash. The local check has zero
+    /// dependency on registry reachability — nulling it conflates a
+    /// network outage with a binary tampering signal and propagates to
+    /// CIRISAgent#862's fleet-wide shutdown cascade.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn network_unavailable_preserves_local_self_verification() {
+        let config = VerifyConfig {
+            probe_targets_override: Some(vec!["http://127.0.0.1:1/".to_string()]),
+            ..VerifyConfig::default()
+        };
+        let engine = UnifiedAttestationEngine::new(config).expect("engine ok");
+
+        let request = FullAttestationRequest {
+            challenge: vec![0u8; 32],
+            agent_version: None,
+            agent_root: None,
+            spot_check_count: 0,
+            audit_entries: None,
+            portal_key_id: None,
+            skip_registry: false,
+            skip_file_integrity: true,
+            skip_audit: true,
+            key_fingerprint: None,
+            partial_file_check: false,
+            python_hashes: None,
+            expected_python_hash: None,
+            agent_project: None,
+        };
+
+        let result = engine.run_attestation(request).await.expect("attestation");
+
+        assert_eq!(
+            result.registry_key_status, "network_unavailable",
+            "loopback:1 must trigger the fast-fail path"
+        );
+        let sv = result
+            .self_verification
+            .expect("self_verification must NOT be None on network-unavailable path");
+        assert!(
+            !sv.binary_hash.is_empty(),
+            "binary_hash is locally computed; network outage does not null it"
+        );
+        assert!(
+            !sv.binary_version.is_empty(),
+            "binary_version is locally known (env! CARGO_PKG_VERSION)"
+        );
+        assert!(
+            !sv.target.is_empty(),
+            "target is locally known (current_target())"
+        );
+        assert_eq!(
+            sv.expected_hash, None,
+            "expected_hash is None when manifest is unavailable — local hash stands on its own"
+        );
+    }
+
     /// CIRISVerify#50: The network_unavailable partial result must
     /// carry the canonical opaque-failure shape - same field names
     /// the timeout-fallback uses, distinct status string.
+    ///
+    /// v4.8.1 (CIRISVerify#56): `self_verification` field is now
+    /// pass-through — callers populate it from a real local-only
+    /// self-verification run before calling this. Asserting `None`
+    /// here is a pure shape check (the bypass path); the
+    /// `network_unavailable_preserves_local_self_verification` test
+    /// covers the wired-up behavior.
     #[test]
     fn network_unavailable_result_shape_is_canonical() {
         let engine = UnifiedAttestationEngine::new(VerifyConfig::default()).expect("engine ok");
-        let result = engine.network_unavailable_result(Duration::from_millis(1234));
+        let result = engine.network_unavailable_result(Duration::from_millis(1234), None);
 
         assert!(!result.valid);
         assert_eq!(result.level, 0);

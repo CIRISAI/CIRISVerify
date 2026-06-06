@@ -123,10 +123,48 @@ pub fn post_json<T: serde::de::DeserializeOwned, B: serde::Serialize>(
     Ok((status, body))
 }
 
-/// Check HTTP status without parsing body.
+/// Check HTTP status without parsing body — returns `true` only on
+/// 2xx. Intended for health-check semantics where 401/404/500 are
+/// meaningfully "not healthy."
 pub fn check_status(agent: &ureq::Agent, url: &str) -> Result<bool, VerifyError> {
     match agent.get(url).call() {
         Ok(response) => Ok(response.status() >= 200 && response.status() < 300),
         Err(_) => Ok(false),
+    }
+}
+
+/// Network-reachability probe (v4.8.1+, CIRISVerify#56).
+///
+/// Returns `true` if the TCP+TLS handshake completed and ANY HTTP
+/// response came back — including 401/403/404/500. The registry
+/// returns HTTP 401 from its bare hostname (auth required), which
+/// **proves** the network path works: DNS resolved, TCP connected,
+/// TLS handshake succeeded, server responded. That's all we need
+/// from a reachability probe.
+///
+/// Returns `false` only on:
+/// - DNS resolution failure
+/// - Connect refused (ECONNREFUSED) / network unreachable (ENETUNREACH)
+/// - TLS handshake failure
+/// - Read/write timeout
+///
+/// **Distinct from [`check_status`]** which is 2xx-only and intended
+/// for health-check semantics. The S21U Galaxy bug (CIRISVerify#56)
+/// was that the v4.8.0 mobile probe used `check_status` and classified
+/// the registry's HTTP 401 response as "unreachable" — even though
+/// 401 demonstrably proves the network worked.
+pub fn probe_reachability(agent: &ureq::Agent, url: &str) -> bool {
+    match agent.get(url).call() {
+        // 2xx — network reachable, server happy.
+        Ok(_) => true,
+        // Non-2xx with a structured response — network reachable, server
+        // returned an HTTP-level error. That's a SUCCESS for the probe.
+        Err(ureq::Error::Status(_, _)) => true,
+        // Any other ureq::Error variant is a transport-level failure
+        // (DNS, connect, TLS, timeout). Not reachable.
+        Err(e) => {
+            warn!("Mobile probe: {} unreachable ({})", url, e);
+            false
+        },
     }
 }
