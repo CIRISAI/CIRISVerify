@@ -698,7 +698,7 @@ jobs:
           # federation_crypto has required-features (skipped above) —
           # compile it explicitly so it can't bit-rot either.
           cargo bench -p ciris-crypto --bench federation_crypto \
-            --features aes-gcm,kdf,hmac,pqc-ml-dsa --no-run
+            --features aes-gcm,kdf,hmac,pqc-ml-dsa,ml-kem,x25519,hybrid-kex,key-grant --no-run
 
   # ==========================================================================
   # MSRV Check
