@@ -37,6 +37,11 @@ key-grant = ["x25519", "aes-gcm", "kdf", "random"]
 # decrypt-later vulnerability).
 ml-kem = ["dep:ml-kem"]
 hybrid-kex = ["x25519", "ml-kem", "kdf", "random"]
+# v4.8.x+ (CIRISVerify#53): liboqs cross-check bench. Gates the `oqs`
+# dev-dep so the (expensive cmake) liboqs build is only paid when the
+# bench is exercised. Off by default — `cargo bench` from CI's default
+# feature set will continue to skip the comparison bench entirely.
+bench-liboqs = ["dep:oqs"]
 
 [dependencies]
 thiserror.workspace = true
@@ -101,6 +106,13 @@ ring = { version = "0.17", optional = true }
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"], optional = true }
 hmac = { version = "0.12", optional = true }
 
+# v4.8.x+ (CIRISVerify#53): liboqs cross-check bench dep. Cargo
+# disallows `optional = true` on `[dev-dependencies]`, so the dep
+# lives here gated on `bench-liboqs`. liboqs is built from source via
+# `oqs-sys`'s cmake build script — expensive — so the feature is OFF
+# by default and only flipped on for the comparison bench.
+oqs = { version = "0.11", default-features = false, features = ["std", "ml_kem", "ml_dsa"], optional = true }
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 hex = "0.4"
@@ -131,3 +143,14 @@ required-features = [
     "hybrid-kex",
     "key-grant",
 ]
+
+# v4.8.x+ (CIRISVerify#53): liboqs AVX2 reference cross-check.
+# OFF by default — `oqs-sys` builds liboqs via cmake (~30s warm,
+# multi-minute cold) and needs libclang + GCC internal headers. Run:
+#   cargo bench -p ciris-crypto --bench liboqs_comparison \
+#     --features bench-liboqs,ml-kem,pqc-ml-dsa
+# See benches/liboqs_comparison.rs module docs for full env notes.
+[[bench]]
+name = "liboqs_comparison"
+harness = false
+required-features = ["bench-liboqs", "ml-kem", "pqc-ml-dsa"]
