@@ -117,4 +117,17 @@ harness = false
 # feature-gated modules. `cargo bench` with default features skips this
 # (Cargo honors required-features); bench.yml + the CI compile-check
 # pass the feature set explicitly.
-required-features = ["aes-gcm", "kdf", "hmac", "pqc-ml-dsa"]
+#
+# v4.8.x added `ml-kem` / `hybrid-kex` / `key-grant` / `x25519` to the
+# required set for the new bench groups (CIRISVerify#53 cross-check
+# against liboqs AVX2 + OpenMLS TreeKEM rekey).
+required-features = [
+    "aes-gcm",
+    "kdf",
+    "hmac",
+    "pqc-ml-dsa",
+    "ml-kem",
+    "x25519",
+    "hybrid-kex",
+    "key-grant",
+]

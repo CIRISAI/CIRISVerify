@@ -1,27 +1,43 @@
-//! Federation crypto-authority benchmarks (CIRISVerify#7, v2.7.0).
+//! Federation crypto-authority benchmarks (CIRISVerify#7, v2.7.0;
+//! ML-KEM-768 / hybrid_kex / key_grant added v4.8.x for CIRISVerify#53).
 //!
 //! Measures the v2.0+ primitives the CIRIS federation centralizes in
 //! `ciris-crypto` so consumers never reach into RustCrypto directly:
-//! hybrid Ed25519 + ML-DSA-65 signing, AES-256-GCM, HKDF/PBKDF2, HMAC.
+//! hybrid Ed25519 + ML-DSA-65 signing, ML-KEM-768 KEM, hybrid X25519 +
+//! ML-KEM-768 KEX, AES-256-GCM AEAD, HPKE-shape DEK wrap (key_grant),
+//! HKDF / PBKDF2 / HMAC.
 //!
-//! Requires features `aes-gcm`, `kdf`, `hmac`, `pqc-ml-dsa` — see the
-//! `required-features` note in `Cargo.toml`.
+//! Requires features `aes-gcm`, `kdf`, `hmac`, `pqc-ml-dsa`, `ml-kem`,
+//! `hybrid-kex`, `key-grant`, `x25519` — see the `required-features`
+//! note in `Cargo.toml`. The PQC, hybrid_kex, and key_grant groups
+//! were added in CIRISVerify v4.8.x for #53 (cross-check against
+//! liboqs AVX2 and OpenMLS TreeKEM rekey targets).
 //!
 //! What to read:
 //!
 //! * `federation_crypto/hybrid_sign` / `hybrid_verify` — the dual
 //!   Ed25519 + ML-DSA-65 path. ML-DSA dominates; this is the cost of
 //!   post-quantum coverage on every federation signature.
+//! * `federation_crypto/ml_kem_*` — ML-KEM-768 (FIPS 203 final)
+//!   keygen / encaps / decaps. Sanity vs CEG model: encaps ~30µs.
+//! * `federation_crypto/hybrid_kex_*` — full 2-party hybrid X25519 +
+//!   ML-KEM-768 handshake. Initiate (ephemeral X25519 + encaps + HKDF
+//!   binding) + respond (X25519 DH + decaps + HKDF re-derive).
+//! * `federation_crypto/classical_kex_*` — X25519-only fallback (no
+//!   ML-KEM). Delta vs `hybrid_kex_*` is the cost of PQ coverage on
+//!   one handshake.
+//! * `federation_crypto/key_grant_*` — HPKE-RFC-9180-base-mode-shaped
+//!   DEK wrap/unwrap (X25519 ECDH → HKDF wrap key → AES-256-GCM seal).
+//!   Comparison point for OpenMLS TreeKEM path-update.
 //! * `federation_crypto/aes_gcm_*` — symmetric AEAD seal/open.
-//! * `federation_crypto/hkdf_sha256` — pure HKDF (no storage load,
-//!   unlike `key_derivation` in ciris-verify-core).
-//! * `federation_crypto/pbkdf2_*` — password-based KDF; cost scales
-//!   linearly with the iteration count (benched at a fixed count).
+//! * `federation_crypto/hkdf_sha256` — pure HKDF.
+//! * `federation_crypto/pbkdf2_*` — password-based KDF (linear in
+//!   iteration count; benched at fixed count).
 //! * `federation_crypto/hmac_sha256` — MAC over a small message.
 
 use ciris_crypto::{
-    aes_gcm, hmac, kdf, Ed25519Signer, Ed25519Verifier, HybridSigner, HybridVerifier,
-    MlDsa65Signer, MlDsa65Verifier,
+    aes_gcm, hmac, hybrid_kex, kdf, key_grant, ml_kem, x25519, Ed25519Signer, Ed25519Verifier,
+    HybridSigner, HybridVerifier, MlDsa65Signer, MlDsa65Verifier,
 };
 use criterion::{black_box, criterion_group, criterion_main, BenchmarkId, Criterion, Throughput};
 
@@ -124,10 +140,113 @@ fn bench_hmac(c: &mut Criterion) {
     group.finish();
 }
 
+fn bench_ml_kem(c: &mut Criterion) {
+    // Pre-generate one keypair so encaps / decaps benches don't fold
+    // keygen cost into their measurement.
+    let (recipient_sk, recipient_pk) = ml_kem::generate_keypair().expect("ml-kem keygen");
+    let (ciphertext, _shared_secret) =
+        ml_kem::encapsulate(&recipient_pk).expect("ml-kem encapsulate");
+
+    let mut group = c.benchmark_group("federation_crypto");
+    group.bench_function("ml_kem_768_keygen", |b| {
+        b.iter(|| ml_kem::generate_keypair().expect("keygen"));
+    });
+    group.bench_function("ml_kem_768_encapsulate", |b| {
+        b.iter(|| ml_kem::encapsulate(black_box(&recipient_pk)).expect("encaps"));
+    });
+    group.bench_function("ml_kem_768_decapsulate", |b| {
+        b.iter(|| {
+            ml_kem::decapsulate(black_box(&recipient_sk), black_box(&ciphertext)).expect("decaps")
+        });
+    });
+    group.finish();
+}
+
+fn bench_hybrid_kex(c: &mut Criterion) {
+    // Pre-generate recipient long-term material (X25519 + ML-KEM-768).
+    let (recipient_x_sk, recipient_x_pk) =
+        x25519::generate_ephemeral_keypair().expect("x25519 keygen");
+    let (recipient_mlkem_sk, recipient_mlkem_pk) =
+        ml_kem::generate_keypair().expect("ml-kem keygen");
+
+    // Pre-build a handshake message for the respond-side bench.
+    let (handshake_msg, _initiator_session_key) =
+        hybrid_kex::initiate_hybrid(&recipient_x_pk, &recipient_mlkem_pk).expect("initiate hybrid");
+
+    let mut group = c.benchmark_group("federation_crypto");
+    group.bench_function("hybrid_kex_initiate", |b| {
+        b.iter(|| {
+            hybrid_kex::initiate_hybrid(black_box(&recipient_x_pk), black_box(&recipient_mlkem_pk))
+                .expect("initiate")
+        });
+    });
+    group.bench_function("hybrid_kex_respond", |b| {
+        b.iter(|| {
+            hybrid_kex::respond_hybrid_with_public(
+                black_box(&recipient_x_sk),
+                black_box(&recipient_mlkem_sk),
+                black_box(&recipient_mlkem_pk),
+                black_box(&handshake_msg),
+            )
+            .expect("respond")
+        });
+    });
+    group.finish();
+}
+
+fn bench_classical_kex(c: &mut Criterion) {
+    // X25519-only fallback path. The delta vs `hybrid_kex_*` is the
+    // cost of PQ coverage on one handshake.
+    let (recipient_x_sk, recipient_x_pk) =
+        x25519::generate_ephemeral_keypair().expect("x25519 keygen");
+    let (classical_msg, _initiator_session_key) =
+        hybrid_kex::initiate_classical(&recipient_x_pk).expect("initiate classical");
+
+    let mut group = c.benchmark_group("federation_crypto");
+    group.bench_function("classical_kex_initiate", |b| {
+        b.iter(|| {
+            hybrid_kex::initiate_classical(black_box(&recipient_x_pk)).expect("initiate classical")
+        });
+    });
+    group.bench_function("classical_kex_respond", |b| {
+        b.iter(|| {
+            hybrid_kex::respond_classical(black_box(&recipient_x_sk), black_box(&classical_msg))
+                .expect("respond classical")
+        });
+    });
+    group.finish();
+}
+
+fn bench_key_grant(c: &mut Criterion) {
+    // HPKE-RFC-9180-base-mode-shaped DEK wrap/unwrap. Comparison point
+    // for OpenMLS TreeKEM path-update (one rekey edge).
+    let (recipient_sk, recipient_pk) = x25519::generate_ephemeral_keypair().expect("x25519 keygen");
+    let dek = [0x7Au8; 32];
+    let wrap = key_grant::wrap_dek_for_recipient(&recipient_pk, &dek).expect("wrap");
+
+    let mut group = c.benchmark_group("federation_crypto");
+    group.bench_function("key_grant_wrap", |b| {
+        b.iter(|| {
+            key_grant::wrap_dek_for_recipient(black_box(&recipient_pk), black_box(&dek))
+                .expect("wrap")
+        });
+    });
+    group.bench_function("key_grant_unwrap", |b| {
+        b.iter(|| {
+            key_grant::unwrap_dek(black_box(&recipient_sk), black_box(&wrap)).expect("unwrap")
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_hybrid_sign,
     bench_hybrid_verify,
+    bench_ml_kem,
+    bench_hybrid_kex,
+    bench_classical_kex,
+    bench_key_grant,
     bench_aes_gcm,
     bench_kdf,
     bench_hmac,
