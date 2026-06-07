@@ -1,0 +1,26 @@
+# CODEOWNERS — two-person-rule on authoritative governance + threat-model docs.
+#
+# CIRISVerify#54 (Fed TM §3.3 Gap G / §6.7 F-AV-MAINT): the threat
+# model is markdown in a git repo with no signing requirement and no
+# two-person rule. A maintainer compromise — or a careless edit — that
+# silently downgrades an F-AV's `Status: Open` to `Status: Mitigated`,
+# mis-specifies a RATCHET signal, or quietly weakens a mitigation,
+# corrupts every downstream RATCHET designer's mental model. RATCHET
+# cannot detect this (the threat model defines RATCHET's job); detection
+# is external — review, signed-version verification, hash mismatch.
+#
+# This file is Phase 1 (the cheap structural half): require an explicit
+# reviewer on every change to the authoritative docs. Pair it with a
+# branch-protection rule ("Require review from Code Owners") on `main`.
+# Phase 2 is the cryptographic half — `ciris_verify_core::doc_integrity`
+# (hybrid-signed content hash). Phase 3 composes the M-of-N steward
+# threshold (CIRISVerify#31) over the doc signature.
+
+# Authoritative threat-model + governance documents — two-person rule.
+/docs/FEDERATION_THREAT_MODEL.md   @emooreatx
+/docs/THREAT_MODEL.md              @emooreatx
+/MISSION.md                        @emooreatx
+
+# The document-integrity substrate itself + the bootstrap trust anchor.
+/src/ciris-verify-core/src/doc_integrity.rs      @emooreatx
+/src/ciris-verify-ffi/data/bootstrap_stewards.json   @emooreatx

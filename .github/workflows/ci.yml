@@ -46,6 +46,55 @@ jobs:
           echo "✓ All versions match: $CARGO_VERSION"
 
   # ==========================================================================
+  # Threat-model doc integrity (CIRISVerify#54, Gap G / F-AV-MAINT)
+  # --------------------------------------------------------------------------
+  # A PR that edits an authoritative governance / threat-model doc MUST
+  # also record WHAT changed and WHY in that doc's changelog block near
+  # the top. This is the cheap structural half of F-AV-MAINT mitigation
+  # (paired with the CODEOWNERS two-person rule + the doc_integrity
+  # crypto substrate). It makes a silent F-AV-status downgrade visible:
+  # you can't change the doc without leaving a diffable provenance line.
+  # Only runs on pull_request (needs the base ref for the diff).
+  # ==========================================================================
+  threat-model-changelog:
+    name: Threat-model changelog guard
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Require a changelog delta on authoritative-doc edits
+        run: |
+          set -e
+          BASE="origin/${{ github.base_ref }}"
+          git fetch origin "${{ github.base_ref }}" --depth=1 >/dev/null 2>&1 || true
+          # Authoritative docs whose edits demand a changelog delta.
+          GUARDED="docs/FEDERATION_THREAT_MODEL.md docs/THREAT_MODEL.md MISSION.md"
+          CHANGED=$(git diff --name-only "$BASE"...HEAD || true)
+          fail=0
+          for doc in $GUARDED; do
+            if echo "$CHANGED" | grep -qx "$doc"; then
+              echo "Authoritative doc edited: $doc"
+              # The changelog provenance lives in the first ~40 lines
+              # (version stamp + 'vX deltas' block). Require that an
+              # edit touches one of those lines — i.e. the diff hunk
+              # headers cover the header region OR a 'deltas'/'Last
+              # updated'/'Version' line appears in the added lines.
+              ADDED=$(git diff "$BASE"...HEAD -- "$doc" | grep '^+' || true)
+              if echo "$ADDED" | grep -qiE '(deltas vs|Last updated|^\+\*\*Version\*\*|revision log|changelog)'; then
+                echo "  ✓ changelog provenance updated"
+              else
+                echo "  ✗ $doc changed WITHOUT a changelog delta (version stamp / 'deltas' / 'Last updated' line)."
+                echo "    Per CIRISVerify#54 (F-AV-MAINT), every authoritative-doc edit must record what changed + why."
+                fail=1
+              fi
+            fi
+          done
+          if [ "$fail" -ne 0 ]; then exit 1; fi
+          echo "✓ Threat-model changelog guard passed"
+
+  # ==========================================================================
   # Code Quality
   # ==========================================================================
   fmt:

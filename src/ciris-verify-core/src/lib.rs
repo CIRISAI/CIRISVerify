@@ -59,6 +59,7 @@ pub mod cache;
 pub mod ceg_error;
 pub mod config;
 pub mod dns;
+pub mod doc_integrity;
 pub mod engine;
 pub mod error;
 pub mod federation_envelope;
