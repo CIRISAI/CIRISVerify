@@ -697,8 +697,17 @@ jobs:
           cargo bench --workspace --no-run
           # federation_crypto has required-features (skipped above) —
           # compile it explicitly so it can't bit-rot either.
+          # v4.8.1+ (CIRISVerify#53 phase 1): added ml-kem / x25519 /
+          # hybrid-kex / key-grant to the bench feature set when ml_kem,
+          # hybrid_kex, and key_grant bench groups landed.
           cargo bench -p ciris-crypto --bench federation_crypto \
-            --features aes-gcm,kdf,hmac,pqc-ml-dsa --no-run
+            --features aes-gcm,kdf,hmac,pqc-ml-dsa,ml-kem,x25519,hybrid-kex,key-grant \
+            --no-run
+          # liboqs_comparison bench (CIRISVerify#53 phase 2) is intentionally
+          # NOT compile-checked here — `oqs-sys` builds liboqs from source
+          # via cmake (~30s warm, multi-minute cold) and pulls libclang.
+          # The bench is off by default; activating it on every CI run is
+          # an unnecessary tax. See benches/liboqs_comparison.rs module docs.
 
   # ==========================================================================
   # MSRV Check
