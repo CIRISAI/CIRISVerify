@@ -307,6 +307,36 @@ jobs:
           PROPTEST_CASES: 64
 
   # ==========================================================================
+  # Feature-gated crypto tests (v4.10.0+, CIRISVerify#58)
+  # --------------------------------------------------------------------------
+  # `nextest run --all` above uses DEFAULT features per crate (--all-features
+  # is excluded because the TPM feature needs system libs). ciris-crypto's
+  # default does NOT include key-grant / hybrid-kex / ml-kem, so the
+  # feature-gated crypto — key_grant v1+v2 DEK wrap, hybrid X25519+ML-KEM-768
+  # KEX, ML-KEM-768 KEM — was running CI-dark. This job exercises that
+  # surface explicitly. It is security-critical (the §10.5.3 harvest-now-
+  # decrypt-later DEK wrap) so a regression here MUST fail CI.
+  # ==========================================================================
+  crypto-features:
+    name: Crypto feature-gated tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        continue-on-error: true
+        with:
+          cache-bin: false
+      - name: Install cargo-nextest
+        uses: taiki-e/install-action@nextest
+      - name: Test ciris-crypto with full crypto feature set
+        run: |
+          cargo nextest run -p ciris-crypto --profile ci \
+            --features ecdsa-p256,ed25519,secp256k1,random,aes-gcm,kdf,hmac,pqc-ml-dsa,x25519,ml-kem,hybrid-kex,key-grant
+        env:
+          PROPTEST_CASES: 64
+
+  # ==========================================================================
   # Build Matrix - Native Platforms
   # ==========================================================================
   build-native:
