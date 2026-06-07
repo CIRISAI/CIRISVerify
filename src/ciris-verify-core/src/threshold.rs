@@ -52,12 +52,41 @@ use base64::Engine;
 use ciris_crypto::{ClassicalVerifier, Ed25519Verifier, MlDsa65Verifier, PqcVerifier};
 use serde::{Deserialize, Serialize};
 
+/// Role of a trusted threshold-signing member.
+///
+/// Used by CEG 0.11+ `cohort_subkind: infrastructure` trust-root
+/// communities (CIRISVerify#31 / CIRISRegistry#56), where admission
+/// must be evaluated over the founder subset rather than the full
+/// member set — the anti-Sybil guardrail that prevents flooding
+/// the membership from diluting the admission quorum.
+///
+/// For non-infrastructure callers, members carry `role: None`
+/// (serialized as absent) and are treated as `Member` by anything
+/// that asks; the existing flat-member `verify_threshold_signatures`
+/// is role-blind and continues to work unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Role {
+    /// Founding member of the trust root. Admission quorum is
+    /// evaluated over this subset for `cohort_subkind: infrastructure`
+    /// communities with `admission_quorum_basis: "founders"`.
+    Founder,
+    /// Non-founding member. Counts toward operational signatures but
+    /// not toward admission of new members.
+    Member,
+}
+
 /// A trusted threshold-signing member — the pinned identity of a key
 /// that may contribute toward a threshold.
 ///
 /// Wire-shape mirrors CIRISPersist's `KeyRecord` (base64 strings) so a
 /// federation announcement carrying these can be serialized directly
 /// between persist, the agent, and verify.
+///
+/// `role` was added in CIRISVerify v4.9.0 for `cohort_subkind: infrastructure`
+/// support (CIRISVerify#31). Existing JSON without the field deserializes
+/// with `role: None` and behaves as before — `verify_threshold_signatures`
+/// ignores the field; only the new `verify_founder_quorum` consumes it.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ThresholdMember {
     /// Stable identifier for the member.
@@ -69,6 +98,11 @@ pub struct ThresholdMember {
     /// signatures from this member still count toward the threshold.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mldsa65_public_key_base64: Option<String>,
+    /// CEG 0.11+ role (`founder` / `member`). `None` for legacy callers
+    /// and non-infrastructure use cases — treated as `Member` by
+    /// founder-aware verifiers ([`verify_founder_quorum`]).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub role: Option<Role>,
 }
 
 /// A submitted signature toward a threshold.
@@ -220,6 +254,42 @@ pub fn verify_threshold_signatures(
     }
 }
 
+/// Verify an M-of-N hybrid threshold-signature set over `bytes`,
+/// **restricted to members with `role == Role::Founder`**.
+///
+/// CEG 0.11+ `cohort_subkind: infrastructure` communities (the
+/// `ciris-canonical` trust root and any sibling service-class trust
+/// root) require admission to be evaluated over the founder subset
+/// rather than the full member set. Growing the membership with
+/// `role: Member` admittees MUST NOT dilute the admission quorum —
+/// that's the anti-Sybil property a trust root needs.
+///
+/// This function filters `members` to founders first, then delegates
+/// to [`verify_threshold_signatures`]. Errors:
+/// - [`ThresholdError::ThresholdExceedsMembers`] when `threshold` exceeds
+///   the founder-subset size (the policy is unsatisfiable).
+/// - [`ThresholdError::Insufficient`] when fewer than `threshold`
+///   founders signed validly (note: only the founder subset is
+///   reported as `members` in the error).
+///
+/// A signature from a `role: Member` member is silently ignored —
+/// not counted, not an error. Signatures from members with `role: None`
+/// (legacy / non-infrastructure shape) are likewise ignored, since
+/// "founder" must be explicitly declared for a trust root.
+pub fn verify_founder_quorum(
+    bytes: &[u8],
+    members: &[ThresholdMember],
+    signatures: &[ThresholdSignature],
+    threshold: usize,
+) -> Result<usize, ThresholdError> {
+    let founders: Vec<ThresholdMember> = members
+        .iter()
+        .filter(|m| matches!(m.role, Some(Role::Founder)))
+        .cloned()
+        .collect();
+    verify_threshold_signatures(bytes, &founders, signatures, threshold)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -249,6 +319,7 @@ mod tests {
                 ed25519_public_key_base64: b64.encode(self.ed.public_key().unwrap()),
                 mldsa65_public_key_base64: include_pqc
                     .then(|| b64.encode(self.mldsa.public_key().unwrap())),
+                role: None,
             }
         }
 
@@ -513,6 +584,125 @@ mod tests {
         assert!(matches!(
             verify_threshold_signatures(intent_bytes, &accord_holders, &one_sig, 2),
             Err(ThresholdError::Insufficient { .. })
+        ));
+    }
+
+    // =========================================================================
+    // Founder-quorum tests (CIRISVerify#31, CEG 0.11 `cohort_subkind: infrastructure`)
+    // =========================================================================
+
+    /// Helper to tag a Party's ThresholdMember with a role.
+    fn member_with_role(party: &Party, role: Role) -> ThresholdMember {
+        ThresholdMember {
+            role: Some(role),
+            ..party.member(true)
+        }
+    }
+
+    /// Lock the CEG 0.11 anti-Sybil property: flooding the membership
+    /// with non-founder members must NOT make admission easier. With
+    /// 2 founders + 2 non-founder members, threshold=2, the 2 founders
+    /// must both sign for the quorum to pass — non-founder signatures
+    /// don't count.
+    #[test]
+    fn founder_quorum_anti_sybil_non_founders_dont_count() {
+        let bytes = b"infrastructure-community-admission-payload";
+        let founders = [Party::new("founder-us"), Party::new("founder-eu")];
+        let non_founders = [Party::new("lens-install"), Party::new("node-install")];
+
+        let mut members: Vec<ThresholdMember> = founders
+            .iter()
+            .map(|p| member_with_role(p, Role::Founder))
+            .collect();
+        members.extend(
+            non_founders
+                .iter()
+                .map(|p| member_with_role(p, Role::Member)),
+        );
+
+        // Only non-founder signatures — must fail (zero founders signed).
+        let sigs_non_founder: Vec<_> = non_founders.iter().map(|p| p.sign(bytes, true)).collect();
+        let res = verify_founder_quorum(bytes, &members, &sigs_non_founder, 2);
+        assert!(
+            matches!(res, Err(ThresholdError::Insufficient { valid: 0, .. })),
+            "non-founder signatures must not satisfy founder quorum; got {res:?}"
+        );
+
+        // Both founders sign — quorum satisfied.
+        let sigs_founders: Vec<_> = founders.iter().map(|p| p.sign(bytes, true)).collect();
+        assert_eq!(
+            verify_founder_quorum(bytes, &members, &sigs_founders, 2),
+            Ok(2)
+        );
+
+        // Mixed signatures (1 founder + 1 non-founder) — only 1 founder
+        // counted, threshold=2 not met.
+        let sigs_mixed = vec![
+            founders[0].sign(bytes, true),
+            non_founders[0].sign(bytes, true),
+        ];
+        let res = verify_founder_quorum(bytes, &members, &sigs_mixed, 2);
+        assert!(
+            matches!(res, Err(ThresholdError::Insufficient { valid: 1, .. })),
+            "1 founder + 1 non-founder must report valid=1; got {res:?}"
+        );
+    }
+
+    /// Members with `role: None` (legacy / non-infrastructure shape)
+    /// are treated as Member, not Founder. A keyset of all-`None`
+    /// members can never satisfy a founder quorum — fail-secure.
+    #[test]
+    fn founder_quorum_treats_role_none_as_member() {
+        let bytes = b"legacy-keyset-bytes";
+        let parties = [Party::new("a"), Party::new("b")];
+        // Default member() returns role: None.
+        let members: Vec<ThresholdMember> = parties.iter().map(|p| p.member(true)).collect();
+        let sigs: Vec<_> = parties.iter().map(|p| p.sign(bytes, true)).collect();
+        let res = verify_founder_quorum(bytes, &members, &sigs, 1);
+        // Founder subset is EMPTY → threshold=1 exceeds member-set size 0.
+        assert!(
+            matches!(
+                res,
+                Err(ThresholdError::ThresholdExceedsMembers {
+                    threshold: 1,
+                    members: 0
+                })
+            ),
+            "all-None-role keyset must report empty founder subset; got {res:?}"
+        );
+    }
+
+    /// CEG 0.15 worked example shape: 3 founders, 2-of-3 quorum.
+    /// Any 2 of the 3 founders' signatures satisfy admission.
+    #[test]
+    fn founder_quorum_2_of_3_founders() {
+        let bytes = b"ciris-canonical-supersedes-payload";
+        let founders = [
+            Party::new("registry-steward-us"),
+            Party::new("registry-steward-eu"),
+            Party::new("registry-steward-apac"),
+        ];
+        let members: Vec<ThresholdMember> = founders
+            .iter()
+            .map(|p| member_with_role(p, Role::Founder))
+            .collect();
+
+        // us + eu sign — admitted.
+        let sigs = vec![founders[0].sign(bytes, true), founders[1].sign(bytes, true)];
+        assert_eq!(verify_founder_quorum(bytes, &members, &sigs, 2), Ok(2));
+
+        // us + apac sign — also admitted (any 2 of 3 founders).
+        let sigs = vec![founders[0].sign(bytes, true), founders[2].sign(bytes, true)];
+        assert_eq!(verify_founder_quorum(bytes, &members, &sigs, 2), Ok(2));
+
+        // Just us — insufficient.
+        let sigs = vec![founders[0].sign(bytes, true)];
+        assert!(matches!(
+            verify_founder_quorum(bytes, &members, &sigs, 2),
+            Err(ThresholdError::Insufficient {
+                valid: 1,
+                threshold: 2
+            })
         ));
     }
 }

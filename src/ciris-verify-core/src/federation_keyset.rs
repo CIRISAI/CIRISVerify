@@ -123,6 +123,7 @@ mod tests {
             member_id: id.to_string(),
             ed25519_public_key_base64: ed.to_string(),
             mldsa65_public_key_base64: mldsa.map(str::to_string),
+            role: None,
         }
     }
 
@@ -255,6 +256,7 @@ mod tests {
                 member_id: id.clone(),
                 ed25519_public_key_base64: b64.encode(ed.public_key().unwrap()),
                 mldsa65_public_key_base64: Some(b64.encode(mldsa.public_key().unwrap())),
+                role: None,
             })
             .collect();
 

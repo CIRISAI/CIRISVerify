@@ -69,6 +69,7 @@ pub mod holds_bytes;
 pub mod http_client;
 pub mod https;
 pub mod humanity_accord;
+pub mod infrastructure_community;
 pub mod jwt;
 pub mod keys;
 pub mod license;
