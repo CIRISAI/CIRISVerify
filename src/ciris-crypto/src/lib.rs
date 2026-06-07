@@ -63,6 +63,13 @@ pub mod hmac;
 #[cfg(feature = "random")]
 pub mod random;
 
+// v4.9.0+ (CIRISVerify#55 Gap H): SP 800-90B startup RNG health-check +
+// fail-secure gate read by `random::fill`. Gated alongside `random`
+// since it shares the `rand_core::OsRng` entropy path and exists to
+// guard it.
+#[cfg(feature = "random")]
+pub mod rng_health;
+
 // v4.4.0+ — X25519 ECDH primitive + HPKE-shape key-grant wrap
 // (CIRISVerify#44 / CIRISNodeCore MEDIA_SHARING.md §6.3).
 #[cfg(feature = "x25519")]
@@ -97,6 +104,14 @@ pub use ed25519::{Ed25519Signer, Ed25519Verifier};
 
 #[cfg(feature = "pqc-ml-dsa")]
 pub use ml_dsa::{MlDsa65Signer, MlDsa65Verifier};
+
+// v4.9.0+ (CIRISVerify#55 Gap H): surface the startup health-check
+// entry points at the crate root so consumers can run the gate at
+// process init without spelling out the module path. Mirrors how the
+// signer types are hoisted above; the `random` module itself stays
+// module-pathed (`crate::random::{fill,bytes}`) per its existing style.
+#[cfg(feature = "random")]
+pub use rng_health::{is_rng_failed, run_startup_health_check, RngHealth};
 
 /// Constant-time byte comparison.
 ///

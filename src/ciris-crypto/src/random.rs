@@ -16,15 +16,35 @@
 use rand_core::{OsRng, RngCore};
 
 use crate::error::CryptoError;
+use crate::rng_health;
 
 /// Fill `buf` with cryptographically-secure random bytes.
 ///
+/// # Fail-secure gate (CIRISVerify#55 Gap H)
+///
+/// Before drawing, this reads the latched startup RNG health verdict
+/// via [`rng_health::is_rng_failed`]. If the SP 800-90B startup
+/// health-check has run AND failed (the OS entropy source is producing
+/// detectably non-random output), `fill` returns
+/// `CryptoError::RngHealthCheckFailed` WITHOUT drawing — degrading
+/// closed rather than emitting potentially-predictable bytes. The gate
+/// only READS the latch; it never runs the check itself (the check
+/// draws, which would risk recursion). Callers invoke
+/// [`rng_health::run_startup_health_check`] once at process init.
+///
 /// # Errors
 ///
-/// `CryptoError::SerializationError` (re-purposed for "couldn't fill
-/// from OS entropy source") on the rare platforms where `OsRng` can
-/// fail. On Linux/macOS/Windows this is effectively infallible.
+/// - `CryptoError::RngHealthCheckFailed` if the startup health-check
+///   failed (fail-secure; no bytes drawn).
+/// - `CryptoError::SerializationError` (re-purposed for "couldn't fill
+///   from OS entropy source") on the rare platforms where `OsRng` can
+///   fail. On Linux/macOS/Windows this is effectively infallible.
 pub fn fill(buf: &mut [u8]) -> Result<(), CryptoError> {
+    if rng_health::is_rng_failed() {
+        return Err(CryptoError::RngHealthCheckFailed(
+            "OS RNG failed the SP 800-90B startup health-check; refusing to draw".to_string(),
+        ));
+    }
     let mut rng = OsRng;
     rng.try_fill_bytes(buf)
         .map_err(|e| CryptoError::SerializationError(format!("OsRng fill: {e}")))
@@ -77,5 +97,49 @@ mod tests {
         fill(&mut empty).unwrap();
         let zero_bytes = bytes(0).unwrap();
         assert!(zero_bytes.is_empty());
+    }
+
+    /// When the health latch is forced to `Failed`, `fill` fail-secures
+    /// with `RngHealthCheckFailed` and draws nothing; forcing it back to
+    /// `Healthy` restores normal operation.
+    ///
+    /// The health latch is a process-global shared by every test in the
+    /// crate, so this test holds a static serialization mutex for the
+    /// duration of its forced-`Failed` window and ALWAYS restores the
+    /// latch to `Healthy` before releasing it. That keeps the global in
+    /// a benign (Healthy) state for any test that races afterward and
+    /// makes this test deterministic rather than flaky.
+    #[test]
+    fn fill_fails_secure_when_rng_marked_failed() {
+        use crate::rng_health::{self, RngHealth};
+        use std::sync::Mutex;
+
+        // Serialize against any other test that pokes the global latch.
+        static GATE: Mutex<()> = Mutex::new(());
+        let _guard = GATE.lock().unwrap_or_else(|p| p.into_inner());
+
+        rng_health::__force_health_for_test(RngHealth::Failed {
+            test: "test-injected",
+            detail: "forced for fail-secure path".to_string(),
+        });
+
+        let mut buf = [0u8; 16];
+        let err = fill(&mut buf).unwrap_err();
+        assert!(
+            matches!(err, CryptoError::RngHealthCheckFailed(_)),
+            "expected RngHealthCheckFailed, got {err:?}"
+        );
+        // Fail-secure means no bytes were emitted into the buffer.
+        assert!(buf.iter().all(|&b| b == 0));
+        // bytes() inherits the gate through fill().
+        assert!(matches!(
+            bytes(16).unwrap_err(),
+            CryptoError::RngHealthCheckFailed(_)
+        ));
+
+        // Restore and confirm normal operation resumes.
+        rng_health::__force_health_for_test(RngHealth::Healthy);
+        fill(&mut buf).unwrap();
+        assert!(buf.iter().any(|&b| b != 0));
     }
 }

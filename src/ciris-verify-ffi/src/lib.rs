@@ -1094,6 +1094,26 @@ pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
     // 1. JNI threads have special characteristics
     // 2. Multi-threaded runtime spawns worker threads that aren't JNI-attached
     // 3. Those worker threads hang when trying to do I/O operations
+    // v4.9.0 (CIRISVerify#55, Gap H): SP 800-90B startup RNG health-check.
+    // Runs here — after platform logging is wired so the verdict reaches
+    // logcat/console, and before any crypto draws entropy. Latches its
+    // verdict process-wide; on failure the fail-secure gate inside
+    // `ciris_crypto::random::fill` makes every subsequent draw error, so
+    // nonce/key/KEX generation fails closed and the attestation degrades
+    // naturally — no separate wire field needed.
+    {
+        use ciris_crypto::rng_health::{run_startup_health_check, RngHealth};
+        match run_startup_health_check() {
+            RngHealth::Healthy => tracing::info!("RNG startup health-check: OK (SP 800-90B)"),
+            RngHealth::Failed { test, detail } => tracing::error!(
+                test,
+                %detail,
+                "RNG startup health-check FAILED — entropy source producing detectably \
+                 non-random output; all crypto draws now fail-secure"
+            ),
+        }
+    }
+
     tracing::info!("Creating async runtime");
     #[cfg(target_os = "android")]
     let runtime = match tokio::runtime::Builder::new_current_thread()

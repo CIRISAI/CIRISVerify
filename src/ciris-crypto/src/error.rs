@@ -112,6 +112,13 @@ pub enum CryptoError {
     /// `255 * HashLen` per RFC 5869; PBKDF2 refuses zero iterations.
     #[error("KDF parameter error: {0}")]
     KdfParameter(String),
+
+    /// The startup RNG health-check (SP 800-90B repetition-count +
+    /// adaptive-proportion) failed; the OS entropy source is producing
+    /// detectably non-random output. Fail-secure: every `random::fill`
+    /// returns this instead of emitting potentially-degraded bytes.
+    #[error("RNG health-check failed: {0}")]
+    RngHealthCheckFailed(String),
 }
 
 impl CryptoError {
