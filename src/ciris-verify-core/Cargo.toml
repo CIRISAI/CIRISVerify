@@ -36,6 +36,13 @@ clap = { version = "4.5", features = ["derive"] }
 # Serialization
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+# v4.11.0 (CIRISVerify#59): RFC 8785 JSON Canonicalization Scheme — the
+# cross-impl signing-bytes encoding CEG §0.9 mandates for federation
+# Contributions. Wrapped behind `ciris_verify_core::jcs`; the notorious
+# ECMAScript number-to-string algorithm (RFC 8785 §3.2.2.3) lives in this
+# crate's `ryu-js` backend rather than being hand-rolled. Behavior is
+# locked by RFC 8785 Appendix B KAT vectors in `jcs::tests`.
+serde_jcs = "0.2"
 prost.workspace = true
 
 # Error handling
