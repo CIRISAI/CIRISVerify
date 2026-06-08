@@ -111,23 +111,36 @@ jobs:
           set -eux
           DEADLINE=$((SECONDS + 300))
           VER="${{ steps.ver.outputs.version }}"
+          # v4.11.0: PyPI's CDN edges propagate independently — two
+          # back-to-back `--no-cache-dir` resolutions can hit different
+          # edges and disagree for a few seconds after upload. The old
+          # logic broke the wait-loop on ONE successful --quiet dry-run,
+          # then a SEPARATE "final hard check" did another resolution
+          # that hit a not-yet-propagated edge and exited 1 with no
+          # retry — a false failure on a perfectly-good wheel (the
+          # 4.11.0 Post-Release false-fail). Fix: the loop IS the gate.
+          # Require TWO CONSECUTIVE successes (a single edge that's
+          # caught up isn't enough; two in a row means the version has
+          # propagated broadly enough that the next real install won't
+          # race), and fail only if the deadline elapses.
+          streak=0
           while [ $SECONDS -lt $DEADLINE ]; do
-              # --dry-run does the full resolution without downloading.
-              # --no-cache-dir bypasses pip's local metadata cache so
-              # we hit the freshest upstream state on each attempt.
-              # --quiet keeps the log readable across retries.
               if pip install --dry-run --no-cache-dir --quiet "ciris-verify==$VER" 2>/dev/null; then
-                  echo "ciris-verify $VER is installable via pip"
-                  break
+                  streak=$((streak + 1))
+                  echo "ciris-verify $VER resolved (consecutive successes: $streak/2)"
+                  if [ "$streak" -ge 2 ]; then
+                      echo "ciris-verify $VER is installable via pip (propagated)"
+                      exit 0
+                  fi
+                  sleep 5
+              else
+                  streak=0
+                  echo "waiting for pip to see $VER..."
+                  sleep 15
               fi
-              echo "waiting for pip to see $VER..."
-              sleep 15
           done
-          # Final hard check.
-          pip install --dry-run --no-cache-dir "ciris-verify==$VER" || {
-              echo "::error::pip never resolved ciris-verify==$VER within 5 min"
-              exit 1
-          }
+          echo "::error::pip never resolved ciris-verify==$VER twice within 5 min"
+          exit 1
 
       - name: Set up Python 3.12
         uses: actions/setup-python@v5
