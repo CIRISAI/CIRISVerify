@@ -225,9 +225,12 @@ and concrete review-time examples.
 
 | Project | Integration |
 |---------|-------------|
-| `../CIRISRegistry` | Source of verification data |
-| `../CIRISAgent` | Primary consumer of verification |
+| `../CIRISRegistry` | Source of verification data; **CEG + identity authority** — owns the identity/admission *API routes* (incl. key registration), policy layer over Persist's tables |
+| `../CIRISPersist` | Storage substrate — owns `federation_keys` (the registered-key tables); written *through* Registry's policy layer, not by clients directly |
+| `../CIRISAgent` | Primary consumer of verification; embeds the verify wheel; hosts **the client (KMP, `CIRISAgent/client`)** |
 | `../CIRISPortal` | License management portal |
+
+**Client / UI topology (corrected 2026-06-09):** The active client is **Kotlin Multiplatform in `CIRISAgent/client`**. **`CIRISGUI` is orphaned** (do not target it). "UI" in project discussion usually means **API routes**, not pixels. Key-registration / identity routes are **CIRISRegistry's** (identity + CEG admission authority); the local key *ceremony* (hardware probe, keygen, touch, hybrid sign) runs client-side via the verify wheel; the resulting pubkey + `hardware_class` + attestations are POSTed to Registry, which validates CEG conformance + admission and writes through to Persist `federation_keys`. See [[reference_client_topology_and_route_ownership]].
 
 ## CLI Usage
 

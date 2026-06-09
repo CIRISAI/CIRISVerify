@@ -22,7 +22,9 @@ CIRISVerify#53) for the measured numbers behind the claim.
 
 ```
                        ┌─────────────────┐
-                       │    CIRISGUI     │  unified client
+                       │ CIRISAgent/client│  client (Kotlin Multiplatform)
+                       │  (CIRISGUI is    │  — CIRISGUI is ORPHANED, do not target
+                       │   orphaned)      │
                        └────────┬────────┘
                        ┌────────▼────────┐
                        │   CIRISAgent    │  agent runtime (H3ERE)
