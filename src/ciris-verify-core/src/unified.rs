@@ -219,6 +219,26 @@ pub struct KeyAttestationResult {
     /// Whether the key is hardware-backed (Android Keystore AES wrapper, Secure Enclave, TPM).
     #[serde(default)]
     pub hardware_backed: bool,
+    /// Whether the signing boundary is below the hardware-backed baseline
+    /// because **no hardware secure element is present** — i.e. software-only
+    /// fallback (CIRISVerify#60, v5.0.0+).
+    ///
+    /// This is **distinct from and orthogonal to** `hardware_trust_degraded`
+    /// (in `HardwareInfo`), which is the *forced/involuntary* case —
+    /// hardware was expected and is compromised (vulnerable SoC / CVE
+    /// auto-downgrade / rooted / emulator). The two never both apply to the
+    /// same condition:
+    /// - hardware present but CVE-degraded → `hardware_trust_degraded=true,
+    ///   boundary_degraded=false`
+    /// - no hardware at all (community / software mode) →
+    ///   `boundary_degraded=true, hardware_trust_degraded=false`
+    ///
+    /// Verify authors this determination (it is the only component that
+    /// knows hardware-absent vs hardware-present-but-failed); the consumer
+    /// surfaces it and MUST NOT re-derive it from `!hardware_backed` (a
+    /// lossy proxy that conflates the two cases). Informational severity.
+    #[serde(default)]
+    pub boundary_degraded: bool,
     /// Storage mode description (e.g., "Software", "HW-AES-256-GCM", "SecureEnclave", "TPM").
     #[serde(default)]
     pub storage_mode: String,
@@ -3280,5 +3300,73 @@ mod tests {
         assert_eq!(result.checks_passed, 0);
         assert_eq!(result.checks_total, 0);
         assert!(result.diagnostics.contains("Network unavailable"));
+    }
+
+    /// CIRISVerify#60: `boundary_degraded` round-trips through JSON (the
+    /// agent reads it off the serialized attestation result) and is a
+    /// real field on `KeyAttestationResult`.
+    #[test]
+    fn boundary_degraded_serializes_on_key_attestation() {
+        let ka = KeyAttestationResult {
+            key_type: "portal".into(),
+            hardware_type: "SoftwareOnly".into(),
+            has_valid_signature: true,
+            binary_version: "5.0.0".into(),
+            running_in_vm: false,
+            classical_signature: String::new(),
+            pqc_available: true,
+            hardware_backed: false,
+            boundary_degraded: true,
+            storage_mode: "Software".into(),
+            ed25519_fingerprint: "fp".into(),
+            mldsa_fingerprint: None,
+            registry_key_status: "active".into(),
+            platform_os: "linux".into(),
+        };
+        let json = serde_json::to_value(&ka).unwrap();
+        assert_eq!(json["boundary_degraded"], serde_json::json!(true));
+        // Legacy JSON without the field deserializes with the serde
+        // default (false) — no wire break for old producers.
+        let legacy: KeyAttestationResult = serde_json::from_value(serde_json::json!({
+            "key_type": "portal", "hardware_type": "TPM", "has_valid_signature": true,
+            "binary_version": "4.0.0", "running_in_vm": false, "pqc_available": true,
+            "hardware_backed": true,
+        }))
+        .unwrap();
+        assert!(!legacy.boundary_degraded, "missing field defaults to false");
+    }
+
+    /// CIRISVerify#60: the orthogonality contract. `boundary_degraded`
+    /// (no hardware present → software baseline) and
+    /// `hardware_trust_degraded` (hardware present but forced down) MUST
+    /// NOT both be true for the same condition. Models the three cases
+    /// the issue enumerates, using the FFI's computation rule
+    /// `boundary_degraded = (hardware_type == SoftwareOnly)`.
+    #[test]
+    fn boundary_degraded_orthogonal_to_trust_degraded() {
+        use ciris_keyring::HardwareType;
+        // (hardware_type, hardware_trust_degraded) -> expected boundary_degraded
+        let cases = [
+            // HW present + trusted: neither degraded.
+            (HardwareType::TpmFirmware, false, false),
+            // HW present but CVE/emulator forced down: trust degraded,
+            // boundary NOT degraded (a secure element exists).
+            (HardwareType::AndroidKeystore, true, false),
+            // No hardware at all (community/software): boundary degraded,
+            // trust NOT degraded.
+            (HardwareType::SoftwareOnly, false, true),
+        ];
+        for (hw_type, trust_degraded, expect_boundary) in cases {
+            let boundary_degraded = matches!(hw_type, HardwareType::SoftwareOnly);
+            assert_eq!(
+                boundary_degraded, expect_boundary,
+                "boundary_degraded for {hw_type:?}"
+            );
+            assert!(
+                !(boundary_degraded && trust_degraded),
+                "the two degradation signals must never both be true for {hw_type:?} — \
+                 they encode distinct conditions (absent vs present-but-failed)"
+            );
+        }
     }
 }

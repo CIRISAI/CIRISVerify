@@ -3865,6 +3865,19 @@ unsafe fn run_attestation_inner(
         _ => "Software".to_string(),
     };
 
+    // CIRISVerify#60: boundary_degraded = NO hardware secure element is
+    // present, so software signing is the baseline (informational). This
+    // is distinct from hardware_trust_degraded (hardware present but
+    // forced down — CVE/rooted/emulator). When a secure element exists
+    // (AndroidKeystore / SecureEnclave / TPM) the boundary is at the
+    // hardware baseline even if trust was later degraded, so
+    // boundary_degraded stays false and the forced case is reported via
+    // hardware_trust_degraded instead.
+    let boundary_degraded = matches!(
+        capabilities.hardware_type,
+        ciris_keyring::HardwareType::SoftwareOnly
+    );
+
     result.key_attestation = Some(ciris_verify_core::unified::KeyAttestationResult {
         key_type: key_type.to_string(),
         hardware_type: hw_type_str,
@@ -3874,6 +3887,7 @@ unsafe fn run_attestation_inner(
         classical_signature: String::new(),
         pqc_available: true, // ML-DSA-65 compiled in via default pqc feature
         hardware_backed,
+        boundary_degraded,
         storage_mode: storage_mode.clone(),
         ed25519_fingerprint: ed25519_fingerprint.clone(),
         mldsa_fingerprint: None,

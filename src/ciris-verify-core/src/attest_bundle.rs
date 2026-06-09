@@ -728,6 +728,7 @@ mod tests {
                 classical_signature: "abc".into(),
                 pqc_available: true,
                 hardware_backed: true,
+                boundary_degraded: false,
                 storage_mode: "TPM".into(),
                 ed25519_fingerprint: "fp".into(),
                 mldsa_fingerprint: None,
