@@ -1,6 +1,6 @@
 # CIRISVerify Threat Model
 
-**Last updated:** 2026-05-28 (v4.0.0 "CEG 0.2 Federation Conformance" — typed error envelope, full-SHA holds_bytes verifier, STH witness consistency-proof requirement, multi-steward response verifier, §0.5/§0.6 canonicalization discipline)
+**Last updated:** 2026-06-09 (v5.0.0 "CEG 1.0 / Agent 3.0 substrate" — RNG SP 800-90B startup health-check + fail-secure (AV-39 closed), `boundary_degraded` orthogonal to `hardware_trust_degraded`, JCS/RFC-8785 cross-impl signing bytes, `key_grant` wrap_algorithm v2 (X25519+ML-KEM-768) at-rest PQC, `doc_integrity` hybrid-signed artifact integrity + CODEOWNERS two-person-rule on threat-model docs, `infrastructure_community` M-of-N trust-root substrate. Prior: v4.0.0 "CEG 0.2 Federation Conformance" — typed error envelope, full-SHA holds_bytes verifier, STH witness consistency-proof requirement, multi-steward response verifier, §0.5/§0.6 canonicalization discipline)
 
 ## 1. Scope
 
@@ -200,7 +200,9 @@ Original six vectors (AV-1..AV-6) from FSD-001; v1.7-v1.8 federation work added 
 
 **Secondary**: None against this attack — a compromised maintainer signs both classical + PQC, so hybrid-sig is no defense; they have legitimate access to the steward key, so steward-signed BuildManifest is no defense.
 
-**Residual (open)**: No two-person-rule on releases (single-maintainer signoff is the current path). No multi-maintainer signing key. No SBOM published with releases (CISA / EU CRA gap). No reproducible builds means source-vs-binary divergence cannot be independently verified. **Action items**: §10 SOTA gaps #3 (SBOM), #4 (reproducible builds), #5 (two-person-rule).
+**Residual (open)**: No two-person-rule on **releases** (single-maintainer signoff is the current path). No multi-maintainer signing key. No SBOM published with releases (CISA / EU CRA gap). No reproducible builds means source-vs-binary divergence cannot be independently verified. **Action items**: §10 SOTA gaps #3 (SBOM), #4 (reproducible builds), #5 (two-person-rule on releases).
+
+**Partial closure for governance docs (v5.0.0, CIRISVerify#54)**: distinct from release signing — the **authoritative threat-model + governance documents** (`FEDERATION_THREAT_MODEL.md`, this file, `MISSION.md`, the embedded `bootstrap_stewards.json`) now have (a) a two-person-rule via `.github/CODEOWNERS` requiring reviewer approval on every edit, (b) a CI `threat-model-changelog` gate rejecting an authoritative-doc edit with no changelog delta (a silent F-AV-status downgrade is now diffable-by-construction), and (c) `ciris_verify_core::doc_integrity` — a hybrid Ed25519 + ML-DSA-65 signed content-hash attestation that detects any post-publication tamper. This closes the *document-integrity* half of the meta-class (FEDERATION_THREAT_MODEL.md §6.7 F-AV-MAINT Phases 1-2); the *release-signing* two-person-rule above is a separate, still-open item.
 
 **Related (registry-side, finer-grained)**: [`CIRISRegistry/docs/THREAT_MODEL.md`](https://github.com/CIRISAI/CIRISRegistry/blob/main/docs/THREAT_MODEL.md) AV-34 ("Build-signing key compromise (CI-side, post-Phase-A surface)") catalogues the post-Phase-A surface where per-primitive build-signing keys held in GHA secrets become load-bearing trust anchors for the federation. Their dual-secret-co-requirement defense (publishing requires BOTH the build-signing key AND `REGISTRY_ADMIN_TOKEN`) and per-repo isolation (compromise of one repo's GHA can publish only that primitive's manifests) extend AV-12's mitigation surface across the federation. Their v1.4 hardening proposals (cosign verification on uploaded manifests, M-of-N signing for high-stakes primitives, SLSA attestation in extras) target the same supply-chain class that our SOTA gaps #3-#5 target.
 
@@ -333,9 +335,11 @@ Concrete instance: if persist derives an AES-GCM key with `info = b"ciris-secret
 
 **Primary mitigation**: `ciris_crypto::random` wraps `OsRng`, which on Linux/Android delegates to `getrandom(2)` (blocking until seeded), on macOS/iOS to `SecRandomCopyBytes`, on Windows to `BCryptGenRandom`. The blocking semantics on Linux are the kernel's mitigation — `getrandom(2)` waits for `random.fasync_init` rather than returning entropy-weak bytes.
 
+**Startup health-check + fail-secure (v5.0.0, CIRISVerify#55)**: `ciris_crypto::rng_health` runs NIST SP 800-90B startup tests over a fresh 4096-byte `OsRng` draw at process init — a repetition-count test (§4.4.1; catches a stuck source emitting the same value) and an adaptive-proportion test (§4.4.2; catches a source biased toward one value) — and latches a process-global verdict. On failure, every subsequent `random::fill` returns `CryptoError::RngHealthCheckFailed` **without drawing**, so a degraded source (vTPM PRNG seeding bug at boot, embedded low-entropy boot, Dual_EC-class compromise) fails closed: nonce / key / KEX generation errors and the attestation degrades through existing crypto error paths instead of silently emitting weak material. The FFI runs the check at `ciris_verify_init` (after logging is wired, so the verdict reaches logcat / Console). This closes Fed TM §3.3 Gap H. It is detection + fail-secure, not prevention — it catches the degradation classes an SP 800-90B startup test can catch, not a subtle in-range bias.
+
 **Secondary**: deployment guidance — containers should include an `ExecStartPre` that reads from `/dev/random` (the blocking variant) or uses `--random-source` mounts to inherit host entropy. Embedded targets get hardware-RNG mixing once we have a concrete embedded consumer (none today; CIRIS deployment targets are server / mobile / desktop).
 
-**Status**: ✓ Mitigated for primary deployment targets (server / mobile / desktop on platforms with a maintained kernel CSPRNG); 🟡 future hardening (FIPS-mode draws, hardware-entropy mixing) tracked as v2.x work if/when embedded targets surface.
+**Status**: ✓ Mitigated for primary deployment targets (server / mobile / desktop on platforms with a maintained kernel CSPRNG); ✓ startup SP 800-90B health-check + fail-secure latch shipped v5.0.0 (Gap H closed); 🟡 future hardening (independent hardware-entropy mixing, FIPS-mode draw path for FedRAMP/CMMC, per-platform CSPRNG-identity attestation) tracked if/when embedded or compliance targets surface.
 
 #### AV-40: Federation-policy violation (bypassing ciris-crypto)
 
@@ -457,6 +461,16 @@ CIRISVerify detects known hardware vulnerabilities that compromise TEE security.
 **Detection**: CIRISVerify identifies vulnerable chipsets via `Build.HARDWARE` and `Build.BOARD` system properties on Android.
 
 **Mitigation**: Devices with affected chipsets have `hardware_trust_degraded = true` and `HardwareLimitation::VulnerableSoC` in their limitations. Professional license tiers are not available on these devices.
+
+**`boundary_degraded` vs `hardware_trust_degraded` — two orthogonal signals (v5.0.0, CIRISVerify#60)**: a CVE-degraded device like the above is the **forced/involuntary** case — hardware was expected and is compromised → `hardware_trust_degraded = true`. This is distinct from the **software-baseline** case — no secure element is present at all (community / pure-software mode) → `boundary_degraded = true`. The two never both apply to one condition:
+
+| Condition | `boundary_degraded` | `hardware_trust_degraded` |
+|---|---|---|
+| Hardware present + trusted | false | false |
+| Hardware present, CVE/rooted/emulator forced down | **false** | **true** |
+| No secure element at all (software-only) | **true** | false |
+
+`boundary_degraded = (detected hardware_type == SoftwareOnly)` is **authored by Verify** on the attestation result, not derived by the consumer from `!hardware_backed` (a lossy proxy that conflates the two cases). Only Verify knows hardware-absent vs hardware-present-but-failed. Consumers surface both fields; they do not compute them. Informational severity (the forced case carries the warning/critical weight via `hardware_trust_degraded`).
 
 ### CVE-2026-21385: Qualcomm Security Component Vulnerability
 

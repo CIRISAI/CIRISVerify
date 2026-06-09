@@ -66,13 +66,15 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 
 ## Current Implementation Status
 
+*(Current release: **v5.0.0** — CEG 1.0 / Agent 3.0 substrate. The per-crate "Phase" labels below are historical; all crates are production-released.)*
+
 | Crate | Status | Notes |
 |-------|--------|-------|
-| `ciris-keyring` | Phase 2 Complete | HardwareSigner trait, SoftwareSigner impl, Android Keystore, TPM 2.0 (dual-key architecture), **SecureBlobStorage for wallet seeds (v1.4.0+)**, **PqcSigner trait + MlDsa65SoftwareSigner (v1.9.0+, feature `pqc-ml-dsa`)** |
-| `ciris-crypto` | Phase 1 Complete | ECDSA P-256, Ed25519, ML-DSA-65 (FIPS 204), hybrid signer with bound signatures, **secp256k1 wallet signing (v1.3.0+)** |
-| `ciris-verify-core` | Phase 3-5 Active | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), Tripwire file integrity, remote attestation export, binary self-verification, **hardware vulnerability detection (v1.2.0+)**, **offline manifest cache (v1.2.0+)** |
-| `ciris-verify-ffi` | Phase 4 Active | C FFI (33 functions), JNI bindings (Android full attestation), Swift wrapper (iOS full attestation), **wallet signing FFI (v1.3.0+)**, **named key storage (v1.5.0+)** |
-| `bindings/python` | Released | ciris-verify 1.5.0 on PyPI with platform wheels, **wallet signing support**, **named key storage** |
+| `ciris-keyring` | Released | HardwareSigner trait, SoftwareSigner impl, Android Keystore, TPM 2.0 (dual-key architecture), SecureBlobStorage for wallet seeds, PqcSigner + MlDsa65SoftwareSigner (feature `pqc-ml-dsa`) |
+| `ciris-crypto` | Released | ECDSA P-256, Ed25519, ML-DSA-65 (FIPS 204), hybrid signer with bound signatures, secp256k1 wallet signing, **AES-256-GCM / HKDF / HMAC federation primitives**, **X25519 + ML-KEM-768 hybrid KEX + `key_grant` wrap v1/v2 (X25519+ML-KEM-768, CEG §10.5.3)**, **`random` SP 800-90B RNG health-check + fail-secure (#55)** |
+| `ciris-verify-core` | Released | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), file integrity, remote attestation export, binary self-verification, hardware vulnerability detection, offline manifest cache, **`jcs` RFC 8785 canonicalizer + Contribution verify (#59)**, **`doc_integrity` hybrid-signed artifact integrity (#54)**, **`infrastructure_community` CEG 0.11 M-of-N trust root + `threshold` founder-quorum (#31)**, **`boundary_degraded` attestation field (#60)** |
+| `ciris-verify-ffi` | Released | C FFI, JNI bindings (Android full attestation), Swift wrapper (iOS full attestation), wallet signing FFI, named key storage, **wheel surfaces for hybrid_kex / key_grant / reconsider_dos / skill_import / locale_merkle / `jcs` (#61)** |
+| `bindings/python` | Released | **ciris-verify 5.0.0** on PyPI with platform wheels, wallet signing, named key storage, **`jcs_canonicalize` module-level binding (#61)** |
 | `bindings/swift` | Released | CIRISVerify.swift wrapper + bridging header, XCFramework build script |
 
 **ML-DSA-65**: Fully implemented using `ml-dsa` 0.1.0-rc.3 (RustCrypto). Bound dual signatures operational.
@@ -97,7 +99,20 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 - **Linux/Windows**: `TpmSecureBlobStorage` - TPM 2.0 sealed blobs
 - **Fallback**: `SoftwareSecureBlobStorage` - AES-256-GCM with derived master key
 
-**278 tests passing** across all crates.
+**754 lib tests passing** across all crates (default features; +6 more in `ciris-crypto` under the full crypto-feature set exercised by the CI `crypto-features` job — key_grant v1/v2, hybrid_kex, ml_kem). As of v5.0.0.
+
+### v5.0.0 substrate (CEG 1.0 / Agent 3.0) — new modules
+
+- **`ciris_crypto::rng_health` (#55)**: NIST SP 800-90B startup health-check (repetition-count + adaptive-proportion) over a fresh `OsRng` draw; latches a process-global fail-secure flag. On failure `random::fill` returns `RngHealthCheckFailed` *without drawing*. FFI runs it at `ciris_verify_init`. `random` is now a default `ciris-crypto` feature. Closes Fed TM Gap H.
+- **`ciris_crypto::key_grant` v2 (#58)**: `wrap_dek_for_recipient_v2` / `unwrap_dek_v2` — X25519 + ML-KEM-768 hybrid DEK wrap (`KEY_GRANT_ALGORITHM_V2 = "x25519-mlkem768-aes256-gcm-hkdf-sha256"`), CEG §10.5.3-mandatory for streaming epoch-DEK. Gated on the `ml-kem` feature. The wire string is pinned but flagged for CEG cross-confirmation before consumers hard-code it as a closed enum.
+- **`ciris_verify_core::jcs` (#59) + `jcs_canonicalize` Python binding (#61)**: RFC 8785 JSON Canonicalization (wraps `serde_jcs`/`ryu-js`, KAT-locked) — the one blessed cross-impl signing-bytes encoder for CEG §0.9 Contributions. `verify_jcs_hybrid_signature` for the Conforming-Consumer recompute path. The Python binding does zero canonicalization (transports the value into Rust) → byte-identity by construction. Honors §0.9 omit-vs-materialize (never injects defaults). Gates CIRISPersist#172 OQ-4 + the 2.9.6 JCS cutover.
+- **`ciris_verify_core::doc_integrity` (#54)**: hybrid Ed25519 + ML-DSA-65 `DocSignature` over a domain-separated content hash of `(doc_path_label, doc_version_label, content)`; version-bound (no cross-release replay). Phase-1 two-person-rule is `.github/CODEOWNERS` + the CI `threat-model-changelog` gate. Fed TM Gap G Phases 1-2.
+- **`ciris_verify_core::infrastructure_community` + `threshold` founder-quorum (#31)**: CEG 0.11 `cohort_subkind: infrastructure` trust root (the `ciris-canonical` shape). `verify_founder_quorum` evaluates M-of-N over the founder subset; `verify_supersedes_preserves_entrenchment` rejects a rotation that weakens `consensus_protocol` or moves `admission_quorum_basis` off `"founders"`. NB: this is the service trust-root **community**; HUMANITY_ACCORD is the separate entrenched-**family** instance (CEG §9.1) whose key material lives in Persist `federation_keys`, verify only doing the 2-of-3 hybrid-sig check.
+- **`boundary_degraded` on the attestation result (#60)**: Verify-authored, orthogonal to `hardware_trust_degraded`. `boundary_degraded = (hardware_type == SoftwareOnly)` (no secure element present). Consumers surface it; they MUST NOT derive it from `!hardware_backed`.
+
+### Reading discipline — CEG family vs community (avoid a recurring mix-up)
+
+`HUMANITY_ACCORD` is a **`family`** (CEG §9.1 / §5.6.8.9 — the canonical entrenched-family instance, `quorum:2/3`, 3 humans, structural-invisibility). `ciris-canonical` is a **`community`** (`cohort_subkind: infrastructure`, §5.6.8.10 — the service trust root for Registry/Lens/Node, founder-quorum, federates publicly). Both are `quorum:M/N` + entrenched and easy to conflate; the `infrastructure_community` module (#31) is the **community** one. The accord hardware-class taxonomy (`YubiKey_5_FIPS` etc.) is CEG §9.4.
 
 ## Development Workflow
 
