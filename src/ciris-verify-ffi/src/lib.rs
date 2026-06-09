@@ -57,6 +57,7 @@ mod constructor;
 // `wheel_guard!` panic catch (sibling modules cannot see the
 // crate-root `ffi_guard!` macro without `#[macro_export]`).
 mod wheel_hybrid_kex;
+mod wheel_jcs;
 mod wheel_key_grant;
 mod wheel_locale_merkle;
 mod wheel_reconsider_dos;

@@ -29,6 +29,7 @@ Logging:
 import logging as _logging
 
 from .client import CIRISVerify, MockCIRISVerify, verify_tree, DEFAULT_REGISTRY_URL
+from ._jcs import jcs_canonicalize
 from .types import (
     LicenseStatus,
     LicenseTier,
@@ -123,6 +124,7 @@ __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
     "verify_tree",
+    "jcs_canonicalize",
     "DEFAULT_REGISTRY_URL",
     "TreeVerifyRequest",
     "TreeVerifyResult",
