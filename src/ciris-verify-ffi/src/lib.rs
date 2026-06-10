@@ -60,6 +60,7 @@ mod wheel_hybrid_kex;
 mod wheel_jcs;
 mod wheel_key_grant;
 mod wheel_locale_merkle;
+mod wheel_operational_admit;
 mod wheel_reconsider_dos;
 mod wheel_skill_import;
 

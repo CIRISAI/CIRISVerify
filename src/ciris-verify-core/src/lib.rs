@@ -79,6 +79,7 @@ pub mod locale_merkle;
 pub mod manifest_cache;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub mod mobile_http;
+pub mod operational_admit;
 pub mod parallel_race;
 pub mod play_integrity;
 pub mod provenance;

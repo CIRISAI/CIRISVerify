@@ -66,15 +66,15 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 
 ## Current Implementation Status
 
-*(Current release: **v5.0.0** — CEG 1.0 / Agent 3.0 substrate. The per-crate "Phase" labels below are historical; all crates are production-released.)*
+*(Current release: **v5.1.0** — CEG 1.0-RC2 operational-data admit surface (§5.6.8.13). The per-crate "Phase" labels below are historical; all crates are production-released.)*
 
 | Crate | Status | Notes |
 |-------|--------|-------|
 | `ciris-keyring` | Released | HardwareSigner trait, SoftwareSigner impl, Android Keystore, TPM 2.0 (dual-key architecture), SecureBlobStorage for wallet seeds, PqcSigner + MlDsa65SoftwareSigner (feature `pqc-ml-dsa`) |
 | `ciris-crypto` | Released | ECDSA P-256, Ed25519, ML-DSA-65 (FIPS 204), hybrid signer with bound signatures, secp256k1 wallet signing, **AES-256-GCM / HKDF / HMAC federation primitives**, **X25519 + ML-KEM-768 hybrid KEX + `key_grant` wrap v1/v2 (X25519+ML-KEM-768, CEG §10.5.3)**, **`random` SP 800-90B RNG health-check + fail-secure (#55)** |
-| `ciris-verify-core` | Released | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), file integrity, remote attestation export, binary self-verification, hardware vulnerability detection, offline manifest cache, **`jcs` RFC 8785 canonicalizer + Contribution verify (#59)**, **`doc_integrity` hybrid-signed artifact integrity (#54)**, **`infrastructure_community` CEG 0.11 M-of-N trust root + `threshold` founder-quorum (#31)**, **`boundary_degraded` attestation field (#60)** |
-| `ciris-verify-ffi` | Released | C FFI, JNI bindings (Android full attestation), Swift wrapper (iOS full attestation), wallet signing FFI, named key storage, **wheel surfaces for hybrid_kex / key_grant / reconsider_dos / skill_import / locale_merkle / `jcs` (#61)** |
-| `bindings/python` | Released | **ciris-verify 5.0.0** on PyPI with platform wheels, wallet signing, named key storage, **`jcs_canonicalize` module-level binding (#61)** |
+| `ciris-verify-core` | Released | Full verification engine, HTTPS-authoritative consensus, anti-rollback, transparency log (Merkle), file integrity, remote attestation export, binary self-verification, hardware vulnerability detection, offline manifest cache, **`jcs` RFC 8785 canonicalizer + Contribution verify (#59)**, **`doc_integrity` hybrid-signed artifact integrity (#54)**, **`infrastructure_community` CEG 0.11 M-of-N trust root + `threshold` founder-quorum (#31)**, **`boundary_degraded` attestation field (#60)**, **`operational_admit` CEG 1.0-RC2 §5.6.8.13 admit surface — `resolve_role_authority` (§8.1.12.7.1 role-chain) + `verify_partner_record_quorum` (#65)** |
+| `ciris-verify-ffi` | Released | C FFI, JNI bindings (Android full attestation), Swift wrapper (iOS full attestation), wallet signing FFI, named key storage, **wheel surfaces for hybrid_kex / key_grant / reconsider_dos / skill_import / locale_merkle / `jcs` (#61)**, **`resolve_role_authority` + `partner_record_quorum` operational-admit JSON surface (#65)** |
+| `bindings/python` | Released | **ciris-verify 5.1.0** on PyPI with platform wheels, wallet signing, named key storage, **`jcs_canonicalize` module-level binding (#61)**, **`resolve_role_authority` + `verify_partner_record_quorum` module-level bindings (#65)** |
 | `bindings/swift` | Released | CIRISVerify.swift wrapper + bridging header, XCFramework build script |
 
 **ML-DSA-65**: Fully implemented using `ml-dsa` 0.1.0-rc.3 (RustCrypto). Bound dual signatures operational.
@@ -99,7 +99,7 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 - **Linux/Windows**: `TpmSecureBlobStorage` - TPM 2.0 sealed blobs
 - **Fallback**: `SoftwareSecureBlobStorage` - AES-256-GCM with derived master key
 
-**754 lib tests passing** across all crates (default features; +6 more in `ciris-crypto` under the full crypto-feature set exercised by the CI `crypto-features` job — key_grant v1/v2, hybrid_kex, ml_kem). As of v5.0.0.
+**777 lib tests passing** across all crates (default features; +6 more in `ciris-crypto` under the full crypto-feature set exercised by the CI `crypto-features` job — key_grant v1/v2, hybrid_kex, ml_kem). As of v5.1.0.
 
 ### v5.0.0 substrate (CEG 1.0 / Agent 3.0) — new modules
 
@@ -109,6 +109,13 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 - **`ciris_verify_core::doc_integrity` (#54)**: hybrid Ed25519 + ML-DSA-65 `DocSignature` over a domain-separated content hash of `(doc_path_label, doc_version_label, content)`; version-bound (no cross-release replay). Phase-1 two-person-rule is `.github/CODEOWNERS` + the CI `threat-model-changelog` gate. Fed TM Gap G Phases 1-2.
 - **`ciris_verify_core::infrastructure_community` + `threshold` founder-quorum (#31)**: CEG 0.11 `cohort_subkind: infrastructure` trust root (the `ciris-canonical` shape). `verify_founder_quorum` evaluates M-of-N over the founder subset; `verify_supersedes_preserves_entrenchment` rejects a rotation that weakens `consensus_protocol` or moves `admission_quorum_basis` off `"founders"`. NB: this is the service trust-root **community**; HUMANITY_ACCORD is the separate entrenched-**family** instance (CEG §9.1) whose key material lives in Persist `federation_keys`, verify only doing the 2-of-3 hybrid-sig check.
 - **`boundary_degraded` on the attestation result (#60)**: Verify-authored, orthogonal to `hardware_trust_degraded`. `boundary_degraded = (hardware_type == SoftwareOnly)` (no secure element present). Consumers surface it; they MUST NOT derive it from `!hardware_backed`.
+
+### v5.1.0 substrate (CEG 1.0-RC2 §5.6.8.13 operational-data admit) — new module
+
+- **`ciris_verify_core::operational_admit` (#65, Registry#70)**: the admit-verification surface CIRISPersist calls at `put_organization` / `put_org_membership` / `put_partner_record`. RC2 §5.6.8.13 pins the two-quorums split — *signature verification is Verify's, the substrate's merge logic never counts signatures* — so this is the **sole** owner of both operational signature paths (no third bespoke path; §5.6.8.13 forbids it). Two shapes:
+  - **`resolve_role_authority` (§8.1.12.7.1 `delegates_to` role-chain resolver)** for `organization` / `org_membership`: a **pure evaluator** (no I/O) over caller-resolved current-state grants. Authorized iff the actor holds the required `OrgRole` via a signature-valid grant whose authority chain is rooted at a recognized steward — bounded, cycle-detected, fail-closed. **NOT** founder-quorum. Identity binding is load-bearing: grant signatures verify against pubkeys **pinned in the caller's `key_directory`** for the claimed `attesting_key_id` (reusing `threshold` bound-sig at threshold 1), never the pubkeys embedded in the grant — a forged grant under a steward's key_id fails the binding.
+  - **`verify_partner_record_quorum`** for `partner_record`: canonicalizes via `jcs` and delegates to `verify_founder_quorum` (#31) — the signature *set* over byte-identical JCS bytes, M-of-N stewards. `check_set_semantics_sorted` is the producer-side guard that catches an unsorted capability array (§0.9.2.1 rule 1) *before* M stewards sign divergent bytes and the quorum silently collapses.
+  - Exposed through FFI (`ciris_verify_resolve_role_authority` / `ciris_verify_partner_record_quorum`, JSON-in/JSON-out) + Python (`resolve_role_authority` / `verify_partner_record_quorum`). **Role-lattice note:** ships the strict reading (`OrgAdmin` superuser, every other role exact-match) — flagged on #65 for CEG to confirm or enrich (a one-line change in `OrgRole::satisfies`).
 
 ### Reading discipline — CEG family vs community (avoid a recurring mix-up)
 

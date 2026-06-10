@@ -30,6 +30,10 @@ import logging as _logging
 
 from .client import CIRISVerify, MockCIRISVerify, verify_tree, DEFAULT_REGISTRY_URL
 from ._jcs import jcs_canonicalize
+from ._operational_admit import (
+    resolve_role_authority,
+    verify_partner_record_quorum,
+)
 from .types import (
     LicenseStatus,
     LicenseTier,
@@ -119,12 +123,14 @@ def get_library_version() -> str:
     return __version__
 
 
-__version__ = "5.0.0"
+__version__ = "5.1.0"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
     "verify_tree",
     "jcs_canonicalize",
+    "resolve_role_authority",
+    "verify_partner_record_quorum",
     "DEFAULT_REGISTRY_URL",
     "TreeVerifyRequest",
     "TreeVerifyResult",
