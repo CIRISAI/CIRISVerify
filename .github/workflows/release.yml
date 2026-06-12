@@ -47,17 +47,48 @@ jobs:
             artifact: libciris_verify_ffi.dylib
 
           # Windows x86_64 (EXPERIMENTAL: native TPM via Platform Crypto Provider)
+          #
+          # Win7-SP1→Win11 lane (CIRISVerify#67): Rust 1.78 raised the
+          # windows-msvc std floor to Win10 1809, so a default-target build of
+          # the cdylib hard-imports Win8/Win10 APIs and fails to LoadLibrary on
+          # Win7. We instead build the Tier-3 target `x86_64-win7-windows-msvc`
+          # (std keeps the Win7 fallbacks) on a nightly toolchain with
+          # `-Zbuild-std` (requires the rust-src component). Modern MSRV/edition
+          # are preserved; one artifact serves Win7→Win11 and still tags as
+          # win_amd64 downstream.
+          #   - `target` stays x86_64-pc-windows-msvc so the uploaded artifact
+          #     name (ciris-verify-x86_64-pc-windows-msvc) is unchanged and the
+          #     publish-pypi job consumes it without edits.
+          #   - `build_target` is what cargo actually compiles + where the .dll
+          #     lands (target/x86_64-win7-windows-msvc/release/).
+          #   - build-std panic flag is `-Zbuild-std=std` (NOT panic_abort):
+          #     the workspace pins panic = "unwind" (root Cargo.toml) so the
+          #     ffi_guard!/catch_unwind sites in ciris-verify-ffi keep working.
           - os: windows-latest
             target: x86_64-pc-windows-msvc
+            build_target: x86_64-win7-windows-msvc
+            toolchain: nightly
+            build_std: "true"
             artifact: ciris_verify_ffi.dll
             features: tpm-windows
 
     steps:
       - uses: actions/checkout@v4
 
+      # Default (stable) toolchain — all targets EXCEPT the Win7 build-std lane.
       - uses: dtolnay/rust-toolchain@stable
+        if: ${{ matrix.toolchain != 'nightly' }}
         with:
           targets: ${{ matrix.target }}
+
+      # Nightly toolchain for the Win7 build-std lane (CIRISVerify#67).
+      # rust-src is REQUIRED by `-Zbuild-std` (std is recompiled from source).
+      # x86_64-win7-windows-msvc is Tier-3, so it can't be installed as a
+      # precompiled `targets:` rustup component — build-std builds it from src.
+      - uses: dtolnay/rust-toolchain@nightly
+        if: ${{ matrix.toolchain == 'nightly' }}
+        with:
+          components: rust-src
 
       - uses: Swatinem/rust-cache@v2
         # CI hardening (v2.1.1+): cache restore failures degrade to
@@ -68,9 +99,14 @@ jobs:
           # poisoning. See ci.yml comment block above.
           cache-bin: false
           # Include git tag in cache key to bust cache on version bumps
-          key: release-${{ matrix.target }}-${{ github.ref_name }}
+          key: release-${{ matrix.build_target || matrix.target }}-${{ github.ref_name }}
 
       - name: Repair toolchain if rustup-init shadow (cache-poison heal)
+        # Skip on the Win7 nightly+build-std lane (CIRISVerify#67): this heal
+        # reinstalls *stable* and nukes ~/.cargo/bin, which would destroy the
+        # nightly toolchain + rust-src that lane needs. The poison it targets is
+        # macOS-specific; the Windows lane uses cache-bin: false and is immune.
+        if: ${{ matrix.toolchain != 'nightly' }}
         # v2.1.2 detected; v2.1.3 moved after cache restore; v2.1.4 active heal.
         # macOS runners occasionally cache a `~/.cargo/bin/cargo` that IS the
         # rustup-init shim binary. The shim passes `cargo --version` through
@@ -125,26 +161,42 @@ jobs:
         shell: bash
         run: |
           FEATURES="${{ matrix.features }}"
-          if [ -n "$FEATURES" ]; then
-            cargo build --release --target ${{ matrix.target }} -p ciris-verify-ffi --features "$FEATURES"
+          # build_target overrides target for the Win7 Tier-3 lane (#67); the
+          # .dll lands under target/$TARGET/release/.
+          TARGET="${{ matrix.build_target || matrix.target }}"
+          # Win7 lane: nightly + build-std rebuilds std for the Tier-3 target,
+          # keeping its Win7 syscall fallbacks. `=std` (NOT panic_abort) because
+          # the workspace pins panic = "unwind" so ffi_guard!/catch_unwind work.
+          if [ "${{ matrix.build_std }}" = "true" ]; then
+            CARGO="cargo +nightly"
+            BUILD_STD="-Z build-std=std"
           else
-            cargo build --release --target ${{ matrix.target }} -p ciris-verify-ffi
+            CARGO="cargo"
+            BUILD_STD=""
+          fi
+          if [ -n "$FEATURES" ]; then
+            $CARGO build --release --target "$TARGET" $BUILD_STD -p ciris-verify-ffi --features "$FEATURES"
+          else
+            $CARGO build --release --target "$TARGET" $BUILD_STD -p ciris-verify-ffi
           fi
 
       # Strip binaries (Linux/macOS)
       - name: Strip binary
         if: runner.os != 'Windows'
         run: |
-          if [ -f "target/${{ matrix.target }}/release/${{ matrix.artifact }}" ]; then
-            strip "target/${{ matrix.target }}/release/${{ matrix.artifact }}" || true
+          if [ -f "target/${{ matrix.build_target || matrix.target }}/release/${{ matrix.artifact }}" ]; then
+            strip "target/${{ matrix.build_target || matrix.target }}/release/${{ matrix.artifact }}" || true
           fi
 
       # Upload artifacts
+      # Artifact NAME stays keyed on matrix.target (x86_64-pc-windows-msvc) so
+      # the publish-pypi job is unchanged; PATH uses build_target so the Win7
+      # lane's .dll (target/x86_64-win7-windows-msvc/release/) is picked up.
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: ciris-verify-${{ matrix.target }}
-          path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
+          path: target/${{ matrix.build_target || matrix.target }}/release/${{ matrix.artifact }}
           if-no-files-found: error
 
   # ==========================================================================

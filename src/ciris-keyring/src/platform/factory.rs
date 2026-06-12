@@ -158,12 +158,25 @@ fn detect_linux_capabilities() -> PlatformCapabilities {
     }
 }
 
+/// Whether a TBS-probed TPM version string counts as **usable hardware**
+/// for the keyring's signer tier. Only **TPM 2.0** qualifies: the Windows
+/// signer path (PCP/CNG) issues TPM-2.0 ECDSA-P256 operations, which a
+/// TPM **1.2** device — the ceiling of Windows 7's TBS — cannot service.
+/// So a 1.2 TPM, like an absent one, degrades to the software tier rather
+/// than advertising a hardware tier it can't deliver (CIRISVerify#67).
+/// Extracted as a pure fn so the policy is unit-testable off-Windows.
+#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
+fn tpm_probe_is_usable_hardware(probe: Option<&str>) -> bool {
+    matches!(probe, Some("2.0"))
+}
+
 #[cfg(target_os = "windows")]
 fn detect_windows_capabilities() -> PlatformCapabilities {
-    // Probe TBS (user-mode, no admin needed). If TBS is missing or no TPM
-    // is present, fall back to software-only with the same posture as Linux
-    // without a TPM device node.
-    let has_tpm = crate::platform::tpm::probe_tbs_device_info().is_some();
+    // Probe TBS (user-mode, no admin needed). If TBS is missing, no TPM is
+    // present, or only TPM 1.2 is exposed (Windows 7), fall back to
+    // software-only with the same posture as Linux without a usable TPM —
+    // and without uselessly attempting a doomed TPM-2.0 signer init.
+    let has_tpm = tpm_probe_is_usable_hardware(crate::platform::tpm::probe_tbs_device_info());
     if has_tpm {
         PlatformCapabilities {
             hardware_type: HardwareType::TpmFirmware,
@@ -430,6 +443,16 @@ mod tests {
         // Cleanup: delete persisted key file
         let key_path = default_key_dir().join("test_factory_key.p256.key");
         let _ = std::fs::remove_file(&key_path);
+    }
+
+    #[test]
+    fn tpm_usable_hardware_policy() {
+        // Only TPM 2.0 is usable hardware; 1.2 (Windows 7 / TBS ceiling)
+        // and absent/unknown degrade to the software tier (CIRISVerify#67).
+        assert!(tpm_probe_is_usable_hardware(Some("2.0")));
+        assert!(!tpm_probe_is_usable_hardware(Some("1.2")));
+        assert!(!tpm_probe_is_usable_hardware(None));
+        assert!(!tpm_probe_is_usable_hardware(Some("9.9")));
     }
 
     #[test]
