@@ -46,7 +46,9 @@ libc = "0.2"
 hex.workspace = true
 getrandom = "0.2"
 ed25519-dalek = { workspace = true }
-dirs = "5"
+# v6 drops the windows-sys 0.48 → windows-targets 0.48.5 chain that fails to
+# link on the Tier-3 x86_64-win7-windows-msvc target (CIRISVerify#67).
+dirs = "6"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
 sha2.workspace = true
 rand.workspace = true

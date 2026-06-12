@@ -30,8 +30,13 @@ p256 = { workspace = true }
 ed25519-dalek.workspace = true
 rand_core.workspace = true
 
-# Cross-platform data directories for key persistence
-dirs = "5"
+# Cross-platform data directories for key persistence.
+# v6 (windows-sys 0.59 → windows-targets raw-dylib) — the old dirs 5 →
+# windows-sys 0.48 → windows-targets 0.48.5 chain bundles versioned .lib
+# files keyed to standard triples and fails to link on the Tier-3
+# x86_64-win7-windows-msvc target (CIRISVerify#67 LNK1181). Only uses
+# data_local_dir()/home_dir(), unchanged across the major bump.
+dirs = "6"
 
 # Cryptographic primitives for secure blob storage
 rand = "0.8"
