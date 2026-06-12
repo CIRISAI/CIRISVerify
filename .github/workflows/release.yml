@@ -61,8 +61,10 @@ jobs:
           #     publish-pypi job consumes it without edits.
           #   - `build_target` is what cargo actually compiles + where the .dll
           #     lands (target/x86_64-win7-windows-msvc/release/).
-          #   - build-std panic flag is `-Zbuild-std=std` (NOT panic_abort):
-          #     the workspace pins panic = "unwind" (root Cargo.toml) so the
+          #   - build-std crate list is `std,panic_abort`. panic_abort is
+          #     required by std's own build (omitting it → E0463 can't find
+          #     crate `panic_abort`); it does NOT set the panic strategy, which
+          #     stays "unwind" via the root Cargo.toml profile pin so the
           #     ffi_guard!/catch_unwind sites in ciris-verify-ffi keep working.
           - os: windows-latest
             target: x86_64-pc-windows-msvc
@@ -165,11 +167,14 @@ jobs:
           # .dll lands under target/$TARGET/release/.
           TARGET="${{ matrix.build_target || matrix.target }}"
           # Win7 lane: nightly + build-std rebuilds std for the Tier-3 target,
-          # keeping its Win7 syscall fallbacks. `=std` (NOT panic_abort) because
-          # the workspace pins panic = "unwind" so ffi_guard!/catch_unwind work.
+          # keeping its Win7 syscall fallbacks. The crate list MUST include
+          # panic_abort (std's build references it → else E0463), even though
+          # the active panic strategy stays "unwind" via the workspace profile
+          # pin — the build-std list and the -C panic strategy are independent.
+          # build-std auto-adds core/alloc/panic_unwind.
           if [ "${{ matrix.build_std }}" = "true" ]; then
             CARGO="cargo +nightly"
-            BUILD_STD="-Z build-std=std"
+            BUILD_STD="-Z build-std=std,panic_abort"
           else
             CARGO="cargo"
             BUILD_STD=""
