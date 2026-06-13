@@ -142,6 +142,31 @@ pub enum ThresholdError {
         /// The threshold the caller required.
         threshold: usize,
     },
+    /// The declared M-of-N policy is a **deadlock / split-brain** shape and
+    /// is rejected outright — no signatures are even counted (fail-closed,
+    /// "no action"). The single quorum rule is **`2·M > N`** (strict
+    /// majority): valid `1/1`, `2/2`, `2/3`, `3/4`, `3/5`; rejected `1/2`,
+    /// `2/4`, `2/5`, `3/6`. A non-majority quorum admits two disjoint
+    /// quorums (no intersection) → conflicting authorizations. There is no
+    /// `M==1` escape hatch: an N≥2 trust root must be a strict majority, so
+    /// a 2-install set is `2/2`, and a botched grow-the-set ceremony resets
+    /// rather than degrading to a 1-of-2 single-point-of-compromise.
+    DeadlockPolicy {
+        /// The threshold M.
+        m: usize,
+        /// The member-set size N.
+        n: usize,
+    },
+    /// The declared policy `N` does not match the actual founder-roster
+    /// size. A `quorum:2/3` policy evaluated over a 4-founder roster is a
+    /// misconfiguration (the real shape would be `2/4` — itself a deadlock),
+    /// so the declared denominator MUST equal the founder count. Fail-closed.
+    RosterMismatch {
+        /// The `N` the policy string declared.
+        declared: usize,
+        /// The actual number of founder-role members supplied.
+        actual: usize,
+    },
 }
 
 impl std::fmt::Display for ThresholdError {
@@ -156,7 +181,98 @@ impl std::fmt::Display for ThresholdError {
                 f,
                 "insufficient distinct valid signatures: {valid} < threshold {threshold}"
             ),
+            Self::DeadlockPolicy { m, n } => write!(
+                f,
+                "deadlock quorum policy {m}/{n}: not a strict majority (2·{m} ≤ {n}); \
+                 rejected, no action"
+            ),
+            Self::RosterMismatch { declared, actual } => write!(
+                f,
+                "quorum policy declares N={declared} but the founder roster has {actual} members"
+            ),
         }
+    }
+}
+
+/// A declared M-of-N quorum policy and the **single validity rule** the
+/// whole federation uses: a policy is valid iff it is a **strict majority**,
+/// `2·M > N` (with `1 ≤ M ≤ N`).
+///
+/// This is the one rule, applied everywhere a quorum is declared — the
+/// `ciris-canonical` registry trust root, the HUMANITY_ACCORD, partner-record
+/// admission, keyset rotation. There is intentionally **no `M==1` carve-out**:
+///
+/// | policy | `2M > N` | verdict |
+/// |---|---|---|
+/// | `1/1`, `2/2` | yes (unanimous is trivially a majority) | valid |
+/// | `2/3`, `3/4`, `3/5` | yes | valid |
+/// | `1/2` | no (`2 ≤ 2`) | **rejected** — a 2-set must be `2/2` |
+/// | `2/4`, `3/6` | no (exact half) | **rejected** — split-brain |
+/// | `2/5` | no (`4 ≤ 5`) | **rejected** — sub-majority |
+///
+/// Rationale: a non-strict-majority quorum admits two *disjoint* satisfying
+/// subsets (no quorum intersection), so two camps can authorize conflicting
+/// state — the split-brain a trust root must never allow. A `1/N` "any-one"
+/// shape is the degenerate worst case (single-point-of-compromise), not a
+/// convenience: a 2-install operator runs `2/2`, and a fumbled
+/// add-the-second-install ceremony resets rather than degrading to `1/2`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QuorumPolicy {
+    /// Threshold M — distinct valid signatures required.
+    pub m: usize,
+    /// Member-set size N.
+    pub n: usize,
+}
+
+impl QuorumPolicy {
+    /// Construct a policy. Does not validate — call [`Self::validate`].
+    #[must_use]
+    pub fn new(m: usize, n: usize) -> Self {
+        Self { m, n }
+    }
+
+    /// Parse a `consensus_protocol` string. Accepts the CEG forms
+    /// `"quorum:M/N"` and a bare `"M/N"`. Returns `None` on any other shape
+    /// (e.g. `"founder_only"`, `"unanimous"` — those are not numeric M-of-N
+    /// policies and are handled by their own rules upstream).
+    #[must_use]
+    pub fn parse(s: &str) -> Option<Self> {
+        let frac = s.strip_prefix("quorum:").unwrap_or(s);
+        let (m, n) = frac.split_once('/')?;
+        Some(Self {
+            m: m.trim().parse().ok()?,
+            n: n.trim().parse().ok()?,
+        })
+    }
+
+    /// The single rule: a valid quorum is a **strict majority**, `2·M > N`
+    /// with `1 ≤ M ≤ N`. No `M==1` exception.
+    #[must_use]
+    pub fn is_valid(self) -> bool {
+        self.m >= 1 && self.m <= self.n && 2 * self.m > self.n
+    }
+
+    /// Fail-closed gate: `Ok(())` iff [`Self::is_valid`], else
+    /// [`ThresholdError::DeadlockPolicy`] (for the `2M ≤ N` deadlock shapes)
+    /// or the matching parameter error for the degenerate `M=0` / `M>N`
+    /// cases. Call this *before* counting any signatures.
+    pub fn validate(self) -> Result<(), ThresholdError> {
+        if self.m == 0 {
+            return Err(ThresholdError::ZeroThreshold);
+        }
+        if self.m > self.n {
+            return Err(ThresholdError::ThresholdExceedsMembers {
+                threshold: self.m,
+                members: self.n,
+            });
+        }
+        if 2 * self.m <= self.n {
+            return Err(ThresholdError::DeadlockPolicy {
+                m: self.m,
+                n: self.n,
+            });
+        }
+        Ok(())
     }
 }
 
@@ -288,6 +404,42 @@ pub fn verify_founder_quorum(
         .cloned()
         .collect();
     verify_threshold_signatures(bytes, &founders, signatures, threshold)
+}
+
+/// Verify a hybrid founder-quorum over `bytes` against a **declared
+/// [`QuorumPolicy`]** — the single trust-root entry point (CIRISVerify#69).
+///
+/// Unlike [`verify_founder_quorum`] (which takes a raw threshold), this
+/// enforces the federation's one quorum rule end-to-end:
+/// 1. [`QuorumPolicy::validate`] — reject a deadlock / non-strict-majority
+///    shape (`2M ≤ N`) outright, *before* any signature is counted
+///    (fail-closed, "no action"). No `M==1` escape hatch.
+/// 2. The declared `N` MUST equal the actual founder-roster size
+///    ([`ThresholdError::RosterMismatch`] otherwise) — so `quorum:2/3` can't
+///    be evaluated over a 4-founder set and silently become a `2/4` deadlock.
+/// 3. Require ≥ `policy.m` distinct founders to have signed.
+///
+/// This is what `ciris-canonical` registry-consensus, the HUMANITY_ACCORD,
+/// and any entrenched `quorum:M/N` community route through, so the
+/// strict-majority invariant holds uniformly.
+pub fn verify_quorum_policy(
+    bytes: &[u8],
+    members: &[ThresholdMember],
+    signatures: &[ThresholdSignature],
+    policy: QuorumPolicy,
+) -> Result<usize, ThresholdError> {
+    policy.validate()?;
+    let founder_count = members
+        .iter()
+        .filter(|m| matches!(m.role, Some(Role::Founder)))
+        .count();
+    if founder_count != policy.n {
+        return Err(ThresholdError::RosterMismatch {
+            declared: policy.n,
+            actual: founder_count,
+        });
+    }
+    verify_founder_quorum(bytes, members, signatures, policy.m)
 }
 
 #[cfg(test)]
@@ -704,5 +856,118 @@ mod tests {
                 threshold: 2
             })
         ));
+    }
+
+    // ---- QuorumPolicy: the single strict-majority rule -----------------
+
+    #[test]
+    fn quorum_policy_validity_matrix() {
+        // (m, n, expected_valid) — the rule is 2M > N, no M==1 carve-out.
+        let cases = [
+            (1, 1, true),  // unanimous-of-one
+            (2, 2, true),  // two installs → both required
+            (2, 3, true),  // canonical 2/3
+            (3, 4, true),  // majority on even N (not a half-split)
+            (3, 5, true),  // 3/5
+            (1, 2, false), // the retired "any-of-2" SPOF
+            (2, 4, false), // exact-half split-brain
+            (3, 6, false), // higher even
+            (2, 5, false), // sub-majority on odd N
+            (0, 3, false), // zero threshold
+            (4, 3, false), // M > N
+        ];
+        for (m, n, expected) in cases {
+            assert_eq!(
+                QuorumPolicy::new(m, n).is_valid(),
+                expected,
+                "policy {m}/{n} validity"
+            );
+        }
+    }
+
+    #[test]
+    fn quorum_policy_validate_error_kinds() {
+        assert_eq!(QuorumPolicy::new(2, 3).validate(), Ok(()));
+        assert_eq!(
+            QuorumPolicy::new(1, 2).validate(),
+            Err(ThresholdError::DeadlockPolicy { m: 1, n: 2 })
+        );
+        assert_eq!(
+            QuorumPolicy::new(2, 4).validate(),
+            Err(ThresholdError::DeadlockPolicy { m: 2, n: 4 })
+        );
+        assert_eq!(
+            QuorumPolicy::new(0, 3).validate(),
+            Err(ThresholdError::ZeroThreshold)
+        );
+        assert_eq!(
+            QuorumPolicy::new(4, 3).validate(),
+            Err(ThresholdError::ThresholdExceedsMembers {
+                threshold: 4,
+                members: 3
+            })
+        );
+    }
+
+    #[test]
+    fn quorum_policy_parse_forms() {
+        assert_eq!(
+            QuorumPolicy::parse("quorum:2/3"),
+            Some(QuorumPolicy::new(2, 3))
+        );
+        assert_eq!(QuorumPolicy::parse("3/5"), Some(QuorumPolicy::new(3, 5)));
+        assert_eq!(QuorumPolicy::parse("founder_only"), None);
+        assert_eq!(QuorumPolicy::parse("unanimous"), None);
+        assert_eq!(QuorumPolicy::parse("quorum:x/3"), None);
+    }
+
+    #[test]
+    fn verify_quorum_policy_2of3_passes_and_4of3_roster_rejected() {
+        let parties = three_parties();
+        let bytes = b"ciris-canonical registry-consensus claim";
+        let founders: Vec<_> = parties
+            .iter()
+            .map(|p| member_with_role(p, Role::Founder))
+            .collect();
+        let sigs = vec![parties[0].sign(bytes, true), parties[1].sign(bytes, true)];
+
+        // declared 2/3 over a 3-founder roster, 2 founders signed → pass.
+        assert_eq!(
+            verify_quorum_policy(bytes, &founders, &sigs, QuorumPolicy::new(2, 3)),
+            Ok(2)
+        );
+
+        // A valid-shape policy (3/4, since 2·3>4) declared over the 3-founder
+        // roster → RosterMismatch (fail-closed): the declared N must equal the
+        // real founder count, so a policy can't be evaluated over the wrong set.
+        assert_eq!(
+            verify_quorum_policy(bytes, &founders, &sigs, QuorumPolicy::new(3, 4)),
+            Err(ThresholdError::RosterMismatch {
+                declared: 4,
+                actual: 3
+            })
+        );
+    }
+
+    #[test]
+    fn verify_quorum_policy_deadlock_rejected_before_counting() {
+        // A 1/2 "any-of-2" policy is rejected outright — even with a valid
+        // signature present, no action is taken.
+        let parties = three_parties();
+        let bytes = b"x";
+        let two_founders: Vec<_> = parties[..2]
+            .iter()
+            .map(|p| member_with_role(p, Role::Founder))
+            .collect();
+        let sigs = vec![parties[0].sign(bytes, true), parties[1].sign(bytes, true)];
+        assert_eq!(
+            verify_quorum_policy(bytes, &two_founders, &sigs, QuorumPolicy::new(1, 2)),
+            Err(ThresholdError::DeadlockPolicy { m: 1, n: 2 })
+        );
+        // The proper 2/2 over the same roster passes.
+        assert_eq!(
+            verify_quorum_policy(bytes, &two_founders, &sigs, QuorumPolicy::new(2, 2)),
+            Ok(2)
+        );
     }
 }
