@@ -89,6 +89,9 @@ pub mod storage;
 /// Keyring-backed RNS transport-identity storage (CIRISVerify#68).
 pub mod transport_identity;
 
+/// TPM/SE-sealed Ed25519 federation signing key (CIRISVerify#70).
+pub mod sealed_ed25519;
+
 /// Platform-specific hardware signer implementations.
 pub mod platform;
 
@@ -113,6 +116,8 @@ pub use storage::{create_platform_storage, SecureBlobStorage, StorageBackend};
 pub use transport_identity::{
     BlobTransportKeystore, TransportIdentityKeystore, TRANSPORT_IDENTITY_LEN,
 };
+
+pub use sealed_ed25519::{get_platform_ed25519_signer, SealedEd25519Signer};
 
 #[cfg(feature = "keyring-storage")]
 pub use keyring_storage::{create_keyring_signer, KeyringStorageSigner};
