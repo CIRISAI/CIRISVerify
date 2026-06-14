@@ -275,7 +275,15 @@ pub fn verify_provenance_chain(
             if !link.is_self_signed || link.scrub_key_id != link.key_id {
                 return Err(ProvenanceError::TerminusNotSelfSigned);
             }
-            if link.identity_type != STEWARD_IDENTITY_TYPE {
+            // CEG 1.0-RC5 §7.0.1: `identity_type` is a comma-joined SET, read
+            // by set-membership — NOT scalar equality. A fabric-node steward
+            // legitimately carries multiple roles (e.g. "steward,witness"), so
+            // a scalar `!= "steward"` would wrongly reject a valid terminus.
+            if !link
+                .identity_type
+                .split(',')
+                .any(|role| role == STEWARD_IDENTITY_TYPE)
+            {
                 return Err(ProvenanceError::TerminusNotSteward {
                     identity_type: link.identity_type.clone(),
                 });
@@ -588,6 +596,25 @@ mod tests {
     fn terminus_not_steward_is_rejected() {
         let (mut chain, anchor, ..) = valid_chain();
         chain.chain[1].identity_type = "agent".to_string();
+        assert!(matches!(
+            verify_provenance_chain(&chain, &[anchor]),
+            Err(ProvenanceError::TerminusNotSteward { .. })
+        ));
+    }
+
+    /// CEG 1.0-RC5 §7.0.1: `identity_type` is a comma-joined SET, read by
+    /// membership. A fabric-node steward carrying multiple roles
+    /// ("steward,witness") MUST still resolve as a valid steward terminus —
+    /// the pre-RC5 scalar `!= "steward"` check would have wrongly rejected it.
+    #[test]
+    fn multi_role_fabric_node_steward_terminus_verifies() {
+        let (mut chain, anchor, ..) = valid_chain();
+        chain.chain[1].identity_type = "steward,witness".to_string();
+        assert!(verify_provenance_chain(&chain, std::slice::from_ref(&anchor)).is_ok());
+
+        // …and a set that does NOT contain "steward" is still rejected
+        // (membership, not substring — "stewardship" must not match).
+        chain.chain[1].identity_type = "witness,stewardship".to_string();
         assert!(matches!(
             verify_provenance_chain(&chain, &[anchor]),
             Err(ProvenanceError::TerminusNotSteward { .. })
