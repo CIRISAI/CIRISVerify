@@ -53,6 +53,11 @@ mod error;
 mod signer;
 mod types;
 
+/// Generic, interface-keyed external hardware-security-token abstraction
+/// (CIRISVerify#62). Probe → CEG §9.4 `hardware_class` resolver (real, tested)
+/// + an honestly-stubbed PC/SC token-signer entry point.
+pub mod hw_token;
+
 #[cfg(feature = "software")]
 mod software;
 
@@ -100,6 +105,10 @@ pub mod platform;
 pub mod keyring_storage;
 
 pub use error::KeyringError;
+pub use hw_token::{
+    get_token_signer, hardware_class_table, resolve_hardware_class, HardwareClassRule, ProbedToken,
+    TokenInterface, GENERIC_EXTERNAL_TOKEN_CLASS,
+};
 pub use signer::{HardwareSigner, KeyGenConfig};
 pub use types::{
     AndroidAttestation, ClassicalAlgorithm, HardwareType, IosAttestation, KeyringScope,

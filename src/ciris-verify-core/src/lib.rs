@@ -92,6 +92,7 @@ pub mod steward_key;
 pub mod threshold;
 pub mod tpm_attest;
 pub mod transparency;
+pub mod transport_binding;
 pub mod tree_verify;
 pub mod types;
 pub mod unified;
