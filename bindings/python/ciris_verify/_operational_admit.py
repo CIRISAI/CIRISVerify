@@ -24,7 +24,11 @@ import threading as _threading
 from pathlib import Path
 from typing import Any, Optional
 
-__all__ = ["resolve_role_authority", "verify_partner_record_quorum"]
+__all__ = [
+    "resolve_role_authority",
+    "verify_partner_record_quorum",
+    "verify_delegation_scope_split",
+]
 
 _lib: Optional[ctypes.CDLL] = None
 _lib_lock = _threading.Lock()
@@ -74,6 +78,7 @@ def _load_lib() -> ctypes.CDLL:
                 lib = ctypes.CDLL(path)
                 _wire(lib.ciris_verify_resolve_role_authority)
                 _wire(lib.ciris_verify_partner_record_quorum)
+                _wire(lib.ciris_verify_delegation_scope_split)
             except (OSError, AttributeError) as exc:
                 last_err = exc
                 continue
@@ -201,5 +206,38 @@ def verify_partner_record_quorum(
             "steward_roster": steward_roster,
             "signatures": signatures,
             "threshold": threshold,
+        },
+    )
+
+
+def verify_delegation_scope_split(
+    attested_identity_type: str,
+    delegated_scope: list[str],
+) -> dict:
+    """Enforce the CEG §8.1.12.7.1 / §5.6.8.10 ``infra:*`` / ``agency:*``
+    delegation scope split — the wire-checkable form of §1.3 "infrastructure
+    must not have agency" (CIRISRegistry#83).
+
+    Args:
+        attested_identity_type: the caller-resolved §7.0.1 ``identity_type``
+            SET (comma-joined) of the delegation's ``attested_key_id``. The
+            delegate is a brain iff the set contains ``agent``.
+        delegated_scope: the delegation's scopes. A ``node``-only delegate may
+            carry only ``infra:*``; any ``agency:*`` (or legacy agency kind) is
+            rejected, as is any unrecognized scope (fail-closed).
+
+    Returns:
+        ``{"ok": bool, "error": str?}``. Fail-closed: a violating delegation
+        is ``ok: False`` with a reason, not an exception.
+
+    Raises:
+        ValueError: the request itself is malformed.
+        RuntimeError: the shared library / FFI symbols are unavailable.
+    """
+    return _call(
+        "ciris_verify_delegation_scope_split",
+        {
+            "attested_identity_type": attested_identity_type,
+            "delegated_scope": delegated_scope,
         },
     )

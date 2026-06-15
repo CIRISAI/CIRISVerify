@@ -983,9 +983,12 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_pending_classical_only_signature_verifies() {
-        // A binding with no ML-DSA half (hybrid-pending) still verifies on
-        // the classical half alone — the threshold rule.
+    fn hybrid_pending_classical_only_signature_rejected() {
+        // RC7 §10.1.5.1.1 / F-AV-14: a transport_destination binding is a
+        // federation-tier identity binding (AV-17 / AV-42). A binding with no
+        // ML-DSA half (classical-only / hybrid-pending, or a stripped PQC
+        // half) MUST NOT verify — accepting it would let a future Ed25519
+        // break forge an authenticated announce.
         let signer = Signer::random();
         let dir = vec![signer.directory_member("steward-us")];
         let mut binding = make_binding(
@@ -998,7 +1001,7 @@ mod tests {
         binding.signature.mldsa65_signature_base64 = None;
 
         let v = verify_transport_binding(&binding, &dir).unwrap();
-        assert!(v.authentic, "classical-only signature must still verify");
-        assert_eq!(v.reason, TransportBindingReason::Verified);
+        assert!(!v.authentic, "classical-only binding must be rejected");
+        assert_eq!(v.reason, TransportBindingReason::SignatureInvalid);
     }
 }

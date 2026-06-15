@@ -452,6 +452,155 @@ pub fn check_set_semantics_sorted(value: &Value, fields: &[&str]) -> Result<(), 
     Ok(())
 }
 
+// ===========================================================================
+// Delegation scope split — `infra:*` vs `agency:*` (CEG 1.0-RC7 §8.1.12.7.1 /
+// §5.6.8.10 / §1.3, CIRISRegistry#83)
+// ===========================================================================
+
+/// The reserved `infra:*` delegation scopes — server-class powers a `node`-role
+/// (fabric/infrastructure) delegate MAY hold. A user-owned fabric node serves +
+/// holds membership *standing* under the user's authority with these.
+pub const INFRA_SCOPES: &[&str] = &[
+    "infra:network_presence",
+    "infra:join_communities",
+    "infra:serve",
+    "infra:store",
+    "infra:attest",
+    "infra:transport",
+];
+
+/// The reserved `agency:*` delegation scopes — brain-only powers (reason and
+/// act AS the user). FORBIDDEN for a pure `node`-role delegate (§1.3
+/// "infrastructure must not have agency").
+pub const AGENCY_SCOPES: &[&str] = &[
+    "agency:act_on_behalf",
+    "agency:message_io",
+    "agency:reason",
+    "agency:decide",
+];
+
+/// Legacy unprefixed kinds that convey **agency** (valid only for an
+/// `agent`-role delegate — the Self-at-login agency profile; the `agency:*`
+/// equivalents). `sub_delegation` is agency-class: re-granting authority is a
+/// brain decision.
+const LEGACY_AGENCY_KINDS: &[&str] = &[
+    "act_on_behalf",
+    "message_io",
+    "reason",
+    "decide",
+    "sub_delegation",
+];
+
+/// Legacy unprefixed kinds that convey **infra** (the `infra:network_presence`
+/// equivalent).
+const LEGACY_INFRA_KINDS: &[&str] = &["network_presence"];
+
+/// The brain role in an `identity_type` set (§7.0.1) — its presence is what
+/// authorizes `agency:*`.
+const AGENT_IDENTITY_ROLE: &str = "agent";
+
+/// What a single delegated scope conveys.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ScopeClass {
+    Infra,
+    Agency,
+    Unknown,
+}
+
+fn classify_scope(scope: &str) -> ScopeClass {
+    if INFRA_SCOPES.contains(&scope) || LEGACY_INFRA_KINDS.contains(&scope) {
+        ScopeClass::Infra
+    } else if AGENCY_SCOPES.contains(&scope) || LEGACY_AGENCY_KINDS.contains(&scope) {
+        ScopeClass::Agency
+    } else {
+        // An unrecognized scope — including an unknown suffix under a reserved
+        // prefix (`infra:hack` / `agency:hack`) — is fail-closed.
+        ScopeClass::Unknown
+    }
+}
+
+/// Why a `delegates_to` scope set was rejected.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScopeSplitError {
+    /// The delegate's `identity_type` is `node`-only (no `agent`/brain) but the
+    /// delegation carries an agency-class scope — §1.3 violation.
+    NodeCarriesAgency {
+        /// The offending agency-class scope.
+        scope: String,
+    },
+    /// A scope is not a recognized reserved (`infra:*` / `agency:*`) or legacy
+    /// kind — rejected fail-closed.
+    UnknownScope {
+        /// The unrecognized scope.
+        scope: String,
+    },
+}
+
+impl std::fmt::Display for ScopeSplitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NodeCarriesAgency { scope } => write!(
+                f,
+                "node-only delegate may not hold agency scope {scope:?} \
+                 (§1.3 infrastructure must not have agency)"
+            ),
+            Self::UnknownScope { scope } => {
+                write!(f, "unrecognized delegation scope {scope:?} (fail-closed)")
+            },
+        }
+    }
+}
+
+impl std::error::Error for ScopeSplitError {}
+
+/// Enforce the CEG §8.1.12.7.1 / §5.6.8.10 `infra:*` / `agency:*` scope split on
+/// a `delegates_to` — the wire-checkable form of §1.3 "infrastructure must not
+/// have agency".
+///
+/// `attested_identity_type` is the **caller-resolved** `identity_type` (§7.0.1)
+/// of the delegation's `attested_key_id`, a comma-joined SET. The delegate is a
+/// **brain** iff that set contains `agent`. A non-brain (pure `node`)
+/// delegate MUST carry only `infra:*` scopes: any agency-class scope is
+/// rejected. An unrecognized scope is rejected fail-closed. A brain delegate
+/// may hold any recognized scope (the Self-at-login agency profile).
+///
+/// This is a **pure evaluator** (no I/O), the same discipline as
+/// [`resolve_role_authority`]. Cohabitation (`agent = node + brain`) is modeled
+/// as two *separate* `delegates_to` (the node holds `infra:*`, the brain holds
+/// `agency:*`), each checked independently — so this per-delegation check is
+/// exactly right.
+///
+/// # Errors
+///
+/// [`ScopeSplitError::NodeCarriesAgency`] / [`ScopeSplitError::UnknownScope`].
+pub fn verify_delegation_scope_split(
+    attested_identity_type: &str,
+    delegated_scope: &[String],
+) -> Result<(), ScopeSplitError> {
+    let is_brain = attested_identity_type
+        .split(',')
+        .any(|role| role.trim() == AGENT_IDENTITY_ROLE);
+
+    for scope in delegated_scope {
+        match classify_scope(scope) {
+            ScopeClass::Infra => {},
+            ScopeClass::Agency => {
+                if !is_brain {
+                    return Err(ScopeSplitError::NodeCarriesAgency {
+                        scope: scope.clone(),
+                    });
+                }
+            },
+            ScopeClass::Unknown => {
+                return Err(ScopeSplitError::UnknownScope {
+                    scope: scope.clone(),
+                });
+            },
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -877,5 +1026,83 @@ mod tests {
     fn absent_or_non_array_fields_are_skipped() {
         let pr = json!({ "license_id": "lic-1" });
         assert!(check_set_semantics_sorted(&pr, &["capabilities_granted"]).is_ok());
+    }
+
+    // ---- delegation scope split (#77 / RC7 §8.1.12.7.1 / §1.3) -----------
+
+    fn scopes(xs: &[&str]) -> Vec<String> {
+        xs.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    #[test]
+    fn node_only_with_all_infra_scopes_is_ok() {
+        // A pure fabric node may serve + hold membership standing.
+        let scope = scopes(&[
+            "infra:network_presence",
+            "infra:join_communities",
+            "infra:serve",
+        ]);
+        assert!(verify_delegation_scope_split("node", &scope).is_ok());
+    }
+
+    #[test]
+    fn node_only_carrying_agency_is_rejected() {
+        // §1.3 wire-checkable: infrastructure must not have agency.
+        let scope = scopes(&["infra:serve", "agency:act_on_behalf"]);
+        assert_eq!(
+            verify_delegation_scope_split("node", &scope),
+            Err(ScopeSplitError::NodeCarriesAgency {
+                scope: "agency:act_on_behalf".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn node_only_carrying_legacy_agency_kind_is_rejected() {
+        // Legacy unprefixed agency kind is still agency — rejected for a node.
+        let scope = scopes(&["network_presence", "act_on_behalf"]);
+        assert_eq!(
+            verify_delegation_scope_split("node", &scope),
+            Err(ScopeSplitError::NodeCarriesAgency {
+                scope: "act_on_behalf".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn agent_role_may_hold_agency() {
+        // The Self-at-login agency profile: a brain reasons + acts as the user.
+        let scope = scopes(&[
+            "agency:act_on_behalf",
+            "agency:message_io",
+            "infra:network_presence",
+        ]);
+        assert!(verify_delegation_scope_split("agent", &scope).is_ok());
+    }
+
+    #[test]
+    fn cohabiting_node_plus_agent_is_a_brain() {
+        // identity_type SET (§7.0.1): "node,agent" contains the brain role.
+        let scope = scopes(&["agency:decide"]);
+        assert!(verify_delegation_scope_split("node,agent", &scope).is_ok());
+    }
+
+    #[test]
+    fn unknown_scope_is_rejected_fail_closed() {
+        // Unknown suffix under a reserved prefix is NOT a free pass.
+        for bad in ["agency:hack", "infra:exfiltrate", "wat", "act_now"] {
+            assert_eq!(
+                verify_delegation_scope_split("agent", &scopes(&[bad])),
+                Err(ScopeSplitError::UnknownScope {
+                    scope: bad.to_string()
+                }),
+                "scope {bad:?} must be rejected fail-closed"
+            );
+        }
+    }
+
+    #[test]
+    fn empty_scope_set_is_ok() {
+        assert!(verify_delegation_scope_split("node", &[]).is_ok());
     }
 }

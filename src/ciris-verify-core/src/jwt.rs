@@ -294,12 +294,15 @@ impl PqcVerifier for MlDsa65KeyVerifier<'_> {
 pub enum LicenseVerification {
     /// Both classical and PQC signatures verified against the steward key.
     HybridVerified,
-    /// Classical signature verified; PQC could not be checked because the full
-    /// PQC steward key was unavailable (e.g. DNS-only consensus) or the PQC
-    /// verification backend is not compiled in. Still cryptographically gated by
-    /// the classical signature — sufficient to defeat a forged cache, but
-    /// short of the day-1 hybrid ideal. Callers MAY treat this as licensable;
-    /// it is strictly safer than the unverified path it replaces.
+    /// Classical signature verified, but the PQC half could not be checked —
+    /// the full PQC steward key was unavailable (e.g. DNS-only consensus, or
+    /// the registry has not yet published `steward_key_pqc`) or the PQC backend
+    /// is not compiled in. Cryptographically gated by the classical signature
+    /// (defeats a forged cache), but **NOT federation-licensable at CEG 1.0**:
+    /// per RC7 §10.1.5.1.1 a `Licensed*` tier requires both halves, because a
+    /// classical-only license is forgeable by a future Ed25519 break (the HNDL
+    /// threat). A `ClassicalVerified` license **degrades to community** until
+    /// the hybrid steward key is available — see [`Self::is_licensable`].
     ClassicalVerified,
     /// Verification failed — forged, tampered, malformed, or not signed by the
     /// consensus steward. Callers MUST degrade to community/unverified.
@@ -307,9 +310,27 @@ pub enum LicenseVerification {
 }
 
 impl LicenseVerification {
-    /// Whether this outcome permits a `Licensed*` status.
+    /// Whether this outcome permits a federation-tier `Licensed*` status.
+    ///
+    /// **`HybridVerified` only** (CEG 1.0-RC7 §10.1.5.1.1 / F-AV-14): the PQC
+    /// half is MANDATORY at the federation admission boundary — there is no
+    /// `require_hybrid: false` posture at 1.0. `ClassicalVerified` is
+    /// classically gated (and is the right state to log) but is **not**
+    /// federation-licensable; such a license degrades to community until its
+    /// hybrid steward key is published. Accepting the classical half alone
+    /// would make professional-tier licensing forgeable by a single future
+    /// Ed25519 break — the exact threat the hybrid model defends.
     #[must_use]
     pub fn is_licensable(&self) -> bool {
+        matches!(self, LicenseVerification::HybridVerified)
+    }
+
+    /// Whether the classical steward signature verified (either `HybridVerified`
+    /// or `ClassicalVerified`). Defeats a forged cache, but is NOT sufficient
+    /// for a federation `Licensed*` tier on its own — use [`Self::is_licensable`]
+    /// for the admission decision. Exposed for diagnostics / local-tier logging.
+    #[must_use]
+    pub fn classical_gate_held(&self) -> bool {
         matches!(
             self,
             LicenseVerification::HybridVerified | LicenseVerification::ClassicalVerified
@@ -663,7 +684,10 @@ mod tests {
 
         // Classical gate still holds (genuine steward classical sig), PQC refused.
         assert_eq!(outcome, LicenseVerification::ClassicalVerified);
-        assert!(outcome.is_licensable());
+        // Classical gate held, but classical-only is NOT federation-licensable
+        // at 1.0 (RC7 §10.1.5.1.1) — degrades to community.
+        assert!(outcome.classical_gate_held());
+        assert!(!outcome.is_licensable());
     }
 
     /// Classical-only consensus (no full PQC key, e.g. DNS-only) still gates on
@@ -675,7 +699,9 @@ mod tests {
 
         let outcome = verify_license_jwt(&token, &classical_pub, None, None);
         assert_eq!(outcome, LicenseVerification::ClassicalVerified);
-        assert!(outcome.is_licensable());
+        // Classically gated (defeats a forged cache) but not federation-licensable.
+        assert!(outcome.classical_gate_held());
+        assert!(!outcome.is_licensable());
     }
 
     /// A wrong consensus classical key rejects an otherwise-valid token.

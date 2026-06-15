@@ -43,6 +43,8 @@
 
 use base64::Engine;
 use ciris_crypto::{ClassicalVerifier, Ed25519Verifier, MlDsa65Verifier, PqcVerifier};
+
+use crate::threshold::HybridPolicy;
 use serde::{Deserialize, Serialize};
 
 /// `identity_type` a terminating bootstrap link must carry.
@@ -175,6 +177,14 @@ pub enum ProvenanceError {
         /// The terminus `key_id`.
         key_id: String,
     },
+    /// A link carries no ML-DSA-65 scrub-signature (classical-only /
+    /// hybrid-pending) but the chain was verified under the federation-tier
+    /// [`HybridPolicy::RequireHybrid`] (CEG 1.0-RC7 §10.1.5.1.1). Such a link
+    /// is local-tier only.
+    LinkNotHybrid {
+        /// The classical-only link.
+        key_id: String,
+    },
 }
 
 impl std::fmt::Display for ProvenanceError {
@@ -232,6 +242,11 @@ impl std::fmt::Display for ProvenanceError {
                 f,
                 "provenance chain roots at {key_id}, which is not a pinned trusted steward"
             ),
+            Self::LinkNotHybrid { key_id } => write!(
+                f,
+                "provenance link {key_id} is classical-only (hybrid-pending); \
+                 not admissible at federation-tier (RC7 §10.1.5.1.1)"
+            ),
         }
     }
 }
@@ -252,6 +267,29 @@ impl std::error::Error for ProvenanceError {}
 pub fn verify_provenance_chain(
     chain: &ProvenanceChain,
     trusted_bootstrap_ed25519: &[Vec<u8>],
+) -> Result<(), ProvenanceError> {
+    verify_provenance_chain_with_policy(
+        chain,
+        trusted_bootstrap_ed25519,
+        HybridPolicy::RequireHybrid,
+    )
+}
+
+/// Verify a [`ProvenanceChain`] under an explicit [`HybridPolicy`].
+///
+/// [`verify_provenance_chain`] is the federation-tier default
+/// ([`HybridPolicy::RequireHybrid`]): every link MUST carry a valid ML-DSA-65
+/// scrub-signature (CEG 1.0-RC7 §10.1.5.1.1) — a classical-only
+/// ("hybrid-pending") link is rejected, because a federation-key directory
+/// rooted on a classical-only scrub chain could be forged whole by a future
+/// Ed25519 break (`FEDERATION_THREAT_MODEL.md` F-AV-14 / AV-8).
+/// [`HybridPolicy::AllowClassicalPending`] tolerates a classical-only link and
+/// is for **local-tier** (§10.1.5.2) self-read ONLY — never a federation trust
+/// decision.
+pub fn verify_provenance_chain_with_policy(
+    chain: &ProvenanceChain,
+    trusted_bootstrap_ed25519: &[Vec<u8>],
+    policy: HybridPolicy,
 ) -> Result<(), ProvenanceError> {
     let links = &chain.chain;
     if links.is_empty() {
@@ -334,35 +372,42 @@ pub fn verify_provenance_chain(
             });
         }
 
-        // PQC scrub-signature is verified when present. A row may be
-        // hybrid-pending (Ed25519-only) until the cold-path PQC sign
-        // fills in — persist allows that — so a *missing* PQC half is
-        // not a rejection, but a *present* one must verify.
-        if let Some(pqc_sig_b64) = &link.scrub_signature_pqc {
-            let pqc_sig =
-                b64.decode(pqc_sig_b64)
-                    .map_err(|_| ProvenanceError::BadSignatureEncoding {
-                        key_id: link.key_id.clone(),
-                    })?;
-            let parent_mldsa_b64 = parent.pubkey_ml_dsa_65_base64.as_ref().ok_or(
-                ProvenanceError::ParentMissingPqcKey {
-                    key_id: parent.key_id.clone(),
-                },
-            )?;
-            let parent_mldsa =
-                b64.decode(parent_mldsa_b64)
-                    .map_err(|_| ProvenanceError::BadKeyEncoding {
-                        key_id: parent.key_id.clone(),
-                    })?;
-            // Bound signature: PQC covers hash ‖ classical_sig.
-            let mut bound = hash.clone();
-            bound.extend_from_slice(&classical_sig);
-            if !matches!(mldsa.verify(&parent_mldsa, &bound, &pqc_sig), Ok(true)) {
-                return Err(ProvenanceError::ScrubSignatureInvalid {
+        // PQC scrub-signature. Under RequireHybrid (federation-tier, RC7
+        // §10.1.5.1.1) every link MUST carry one and it MUST verify — a
+        // classical-only ("hybrid-pending") link is rejected. Under
+        // AllowClassicalPending (local-tier self-read) a missing PQC half is
+        // tolerated, but a *present* one must still verify.
+        let Some(pqc_sig_b64) = &link.scrub_signature_pqc else {
+            if policy == HybridPolicy::RequireHybrid {
+                return Err(ProvenanceError::LinkNotHybrid {
                     key_id: link.key_id.clone(),
-                    half: "pqc",
                 });
             }
+            continue; // local-tier: classical-only link tolerated
+        };
+        let pqc_sig =
+            b64.decode(pqc_sig_b64)
+                .map_err(|_| ProvenanceError::BadSignatureEncoding {
+                    key_id: link.key_id.clone(),
+                })?;
+        let parent_mldsa_b64 = parent.pubkey_ml_dsa_65_base64.as_ref().ok_or(
+            ProvenanceError::ParentMissingPqcKey {
+                key_id: parent.key_id.clone(),
+            },
+        )?;
+        let parent_mldsa =
+            b64.decode(parent_mldsa_b64)
+                .map_err(|_| ProvenanceError::BadKeyEncoding {
+                    key_id: parent.key_id.clone(),
+                })?;
+        // Bound signature: PQC covers hash ‖ classical_sig.
+        let mut bound = hash.clone();
+        bound.extend_from_slice(&classical_sig);
+        if !matches!(mldsa.verify(&parent_mldsa, &bound, &pqc_sig), Ok(true)) {
+            return Err(ProvenanceError::ScrubSignatureInvalid {
+                key_id: link.key_id.clone(),
+                half: "pqc",
+            });
         }
     }
 
@@ -507,10 +552,8 @@ mod tests {
         assert!(verify_provenance_chain(&chain, &[steward.ed_pub()]).is_ok());
     }
 
-    #[test]
-    fn hybrid_pending_link_still_verifies() {
-        // A classical-only (PQC-pending) child is accepted; its classical
-        // scrub-signature still chains.
+    /// Build a chain whose child link is classical-only (PQC-pending).
+    fn hybrid_pending_chain() -> (ProvenanceChain, Vec<u8>) {
         let steward = Keypair::new();
         let child = Keypair::new();
         let steward_link = make_link(
@@ -529,14 +572,39 @@ mod tests {
             &steward,
             "steward-1",
             [0x33u8; 32],
-            false,
+            false, // no PQC scrub-signature
         );
         let chain = ProvenanceChain {
             key_id: "agent-1".to_string(),
             chain: vec![child_link, steward_link],
             terminates_at_steward_bootstrap: true,
         };
-        assert!(verify_provenance_chain(&chain, &[steward.ed_pub()]).is_ok());
+        (chain, steward.ed_pub())
+    }
+
+    #[test]
+    fn hybrid_pending_link_rejected_at_federation_tier() {
+        // RC7 §10.1.5.1.1 / F-AV-14 / AV-8: a classical-only scrub link cannot
+        // root federation-tier trust — a future Ed25519 break could forge the
+        // whole chain. The default policy rejects it.
+        let (chain, anchor) = hybrid_pending_chain();
+        assert!(matches!(
+            verify_provenance_chain(&chain, &[anchor]),
+            Err(ProvenanceError::LinkNotHybrid { .. })
+        ));
+    }
+
+    #[test]
+    fn hybrid_pending_link_accepted_only_at_local_tier() {
+        // The classical-only chain is admissible ONLY under the explicit
+        // local-tier policy (§10.1.5.2 self-read).
+        let (chain, anchor) = hybrid_pending_chain();
+        assert!(verify_provenance_chain_with_policy(
+            &chain,
+            &[anchor],
+            HybridPolicy::AllowClassicalPending,
+        )
+        .is_ok());
     }
 
     #[test]

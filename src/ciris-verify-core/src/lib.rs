@@ -136,8 +136,8 @@ pub use locale_merkle::{
     RFC6962_PARENT_PREFIX,
 };
 pub use provenance::{
-    verify_provenance_chain, ProvenanceChain, ProvenanceError, ProvenanceLink,
-    MAX_PROVENANCE_DEPTH, STEWARD_IDENTITY_TYPE,
+    verify_provenance_chain, verify_provenance_chain_with_policy, ProvenanceChain, ProvenanceError,
+    ProvenanceLink, MAX_PROVENANCE_DEPTH, STEWARD_IDENTITY_TYPE,
 };
 pub use reconsider_dos::{
     ActorBudget, ActorBudgetExhausted, EventRateLimit, EventRateLimited, FilingOutcome,
@@ -160,7 +160,8 @@ pub use steward_key::{
     StewardKeyResponse, ThresholdPolicy, STEWARD_KEY_RESPONSE_DOMAIN_PREFIX,
 };
 pub use threshold::{
-    verify_threshold_signatures, ThresholdError, ThresholdMember, ThresholdSignature,
+    verify_threshold_signatures, verify_threshold_signatures_with_policy, HybridPolicy,
+    ThresholdError, ThresholdMember, ThresholdSignature,
 };
 pub use transparency::{
     verify_consistency, verify_inclusion, ConsistencyProof, InMemoryTransparencyStore, MerkleProof,

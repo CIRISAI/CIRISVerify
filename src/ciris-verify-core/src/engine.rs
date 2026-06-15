@@ -1112,17 +1112,31 @@ impl LicenseEngine {
             validation.consensus_pqc_fingerprint.as_deref(),
         );
 
-        if !outcome.is_licensable() {
-            warn!(
-                license_id = %license.license_id,
-                "License JWT signature verification FAILED against consensus steward key"
-            );
-        } else {
-            debug!(
-                license_id = %license.license_id,
-                outcome = ?outcome,
-                "License JWT signature verified against consensus steward key"
-            );
+        use crate::jwt::LicenseVerification;
+        match outcome {
+            LicenseVerification::HybridVerified => {
+                debug!(
+                    license_id = %license.license_id,
+                    "License JWT hybrid signature verified against consensus steward key"
+                );
+            },
+            LicenseVerification::ClassicalVerified => {
+                // RC7 §10.1.5.1.1: classical-only is not federation-licensable.
+                // The classical gate held (not a forgery), but the PQC steward
+                // key was unavailable — degrade to community until it is.
+                warn!(
+                    license_id = %license.license_id,
+                    "License classically gated but PQC steward key unavailable — \
+                     NOT federation-licensable at CEG 1.0 (RC7 §10.1.5.1.1); \
+                     degrading to community. Registry must publish steward_key_pqc."
+                );
+            },
+            LicenseVerification::Failed => {
+                warn!(
+                    license_id = %license.license_id,
+                    "License JWT signature verification FAILED against consensus steward key"
+                );
+            },
         }
 
         outcome.is_licensable()
@@ -1859,8 +1873,80 @@ mod tests {
         let p = b64url(&serde_json::to_vec(&payload).unwrap());
         let signing_input = format!("{}.{}", h, p);
         let csig = steward.sign(signing_input.as_bytes()).unwrap();
-        // PQC half left as filler; engine test drives classical-only consensus.
+        // PQC half left as filler; this classical-only JWT is no longer
+        // federation-licensable (RC7 §10.1.5.1.1) — used by the degradation test.
         format!("{}.{}.{}.{}", h, p, b64url(&csig), b64url(&[0u8; 8]))
+    }
+
+    /// A fully-hybrid steward-signed license JWT: classical over `signing_input`,
+    /// ML-DSA-65 over `signing_input ‖ classical_sig` (the bound-sig rule).
+    /// Returns `(jwt, steward_pqc_pubkey)`.
+    #[cfg(feature = "pqc")]
+    fn signed_license_jwt_hybrid(
+        steward: &Ed25519Signer,
+        steward_pqc: &ciris_crypto::MlDsa65Signer,
+        exp: i64,
+    ) -> (String, Vec<u8>) {
+        use ciris_crypto::PqcSigner;
+        let header = JwtHeader {
+            alg: "CIRIS_HYBRID_V1".to_string(),
+            typ: "JWT".to_string(),
+            kid: Some("steward".to_string()),
+        };
+        let payload = LicensePayload {
+            jti: "lic-eng-1".to_string(),
+            iss: "https://registry.ciris.ai".to_string(),
+            sub: "deploy-eng-1".to_string(),
+            aud: vec!["ciris-verify".to_string()],
+            iat: 1_737_936_000,
+            exp,
+            nbf: 1_737_936_000,
+            license_type: LicenseType::ProfessionalMedical,
+            org_name: "Eng Org".to_string(),
+            org_id: "org-eng".to_string(),
+            responsible_party: "Dr. Eng".to_string(),
+            responsible_party_contact: "e@o.org".to_string(),
+            capabilities: vec!["domain:medical:triage".to_string()],
+            capabilities_denied: vec![],
+            max_tier: AutonomyTier::A3High,
+            constraints: DeploymentConstraints::default(),
+        };
+        let h = b64url(&serde_json::to_vec(&header).unwrap());
+        let p = b64url(&serde_json::to_vec(&payload).unwrap());
+        let signing_input = format!("{}.{}", h, p);
+        let csig = steward.sign(signing_input.as_bytes()).unwrap();
+        let mut bound = signing_input.as_bytes().to_vec();
+        bound.extend_from_slice(&csig);
+        let psig = steward_pqc.sign(&bound).unwrap();
+        let jwt = format!("{}.{}.{}.{}", h, p, b64url(&csig), b64url(&psig));
+        (jwt, steward_pqc.public_key().unwrap())
+    }
+
+    /// Hybrid consensus: classical + full PQC steward key + its fingerprint.
+    #[cfg(feature = "pqc")]
+    fn hybrid_consensus(steward_ed_pub: Vec<u8>, steward_pqc_pub: &[u8]) -> ValidationResult {
+        let fp = {
+            use sha2::{Digest, Sha256};
+            let mut hsh = Sha256::new();
+            hsh.update(steward_pqc_pub);
+            hsh.finalize().to_vec()
+        };
+        ValidationResult {
+            status: ValidationStatus::AllSourcesAgree,
+            consensus_key_classical: Some(steward_ed_pub),
+            consensus_key_pqc: Some(steward_pqc_pub.to_vec()),
+            consensus_pqc_fingerprint: Some(fp),
+            consensus_revocation_revision: Some(1),
+            authoritative_source: Some("HTTPS".to_string()),
+            source_details: SourceDetails {
+                dns_us_reachable: true,
+                dns_eu_reachable: true,
+                https_reachable: true,
+                dns_us_error: None,
+                dns_eu_error: None,
+                https_error: None,
+            },
+        }
     }
 
     fn license_with_jwt(deployment_id: &str, jwt: String, exp: i64) -> LicenseDetails {
@@ -1915,31 +2001,57 @@ mod tests {
         LicenseEngine::with_signer(config, Arc::from(signer)).unwrap()
     }
 
-    /// PROOF: a cache entry with a VALID steward-signed license is honored.
+    /// PROOF: a cache entry with a VALID **hybrid** steward-signed license,
+    /// against a hybrid consensus steward key, is honored.
+    #[cfg(feature = "pqc")]
     #[tokio::test]
-    async fn test_get_license_details_valid_signature_honored() {
+    async fn test_get_license_details_valid_hybrid_signature_honored() {
         let steward = Ed25519Signer::random().unwrap();
+        let steward_pqc = ciris_crypto::MlDsa65Signer::new().unwrap();
         let exp = chrono::Utc::now().timestamp() + 86_400;
         let dep = "deploy-eng-1";
-        let jwt = signed_license_jwt(&steward, exp);
+        let (jwt, pqc_pub) = signed_license_jwt_hybrid(&steward, &steward_pqc, exp);
 
         let engine = make_engine();
         engine.cache.put(&license_with_jwt(dep, jwt, exp));
 
-        let validation = classical_only_consensus(steward.public_key().unwrap());
+        let validation = hybrid_consensus(steward.public_key().unwrap(), &pqc_pub);
         let got = engine.get_license_details(dep, &validation).await;
         assert!(
             got.is_some(),
-            "valid steward-signed cached license must be returned"
+            "valid HYBRID steward-signed cached license must be returned"
         );
 
-        // And it maps to a professional status.
         let (status, _) = engine.apply_hardware_restriction(got);
         // Software-only signer caps at community, so assert via verify gate instead:
         assert!(matches!(
             status,
             LicenseStatus::UnlicensedCommunity | LicenseStatus::LicensedProfessional
         ));
+    }
+
+    /// PROOF (HNDL gate, RC7 §10.1.5.1.1): a license whose classical signature
+    /// is valid but whose PQC half cannot be verified (classical-only consensus
+    /// — no steward PQC key) is NOT federation-licensable — it degrades to
+    /// community. A future Ed25519 break alone must not yield a Licensed* tier.
+    #[tokio::test]
+    async fn test_classical_only_license_degrades_to_community() {
+        let steward = Ed25519Signer::random().unwrap();
+        let exp = chrono::Utc::now().timestamp() + 86_400;
+        let dep = "deploy-eng-1";
+        // A genuinely steward-signed (classical) license …
+        let jwt = signed_license_jwt(&steward, exp);
+
+        let engine = make_engine();
+        engine.cache.put(&license_with_jwt(dep, jwt, exp));
+
+        // … but consensus carries no PQC steward key → classical-only gate.
+        let validation = classical_only_consensus(steward.public_key().unwrap());
+        let got = engine.get_license_details(dep, &validation).await;
+        assert!(
+            got.is_none(),
+            "classical-only license must NOT be federation-licensable (RC7 §10.1.5.1.1)"
+        );
     }
 
     /// PROOF (vuln closed): a FORGED cache entry — license signed by an
@@ -1968,16 +2080,20 @@ mod tests {
     /// PROOF: an expired but validly-signed license degrades to expired, never
     /// served as licensed.
     #[tokio::test]
+    #[cfg(feature = "pqc")]
     async fn test_get_license_details_expired_degrades() {
         let steward = Ed25519Signer::random().unwrap();
+        let steward_pqc = ciris_crypto::MlDsa65Signer::new().unwrap();
         let exp = chrono::Utc::now().timestamp() - 10; // already expired
         let dep = "deploy-eng-1";
-        let jwt = signed_license_jwt(&steward, exp);
+        // Fully hybrid + valid signature so the expiry path (not the sig gate)
+        // is what's under test.
+        let (jwt, pqc_pub) = signed_license_jwt_hybrid(&steward, &steward_pqc, exp);
 
         let engine = make_engine();
         engine.cache.put(&license_with_jwt(dep, jwt, exp));
 
-        let validation = classical_only_consensus(steward.public_key().unwrap());
+        let validation = hybrid_consensus(steward.public_key().unwrap(), &pqc_pub);
         let got = engine.get_license_details(dep, &validation).await;
         assert!(
             got.is_some(),

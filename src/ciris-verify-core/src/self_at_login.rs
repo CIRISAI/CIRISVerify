@@ -72,6 +72,13 @@ fn b64() -> base64::engine::general_purpose::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
 }
 
+/// The positive `score` member of a `consent:partnership_*:v1` envelope (CEG
+/// §8.1.12.7.1(a) — "score: positive (the affirmation)"). The seven-member set
+/// pins the member *presence*; the affirmation value is `1` on both halves.
+/// Producer and substrate MUST agree on this exact JSON number (it is part of
+/// the JCS signing bytes) — flagged for Persist cross-confirmation on #76.
+const PARTNERSHIP_AFFIRMATION_SCORE: i64 = 1;
+
 /// A hybrid signing identity: a federation `key_id` plus its Ed25519 +
 /// ML-DSA-65 keypair. This is the producer-side counterpart of a
 /// [`ThresholdMember`] (which holds only the *public* halves).
@@ -237,14 +244,14 @@ pub fn sign_delegation(
 /// `bilateral_pair_id` — the stable join key that ties the grant to its
 /// matching accept.
 ///
-/// **CEG shape note (assumed, flagged for confirmation on #63):** §8.1.12.7
-/// pins the `:v1` consent envelope and the `bilateral_pair_id` join but does
-/// not, in the material available here, enumerate the full member set. This
-/// emits the minimal load-bearing members — `envelope_type`
-/// (`"consent:partnership_grant:v1"`, the `:v1` pin), `bilateral_pair_id`,
-/// `granter_key_id` == `attesting_key_id` (so the signature binds to the
-/// initiating user), `partner_key_id`, and `consented_at`. Additional CEG
-/// members are additive and do not change the signing discipline.
+/// **Member set pinned by CEG 1.0-RC7 §8.1.12.7.1(a)** (CIRISRegistry#81):
+/// the bare-`scores` shape with EXACTLY seven REQUIRED members —
+/// `attestation_type:"scores"`, `attesting_key_id` (the signer = granter),
+/// `dimension:"consent:partnership_grant:v1"`, `score` (positive affirmation),
+/// `subject_key_ids:[partner_key_id]` (the OTHER party, single-element array),
+/// `bilateral_pair_id`, `signed_at`. **No `valid_until`** — a PARTNERED pair
+/// has no expiry (omitted, not null). Both impls MUST canonicalize exactly
+/// this set or the JCS bytes — and the hybrid signatures — diverge.
 ///
 /// The output verifies as a threshold-1 bound hybrid signature against the
 /// granter's pinned pubkeys (the [`crate::threshold`] rule), exactly like a
@@ -257,15 +264,21 @@ pub fn sign_partnership_grant(
     granter: &HybridSigningIdentity,
     partner_key_id: &str,
     bilateral_pair_id: &str,
-    consented_at: &str,
+    signed_at: &str,
 ) -> Result<SignedEnvelope, VerifyError> {
+    // CEG 1.0-RC7 §8.1.12.7.1(a): EXACTLY these seven members, bare-`scores`
+    // shape. `attesting_key_id` is the signer (granter); `subject_key_ids` is
+    // the single-element array `[partner]` (set-sorted trivially); NO
+    // `valid_until` (a PARTNERED pair has no expiry — omitted, not null). JCS
+    // sorts keys, so member order here is irrelevant to the signed bytes.
     let envelope = json!({
-        "envelope_type": "consent:partnership_grant:v1",
-        "bilateral_pair_id": bilateral_pair_id,
-        "granter_key_id": granter.key_id,
-        "partner_key_id": partner_key_id,
+        "attestation_type": "scores",
         "attesting_key_id": granter.key_id,
-        "consented_at": consented_at,
+        "dimension": "consent:partnership_grant:v1",
+        "score": PARTNERSHIP_AFFIRMATION_SCORE,
+        "subject_key_ids": [partner_key_id],
+        "bilateral_pair_id": bilateral_pair_id,
+        "signed_at": signed_at,
     });
     granter.sign_envelope(envelope)
 }
@@ -288,15 +301,20 @@ pub fn sign_partnership_accept(
     accepter: &HybridSigningIdentity,
     granter_key_id: &str,
     bilateral_pair_id: &str,
-    accepted_at: &str,
+    signed_at: &str,
 ) -> Result<SignedEnvelope, VerifyError> {
+    // CEG 1.0-RC7 §8.1.12.7.1(a) accept half: same seven-member set, mirrored.
+    // `attesting_key_id` is the accepter (the signer); `subject_key_ids` is the
+    // OTHER party — here the original granter (`[granter_key_id]`). Tied to the
+    // grant by the shared `bilateral_pair_id`.
     let envelope = json!({
-        "envelope_type": "consent:partnership_accept:v1",
-        "bilateral_pair_id": bilateral_pair_id,
-        "granter_key_id": granter_key_id,
-        "accepter_key_id": accepter.key_id,
+        "attestation_type": "scores",
         "attesting_key_id": accepter.key_id,
-        "accepted_at": accepted_at,
+        "dimension": "consent:partnership_accept:v1",
+        "score": PARTNERSHIP_AFFIRMATION_SCORE,
+        "subject_key_ids": [granter_key_id],
+        "bilateral_pair_id": bilateral_pair_id,
+        "signed_at": signed_at,
     });
     accepter.sign_envelope(envelope)
 }
@@ -611,25 +629,54 @@ mod tests {
             "partnership_accept must verify under the agent occurrence key"
         );
 
-        // The bilateral join: both carry the same pair_id, the :v1 pin, and
-        // cross-name each other.
+        // RC7 §8.1.12.7.1(a): exactly the seven REQUIRED members, no more.
+        for env in [&grant.signed_envelope, &accept.signed_envelope] {
+            let obj = env.as_object().unwrap();
+            let mut keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+            keys.sort_unstable();
+            assert_eq!(
+                keys,
+                vec![
+                    "attestation_type",
+                    "attesting_key_id",
+                    "bilateral_pair_id",
+                    "dimension",
+                    "score",
+                    "signed_at",
+                    "subject_key_ids",
+                ],
+                "partnership envelope must carry EXACTLY the seven RC7 members"
+            );
+            assert_eq!(env["attestation_type"], json!("scores"));
+            assert!(env["score"].as_i64().unwrap() > 0, "score must be positive");
+            assert!(env.get("valid_until").is_none(), "no valid_until (omitted)");
+            assert!(env["subject_key_ids"].is_array());
+        }
+        // The bilateral join + cross-naming via subject_key_ids / attesting_key_id.
         assert_eq!(
             grant.signed_envelope["bilateral_pair_id"],
             accept.signed_envelope["bilateral_pair_id"]
         );
         assert_eq!(
-            grant.signed_envelope["envelope_type"],
+            grant.signed_envelope["dimension"],
             json!("consent:partnership_grant:v1")
         );
         assert_eq!(
-            accept.signed_envelope["envelope_type"],
+            accept.signed_envelope["dimension"],
             json!("consent:partnership_accept:v1")
         );
-        assert_eq!(accept.signed_envelope["granter_key_id"], json!("user-1"));
+        // grant: signer = user, subject = agent occurrence.
+        assert_eq!(grant.signed_envelope["attesting_key_id"], json!("user-1"));
         assert_eq!(
-            grant.signed_envelope["partner_key_id"],
+            grant.signed_envelope["subject_key_ids"],
+            json!(["agent-occ-1"])
+        );
+        // accept: signer = agent occurrence, subject = the original granter.
+        assert_eq!(
+            accept.signed_envelope["attesting_key_id"],
             json!("agent-occ-1")
         );
+        assert_eq!(accept.signed_envelope["subject_key_ids"], json!(["user-1"]));
     }
 
     #[test]
@@ -639,7 +686,7 @@ mod tests {
             sign_partnership_grant(&user, "agent-occ-1", "pair-1", "2026-06-14T00:00:00.000Z")
                 .unwrap();
         // Repoint the partnership at a different agent after signing.
-        grant.signed_envelope["partner_key_id"] = json!("agent-evil");
+        grant.signed_envelope["subject_key_ids"] = json!(["agent-evil"]);
 
         let bytes = jcs::canonicalize(&grant.signed_envelope).unwrap();
         assert!(

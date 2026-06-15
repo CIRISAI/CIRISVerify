@@ -16,10 +16,20 @@
 //!
 //! The federation's "every signature is hybrid + the PQC binds the
 //! classical" discipline applies: each submitted signature carries an
-//! Ed25519 half and (when not hybrid-pending) an ML-DSA-65 half. The
-//! PQC half covers `bytes ‖ classical_sig` — the bound-signature rule
-//! shared with `FederationEnvelope`, `WitnessSignature`, and
-//! `ProvenanceLink`.
+//! Ed25519 half and an ML-DSA-65 half. The PQC half covers
+//! `bytes ‖ classical_sig` — the bound-signature rule shared with
+//! `FederationEnvelope`, `WitnessSignature`, and `ProvenanceLink`.
+//!
+//! **Both halves are MANDATORY at federation-tier (the default,
+//! [`HybridPolicy::RequireHybrid`], CEG 1.0-RC7 §10.1.5.1.1).** A
+//! classical-only ("hybrid-pending") submission does NOT count toward a
+//! federation-tier threshold — accepting the classical half alone would
+//! make the hybrid scheme poppable by a single future Ed25519 break, the
+//! exact threat hybrid exists to defend (`FEDERATION_THREAT_MODEL.md`
+//! F-AV-14: *old-classical-only — FORBIDDEN, verifier must reject*). The
+//! permissive classical-only behavior survives ONLY under the explicit
+//! local-tier [`HybridPolicy::AllowClassicalPending`] (§10.1.5.2
+//! self-read), never at any federation authority gate.
 //!
 //! ## What is verified
 //!
@@ -32,12 +42,14 @@
 //!    as `SignedTreeHead::count_valid_witnesses`).
 //! 3. The Ed25519 half verifies against the member's pinned Ed25519
 //!    public key over `bytes`.
-//! 4. If a PQC half is present, it verifies against the member's
-//!    pinned ML-DSA-65 public key over `bytes ‖ classical_sig`. A
-//!    member that has no PQC public key (`mldsa65_public_key_base64 ==
-//!    None`) is hybrid-pending — its classical-only signature still
-//!    counts; a *submitted* PQC half against a member without a PQC
-//!    pubkey is treated as not-counting (no parent to verify against).
+//! 4. The PQC half verifies against the member's pinned ML-DSA-65
+//!    public key over `bytes ‖ classical_sig`. Under `RequireHybrid`
+//!    (federation-tier) BOTH the member pubkey and the submitted PQC
+//!    signature MUST be present and verify — a member with no PQC
+//!    pubkey, or a submission with no PQC half, does not count. Under
+//!    the local-tier `AllowClassicalPending` policy a hybrid-pending
+//!    member/submission counts on the classical half alone, but any PQC
+//!    half that *is* present must still verify.
 //! 5. Duplicate `member_id` submissions count once.
 //! 6. The final distinct-valid count is `≥ threshold`.
 //!
@@ -278,22 +290,69 @@ impl QuorumPolicy {
 
 impl std::error::Error for ThresholdError {}
 
-/// Verify an M-of-N hybrid threshold-signature set over `bytes`.
+/// Whether the PQC (ML-DSA-65) half is REQUIRED for a signature to count.
 ///
-/// Returns `Ok(count)` where `count` is the number of *distinct*
-/// trusted members whose hybrid signature verified, when `count
-/// >= threshold`. Otherwise returns [`ThresholdError`].
+/// CEG 1.0-RC7 §10.1.5.1.1 (CIRISRegistry#82): at the **federation admission
+/// boundary** the PQC half is MANDATORY — there is no `require_hybrid: false`
+/// posture at 1.0; the hybrid-required check is always-on, never an operator
+/// toggle. Classical-only ("hybrid-pending") is non-conformant for
+/// federation-tier and is confined to local-tier (§10.1.5.2 self-read). This
+/// is exactly `FEDERATION_THREAT_MODEL.md` F-AV-14: *old-classical-only —
+/// FORBIDDEN, the verifier must reject*. Accepting the classical half alone
+/// would make the whole hybrid scheme poppable by a single (future) Ed25519
+/// break — the precise threat hybrid exists to defend.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HybridPolicy {
+    /// **Federation-tier admission (the default).** A member with no PQC
+    /// pubkey, or a submission with no PQC signature, is NOT counted; both
+    /// halves must verify (the PQC half bound over `bytes ‖ classical_sig`).
+    RequireHybrid,
+    /// **Local-tier (§10.1.5.2 self-read) ONLY.** A hybrid-pending member /
+    /// submission counts on the classical half alone. MUST NOT be used at any
+    /// federation authority gate — admission, quorum, provenance, binding.
+    /// Exists solely so a genuinely local self-read can tolerate a row whose
+    /// cold-path PQC sign has not yet landed.
+    AllowClassicalPending,
+}
+
+/// Verify an M-of-N hybrid threshold-signature set over `bytes` at the
+/// **federation-tier** policy ([`HybridPolicy::RequireHybrid`]) — the default
+/// every federation authority gate uses. Classical-only signatures do NOT
+/// count (RC7 §10.1.5.1.1). For the rare local-tier self-read that may tolerate
+/// a hybrid-pending row, call [`verify_threshold_signatures_with_policy`] with
+/// [`HybridPolicy::AllowClassicalPending`] explicitly.
 ///
-/// See the module docs for the exact rules. The primitive never
-/// panics; any signature that fails for any reason — unknown
-/// `member_id`, base64 malformation, classical-half mismatch, PQC-half
-/// mismatch — is silently skipped and simply doesn't count toward the
-/// threshold. The single returned `usize` is the verdict.
+/// Returns `Ok(count)` where `count` is the number of *distinct* trusted
+/// members whose **hybrid** signature verified, when `count >= threshold`.
+/// Otherwise returns [`ThresholdError`].
 pub fn verify_threshold_signatures(
     bytes: &[u8],
     members: &[ThresholdMember],
     signatures: &[ThresholdSignature],
     threshold: usize,
+) -> Result<usize, ThresholdError> {
+    verify_threshold_signatures_with_policy(
+        bytes,
+        members,
+        signatures,
+        threshold,
+        HybridPolicy::RequireHybrid,
+    )
+}
+
+/// Verify an M-of-N hybrid threshold-signature set over `bytes` under an
+/// explicit [`HybridPolicy`]. See [`verify_threshold_signatures`] (the
+/// federation-tier default) and [`HybridPolicy`] for when local-tier is
+/// permissible. The primitive never panics; any signature that fails for any
+/// reason — unknown `member_id`, base64 malformation, classical-half mismatch,
+/// missing/invalid PQC half under `RequireHybrid` — is silently skipped and
+/// does not count toward the threshold.
+pub fn verify_threshold_signatures_with_policy(
+    bytes: &[u8],
+    members: &[ThresholdMember],
+    signatures: &[ThresholdSignature],
+    threshold: usize,
+    policy: HybridPolicy,
 ) -> Result<usize, ThresholdError> {
     if threshold == 0 {
         return Err(ThresholdError::ZeroThreshold);
@@ -336,27 +395,54 @@ pub fn verify_threshold_signatures(
             continue;
         }
 
-        // PQC half is verified when *both* the submission and the
-        // member carry one. A submitted PQC half against a member with
-        // no PQC pubkey can't be checked → not counted (fail-secure).
-        // A hybrid-pending member + hybrid-pending submission counts
-        // on the classical half alone.
-        if let Some(pqc_sig_b64) = &sig.mldsa65_signature_base64 {
-            let Some(pqc_pubkey_b64) = &member.mldsa65_public_key_base64 else {
-                continue;
-            };
-            let Ok(pqc_sig) = b64.decode(pqc_sig_b64) else {
-                continue;
-            };
-            let Ok(pqc_pubkey) = b64.decode(pqc_pubkey_b64) else {
-                continue;
-            };
-            // Bound signature: PQC covers bytes ‖ classical_sig.
-            let mut bound = bytes.to_vec();
-            bound.extend_from_slice(&classical_sig);
-            if !matches!(mldsa.verify(&pqc_pubkey, &bound, &pqc_sig), Ok(true)) {
-                continue;
-            }
+        // The PQC (ML-DSA-65) half. Under RequireHybrid (federation-tier,
+        // RC7 §10.1.5.1.1) BOTH the member pubkey and the submission signature
+        // MUST be present and the bound PQC half MUST verify — a classical-only
+        // submission is non-conformant and does not count. Under
+        // AllowClassicalPending (local-tier only) a hybrid-pending
+        // member/submission counts on the classical half alone, but any PQC
+        // half that *is* present must still verify.
+        match policy {
+            HybridPolicy::RequireHybrid => {
+                // Both halves mandatory. Missing either → not counted.
+                let (Some(pqc_sig_b64), Some(pqc_pubkey_b64)) = (
+                    &sig.mldsa65_signature_base64,
+                    &member.mldsa65_public_key_base64,
+                ) else {
+                    continue;
+                };
+                let (Ok(pqc_sig), Ok(pqc_pubkey)) =
+                    (b64.decode(pqc_sig_b64), b64.decode(pqc_pubkey_b64))
+                else {
+                    continue;
+                };
+                // Bound signature: PQC covers bytes ‖ classical_sig.
+                let mut bound = bytes.to_vec();
+                bound.extend_from_slice(&classical_sig);
+                if !matches!(mldsa.verify(&pqc_pubkey, &bound, &pqc_sig), Ok(true)) {
+                    continue;
+                }
+            },
+            HybridPolicy::AllowClassicalPending => {
+                // Local-tier: verify the PQC half only when both sides carry
+                // one; a hybrid-pending member/submission counts on classical.
+                if let Some(pqc_sig_b64) = &sig.mldsa65_signature_base64 {
+                    let Some(pqc_pubkey_b64) = &member.mldsa65_public_key_base64 else {
+                        continue;
+                    };
+                    let Ok(pqc_sig) = b64.decode(pqc_sig_b64) else {
+                        continue;
+                    };
+                    let Ok(pqc_pubkey) = b64.decode(pqc_pubkey_b64) else {
+                        continue;
+                    };
+                    let mut bound = bytes.to_vec();
+                    bound.extend_from_slice(&classical_sig);
+                    if !matches!(mldsa.verify(&pqc_pubkey, &bound, &pqc_sig), Ok(true)) {
+                        continue;
+                    }
+                }
+            },
         }
 
         counted.push(&sig.member_id);
@@ -637,20 +723,68 @@ mod tests {
     }
 
     #[test]
-    fn hybrid_pending_member_classical_still_counts() {
+    fn hybrid_pending_member_rejected_at_federation_tier() {
+        // RC7 §10.1.5.1.1 / F-AV-14: a classical-only ("hybrid-pending")
+        // submission MUST NOT count at the federation-tier default. If it did,
+        // a future Ed25519 break alone would forge admission.
         let parties = three_parties();
         let bytes = b"x";
-        // First party has no PQC pubkey (hybrid-pending); the others do.
+        let members = vec![
+            parties[0].member(false), // no PQC pubkey (hybrid-pending)
+            parties[1].member(true),
+            parties[2].member(true),
+        ];
+        // Party-0 classical-only does NOT count; only party-1's hybrid does →
+        // 1 valid against threshold 2 → Insufficient.
+        let sigs = vec![parties[0].sign(bytes, false), parties[1].sign(bytes, true)];
+        assert_eq!(
+            verify_threshold_signatures(bytes, &members, &sigs, 2),
+            Err(ThresholdError::Insufficient {
+                valid: 1,
+                threshold: 2
+            })
+        );
+    }
+
+    #[test]
+    fn submission_stripping_pqc_half_does_not_count_at_federation_tier() {
+        // Downgrade attack: a member HAS a PQC pubkey, but the attacker strips
+        // the PQC half from the submission to force a classical-only check.
+        // RequireHybrid rejects it (missing submission PQC half → not counted).
+        let parties = three_parties();
+        let bytes = b"x";
+        let members: Vec<_> = parties.iter().map(|p| p.member(true)).collect();
+        // Party-0 submits classical-only despite having a PQC pubkey.
+        let sigs = vec![parties[0].sign(bytes, false), parties[1].sign(bytes, true)];
+        assert_eq!(
+            verify_threshold_signatures(bytes, &members, &sigs, 2),
+            Err(ThresholdError::Insufficient {
+                valid: 1,
+                threshold: 2
+            })
+        );
+    }
+
+    #[test]
+    fn hybrid_pending_member_counts_only_at_local_tier() {
+        // The permissive classical-only path survives ONLY behind the explicit
+        // local-tier policy (§10.1.5.2 self-read) — never the default.
+        let parties = three_parties();
+        let bytes = b"x";
         let members = vec![
             parties[0].member(false),
             parties[1].member(true),
             parties[2].member(true),
         ];
-        // Party-0 signs classical-only (no PQC half); parties 1+2 sign
-        // full hybrid. Threshold 2 → met.
         let sigs = vec![parties[0].sign(bytes, false), parties[1].sign(bytes, true)];
         assert_eq!(
-            verify_threshold_signatures(bytes, &members, &sigs, 2),
+            verify_threshold_signatures_with_policy(
+                bytes,
+                &members,
+                &sigs,
+                2,
+                HybridPolicy::AllowClassicalPending,
+            ),
             Ok(2)
         );
     }
