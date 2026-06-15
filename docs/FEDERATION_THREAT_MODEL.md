@@ -1,10 +1,13 @@
-# CIRIS Federation Threat Model (v1.3)
+# CIRIS Federation Threat Model (v1.4)
 
-**Status**: DRAFT for first publication (2026-05-02; v1.1 update 2026-05-31; v1.2 audit pass 2026-06-03; v1.3 CEG-0.15 / CIRISVerify-5.0.0 substrate-landed pass 2026-06-09)
-**Version**: 1.3 (v1.2 + §3.3 gap-status updates for the substrate that landed in CIRISVerify v5.0.0 — Gaps F / G / H + the Gap C at-rest + JCS additions; see Appendix A revision log)
+**Status**: DRAFT for first publication (2026-05-02; v1.1 update 2026-05-31; v1.2 audit pass 2026-06-03; v1.3 CEG-0.15 / CIRISVerify-5.0.0 substrate-landed pass 2026-06-09; v1.4 CEG-1.0-RC7 / CIRISVerify-5.7.0 hybrid-required-enforced pass 2026-06-15)
+**Version**: 1.4 (v1.3 + F-AV-14 deployed-enforcement update — CIRISVerify v5.7.0 closes the "buggy verifier accepts old-classical-only" gap at every federation-tier gate, per CEG 1.0-RC7 §10.1.5.1.1)
 **Audience**: CIRIS engineering, RATCHET evaluator, federation-protocol stakeholders, external reviewers
 **Scope**: federation-emergent threats; cross-references per-repo threat models for substrate threats
-**Last updated**: 2026-06-09
+**Last updated**: 2026-06-15
+
+**v1.4 deltas vs v1.3** (CEG 1.0-RC7 / CIRISVerify v5.7.0 — hybrid-required enforced):
+- **F-AV-14** (PQC algorithm-agility window): the "Old-only — FORBIDDEN" verifier obligation is now **enforced in code**, not merely specified. CIRISVerify carried a pre-1.0 "hybrid-pending" accommodation that counted a classical-only signature at three federation-tier gates (`threshold` and all its consumers, `provenance`, the license JWT gate) — exactly the "buggy verifier" the v1.0 Known-weaknesses note warned reintroduces F-AV-14. v5.7.0 (#75) removes it: `HybridPolicy::RequireHybrid` is the default, classical-only and PQC-stripped submissions are rejected, and the permissive path survives only as an explicit local-tier `AllowClassicalPending`. **Cutover dependency**: federation-tier keys must carry a published ML-DSA-65 half (registry HTTPS-consensus `steward_key_pqc`) or admission/licensing fails closed to community.
 
 **v1.3 deltas vs v1.2** (CEG 0.15 / CIRISVerify v5.0.0 — substrate landed for three open §3.3 gaps):
 - §3.3 **Gap H** (C0 RNG startup health-check): **CLOSED** — `ciris_crypto::rng_health` ships the NIST SP 800-90B startup tests + fail-secure latch (CIRISVerify#55). RATCHET A0 → TIER-LOW for the catchable degradation class.
@@ -1048,13 +1051,13 @@ The canonicalization rules close two v2 gaps the cryptographer reviewer flagged:
 **Cost-asymmetry argument**: bound signatures with canonical encoding + verifier obligations mean a single-algorithm break does not break the hybrid scheme during migration. Migration window risk is bounded by phase-2 timing, which is gated on ≥99% peer update — preventing premature migration.
 
 **Known weaknesses**:
-- Verifier-obligation enforcement requires implementation discipline; a buggy verifier that accepts old-classical-only despite policy reintroduces F-AV-14.
+- Verifier-obligation enforcement requires implementation discipline; a buggy verifier that accepts old-classical-only despite policy reintroduces F-AV-14. **This was a real gap in CIRISVerify through v5.6.0 — closed in v5.7.0 (CIRISVerify#75):** the verifier carried a pre-1.0 "hybrid-pending" accommodation (a member/submission with no ML-DSA-65 half was counted on the classical signature alone) across three federation-tier gates — `threshold::verify_threshold_signatures` (and everything that routes through it: operational-admit role-chain + partner-quorum, transport-binding, founder-quorum, the HUMANITY_ACCORD 2-of-3, keyset rotation), `provenance::verify_provenance_chain` (the AV-8 directory root), and the license JWT gate. Per CEG 1.0-RC7 §10.1.5.1.1 (CIRISRegistry#82) the PQC half is now MANDATORY at the federation admission boundary: a `HybridPolicy` enum gates each path, defaulting to `RequireHybrid`, and classical-only signatures no longer count (a *stripped* PQC half is likewise rejected — the downgrade case). The permissive behavior survives only behind an explicit `AllowClassicalPending` reserved for genuine local-tier self-read (§10.1.5.2). Proven by paired `*_rejected_at_federation_tier` / `*_only_at_local_tier` tests plus an explicit PQC-stripping test.
 - Migration policy specification is a per-release artifact; policy publication failures reintroduce risk. Mitigated by S3-anchoring of policy rows.
 - Cross-protocol attacks against keys reused outside CIRIS are policy-bounded (key-reuse forbidden) but not cryptographically prevented.
 
 **RATCHET signal**: signature scheme version per signed action; flags signatures using deprecated schemes for higher scrutiny; flags any verification mode mismatches between peers.
 
-**Status**: **Spec** in v1.0 (precision tightened from v2); CIRISCrypto implementation matches the canonical-encoding rule for current Ed25519+ML-DSA hybrid; migration protocol documented in CIRISVerify FSD-001 §C2.
+**Status**: **Spec** in v1.0 (precision tightened from v2); CIRISCrypto implementation matches the canonical-encoding rule for current Ed25519+ML-DSA hybrid; migration protocol documented in CIRISVerify FSD-001 §C2. **Deployed (CIRISVerify v5.7.0)**: the "Old-only — FORBIDDEN" verifier obligation is now *enforced in code* at every federation-tier admission gate (no `require_hybrid: false` posture, per RC7 §10.1.5.1.1) — see the Known-weaknesses note above. **Cutover dependency:** because hybrid-required fails closed, every federation-tier key must carry a published ML-DSA-65 half — the registry MUST publish each steward/founder `steward_key_pqc` (+ fingerprint) over HTTPS consensus, or federation-tier admission/licensing degrades to community (the intended fail-secure direction; sequenced with CIRISVerify#69 and the Persist#171 four-impl conformance gate).
 
 #### F-AV-BOOT: Bootstrap singularity
 
