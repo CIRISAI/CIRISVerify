@@ -97,6 +97,11 @@ pub mod transport_identity;
 /// TPM/SE-sealed Ed25519 federation signing key (CIRISVerify#70).
 pub mod sealed_ed25519;
 
+/// TPM/SE-sealed ML-DSA-65 federation signing key — the PQC half of
+/// hardware-backed federation custody (CIRISVerify#70 PQC analog).
+#[cfg(feature = "pqc-ml-dsa")]
+pub mod sealed_mldsa65;
+
 /// Platform-specific hardware signer implementations.
 pub mod platform;
 
@@ -138,6 +143,9 @@ pub use software::{
 
 #[cfg(feature = "pqc-ml-dsa")]
 pub use pqc::{get_platform_pqc_signer, MlDsa65SoftwareSigner, PqcAlgorithm, PqcSigner};
+
+#[cfg(feature = "pqc-ml-dsa")]
+pub use sealed_mldsa65::{get_platform_sealed_mldsa65_signer, SealedMlDsa65Signer};
 
 #[cfg(all(feature = "software", feature = "pqc-ml-dsa"))]
 pub use local_seed::{load_local_seed, LocalSeedConfig};
