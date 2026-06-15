@@ -51,7 +51,7 @@ const PBKDF2_ITERS: u32 = 100_000;
 
 fn bench_hybrid_sign(c: &mut Criterion) {
     let signer = HybridSigner::new(
-        Ed25519Signer::random().unwrap().expect("ed25519 signer"),
+        Ed25519Signer::random().expect("ed25519 signer"),
         MlDsa65Signer::new().expect("ml-dsa signer"),
     )
     .expect("hybrid signer");
@@ -66,7 +66,7 @@ fn bench_hybrid_sign(c: &mut Criterion) {
 
 fn bench_hybrid_verify(c: &mut Criterion) {
     let signer = HybridSigner::new(
-        Ed25519Signer::random().unwrap().expect("ed25519 signer"),
+        Ed25519Signer::random().expect("ed25519 signer"),
         MlDsa65Signer::new().expect("ml-dsa signer"),
     )
     .expect("hybrid signer");
