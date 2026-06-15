@@ -4,6 +4,7 @@
 //! Note: Most mobile hardware HSMs do NOT support Ed25519.
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
+#[cfg(not(feature = "random"))]
 use rand_core::OsRng;
 
 use crate::error::CryptoError;
@@ -16,12 +17,42 @@ pub struct Ed25519Signer {
 }
 
 impl Ed25519Signer {
-    /// Create a new signer with a random key.
-    #[must_use]
-    pub fn random() -> Self {
-        Self {
-            signing_key: SigningKey::generate(&mut OsRng),
+    /// Create a new signer with a freshly generated random key.
+    ///
+    /// # Fail-secure (CIRISVerify#74)
+    ///
+    /// The 32-byte seed is drawn through [`crate::random::fill`], which
+    /// reads the latched SP 800-90B startup RNG health verdict
+    /// ([`crate::rng_health::is_rng_failed`]) before drawing. If the OS
+    /// entropy source failed that check, the draw is refused and this
+    /// returns `CryptoError::RngHealthCheckFailed` WITHOUT generating a
+    /// key — so a broken-entropy environment cannot mint a predictable
+    /// long-term identity key. (Previously this drew `OsRng` directly,
+    /// bypassing the latch — the bug fixed here.)
+    ///
+    /// When the `random` feature is disabled the facade is not compiled;
+    /// in that build the seed is drawn directly from `OsRng` (no latch
+    /// exists to consult).
+    ///
+    /// # Errors
+    ///
+    /// `CryptoError::RngHealthCheckFailed` if the RNG health latch is
+    /// `Failed` (fail-secure; no key generated). Other variants only on
+    /// the rare platforms where the OS entropy source itself errors.
+    pub fn random() -> Result<Self, CryptoError> {
+        let mut seed = [0u8; 32];
+        #[cfg(feature = "random")]
+        {
+            crate::random::fill(&mut seed)?;
         }
+        #[cfg(not(feature = "random"))]
+        {
+            use rand_core::RngCore;
+            OsRng
+                .try_fill_bytes(&mut seed)
+                .map_err(|e| CryptoError::invalid_private_key(format!("OsRng seed draw: {e}")))?;
+        }
+        Self::from_seed(&seed)
     }
 
     /// Create a signer from seed bytes (32 bytes).
@@ -132,7 +163,7 @@ mod tests {
 
     #[test]
     fn test_ed25519_sign_verify() {
-        let signer = Ed25519Signer::random();
+        let signer = Ed25519Signer::random().unwrap();
         let verifier = Ed25519Verifier::new();
 
         let data = b"test message";
@@ -154,5 +185,27 @@ mod tests {
 
         // Same seed should produce same key
         assert_eq!(signer1.public_key().unwrap(), signer2.public_key().unwrap());
+    }
+
+    /// CIRISVerify#74 fail-secure proof: when the SP 800-90B RNG health
+    /// latch is forced `Failed`, keygen refuses to draw and returns
+    /// `RngHealthCheckFailed` rather than minting a (potentially
+    /// predictable) identity key.
+    #[cfg(feature = "random")]
+    #[test]
+    fn random_fails_secure_when_rng_marked_failed() {
+        crate::rng_health::test_support::with_forced_failed(|| {
+            // Signer holds key material and is intentionally not `Debug`,
+            // so assert on the variant directly rather than `unwrap_err`.
+            assert!(
+                matches!(
+                    Ed25519Signer::random(),
+                    Err(CryptoError::RngHealthCheckFailed(_))
+                ),
+                "keygen must fail-secure on failed RNG latch"
+            );
+        });
+        // Latch restored: keygen works again.
+        assert!(Ed25519Signer::random().is_ok());
     }
 }

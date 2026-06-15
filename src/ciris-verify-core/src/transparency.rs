@@ -1986,7 +1986,7 @@ mod tests {
 
     fn real_signer() -> RealSigner {
         ciris_crypto::HybridSigner::new(
-            ciris_crypto::Ed25519Signer::random(),
+            ciris_crypto::Ed25519Signer::random().unwrap(),
             ciris_crypto::MlDsa65Signer::new().unwrap(),
         )
         .unwrap()

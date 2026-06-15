@@ -532,7 +532,7 @@ mod tests {
 
     fn signer() -> HybridSigner<Ed25519Signer, MlDsa65Signer> {
         HybridSigner::new(
-            Ed25519Signer::random(),
+            Ed25519Signer::random().unwrap(),
             MlDsa65Signer::new().expect("ml-dsa signer"),
         )
         .expect("hybrid signer")

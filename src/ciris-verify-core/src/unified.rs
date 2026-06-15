@@ -2781,6 +2781,7 @@ mod tests {
         let validation = ValidationResult {
             status: ValidationStatus::AllSourcesAgree,
             consensus_key_classical: None,
+            consensus_key_pqc: None,
             consensus_pqc_fingerprint: None,
             consensus_revocation_revision: Some(1),
             authoritative_source: None,

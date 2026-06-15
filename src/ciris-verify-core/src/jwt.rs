@@ -249,6 +249,182 @@ pub struct StewardKeys {
     pub pqc_algorithm: String,
 }
 
+// ============================================================================
+// License signature verification (CIRISVerify#72 — trust-root gate)
+// ============================================================================
+//
+// A `Licensed*` status MUST NOT be derived from cache contents alone. Before
+// the engine maps a `LicenseDetails` to a professional tier, the signed JWT it
+// carries is re-verified here against the consensus steward key. A forged cache
+// entry (or any JWT not signed by the genuine steward) fails this gate and is
+// degraded to community/unverified — closing the masquerade vulnerability.
+
+/// Key-bound Ed25519 verifier adapting `ciris_crypto::Ed25519Verifier` to the
+/// local key-bound [`ClassicalVerifier`] trait used by [`HybridJwt::verify`].
+struct Ed25519KeyVerifier<'a> {
+    public_key: &'a [u8],
+}
+
+impl ClassicalVerifier for Ed25519KeyVerifier<'_> {
+    fn verify(&self, data: &[u8], signature: &[u8]) -> Result<bool, String> {
+        use ciris_crypto::{ClassicalVerifier as CryptoClassicalVerifier, Ed25519Verifier};
+        Ed25519Verifier::new()
+            .verify(self.public_key, data, signature)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Key-bound ML-DSA-65 verifier adapting `ciris_crypto::MlDsa65Verifier` to the
+/// local key-bound [`PqcVerifier`] trait used by [`HybridJwt::verify`].
+struct MlDsa65KeyVerifier<'a> {
+    public_key: &'a [u8],
+}
+
+impl PqcVerifier for MlDsa65KeyVerifier<'_> {
+    fn verify(&self, data: &[u8], signature: &[u8]) -> Result<bool, String> {
+        use ciris_crypto::{MlDsa65Verifier, PqcVerifier as CryptoPqcVerifier};
+        MlDsa65Verifier::new()
+            .verify(self.public_key, data, signature)
+            .map_err(|e| e.to_string())
+    }
+}
+
+/// Outcome of verifying a license JWT against the consensus steward key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LicenseVerification {
+    /// Both classical and PQC signatures verified against the steward key.
+    HybridVerified,
+    /// Classical signature verified; PQC could not be checked because the full
+    /// PQC steward key was unavailable (e.g. DNS-only consensus) or the PQC
+    /// verification backend is not compiled in. Still cryptographically gated by
+    /// the classical signature — sufficient to defeat a forged cache, but
+    /// short of the day-1 hybrid ideal. Callers MAY treat this as licensable;
+    /// it is strictly safer than the unverified path it replaces.
+    ClassicalVerified,
+    /// Verification failed — forged, tampered, malformed, or not signed by the
+    /// consensus steward. Callers MUST degrade to community/unverified.
+    Failed,
+}
+
+impl LicenseVerification {
+    /// Whether this outcome permits a `Licensed*` status.
+    #[must_use]
+    pub fn is_licensable(&self) -> bool {
+        matches!(
+            self,
+            LicenseVerification::HybridVerified | LicenseVerification::ClassicalVerified
+        )
+    }
+}
+
+/// Verify a license JWT against the consensus steward key material.
+///
+/// This is the cryptographic gate that the engine MUST clear before returning
+/// any `Licensed*` status (CIRISVerify#72). It is fail-closed: any parse error,
+/// missing classical key, or signature mismatch yields
+/// [`LicenseVerification::Failed`].
+///
+/// # Arguments
+///
+/// * `token` — the raw 4-part hybrid JWT (`header.payload.classical.pqc`).
+/// * `consensus_classical_key` — the steward classical (Ed25519) public key
+///   agreed by multi-source consensus. This is the authenticated key; the JWT
+///   does **not** carry its own trusted keys.
+/// * `consensus_pqc_key` — the full steward PQC (ML-DSA-65) public key, if a
+///   source provided it. When `None`, only classical verification is performed.
+/// * `consensus_pqc_fingerprint` — SHA-256 fingerprint of the steward PQC key
+///   from consensus. When present, the supplied `consensus_pqc_key` is bound to
+///   it (constant-time) before any PQC trust — a substituted full key fails.
+#[must_use]
+pub fn verify_license_jwt(
+    token: &str,
+    consensus_classical_key: &[u8],
+    consensus_pqc_key: Option<&[u8]>,
+    consensus_pqc_fingerprint: Option<&[u8]>,
+) -> LicenseVerification {
+    // Fail-closed: an empty/absent classical steward key means we have no
+    // authenticated authority to verify against. Never licensable.
+    if consensus_classical_key.is_empty() {
+        return LicenseVerification::Failed;
+    }
+
+    let jwt = match HybridJwtParser::parse(token) {
+        Ok(j) => j,
+        Err(_) => return LicenseVerification::Failed,
+    };
+
+    // 1. Classical signature is the hard gate (always required).
+    let classical_verifier = Ed25519KeyVerifier {
+        public_key: consensus_classical_key,
+    };
+
+    // Decide whether we can also verify the PQC half. The full PQC key must be
+    // present AND match the consensus fingerprint (a substituted key is
+    // rejected). If the fingerprint is absent we still bind to the key we were
+    // given, but treat the result as classical-gated only when PQC can't run.
+    let pqc_key_trusted: Option<&[u8]> = match consensus_pqc_key {
+        Some(key) if !key.is_empty() => {
+            if let Some(expected_fp) = consensus_pqc_fingerprint {
+                let actual_fp = {
+                    use sha2::{Digest, Sha256};
+                    let mut h = Sha256::new();
+                    h.update(key);
+                    h.finalize().to_vec()
+                };
+                if ciris_crypto::constant_time_eq(&actual_fp, expected_fp) {
+                    Some(key)
+                } else {
+                    // Full key does not match the consensus fingerprint:
+                    // refuse to trust it for PQC, fall back to classical gate.
+                    None
+                }
+            } else {
+                Some(key)
+            }
+        },
+        _ => None,
+    };
+
+    match pqc_key_trusted {
+        Some(pqc_key) => {
+            let pqc_verifier = MlDsa65KeyVerifier {
+                public_key: pqc_key,
+            };
+            match jwt.verify(&classical_verifier, &pqc_verifier) {
+                Ok(true) => LicenseVerification::HybridVerified,
+                // Either signature failed. If the failure was purely because
+                // the PQC backend is not compiled in, `verify` returns Err; we
+                // retry classical-only below to preserve the classical gate.
+                Ok(false) => LicenseVerification::Failed,
+                Err(_) => verify_classical_only(&jwt, &classical_verifier),
+            }
+        },
+        None => verify_classical_only(&jwt, &classical_verifier),
+    }
+}
+
+/// Verify only the classical half of the JWT against the steward key.
+///
+/// Used when the full PQC steward key is unavailable or the PQC backend is not
+/// compiled in. The classical signature alone still defeats a forged cache.
+fn verify_classical_only(
+    jwt: &HybridJwt,
+    classical_verifier: &Ed25519KeyVerifier<'_>,
+) -> LicenseVerification {
+    let classical_valid = ClassicalVerifier::verify(
+        classical_verifier,
+        jwt.signing_input().as_bytes(),
+        &jwt.classical_signature,
+    )
+    .unwrap_or(false);
+
+    if classical_valid {
+        LicenseVerification::ClassicalVerified
+    } else {
+        LicenseVerification::Failed
+    }
+}
+
 /// JWT parsing errors.
 #[derive(Debug, thiserror::Error)]
 pub enum JwtError {
@@ -348,5 +524,189 @@ mod tests {
         assert_eq!(details.license_id, "lic-12345");
         assert_eq!(details.organization_name, "Test Hospital");
         assert_eq!(details.max_autonomy_tier, AutonomyTier::A3High);
+    }
+
+    // ========================================================================
+    // CIRISVerify#72 — license signature verification (forgery rejection)
+    // ========================================================================
+
+    use ciris_crypto::{ClassicalSigner, Ed25519Signer};
+    #[cfg(feature = "pqc")]
+    use ciris_crypto::{MlDsa65Signer, PqcSigner};
+
+    /// Build a real hybrid-signed JWT signed by `classical_signer` (and, with
+    /// the PQC backend, `pqc_signer`). Returns `(token, classical_pubkey,
+    /// pqc_pubkey)`.
+    fn sign_test_jwt(classical_signer: &Ed25519Signer) -> (String, Vec<u8>, Option<Vec<u8>>) {
+        let header = JwtHeader {
+            alg: "CIRIS_HYBRID_V1".to_string(),
+            typ: "JWT".to_string(),
+            kid: Some("steward-key-2026".to_string()),
+        };
+        let payload = LicensePayload {
+            jti: "lic-signed-1".to_string(),
+            iss: "https://registry.ciris.ai".to_string(),
+            sub: "deploy-1".to_string(),
+            aud: vec!["ciris-verify".to_string()],
+            iat: 1737936000,
+            exp: 1769472000,
+            nbf: 1737936000,
+            license_type: LicenseType::ProfessionalMedical,
+            org_name: "Test Hospital".to_string(),
+            org_id: "org-1".to_string(),
+            responsible_party: "Dr. Test".to_string(),
+            responsible_party_contact: "t@h.org".to_string(),
+            capabilities: vec!["domain:medical:triage".to_string()],
+            capabilities_denied: vec![],
+            max_tier: AutonomyTier::A3High,
+            constraints: DeploymentConstraints::default(),
+        };
+
+        let header_b64 = base64url_encode(&serde_json::to_vec(&header).unwrap());
+        let payload_b64 = base64url_encode(&serde_json::to_vec(&payload).unwrap());
+        let signing_input = format!("{}.{}", header_b64, payload_b64);
+
+        let classical_sig = classical_signer.sign(signing_input.as_bytes()).unwrap();
+        let classical_pub = classical_signer.public_key().unwrap();
+
+        // PQC signature covers (signing_input || classical_sig).
+        #[cfg(feature = "pqc")]
+        let (pqc_sig, pqc_pub): (Vec<u8>, Option<Vec<u8>>) = {
+            let pqc = MlDsa65Signer::new().unwrap();
+            let mut bound = signing_input.as_bytes().to_vec();
+            bound.extend_from_slice(&classical_sig);
+            (pqc.sign(&bound).unwrap(), Some(pqc.public_key().unwrap()))
+        };
+        #[cfg(not(feature = "pqc"))]
+        let (pqc_sig, pqc_pub): (Vec<u8>, Option<Vec<u8>>) = (vec![0u8; 8], None);
+
+        let token = format!(
+            "{}.{}.{}.{}",
+            header_b64,
+            payload_b64,
+            base64url_encode(&classical_sig),
+            base64url_encode(&pqc_sig),
+        );
+        (token, classical_pub, pqc_pub)
+    }
+
+    fn pqc_fingerprint(key: &[u8]) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(key);
+        h.finalize().to_vec()
+    }
+
+    /// PROOF: a JWT validly signed by the consensus steward verifies.
+    #[test]
+    fn test_verify_valid_steward_license() {
+        let steward = Ed25519Signer::random().unwrap();
+        let (token, classical_pub, pqc_pub) = sign_test_jwt(&steward);
+        let fp = pqc_pub.as_deref().map(pqc_fingerprint);
+
+        let outcome = verify_license_jwt(&token, &classical_pub, pqc_pub.as_deref(), fp.as_deref());
+
+        assert!(
+            outcome.is_licensable(),
+            "validly steward-signed license must be licensable, got {:?}",
+            outcome
+        );
+    }
+
+    /// PROOF (the vuln is closed): a forged license — valid 4-part JWT but
+    /// signed by an attacker, NOT the consensus steward — is NOT licensable.
+    #[test]
+    fn test_verify_forged_license_rejected() {
+        let steward = Ed25519Signer::random().unwrap();
+        let attacker = Ed25519Signer::random().unwrap();
+
+        // Attacker forges a "ProfessionalMedical" JWT under their own key.
+        let (forged_token, _attacker_pub, attacker_pqc_pub) = sign_test_jwt(&attacker);
+        let attacker_fp = attacker_pqc_pub.as_deref().map(pqc_fingerprint);
+
+        // Verified against the GENUINE steward consensus key.
+        let steward_pub = steward.public_key().unwrap();
+        let outcome = verify_license_jwt(
+            &forged_token,
+            &steward_pub,
+            attacker_pqc_pub.as_deref(),
+            attacker_fp.as_deref(),
+        );
+
+        assert_eq!(
+            outcome,
+            LicenseVerification::Failed,
+            "forged license signed by a non-steward key MUST be rejected"
+        );
+        assert!(!outcome.is_licensable());
+    }
+
+    /// A substituted PQC key that does not match the consensus fingerprint must
+    /// not be trusted for PQC; we fall back to (and still require) the classical
+    /// gate, so a genuine steward-classical-signed token stays classical-only.
+    #[cfg(feature = "pqc")]
+    #[test]
+    fn test_verify_pqc_key_fingerprint_mismatch_falls_back_to_classical() {
+        let steward = Ed25519Signer::random().unwrap();
+        let (token, classical_pub, _real_pqc_pub) = sign_test_jwt(&steward);
+
+        // Attacker substitutes a different PQC key + matching-but-wrong fingerprint
+        let wrong_pqc = MlDsa65Signer::new().unwrap().public_key().unwrap();
+        let consensus_fp = pqc_fingerprint(&[0xAB; 32]); // does not match wrong_pqc
+
+        let outcome = verify_license_jwt(
+            &token,
+            &classical_pub,
+            Some(&wrong_pqc),
+            Some(&consensus_fp),
+        );
+
+        // Classical gate still holds (genuine steward classical sig), PQC refused.
+        assert_eq!(outcome, LicenseVerification::ClassicalVerified);
+        assert!(outcome.is_licensable());
+    }
+
+    /// Classical-only consensus (no full PQC key, e.g. DNS-only) still gates on
+    /// the classical steward signature.
+    #[test]
+    fn test_verify_classical_only_consensus() {
+        let steward = Ed25519Signer::random().unwrap();
+        let (token, classical_pub, _pqc_pub) = sign_test_jwt(&steward);
+
+        let outcome = verify_license_jwt(&token, &classical_pub, None, None);
+        assert_eq!(outcome, LicenseVerification::ClassicalVerified);
+        assert!(outcome.is_licensable());
+    }
+
+    /// A wrong consensus classical key rejects an otherwise-valid token.
+    #[test]
+    fn test_verify_wrong_consensus_key_rejected() {
+        let steward = Ed25519Signer::random().unwrap();
+        let (token, _classical_pub, _pqc_pub) = sign_test_jwt(&steward);
+
+        let wrong_key = Ed25519Signer::random().unwrap().public_key().unwrap();
+        let outcome = verify_license_jwt(&token, &wrong_key, None, None);
+        assert_eq!(outcome, LicenseVerification::Failed);
+    }
+
+    /// Empty consensus key fails closed (no authority to verify against).
+    #[test]
+    fn test_verify_empty_consensus_key_fails_closed() {
+        let steward = Ed25519Signer::random().unwrap();
+        let (token, _pub, _pqc) = sign_test_jwt(&steward);
+        assert_eq!(
+            verify_license_jwt(&token, &[], None, None),
+            LicenseVerification::Failed
+        );
+    }
+
+    /// A malformed (non-JWT) token fails closed.
+    #[test]
+    fn test_verify_malformed_token_fails_closed() {
+        let key = Ed25519Signer::random().unwrap().public_key().unwrap();
+        assert_eq!(
+            verify_license_jwt("not-a-jwt", &key, None, None),
+            LicenseVerification::Failed
+        );
     }
 }

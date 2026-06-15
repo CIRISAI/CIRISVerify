@@ -38,19 +38,16 @@
 //!    Both are exact-byte pubkey comparisons. Implemented + tested.
 //!
 //! 3. **`destination_hash` derivation** — §5.6.8.8.1 requires
-//!    `destination_hash == RNS_hash(reticulum_x25519 ‖ reticulum_ed25519 ‖
-//!    app_name ‖ aspects)`. This module verifies the hash is **present and
-//!    a signed member** of the binding (so (1) covers it — a forged hash
-//!    changes the JCS bytes and fails the signature). The *recompute* of
-//!    `RNS_hash(...)` is **honestly stubbed**: §5.6.8.8.1 fixes only the
-//!    preimage *ordering* and that it is a truncated SHA-256 to 16 bytes
-//!    (§5.6.8.8 `destination_hash: [u8; 16]`), but defers the exact byte
-//!    layout (name-hash framing, aspect joining/separator, name-expansion)
-//!    to Reticulum/leviculum's RNS destination-hash rule, which is **not
-//!    pinned in the CEG spec**. A wrong recompute is worse than an honest
-//!    gap, so [`verify_destination_hash`] returns
-//!    [`DestinationHashCheck::Unsupported`] until leviculum's exact rule is
-//!    pinned. See that function's docs.
+//!    `destination_hash` to recompute from `reticulum_x25519_pubkey`,
+//!    `reticulum_ed25519_pubkey`, `app_name`, and `aspects` per the
+//!    **§5.6.8.8.1.1 pinned two-stage RNS algorithm** (1.0-RC6 reproduced
+//!    the RNS construction in-spec, resolving CIRISVerify#28). On top of
+//!    (1) — which covers a forged-and-resigned hash because it changes the
+//!    JCS bytes — [`verify_destination_hash`] now recomputes the hash and
+//!    returns [`DestinationHashCheck::Match`] / [`DestinationHashCheck::Mismatch`],
+//!    catching the orthogonal case of a producer whose own hash is
+//!    inconsistent with its pubkeys / `app_name` / `aspects`. A mismatch
+//!    MUST be treated as an unauthenticated (advisory-only) announce.
 //!
 //! ## Fail-closed
 //!
@@ -80,8 +77,12 @@ use crate::threshold::{verify_threshold_signatures, ThresholdMember, ThresholdSi
 /// Length of an X25519 / Ed25519 public key (raw bytes, pre-base64).
 const PUBKEY_LEN: usize = 32;
 /// Length of an RNS `destination_hash` (truncated SHA-256), per
-/// §5.6.8.8 `destination_hash: [u8; 16]`.
+/// §5.6.8.8 `destination_hash: [u8; 16]` and §5.6.8.8.1.1
+/// `DEST_HASH_LEN` (RNS `Reticulum.TRUNCATED_HASHLENGTH` = 128 bits).
 const DESTINATION_HASH_LEN: usize = 16;
+/// Length of an RNS `name_hash` (truncated SHA-256), per §5.6.8.8.1.1
+/// `NAME_HASH_LEN` (RNS `Identity.NAME_HASH_LENGTH` = 80 bits).
+const NAME_HASH_LEN: usize = 10;
 
 /// The `transport_destination` field of an `identity_occurrence`
 /// (§5.6.8.8.1 / §8.1.12.7.1(c)).
@@ -171,8 +172,8 @@ pub struct TransportBinding {
 #[serde(rename_all = "snake_case")]
 pub enum TransportBindingReason {
     /// Signature valid + key separation holds + `destination_hash`
-    /// present-and-signed. (The `RNS_hash` recompute is deferred — see
-    /// [`DestinationHashCheck`].)
+    /// recomputes per §5.6.8.8.1.1 (carries
+    /// [`DestinationHashCheck::Match`]).
     Verified,
     /// The claimed `attesting_key_id` is not present in the caller's
     /// `key_directory`, or its pinned pubkeys are malformed.
@@ -184,6 +185,12 @@ pub enum TransportBindingReason {
     /// occurrence's signing key (AV-17), OR the content-KEM x25519 equals
     /// the transport x25519 (§5.6.8.8.2 C4).
     KeySeparationViolation,
+    /// The signature + key-separation checks passed, but the bound
+    /// `destination_hash` does NOT recompute from the pubkeys / `app_name`
+    /// / `aspects` per the §5.6.8.8.1.1 two-stage RNS algorithm (or an
+    /// aspect contained an illegal `.`). Per §8.1.13.1.1(b) the consumer
+    /// MUST treat this as an unauthenticated (advisory-only) announce.
+    DestinationHashMismatch,
     /// A pubkey / hash field was absent, the wrong length, or not valid
     /// base64 — the binding is structurally malformed. Fail-closed.
     Malformed,
@@ -198,10 +205,12 @@ pub struct TransportBindingVerdict {
     pub authentic: bool,
     /// The coarse reason.
     pub reason: TransportBindingReason,
-    /// Result of the (currently deferred) `destination_hash` recompute.
-    /// Always [`DestinationHashCheck::Unsupported`] today; surfaced so the
-    /// caller can see the binding's hash was *not* recomputed (only that
-    /// it is present and signature-covered).
+    /// Result of the §5.6.8.8.1.1 `destination_hash` recompute.
+    /// [`DestinationHashCheck::Match`] on an authentic verdict;
+    /// [`DestinationHashCheck::Mismatch`] when the producer's hash is
+    /// inconsistent with its pubkeys / `app_name` / `aspects`;
+    /// [`DestinationHashCheck::Unsupported`] when the binding was rejected
+    /// before the recompute was reached.
     pub destination_hash_check: DestinationHashCheck,
 }
 
@@ -210,19 +219,20 @@ pub struct TransportBindingVerdict {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DestinationHashCheck {
-    /// The recompute is not implemented — §5.6.8.8.1 defers the exact RNS
-    /// destination-hash byte layout to Reticulum/leviculum (see
-    /// [`verify_destination_hash`]). The hash is still
-    /// **present-and-signature-covered** (the producer cannot have signed a
-    /// different hash without breaking the hybrid signature), so a forged
-    /// hash is already rejected by check (1); what is *not* yet checked is
-    /// that the producer derived it correctly from the pubkeys.
+    /// The recompute did not run for this verdict — the binding was
+    /// rejected on a structurally-earlier check (malformed field, unknown
+    /// signer, key-separation, bad signature), so the §5.6.8.8.1.1
+    /// recompute was never reached. Carried only on a non-authentic
+    /// verdict; an authentic verdict always carries `Match`.
     Unsupported,
-    /// The recomputed `RNS_hash(...)` matched the bound `destination_hash`.
-    /// (Reserved — not produced until the RNS rule is pinned.)
+    /// The recomputed §5.6.8.8.1.1 two-stage hash matched the bound
+    /// `destination_hash` — the producer derived it correctly from its
+    /// pubkeys / `app_name` / `aspects`.
     Match,
     /// The recompute ran and did NOT match — the producer's hash is
-    /// inconsistent with its pubkeys/app_name/aspects. (Reserved.)
+    /// inconsistent with its pubkeys / `app_name` / `aspects` (or an
+    /// aspect contained an illegal `.`). Per §5.6.8.8.1.1 the consumer
+    /// MUST treat this as an unauthenticated (advisory-only) announce.
     Mismatch,
 }
 
@@ -342,8 +352,17 @@ pub fn verify_transport_binding(
         return Ok(reject(TransportBindingReason::SignatureInvalid));
     }
 
-    // ---- (3) destination_hash recompute — deferred to leviculum --------
+    // ---- (3) destination_hash recompute — §5.6.8.8.1.1 two-stage RNS ----
+    // §8.1.13.1.1(b) REQUIREs destination_hash == rns_destination_hash(...);
+    // a mismatch is fail-closed (advisory-only announce, never authentic).
     let destination_hash_check = verify_destination_hash(&binding.transport_destination);
+    if destination_hash_check != DestinationHashCheck::Match {
+        return Ok(TransportBindingVerdict {
+            authentic: false,
+            reason: TransportBindingReason::DestinationHashMismatch,
+            destination_hash_check: DestinationHashCheck::Mismatch,
+        });
+    }
 
     Ok(TransportBindingVerdict {
         authentic: true,
@@ -352,44 +371,111 @@ pub fn verify_transport_binding(
     })
 }
 
-/// Recompute `RNS_hash(reticulum_x25519 ‖ reticulum_ed25519 ‖ app_name ‖
-/// aspects)` and compare to the bound `destination_hash` (§5.6.8.8.1
-/// conformance point 2).
+/// Derive the RNS `destination_hash` (16 bytes) from a destination's
+/// `app_name`, ordered `aspects`, and transport pubkeys per the
+/// **§5.6.8.8.1.1 pinned two-stage algorithm** — the single derivation a
+/// **producer** uses to fill `destination_hash` and a **consumer**
+/// ([`verify_destination_hash`]) recomputes to authenticate it. Returns
+/// `None` iff an aspect carries an illegal `.` (the producer must reject
+/// such input).
 ///
-/// **DELIBERATELY STUBBED — returns [`DestinationHashCheck::Unsupported`].**
+/// # The algorithm (§5.6.8.8.1.1, 1.0-RC6 — closed CEG reproduction of the
+/// RNS construction; SHA-256 throughout)
 ///
-/// §5.6.8.8.1 pins only:
-/// - the preimage *ordering* (`x25519 ‖ ed25519 ‖ app_name ‖ aspects`,
-///   §8.1.13.1.1(b) `RNS_hash(...)`);
-/// - that the result is a truncated SHA-256 to 16 bytes (§5.6.8.8
-///   `destination_hash: [u8; 16]`).
+/// This is a **two-stage** hash — NOT a single SHA-256 over a flat
+/// `x25519 ‖ ed25519 ‖ app_name ‖ aspects` preimage (the naive flat form
+/// yields a different, wrong value).
 ///
-/// It does **not** pin the exact RNS destination-hash construction — the
-/// name-hash framing, how `app_name` + `aspects[]` are joined/separated and
-/// expanded into the Reticulum "full name", the truncation offset, or
-/// whether intermediate name-hashing is applied before the final digest.
-/// That layout lives in Reticulum/leviculum's RNS `Destination.hash` rule,
-/// which is referenced ("per the RNS rule") but not reproduced in the CEG
-/// spec. Implementing a *guess* here would manufacture a check that passes
-/// for our encoding and silently rejects conformant producers (or vice
-/// versa) — strictly worse than an honest gap, because a wrong hash impl
-/// looks authoritative.
+/// 1. **Expanded name** (UTF-8): `app_name`, then each `aspect` dot-joined
+///    in field order; the identity hexhash is NOT included (RNS computes
+///    `name_hash` with `identity=None`). An aspect containing a `.` is
+///    illegal → `None`.
+///    `expanded_name = app_name (+ "." + aspect for each aspect)`
+/// 2. `name_hash = SHA256(utf8(expanded_name))[:NAME_HASH_LEN]` (10 bytes).
+/// 3. `identity_hash = SHA256(x25519_pub ‖ ed25519_pub)[:DEST_HASH_LEN]`
+///    (16 bytes). Key order is **x25519 THEN ed25519** — RNS
+///    `get_public_key()` = `pub_bytes (X25519) ‖ sig_pub_bytes (Ed25519)`.
+/// 4. `destination_hash = SHA256(name_hash ‖ identity_hash)[:DEST_HASH_LEN]`
+///    (16 bytes; the 26-byte `name_hash ‖ identity_hash` material).
 ///
-/// The binding is not unprotected in the meantime: `destination_hash` is a
-/// signed member of the occurrence envelope, so
-/// [`verify_transport_binding`] check (1) already rejects any *forged or
-/// substituted* hash (it would change the JCS bytes and break the hybrid
-/// signature). What is deferred is only the orthogonal check that the
-/// producer *derived* the hash correctly from its own pubkeys — a
-/// producer-side consistency proof.
-///
-/// TODO(leviculum): wire the exact RNS destination-hash algorithm (byte
-/// layout + truncation) from leviculum's spec, then return
-/// [`DestinationHashCheck::Match`] / [`DestinationHashCheck::Mismatch`].
-/// Tracked against CIRISVerify#28 / CIRISEdge#15 (AV-42).
+/// Pinned source: Reticulum `RNS/Destination.py::Destination.hash` +
+/// `RNS/Identity.py` (`full_hash` = SHA-256; `truncated_hash`;
+/// `get_public_key()` = `pub_bytes ‖ sig_pub_bytes`) + `RNS/Reticulum.py`
+/// (`TRUNCATED_HASHLENGTH = 128`). CEG owns this reproduction; it does not
+/// float with upstream Reticulum. Resolves CIRISVerify#28 / CIRISEdge#15
+/// (AV-42).
 #[must_use]
-pub fn verify_destination_hash(_dest: &TransportDestination) -> DestinationHashCheck {
-    DestinationHashCheck::Unsupported
+pub fn compute_destination_hash(
+    app_name: &str,
+    aspects: &[String],
+    x25519_pubkey: &[u8],
+    ed25519_pubkey: &[u8],
+) -> Option<[u8; DESTINATION_HASH_LEN]> {
+    use sha2::{Digest, Sha256};
+
+    // 1. Expanded name (UTF-8), app_name then each aspect dot-joined in field
+    //    order. A dot inside an aspect is illegal per §5.6.8.8.1.1.
+    let mut expanded_name = app_name.to_string();
+    for aspect in aspects {
+        if aspect.contains('.') {
+            return None;
+        }
+        expanded_name.push('.');
+        expanded_name.push_str(aspect);
+    }
+
+    // 2. name_hash = SHA256(utf8(expanded_name))[:NAME_HASH_LEN]
+    let name_hash = &Sha256::digest(expanded_name.as_bytes())[..NAME_HASH_LEN];
+
+    // 3. identity_hash = SHA256(x25519 ‖ ed25519)[:DEST_HASH_LEN]
+    let mut id_hasher = Sha256::new();
+    id_hasher.update(x25519_pubkey);
+    id_hasher.update(ed25519_pubkey);
+    let identity_hash = id_hasher.finalize();
+    let identity_hash = &identity_hash[..DESTINATION_HASH_LEN];
+
+    // 4. destination_hash = SHA256(name_hash ‖ identity_hash)[:DEST_HASH_LEN]
+    let mut final_hasher = Sha256::new();
+    final_hasher.update(name_hash);
+    final_hasher.update(identity_hash);
+    let mut out = [0u8; DESTINATION_HASH_LEN];
+    out.copy_from_slice(&final_hasher.finalize()[..DESTINATION_HASH_LEN]);
+    Some(out)
+}
+
+/// Recompute the §5.6.8.8.1.1 `destination_hash` (via
+/// [`compute_destination_hash`]) from a [`TransportDestination`]'s pubkeys /
+/// `app_name` / `aspects` and compare it byte-for-byte to the bound
+/// `destination_hash` (§5.6.8.8.1 conformance point 2 / §8.1.13.1.1(b)).
+/// [`DestinationHashCheck::Match`] on byte-equality; otherwise
+/// [`DestinationHashCheck::Mismatch`] — including any malformed field or an
+/// aspect carrying an illegal `.`.
+#[must_use]
+pub fn verify_destination_hash(dest: &TransportDestination) -> DestinationHashCheck {
+    // Decode + length-check the three byte fields; any malformation → Mismatch
+    // (a malformed binding can never be hash-consistent).
+    let (Some(x25519), Some(ed25519), Some(bound_hash)) = (
+        dest.x25519_pubkey(),
+        dest.ed25519_pubkey(),
+        dest.destination_hash(),
+    ) else {
+        return DestinationHashCheck::Mismatch;
+    };
+
+    let Some(recomputed) =
+        compute_destination_hash(&dest.app_name, &dest.aspects, &x25519, &ed25519)
+    else {
+        // An aspect carried an illegal `.` — never hash-consistent.
+        return DestinationHashCheck::Mismatch;
+    };
+
+    // Constant-time-ish byte compare. (The hash is public material — both
+    // sides are non-secret — but use a length+value compare for clarity.)
+    if recomputed.as_slice() == bound_hash.as_slice() {
+        DestinationHashCheck::Match
+    } else {
+        DestinationHashCheck::Mismatch
+    }
 }
 
 /// Build a fail-closed (non-authentic) verdict with the given reason.
@@ -423,7 +509,7 @@ mod tests {
     impl Signer {
         fn random() -> Self {
             Self {
-                ed: Ed25519Signer::random(),
+                ed: Ed25519Signer::random().unwrap(),
                 mldsa: MlDsa65Signer::new().unwrap(),
             }
         }
@@ -461,6 +547,34 @@ mod tests {
         vec![seed; PUBKEY_LEN]
     }
 
+    /// Recompute the correct §5.6.8.8.1.1 two-stage RNS `destination_hash`
+    /// for the given fixture inputs, so a fixture binding's hash is
+    /// derivation-consistent (and `verify_destination_hash` → Match). This
+    /// is an INDEPENDENT re-derivation of the four pinned steps (not a call
+    /// into the production fn) so the test is a genuine cross-check.
+    fn rns_destination_hash(
+        x25519: &[u8],
+        ed25519: &[u8],
+        app_name: &str,
+        aspects: &[&str],
+    ) -> Vec<u8> {
+        use sha2::{Digest, Sha256};
+        let mut expanded = app_name.to_string();
+        for a in aspects {
+            expanded.push('.');
+            expanded.push_str(a);
+        }
+        let name_hash = &Sha256::digest(expanded.as_bytes())[..NAME_HASH_LEN];
+        let mut idh = Sha256::new();
+        idh.update(x25519);
+        idh.update(ed25519);
+        let identity_hash = idh.finalize();
+        let mut fh = Sha256::new();
+        fh.update(name_hash);
+        fh.update(&identity_hash[..DESTINATION_HASH_LEN]);
+        fh.finalize()[..DESTINATION_HASH_LEN].to_vec()
+    }
+
     /// Build the signed occurrence envelope + the typed transport_dest,
     /// hybrid-sign it, and assemble a [`TransportBinding`]. `transport_ed`
     /// lets a test force the AV-17 collision (transport ed == signing ed).
@@ -471,13 +585,18 @@ mod tests {
         transport_x: &[u8],
         encryption_x: Option<&[u8]>,
     ) -> TransportBinding {
-        let dest_hash = vec![0xABu8; DESTINATION_HASH_LEN];
+        let app_name = "ciris.federation";
+        let aspects = ["announce", "v1"];
+        // Derivation-consistent hash per §5.6.8.8.1.1 — so a well-formed
+        // fixture verifies (Match). A test that wants a Mismatch tampers
+        // this field after the fact.
+        let dest_hash = rns_destination_hash(transport_x, transport_ed, app_name, &aspects);
         let td = TransportDestination {
             reticulum_x25519_pubkey_base64: b64().encode(transport_x),
             reticulum_ed25519_pubkey_base64: b64().encode(transport_ed),
             destination_hash_base64: b64().encode(&dest_hash),
-            app_name: "ciris.federation".to_string(),
-            aspects: vec!["announce".to_string(), "v1".to_string()],
+            app_name: app_name.to_string(),
+            aspects: aspects.iter().map(|s| (*s).to_string()).collect(),
         };
         let enc = encryption_x.map(|x| EncryptionPubkeys {
             x25519_base64: b64().encode(x),
@@ -540,8 +659,9 @@ mod tests {
         let v = verify_transport_binding(&binding, &dir).unwrap();
         assert!(v.authentic, "a well-formed signed binding must verify");
         assert_eq!(v.reason, TransportBindingReason::Verified);
-        // The hash recompute is honestly deferred.
-        assert_eq!(v.destination_hash_check, DestinationHashCheck::Unsupported);
+        // The §5.6.8.8.1.1 hash recompute matches the derivation-consistent
+        // fixture hash.
+        assert_eq!(v.destination_hash_check, DestinationHashCheck::Match);
     }
 
     #[test]
@@ -725,20 +845,141 @@ mod tests {
     }
 
     #[test]
-    fn destination_hash_recompute_is_stubbed_unsupported() {
-        // Explicitly lock the honest gap: the recompute is deferred.
+    fn destination_hash_recompute_matches_correct_derivation() {
+        // A derivation-consistent hash → Match. The fixture hash is built by
+        // the test's independent re-derivation of the four §5.6.8.8.1.1
+        // steps, so this is a genuine cross-check of the production fn.
+        let x = pubkey_bytes(0x02);
+        let ed = pubkey_bytes(0x01);
         let td = TransportDestination {
-            reticulum_x25519_pubkey_base64: b64().encode(pubkey_bytes(0x02)),
-            reticulum_ed25519_pubkey_base64: b64().encode(pubkey_bytes(0x01)),
+            reticulum_x25519_pubkey_base64: b64().encode(&x),
+            reticulum_ed25519_pubkey_base64: b64().encode(&ed),
+            destination_hash_base64: b64().encode(rns_destination_hash(
+                &x,
+                &ed,
+                "ciris.federation",
+                &["announce"],
+            )),
+            app_name: "ciris.federation".to_string(),
+            aspects: vec!["announce".to_string()],
+        };
+        assert_eq!(verify_destination_hash(&td), DestinationHashCheck::Match);
+    }
+
+    #[test]
+    fn destination_hash_recompute_detects_wrong_hash() {
+        // A wrong bound hash (not derived from the pubkeys) → Mismatch.
+        let x = pubkey_bytes(0x02);
+        let ed = pubkey_bytes(0x01);
+        let td = TransportDestination {
+            reticulum_x25519_pubkey_base64: b64().encode(&x),
+            reticulum_ed25519_pubkey_base64: b64().encode(&ed),
             destination_hash_base64: b64().encode(vec![0xABu8; DESTINATION_HASH_LEN]),
+            app_name: "ciris.federation".to_string(),
+            aspects: vec!["announce".to_string()],
+        };
+        assert_eq!(verify_destination_hash(&td), DestinationHashCheck::Mismatch);
+    }
+
+    #[test]
+    fn destination_hash_key_order_is_x25519_then_ed25519() {
+        // §5.6.8.8.1.1 step 3 pins x25519 THEN ed25519. Swapping the two
+        // distinct keys must NOT match (proves order is load-bearing).
+        let x = pubkey_bytes(0x02);
+        let ed = pubkey_bytes(0x01);
+        // Hash derived with the SWAPPED order (ed then x).
+        let swapped = rns_destination_hash(&ed, &x, "ciris.federation", &["announce"]);
+        let td = TransportDestination {
+            reticulum_x25519_pubkey_base64: b64().encode(&x),
+            reticulum_ed25519_pubkey_base64: b64().encode(&ed),
+            destination_hash_base64: b64().encode(swapped),
             app_name: "ciris.federation".to_string(),
             aspects: vec!["announce".to_string()],
         };
         assert_eq!(
             verify_destination_hash(&td),
-            DestinationHashCheck::Unsupported,
-            "the RNS destination-hash recompute is deliberately deferred to leviculum"
+            DestinationHashCheck::Mismatch,
+            "swapping the x25519/ed25519 key order must change the hash"
         );
+    }
+
+    #[test]
+    fn destination_hash_aspect_with_dot_is_mismatch() {
+        // §5.6.8.8.1.1 step 1: a dot inside an aspect is illegal → Mismatch
+        // (regardless of any bound hash value).
+        let x = pubkey_bytes(0x02);
+        let ed = pubkey_bytes(0x01);
+        let td = TransportDestination {
+            reticulum_x25519_pubkey_base64: b64().encode(&x),
+            reticulum_ed25519_pubkey_base64: b64().encode(&ed),
+            // Even a hash that "matches" a naive join cannot rescue it.
+            destination_hash_base64: b64().encode(vec![0u8; DESTINATION_HASH_LEN]),
+            app_name: "ciris.federation".to_string(),
+            aspects: vec!["bad.aspect".to_string()],
+        };
+        assert_eq!(verify_destination_hash(&td), DestinationHashCheck::Mismatch);
+    }
+
+    #[test]
+    fn destination_hash_two_stage_not_flat_concat() {
+        // §5.6.8.8.1.1 warns the naive flat SHA-256 over
+        // x25519 ‖ ed25519 ‖ app_name ‖ aspects yields a DIFFERENT value.
+        // Lock that the two-stage construction is not the flat one.
+        use sha2::{Digest, Sha256};
+        let x = pubkey_bytes(0x02);
+        let ed = pubkey_bytes(0x01);
+        let app_name = "ciris.federation";
+        let aspects = ["announce"];
+
+        let two_stage = rns_destination_hash(&x, &ed, app_name, &aspects);
+
+        // Naive flat preimage: x ‖ ed ‖ app_name ‖ aspects, single SHA-256.
+        let mut flat = Vec::new();
+        flat.extend_from_slice(&x);
+        flat.extend_from_slice(&ed);
+        flat.extend_from_slice(app_name.as_bytes());
+        for a in aspects {
+            flat.extend_from_slice(a.as_bytes());
+        }
+        let flat_hash = Sha256::digest(&flat)[..DESTINATION_HASH_LEN].to_vec();
+
+        assert_ne!(
+            two_stage, flat_hash,
+            "the §5.6.8.8.1.1 two-stage hash must differ from a flat-concat SHA-256"
+        );
+    }
+
+    #[test]
+    fn binding_with_wrong_destination_hash_is_not_authentic() {
+        // End-to-end: a signed, key-separated binding whose destination_hash
+        // is NOT derivation-consistent must fail-closed (§8.1.13.1.1(b)).
+        let signer = Signer::random();
+        let dir = vec![signer.directory_member("steward-us")];
+        let mut binding = make_binding(
+            &signer,
+            "steward-us",
+            &pubkey_bytes(0x01),
+            &pubkey_bytes(0x02),
+            None,
+        );
+
+        // Replace the (correct) hash with a wrong one, then RE-SIGN so the
+        // signature still verifies — isolating the hash-derivation check
+        // from the signature check.
+        binding.transport_destination.destination_hash_base64 =
+            b64().encode(vec![0xCDu8; DESTINATION_HASH_LEN]);
+        binding.signed_envelope["transport_destination"]["destination_hash"] =
+            json!(binding.transport_destination.destination_hash_base64);
+        let bytes = jcs::canonicalize(&binding.signed_envelope).unwrap();
+        binding.signature = signer.sign(&bytes);
+
+        let v = verify_transport_binding(&binding, &dir).unwrap();
+        assert!(
+            !v.authentic,
+            "a signed binding with a non-derivation-consistent hash must reject"
+        );
+        assert_eq!(v.reason, TransportBindingReason::DestinationHashMismatch);
+        assert_eq!(v.destination_hash_check, DestinationHashCheck::Mismatch);
     }
 
     #[test]

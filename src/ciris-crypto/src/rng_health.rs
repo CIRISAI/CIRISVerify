@@ -312,6 +312,37 @@ pub fn __force_health_for_test(h: RngHealth) {
     }
 }
 
+/// Test-only helpers shared across the crate's keygen fail-secure
+/// proof tests (CIRISVerify#74). Compiled only under `#[cfg(test)]`.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::{__force_health_for_test, RngHealth};
+
+    /// Run `f` with the RNG health latch forced to `Failed` (per-thread
+    /// override), then ALWAYS restore the latch to `Healthy` — even if
+    /// `f` panics. Lets a keygen module assert its fail-secure path
+    /// without poisoning the process-global latch for other tests.
+    ///
+    /// The override is thread-local (see [`super::is_rng_failed`]), so no
+    /// cross-test serialization mutex is needed: a concurrently-running
+    /// test on another thread never observes this thread's forced
+    /// `Failed`.
+    pub(crate) fn with_forced_failed<R>(f: impl FnOnce() -> R) -> R {
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                __force_health_for_test(RngHealth::Healthy);
+            }
+        }
+        __force_health_for_test(RngHealth::Failed {
+            test: "test-injected",
+            detail: "forced for keygen fail-secure proof".to_string(),
+        });
+        let _restore = Restore;
+        f()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

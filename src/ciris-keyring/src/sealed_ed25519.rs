@@ -306,15 +306,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn software_tier_reports_software_only_honestly() {
-        // No TPM in CI → software fallback → SoftwareOnly, not a false TPM claim.
+    async fn tier_reporting_is_honest() {
+        // The honesty invariant (env-independent): `hardware_type` reports
+        // `SoftwareOnly` IFF `storage_descriptor` is a `SoftwareFile`. The
+        // signer never claims hardware backing it lacks, nor hides backing it
+        // has. On a software box this lands on the SoftwareFile arm; on a
+        // TPM/SE box with the platform feature (e.g. `--features tpm`, the
+        // Linux release wheel) it lands on the Hardware arm. Either is honest;
+        // a disagreement is the bug.
         let dir = tmpdir();
         let signer = get_platform_ed25519_signer("fed-key", &dir).unwrap();
-        assert_eq!(signer.hardware_type(), HardwareType::SoftwareOnly);
-        assert!(matches!(
+        let tier_is_software = signer.hardware_type() == HardwareType::SoftwareOnly;
+        let descriptor_is_software = matches!(
             signer.storage_descriptor(),
             StorageDescriptor::SoftwareFile { .. }
-        ));
+        );
+        assert_eq!(
+            tier_is_software, descriptor_is_software,
+            "hardware_type and storage_descriptor must agree on the backing tier"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

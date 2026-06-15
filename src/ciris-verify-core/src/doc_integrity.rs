@@ -340,7 +340,11 @@ mod tests {
     const SAMPLE: &[u8] = b"# Federation Threat Model\n\nF-AV-MAINT: status OPEN.\n";
 
     fn make_signer() -> HybridSigner<Ed25519Signer, MlDsa65Signer> {
-        HybridSigner::new(Ed25519Signer::random(), MlDsa65Signer::new().unwrap()).unwrap()
+        HybridSigner::new(
+            Ed25519Signer::random().unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        )
+        .unwrap()
     }
 
     fn matching_verifier() -> HybridVerifier<Ed25519Verifier, MlDsa65Verifier> {

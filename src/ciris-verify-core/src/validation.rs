@@ -274,6 +274,7 @@ impl ConsensusValidator {
             return ValidationResult {
                 status: ValidationStatus::NoSourcesReachable,
                 consensus_key_classical: None,
+                consensus_key_pqc: None,
                 consensus_pqc_fingerprint: None,
                 consensus_revocation_revision: None,
                 authoritative_source: None,
@@ -295,6 +296,7 @@ impl ConsensusValidator {
             return ValidationResult {
                 status: ValidationStatus::ValidationError,
                 consensus_key_classical: Some(data.steward_key_classical.clone()),
+                consensus_key_pqc: data.steward_key_pqc.clone(),
                 consensus_pqc_fingerprint: Some(data.pqc_fingerprint.clone()),
                 consensus_revocation_revision: Some(data.revocation_revision),
                 authoritative_source: None,
@@ -381,6 +383,7 @@ impl ConsensusValidator {
                 ValidationResult {
                     status: ValidationStatus::AllSourcesAgree,
                     consensus_key_classical: Some(consensus_data.steward_key_classical.clone()),
+                    consensus_key_pqc: consensus_data.steward_key_pqc.clone(),
                     consensus_pqc_fingerprint: Some(consensus_data.pqc_fingerprint.clone()),
                     consensus_revocation_revision: Some(consensus_data.revocation_revision),
                     authoritative_source: None,
@@ -392,6 +395,7 @@ impl ConsensusValidator {
                 ValidationResult {
                     status: ValidationStatus::PartialAgreement,
                     consensus_key_classical: Some(consensus_data.steward_key_classical.clone()),
+                    consensus_key_pqc: consensus_data.steward_key_pqc.clone(),
                     consensus_pqc_fingerprint: Some(consensus_data.pqc_fingerprint.clone()),
                     consensus_revocation_revision: Some(consensus_data.revocation_revision),
                     authoritative_source: None,
@@ -418,6 +422,7 @@ impl ConsensusValidator {
             ValidationResult {
                 status: ValidationStatus::PartialAgreement,
                 consensus_key_classical: Some(consensus_data.steward_key_classical.clone()),
+                consensus_key_pqc: consensus_data.steward_key_pqc.clone(),
                 consensus_pqc_fingerprint: Some(consensus_data.pqc_fingerprint.clone()),
                 consensus_revocation_revision: Some(consensus_data.revocation_revision),
                 authoritative_source: None,
@@ -430,6 +435,7 @@ impl ConsensusValidator {
             ValidationResult {
                 status: ValidationStatus::SourcesDisagree,
                 consensus_key_classical: None,
+                consensus_key_pqc: None,
                 consensus_pqc_fingerprint: None,
                 consensus_revocation_revision: None,
                 authoritative_source: None,
@@ -504,6 +510,7 @@ impl ConsensusValidator {
                 return ValidationResult {
                     status: ValidationStatus::SourcesDisagree,
                     consensus_key_classical: None,
+                    consensus_key_pqc: None,
                     consensus_pqc_fingerprint: None,
                     consensus_revocation_revision: None,
                     authoritative_source: None,
@@ -534,6 +541,7 @@ impl ConsensusValidator {
                         ValidationStatus::PartialAgreement
                     },
                     consensus_key_classical: Some(https_consensus.steward_key_classical.clone()),
+                    consensus_key_pqc: https_consensus.steward_key_pqc.clone(),
                     consensus_pqc_fingerprint: Some(https_consensus.pqc_fingerprint.clone()),
                     consensus_revocation_revision: Some(https_consensus.revocation_revision),
                     authoritative_source: Some(authoritative),
@@ -554,6 +562,7 @@ impl ConsensusValidator {
                         ValidationStatus::PartialAgreement
                     },
                     consensus_key_classical: Some(https_consensus.steward_key_classical.clone()),
+                    consensus_key_pqc: https_consensus.steward_key_pqc.clone(),
                     consensus_pqc_fingerprint: Some(https_consensus.pqc_fingerprint.clone()),
                     consensus_revocation_revision: Some(https_consensus.revocation_revision),
                     authoritative_source: Some(authoritative),
@@ -568,6 +577,7 @@ impl ConsensusValidator {
                 ValidationResult {
                     status: ValidationStatus::PartialAgreement,
                     consensus_key_classical: Some(https_consensus.steward_key_classical.clone()),
+                    consensus_key_pqc: https_consensus.steward_key_pqc.clone(),
                     consensus_pqc_fingerprint: Some(https_consensus.pqc_fingerprint.clone()),
                     consensus_revocation_revision: Some(https_consensus.revocation_revision),
                     authoritative_source: Some(authoritative),
@@ -586,6 +596,7 @@ impl ConsensusValidator {
                 return ValidationResult {
                     status: ValidationStatus::NoSourcesReachable,
                     consensus_key_classical: None,
+                    consensus_key_pqc: None,
                     consensus_pqc_fingerprint: None,
                     consensus_revocation_revision: None,
                     authoritative_source: None,
@@ -598,6 +609,7 @@ impl ConsensusValidator {
                 return ValidationResult {
                     status: ValidationStatus::ValidationError,
                     consensus_key_classical: Some(available[0].steward_key_classical.clone()),
+                    consensus_key_pqc: available[0].steward_key_pqc.clone(),
                     consensus_pqc_fingerprint: Some(available[0].pqc_fingerprint.clone()),
                     consensus_revocation_revision: Some(available[0].revocation_revision),
                     authoritative_source: Some("DNS-fallback".to_string()),
@@ -610,6 +622,7 @@ impl ConsensusValidator {
                 ValidationResult {
                     status: ValidationStatus::PartialAgreement,
                     consensus_key_classical: Some(available[0].steward_key_classical.clone()),
+                    consensus_key_pqc: available[0].steward_key_pqc.clone(),
                     consensus_pqc_fingerprint: Some(available[0].pqc_fingerprint.clone()),
                     consensus_revocation_revision: Some(available[0].revocation_revision),
                     authoritative_source: Some("DNS-fallback".to_string()),
@@ -623,6 +636,7 @@ impl ConsensusValidator {
                 ValidationResult {
                     status: ValidationStatus::SourcesDisagree,
                     consensus_key_classical: None,
+                    consensus_key_pqc: None,
                     consensus_pqc_fingerprint: None,
                     consensus_revocation_revision: None,
                     authoritative_source: None,
@@ -654,6 +668,13 @@ impl ConsensusValidator {
 pub struct SourceData {
     /// Classical steward key (raw bytes).
     pub steward_key_classical: Vec<u8>,
+    /// Full PQC steward public key (raw bytes, when the source provides it).
+    ///
+    /// DNS sources only publish a fingerprint, so this is `None` for DNS.
+    /// HTTPS sources carry the full key, enabling full hybrid license
+    /// verification. The full key is always cross-checked against
+    /// `pqc_fingerprint` before use (see the engine's license verifier).
+    pub steward_key_pqc: Option<Vec<u8>>,
     /// PQC key fingerprint (SHA-256, raw bytes).
     pub pqc_fingerprint: Vec<u8>,
     /// Revocation list revision number.
@@ -667,6 +688,8 @@ impl SourceData {
     pub fn from_dns(record: &DnsTxtRecord) -> Self {
         Self {
             steward_key_classical: record.steward_key_classical.clone(),
+            // DNS publishes only the fingerprint, never the full PQC key.
+            steward_key_pqc: None,
             pqc_fingerprint: record.pqc_fingerprint.clone(),
             revocation_revision: record.revocation_revision,
             timestamp: record.timestamp,
@@ -680,6 +703,14 @@ impl SourceData {
             .decode(&response.classical.key)
             .unwrap_or_default();
 
+        // Decode the full PQC public key (HTTPS carries it; DNS does not).
+        // Used for hybrid license verification; always cross-checked against
+        // the fingerprint before trust is placed in it.
+        let steward_key_pqc = base64::engine::general_purpose::STANDARD
+            .decode(&response.pqc.key)
+            .ok()
+            .filter(|k| !k.is_empty());
+
         // Decode the PQC fingerprint
         let pqc_fp_hex = response
             .pqc
@@ -690,6 +721,7 @@ impl SourceData {
 
         Self {
             steward_key_classical,
+            steward_key_pqc,
             pqc_fingerprint,
             revocation_revision: response.revision,
             timestamp: response.timestamp,
@@ -704,6 +736,12 @@ pub struct ValidationResult {
     pub status: ValidationStatus,
     /// Consensus steward key (classical, if available).
     pub consensus_key_classical: Option<Vec<u8>>,
+    /// Consensus full PQC steward public key (if a source provided it).
+    ///
+    /// Only HTTPS sources carry the full key. `None` when consensus rests on
+    /// DNS-only sources (which publish just the fingerprint) — in that case
+    /// hybrid license verification falls back to classical-only gating.
+    pub consensus_key_pqc: Option<Vec<u8>>,
     /// Consensus PQC key fingerprint (if available).
     pub consensus_pqc_fingerprint: Option<Vec<u8>>,
     /// Consensus revocation revision (if available).
@@ -774,6 +812,7 @@ mod tests {
     fn make_source_data(key: &[u8], fingerprint: &[u8], revision: u64) -> SourceData {
         SourceData {
             steward_key_classical: key.to_vec(),
+            steward_key_pqc: None,
             pqc_fingerprint: fingerprint.to_vec(),
             revocation_revision: revision,
             timestamp: 1737763200,

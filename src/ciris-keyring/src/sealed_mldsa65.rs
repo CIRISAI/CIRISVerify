@@ -260,14 +260,24 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn software_tier_reports_software_only_honestly() {
+    async fn tier_reporting_is_honest() {
+        // The honesty invariant (env-independent): `hardware_type` reports
+        // `SoftwareOnly` IFF `storage_descriptor` is a `SoftwareFile`. On a
+        // software box this is the SoftwareFile arm; on a TPM/SE box with the
+        // platform feature (the Linux release wheel builds `--features tpm`)
+        // the sealed seed is genuinely hardware-backed and both move to the
+        // Hardware arm. A disagreement between the two is the bug.
         let dir = tmpdir();
         let signer = get_platform_sealed_mldsa65_signer("fed-pqc", &dir).unwrap();
-        assert_eq!(signer.hardware_type(), HardwareType::SoftwareOnly);
-        assert!(matches!(
+        let tier_is_software = signer.hardware_type() == HardwareType::SoftwareOnly;
+        let descriptor_is_software = matches!(
             signer.storage_descriptor(),
             StorageDescriptor::SoftwareFile { .. }
-        ));
+        );
+        assert_eq!(
+            tier_is_software, descriptor_is_software,
+            "hardware_type and storage_descriptor must agree on the backing tier"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -305,7 +305,7 @@ pub fn generate_mldsa65_keypair() -> Result<(Vec<u8>, Vec<u8>)> {
 /// reject a tampered signature on a small test vector? Used as a
 /// startup self-check in the CLIs.
 pub fn self_test_crypto() -> Result<()> {
-    let signer = Ed25519Signer::random();
+    let signer = Ed25519Signer::random().map_err(|e| anyhow!("ed keygen: {e}"))?;
     let pub_vec = signer.public_key().map_err(|e| anyhow!("ed pubkey: {e}"))?;
     let mut pub_arr = [0u8; 32];
     pub_arr.copy_from_slice(&pub_vec);

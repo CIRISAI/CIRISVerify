@@ -29,7 +29,7 @@ proptest! {
     /// ECDSA signatures are deterministic for the same key and message.
     #[test]
     fn ecdsa_sign_deterministic(data in binary_data(1, 1024)) {
-        let signer = P256Signer::random();
+        let signer = P256Signer::random().unwrap();
         let sig1 = signer.sign(&data).unwrap();
         let sig2 = signer.sign(&data).unwrap();
 
@@ -40,7 +40,7 @@ proptest! {
     /// ECDSA sign-verify roundtrip always succeeds.
     #[test]
     fn ecdsa_roundtrip(data in binary_data(0, 2048)) {
-        let signer = P256Signer::random();
+        let signer = P256Signer::random().unwrap();
         let verifier = P256Verifier::new();
 
         let signature = signer.sign(&data).unwrap();
@@ -55,7 +55,7 @@ proptest! {
         data in binary_data(1, 1024),
         tamper_idx in any::<prop::sample::Index>()
     ) {
-        let signer = P256Signer::random();
+        let signer = P256Signer::random().unwrap();
         let verifier = P256Verifier::new();
 
         let signature = signer.sign(&data).unwrap();
@@ -73,8 +73,8 @@ proptest! {
     /// ECDSA verification fails for wrong key.
     #[test]
     fn ecdsa_wrong_key_fails(data in binary_data(1, 1024)) {
-        let signer1 = P256Signer::random();
-        let signer2 = P256Signer::random();
+        let signer1 = P256Signer::random().unwrap();
+        let signer2 = P256Signer::random().unwrap();
         let verifier = P256Verifier::new();
 
         let signature = signer1.sign(&data).unwrap();
@@ -87,7 +87,7 @@ proptest! {
     /// ECDSA signatures have correct size (64 bytes for P-256).
     #[test]
     fn ecdsa_signature_size(data in binary_data(1, 1024)) {
-        let signer = P256Signer::random();
+        let signer = P256Signer::random().unwrap();
         let signature = signer.sign(&data).unwrap();
 
         prop_assert_eq!(signature.len(), 64);
@@ -96,7 +96,7 @@ proptest! {
     /// ECDSA public keys have correct size (65 bytes uncompressed).
     #[test]
     fn ecdsa_public_key_size(_seed in any::<u64>()) {
-        let signer = P256Signer::random();
+        let signer = P256Signer::random().unwrap();
         let public_key = signer.public_key().unwrap();
 
         // Uncompressed point: 0x04 || X (32 bytes) || Y (32 bytes)
@@ -111,7 +111,7 @@ proptest! {
     /// Ed25519 sign-verify roundtrip always succeeds.
     #[test]
     fn ed25519_roundtrip(data in binary_data(0, 2048)) {
-        let signer = Ed25519Signer::random();
+        let signer = Ed25519Signer::random().unwrap();
         let verifier = Ed25519Verifier::new();
 
         let signature = signer.sign(&data).unwrap();
@@ -123,7 +123,7 @@ proptest! {
     /// Ed25519 signatures have correct size (64 bytes).
     #[test]
     fn ed25519_signature_size(data in binary_data(1, 1024)) {
-        let signer = Ed25519Signer::random();
+        let signer = Ed25519Signer::random().unwrap();
         let signature = signer.sign(&data).unwrap();
 
         prop_assert_eq!(signature.len(), 64);
@@ -132,7 +132,7 @@ proptest! {
     /// Ed25519 public keys have correct size (32 bytes).
     #[test]
     fn ed25519_public_key_size(_seed in any::<u64>()) {
-        let signer = Ed25519Signer::random();
+        let signer = Ed25519Signer::random().unwrap();
         let public_key = signer.public_key().unwrap();
 
         prop_assert_eq!(public_key.len(), 32);
@@ -144,7 +144,7 @@ proptest! {
         data in binary_data(1, 1024),
         tamper_idx in 0usize..64
     ) {
-        let signer = Ed25519Signer::random();
+        let signer = Ed25519Signer::random().unwrap();
         let verifier = Ed25519Verifier::new();
 
         let signature = signer.sign(&data).unwrap();
@@ -209,7 +209,7 @@ proptest! {
 
 #[test]
 fn test_ecdsa_empty_message() {
-    let signer = P256Signer::random();
+    let signer = P256Signer::random().unwrap();
     let verifier = P256Verifier::new();
 
     let data = b"";
@@ -235,8 +235,8 @@ fn test_ed25519_from_seed_deterministic() {
 
 #[test]
 fn test_different_keys_different_signatures() {
-    let signer1 = P256Signer::random();
-    let signer2 = P256Signer::random();
+    let signer1 = P256Signer::random().unwrap();
+    let signer2 = P256Signer::random().unwrap();
 
     let data = b"test data";
     let sig1 = signer1.sign(data).unwrap();
@@ -255,7 +255,7 @@ fn test_constant_time_eq_empty() {
 
 #[test]
 fn test_ed25519_different_data_different_signatures() {
-    let signer = Ed25519Signer::random();
+    let signer = Ed25519Signer::random().unwrap();
 
     let data1 = b"message one";
     let data2 = b"message two";
@@ -269,7 +269,7 @@ fn test_ed25519_different_data_different_signatures() {
 
 #[test]
 fn test_p256_large_message() {
-    let signer = P256Signer::random();
+    let signer = P256Signer::random().unwrap();
     let verifier = P256Verifier::new();
 
     let data = vec![0x42u8; 10_000]; // 10KB message

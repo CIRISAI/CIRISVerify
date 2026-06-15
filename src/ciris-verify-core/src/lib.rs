@@ -87,6 +87,7 @@ pub mod reconsider_dos;
 pub mod registry;
 pub mod revocation;
 pub mod security;
+pub mod self_at_login;
 pub mod skill_import;
 pub mod steward_key;
 pub mod threshold;

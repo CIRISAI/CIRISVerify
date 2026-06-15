@@ -60,6 +60,7 @@ proptest! {
     ) {
         let source = SourceData {
             steward_key_classical: key.clone(),
+            steward_key_pqc: None,
             pqc_fingerprint: fp.clone(),
             revocation_revision: rev,
             timestamp: 1737936000,
@@ -88,6 +89,7 @@ proptest! {
 
         let source1 = SourceData {
             steward_key_classical: key1.clone(),
+            steward_key_pqc: None,
             pqc_fingerprint: fp.clone(),
             revocation_revision: rev,
             timestamp: 1737936000,
@@ -95,6 +97,7 @@ proptest! {
 
         let source2 = SourceData {
             steward_key_classical: key2,
+            steward_key_pqc: None,
             pqc_fingerprint: fp.clone(),
             revocation_revision: rev,
             timestamp: 1737936000,
@@ -125,6 +128,7 @@ proptest! {
 
         let source1 = SourceData {
             steward_key_classical: key1,
+            steward_key_pqc: None,
             pqc_fingerprint: fp.clone(),
             revocation_revision: rev,
             timestamp: 1737936000,
@@ -132,6 +136,7 @@ proptest! {
 
         let source2 = SourceData {
             steward_key_classical: key2,
+            steward_key_pqc: None,
             pqc_fingerprint: fp.clone(),
             revocation_revision: rev,
             timestamp: 1737936000,
@@ -139,6 +144,7 @@ proptest! {
 
         let source3 = SourceData {
             steward_key_classical: key3,
+            steward_key_pqc: None,
             pqc_fingerprint: fp.clone(),
             revocation_revision: rev,
             timestamp: 1737936000,
@@ -175,6 +181,7 @@ proptest! {
     fn consensus_single_source((key, fp, rev) in source_data_strategy()) {
         let source = SourceData {
             steward_key_classical: key,
+            steward_key_pqc: None,
             pqc_fingerprint: fp,
             revocation_revision: rev,
             timestamp: 1737936000,
@@ -210,6 +217,7 @@ proptest! {
     fn consensus_two_available_agree((key, fp, rev) in source_data_strategy()) {
         let source = SourceData {
             steward_key_classical: key,
+            steward_key_pqc: None,
             pqc_fingerprint: fp,
             revocation_revision: rev,
             timestamp: 1737936000,
@@ -255,6 +263,7 @@ proptest! {
 
         let source1 = SourceData {
             steward_key_classical: key.clone(),
+            steward_key_pqc: None,
             pqc_fingerprint: fp.clone(),
             revocation_revision: base_rev,
             timestamp: 1737936000,
@@ -262,6 +271,7 @@ proptest! {
 
         let source2 = SourceData {
             steward_key_classical: key.clone(),
+            steward_key_pqc: None,
             pqc_fingerprint: fp.clone(),
             revocation_revision: base_rev + 1, // One higher
             timestamp: 1737936000,
@@ -269,6 +279,7 @@ proptest! {
 
         let source3 = SourceData {
             steward_key_classical: key,
+            steward_key_pqc: None,
             pqc_fingerprint: fp,
             revocation_revision: base_rev, // Same as source1
             timestamp: 1737936000,
@@ -329,6 +340,7 @@ fn test_consensus_preserves_key_on_agreement() {
 
     let source = SourceData {
         steward_key_classical: key.clone(),
+        steward_key_pqc: None,
         pqc_fingerprint: fp.clone(),
         revocation_revision: rev,
         timestamp: 1737936000,
@@ -356,6 +368,7 @@ fn test_consensus_disagreement_no_key() {
 
     let source1 = SourceData {
         steward_key_classical: key1,
+        steward_key_pqc: None,
         pqc_fingerprint: fp.clone(),
         revocation_revision: 100,
         timestamp: 1737936000,
@@ -363,6 +376,7 @@ fn test_consensus_disagreement_no_key() {
 
     let source2 = SourceData {
         steward_key_classical: key2,
+        steward_key_pqc: None,
         pqc_fingerprint: fp.clone(),
         revocation_revision: 100,
         timestamp: 1737936000,
@@ -370,6 +384,7 @@ fn test_consensus_disagreement_no_key() {
 
     let source3 = SourceData {
         steward_key_classical: key3,
+        steward_key_pqc: None,
         pqc_fingerprint: fp,
         revocation_revision: 100,
         timestamp: 1737936000,
@@ -394,6 +409,7 @@ fn test_source_details_tracking() {
 
     let source = SourceData {
         steward_key_classical: key,
+        steward_key_pqc: None,
         pqc_fingerprint: fp,
         revocation_revision: 100,
         timestamp: 1737936000,

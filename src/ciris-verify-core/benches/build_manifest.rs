@@ -75,7 +75,7 @@ fn sample_manifest(primitive: BuildPrimitive, extras_size: usize) -> BuildManife
 /// Sign a manifest with newly-generated steward keys, returning
 /// (signed_bytes, embedded steward keys boxed in 'static).
 fn sign_for_bench(mut m: BuildManifest) -> (Vec<u8>, &'static [u8; 32], &'static [u8]) {
-    let ed_signer = Ed25519Signer::random();
+    let ed_signer = Ed25519Signer::random().unwrap();
     let ed_pub_vec = ed_signer.public_key().expect("ed25519 pubkey");
     let mut ed_pub_arr = [0u8; 32];
     ed_pub_arr.copy_from_slice(&ed_pub_vec);

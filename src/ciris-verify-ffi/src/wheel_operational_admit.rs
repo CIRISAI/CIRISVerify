@@ -258,7 +258,7 @@ mod tests {
         fn new(id: &str) -> Self {
             Self {
                 key_id: id.to_string(),
-                ed: Ed25519Signer::random(),
+                ed: Ed25519Signer::random().unwrap(),
                 mldsa: MlDsa65Signer::new().unwrap(),
             }
         }

@@ -191,7 +191,7 @@ impl MlDsa65SoftwareSigner {
 
     /// Create a signer from raw 32-byte ML-DSA-65 seed.
     ///
-    /// The seed bytes are consumed into an [`ml_dsa::SigningKey`] via
+    /// The seed bytes are consumed into an `ml_dsa::SigningKey` via
     /// `MlDsa65::from_seed`. This is the format the lens-steward bootstrap
     /// uses (matches `dilithium-py`'s `from_seed`).
     ///
@@ -425,7 +425,7 @@ impl PqcSigner for ciris_crypto::MlDsa65Signer {
 /// **Tomorrow (post-quantum HSM era, ~2030+)**: this factory will probe for
 /// hardware backends (post-quantum HSM, secure-enclave PQC primitives) and
 /// fall back to software only when hardware is unavailable — the same
-/// pattern [`crate::platform::get_platform_signer`] uses for classical
+/// pattern [`crate::get_platform_signer`] uses for classical
 /// algorithms today.
 ///
 /// # Behavior in v1.9.0

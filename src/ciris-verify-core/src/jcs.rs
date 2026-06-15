@@ -274,8 +274,11 @@ mod tests {
     fn sign_then_verify_jcs_round_trip() {
         use ciris_crypto::{Ed25519Signer, HybridSigner, MlDsa65Signer};
 
-        let signer =
-            HybridSigner::new(Ed25519Signer::random(), MlDsa65Signer::new().unwrap()).unwrap();
+        let signer = HybridSigner::new(
+            Ed25519Signer::random().unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        )
+        .unwrap();
 
         // A representative CEG-attestation-shaped signed object (already
         // stripped of its signature container).
@@ -317,8 +320,11 @@ mod tests {
     fn tampered_object_fails_verification() {
         use ciris_crypto::{Ed25519Signer, HybridSigner, MlDsa65Signer};
 
-        let signer =
-            HybridSigner::new(Ed25519Signer::random(), MlDsa65Signer::new().unwrap()).unwrap();
+        let signer = HybridSigner::new(
+            Ed25519Signer::random().unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        )
+        .unwrap();
         let verifier = keyless_verifier();
 
         let signed = json!({"dimension": "x", "score": 0.95});

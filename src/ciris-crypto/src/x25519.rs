@@ -35,6 +35,28 @@ use crate::error::CryptoError;
 /// X25519 key length in bytes (RFC 7748).
 pub const X25519_KEY_LEN: usize = 32;
 
+/// Fail-secure gate (CIRISVerify#74): refuse to draw fresh X25519 key
+/// material when the SP 800-90B startup RNG health latch is `Failed`.
+///
+/// `x25519-dalek` draws its secret scalar from `OsRng` internally, so we
+/// cannot route the draw through `random::fill`; instead we consult the
+/// latch BEFORE letting dalek draw. When the `random` feature is not
+/// compiled (X25519 can be enabled standalone) there is no latch and the
+/// gate is a no-op.
+#[inline]
+fn rng_health_gate() -> Result<(), CryptoError> {
+    #[cfg(feature = "random")]
+    {
+        if crate::rng_health::is_rng_failed() {
+            return Err(CryptoError::RngHealthCheckFailed(
+                "OS RNG failed the SP 800-90B startup health-check; refusing X25519 keygen"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Generate an ephemeral (secret, public) keypair from a CSPRNG.
 ///
 /// The secret is `StaticSecret`-shaped (clamped per RFC 7748) so the
@@ -43,9 +65,12 @@ pub const X25519_KEY_LEN: usize = 32;
 ///
 /// # Errors
 ///
+/// `CryptoError::RngHealthCheckFailed` if the SP 800-90B startup RNG
+/// health latch is `Failed` (fail-secure; no key drawn — CIRISVerify#74).
 /// `CryptoError::Other` if the OS CSPRNG is unavailable (extremely
 /// rare on a healthy system; mirrors what `random::fill` reports).
 pub fn generate_ephemeral_keypair() -> Result<([u8; 32], [u8; 32]), CryptoError> {
+    rng_health_gate()?;
     let secret = StaticSecret::random_from_rng(OsRng);
     let public = PublicKey::from(&secret);
     Ok((secret.to_bytes(), public.to_bytes()))
@@ -88,10 +113,13 @@ pub fn dh(secret_bytes: &[u8; 32], peer_public_bytes: &[u8; 32]) -> Result<[u8; 
 ///
 /// # Errors
 ///
-/// Propagates from [`generate_ephemeral_keypair`].
+/// `CryptoError::RngHealthCheckFailed` if the SP 800-90B startup RNG
+/// health latch is `Failed` (fail-secure; no ephemeral drawn —
+/// CIRISVerify#74). Otherwise propagates as [`generate_ephemeral_keypair`].
 pub fn ephemeral_dh(
     recipient_public_bytes: &[u8; 32],
 ) -> Result<([u8; 32], [u8; 32]), CryptoError> {
+    rng_health_gate()?;
     let secret = EphemeralSecret::random_from_rng(OsRng);
     let ephemeral_public = PublicKey::from(&secret).to_bytes();
     let recipient = PublicKey::from(*recipient_public_bytes);
@@ -170,5 +198,25 @@ mod tests {
         ];
         let computed = dh(&alice_secret, &bob_public).unwrap();
         assert_eq!(computed, expected_shared, "RFC 7748 §6.1 vector must match");
+    }
+
+    /// CIRISVerify#74 fail-secure proof: with the RNG health latch forced
+    /// `Failed`, both fresh-keypair draws refuse rather than producing
+    /// ephemeral key material from the suspect entropy source.
+    #[cfg(feature = "random")]
+    #[test]
+    fn keygen_fails_secure_when_rng_marked_failed() {
+        let (_, recipient_pub) = generate_ephemeral_keypair().unwrap();
+        crate::rng_health::test_support::with_forced_failed(|| {
+            assert!(matches!(
+                generate_ephemeral_keypair().unwrap_err(),
+                CryptoError::RngHealthCheckFailed(_)
+            ));
+            assert!(matches!(
+                ephemeral_dh(&recipient_pub).unwrap_err(),
+                CryptoError::RngHealthCheckFailed(_)
+            ));
+        });
+        assert!(generate_ephemeral_keypair().is_ok());
     }
 }

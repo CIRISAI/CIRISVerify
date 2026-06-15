@@ -405,7 +405,11 @@ mod tests {
     type RootSigner = HybridSigner<Ed25519Signer, MlDsa65Signer>;
 
     fn root_signer() -> RootSigner {
-        HybridSigner::new(Ed25519Signer::random(), MlDsa65Signer::new().unwrap()).unwrap()
+        HybridSigner::new(
+            Ed25519Signer::random().unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        )
+        .unwrap()
     }
 
     /// Build a one-steward keyset; if `signer` is `Some`, sign it. The

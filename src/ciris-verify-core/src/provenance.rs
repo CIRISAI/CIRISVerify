@@ -397,7 +397,7 @@ mod tests {
     impl Keypair {
         fn new() -> Self {
             Self {
-                ed: Ed25519Signer::random(),
+                ed: Ed25519Signer::random().unwrap(),
                 mldsa: MlDsa65Signer::new().unwrap(),
             }
         }

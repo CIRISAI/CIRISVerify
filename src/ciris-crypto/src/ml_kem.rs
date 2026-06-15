@@ -35,14 +35,53 @@ pub const ML_KEM_768_CIPHERTEXT_LEN: usize = 1088;
 /// ML-KEM-768 shared-secret length in bytes.
 pub const ML_KEM_768_SHARED_SECRET_LEN: usize = 32;
 
+/// Fail-secure gate (CIRISVerify#74): refuse to draw fresh ML-KEM key
+/// material / encapsulation randomness when the SP 800-90B startup RNG
+/// health latch is `Failed`.
+///
+/// The `ml-kem` backend draws from the OS CSPRNG internally (its
+/// `getrandom` feature), so we cannot route the draw through
+/// `random::fill`; instead we consult the latch BEFORE the backend
+/// draws. When the `random` feature is not compiled (ML-KEM can be
+/// enabled standalone) there is no latch and the gate is a no-op. The
+/// deterministic KAT paths (`*_deterministic`) draw nothing and are
+/// intentionally NOT gated.
+#[inline]
+fn rng_health_gate() -> Result<(), CryptoError> {
+    #[cfg(feature = "random")]
+    {
+        if crate::rng_health::is_rng_failed() {
+            return Err(CryptoError::RngHealthCheckFailed(
+                "OS RNG failed the SP 800-90B startup health-check; refusing ML-KEM keygen/encaps"
+                    .to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Generate a fresh ML-KEM-768 keypair using the system CSPRNG.
+///
+/// # Errors
+///
+/// `CryptoError::RngHealthCheckFailed` if the SP 800-90B startup RNG
+/// health latch is `Failed` (fail-secure; no key drawn — CIRISVerify#74).
 pub fn generate_keypair() -> Result<(Vec<u8>, Vec<u8>), CryptoError> {
+    rng_health_gate()?;
     let (dk, ek) = MlKem768::generate_keypair();
     Ok((dk.to_bytes().to_vec(), ek.to_bytes().to_vec()))
 }
 
 /// Encapsulate a fresh shared secret under `recipient_public_key`.
+///
+/// # Errors
+///
+/// `CryptoError::RngHealthCheckFailed` if the SP 800-90B startup RNG
+/// health latch is `Failed` (fail-secure; nothing drawn —
+/// CIRISVerify#74); otherwise an `InvalidPublicKey` variant on a
+/// malformed recipient key.
 pub fn encapsulate(recipient_public_key: &[u8]) -> Result<(Vec<u8>, [u8; 32]), CryptoError> {
+    rng_health_gate()?;
     if recipient_public_key.len() != ML_KEM_768_PUBKEY_LEN {
         return Err(CryptoError::InvalidPublicKey {
             reason: format!(
@@ -365,5 +404,28 @@ mod tests {
         let (ct, _) = encapsulate(&pk).unwrap();
         assert!(decapsulate(&[0u8; 100], &ct).is_err());
         assert!(decapsulate(&sk, &[0u8; 100]).is_err());
+    }
+
+    /// CIRISVerify#74 fail-secure proof: with the RNG health latch forced
+    /// `Failed`, the fresh keygen and encapsulate paths refuse to draw.
+    /// The deterministic KAT path draws nothing, so it stays usable —
+    /// confirming the gate is on the random draws, not the pure logic.
+    #[cfg(feature = "random")]
+    #[test]
+    fn random_paths_fail_secure_when_rng_marked_failed() {
+        let (_, ek) = generate_keypair().unwrap();
+        crate::rng_health::test_support::with_forced_failed(|| {
+            assert!(matches!(
+                generate_keypair().unwrap_err(),
+                CryptoError::RngHealthCheckFailed(_)
+            ));
+            assert!(matches!(
+                encapsulate(&ek).unwrap_err(),
+                CryptoError::RngHealthCheckFailed(_)
+            ));
+            // Deterministic path draws nothing — still works under the latch.
+            assert!(generate_keypair_deterministic(&kat_keygen_seed()).is_ok());
+        });
+        assert!(generate_keypair().is_ok());
     }
 }

@@ -245,7 +245,7 @@ mod tests {
             .map(|i| {
                 (
                     format!("steward-{i}"),
-                    Ed25519Signer::random(),
+                    Ed25519Signer::random().unwrap(),
                     MlDsa65Signer::new().unwrap(),
                 )
             })

@@ -66,7 +66,7 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 
 ## Current Implementation Status
 
-*(Current release: **v5.1.0** — CEG 1.0-RC2 operational-data admit surface (§5.6.8.13). The per-crate "Phase" labels below are historical; all crates are production-released.)*
+*(Current release: **v5.6.0** — consolidated **security-audit remediation** (CRITICAL #72 license-signature gate, #73 real TPM sealing, #74 fail-secure keygen, #28 RNS destination_hash recompute, #63 producer signing). See the v5.6.0 substrate note below. The per-crate "Phase" labels below are historical; all crates are production-released.)*
 
 | Crate | Status | Notes |
 |-------|--------|-------|
@@ -116,6 +116,16 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
   - **`resolve_role_authority` (§8.1.12.7.1 `delegates_to` role-chain resolver)** for `organization` / `org_membership`: a **pure evaluator** (no I/O) over caller-resolved current-state grants. Authorized iff the actor holds the required `OrgRole` via a signature-valid grant whose authority chain is rooted at a recognized steward — bounded, cycle-detected, fail-closed. **NOT** founder-quorum. Identity binding is load-bearing: grant signatures verify against pubkeys **pinned in the caller's `key_directory`** for the claimed `attesting_key_id` (reusing `threshold` bound-sig at threshold 1), never the pubkeys embedded in the grant — a forged grant under a steward's key_id fails the binding.
   - **`verify_partner_record_quorum`** for `partner_record`: canonicalizes via `jcs` and delegates to `verify_founder_quorum` (#31) — the signature *set* over byte-identical JCS bytes, M-of-N stewards. `check_set_semantics_sorted` is the producer-side guard that catches an unsorted capability array (§0.9.2.1 rule 1) *before* M stewards sign divergent bytes and the quorum silently collapses.
   - Exposed through FFI (`ciris_verify_resolve_role_authority` / `ciris_verify_partner_record_quorum`, JSON-in/JSON-out) + Python (`resolve_role_authority` / `verify_partner_record_quorum`). **Role-lattice note:** ships the strict reading (`OrgAdmin` superuser, every other role exact-match) — flagged on #65 for CEG to confirm or enrich (a one-line change in `OrgRole::satisfies`).
+
+### v5.6.0 substrate — adversarial security-audit remediation
+
+A 5-dimension adversarial audit found 1 CRITICAL + 3 HIGH, all confirmed in code, all in **wiring** (sound primitives not invoked on the decisions that matter — not the crypto). v5.6.0 closes them:
+
+- **CRITICAL — license-signature gate (#72)**: `engine.rs` / `jwt.rs` / `validation.rs` / `unified.rs`. `get_license_details` now calls `license_signature_verified` (new `jwt::verify_license_jwt`, hybrid Ed25519 + ML-DSA-65 against the **consensus steward key**, PQC key bound to the consensus fingerprint via constant-time compare) and returns `None` unless it verifies — fail-closed if no consensus key. Removed the expired-license fail-open; a `ValidationError` now degrades instead of admitting. Proven by `test_get_license_details_forged_cache_rejected` + `test_verify_forged_license_rejected` (a forged cache JWT → community, not licensed). Plumbs `steward_key_pqc` / `consensus_key_pqc` through `SourceData` / `ValidationResult`.
+- **HIGH — real TPM sealing (#73)**: `storage/tpm.rs`. Master key sealed under the SRK via `TPM2_Create` (persists `out_private` / `out_public` as `{alias}.tpm_seal`, recovered with `TPM2_Unseal`); `is_hardware_backed()` returns `true` **only** when `MasterState::TpmSealed`, and the software fallback reports `false` honestly. Eliminated the plaintext `tpm_sig.bin`.
+- **HIGH — fail-secure keygen (#74)**: `ciris-crypto` keygen now honors the SP 800-90B RNG health latch. `Ed25519Signer::random()` / `P256Signer::random()` return `Result` (breaking) and propagate `RngHealthCheckFailed` instead of drawing from a failed CSPRNG — no weak key is ever produced. Proven by the per-primitive `*_fails_secure_when_rng_marked_failed` tests.
+- **HIGH — RNS `destination_hash` recompute (#28)**: `transport_binding.rs`. New public `compute_destination_hash` (the §5.6.8.8.1.1 two-stage RNS derivation) is the single producer/consumer derivation; `verify_destination_hash` recomputes + byte-compares, `DestinationHashMismatch` → `authentic=false`. **Producer↔consumer coherence (#63)**: `self_at_login::sign_transport_binding` now *computes* the hash via that same function (no longer accepts an arbitrary one), so a producer can never emit a binding the verifier rejects.
+- **#63 producer signing + #71 sealed ML-DSA-65**: `self_at_login.rs` emits the signed delegation / partnership / transport-binding envelopes that the verify-side evaluators consume (round-trip *is* the contract); `sealed_mldsa65.rs` gives the PQC half of the hybrid federation key the same sealed-at-rest custody as #70's Ed25519 half.
 
 ### Reading discipline — CEG family vs community (avoid a recurring mix-up)
 

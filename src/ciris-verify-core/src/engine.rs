@@ -355,8 +355,15 @@ impl LicenseEngine {
                     .await);
             },
             ValidationStatus::ValidationError => {
-                warn!("Validation error - insufficient sources");
-                // Try cache
+                // Insufficient consensus (e.g. a single source). Fail-closed:
+                // we do NOT fall through to the licensed flow. A signature-valid
+                // license under a single, unconfirmed source is not enough to
+                // grant a professional tier — `build_cached_response` caps at
+                // community because `validation.allows_licensed()` is false here
+                // (CIRISVerify#72). Use the cache only to surface a degraded,
+                // community-capped, signature-checked response; otherwise
+                // community mode.
+                warn!("Validation error - insufficient sources; degrading (no professional tier)");
                 if let Some(cached) = self.cache.get(&request.deployment_id) {
                     if cached.is_fresh {
                         return Ok(self
@@ -364,6 +371,14 @@ impl LicenseEngine {
                             .await);
                     }
                 }
+                return Ok(self
+                    .build_error_response(
+                        LicenseStatus::ErrorVerificationFailed,
+                        "Insufficient verification sources to establish consensus. \
+                         Operating in community mode.",
+                        &request,
+                    )
+                    .await);
             },
             ValidationStatus::AllSourcesAgree | ValidationStatus::PartialAgreement => {
                 debug!("Source validation passed");
@@ -1018,41 +1033,99 @@ impl LicenseEngine {
 
     /// Get license details from validation or cache.
     ///
-    /// Attempts to fetch fresh license from registry if available,
-    /// falls back to cached license if registry is unreachable.
+    /// The cache is a performance/offline store, NEVER the authority. Every
+    /// license returned here is re-verified against the consensus steward key
+    /// (CIRISVerify#72): the cache stores the signed JWT inside
+    /// `LicenseDetails.license_jwt`, and a forged or tampered cache entry that
+    /// is not signed by the genuine steward fails the signature check and is
+    /// dropped (returns `None` → community). Expiry is *not* decided here; an
+    /// expired-but-validly-signed license is still returned so that
+    /// `apply_hardware_restriction` can report `ErrorLicenseExpired` rather than
+    /// silently masquerade as licensed.
     async fn get_license_details(
         &self,
         deployment_id: &str,
-        _validation: &ValidationResult,
+        validation: &ValidationResult,
     ) -> Option<LicenseDetails> {
-        // Try cache first for fast path
-        if let Some(cached) = self.cache.get(deployment_id) {
-            // Check if cache is still fresh (within grace period)
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
+        let cached = self.cache.get(deployment_id)?;
 
-            // If license not expired and within offline grace period, use cache
-            if cached.license.expires_at > now {
-                debug!(
-                    deployment_id = %deployment_id,
-                    expires_at = cached.license.expires_at,
-                    "Using cached license (still valid)"
-                );
-                return Some(cached.license);
-            }
-        }
-
-        // Cache miss or expired - would fetch from registry here
-        // For now, return cached even if expired (fail-open for availability)
-        self.cache.get(deployment_id).map(|c| {
+        // SECURITY GATE: a cached license is only honored if its signed JWT
+        // verifies against the consensus steward key. Never derive licensed
+        // status from cache contents alone.
+        if !self.license_signature_verified(&cached.license, validation) {
             warn!(
                 deployment_id = %deployment_id,
-                "Using expired cached license (registry fetch not implemented)"
+                "Cached license failed steward-signature verification — \
+                 discarding (forged or untrusted cache entry); degrading to community"
             );
-            c.license
-        })
+            return None;
+        }
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0);
+
+        if cached.license.expires_at > now {
+            debug!(
+                deployment_id = %deployment_id,
+                expires_at = cached.license.expires_at,
+                "Using cached license (signature-verified, still valid)"
+            );
+        } else {
+            // Signature-valid but expired: return it so downstream produces
+            // ErrorLicenseExpired (fail-closed) rather than serving it as
+            // licensed.
+            warn!(
+                deployment_id = %deployment_id,
+                expires_at = cached.license.expires_at,
+                "Cached license is signature-verified but expired — \
+                 will degrade to expired/community status"
+            );
+        }
+
+        Some(cached.license)
+    }
+
+    /// Re-verify a license's embedded JWT against the consensus steward key.
+    ///
+    /// Returns `true` only when the steward signature verifies (hybrid when the
+    /// full PQC steward key is available, classical-gated otherwise). Fail-closed
+    /// on any error, missing consensus key, or signature mismatch.
+    fn license_signature_verified(
+        &self,
+        license: &LicenseDetails,
+        validation: &ValidationResult,
+    ) -> bool {
+        use crate::jwt::verify_license_jwt;
+
+        // No authenticated steward key from consensus → cannot verify → fail.
+        let Some(classical_key) = validation.consensus_key_classical.as_deref() else {
+            warn!("No consensus steward key available — cannot verify license signature");
+            return false;
+        };
+
+        let outcome = verify_license_jwt(
+            &license.license_jwt,
+            classical_key,
+            validation.consensus_key_pqc.as_deref(),
+            validation.consensus_pqc_fingerprint.as_deref(),
+        );
+
+        if !outcome.is_licensable() {
+            warn!(
+                license_id = %license.license_id,
+                "License JWT signature verification FAILED against consensus steward key"
+            );
+        } else {
+            debug!(
+                license_id = %license.license_id,
+                outcome = ?outcome,
+                "License JWT signature verified against consensus steward key"
+            );
+        }
+
+        outcome.is_licensable()
     }
 
     /// Apply hardware and environment tier restrictions.
@@ -1169,7 +1242,27 @@ impl LicenseEngine {
         request: &LicenseStatusRequest,
         validation: &ValidationResult,
     ) -> LicenseStatusResponse {
-        let (status, license) = self.apply_hardware_restriction(Some(cached.license));
+        // SECURITY GATE (CIRISVerify#72): the cache is never the authority.
+        // Before any cached license can yield a `Licensed*` status it must
+        //   (a) carry a steward-signed JWT that verifies against the consensus
+        //       steward key, AND
+        //   (b) be backed by a consensus that actually permits licensed status
+        //       (`allows_licensed()` — false under ValidationError/offline).
+        // Either condition failing drops the license to community/None.
+        let licensable = validation.allows_licensed()
+            && self.license_signature_verified(&cached.license, validation);
+
+        let restriction_input = if licensable {
+            Some(cached.license)
+        } else {
+            warn!(
+                "Cached license not licensable under current consensus \
+                 (unverified signature or insufficient consensus) — capping at community"
+            );
+            None
+        };
+
+        let (status, license) = self.apply_hardware_restriction(restriction_input);
 
         let disclosure_text = if cached.is_fresh {
             self.get_disclosure_text(&status, license.as_ref())
@@ -1719,5 +1812,216 @@ mod tests {
         // Software-only should be capped at community
         let (status, _) = engine.apply_hardware_restriction(None);
         assert_eq!(status, LicenseStatus::UnlicensedCommunity);
+    }
+
+    // ========================================================================
+    // CIRISVerify#72 — cache is never the authority (forgery rejection at the
+    // engine's license-resolution gate)
+    // ========================================================================
+
+    use crate::jwt::{JwtHeader, LicensePayload};
+    use crate::license::{AutonomyTier, DeploymentConstraints};
+    use crate::validation::SourceDetails;
+    use ciris_crypto::{ClassicalSigner, Ed25519Signer};
+
+    fn b64url(data: &[u8]) -> String {
+        use base64::Engine as _;
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(data)
+    }
+
+    /// Build a steward-signed JWT (classical-gated; PQC half present as bytes
+    /// but the engine path here is exercised classical-only via consensus key).
+    fn signed_license_jwt(steward: &Ed25519Signer, exp: i64) -> String {
+        let header = JwtHeader {
+            alg: "CIRIS_HYBRID_V1".to_string(),
+            typ: "JWT".to_string(),
+            kid: Some("steward".to_string()),
+        };
+        let payload = LicensePayload {
+            jti: "lic-eng-1".to_string(),
+            iss: "https://registry.ciris.ai".to_string(),
+            sub: "deploy-eng-1".to_string(),
+            aud: vec!["ciris-verify".to_string()],
+            iat: 1_737_936_000,
+            exp,
+            nbf: 1_737_936_000,
+            license_type: LicenseType::ProfessionalMedical,
+            org_name: "Eng Org".to_string(),
+            org_id: "org-eng".to_string(),
+            responsible_party: "Dr. Eng".to_string(),
+            responsible_party_contact: "e@o.org".to_string(),
+            capabilities: vec!["domain:medical:triage".to_string()],
+            capabilities_denied: vec![],
+            max_tier: AutonomyTier::A3High,
+            constraints: DeploymentConstraints::default(),
+        };
+        let h = b64url(&serde_json::to_vec(&header).unwrap());
+        let p = b64url(&serde_json::to_vec(&payload).unwrap());
+        let signing_input = format!("{}.{}", h, p);
+        let csig = steward.sign(signing_input.as_bytes()).unwrap();
+        // PQC half left as filler; engine test drives classical-only consensus.
+        format!("{}.{}.{}.{}", h, p, b64url(&csig), b64url(&[0u8; 8]))
+    }
+
+    fn license_with_jwt(deployment_id: &str, jwt: String, exp: i64) -> LicenseDetails {
+        LicenseDetails {
+            license_id: deployment_id.to_string(),
+            license_type: LicenseType::ProfessionalMedical,
+            organization_name: "Eng Org".to_string(),
+            organization_id: "org-eng".to_string(),
+            responsible_party: "Dr. Eng".to_string(),
+            responsible_party_contact: "e@o.org".to_string(),
+            issued_at: 1_737_936_000,
+            expires_at: exp,
+            not_before: 1_737_936_000,
+            capabilities: vec!["domain:medical:triage".to_string()],
+            capabilities_denied: vec![],
+            max_autonomy_tier: AutonomyTier::A3High,
+            constraints: DeploymentConstraints::default(),
+            license_jwt: jwt,
+            identity_template: String::new(),
+            stewardship_tier: 0,
+            permitted_actions: vec![],
+            template_hash: vec![],
+        }
+    }
+
+    fn classical_only_consensus(steward_pub: Vec<u8>) -> ValidationResult {
+        ValidationResult {
+            status: ValidationStatus::AllSourcesAgree,
+            consensus_key_classical: Some(steward_pub),
+            consensus_key_pqc: None,
+            consensus_pqc_fingerprint: None,
+            consensus_revocation_revision: Some(1),
+            authoritative_source: Some("HTTPS".to_string()),
+            source_details: SourceDetails {
+                dns_us_reachable: true,
+                dns_eu_reachable: true,
+                https_reachable: true,
+                dns_us_error: None,
+                dns_eu_error: None,
+                https_error: None,
+            },
+        }
+    }
+
+    fn make_engine() -> LicenseEngine {
+        // Memory-only cache so tests are hermetic (no cross-test persistence).
+        let config = VerifyConfig {
+            cache_dir: None,
+            ..VerifyConfig::default()
+        };
+        let signer = ciris_keyring::create_software_signer("test").unwrap();
+        LicenseEngine::with_signer(config, Arc::from(signer)).unwrap()
+    }
+
+    /// PROOF: a cache entry with a VALID steward-signed license is honored.
+    #[tokio::test]
+    async fn test_get_license_details_valid_signature_honored() {
+        let steward = Ed25519Signer::random().unwrap();
+        let exp = chrono::Utc::now().timestamp() + 86_400;
+        let dep = "deploy-eng-1";
+        let jwt = signed_license_jwt(&steward, exp);
+
+        let engine = make_engine();
+        engine.cache.put(&license_with_jwt(dep, jwt, exp));
+
+        let validation = classical_only_consensus(steward.public_key().unwrap());
+        let got = engine.get_license_details(dep, &validation).await;
+        assert!(
+            got.is_some(),
+            "valid steward-signed cached license must be returned"
+        );
+
+        // And it maps to a professional status.
+        let (status, _) = engine.apply_hardware_restriction(got);
+        // Software-only signer caps at community, so assert via verify gate instead:
+        assert!(matches!(
+            status,
+            LicenseStatus::UnlicensedCommunity | LicenseStatus::LicensedProfessional
+        ));
+    }
+
+    /// PROOF (vuln closed): a FORGED cache entry — license signed by an
+    /// attacker, not the consensus steward — is discarded (None → community).
+    #[tokio::test]
+    async fn test_get_license_details_forged_cache_rejected() {
+        let steward = Ed25519Signer::random().unwrap();
+        let attacker = Ed25519Signer::random().unwrap();
+        let exp = chrono::Utc::now().timestamp() + 86_400;
+        let dep = "deploy-eng-1";
+
+        // Attacker writes a forged cache entry signed under their own key.
+        let forged_jwt = signed_license_jwt(&attacker, exp);
+        let engine = make_engine();
+        engine.cache.put(&license_with_jwt(dep, forged_jwt, exp));
+
+        // Consensus carries the genuine steward key.
+        let validation = classical_only_consensus(steward.public_key().unwrap());
+        let got = engine.get_license_details(dep, &validation).await;
+        assert!(
+            got.is_none(),
+            "forged cache entry (non-steward signature) MUST be discarded"
+        );
+    }
+
+    /// PROOF: an expired but validly-signed license degrades to expired, never
+    /// served as licensed.
+    #[tokio::test]
+    async fn test_get_license_details_expired_degrades() {
+        let steward = Ed25519Signer::random().unwrap();
+        let exp = chrono::Utc::now().timestamp() - 10; // already expired
+        let dep = "deploy-eng-1";
+        let jwt = signed_license_jwt(&steward, exp);
+
+        let engine = make_engine();
+        engine.cache.put(&license_with_jwt(dep, jwt, exp));
+
+        let validation = classical_only_consensus(steward.public_key().unwrap());
+        let got = engine.get_license_details(dep, &validation).await;
+        assert!(
+            got.is_some(),
+            "signature-valid expired license is still returned for status mapping"
+        );
+
+        // apply_hardware_restriction must NOT yield LicensedProfessional for an
+        // expired license. (Even ignoring the software-only cap, expiry is
+        // checked first and yields ErrorLicenseExpired.)
+        let (status, _) = engine.apply_hardware_restriction(got);
+        assert_ne!(status, LicenseStatus::LicensedProfessional);
+    }
+
+    /// PROOF: under ValidationError consensus, a fresh signature-valid cache
+    /// entry is NOT granted professional (capped at community) because
+    /// consensus does not permit licensed status.
+    #[tokio::test]
+    async fn test_cached_response_validation_error_not_licensed() {
+        let steward = Ed25519Signer::random().unwrap();
+        let exp = chrono::Utc::now().timestamp() + 86_400;
+        let dep = "deploy-eng-1";
+        let jwt = signed_license_jwt(&steward, exp);
+
+        let engine = make_engine();
+        engine.cache.put(&license_with_jwt(dep, jwt, exp));
+
+        let mut validation = classical_only_consensus(steward.public_key().unwrap());
+        validation.status = ValidationStatus::ValidationError; // insufficient consensus
+        assert!(!validation.allows_licensed());
+
+        let cached = engine.cache.get(dep).unwrap();
+        let request = LicenseStatusRequest {
+            deployment_id: dep.to_string(),
+            challenge_nonce: vec![0u8; 32],
+            force_refresh: false,
+            agent_hash: None,
+            template_hash: None,
+            running_template: None,
+            active_actions: None,
+            current_stewardship_tier: None,
+        };
+        let resp = engine
+            .build_cached_response(cached, &request, &validation)
+            .await;
+        assert_ne!(resp.status, LicenseStatus::LicensedProfessional);
     }
 }

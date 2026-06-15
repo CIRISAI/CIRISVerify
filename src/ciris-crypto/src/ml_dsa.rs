@@ -38,16 +38,38 @@ pub struct MlDsa65Signer {
 impl MlDsa65Signer {
     /// Create a new signer with a randomly generated key pair.
     ///
+    /// # Fail-secure (CIRISVerify#74)
+    ///
+    /// The 32-byte seed is drawn through [`crate::random::fill`], which
+    /// refuses to draw when the SP 800-90B startup RNG health latch is
+    /// `Failed` — so on broken entropy this returns
+    /// `CryptoError::RngHealthCheckFailed` without generating a
+    /// predictable PQC identity key. (Previously this called
+    /// `OsRng.fill_bytes` directly, bypassing the latch.) When the
+    /// `random` feature is disabled the seed is drawn directly from
+    /// `OsRng` (no latch is compiled to consult).
+    ///
     /// # Errors
     ///
-    /// Returns error if PQC feature is not enabled.
+    /// `CryptoError::RngHealthCheckFailed` if the RNG health latch is
+    /// `Failed` (fail-secure; no key generated), or
+    /// `CryptoError::UnsupportedAlgorithm` if the PQC feature is not
+    /// enabled.
     #[cfg(feature = "pqc-ml-dsa")]
     pub fn new() -> Result<Self, CryptoError> {
-        use rand_core::{OsRng, RngCore};
-
-        // Generate a random 32-byte seed using the system CSPRNG
+        // Generate a random 32-byte seed using the fail-secure RNG facade.
         let mut seed_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut seed_bytes);
+        #[cfg(feature = "random")]
+        {
+            crate::random::fill(&mut seed_bytes)?;
+        }
+        #[cfg(not(feature = "random"))]
+        {
+            use rand_core::{OsRng, RngCore};
+            OsRng
+                .try_fill_bytes(&mut seed_bytes)
+                .map_err(|e| CryptoError::invalid_private_key(format!("OsRng seed draw: {e}")))?;
+        }
 
         Self::from_seed(&seed_bytes)
     }
@@ -267,6 +289,24 @@ mod tests {
         let signer = MlDsa65Signer::new().unwrap();
         assert_eq!(signer.algorithm(), PqcAlgorithm::MlDsa65);
         assert!(signer.algorithm().meets_minimum_requirement());
+    }
+
+    /// CIRISVerify#74 fail-secure proof: with the RNG health latch forced
+    /// `Failed`, ML-DSA-65 keygen refuses the seed draw and returns
+    /// `RngHealthCheckFailed` rather than minting a PQC identity key.
+    #[cfg(feature = "random")]
+    #[test]
+    fn new_fails_secure_when_rng_marked_failed() {
+        crate::rng_health::test_support::with_forced_failed(|| {
+            assert!(
+                matches!(
+                    MlDsa65Signer::new(),
+                    Err(CryptoError::RngHealthCheckFailed(_))
+                ),
+                "keygen must fail-secure on failed RNG latch"
+            );
+        });
+        assert!(MlDsa65Signer::new().is_ok());
     }
 }
 

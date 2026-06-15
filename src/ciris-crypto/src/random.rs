@@ -1,12 +1,33 @@
 //! Cryptographically secure RNG facade (CIRISVerify#7, v2.0.0+).
 //!
-//! Centralizes the federation's RNG policy in `ciris-crypto`. Every
-//! consumer that needs random bytes (nonces, salts, software-mode
-//! master-key generation, etc.) goes through this module rather than
-//! reaching into `rand_core`/`getrandom` directly. That keeps a single
-//! audit point for entropy provenance and lets future hardening (FIPS
-//! draws, hardware-entropy mixing) land here once and propagate
-//! federation-wide.
+//! Centralizes the federation's RNG policy in `ciris-crypto`. Consumers
+//! that need raw random bytes (nonces, salts, software-mode master-key
+//! generation, etc.) go through this module rather than reaching into
+//! `rand_core`/`getrandom` directly. That keeps a single audit point for
+//! entropy provenance and lets future hardening (FIPS draws,
+//! hardware-entropy mixing) land here once and propagate federation-wide.
+//!
+//! ## RNG-health coverage of key generation (CIRISVerify#74)
+//!
+//! The fail-secure latch this module gates on (see [`fill`]) is the SAME
+//! latch every keygen path now consults before drawing — but not every
+//! keygen routes its draw *through* [`fill`]. Two shapes exist:
+//!
+//! - **Seed-then-construct** (`Ed25519Signer::random`,
+//!   `MlDsa65Signer::new`): the 32-byte seed IS drawn via [`fill`], so
+//!   the gate is inherited directly.
+//! - **Latch-checked backend draw** (`P256Signer::random`, the
+//!   `x25519` ephemerals, `ml_kem::{generate_keypair, encapsulate}`):
+//!   the underlying crate must draw its own scalar/randomness with
+//!   rejection sampling (a raw [`fill`] of 32 bytes is not a valid
+//!   uniform scalar), so those call sites read
+//!   [`crate::rng_health::is_rng_failed`] and fail closed BEFORE letting
+//!   the backend draw.
+//!
+//! Either way, on a `Failed` latch no long-term key is produced. (Before
+//! #74 the keygen paths drew `OsRng` directly and bypassed the latch
+//! entirely — the audit-point claim here was aspirational for keygen and
+//! is now load-bearing.)
 //!
 //! Backed by [`rand_core::OsRng`], which on Linux/Android sources
 //! `getrandom(2)` (kernel CSPRNG), on macOS/iOS uses
