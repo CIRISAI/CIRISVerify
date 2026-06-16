@@ -104,13 +104,45 @@ pub struct WholenessWitness {
     /// `EpochBehind` reconciliation input — the eclipse guard, N4).
     pub epoch_id: u64,
     /// The namespaces this root covers (WW-1 per-namespace opt-in). MUST NOT
-    /// name an anonymous-tier or `cohort_scope: self` namespace (WW-2).
+    /// name an anonymous-tier or `cohort_scope: self` namespace (WW-2). Encoded
+    /// lexicographically sorted in the canonical preimage.
     pub claim_namespaces: Vec<String>,
     /// The Merkle root over the (lexicographically-ordered, WW-2-filtered) leaves.
     pub merkle_root: Hash,
+    /// Number of Merkle leaves the root covers (a signed scalar, distinct from
+    /// `claim_namespaces.len()`).
+    pub leaf_count: u32,
+    /// Producer observation time, unix-ms (signed scalar).
+    pub observed_at_unix_ms: u64,
+    /// Witness schema version (`1`).
+    pub witness_version: u16,
 }
 
 impl WholenessWitness {
+    /// Build the §19.1 canonical signing preimage (CEG 1.0-RC11, byte-frozen by
+    /// the Edge v4.1.2 §19.6 vectors). Layout, after the
+    /// [`DOMAIN_WITNESS_PREIMAGE`](super::preimage::DOMAIN_WITNESS_PREIMAGE) separator:
+    /// `u32-lp(peer_id) ‖ u64(epoch_id) ‖ merkle_root[32] ‖ u32(leaf_count) ‖
+    /// u32(namespace_count) ‖ [u32-lp(ns)]*(lex-sorted) ‖
+    /// u64(observed_at_unix_ms) ‖ u16(witness_version)`.
+    #[must_use]
+    pub fn canonical_preimage(&self) -> Vec<u8> {
+        let mut ns = self.claim_namespaces.clone();
+        ns.sort_unstable();
+        let mut pre = super::preimage::Preimage::new(super::preimage::DOMAIN_WITNESS_PREIMAGE)
+            .lp(self.peer_id.as_bytes())
+            .u64_be(self.epoch_id)
+            .fixed(&self.merkle_root)
+            .u32_be(self.leaf_count)
+            .u32_be(ns.len() as u32);
+        for n in &ns {
+            pre = pre.lp(n.as_bytes());
+        }
+        pre.u64_be(self.observed_at_unix_ms)
+            .u16_be(self.witness_version)
+            .finish()
+    }
+
     /// The `(peer_id, epoch_id, sorted claim_namespace_set)` identity an
     /// equivocation is judged against (N4). The namespace set is sorted so
     /// order-only differences don't read as distinct scopes.
@@ -328,6 +360,9 @@ mod tests {
             epoch_id: epoch,
             claim_namespaces: ns.iter().map(|s| s.to_string()).collect(),
             merkle_root: root,
+            leaf_count: 0,
+            observed_at_unix_ms: 0,
+            witness_version: 1,
         }
     }
 

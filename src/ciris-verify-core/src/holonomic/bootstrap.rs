@@ -218,6 +218,53 @@ pub fn membership_blocked_without_owner_binding(
         && binding.consensus_vote_passed)
 }
 
+/// A §19.2 `SignedClaim` — the trust-discovery claim a bootstrap hop carries.
+/// The owner-binding trio (`user_owner` / `delegates_to` / `identity_occurrence`,
+/// the CIRISEdge#143 additions) makes the §5.6.8.10 membership gate expressible.
+/// Byte layout byte-frozen by the Edge v4.1.2 §19.6 vectors.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedClaim {
+    /// Claim issue time, unix-ms.
+    pub signed_at_unix_ms: u64,
+    /// Claim schema version (`1`).
+    pub claim_version: u16,
+    /// The claim kind (e.g. `"trust_grant"`, `"membership_request"`).
+    pub claim_kind: String,
+    /// The signing peer's id.
+    pub signer_peer_id: String,
+    /// Opaque claim payload (hex-encoded lowercase into the preimage).
+    pub claim_bytes: Vec<u8>,
+    /// Owner-binding: the `user`-owner whose authority backs this claim.
+    pub user_owner: Option<String>,
+    /// Owner-binding: the `delegates_to` target.
+    pub delegates_to: Option<String>,
+    /// Owner-binding: the admitted `identity_occurrence`.
+    pub identity_occurrence: Option<String>,
+}
+
+impl SignedClaim {
+    /// Build the §19.2 canonical signing preimage (byte-frozen by Edge v4.1.2).
+    /// Layout, after the [`DOMAIN_SIGNED_CLAIM`](super::preimage::DOMAIN_SIGNED_CLAIM)
+    /// separator: `u64(signed_at_unix_ms) ‖ u16(claim_version) ‖
+    /// u32-lp(claim_kind) ‖ u32-lp(signer_peer_id) ‖ u32-lp(hexlower(claim_bytes))
+    /// ‖ opt(user_owner) ‖ opt(delegates_to) ‖ opt(identity_occurrence)`, where
+    /// `opt(Some s) = 0x01 ‖ u32-lp(s)` and `opt(None) = 0x00`.
+    #[must_use]
+    pub fn signing_preimage(&self) -> Vec<u8> {
+        let claim_hex = hex::encode(&self.claim_bytes);
+        super::preimage::Preimage::new(super::preimage::DOMAIN_SIGNED_CLAIM)
+            .u64_be(self.signed_at_unix_ms)
+            .u16_be(self.claim_version)
+            .lp(self.claim_kind.as_bytes())
+            .lp(self.signer_peer_id.as_bytes())
+            .lp(claim_hex.as_bytes())
+            .opt_lp(self.user_owner.as_deref())
+            .opt_lp(self.delegates_to.as_deref())
+            .opt_lp(self.identity_occurrence.as_deref())
+            .finish()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

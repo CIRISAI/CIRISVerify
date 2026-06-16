@@ -47,7 +47,8 @@ pub mod wholeness_witness;
 
 pub use preimage::{
     verify_bound_hybrid, BoundHybridSig, HolonomicError, Preimage, DOMAIN_COMPRESS_REQUEST,
-    DOMAIN_HOLDING_CLAIM, DOMAIN_RELAY_CAPACITY, DOMAIN_SIGNED_CLAIM, WW_EMPTY_SENTINEL,
+    DOMAIN_HOLDING_CLAIM, DOMAIN_RELAY_CAPACITY, DOMAIN_SIGNED_CLAIM, DOMAIN_WITNESS_PREIMAGE,
+    WW_EMPTY_SENTINEL,
 };
 
 pub use wholeness_witness::{
@@ -57,12 +58,12 @@ pub use wholeness_witness::{
 
 pub use bootstrap::{
     membership_blocked_without_owner_binding, recursive_trust_bootstrap, BootstrapHop,
-    BootstrapVerdict, OwnerBinding, TrustRoot, MAX_BOOTSTRAP_HOPS,
+    BootstrapVerdict, OwnerBinding, SignedClaim, TrustRoot, MAX_BOOTSTRAP_HOPS,
 };
 
 pub use fountain::{
     holding_claim_counts_toward_rarity, retention_decision, verify_holding_claim, verify_symbol,
-    ConsentState, FountainHoldingClaim, RetentionDecision,
+    ConsentState, FountainCompressRequest, FountainHoldingClaim, RetentionDecision,
 };
 
 pub use alm::{

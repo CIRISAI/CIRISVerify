@@ -45,6 +45,9 @@ pub const DOMAIN_HOLDING_CLAIM: &[u8] = b"ciris-edge/holding-claim/v1";
 pub const DOMAIN_COMPRESS_REQUEST: &[u8] = b"ciris-edge/compress-request/v1";
 /// Recursive-bootstrap `SignedClaim` domain separator (§19.2).
 pub const DOMAIN_SIGNED_CLAIM: &[u8] = b"CIRIS-CLAIM-v1\0\0";
+/// WholenessWitness signed-preimage domain separator (§19.1). Distinct from the
+/// [`WW_EMPTY_SENTINEL`] (which seeds the empty Merkle root, not the preimage).
+pub const DOMAIN_WITNESS_PREIMAGE: &[u8] = b"WW-PREIMAGE-v1\0\0";
 /// WholenessWitness empty-tree Merkle sentinel (§19.1).
 pub const WW_EMPTY_SENTINEL: &[u8] = b"WW-v1-empty";
 
@@ -114,17 +117,28 @@ impl Preimage {
         self
     }
 
-    /// Append a variable-length field, `u32` big-endian length-prefixed.
+    /// Append a variable-length field, **`u32`** big-endian length-prefixed
+    /// (the WholenessWitness / SignedClaim string fields, per the v4.1.2
+    /// vectors).
     #[must_use]
     pub fn lp(mut self, bytes: &[u8]) -> Self {
-        // u32 BE length prefix — unambiguous parse, cross-impl stable.
         self.buf
             .extend_from_slice(&(bytes.len() as u32).to_be_bytes());
         self.buf.extend_from_slice(bytes);
         self
     }
 
-    /// Append a `u64` big-endian (counters, epochs, sequence numbers).
+    /// Append a variable-length field, **`u64`** big-endian length-prefixed (the
+    /// fountain holding-claim / compress-request fields, per the v4.1.2 vectors).
+    #[must_use]
+    pub fn lp_u64(mut self, bytes: &[u8]) -> Self {
+        self.buf
+            .extend_from_slice(&(bytes.len() as u64).to_be_bytes());
+        self.buf.extend_from_slice(bytes);
+        self
+    }
+
+    /// Append a `u64` big-endian (counters, epochs, unix-ms timestamps).
     #[must_use]
     pub fn u64_be(mut self, n: u64) -> Self {
         self.buf.extend_from_slice(&n.to_be_bytes());
@@ -136,6 +150,31 @@ impl Preimage {
     pub fn u32_be(mut self, n: u32) -> Self {
         self.buf.extend_from_slice(&n.to_be_bytes());
         self
+    }
+
+    /// Append a `u16` big-endian (schema version fields).
+    #[must_use]
+    pub fn u16_be(mut self, n: u16) -> Self {
+        self.buf.extend_from_slice(&n.to_be_bytes());
+        self
+    }
+
+    /// Append a single byte (presence flags: `0x01` Some / `0x00` None).
+    #[must_use]
+    pub fn u8(mut self, b: u8) -> Self {
+        self.buf.push(b);
+        self
+    }
+
+    /// Append an optional UTF-8 field with a presence flag: `0x01 ‖ u32-lp(s)`
+    /// when `Some`, a single `0x00` when `None` (the SignedClaim owner-binding
+    /// trio encoding, per the v4.1.2 vectors).
+    #[must_use]
+    pub fn opt_lp(self, value: Option<&str>) -> Self {
+        match value {
+            Some(s) => self.u8(0x01).lp(s.as_bytes()),
+            None => self.u8(0x00),
+        }
     }
 
     /// The finished preimage bytes — the input to [`verify_bound_hybrid`].
