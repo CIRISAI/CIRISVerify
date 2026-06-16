@@ -50,6 +50,9 @@ pub const DOMAIN_SIGNED_CLAIM: &[u8] = b"CIRIS-CLAIM-v1\0\0";
 pub const DOMAIN_WITNESS_PREIMAGE: &[u8] = b"WW-PREIMAGE-v1\0\0";
 /// WholenessWitness empty-tree Merkle sentinel (§19.1).
 pub const WW_EMPTY_SENTINEL: &[u8] = b"WW-v1-empty";
+/// §19.7.1 `AggregationMetaV1` domain separator — exactly 16 bytes
+/// (`"AGG-META-v1"` + five `\0`).
+pub const DOMAIN_AGG_META: &[u8] = b"AGG-META-v1\0\0\0\0\0";
 
 /// Length of an Ed25519 public key / the raw signature is 64; pubkey 32.
 const ED25519_PUBKEY_LEN: usize = 32;

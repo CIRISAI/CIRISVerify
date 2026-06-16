@@ -36,6 +36,7 @@
 //! **pinned-but-unproven, RC-grade**. This module owns the verifier side of that
 //! vector set.
 
+pub mod aggregation;
 pub mod alm;
 pub mod av_chunk;
 pub mod bootstrap;
@@ -46,9 +47,14 @@ pub mod wholeness_witness;
 // ---- the load-bearing surface, re-exported flat -----------------------
 
 pub use preimage::{
-    verify_bound_hybrid, BoundHybridSig, HolonomicError, Preimage, DOMAIN_COMPRESS_REQUEST,
-    DOMAIN_HOLDING_CLAIM, DOMAIN_RELAY_CAPACITY, DOMAIN_SIGNED_CLAIM, DOMAIN_WITNESS_PREIMAGE,
-    WW_EMPTY_SENTINEL,
+    verify_bound_hybrid, BoundHybridSig, HolonomicError, Preimage, DOMAIN_AGG_META,
+    DOMAIN_COMPRESS_REQUEST, DOMAIN_HOLDING_CLAIM, DOMAIN_RELAY_CAPACITY, DOMAIN_SIGNED_CLAIM,
+    DOMAIN_WITNESS_PREIMAGE, WW_EMPTY_SENTINEL,
+};
+
+pub use aggregation::{
+    ejection_verdict, member_commitment, verify_aggregation_meta, verify_member_commitment,
+    AggregationMetaV1, AggregationMetaVerification, EjectionVerdict,
 };
 
 pub use wholeness_witness::{

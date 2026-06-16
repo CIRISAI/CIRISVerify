@@ -1,0 +1,17 @@
+{
+  "description": "descend returns the lexicographic member-id order member_commitment commits to.",
+  "expected_commitment_hex": "819b0461902edc7b80763b69a29f6795a15d8ec9541c714b5cba5ef27f55e983",
+  "expected_ordered_ids": [
+    "alpha",
+    "beta",
+    "mu",
+    "zeta"
+  ],
+  "input_member_ids": [
+    "zeta",
+    "alpha",
+    "mu",
+    "beta"
+  ],
+  "vector_id": "descend/ordered_list"
+}
