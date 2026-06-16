@@ -66,7 +66,7 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 
 ## Current Implementation Status
 
-*(Current release: **v5.7.0** — **CEG 1.0-RC7 conformance + HNDL hardening**: hybrid-required at every federation-tier gate (#75, the PQC-mandatory admission boundary), partnership seven-member set (#76), `infra:*`/`agency:*` delegation scope split (#77). See the v5.7.0 substrate note below. Prior: v5.6.0 security-audit remediation (#72 license-signature gate, #73 real TPM sealing, #74 fail-secure keygen, #28 RNS destination_hash, #63 producer signing). The per-crate "Phase" labels below are historical; all crates are production-released.)*
+*(Current release: **v5.8.0** — **CEG 1.0-RC11 §19 holonomic substrate verifiers** (#78): the `holonomic` module — §19.0 binary signed-preimage PQC-mandatory gate, §19.1 WholenessWitness Merkle + equivocation, §19.2 recursive-bootstrap (trust≠membership, ≤5-hop, cycle-reject, weight cap), §19.3 fountain holding-claim + revocation-respect, §19.4 ALM capacity authenticity, §10.5.8 A/V chunk nonces. See the v5.8.0 substrate note below. Prior: v5.7.0 CEG 1.0-RC7 conformance + HNDL hardening (#75 hybrid-required at every federation-tier gate, #76 partnership member-set, #77 scope split); v5.6.0 security-audit remediation (#72/#73/#74/#28/#63). The per-crate "Phase" labels below are historical; all crates are production-released.)*
 
 | Crate | Status | Notes |
 |-------|--------|-------|
