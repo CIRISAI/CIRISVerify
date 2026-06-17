@@ -4,6 +4,7 @@
 **Version**: 1.4 (v1.3 + F-AV-14 deployed-enforcement update — CIRISVerify v5.7.0 closes the "buggy verifier accepts old-classical-only" gap at every federation-tier gate, per CEG 1.0-RC7 §10.1.5.1.1)
 **Audience**: CIRIS engineering, RATCHET evaluator, federation-protocol stakeholders, external reviewers
 **Scope**: federation-emergent threats; cross-references per-repo threat models for substrate threats
+**Holonomic substrate (CEG §19 / §19.7)**: see [`HOLONOMIC_SUBSTRATE.md`](HOLONOMIC_SUBSTRATE.md) — the WholenessWitness / recursive-bootstrap / fountain / ALM / forever-memory aggregation verifiers and their guardrails (§19 cross-impl-proven vs CIRISEdge v4.1.2; §19.7 **1.0** vs v4.3.0).
 **Last updated**: 2026-06-15
 
 **v1.4 deltas vs v1.3** (CEG 1.0-RC7 / CIRISVerify v5.7.0 — hybrid-required enforced):

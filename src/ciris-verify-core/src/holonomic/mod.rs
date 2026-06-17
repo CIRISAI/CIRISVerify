@@ -53,8 +53,8 @@ pub use preimage::{
 };
 
 pub use aggregation::{
-    ejection_verdict, member_commitment, verify_aggregation_meta, verify_member_commitment,
-    AggregationMetaV1, AggregationMetaVerification, EjectionVerdict,
+    eject_aggregated_tier, ejection_verdict, member_commitment, verify_aggregation_meta,
+    verify_member_commitment, AggregationMetaV1, AggregationMetaVerification, EjectionVerdict,
 };
 
 pub use wholeness_witness::{

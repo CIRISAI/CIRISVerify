@@ -25,12 +25,15 @@
 //!   a revoked item → [`EjectionVerdict::EjectHardDelete`] (the fastest descent,
 //!   **never** tier-shed); capacity pressure → [`EjectionVerdict::EjectToTier`].
 //!
-//! **Vector authorship.** Per §19.7's conformance note, no reference impl
-//! defined these bytes, so the *first* conformant implementation generates the
-//! §19.6/#57 vectors and a second reproduces them. **CIRISVerify is that first
-//! impl** — `tests/conformance_vectors_v19_7.rs` emits the canonical vectors
-//! from this module; Edge/Persist reproduce them byte-for-byte to lift §19.7
-//! from RC-grade to 1.0.
+//! **Vector authorship — §19.7 is now 1.0 (CEG 1.0-RC16).** No reference impl
+//! defined these bytes, so the *first* conformant implementation generated the
+//! §19.6/#57 vectors and a second reproduced them. **CIRISVerify authored them**
+//! (`tests/conformance_vectors_v19_7.rs`); **CIRISEdge v4.3.0 reproduced them
+//! byte-for-byte on the first attempt with no coordination beyond the spec** —
+//! so the §19.7 vector family is **closed and §19.7 is 1.0, not RC** (the §19.0
+//! binary discipline makes wire-identity reproducible from the text alone). The
+//! `member_commitment` Merkle is the §19.1 WholenessWitness scheme verbatim —
+//! one Merkle scheme across §19.1 + §19.7, no fork.
 
 use super::fountain::ConsentState;
 use super::preimage::{
@@ -161,10 +164,29 @@ pub enum EjectionVerdict {
     /// One downward step: still recoverable, lower fidelity (an intra-object
     /// layer-drop OR an N→1 aggregation). Persist drives `put_aggregated_tier`.
     EjectToTier,
+    /// Shed **exactly one** pyramid stratum — the tier-`tier` `AggregationMetaV1`
+    /// composite — leaving both finer AND coarser tiers intact (§19.7.3, added
+    /// 1.0-RC16). The tier-granular form of [`Self::EjectToTier`], applied under
+    /// *targeted* pressure. Composes with hard-delete: a `tier` already below
+    /// the noise floor is unreachable, so this never resurrects erased content.
+    /// Persist drives the tier-tagged evict.
+    EjectAggregatedTierOnly {
+        /// The pyramid stratum (tier index) to shed.
+        tier: u32,
+    },
     /// Forced descent below the floor + purge still-recoverable tiers (§19.3
     /// N5). The fastest descent; **never** tier-shed. Persist drives
     /// `evict_fountain_content_hard_delete`.
     EjectHardDelete,
+}
+
+/// §19.7.3 targeted variant: shed exactly the tier-`tier` stratum
+/// ([`EjectionVerdict::EjectAggregatedTierOnly`]) — for a substrate applying
+/// pressure to one intermediate pyramid level rather than the whole item. A
+/// pure fabric node MAY compute this mechanically (no agency).
+#[must_use]
+pub fn eject_aggregated_tier(tier: u32) -> EjectionVerdict {
+    EjectionVerdict::EjectAggregatedTierOnly { tier }
 }
 
 /// §19.7.3 mapping (normative): resolve the descent step for an item from its
@@ -295,6 +317,15 @@ mod tests {
                 &mldsa.public_key().unwrap()
             ),
             AggregationMetaVerification::Failed
+        );
+    }
+
+    #[test]
+    fn eject_aggregated_tier_only_sheds_one_stratum() {
+        // RC16: shed exactly tier N, leaving finer + coarser tiers intact.
+        assert_eq!(
+            eject_aggregated_tier(3),
+            EjectionVerdict::EjectAggregatedTierOnly { tier: 3 }
         );
     }
 

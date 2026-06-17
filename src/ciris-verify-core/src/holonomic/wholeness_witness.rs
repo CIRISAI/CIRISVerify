@@ -20,9 +20,15 @@
 //! - **odd node duplicated** (`node = SHA-256(last ‖ last)`);
 //! - **empty tree** → `SHA-256(b"WW-v1-empty")`.
 //!
-//! It does **NOT** use the RFC 6962 `0x00`/`0x01` domain prefixes (§19.1 pins
-//! the no-prefix form; adopting them for CVE-2012-2459 second-preimage safety is
-//! flagged open, to settle with the fixed-impl pin — CIRISEdge#143).
+//! It does **NOT** use the RFC 6962 `0x00`/`0x01` domain prefixes. This is
+//! **frozen** (CEG 1.0-RC15, resolving the prior open question): the
+//! CVE-2012-2459 odd-node-duplication malleability is not exploitable here —
+//! every witness/`member_commitment` root is mandatorily hybrid-signed (no
+//! consumer trusts an *unsigned* root), and `member_commitment` is verified by
+//! full source-id recomputation, never partial inclusion proofs. **Normative
+//! caveat:** any *future* use relying on an unsigned root, or verifying partial
+//! inclusion proofs against an untrusted root, MUST first adopt the RFC 6962
+//! prefix + lone-node promotion and re-cut the vectors.
 //!
 //! ## Authority (N3 / N4)
 //!
