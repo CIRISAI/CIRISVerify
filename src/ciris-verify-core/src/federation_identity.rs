@@ -45,9 +45,9 @@ pub struct CreatedIdentity {
     pub key_id: String,
     /// The signed CEG object to relay (a self-signed genesis `KeyRecord`).
     pub object: SignedCegObject,
-    /// The entity's shareable **fedcode** (FSD-002) — a `usercode` for a `user`
+    /// The entity's shareable **fedcode** (FSD-003) — a `usercode` for a `user`
     /// identity, `agentcode` for `agent`, etc. Drop a usercode into a node's
-    /// config to claim ownership (FSD-002 §5).
+    /// config to claim ownership (FSD-003 §5).
     pub code: String,
 }
 
@@ -59,7 +59,7 @@ pub struct CreatedIdentity {
 /// TPM/SE-sealed seed (#71). `valid_from` is caller-supplied RFC-3339.
 ///
 /// The `key_id` is, in order of precedence: `fed_key_id` if given; else
-/// `derive_key_id(label, ed_pubkey)` (the FSD-002 `label-fingerprint` form) if
+/// `derive_key_id(label, ed_pubkey)` (the FSD-003 `label-fingerprint` form) if
 /// `label` is given; else `derive_key_id("id", …)`. The returned
 /// [`CreatedIdentity::code`] is the shareable fedcode for `identity_type`.
 ///
@@ -94,7 +94,7 @@ pub async fn create_federation_identity(
 
     let object = SignedCegObject::new(FEDERATION_KEY_RECORD_KIND, &key_id, valid_from, body);
 
-    // The shareable fedcode for this entity (FSD-002).
+    // The shareable fedcode for this entity (FSD-003).
     let kind = match identity_type {
         "agent" => crate::fedcode::FedKind::Agent,
         "node" => crate::fedcode::FedKind::Node,

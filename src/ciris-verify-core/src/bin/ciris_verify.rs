@@ -211,7 +211,7 @@ enum Commands {
         action: IdentityAction,
     },
 
-    /// Federation identity codes (FSD-002) — generate / inspect a usercode,
+    /// Federation identity codes (FSD-003) — generate / inspect a usercode,
     /// agentcode, nodecode, familycode, or communitycode. Software keys, no
     /// hardware required; render to the terminal or an SVG QR.
     Fedcode {
@@ -285,7 +285,7 @@ enum IdentityAction {
         /// CEG `identity_type` (`user` | `agent`). Default `user`.
         #[arg(long, default_value = "user")]
         identity_type: String,
-        /// Human label for the `key_id` (FSD-002 `label-fingerprint`, e.g.
+        /// Human label for the `key_id` (FSD-003 `label-fingerprint`, e.g.
         /// `eric-moore`). The address becomes `<label>-<key-fingerprint>`.
         #[arg(long)]
         label: Option<String>,
@@ -2041,7 +2041,7 @@ fn run_ykman(args: &[&str]) -> Result<(), String> {
 }
 
 // ===========================================================================
-// `fedcode` — federation identity codes (FSD-002), software keys, no hardware
+// `fedcode` — federation identity codes (FSD-003), software keys, no hardware
 // ===========================================================================
 
 fn run_fedcode(action: FedcodeAction, json_output: bool) {

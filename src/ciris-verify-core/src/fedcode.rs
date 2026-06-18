@@ -1,5 +1,5 @@
 //! CIRIS federation identity code (`fedcode`) — the kind-tagged, user-shareable
-//! encoding of a federation entity's identity (FSD-002). One codec, five kinds:
+//! encoding of a federation entity's identity (FSD-003). One codec, five kinds:
 //! **user / agent / node / family / community** — mapping 1:1 onto the
 //! Constitution's `identity_type` (CC 3.4.7.1: user/agent/node) and the rostered
 //! `subject_kind`s (CC 3.2 community / CC 3.3.4 family). The `kind` tag lets a
@@ -27,7 +27,7 @@
 //! `LP`. All fields ≤ 255 bytes. `group_key_id` is the family/community
 //! `*_key_id` (absent for user/agent/node).
 //!
-//! ## key_id format (FSD-002 §4)
+//! ## key_id format (FSD-003 §4)
 //!
 //! [`derive_key_id`] builds `"<label>-<fingerprint>"` where `fingerprint` is the
 //! first [`KEY_ID_FINGERPRINT_LEN`] base32 chars of `sha256(ed25519_pubkey)`.

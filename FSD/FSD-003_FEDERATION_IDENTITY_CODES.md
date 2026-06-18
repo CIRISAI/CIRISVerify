@@ -1,4 +1,4 @@
-# FSD-002: Federation Identity Codes (`fedcode`) & Identity Onboarding
+# FSD-003: Federation Identity Codes (`fedcode`) & Identity Onboarding
 
 **Status**: Draft
 **Author**: Eric Moore, CIRIS L3C
