@@ -48,6 +48,13 @@ pub const CIRIS_HOME_ENV: &str = "CIRIS_HOME";
 /// Relay-envelope schema tag.
 pub const SCHEMA: &str = "ciris.ceg.signed-object.v1";
 
+/// Serializes every test that mutates the process-global `CIRIS_HOME` env var
+/// (here and in `crate::federation_identity`), since `cargo test` runs them in
+/// parallel in one process. Poison-tolerant (a panicking test must not wedge
+/// the rest).
+#[cfg(test)]
+pub(crate) static CIRIS_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 /// The platform `ciris/` root: `$CIRIS_HOME` if set, else desktop `~/ciris`,
 /// mobile `<Documents>/ciris`.
 #[must_use]
@@ -235,6 +242,9 @@ mod tests {
 
     #[test]
     fn ciris_home_env_overrides_root() {
+        let _g = CIRIS_HOME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         // Single self-contained env test (no parallel env-readers in this mod).
         std::env::set_var(CIRIS_HOME_ENV, "/custom/ciris");
         assert_eq!(ciris_root(), PathBuf::from("/custom/ciris"));
@@ -244,6 +254,9 @@ mod tests {
 
     #[test]
     fn round_trips_through_outbox() {
+        let _g = CIRIS_HOME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let dir = std::env::temp_dir().join(format!("ciris-outbox-test-{}", std::process::id()));
         std::env::set_var(CIRIS_HOME_ENV, &dir);
 
@@ -290,6 +303,9 @@ mod tests {
 
     #[test]
     fn write_to_outbox_overwrites_same_id() {
+        let _g = CIRIS_HOME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let dir = std::env::temp_dir().join(format!("ciris-outbox-ow-{}", std::process::id()));
         std::env::set_var(CIRIS_HOME_ENV, &dir);
 
@@ -312,6 +328,9 @@ mod tests {
 
     #[test]
     fn sanitize_collapses_unicode_and_empty_home_falls_back() {
+        let _g = CIRIS_HOME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let out = PathBuf::from("/o");
         let p = object_path_under(&out, "föo→bar", "naïve");
         // Every component is a single safe segment — only [A-Za-z0-9._-] and no

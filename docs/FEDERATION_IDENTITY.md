@@ -137,13 +137,18 @@ or rejected the record (check its logs).
 
 - **Ed25519 is hardware-non-extractable + touch-gated.** Good — the classical half
   genuinely lives on the token and requires a physical touch per signature.
-- **The ML-DSA-65 seed is a plaintext `0600` file** at
-  `~/ciris/keys/<key_id>.mldsa.seed`. TPM / Secure-Enclave sealing of this seed is
-  the **#71 follow-up — not done in 6.0.** This file is the soft underbelly of the
-  hybrid key: anyone who reads it holds the PQC half. **Back it up and protect it**
-  (filesystem permissions, full-disk encryption, off-machine encrypted backup).
-  Don't let the YubiKey's nice properties lull you into treating the whole identity
-  as hardware-protected — it is "classical half in hardware, PQC half in a file."
+- **The ML-DSA-65 seed is sealed at rest** under `~/ciris/keys` (#71
+  `get_platform_sealed_mldsa65_signer`): **TPM-sealed** when you build
+  `--features tpm` on a TPM host, Secure Enclave / StrongBox on mobile, or a
+  software AES-GCM-sealed blob (derived key) as the fallback — **never a plaintext
+  file.** The honest boundary that remains: ML-DSA-65 *signing* is software (no
+  token/TPM/SE can sign PQC yet), so the seed is unsealed into process memory to
+  sign — a much higher bar than reading a file at rest. **A TPM-sealed seed is
+  bound to that machine's TPM** and cannot be unsealed elsewhere, so it is *not*
+  portable: enroll a second device's key (OR-of-N redundancy) rather than copying
+  the seed. Build the desktop CLI with `--features pkcs11,tpm` to get TPM sealing
+  (without `tpm` you get the software-sealed fallback). See `THREAT_MODEL.md`
+  AV-44 for the full disclosure.
 - **`$CIRIS_HOME` overrides the root.** If you set it, set it consistently for both
   this tool and CIRISServer, or the server will drain a different outbox than the
   one you wrote to.

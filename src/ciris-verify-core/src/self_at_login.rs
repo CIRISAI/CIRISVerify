@@ -335,12 +335,18 @@ impl SelfSigner for HybridSigningIdentity {
 pub struct HardwareRootedIdentity {
     key_id: String,
     ed: Arc<dyn HardwareSigner>,
-    mldsa: MlDsa65Signer,
+    mldsa: Arc<dyn ciris_keyring::PqcSigner>,
 }
 
 impl HardwareRootedIdentity {
-    /// Construct from a hardware Ed25519 signer plus the software ML-DSA-65
-    /// PQC half.
+    /// Construct from a hardware Ed25519 signer plus an ML-DSA-65 PQC signer.
+    ///
+    /// The PQC half is any [`ciris_keyring::PqcSigner`] — a **TPM/SE-sealed**
+    /// seed ([`ciris_keyring::get_platform_sealed_mldsa65_signer`], #71; the
+    /// seed lives sealed at rest and is unsealed only transiently to sign — no
+    /// hardware does PQC *signing* yet) or a software seed
+    /// ([`ciris_keyring::MlDsa65SoftwareSigner`]). The wire bytes are identical
+    /// either way.
     ///
     /// # Errors
     /// [`VerifyError::IntegrityError`] if `ed` is not an Ed25519 signer — the
@@ -349,7 +355,7 @@ impl HardwareRootedIdentity {
     pub fn new(
         key_id: impl Into<String>,
         ed: Arc<dyn HardwareSigner>,
-        mldsa: MlDsa65Signer,
+        mldsa: Arc<dyn ciris_keyring::PqcSigner>,
     ) -> Result<Self, VerifyError> {
         if ed.algorithm() != ClassicalAlgorithm::Ed25519 {
             return Err(VerifyError::IntegrityError {
@@ -391,17 +397,18 @@ impl SelfSigner for HardwareRootedIdentity {
     }
 
     async fn mldsa65_public_key(&self) -> Result<Vec<u8>, VerifyError> {
-        self.mldsa.public_key().map_err(crypto_err)
+        self.mldsa.public_key().await.map_err(keyring_err)
     }
 
     async fn sign_bound(&self, bytes: &[u8]) -> Result<(String, String), VerifyError> {
         // Ed25519 in hardware (async — may await a secure-element / touch), then
-        // ML-DSA-65 in software over `bytes ‖ ed_sig`. Byte-identical bound
+        // ML-DSA-65 over `bytes ‖ ed_sig` (the PQC signer unseals its seed
+        // transiently if it is the #71 sealed signer). Byte-identical bound
         // construction to HybridSigningIdentity::sign_bytes.
         let ed_sig = self.ed.sign(bytes).await.map_err(keyring_err)?;
         let mut bound = bytes.to_vec();
         bound.extend_from_slice(&ed_sig);
-        let pqc_sig = self.mldsa.sign(&bound).map_err(crypto_err)?;
+        let pqc_sig = self.mldsa.sign(&bound).await.map_err(keyring_err)?;
         Ok((b64().encode(&ed_sig), b64().encode(&pqc_sig)))
     }
 }
@@ -1442,11 +1449,16 @@ mod tests {
         Arc::new(ciris_keyring::Ed25519SoftwareSigner::from_bytes(&[seed; 32], alias).unwrap())
     }
 
+    /// A software ML-DSA-65 PqcSigner stand-in for the sealed/hardware PQC half.
+    fn software_mldsa(seed: u8, alias: &str) -> Arc<dyn ciris_keyring::PqcSigner> {
+        Arc::new(ciris_keyring::MlDsa65SoftwareSigner::from_seed_bytes(&[seed; 32], alias).unwrap())
+    }
+
     fn hardware_rooted(seed: u8, key_id: &str) -> HardwareRootedIdentity {
         HardwareRootedIdentity::new(
             key_id,
             software_hw_ed25519(seed, key_id),
-            MlDsa65Signer::new().unwrap(),
+            software_mldsa(seed, key_id),
         )
         .unwrap()
     }
@@ -1522,7 +1534,7 @@ mod tests {
         // The federation classical half MUST be Ed25519 — a P-256-only token is
         // refused at construction (fail-closed, not silently downgraded).
         let p256 = Arc::from(ciris_keyring::create_software_signer("p256-token").unwrap());
-        let err = HardwareRootedIdentity::new("user-1", p256, MlDsa65Signer::new().unwrap());
+        let err = HardwareRootedIdentity::new("user-1", p256, software_mldsa(1, "user-1"));
         assert!(err.is_err(), "a P-256 hardware key must be rejected");
     }
 

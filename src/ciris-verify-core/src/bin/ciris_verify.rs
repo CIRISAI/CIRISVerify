@@ -1901,14 +1901,15 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
         println!("  key_id        : {}", created.key_id);
         println!("  identity_type : {}", args.identity_type);
         println!("  hardware      : {hw_type:?} (Ed25519 on token)");
-        println!("  PQC half      : software ML-DSA-65 (seed under ~/ciris/keys)");
+        println!("  PQC half      : ML-DSA-65, seed sealed at rest under ~/ciris/keys (#71)");
         println!("  CEG object    : {}", path.display());
         println!(
             "\n  Next: ensure CIRISServer is draining this ~/ciris root. It verifies the bound\n  \
              hybrid self-signature and relays via register_key → federation_keys, then moves\n  \
-             the object to ~/ciris/ceg/sent/. Back up ~/ciris/keys/{}.mldsa.seed — it is the\n  \
-             PQC half of your identity and is not yet hardware-sealed (#71).",
-            created.key_id
+             the object to ~/ciris/ceg/sent/.\n  \
+             The ML-DSA-65 seed in ~/ciris/keys is sealed by your platform secure storage\n  \
+             (TPM when built --features tpm; software-sealed otherwise). A TPM-sealed seed is\n  \
+             bound to THIS machine — enroll a second device key (OR-of-N) for redundancy."
         );
     }
 }

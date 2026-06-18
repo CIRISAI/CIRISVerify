@@ -10,7 +10,7 @@ authors.workspace = true
 
 [features]
 default = ["pqc"]
-pqc = ["ciris-crypto/pqc-ml-dsa"]
+pqc = ["ciris-crypto/pqc-ml-dsa", "ciris-keyring/pqc-ml-dsa"]
 android = ["ciris-keyring/android"]
 ios = ["ciris-keyring/ios"]
 tpm = ["ciris-keyring/tpm"]
