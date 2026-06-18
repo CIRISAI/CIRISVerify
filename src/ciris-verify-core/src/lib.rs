@@ -86,6 +86,7 @@ pub mod keys;
 pub mod license;
 pub mod locale_merkle;
 pub mod manifest_cache;
+pub mod manifest_contribution;
 #[cfg(any(target_os = "android", target_os = "ios"))]
 pub mod mobile_http;
 pub mod operational_admit;
