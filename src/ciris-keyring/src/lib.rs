@@ -97,6 +97,11 @@ pub mod transport_identity;
 /// TPM/SE-sealed Ed25519 federation signing key (CIRISVerify#70).
 pub mod sealed_ed25519;
 
+/// User-identity hardware custody — the responsible owner's federation key,
+/// multi-factor (YubiKey/PKCS#11 + TPM-SE signing, WebAuthn/passkey presence)
+/// and multi-key-per-identity for redundancy (CIRISVerify#80).
+pub mod user_identity;
+
 /// TPM/SE-sealed ML-DSA-65 federation signing key — the PQC half of
 /// hardware-backed federation custody (CIRISVerify#70 PQC analog).
 #[cfg(feature = "pqc-ml-dsa")]

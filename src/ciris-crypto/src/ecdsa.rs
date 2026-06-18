@@ -132,9 +132,53 @@ impl ClassicalVerifier for P256Verifier {
     }
 }
 
+impl P256Verifier {
+    /// Verify an ECDSA-P256 signature in **ASN.1 DER** form over `data` (SHA-256
+    /// prehashed internally), with `public_key` in **SEC1** form
+    /// (`0x04 ‖ x ‖ y`, 65 bytes uncompressed). This is the WebAuthn / FIDO2
+    /// `ES256` (COSE alg -7) assertion shape — passkeys sign with DER, not the
+    /// fixed-length `(r ‖ s)` that [`ClassicalVerifier::verify`] expects.
+    ///
+    /// # Errors
+    ///
+    /// [`CryptoError`] if the public key or DER signature cannot be parsed.
+    pub fn verify_webauthn_es256(
+        public_key_sec1: &[u8],
+        data: &[u8],
+        der_signature: &[u8],
+    ) -> Result<bool, CryptoError> {
+        let vk = VerifyingKey::from_sec1_bytes(public_key_sec1)
+            .map_err(|e| CryptoError::invalid_public_key(e.to_string()))?;
+        let sig = Signature::from_der(der_signature)
+            .map_err(|e| CryptoError::invalid_signature(e.to_string()))?;
+        Ok(vk.verify(data, &sig).is_ok())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn webauthn_es256_der_round_trips() {
+        use p256::ecdsa::signature::Signer as _;
+        use p256::ecdsa::{Signature, SigningKey};
+        let sk = SigningKey::random(&mut rand_core::OsRng);
+        let vk_sec1 = sk.verifying_key().to_encoded_point(false);
+        // WebAuthn signs `authData ‖ SHA256(clientDataJSON)` with DER ES256.
+        let message = b"authenticator_data||sha256(clientDataJSON)";
+        let sig: Signature = sk.sign(message);
+        let der = sig.to_der();
+        assert!(
+            P256Verifier::verify_webauthn_es256(vk_sec1.as_bytes(), message, der.as_bytes())
+                .unwrap()
+        );
+        // Tampered message fails.
+        assert!(
+            !P256Verifier::verify_webauthn_es256(vk_sec1.as_bytes(), b"other", der.as_bytes())
+                .unwrap()
+        );
+    }
 
     #[test]
     fn test_p256_sign_verify() {

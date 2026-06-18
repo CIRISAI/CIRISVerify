@@ -104,6 +104,10 @@ pub mod types;
 pub mod unified;
 pub mod validation;
 pub mod watchdog;
+/// WebAuthn / FIDO2 passkey assertion verification — the presence/unlock factor
+/// for a user identity (authenticator apps: Google, Microsoft, Apple/Android).
+/// CIRISVerify#80.
+pub mod webauthn;
 pub mod witness_relation;
 
 pub use attest_bundle::{
