@@ -30,6 +30,7 @@ import logging as _logging
 
 from .client import CIRISVerify, MockCIRISVerify, verify_tree, DEFAULT_REGISTRY_URL
 from ._jcs import jcs_canonicalize
+from ._federation_identity import create_federation_identity
 from ._operational_admit import (
     resolve_role_authority,
     verify_delegation_scope_split,
@@ -130,6 +131,7 @@ __all__ = [
     "MockCIRISVerify",
     "verify_tree",
     "jcs_canonicalize",
+    "create_federation_identity",
     "resolve_role_authority",
     "verify_partner_record_quorum",
     "verify_delegation_scope_split",

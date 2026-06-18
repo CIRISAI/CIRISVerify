@@ -241,6 +241,28 @@ enum IdentityAction {
         /// Prompt for the token user PIN (a token requires login to sign).
         #[arg(long)]
         pin: bool,
+        /// Auto-provision an Ed25519 key in the PIV slot via `ykman` if the slot
+        /// is empty (YubiKey only). Generates the key + a self-signed cert with
+        /// the touch/PIN policy below, then proceeds. A populated slot is never
+        /// overwritten.
+        #[arg(long)]
+        provision: bool,
+        /// PIV slot to provision (with `--provision`). Default `9c` (Digital
+        /// Signature). ykcs11 maps `9c` to label "Private key for Digital Signature".
+        #[arg(long, default_value = "9c")]
+        piv_slot: String,
+        /// Touch policy for the provisioned key (`always` | `cached` | `never`).
+        #[arg(long, default_value = "always")]
+        touch_policy: String,
+        /// PIN policy for the provisioned key (`once` | `always` | `never`).
+        #[arg(long, default_value = "once")]
+        pin_policy: String,
+        /// PIV management key for provisioning (hex). Defaults to the factory key.
+        #[arg(
+            long,
+            default_value = "010203040506070801020304050607080102030405060708"
+        )]
+        management_key: String,
     },
 }
 
@@ -1716,6 +1738,22 @@ async fn run_token_sign_test(
 // `identity create` — hardware-rooted federation ID → CEG outbox (6.0)
 // ===========================================================================
 
+/// Bundled `identity create` inputs (keeps the handler signature sane).
+struct IdentityCreateArgs {
+    module: String,
+    slot: usize,
+    key_label: Option<String>,
+    key_id: Option<String>,
+    identity_type: String,
+    fed_key_id: Option<String>,
+    pin: bool,
+    provision: bool,
+    piv_slot: String,
+    touch_policy: String,
+    pin_policy: String,
+    management_key: String,
+}
+
 async fn run_identity(action: IdentityAction, json_output: bool) {
     require_pkcs11_feature();
     match action {
@@ -1727,15 +1765,27 @@ async fn run_identity(action: IdentityAction, json_output: bool) {
             identity_type,
             fed_key_id,
             pin,
+            provision,
+            piv_slot,
+            touch_policy,
+            pin_policy,
+            management_key,
         } => {
             run_identity_create(
-                &module,
-                slot,
-                key_label,
-                key_id,
-                &identity_type,
-                fed_key_id,
-                pin,
+                IdentityCreateArgs {
+                    module,
+                    slot,
+                    key_label,
+                    key_id,
+                    identity_type,
+                    fed_key_id,
+                    pin,
+                    provision,
+                    piv_slot,
+                    touch_policy,
+                    pin_policy,
+                    management_key,
+                },
                 json_output,
             )
             .await;
@@ -1743,115 +1793,89 @@ async fn run_identity(action: IdentityAction, json_output: bool) {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-async fn run_identity_create(
-    module: &str,
-    slot: usize,
-    key_label: Option<String>,
-    key_id: Option<String>,
-    identity_type: &str,
-    fed_key_id: Option<String>,
-    pin: bool,
-    json_output: bool,
-) {
+async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
     use std::sync::Arc;
 
-    use ciris_crypto::MlDsa65Signer;
     use ciris_keyring::pkcs11::{open_pkcs11_signer, Pkcs11Config};
-    use ciris_verify_core::ceg_outbox::{keys_dir, SignedCegObject};
-    use ciris_verify_core::federation_self_record::produce_self_key_record;
-    use ciris_verify_core::self_at_login::HardwareRootedIdentity;
-    use sha2::{Digest, Sha256};
+    use ciris_verify_core::ceg_outbox::SignedCegObject;
+    use ciris_verify_core::federation_identity::create_federation_identity;
 
-    let key_id_bytes = match key_id.as_deref().map(parse_hex).transpose() {
+    let key_id_bytes = match args.key_id.as_deref().map(parse_hex).transpose() {
         Ok(b) => b,
         Err(e) => {
             eprintln!("❌ --key-id is not valid hex: {e}");
             std::process::exit(2);
         },
     };
-
-    // 1. Root the Ed25519 half in the hardware token (YubiKey PIV).
     let cfg = Pkcs11Config {
-        module_path: module.into(),
-        user_pin: prompt_pin(pin),
-        key_label,
+        module_path: args.module.clone().into(),
+        user_pin: prompt_pin(args.pin),
+        key_label: args.key_label.clone(),
         key_id: key_id_bytes,
-        slot_index: slot,
+        slot_index: args.slot,
     };
+
+    // 1. Open the token's Ed25519 key. A populated slot is used as-is (never
+    //    overwritten); only an EMPTY slot triggers `--provision`.
     let hw_signer = match open_pkcs11_signer("federation-identity", &cfg) {
         Ok(s) => s,
+        Err(e) if args.provision => {
+            eprintln!("ℹ️  no usable key in the slot ({e}); provisioning via ykman…");
+            if let Err(pe) = provision_piv_via_ykman(
+                &args.piv_slot,
+                &args.touch_policy,
+                &args.pin_policy,
+                &args.management_key,
+            ) {
+                eprintln!("❌ provisioning failed: {pe}");
+                std::process::exit(1);
+            }
+            match open_pkcs11_signer("federation-identity", &cfg) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("❌ open token signer after provisioning: {e}");
+                    std::process::exit(1);
+                },
+            }
+        },
         Err(e) => {
             eprintln!("❌ open token signer: {e}");
+            eprintln!(
+                "   (pass --provision to generate an Ed25519 key in PIV slot {} via ykman)",
+                args.piv_slot
+            );
             std::process::exit(1);
         },
     };
-    let ed_pub = match hw_signer.public_key().await {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("❌ read Ed25519 public key: {e}");
-            std::process::exit(1);
-        },
-    };
+    let hw_type = hw_signer.hardware_type();
 
-    // 2. Federation key_id: caller-chosen, else sha256(ed_pubkey) hex.
-    let fed_key_id = fed_key_id.unwrap_or_else(|| hex::encode(Sha256::digest(&ed_pub)));
-
-    // 3. The software ML-DSA-65 half — a stable seed under ~/ciris/keys.
-    let seed = match load_or_create_mldsa_seed(&keys_dir(), &fed_key_id) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("❌ ML-DSA-65 seed: {e}");
-            std::process::exit(1);
-        },
-    };
-    let mldsa = match MlDsa65Signer::from_seed(&seed) {
-        Ok(m) => m,
-        Err(e) => {
-            eprintln!("❌ construct ML-DSA-65 signer from seed: {e}");
-            std::process::exit(1);
-        },
-    };
-
-    // 4. The hardware-rooted hybrid identity (Ed25519-only enforced).
-    let identity = match HardwareRootedIdentity::new(
-        fed_key_id.clone(),
-        Arc::from(hw_signer),
-        mldsa,
-    ) {
-        Ok(i) => i,
-        Err(e) => {
-            eprintln!("❌ {e}");
-            eprintln!("   (the PIV key must be Ed25519 — generate with `ykman piv keys generate --algorithm ED25519 9c ...`)");
-            std::process::exit(1);
-        },
-    };
-
-    // 5. Produce the self-signed genesis KeyRecord (the Ed25519 half signs on
-    //    the token — a touch-required key blocks here until you tap it).
+    // 2. Produce the self-signed genesis identity (the Ed25519 half signs on the
+    //    token — a touch-required key blocks here until you tap it).
     if !json_output {
         println!(
             "🔏 signing the genesis key record on the token — tap the YubiKey if it blinks…\n"
         );
     }
     let now = chrono::Utc::now().to_rfc3339();
-    let record = match produce_self_key_record(&identity, identity_type, &now).await {
-        Ok(r) => r,
+    let created = match create_federation_identity(
+        Arc::from(hw_signer),
+        &args.identity_type,
+        args.fed_key_id.clone(),
+        &now,
+    )
+    .await
+    {
+        Ok(c) => c,
         Err(e) => {
-            eprintln!("❌ produce self key record: {e}");
+            eprintln!("❌ create federation identity: {e}");
+            if format!("{e}").contains("Ed25519") {
+                eprintln!("   (the PIV key must be Ed25519 — re-run with --provision, or `ykman piv keys generate --algorithm ED25519 {} ...`)", args.piv_slot);
+            }
             std::process::exit(1);
         },
     };
 
-    let body = match serde_json::to_value(&record) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("❌ serialize key record: {e}");
-            std::process::exit(1);
-        },
-    };
-    let obj = SignedCegObject::new("federation_key_record", &fed_key_id, &now, body);
-    let path = match obj.write_to_outbox(&fed_key_id) {
+    let path = match created.object.write_to_outbox(&created.key_id) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("❌ write to CEG outbox: {e}");
@@ -1859,91 +1883,99 @@ async fn run_identity_create(
         },
     };
 
+    // ensure `SignedCegObject` is referenced for the import even in json mode
+    let _: &SignedCegObject = &created.object;
+
     if json_output {
         println!(
             "{}",
             serde_json::json!({
-                "key_id": fed_key_id,
-                "identity_type": identity_type,
-                "hardware_type": format!("{:?}", identity.hardware_type()),
+                "key_id": created.key_id,
+                "identity_type": args.identity_type,
+                "hardware_type": format!("{hw_type:?}"),
                 "outbox_path": path.display().to_string(),
             })
         );
     } else {
         println!("✅ federation identity created (self-signed, hardware-rooted)\n");
-        println!("  key_id        : {fed_key_id}");
-        println!("  identity_type : {identity_type}");
-        println!(
-            "  hardware      : {:?} (Ed25519 on token)",
-            identity.hardware_type()
-        );
+        println!("  key_id        : {}", created.key_id);
+        println!("  identity_type : {}", args.identity_type);
+        println!("  hardware      : {hw_type:?} (Ed25519 on token)");
         println!("  PQC half      : software ML-DSA-65 (seed under ~/ciris/keys)");
         println!("  CEG object    : {}", path.display());
         println!(
-            "\n  CIRISServer drains the outbox, verifies the bound hybrid self-signature,\n  \
-             and relays it over CEG (register_key → federation_keys)."
+            "\n  Next: ensure CIRISServer is draining this ~/ciris root. It verifies the bound\n  \
+             hybrid self-signature and relays via register_key → federation_keys, then moves\n  \
+             the object to ~/ciris/ceg/sent/. Back up ~/ciris/keys/{}.mldsa.seed — it is the\n  \
+             PQC half of your identity and is not yet hardware-sealed (#71).",
+            created.key_id
         );
     }
 }
 
-/// Load the 32-byte ML-DSA-65 seed for `key_id` from
-/// `<keys>/<sanitized key_id>.mldsa.seed`, or create one with the fail-secure
-/// CSPRNG. On unix the file is created `0600` **atomically** (an exclusive
-/// `create_new` with mode set) so the seed is never momentarily world-readable
-/// and two concurrent runs can't both mint a key. `key_id` is sanitized to a
-/// single path segment (a `--fed-key-id` override must not escape the keys dir).
-fn load_or_create_mldsa_seed(keys_dir: &std::path::Path, key_id: &str) -> Result<Vec<u8>, String> {
-    let file = format!(
-        "{}.mldsa.seed",
-        ciris_verify_core::ceg_outbox::sanitize_segment(key_id)
+/// Provision an Ed25519 key + self-signed cert in a YubiKey PIV slot via
+/// `ykman` (the PIV-applet management tool — PIV slot policy + the slot cert are
+/// not PKCS#11 operations). `ykman` inherits the terminal, so it prompts for the
+/// PIN and the cert step requires a physical touch. The management key defaults
+/// to the factory value; the PIN is NOT passed on argv (ykman prompts).
+fn provision_piv_via_ykman(
+    piv_slot: &str,
+    touch_policy: &str,
+    pin_policy: &str,
+    management_key: &str,
+) -> Result<(), String> {
+    let pub_tmp = std::env::temp_dir().join(format!("ciris_piv_{piv_slot}_pub.pem"));
+    let pub_path = pub_tmp.to_string_lossy().into_owned();
+
+    eprintln!("🛠  provisioning Ed25519 in PIV slot {piv_slot} (touch-policy={touch_policy}, pin-policy={pin_policy})…");
+    run_ykman(&[
+        "piv",
+        "keys",
+        "generate",
+        "--algorithm",
+        "ED25519",
+        "--pin-policy",
+        pin_policy,
+        "--touch-policy",
+        touch_policy,
+        "-m",
+        management_key,
+        piv_slot,
+        &pub_path,
+    ])?;
+
+    eprintln!(
+        "   generating the slot certificate — enter your PIN and TAP the YubiKey when it blinks…"
     );
-    let path = keys_dir.join(file);
+    run_ykman(&[
+        "piv",
+        "certificates",
+        "generate",
+        "--subject",
+        "CN=ciris-federation",
+        "-m",
+        management_key,
+        piv_slot,
+        &pub_path,
+    ])?;
 
-    if path.exists() {
-        return read_seed(&path);
-    }
-
-    let mut seed = vec![0u8; 32];
-    ciris_crypto::random::fill(&mut seed).map_err(|e| format!("CSPRNG: {e}"))?;
-    std::fs::create_dir_all(keys_dir).map_err(|e| format!("create {}: {e}", keys_dir.display()))?;
-
-    // Atomic, restrictive create — fail if a racing run already wrote it (then
-    // read its seed, so concurrent `identity create` converges on ONE seed).
-    let mut opts = std::fs::OpenOptions::new();
-    opts.write(true).create_new(true);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        opts.mode(0o600);
-    }
-    match opts.open(&path) {
-        Ok(mut f) => {
-            use std::io::Write;
-            f.write_all(&seed)
-                .map_err(|e| format!("write seed {}: {e}", path.display()))?;
-            eprintln!(
-                "ℹ️  generated a new ML-DSA-65 seed at {} (0600). NOT yet hardware-sealed — \
-                 back it up; sealing is the #71 TPM/SE follow-up.",
-                path.display()
-            );
-            Ok(seed)
-        },
-        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => read_seed(&path),
-        Err(e) => Err(format!("create seed {}: {e}", path.display())),
-    }
+    let _ = std::fs::remove_file(&pub_tmp);
+    Ok(())
 }
 
-/// Read + length-check a 32-byte seed.
-fn read_seed(path: &std::path::Path) -> Result<Vec<u8>, String> {
-    let seed = std::fs::read(path).map_err(|e| format!("read seed {}: {e}", path.display()))?;
-    if seed.len() != 32 {
+fn run_ykman(args: &[&str]) -> Result<(), String> {
+    let status = std::process::Command::new("ykman")
+        .args(args)
+        .status()
+        .map_err(|e| format!("could not run `ykman` (is yubikey-manager installed?): {e}"))?;
+    if !status.success() {
         return Err(format!(
-            "seed {} is {} bytes, expected 32 (refusing to mint a different identity)",
-            path.display(),
-            seed.len()
+            "`ykman {}` failed (exit {:?})",
+            args.join(" "),
+            status.code()
         ));
     }
-    Ok(seed)
+    Ok(())
 }
 
 #[tokio::main]
@@ -2098,73 +2130,8 @@ async fn main() {
 mod tests {
     use super::*;
 
-    fn tmp_keys(tag: &str) -> std::path::PathBuf {
-        std::env::temp_dir().join(format!("ciris-seed-{tag}-{}", std::process::id()))
-    }
-
-    #[test]
-    fn seed_create_then_load_is_stable() {
-        let dir = tmp_keys("stable");
-        let _ = std::fs::remove_dir_all(&dir);
-
-        let a = load_or_create_mldsa_seed(&dir, "key-1").unwrap();
-        assert_eq!(a.len(), 32);
-        // Second call must return the SAME seed (no silent re-mint → no identity loss).
-        let b = load_or_create_mldsa_seed(&dir, "key-1").unwrap();
-        assert_eq!(a, b);
-
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(dir.join("key-1.mldsa.seed"))
-                .unwrap()
-                .permissions()
-                .mode()
-                & 0o777;
-            assert_eq!(mode, 0o600, "seed file must be 0600");
-        }
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn seed_wrong_length_is_rejected() {
-        let dir = tmp_keys("badlen");
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        std::fs::write(dir.join("key-x.mldsa.seed"), [0u8; 31]).unwrap();
-        let err = load_or_create_mldsa_seed(&dir, "key-x").unwrap_err();
-        assert!(err.contains("expected 32"), "got: {err}");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn fed_key_id_traversal_cannot_escape_keys_dir() {
-        let dir = tmp_keys("traversal");
-        let _ = std::fs::remove_dir_all(&dir);
-        // A malicious --fed-key-id must collapse to a single filename inside the
-        // keys dir — no subdirectory, no `..` segment, no escape.
-        load_or_create_mldsa_seed(&dir, "../../etc/evil").unwrap();
-        let entries: Vec<_> = std::fs::read_dir(&dir)
-            .unwrap()
-            .filter_map(Result::ok)
-            .collect();
-        assert_eq!(
-            entries.len(),
-            1,
-            "exactly one sanitized seed file, no subdirs"
-        );
-        let name = entries[0].file_name().to_string_lossy().into_owned();
-        assert!(name.ends_with(".mldsa.seed"));
-        // No path separator survives, so the name is a single segment that
-        // cannot escape the keys dir (the embedded `.._..` is a literal, inert
-        // filename, not a traversal component).
-        assert!(!name.contains(std::path::MAIN_SEPARATOR));
-        assert!(
-            entries[0].path().is_file(),
-            "a file, not a traversed directory"
-        );
-        let _ = std::fs::remove_dir_all(&dir);
-    }
+    // The ML-DSA-65 seed custody tests live with the logic in
+    // `ciris_verify_core::federation_identity` (it's the shared CLI+FFI core now).
 
     #[test]
     fn parse_hex_round_trips() {

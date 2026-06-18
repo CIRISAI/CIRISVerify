@@ -1655,6 +1655,145 @@ unsafe fn check_capability_inner(
     CirisVerifyError::Success as i32
 }
 
+/// Create a hardware-rooted federation identity — the mobile/desktop UI entry
+/// (CIRISVerify 6.0 #63). The KMP client / CIRISServer calls this to mint the
+/// owner's federation identity and hand the signed CEG object off for relay.
+///
+/// `config_json` is a JSON object:
+/// ```json
+/// {
+///   "alias": "federation-user",            // platform key-store alias
+///   "seed_dir": "/data/.../ciris/keys",    // where the sealed Ed25519 + ML-DSA seeds live
+///   "identity_type": "user",               // "user" | "agent"
+///   "fed_key_id": null,                     // optional; default sha256(ed_pubkey) hex
+///   "valid_from": "2026-06-18T00:00:00Z",  // optional RFC-3339; default host-now
+///   "write_outbox": true                    // also drop it in <ciris>/ceg/outbox
+/// }
+/// ```
+/// Writes a JSON result to `*result_out` (free with `ciris_verify_free_string`):
+/// `{"ok":true,"key_id":"…","outbox_path":"…","ceg_object":{…}}` on success, or
+/// `{"ok":false,"error":"…"}`. The function return code is `Success` whenever a
+/// well-formed JSON result was produced (inspect `ok`); only argument/allocation
+/// faults return a negative code.
+///
+/// The Ed25519 owner-binding half is rooted in the best available platform
+/// hardware (Secure Enclave / Android StrongBox / TPM-sealed; software fallback)
+/// and **auto-provisioned on first call**; the ML-DSA-65 PQC half is a software
+/// seed under the same `seed_dir`. (The YubiKey-PIV token path is the desktop
+/// `ciris-verify identity create` CLI — mobile has no PIV applet.)
+///
+/// # Safety
+///
+/// `config_json` must be a valid NUL-terminated UTF-8 C string; `result_out`
+/// must be a valid, writable pointer.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_create_federation_identity(
+    config_json: *const c_char,
+    result_out: *mut *mut c_char,
+) -> i32 {
+    ffi_guard!("ciris_verify_create_federation_identity", {
+        if config_json.is_null() || result_out.is_null() {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        let cfg_str = match std::ffi::CStr::from_ptr(config_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return CirisVerifyError::InvalidArgument as i32,
+        };
+
+        // Emit a JSON result string and return Success (the `ok` flag carries the
+        // real outcome — the established pattern for these JSON-out FFI fns).
+        let emit = |value: serde_json::Value| -> i32 {
+            match std::ffi::CString::new(value.to_string()) {
+                Ok(c) => {
+                    *result_out = c.into_raw();
+                    CirisVerifyError::Success as i32
+                },
+                Err(_) => CirisVerifyError::InternalError as i32,
+            }
+        };
+        let err = |msg: String| serde_json::json!({ "ok": false, "error": msg });
+
+        let cfg: serde_json::Value = match serde_json::from_str(cfg_str) {
+            Ok(v) => v,
+            Err(e) => return emit(err(format!("invalid config JSON: {e}"))),
+        };
+        let alias = cfg
+            .get("alias")
+            .and_then(|v| v.as_str())
+            .unwrap_or("federation-user")
+            .to_string();
+        let seed_dir = match cfg.get("seed_dir").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => return emit(err("config.seed_dir is required".into())),
+        };
+        let identity_type = cfg
+            .get("identity_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("user")
+            .to_string();
+        let fed_key_id = cfg
+            .get("fed_key_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let valid_from = cfg
+            .get("valid_from")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        let write_outbox = cfg
+            .get("write_outbox")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => return emit(err(format!("runtime: {e}"))),
+        };
+
+        let outcome: Result<serde_json::Value, String> = rt.block_on(async {
+            let signer = ciris_keyring::get_platform_ed25519_signer(&alias, &seed_dir)
+                .map_err(|e| format!("open platform Ed25519 signer: {e}"))?;
+            let created = ciris_verify_core::federation_identity::create_federation_identity(
+                std::sync::Arc::from(signer),
+                &identity_type,
+                fed_key_id,
+                &valid_from,
+            )
+            .await
+            .map_err(|e| format!("create identity: {e}"))?;
+
+            let outbox_path = if write_outbox {
+                Some(
+                    created
+                        .object
+                        .write_to_outbox(&created.key_id)
+                        .map_err(|e| format!("write outbox: {e}"))?
+                        .display()
+                        .to_string(),
+                )
+            } else {
+                None
+            };
+            let ceg_object = serde_json::to_value(&created.object)
+                .map_err(|e| format!("serialize CEG object: {e}"))?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "key_id": created.key_id,
+                "outbox_path": outbox_path,
+                "ceg_object": ceg_object,
+            }))
+        });
+
+        match outcome {
+            Ok(v) => emit(v),
+            Err(msg) => emit(err(msg)),
+        }
+    })
+}
+
 /// Free memory allocated by CIRISVerify functions.
 ///
 /// # Safety

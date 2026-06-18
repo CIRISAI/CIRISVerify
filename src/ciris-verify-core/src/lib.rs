@@ -64,6 +64,7 @@ pub mod doc_integrity;
 pub mod engine;
 pub mod error;
 pub mod federation_envelope;
+pub mod federation_identity;
 pub mod federation_keyset;
 pub mod federation_provenance;
 pub mod federation_self_record;
