@@ -221,10 +221,11 @@ enum Commands {
 
     /// Grant a `delegates_to(you → subject, scopes)` capability — e.g. let a CI
     /// pipeline node publish build manifests on your behalf (`infra:attest`).
-    /// Signed by your platform-sealed federation identity; dropped in the outbox.
+    /// Signed by your federation identity (YubiKey via `--module`, else
+    /// platform-sealed); dropped in the outbox.
     Delegate {
-        /// Your (the granter's) federation `key_id` — also the alias of your
-        /// platform-sealed keys under `~/ciris/keys`.
+        /// Your (the granter's) federation `key_id` — the identity that signs,
+        /// and the alias of your sealed ML-DSA-65 half under `~/ciris/keys`.
         #[arg(long)]
         granter_key_id: String,
         /// The subject's `key_id` (e.g. the CI pipeline node) receiving the grant.
@@ -237,6 +238,23 @@ enum Commands {
         /// Where the sealed keys live (default `~/ciris/keys`).
         #[arg(long)]
         seed_dir: Option<String>,
+        /// PKCS#11 module for a **YubiKey-rooted** granter (e.g. `libykcs11.so`).
+        /// When set, the Ed25519 half signs on the token (your real identity);
+        /// the ML-DSA-65 half is the sealed seed under `~/ciris/keys`.
+        #[arg(long)]
+        module: Option<String>,
+        /// `CKA_LABEL` of the YubiKey Ed25519 key (with `--module`).
+        #[arg(long)]
+        key_label: Option<String>,
+        /// `CKA_ID` of the YubiKey key as hex (alternative to `--key-label`).
+        #[arg(long)]
+        key_id: Option<String>,
+        /// Token slot index. Default 0.
+        #[arg(long, default_value = "0")]
+        slot: usize,
+        /// Prompt for the token user PIN (with `--module`).
+        #[arg(long)]
+        pin: bool,
     },
 }
 
@@ -2375,30 +2393,75 @@ fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], String> {
 // `delegate` — sign a `delegates_to(you → subject, scopes)` capability grant
 // ===========================================================================
 
-async fn run_delegate(
-    granter_key_id: &str,
-    to: &str,
-    scopes: &[String],
+struct DelegateArgs {
+    granter_key_id: String,
+    to: String,
+    scopes: Vec<String>,
     seed_dir: Option<String>,
+    module: Option<String>,
+    key_label: Option<String>,
+    key_id: Option<String>,
+    slot: usize,
+    pin: bool,
     json_output: bool,
-) {
+}
+
+async fn run_delegate(a: DelegateArgs) {
     use std::sync::Arc;
 
+    use ciris_keyring::HardwareSigner;
     use ciris_verify_core::ceg_outbox::{keys_dir, SignedCegObject};
     use ciris_verify_core::self_at_login::{sign_delegation_grant_async, HardwareRootedIdentity};
 
-    let seed_dir = seed_dir.unwrap_or_else(|| keys_dir().to_string_lossy().into_owned());
+    let granter_key_id = a.granter_key_id.as_str();
+    let to = a.to.as_str();
+    let scopes = a.scopes.as_slice();
+    let json_output = a.json_output;
+    let seed_dir = a
+        .seed_dir
+        .clone()
+        .unwrap_or_else(|| keys_dir().to_string_lossy().into_owned());
 
-    // Open the granter's platform-sealed hybrid identity (Ed25519 + sealed
-    // ML-DSA-65), keyed by `granter_key_id`. (A YubiKey-rooted granter is the
-    // pkcs11 variant — a #63 follow-up.)
-    let ed = match ciris_keyring::get_platform_ed25519_signer(granter_key_id, &seed_dir) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("❌ open granter Ed25519 identity: {e}");
-            std::process::exit(1);
-        },
+    // The Ed25519 (owner-binding) half: YubiKey PKCS#11 token when `--module` is
+    // given (your real identity), else the platform-sealed key. The ML-DSA-65
+    // half is the sealed seed under ~/ciris/keys either way.
+    let ed: Arc<dyn HardwareSigner> = if let Some(module) = a.module.as_deref() {
+        let key_id_bytes = match a.key_id.as_deref().map(parse_hex).transpose() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("❌ --key-id is not valid hex: {e}");
+                std::process::exit(2);
+            },
+        };
+        let cfg = ciris_keyring::pkcs11::Pkcs11Config {
+            module_path: module.into(),
+            user_pin: prompt_pin(a.pin),
+            key_label: a.key_label.clone(),
+            key_id: key_id_bytes,
+            slot_index: a.slot,
+        };
+        match ciris_keyring::pkcs11::open_pkcs11_signer("delegate-granter", &cfg) {
+            Ok(s) => {
+                if !json_output {
+                    println!("🔏 signing the grant on the token — tap the YubiKey if it blinks…\n");
+                }
+                Arc::from(s)
+            },
+            Err(e) => {
+                eprintln!("❌ open granter token (Ed25519): {e}");
+                std::process::exit(1);
+            },
+        }
+    } else {
+        match ciris_keyring::get_platform_ed25519_signer(granter_key_id, &seed_dir) {
+            Ok(s) => Arc::from(s),
+            Err(e) => {
+                eprintln!("❌ open granter Ed25519 identity: {e}");
+                std::process::exit(1);
+            },
+        }
     };
+
     let mldsa = match ciris_keyring::get_platform_sealed_mldsa65_signer(granter_key_id, &seed_dir) {
         Ok(s) => s,
         Err(e) => {
@@ -2406,17 +2469,14 @@ async fn run_delegate(
             std::process::exit(1);
         },
     };
-    let identity = match HardwareRootedIdentity::new(
-        granter_key_id.to_string(),
-        Arc::from(ed),
-        Arc::from(mldsa),
-    ) {
-        Ok(i) => i,
-        Err(e) => {
-            eprintln!("❌ {e}");
-            std::process::exit(1);
-        },
-    };
+    let identity =
+        match HardwareRootedIdentity::new(granter_key_id.to_string(), ed, Arc::from(mldsa)) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("❌ {e}");
+                std::process::exit(1);
+            },
+        };
 
     let now = chrono::Utc::now().to_rfc3339();
     let grant = match sign_delegation_grant_async(&identity, to, scopes, &now).await {
@@ -2610,8 +2670,25 @@ async fn main() {
             to,
             scopes,
             seed_dir,
+            module,
+            key_label,
+            key_id,
+            slot,
+            pin,
         }) => {
-            run_delegate(&granter_key_id, &to, &scopes, seed_dir, json_output).await;
+            run_delegate(DelegateArgs {
+                granter_key_id,
+                to,
+                scopes,
+                seed_dir,
+                module,
+                key_label,
+                key_id,
+                slot,
+                pin,
+                json_output,
+            })
+            .await;
         },
         None => {
             // No command - show help
