@@ -1159,6 +1159,17 @@ jobs:
         env:
           CIRIS_BUILD_ED25519_SECRET: ${{ secrets.CIRIS_BUILD_ED25519_SECRET }}
           CIRIS_BUILD_MLDSA_SECRET: ${{ secrets.CIRIS_BUILD_MLDSA_SECRET }}
+          # The pipeline node key_id (the former "steward" keyset, now the
+          # CIRISVerify GitHub build-pipeline node identity, FSD-003).
+          CIRIS_PIPELINE_KEY_ID: ciris-verify-build-pipeline
+          # The human the pipeline attests ON BEHALF OF + the delegates_to(human →
+          # pipeline, infra:attest) grant id. Repo variables, set once after the
+          # owner runs `ciris-verify delegate`. When unset, the legacy signed
+          # manifest is still produced; only the CEG dual-emit is skipped.
+          CIRIS_OWNER_KEY_ID: ${{ vars.CIRIS_OWNER_KEY_ID }}
+          CIRIS_BUILD_DELEGATION_REF: ${{ vars.CIRIS_BUILD_DELEGATION_REF }}
+          # CEG outbox root (the dual-emit Contributions land here → artifact).
+          CIRIS_HOME: ${{ github.workspace }}/ciris-home
         run: |
           set -e
           VERSION="${{ github.ref_name }}"
@@ -1234,6 +1245,18 @@ jobs:
           # the steward keys.
           "$BUILD_SIGN" self-test
 
+          # CC-native dual-emit (transition): if the owner has delegated
+          # infra:attest to this pipeline (the repo vars are set), ALSO emit a
+          # signed `build_manifest_contribution` CEG object per target into the
+          # outbox — on the owner's behalf. Skipped (legacy-only) when unset.
+          DUAL_EMIT=""
+          if [ -n "${CIRIS_OWNER_KEY_ID:-}" ] && [ -n "${CIRIS_BUILD_DELEGATION_REF:-}" ]; then
+            DUAL_EMIT="--on-behalf-of ${CIRIS_OWNER_KEY_ID} --delegation-ref ${CIRIS_BUILD_DELEGATION_REF}"
+            echo "CC-native dual-emit ON (pipeline ${CIRIS_PIPELINE_KEY_ID} attesting for ${CIRIS_OWNER_KEY_ID})"
+          else
+            echo "CC-native dual-emit OFF (set CIRIS_OWNER_KEY_ID + CIRIS_BUILD_DELEGATION_REF repo vars to enable)"
+          fi
+
           mkdir -p signed-build-manifests
           for manifest in function-manifests/*.json; do
             [ -f "$manifest" ] || continue
@@ -1248,7 +1271,8 @@ jobs:
               --manifest-from "$manifest" \
               --ed25519-seed /tmp/steward-keys/ed25519.seed \
               --mldsa-secret /tmp/steward-keys/mldsa65.secret \
-              --key-id "verify-steward-2026" \
+              --key-id "${CIRIS_PIPELINE_KEY_ID}" \
+              ${DUAL_EMIT} \
               --output "signed-build-manifests/${target}.json"
           done
 
@@ -1259,6 +1283,24 @@ jobs:
           echo "Signed BuildManifests:"
           ls -la signed-build-manifests/
           echo "Total: $(ls signed-build-manifests/*.json 2>/dev/null | wc -l) signed manifests"
+
+          if [ -d "${CIRIS_HOME}/ceg/outbox" ]; then
+            echo "CEG outbox (build manifest Contributions for server to relay):"
+            find "${CIRIS_HOME}/ceg/outbox" -type f -name '*.json' | sort
+          fi
+
+      # The CC-native deliverable: the per-platform build-manifest Contributions
+      # in the CEG outbox, uploaded as an artifact for CIRISServer to pick up,
+      # verify (pipeline sig → walk infra:attest delegation → owner trusted), and
+      # relay over CEG. See CIRISServer#25.
+      - name: Upload CEG outbox (build manifest Contributions) as artifact
+        if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ceg-outbox-${{ github.ref_name }}
+          path: ${{ github.workspace }}/ciris-home/ceg/outbox/
+          if-no-files-found: warn
+          retention-days: 90
 
       - name: Upload signed BuildManifests as release assets
         if: ${{ !contains(github.ref_name, '-rc') && !contains(github.ref_name, '-beta') }}

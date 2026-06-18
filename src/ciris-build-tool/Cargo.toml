@@ -33,6 +33,9 @@ rand_core = { version = "0.6", features = ["std"] }
 # Core types
 ciris-verify-core.workspace = true
 
+# Runtime — block_on the async CEG-Contribution producer (manifest dual-emit).
+tokio = { workspace = true, features = ["rt"] }
+
 # Serialization
 serde.workspace = true
 serde_json.workspace = true

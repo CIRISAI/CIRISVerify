@@ -128,13 +128,26 @@ enum Cmd {
         #[arg(long)]
         mldsa_secret: PathBuf,
 
-        /// Steward key identifier (any string the verifier finds useful).
+        /// Signing key identifier — the **pipeline node**'s federation key_id
+        /// (formerly "steward"; under the FSD-003 pipeline-as-delegated-attester
+        /// model this is the pipeline node, owner-bound to a human).
         #[arg(long)]
         key_id: String,
 
         /// Output path for the signed manifest. If omitted, writes to stdout.
         #[arg(short, long)]
         output: Option<PathBuf>,
+
+        /// CC-native dual-emit (transition): the human `key_id` the pipeline
+        /// attests **on behalf of**. With `--delegation-ref`, also emits a
+        /// `build_manifest_contribution` CEG object to the outbox (FSD-003).
+        #[arg(long)]
+        on_behalf_of: Option<String>,
+
+        /// The `delegates_to(human → pipeline, infra:attest)` grant id that
+        /// authorizes this pipeline to publish on the human's behalf.
+        #[arg(long, requires = "on_behalf_of")]
+        delegation_ref: Option<String>,
     },
 
     /// Generate a fresh Ed25519 + ML-DSA-65 keypair pair for testing
@@ -271,6 +284,8 @@ fn main() -> Result<()> {
             mldsa_secret,
             key_id,
             output,
+            on_behalf_of,
+            delegation_ref,
         } => {
             let primitive = parse_primitive(&primitive);
 
@@ -338,6 +353,20 @@ fn main() -> Result<()> {
             let ed_seed = read_key(&ed25519_seed)?;
             let mldsa_seed = read_key(&mldsa_secret)?;
 
+            // Capture the facts the CC-native dual-emit needs before the
+            // by-value args are moved into sign_build_manifest.
+            let dual_emit = on_behalf_of
+                .as_ref()
+                .zip(delegation_ref.as_ref())
+                .map(|(o, d)| (o.clone(), d.clone()));
+            let facts = (
+                target.clone(),
+                binary_hash.clone(),
+                build_id.clone(),
+                binary_version.clone(),
+                key_id.clone(),
+            );
+
             let signed = sign_build_manifest(
                 primitive,
                 build_id,
@@ -360,6 +389,25 @@ fn main() -> Result<()> {
                     use std::io::Write;
                     std::io::stdout().write_all(&signed)?;
                 },
+            }
+
+            // CC-native dual-emit (transition): also publish the manifest as a
+            // pipeline-signed CEG Contribution to the outbox. Runs alongside the
+            // legacy signed manifest until consumers cut over (CIRISServer#25).
+            if let Some((obo, dref)) = dual_emit {
+                let (target, binary_hash, build_id, binary_version, key_id) = facts;
+                emit_manifest_contribution(EmitArgs {
+                    ed_seed: &ed_seed,
+                    mldsa_seed: &mldsa_seed,
+                    pipeline_key_id: &key_id,
+                    target: &target,
+                    binary_hash: &binary_hash,
+                    build_id: &build_id,
+                    binary_version: &binary_version,
+                    signed_manifest: &signed,
+                    on_behalf_of: &obo,
+                    delegation_ref: &dref,
+                })?;
             }
         },
 
@@ -446,5 +494,76 @@ fn main() -> Result<()> {
         },
     }
 
+    Ok(())
+}
+
+/// Args for [`emit_manifest_contribution`] (keeps the signature sane).
+struct EmitArgs<'a> {
+    ed_seed: &'a [u8],
+    mldsa_seed: &'a [u8],
+    pipeline_key_id: &'a str,
+    target: &'a str,
+    binary_hash: &'a str,
+    build_id: &'a str,
+    binary_version: &'a str,
+    signed_manifest: &'a [u8],
+    on_behalf_of: &'a str,
+    delegation_ref: &'a str,
+}
+
+/// CC-native dual-emit: sign the build as a `build_manifest_contribution` CEG
+/// object with the pipeline node's hybrid key (on the human's behalf) and write
+/// it to the CEG outbox (FSD-003 / CIRISVerify `manifest_contribution`).
+fn emit_manifest_contribution(a: EmitArgs<'_>) -> anyhow::Result<()> {
+    use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
+    use ciris_verify_core::manifest_contribution::{
+        sign_build_manifest_contribution, BuildAttestation,
+    };
+    use ciris_verify_core::self_at_login::HybridSigningIdentity;
+    use sha2::{Digest, Sha256};
+
+    let ed = Ed25519Signer::from_seed(a.ed_seed)
+        .map_err(|e| anyhow::anyhow!("pipeline Ed25519 seed: {e}"))?;
+    let mldsa = MlDsa65Signer::from_seed(a.mldsa_seed)
+        .map_err(|e| anyhow::anyhow!("pipeline ML-DSA-65 seed: {e}"))?;
+    let identity = HybridSigningIdentity::new(a.pipeline_key_id, ed, mldsa);
+
+    // Bind the Contribution to the exact signed manifest + take its timestamp.
+    let manifest_hash = hex::encode(Sha256::digest(a.signed_manifest));
+    let signed_at = serde_json::from_slice::<serde_json::Value>(a.signed_manifest)
+        .ok()
+        .and_then(|v| {
+            v.get("generated_at")
+                .and_then(|g| g.as_str())
+                .map(String::from)
+        })
+        .ok_or_else(|| anyhow::anyhow!("signed manifest has no generated_at"))?;
+
+    let build = BuildAttestation {
+        target: a.target,
+        binary_hash: a.binary_hash,
+        build_id: a.build_id,
+        binary_version: a.binary_version,
+        manifest_hash: &manifest_hash,
+    };
+
+    let obj = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .map_err(|e| anyhow::anyhow!("runtime: {e}"))?
+        .block_on(sign_build_manifest_contribution(
+            &identity,
+            &build,
+            a.on_behalf_of,
+            a.delegation_ref,
+            &signed_at,
+        ))
+        .map_err(|e| anyhow::anyhow!("sign manifest contribution: {e}"))?;
+
+    let id = format!("{}-{}", a.build_id, a.target);
+    let path = obj
+        .write_to_outbox(&id)
+        .map_err(|e| anyhow::anyhow!("write CEG outbox: {e}"))?;
+    eprintln!("CC-native manifest Contribution → {}", path.display());
     Ok(())
 }

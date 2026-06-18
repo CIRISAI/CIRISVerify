@@ -218,6 +218,26 @@ enum Commands {
         #[command(subcommand)]
         action: FedcodeAction,
     },
+
+    /// Grant a `delegates_to(you → subject, scopes)` capability — e.g. let a CI
+    /// pipeline node publish build manifests on your behalf (`infra:attest`).
+    /// Signed by your platform-sealed federation identity; dropped in the outbox.
+    Delegate {
+        /// Your (the granter's) federation `key_id` — also the alias of your
+        /// platform-sealed keys under `~/ciris/keys`.
+        #[arg(long)]
+        granter_key_id: String,
+        /// The subject's `key_id` (e.g. the CI pipeline node) receiving the grant.
+        #[arg(long)]
+        to: String,
+        /// Delegated scope(s); repeatable. Default `infra:attest` (publish/attest
+        /// on your behalf). A `node` subject may carry only `infra:*` (#77).
+        #[arg(long = "scope", default_values_t = [String::from("infra:attest")])]
+        scopes: Vec<String>,
+        /// Where the sealed keys live (default `~/ciris/keys`).
+        #[arg(long)]
+        seed_dir: Option<String>,
+    },
 }
 
 /// `ciris-verify fedcode` actions.
@@ -2351,6 +2371,97 @@ fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], String> {
     k.try_into().map_err(|_| "kdf length".to_string())
 }
 
+// ===========================================================================
+// `delegate` — sign a `delegates_to(you → subject, scopes)` capability grant
+// ===========================================================================
+
+async fn run_delegate(
+    granter_key_id: &str,
+    to: &str,
+    scopes: &[String],
+    seed_dir: Option<String>,
+    json_output: bool,
+) {
+    use std::sync::Arc;
+
+    use ciris_verify_core::ceg_outbox::{keys_dir, SignedCegObject};
+    use ciris_verify_core::self_at_login::{sign_delegation_grant_async, HardwareRootedIdentity};
+
+    let seed_dir = seed_dir.unwrap_or_else(|| keys_dir().to_string_lossy().into_owned());
+
+    // Open the granter's platform-sealed hybrid identity (Ed25519 + sealed
+    // ML-DSA-65), keyed by `granter_key_id`. (A YubiKey-rooted granter is the
+    // pkcs11 variant — a #63 follow-up.)
+    let ed = match ciris_keyring::get_platform_ed25519_signer(granter_key_id, &seed_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ open granter Ed25519 identity: {e}");
+            std::process::exit(1);
+        },
+    };
+    let mldsa = match ciris_keyring::get_platform_sealed_mldsa65_signer(granter_key_id, &seed_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ open granter ML-DSA-65 identity: {e}");
+            std::process::exit(1);
+        },
+    };
+    let identity = match HardwareRootedIdentity::new(
+        granter_key_id.to_string(),
+        Arc::from(ed),
+        Arc::from(mldsa),
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("❌ {e}");
+            std::process::exit(1);
+        },
+    };
+
+    let now = chrono::Utc::now().to_rfc3339();
+    let grant = match sign_delegation_grant_async(&identity, to, scopes, &now).await {
+        Ok(g) => g,
+        Err(e) => {
+            eprintln!("❌ sign delegation grant: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    let body = serde_json::to_value(&grant).unwrap_or_default();
+    let obj = SignedCegObject::new("delegation_grant", granter_key_id, &now, body);
+    let delegation_ref = format!("delegation:{granter_key_id}:{to}");
+    let path = match obj.write_to_outbox(&format!("grant-{to}")) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("❌ write CEG outbox: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({
+                "granter": granter_key_id,
+                "subject": to,
+                "scopes": scopes,
+                "delegation_ref": delegation_ref,
+                "outbox_path": path.display().to_string(),
+            })
+        );
+    } else {
+        println!("✅ delegation grant signed\n");
+        println!("  granter        : {granter_key_id}");
+        println!("  subject        : {to}");
+        println!("  scopes         : {}", scopes.join(", "));
+        println!("  delegation_ref : {delegation_ref}");
+        println!("  CEG object     : {}", path.display());
+        println!(
+            "\n  Wire it to the pipeline's build signer:\n    ciris-build-sign sign … \\\n      --on-behalf-of {granter_key_id} --delegation-ref {delegation_ref}"
+        );
+    }
+}
+
 #[tokio::main]
 async fn main() {
     enable_windows_ansi();
@@ -2493,6 +2604,14 @@ async fn main() {
         },
         Some(Commands::Fedcode { action }) => {
             run_fedcode(action, json_output);
+        },
+        Some(Commands::Delegate {
+            granter_key_id,
+            to,
+            scopes,
+            seed_dir,
+        }) => {
+            run_delegate(&granter_key_id, &to, &scopes, seed_dir, json_output).await;
         },
         None => {
             // No command - show help

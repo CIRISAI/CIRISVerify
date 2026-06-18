@@ -495,6 +495,75 @@ fn delegation_envelope(
     })
 }
 
+/// Hybrid-sign a **scoped** `delegates_to(granter → subject, scopes[])` grant —
+/// the *capability* form (distinct from [`sign_delegation`]'s org-membership
+/// role grant). The canonical use: a human delegating `infra:attest` to a CI
+/// pipeline `node` so it may publish build manifests on the human's behalf
+/// (CC §2.4.1; FSD-003). The `scopes` are checked at admission by
+/// [`crate::operational_admit::verify_delegation_scope_split`] against the
+/// subject's `identity_type` (a `node` may carry only `infra:*`). The output
+/// verifies as a threshold-1 bound hybrid signature against the granter's
+/// pinned pubkeys, anchoring the delegated authority in the (human) granter.
+///
+/// **Cross-impl flag:** the member set (`dimension: "delegates_to"`,
+/// `delegated_scope`) is pinned here, flagged for Server/Registry confirmation.
+///
+/// # Errors
+///
+/// [`VerifyError`] only on a canonicalization or signer fault.
+pub fn sign_delegation_grant(
+    granter: &HybridSigningIdentity,
+    subject_key_id: &str,
+    scopes: &[String],
+    signed_at: &str,
+) -> Result<SignedEnvelope, VerifyError> {
+    granter.sign_envelope(delegation_grant_envelope(
+        &granter.key_id,
+        subject_key_id,
+        scopes,
+        signed_at,
+    ))
+}
+
+/// Hardware-rooted async variant of [`sign_delegation_grant`].
+///
+/// # Errors
+///
+/// [`VerifyError`] only on a canonicalization or signer fault.
+pub async fn sign_delegation_grant_async(
+    granter: &dyn SelfSigner,
+    subject_key_id: &str,
+    scopes: &[String],
+    signed_at: &str,
+) -> Result<SignedEnvelope, VerifyError> {
+    granter
+        .sign_envelope_async(delegation_grant_envelope(
+            granter.key_id(),
+            subject_key_id,
+            scopes,
+            signed_at,
+        ))
+        .await
+}
+
+/// The canonical scoped-delegation envelope (CC §2.4.1) — shared by the sync +
+/// async producers so the JCS signing bytes can't drift.
+fn delegation_grant_envelope(
+    attesting_key_id: &str,
+    subject_key_id: &str,
+    scopes: &[String],
+    signed_at: &str,
+) -> Value {
+    json!({
+        "attestation_type": "scores",
+        "attesting_key_id": attesting_key_id,
+        "dimension": "delegates_to",
+        "subject_key_ids": [subject_key_id],
+        "delegated_scope": scopes,
+        "signed_at": signed_at,
+    })
+}
+
 // ===========================================================================
 // 2. Bilateral partnership: consent:partnership_grant:v1 / :accept:v1
 // ===========================================================================
@@ -1860,6 +1929,43 @@ mod tests {
                 1,
             ),
             Ok(1),
+        );
+    }
+
+    #[test]
+    fn scoped_delegation_grant_verifies_and_passes_the_scope_split() {
+        use crate::operational_admit::verify_delegation_scope_split;
+
+        // A human grants `infra:attest` to a CI pipeline NODE (publish manifests
+        // on their behalf). The grant verifies at threshold 1 under the human's
+        // key, and the scope split accepts `infra:*` for a `node` subject.
+        let human = HybridSigningIdentity::generate("eric-moore-k7").unwrap();
+        let scopes = vec!["infra:attest".to_string()];
+        let grant =
+            sign_delegation_grant(&human, "ci-pipeline-node", &scopes, "2026-06-18T00:00:00Z")
+                .unwrap();
+
+        let bytes = jcs::canonicalize(&grant.signed_envelope).unwrap();
+        assert_eq!(
+            verify_threshold_signatures(
+                &bytes,
+                &[human.directory_member().unwrap()],
+                &[threshold_sig("eric-moore-k7", &grant)],
+                1,
+            ),
+            Ok(1),
+            "a scoped delegation must verify under the granter's key"
+        );
+        assert_eq!(grant.signed_envelope["dimension"], json!("delegates_to"));
+        assert_eq!(
+            grant.signed_envelope["delegated_scope"],
+            json!(["infra:attest"])
+        );
+        // The #77 split: a pure `node` may carry infra:* but not agency:*.
+        assert!(verify_delegation_scope_split("node", &scopes).is_ok());
+        assert!(
+            verify_delegation_scope_split("node", &["agency:reason".to_string()]).is_err(),
+            "a node carrying agency:* must be rejected"
         );
     }
 }
