@@ -18,7 +18,7 @@ tpm-windows = ["ciris-keyring/tpm-windows"]  # Experimental: Windows native TPM
 # PKCS#11 hardware-token support (YubiKey PIV / OpenSC) for the `token` CLI
 # subcommand. Pulls in `cryptoki` via the keyring; needs a physical token to
 # exercise (CIRISVerify#80). Bakes the dep into the binary build.
-pkcs11 = ["ciris-keyring/pkcs11", "dep:rpassword"]
+pkcs11 = ["ciris-keyring/pkcs11"]
 
 [[bin]]
 name = "ciris-verify"
@@ -27,7 +27,8 @@ path = "src/bin/ciris_verify.rs"
 [dependencies]
 # Internal crates
 ciris-keyring.workspace = true
-ciris-crypto.workspace = true
+# `kdf` + `aes-gcm` enable password-protected software keys (PBKDF2 → AES-256-GCM).
+ciris-crypto = { workspace = true, features = ["kdf", "aes-gcm"] }
 
 # Async
 tokio.workspace = true
@@ -36,9 +37,11 @@ futures.workspace = true
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
-# Hidden PIN prompt for the `token` PKCS#11 subcommand (keeps the token PIN out
-# of argv / shell history). Only compiled under the `pkcs11` feature.
-rpassword = { version = "7", optional = true }
+# Hidden PIN / password prompt (keeps secrets out of argv / shell history) —
+# used by the `token` PKCS#11 PIN and the `fedcode`/identity software-key password.
+rpassword = "7"
+# QR rendering for fedcodes (terminal unicode + SVG; no heavy image-codec dep).
+qrcode = "0.14"
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }

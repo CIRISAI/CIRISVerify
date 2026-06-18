@@ -210,6 +210,56 @@ enum Commands {
         #[command(subcommand)]
         action: IdentityAction,
     },
+
+    /// Federation identity codes (FSD-002) — generate / inspect a usercode,
+    /// agentcode, nodecode, familycode, or communitycode. Software keys, no
+    /// hardware required; render to the terminal or an SVG QR.
+    Fedcode {
+        #[command(subcommand)]
+        action: FedcodeAction,
+    },
+}
+
+/// `ciris-verify fedcode` actions.
+#[derive(Subcommand)]
+enum FedcodeAction {
+    /// Generate a fedcode for a fresh (or saved) **software** Ed25519 key.
+    New {
+        /// `user` | `agent` | `node` | `family` | `community`.
+        #[arg(long, default_value = "user")]
+        kind: String,
+        /// Human label for the `key_id` (`<label>-<fingerprint>`).
+        #[arg(long)]
+        label: String,
+        /// Optional transport hint (e.g. a public base URL).
+        #[arg(long)]
+        transport_hint: Option<String>,
+        /// Group `*_key_id` (required for `family` / `community`).
+        #[arg(long)]
+        group_key_id: Option<String>,
+        /// Persist the software seed to this file, **encrypted** with a password
+        /// (prompted) — PBKDF2-HMAC-SHA256 + AES-256-GCM. Reused on next run.
+        #[arg(long)]
+        save: Option<String>,
+        /// Write the QR to this `.svg` file in addition to the terminal.
+        #[arg(long)]
+        svg: Option<String>,
+        /// Suppress the terminal QR (code text only).
+        #[arg(long)]
+        no_qr: bool,
+    },
+
+    /// Decode + display a fedcode (and render its QR).
+    Show {
+        /// The `CIRIS-V2-…` (or legacy `CIRIS-V1-…`) code.
+        code: String,
+        /// Write the QR to this `.svg` file.
+        #[arg(long)]
+        svg: Option<String>,
+        /// Suppress the terminal QR.
+        #[arg(long)]
+        no_qr: bool,
+    },
 }
 
 /// `ciris-verify identity` actions.
@@ -1990,6 +2040,317 @@ fn run_ykman(args: &[&str]) -> Result<(), String> {
     Ok(())
 }
 
+// ===========================================================================
+// `fedcode` — federation identity codes (FSD-002), software keys, no hardware
+// ===========================================================================
+
+fn run_fedcode(action: FedcodeAction, json_output: bool) {
+    match action {
+        FedcodeAction::New {
+            kind,
+            label,
+            transport_hint,
+            group_key_id,
+            save,
+            svg,
+            no_qr,
+        } => run_fedcode_new(FedcodeNew {
+            kind,
+            label,
+            transport_hint,
+            group_key_id,
+            save,
+            svg,
+            no_qr,
+            json_output,
+        }),
+        FedcodeAction::Show { code, svg, no_qr } => {
+            run_fedcode_show(&code, svg, no_qr, json_output)
+        },
+    }
+}
+
+struct FedcodeNew {
+    kind: String,
+    label: String,
+    transport_hint: Option<String>,
+    group_key_id: Option<String>,
+    save: Option<String>,
+    svg: Option<String>,
+    no_qr: bool,
+    json_output: bool,
+}
+
+fn parse_fedkind(s: &str) -> Result<ciris_verify_core::fedcode::FedKind, String> {
+    use ciris_verify_core::fedcode::FedKind;
+    Ok(match s {
+        "user" => FedKind::User,
+        "agent" => FedKind::Agent,
+        "node" => FedKind::Node,
+        "family" => FedKind::Family,
+        "community" => FedKind::Community,
+        other => {
+            return Err(format!(
+                "unknown kind {other:?} (user|agent|node|family|community)"
+            ))
+        },
+    })
+}
+
+fn run_fedcode_new(a: FedcodeNew) {
+    use base64::Engine;
+    use ciris_crypto::{ClassicalSigner, Ed25519Signer};
+    use ciris_verify_core::fedcode::{self, FedCode, FedKind};
+
+    let kind = match parse_fedkind(&a.kind) {
+        Ok(k) => k,
+        Err(e) => {
+            eprintln!("❌ {e}");
+            std::process::exit(2);
+        },
+    };
+    if matches!(kind, FedKind::Family | FedKind::Community) && a.group_key_id.is_none() {
+        eprintln!("❌ --group-key-id is required for kind {}", kind.as_str());
+        std::process::exit(2);
+    }
+
+    // Obtain the 32-byte Ed25519 seed: decrypt a saved one, else CSPRNG a fresh
+    // one (and, if --save was given, persist it password-encrypted).
+    let mut newly_generated = false;
+    let seed: [u8; 32] = match a.save.as_deref() {
+        Some(path) if std::path::Path::new(path).exists() => {
+            let pw = prompt_password("Key password: ");
+            match load_encrypted_seed(path, &pw) {
+                Ok(s) if s.len() == 32 => s.try_into().unwrap(),
+                Ok(_) => {
+                    eprintln!("❌ saved seed is not 32 bytes");
+                    std::process::exit(1);
+                },
+                Err(e) => {
+                    eprintln!("❌ open saved key: {e}");
+                    std::process::exit(1);
+                },
+            }
+        },
+        _ => {
+            newly_generated = true;
+            let mut s = [0u8; 32];
+            if let Err(e) = ciris_crypto::random::fill(&mut s) {
+                eprintln!("❌ CSPRNG: {e}");
+                std::process::exit(1);
+            }
+            s
+        },
+    };
+    let signer = match Ed25519Signer::from_seed(&seed) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ seed → key: {e}");
+            std::process::exit(1);
+        },
+    };
+    let ed_pub = match signer.public_key() {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("❌ read public key: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    let key_id = fedcode::derive_key_id(&a.label, &ed_pub);
+    let fc = FedCode {
+        kind,
+        key_id: key_id.clone(),
+        pubkey_ed25519_base64: base64::engine::general_purpose::STANDARD.encode(&ed_pub),
+        transport_hint: a.transport_hint.clone(),
+        alias_hint: Some(a.label.clone()),
+        group_key_id: a.group_key_id.clone(),
+    };
+    let code = match fedcode::encode(&fc) {
+        Ok(c) => c,
+        Err(e) => {
+            eprintln!("❌ encode: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    // Persist the seed (encrypted) if requested and freshly generated.
+    if let (Some(path), true) = (a.save.as_deref(), newly_generated) {
+        let pw = prompt_password("Set a password to protect the saved key: ");
+        let pw2 = prompt_password("Confirm password: ");
+        if pw != pw2 {
+            eprintln!("❌ passwords do not match");
+            std::process::exit(1);
+        }
+        if let Err(e) = save_encrypted_seed(path, &seed, &pw) {
+            eprintln!("❌ save key: {e}");
+            std::process::exit(1);
+        }
+        eprintln!("🔐 saved password-encrypted software key → {path} (PBKDF2 + AES-256-GCM, 0600)");
+    }
+
+    emit_fedcode(
+        &fc,
+        &code,
+        a.svg.as_deref(),
+        a.no_qr,
+        a.json_output,
+        &key_id,
+    );
+}
+
+fn run_fedcode_show(code: &str, svg: Option<String>, no_qr: bool, json_output: bool) {
+    use ciris_verify_core::fedcode;
+    let fc = match fedcode::decode(code) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("❌ decode: {e}");
+            std::process::exit(1);
+        },
+    };
+    // Re-encode to the canonical form for the QR / echo.
+    let canonical = fedcode::encode(&fc).unwrap_or_else(|_| code.to_string());
+    emit_fedcode(
+        &fc,
+        &canonical,
+        svg.as_deref(),
+        no_qr,
+        json_output,
+        &fc.key_id,
+    );
+}
+
+fn emit_fedcode(
+    fc: &ciris_verify_core::fedcode::FedCode,
+    code: &str,
+    svg: Option<&str>,
+    no_qr: bool,
+    json_output: bool,
+    key_id: &str,
+) {
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({
+                "kind": fc.kind.as_str(),
+                "key_id": key_id,
+                "pubkey_ed25519_base64": fc.pubkey_ed25519_base64,
+                "transport_hint": fc.transport_hint,
+                "alias_hint": fc.alias_hint,
+                "group_key_id": fc.group_key_id,
+                "code": code,
+            })
+        );
+    } else {
+        println!("🪪  {}code", fc.kind.as_str());
+        println!("  key_id : {key_id}");
+        if let Some(g) = &fc.group_key_id {
+            println!("  group  : {g}");
+        }
+        println!("  code   : {code}\n");
+        if !no_qr {
+            if let Some(q) = render_qr_terminal(code) {
+                println!("{q}");
+            }
+        }
+    }
+    if let Some(path) = svg {
+        match render_qr_svg(code) {
+            Some(s) => {
+                if let Err(e) = std::fs::write(path, s) {
+                    eprintln!("⚠️  could not write SVG {path}: {e}");
+                } else {
+                    eprintln!("🖼  QR written → {path}");
+                }
+            },
+            None => eprintln!("⚠️  could not render QR (code too long?)"),
+        }
+    }
+}
+
+fn render_qr_terminal(data: &str) -> Option<String> {
+    use qrcode::render::unicode;
+    use qrcode::QrCode;
+    QrCode::new(data.as_bytes()).ok().map(|c| {
+        c.render::<unicode::Dense1x2>()
+            .quiet_zone(true)
+            .module_dimensions(1, 1)
+            .build()
+    })
+}
+
+fn render_qr_svg(data: &str) -> Option<String> {
+    use qrcode::render::svg;
+    use qrcode::QrCode;
+    QrCode::new(data.as_bytes()).ok().map(|c| {
+        c.render::<svg::Color>()
+            .min_dimensions(256, 256)
+            .dark_color(svg::Color("#000000"))
+            .light_color(svg::Color("#ffffff"))
+            .build()
+    })
+}
+
+/// Prompt for a password (hidden), or read `CIRIS_KEY_PASSWORD` if set.
+fn prompt_password(prompt: &str) -> String {
+    if let Ok(p) = std::env::var("CIRIS_KEY_PASSWORD") {
+        return p;
+    }
+    rpassword::prompt_password(prompt).unwrap_or_default()
+}
+
+/// Encrypted software-seed format: `b"CIRISK1"` + salt(16) + nonce(12) +
+/// AES-256-GCM(ciphertext+tag), key = PBKDF2-HMAC-SHA256(password, salt, 600k).
+const KEYFILE_MAGIC: &[u8] = b"CIRISK1";
+const KEYFILE_ITERS: u32 = 600_000;
+
+fn save_encrypted_seed(path: &str, seed: &[u8; 32], password: &str) -> Result<(), String> {
+    let mut salt = [0u8; 16];
+    let mut nonce = [0u8; 12];
+    ciris_crypto::random::fill(&mut salt).map_err(|e| format!("rng: {e}"))?;
+    ciris_crypto::random::fill(&mut nonce).map_err(|e| format!("rng: {e}"))?;
+    let key = derive_key(password, &salt)?;
+    let ct =
+        ciris_crypto::aes_gcm::encrypt(&key, &nonce, seed).map_err(|e| format!("encrypt: {e}"))?;
+
+    let mut out = Vec::with_capacity(KEYFILE_MAGIC.len() + 16 + 12 + ct.len());
+    out.extend_from_slice(KEYFILE_MAGIC);
+    out.extend_from_slice(&salt);
+    out.extend_from_slice(&nonce);
+    out.extend_from_slice(&ct);
+
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    use std::io::Write;
+    opts.open(path)
+        .and_then(|mut f| f.write_all(&out))
+        .map_err(|e| format!("write {path}: {e}"))
+}
+
+fn load_encrypted_seed(path: &str, password: &str) -> Result<Vec<u8>, String> {
+    let data = std::fs::read(path).map_err(|e| format!("read {path}: {e}"))?;
+    let hdr = KEYFILE_MAGIC.len() + 16 + 12;
+    if data.len() < hdr + 16 || &data[..KEYFILE_MAGIC.len()] != KEYFILE_MAGIC {
+        return Err("not a CIRIS encrypted key file".into());
+    }
+    let salt = &data[KEYFILE_MAGIC.len()..KEYFILE_MAGIC.len() + 16];
+    let nonce: [u8; 12] = data[KEYFILE_MAGIC.len() + 16..hdr].try_into().unwrap();
+    let key = derive_key(password, salt)?;
+    ciris_crypto::aes_gcm::decrypt(&key, &nonce, &data[hdr..])
+        .map_err(|_| "wrong password or corrupted key file".to_string())
+}
+
+fn derive_key(password: &str, salt: &[u8]) -> Result<[u8; 32], String> {
+    let k = ciris_crypto::kdf::pbkdf2_hmac_sha256(password.as_bytes(), salt, KEYFILE_ITERS, 32)
+        .map_err(|e| format!("kdf: {e}"))?;
+    k.try_into().map_err(|_| "kdf length".to_string())
+}
+
 #[tokio::main]
 async fn main() {
     enable_windows_ansi();
@@ -2130,6 +2491,9 @@ async fn main() {
             }
             run_identity(action, json_output).await;
         },
+        Some(Commands::Fedcode { action }) => {
+            run_fedcode(action, json_output);
+        },
         None => {
             // No command - show help
             print_banner();
@@ -2150,5 +2514,39 @@ mod tests {
         assert_eq!(parse_hex("0a1b").unwrap(), vec![0x0a, 0x1b]);
         assert_eq!(parse_hex("0x0A1B").unwrap(), vec![0x0a, 0x1b]);
         assert!(parse_hex("abc").is_err(), "odd length rejected");
+    }
+
+    #[test]
+    fn parse_fedkind_maps_all_kinds() {
+        use ciris_verify_core::fedcode::FedKind;
+        assert_eq!(parse_fedkind("user").unwrap(), FedKind::User);
+        assert_eq!(parse_fedkind("community").unwrap(), FedKind::Community);
+        assert!(parse_fedkind("nope").is_err());
+    }
+
+    #[test]
+    fn encrypted_software_keystore_round_trips() {
+        let path = std::env::temp_dir().join(format!("ciris-key-test-{}.key", std::process::id()));
+        let p = path.to_string_lossy().into_owned();
+        let _ = std::fs::remove_file(&p);
+
+        let seed = [7u8; 32];
+        save_encrypted_seed(&p, &seed, "correct horse").unwrap();
+
+        // Right password → exact seed back.
+        assert_eq!(
+            load_encrypted_seed(&p, "correct horse").unwrap(),
+            seed.to_vec()
+        );
+        // Wrong password → rejected (AES-GCM tag fails).
+        assert!(load_encrypted_seed(&p, "wrong").is_err());
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "key file must be 0600");
+        }
+        let _ = std::fs::remove_file(&p);
     }
 }
