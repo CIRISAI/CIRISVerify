@@ -40,8 +40,10 @@ clap = { version = "4.5", features = ["derive"] }
 # Hidden PIN / password prompt (keeps secrets out of argv / shell history) —
 # used by the `token` PKCS#11 PIN and the `fedcode`/identity software-key password.
 rpassword = "7"
-# QR rendering for fedcodes (terminal unicode + SVG; no heavy image-codec dep).
-qrcode = "0.14"
+# QR rendering for fedcodes (terminal unicode + SVG only). `default-features =
+# false` drops the `image` render feature, whose `image@0.25` transitively needs
+# rustc 1.88 > our MSRV 1.86 — we only use the svg/unicode renderers.
+qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
