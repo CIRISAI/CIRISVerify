@@ -22,8 +22,8 @@
 
 use std::sync::Arc;
 
+use base64::Engine;
 use ciris_keyring::{HardwareSigner, KeyringError};
-use sha2::{Digest, Sha256};
 
 use crate::ceg_outbox::{keys_dir, SignedCegObject};
 use crate::error::VerifyError;
@@ -45,18 +45,23 @@ pub struct CreatedIdentity {
     pub key_id: String,
     /// The signed CEG object to relay (a self-signed genesis `KeyRecord`).
     pub object: SignedCegObject,
+    /// The entity's shareable **fedcode** (FSD-002) — a `usercode` for a `user`
+    /// identity, `agentcode` for `agent`, etc. Drop a usercode into a node's
+    /// config to claim ownership (FSD-002 §5).
+    pub code: String,
 }
 
 /// Create a self-signed genesis federation identity from an already-opened
 /// hardware Ed25519 signer.
 ///
 /// `hw_signer` MUST be Ed25519 (the federation classical half) and its key MUST
-/// already exist (the caller provisioned it). The software ML-DSA-65 half is a
-/// stable seed loaded-or-created under `~/ciris/keys/<key_id>.mldsa.seed`.
-/// `valid_from` is caller-supplied RFC-3339 (clock-free for reproducible bytes).
+/// already exist (the caller provisioned it). The ML-DSA-65 PQC half is a
+/// TPM/SE-sealed seed (#71). `valid_from` is caller-supplied RFC-3339.
 ///
-/// Returns the `key_id` + the [`SignedCegObject`]; the caller writes it to the
-/// outbox ([`SignedCegObject::write_to_outbox`]).
+/// The `key_id` is, in order of precedence: `fed_key_id` if given; else
+/// `derive_key_id(label, ed_pubkey)` (the FSD-002 `label-fingerprint` form) if
+/// `label` is given; else `derive_key_id("id", …)`. The returned
+/// [`CreatedIdentity::code`] is the shareable fedcode for `identity_type`.
 ///
 /// # Errors
 ///
@@ -66,10 +71,12 @@ pub async fn create_federation_identity(
     hw_signer: Arc<dyn HardwareSigner>,
     identity_type: &str,
     fed_key_id: Option<String>,
+    label: Option<&str>,
     valid_from: &str,
 ) -> Result<CreatedIdentity, VerifyError> {
     let ed_pub = hw_signer.public_key().await.map_err(keyring_err)?;
-    let key_id = fed_key_id.unwrap_or_else(|| hex::encode(Sha256::digest(&ed_pub)));
+    let key_id =
+        fed_key_id.unwrap_or_else(|| crate::fedcode::derive_key_id(label.unwrap_or("id"), &ed_pub));
 
     // The ML-DSA-65 PQC half: TPM/SE-sealed at rest (#71). The 32-byte seed is
     // sealed under the platform secure storage (TPM with `--features tpm`,
@@ -86,7 +93,30 @@ pub async fn create_federation_identity(
     })?;
 
     let object = SignedCegObject::new(FEDERATION_KEY_RECORD_KIND, &key_id, valid_from, body);
-    Ok(CreatedIdentity { key_id, object })
+
+    // The shareable fedcode for this entity (FSD-002).
+    let kind = match identity_type {
+        "agent" => crate::fedcode::FedKind::Agent,
+        "node" => crate::fedcode::FedKind::Node,
+        _ => crate::fedcode::FedKind::User,
+    };
+    let code = crate::fedcode::encode(&crate::fedcode::FedCode {
+        kind,
+        key_id: key_id.clone(),
+        pubkey_ed25519_base64: base64::engine::general_purpose::STANDARD.encode(&ed_pub),
+        transport_hint: None,
+        alias_hint: label.map(str::to_string),
+        group_key_id: None,
+    })
+    .map_err(|e| VerifyError::IntegrityError {
+        message: format!("encode fedcode: {e}"),
+    })?;
+
+    Ok(CreatedIdentity {
+        key_id,
+        object,
+        code,
+    })
 }
 
 #[cfg(test)]
@@ -114,12 +144,29 @@ mod tests {
 
         let hw: Arc<dyn HardwareSigner> =
             Arc::new(ciris_keyring::Ed25519SoftwareSigner::from_bytes(&[9u8; 32], "fed").unwrap());
-        let created = create_federation_identity(hw, "user", None, "2026-06-18T00:00:00Z")
-            .await
-            .unwrap();
+        let created = create_federation_identity(
+            hw,
+            "user",
+            None,
+            Some("Eric Moore"),
+            "2026-06-18T00:00:00Z",
+        )
+        .await
+        .unwrap();
 
         assert_eq!(created.object.kind, FEDERATION_KEY_RECORD_KIND);
         assert_eq!(created.object.key_id, created.key_id);
+        // label-fingerprint key_id + a usercode fell out.
+        assert!(
+            created.key_id.starts_with("eric-moore-"),
+            "got {}",
+            created.key_id
+        );
+        assert!(created.code.starts_with("CIRIS-V2-"));
+        assert_eq!(
+            crate::fedcode::decode(&created.code).unwrap().kind,
+            crate::fedcode::FedKind::User
+        );
         // The body is the SignedKeyRecord wrapper { record: {...} } — the exact
         // `peer_key_record` shape CIRISServer accepts; signature inside `body`.
         let rec = &created.object.body["record"];

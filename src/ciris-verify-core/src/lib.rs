@@ -63,6 +63,7 @@ pub mod dns;
 pub mod doc_integrity;
 pub mod engine;
 pub mod error;
+pub mod fedcode;
 pub mod federation_envelope;
 pub mod federation_identity;
 pub mod federation_keyset;

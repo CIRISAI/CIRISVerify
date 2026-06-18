@@ -235,7 +235,11 @@ enum IdentityAction {
         /// CEG `identity_type` (`user` | `agent`). Default `user`.
         #[arg(long, default_value = "user")]
         identity_type: String,
-        /// Override the derived federation `key_id` (default: `sha256(ed_pubkey)` hex).
+        /// Human label for the `key_id` (FSD-002 `label-fingerprint`, e.g.
+        /// `eric-moore`). The address becomes `<label>-<key-fingerprint>`.
+        #[arg(long)]
+        label: Option<String>,
+        /// Override the derived federation `key_id` entirely (advanced).
         #[arg(long)]
         fed_key_id: Option<String>,
         /// Prompt for the token user PIN (a token requires login to sign).
@@ -1745,6 +1749,7 @@ struct IdentityCreateArgs {
     key_label: Option<String>,
     key_id: Option<String>,
     identity_type: String,
+    label: Option<String>,
     fed_key_id: Option<String>,
     pin: bool,
     provision: bool,
@@ -1763,6 +1768,7 @@ async fn run_identity(action: IdentityAction, json_output: bool) {
             key_label,
             key_id,
             identity_type,
+            label,
             fed_key_id,
             pin,
             provision,
@@ -1778,6 +1784,7 @@ async fn run_identity(action: IdentityAction, json_output: bool) {
                     key_label,
                     key_id,
                     identity_type,
+                    label,
                     fed_key_id,
                     pin,
                     provision,
@@ -1861,6 +1868,7 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
         Arc::from(hw_signer),
         &args.identity_type,
         args.fed_key_id.clone(),
+        args.label.as_deref(),
         &now,
     )
     .await
@@ -1892,6 +1900,7 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
             serde_json::json!({
                 "key_id": created.key_id,
                 "identity_type": args.identity_type,
+                "code": created.code,
                 "hardware_type": format!("{hw_type:?}"),
                 "outbox_path": path.display().to_string(),
             })
@@ -1900,6 +1909,8 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
         println!("✅ federation identity created (self-signed, hardware-rooted)\n");
         println!("  key_id        : {}", created.key_id);
         println!("  identity_type : {}", args.identity_type);
+        println!("  fedcode       : {}", created.code);
+        println!("                  (your {}code — share it / put it in a node config to claim ownership)", args.identity_type);
         println!("  hardware      : {hw_type:?} (Ed25519 on token)");
         println!("  PQC half      : ML-DSA-65, seed sealed at rest under ~/ciris/keys (#71)");
         println!("  CEG object    : {}", path.display());

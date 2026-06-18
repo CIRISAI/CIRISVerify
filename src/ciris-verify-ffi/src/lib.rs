@@ -1735,6 +1735,10 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
             .get("fed_key_id")
             .and_then(|v| v.as_str())
             .map(str::to_string);
+        let label = cfg
+            .get("label")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let valid_from = cfg
             .get("valid_from")
             .and_then(|v| v.as_str())
@@ -1760,6 +1764,7 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
                 std::sync::Arc::from(signer),
                 &identity_type,
                 fed_key_id,
+                label.as_deref(),
                 &valid_from,
             )
             .await
@@ -1782,6 +1787,7 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
             Ok(serde_json::json!({
                 "ok": true,
                 "key_id": created.key_id,
+                "code": created.code,
                 "outbox_path": outbox_path,
                 "ceg_object": ceg_object,
             }))
