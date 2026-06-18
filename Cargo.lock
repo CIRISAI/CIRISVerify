@@ -654,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-build-tool"
-version = "5.12.0"
+version = "5.13.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -676,7 +676,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "5.12.0"
+version = "5.13.0"
 dependencies = [
  "aws-lc-rs",
  "criterion",
@@ -709,7 +709,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "5.12.0"
+version = "5.13.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -718,6 +718,7 @@ dependencies = [
  "core-foundation",
  "core-foundation-sys",
  "criterion",
+ "cryptoki",
  "dirs",
  "ed25519-dalek",
  "hex",
@@ -747,7 +748,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "5.12.0"
+version = "5.13.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -767,7 +768,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "5.12.0"
+version = "5.13.0"
 dependencies = [
  "android_system_properties",
  "anyhow",
@@ -813,7 +814,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "5.12.0"
+version = "5.13.0"
 dependencies = [
  "aes-gcm",
  "android_logger",
@@ -1107,6 +1108,28 @@ dependencies = [
  "getrandom 0.4.2",
  "hybrid-array",
  "rand_core 0.10.1",
+]
+
+[[package]]
+name = "cryptoki"
+version = "0.12.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "ff765b99fc49f3116c9a908484486a2b92fd73c48da45c3a69716471c6cc56c6"
+dependencies = [
+ "bitflags 2.11.1",
+ "cryptoki-sys",
+ "libloading",
+ "log",
+ "secrecy",
+]
+
+[[package]]
+name = "cryptoki-sys"
+version = "0.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f1fd850498411e4057f1cba79e6e2bc7cbe960544c1046ab46d4685c403a1121"
+dependencies = [
+ "libloading",
 ]
 
 [[package]]
@@ -3807,6 +3830,15 @@ dependencies = [
  "generic-array",
  "pkcs8 0.10.2",
  "subtle",
+ "zeroize",
+]
+
+[[package]]
+name = "secrecy"
+version = "0.10.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e891af845473308773346dc847b2c23ee78fe442e0472ac50e22a18a93d3ae5a"
+dependencies = [
  "zeroize",
 ]
 

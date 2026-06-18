@@ -185,12 +185,10 @@ pub enum SigningBackend {
     /// Best platform hardware: TPM 2.0 / Secure Enclave-sealed Ed25519, with an
     /// encrypted software fallback. Testable on any box.
     PlatformSealed,
-    /// External hardware token (YubiKey) over the given interface (PIV/PKCS#11).
-    /// Requires a physical token; resolved via [`crate::hw_token`].
-    Pkcs11 {
-        /// The token interface (`TokenInterface::Pkcs11` for YubiKey PIV/PKCS#11).
-        interface: TokenInterface,
-    },
+    /// External hardware token (YubiKey) over PKCS#11. Requires a physical token
+    /// and the `pkcs11` feature; resolved via [`crate::pkcs11`]. The private key
+    /// never leaves the token (`C_Sign` runs on-device).
+    Pkcs11(crate::pkcs11::Pkcs11Config),
     /// Software seed — explicit dev/test custody.
     Software,
 }
@@ -230,8 +228,8 @@ pub fn get_user_identity_signer(
         SigningBackend::PlatformSealed => {
             crate::sealed_ed25519::get_platform_ed25519_signer(&config.key_id, &config.seed_dir)
         },
-        SigningBackend::Pkcs11 { interface } => {
-            crate::hw_token::get_token_signer(*interface, &config.key_id)
+        SigningBackend::Pkcs11(pkcs11_config) => {
+            crate::pkcs11::open_pkcs11_signer(&config.key_id, pkcs11_config)
         },
         SigningBackend::Software => crate::platform::create_software_signer(&config.key_id),
     }
@@ -316,15 +314,18 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    #[cfg(not(feature = "pkcs11"))]
     #[test]
-    fn pkcs11_backend_reports_unsupported_without_token() {
+    fn pkcs11_backend_reports_unsupported_without_feature() {
         // Honest: no PKCS#11 backend compiled in / no token on this box.
         let cfg = UserIdentityConfig {
             key_id: "user-yk-1".to_string(),
             seed_dir: std::env::temp_dir(),
-            backend: SigningBackend::Pkcs11 {
-                interface: TokenInterface::Pkcs11,
-            },
+            backend: SigningBackend::Pkcs11(crate::pkcs11::Pkcs11Config::new(
+                "/usr/lib/libykcs11.so",
+                "123456",
+                "PIV AUTH key",
+            )),
         };
         assert!(matches!(
             get_user_identity_signer(&cfg),

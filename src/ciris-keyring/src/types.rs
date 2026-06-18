@@ -96,6 +96,11 @@ pub enum HardwareType {
 
     /// Yubico YubiHSM 2
     YubiHsm = 11,
+
+    /// External hardware security token over PKCS#11 (YubiKey PIV/OpenPGP,
+    /// smartcard, OpenSC token). A dedicated secure element the user holds —
+    /// distinct from a platform TPM/SE and from a network HSM (CIRISVerify#80).
+    ExternalSecureElement = 13,
 }
 
 impl HardwareType {
@@ -120,6 +125,8 @@ impl HardwareType {
             Self::AndroidStrongbox => 5,
             Self::TpmDiscrete => 5,
             Self::IosSecureEnclave | Self::MacOsSecureEnclave => 5,
+            // External PKCS#11 token (YubiKey 5 FIPS PIV, smartcard)
+            Self::ExternalSecureElement => 5,
             // Firmware/TEE-based
             Self::TpmFirmware => 4,
             Self::IntelSgx => 4,

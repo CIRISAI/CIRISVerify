@@ -102,6 +102,10 @@ pub mod sealed_ed25519;
 /// and multi-key-per-identity for redundancy (CIRISVerify#80).
 pub mod user_identity;
 
+/// YubiKey / PKCS#11 hardware-token signer — real `C_Sign` over a physical
+/// token behind the `pkcs11` feature (CIRISVerify#80).
+pub mod pkcs11;
+
 /// TPM/SE-sealed ML-DSA-65 federation signing key — the PQC half of
 /// hardware-backed federation custody (CIRISVerify#70 PQC analog).
 #[cfg(feature = "pqc-ml-dsa")]
