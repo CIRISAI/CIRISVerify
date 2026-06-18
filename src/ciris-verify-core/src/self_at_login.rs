@@ -832,6 +832,90 @@ pub fn as_membership_grant(signed: &SignedEnvelope) -> crate::operational_admit:
 }
 
 // ===========================================================================
+// 3b. occurrence revocation — "revoke the lost / stolen device" (CEG §11.7)
+// ===========================================================================
+
+/// Hybrid-sign an `identity_occurrence` **revocation** — the cryptographic
+/// authorization to remove a device (occurrence) from your identity (CEG
+/// §11.7.1 Option-A forward-secrecy removal). This is the producer half of
+/// "revoke the lost one": `revoker` is a **surviving** key, and it signs a
+/// revocation of `revoked_occurrence_key_id` under `identity_key_id`.
+///
+/// **Use a surviving key.** Per §11.7.4 the vouch (`witness_set`) is single —
+/// "the revoking occurrence OR the `identity_key_id`". For a *stolen* device
+/// you must revoke with a **different** key you still control (another enrolled
+/// occurrence, or the identity root) — never the compromised key. This is the
+/// concrete reason the OR-of-N redundancy ([`crate::self_at_login`] multi-key
+/// enrollment) matters: with only one key you cannot authorize its own
+/// removal. The producer does not forbid `revoker == revoked` (a *voluntary*
+/// leave may self-revoke), but the stolen-device flow MUST NOT.
+///
+/// The signed envelope's members map onto CIRISPersist's
+/// `IdentityOccurrenceRevocation` row (minus the server-computed
+/// `persist_row_hash`): `identity_key_id`, `occurrence_key_id`, `revoked_at`,
+/// `effective_at`, optional `reason`, and `witness_set: [revoker_key_id]`.
+/// `revoked_at` / `effective_at` are caller-supplied RFC-3339 (this module is
+/// clock-free so the signed bytes are reproducible); `effective_at` may be
+/// future-dated. The bound hybrid signature verifies at threshold 1 against the
+/// revoker's pinned pubkeys — the same primitive
+/// ([`crate::threshold::verify_threshold_signatures`]) the admission boundary
+/// reuses — so Registry/Server can verify the authorization before writing the
+/// row through to Persist (whose merge logic never counts signatures, §5.6.8.13).
+///
+/// **Cross-impl flag:** the member set is pinned to the Persist row shape but
+/// the *signed-envelope framing* (member names + the `witness_set` single-vouch)
+/// is flagged for CIRISServer/Registry cross-confirmation — like the #76
+/// partnership seven-member set was.
+///
+/// # Errors
+///
+/// [`VerifyError`] only on a canonicalization or signer fault.
+pub async fn sign_occurrence_revocation(
+    revoker: &dyn SelfSigner,
+    identity_key_id: &str,
+    revoked_occurrence_key_id: &str,
+    reason: Option<&str>,
+    revoked_at: &str,
+    effective_at: &str,
+) -> Result<SignedEnvelope, VerifyError> {
+    revoker
+        .sign_envelope_async(occurrence_revocation_envelope(
+            identity_key_id,
+            revoked_occurrence_key_id,
+            reason,
+            revoked_at,
+            effective_at,
+            revoker.key_id(),
+        ))
+        .await
+}
+
+/// The canonical occurrence-revocation envelope (CEG §11.7) — members map to
+/// the Persist `IdentityOccurrenceRevocation` row. `reason` is omitted (not
+/// null) when absent (§0.9 omit-vs-materialize). `witness_set` is the single
+/// vouch `[revoker_key_id]` (§11.7.4).
+fn occurrence_revocation_envelope(
+    identity_key_id: &str,
+    revoked_occurrence_key_id: &str,
+    reason: Option<&str>,
+    revoked_at: &str,
+    effective_at: &str,
+    revoker_key_id: &str,
+) -> Value {
+    let mut env = json!({
+        "identity_key_id": identity_key_id,
+        "occurrence_key_id": revoked_occurrence_key_id,
+        "revoked_at": revoked_at,
+        "effective_at": effective_at,
+        "witness_set": [revoker_key_id],
+    });
+    if let Some(reason) = reason {
+        env["reason"] = json!(reason);
+    }
+    env
+}
+
+// ===========================================================================
 // 4. The unified login ceremony (CIRISVerify#63): WebAuthn presence + bundle
 // ===========================================================================
 
@@ -1617,6 +1701,153 @@ mod tests {
         assert!(
             r.is_err(),
             "ceremony must fail closed when presence does not verify"
+        );
+    }
+
+    // ---- 5. occurrence revocation — "revoke the lost device" -------------
+
+    #[tokio::test]
+    async fn occurrence_revocation_verifies_with_a_surviving_key() {
+        // Device A (a SURVIVING hardware-rooted key) revokes device B. The
+        // signed revocation verifies at threshold 1 against A's pinned pubkeys
+        // — exactly what Registry/Server checks before writing the row through
+        // to Persist. (You cannot trust the stolen key to revoke itself; the
+        // OR-of-N redundancy is what makes A available to sign this.)
+        let device_a = hardware_rooted(0x07, "device-a-key");
+        let revocation = sign_occurrence_revocation(
+            &device_a,
+            "my-identity-key",
+            "device-b-stolen-key",
+            Some("device lost"),
+            "2026-06-18T00:00:00.000Z",
+            "2026-06-18T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+
+        // Members map to the Persist IdentityOccurrenceRevocation row.
+        let env = &revocation.signed_envelope;
+        assert_eq!(env["identity_key_id"], json!("my-identity-key"));
+        assert_eq!(env["occurrence_key_id"], json!("device-b-stolen-key"));
+        assert_eq!(
+            env["witness_set"],
+            json!(["device-a-key"]),
+            "single vouch = the revoker (§11.7.4)"
+        );
+        assert_eq!(env["reason"], json!("device lost"));
+
+        // The authorization verifies at threshold 1 under the revoker's key.
+        let bytes = jcs::canonicalize(env).unwrap();
+        assert_eq!(
+            verify_threshold_signatures(
+                &bytes,
+                &[device_a.directory_member().await.unwrap()],
+                &[threshold_sig("device-a-key", &revocation)],
+                1,
+            ),
+            Ok(1),
+            "a revocation signed by a surviving key must verify at threshold 1"
+        );
+    }
+
+    #[tokio::test]
+    async fn tampered_revocation_target_fails_verification() {
+        // Repoint the revocation at a different occurrence after signing → the
+        // JCS bytes change → the authorization no longer verifies (an attacker
+        // cannot retarget a signed revocation).
+        let device_a = hardware_rooted(0x07, "device-a-key");
+        let mut revocation = sign_occurrence_revocation(
+            &device_a,
+            "my-identity-key",
+            "device-b-key",
+            None,
+            "2026-06-18T00:00:00.000Z",
+            "2026-06-18T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        // No reason supplied → omitted, not null (§0.9).
+        assert!(revocation.signed_envelope.get("reason").is_none());
+
+        revocation.signed_envelope["occurrence_key_id"] = json!("device-c-key");
+        let bytes = jcs::canonicalize(&revocation.signed_envelope).unwrap();
+        assert!(
+            verify_threshold_signatures(
+                &bytes,
+                &[device_a.directory_member().await.unwrap()],
+                &[threshold_sig("device-a-key", &revocation)],
+                1,
+            )
+            .is_err(),
+            "retargeting a signed revocation must break verification"
+        );
+    }
+
+    #[tokio::test]
+    async fn revocation_does_not_bind_to_a_forged_revoker_key_id() {
+        // A revocation is authorized only if it verifies against the revoker's
+        // DIRECTORY-pinned pubkeys. An attacker who signs a revocation while
+        // CLAIMING a surviving key's key_id (but using their own keypair) is
+        // rejected, because the directory pins that key_id to the real pubkeys.
+        let real_device_a = hardware_rooted(0x07, "device-a-key");
+        let attacker = HybridSigningIdentity::new(
+            "device-a-key", // claims the surviving key's id
+            Ed25519Signer::random().unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        );
+
+        let forged = sign_occurrence_revocation(
+            &attacker,
+            "my-identity-key",
+            "device-b-key",
+            None,
+            "2026-06-18T00:00:00.000Z",
+            "2026-06-18T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+
+        let bytes = jcs::canonicalize(&forged.signed_envelope).unwrap();
+        assert!(
+            verify_threshold_signatures(
+                &bytes,
+                // directory pins device-a-key to the REAL surviving key's pubkeys
+                &[real_device_a.directory_member().await.unwrap()],
+                &[threshold_sig("device-a-key", &forged)],
+                1,
+            )
+            .is_err(),
+            "a revocation forged under a surviving key's id must not authorize"
+        );
+    }
+
+    #[tokio::test]
+    async fn voluntary_self_revoke_carries_self_as_sole_vouch() {
+        // §11.7.4 permits the revoking occurrence to be the subject (a voluntary
+        // leave). Pin that behavior: witness_set == [self], and it verifies
+        // under the signer's own key. (The STOLEN-device flow must instead use a
+        // surviving key — that is the producer's documented caller contract.)
+        let device = hardware_rooted(0x07, "device-self");
+        let rev = sign_occurrence_revocation(
+            &device,
+            "my-identity-key",
+            "device-self", // revoking itself
+            Some("voluntary leave"),
+            "2026-06-18T00:00:00.000Z",
+            "2026-06-18T00:00:00.000Z",
+        )
+        .await
+        .unwrap();
+        assert_eq!(rev.signed_envelope["witness_set"], json!(["device-self"]));
+        let bytes = jcs::canonicalize(&rev.signed_envelope).unwrap();
+        assert_eq!(
+            verify_threshold_signatures(
+                &bytes,
+                &[device.directory_member().await.unwrap()],
+                &[threshold_sig("device-self", &rev)],
+                1,
+            ),
+            Ok(1),
         );
     }
 }

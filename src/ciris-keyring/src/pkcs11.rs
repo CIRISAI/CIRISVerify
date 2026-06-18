@@ -30,6 +30,7 @@ use std::path::PathBuf;
 use crate::error::KeyringError;
 #[cfg(not(feature = "pkcs11"))]
 use crate::signer::HardwareSigner;
+use crate::types::ClassicalAlgorithm;
 
 /// How to reach a user-identity signing key on a PKCS#11 hardware token.
 /// Always available (data only); the signer is `pkcs11`-feature-gated.
@@ -67,6 +68,63 @@ impl Pkcs11Config {
     }
 }
 
+/// A read-only inventory of a PKCS#11 token — its identity plus the key
+/// objects on it — so an operator can discover the `CKA_LABEL` / `CKA_ID` to
+/// sign with (the `ciris-verify token probe` CLI surface). Data only; the
+/// probe *function* is `pkcs11`-feature-gated.
+#[derive(Debug, Clone)]
+pub struct Pkcs11Probe {
+    /// Every slot that currently has a token present.
+    pub tokens: Vec<Pkcs11TokenInfo>,
+    /// Key objects found in the selected slot (`Pkcs11Config::slot_index`).
+    pub keys: Vec<Pkcs11KeyInfo>,
+}
+
+/// Identity of one present token (from `CK_TOKEN_INFO`).
+#[derive(Debug, Clone)]
+pub struct Pkcs11TokenInfo {
+    /// Index into `get_slots_with_token()` (what `slot_index` selects).
+    pub slot_index: usize,
+    /// `manufacturerID` (e.g. `"Yubico (www.yubico.com)"`).
+    pub manufacturer: String,
+    /// `model` (e.g. `"YubiKey YK5"`).
+    pub model: String,
+    /// `serialNumber`.
+    pub serial: String,
+    /// Token `label`.
+    pub label: String,
+}
+
+/// One key object on the token.
+#[derive(Debug, Clone)]
+pub struct Pkcs11KeyInfo {
+    /// `"public"` or `"private"`.
+    pub class: &'static str,
+    /// `CKA_LABEL`, if set — what `Pkcs11Config::key_label` matches.
+    pub label: Option<String>,
+    /// `CKA_ID` as lowercase hex, if set — what `Pkcs11Config::key_id` matches.
+    pub id_hex: Option<String>,
+    /// `CKA_KEY_TYPE` rendered for humans (e.g. `"EC_EDWARDS"`, `"EC"`, `"RSA"`).
+    pub key_type: String,
+    /// The CIRIS federation algorithm this key type maps to, if any. `None`
+    /// means the key is unusable as a federation owner-binding (e.g. RSA).
+    pub ciris_algorithm: Option<ClassicalAlgorithm>,
+}
+
+/// Probe a PKCS#11 token: list present tokens and the key objects in the
+/// selected slot. Read-only — it never writes to the device. Logs in only if
+/// `Pkcs11Config::user_pin` is set (private-key objects are otherwise hidden).
+///
+/// # Errors
+///
+/// Module/token failures, or `NotSupported` without the `pkcs11` feature.
+#[cfg(not(feature = "pkcs11"))]
+pub fn probe_pkcs11(_config: &Pkcs11Config) -> Result<Pkcs11Probe, KeyringError> {
+    Err(KeyringError::NotSupported {
+        operation: "PKCS#11 probe: build with `--features pkcs11` and attach a token".into(),
+    })
+}
+
 /// Open a [`HardwareSigner`] backed by a PKCS#11 token for the user identity
 /// `alias`. With the `pkcs11` feature: real `cryptoki`. Without it: honest
 /// [`KeyringError::NotSupported`].
@@ -89,7 +147,7 @@ pub fn open_pkcs11_signer(
 }
 
 #[cfg(feature = "pkcs11")]
-pub use real::{open_pkcs11_signer, Pkcs11Signer};
+pub use real::{open_pkcs11_signer, probe_pkcs11, Pkcs11Signer};
 
 #[cfg(feature = "pkcs11")]
 mod real {
@@ -315,6 +373,102 @@ mod real {
         config: &Pkcs11Config,
     ) -> Result<Box<dyn HardwareSigner>, KeyringError> {
         Ok(Box::new(Pkcs11Signer::open(alias, config)?))
+    }
+
+    /// Read-only token inventory. See [`super::probe_pkcs11`].
+    ///
+    /// # Errors
+    /// Module/token enumeration failures.
+    pub fn probe_pkcs11(config: &Pkcs11Config) -> Result<super::Pkcs11Probe, KeyringError> {
+        let ctx = Pkcs11::new(&config.module_path)
+            .map_err(|e| err(format!("load PKCS#11 module: {e}")))?;
+        ctx.initialize(CInitializeArgs::new(CInitializeFlags::OS_LOCKING_OK))
+            .map_err(|e| err(format!("C_Initialize: {e}")))?;
+        let slots = ctx
+            .get_slots_with_token()
+            .map_err(|e| err(format!("get_slots_with_token: {e}")))?;
+
+        let mut tokens = Vec::new();
+        for (i, slot) in slots.iter().enumerate() {
+            let info = ctx
+                .get_token_info(*slot)
+                .map_err(|e| err(format!("get_token_info: {e}")))?;
+            tokens.push(super::Pkcs11TokenInfo {
+                slot_index: i,
+                manufacturer: info.manufacturer_id().trim().to_string(),
+                model: info.model().trim().to_string(),
+                serial: info.serial_number().trim().to_string(),
+                label: info.label().trim().to_string(),
+            });
+        }
+
+        let mut keys = Vec::new();
+        if let Some(slot) = slots.get(config.slot_index).copied() {
+            let session = ctx
+                .open_ro_session(slot)
+                .map_err(|e| err(format!("open session: {e}")))?;
+            // Private-key objects are only listable after C_Login; do it if a PIN
+            // was supplied (best-effort — a probe with no PIN still lists pubkeys).
+            let _ = login(&session, config);
+            for (class, name) in [
+                (ObjectClass::PUBLIC_KEY, "public"),
+                (ObjectClass::PRIVATE_KEY, "private"),
+            ] {
+                let handles = session
+                    .find_objects(&[Attribute::Class(class)])
+                    .map_err(|e| err(format!("find_objects({name}): {e}")))?;
+                for h in handles {
+                    keys.push(read_key_info(&session, h, name));
+                }
+            }
+        }
+
+        Ok(super::Pkcs11Probe { tokens, keys })
+    }
+
+    /// Read a key object's label / id / type for the probe (tolerant — missing
+    /// attributes just render as `None` / `"unknown"`).
+    fn read_key_info(
+        session: &Session,
+        handle: ObjectHandle,
+        class: &'static str,
+    ) -> super::Pkcs11KeyInfo {
+        let attrs = session
+            .get_attributes(
+                handle,
+                &[
+                    AttributeType::Label,
+                    AttributeType::Id,
+                    AttributeType::KeyType,
+                ],
+            )
+            .unwrap_or_default();
+        let mut label = None;
+        let mut id_hex = None;
+        let mut key_type = "unknown".to_string();
+        let mut ciris_algorithm = None;
+        for a in attrs {
+            match a {
+                Attribute::Label(bytes) => {
+                    label = Some(String::from_utf8_lossy(&bytes).trim().to_string());
+                },
+                Attribute::Id(bytes) => {
+                    id_hex = Some(bytes.iter().map(|b| format!("{b:02x}")).collect());
+                },
+                Attribute::KeyType(kt) => {
+                    key_type = format!("{kt:?}");
+                    ciris_algorithm = algorithm_for(kt).ok();
+                },
+                _ => {},
+            }
+        }
+        super::Pkcs11KeyInfo {
+            class,
+            label,
+            id_hex,
+            key_type,
+            ciris_algorithm,
+        }
     }
 
     #[async_trait]

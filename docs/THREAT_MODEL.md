@@ -6,7 +6,7 @@
 > **[`HOLONOMIC_SUBSTRATE.md`](HOLONOMIC_SUBSTRATE.md)** — §19 is cross-impl-proven
 > against CIRISEdge v4.1.2, §19.7 is **1.0** (proven against CIRISEdge v4.3.0).
 
-**Last updated:** 2026-06-16 (v5.11.0 "CEG §19 / §19.7 holonomic" — `holonomic` substrate verifiers; §19 cross-impl-proven (Edge v4.1.2), §19.7 promoted to **1.0** (Edge v4.3.0 reproduced Verify-authored vectors), RC16 `EjectAggregatedTierOnly` verdict, RC15 §19.1 Merkle frozen (no RFC-6962 prefix). See [`HOLONOMIC_SUBSTRATE.md`](HOLONOMIC_SUBSTRATE.md). Prior v5.7.0 "CEG 1.0-RC7 / hybrid-required" — **PQC half MANDATORY at every federation-tier admission gate** (#75, RC7 §10.1.5.1.1): `threshold`/`provenance`/license gates reject classical-only ("hybrid-pending") signatures via `HybridPolicy::RequireHybrid`, closing the F-AV-14 "buggy verifier accepts old-classical-only" gap (see §3.2 AV-8 and `FEDERATION_THREAT_MODEL.md` F-AV-14); partnership seven-member set (#76); `infra:*`/`agency:*` delegation scope split makes §1.3 "infrastructure must not have agency" wire-checkable (#77). v5.6.0 "security-audit remediation" — license-signature gate (#72), real TPM sealing (#73), fail-secure keygen (#74), RNS `destination_hash` recompute (#28), producer signing (#63). Prior v5.0.0 "CEG 1.0 / Agent 3.0 substrate" — RNG SP 800-90B startup health-check + fail-secure (AV-39 closed), `boundary_degraded` orthogonal to `hardware_trust_degraded`, JCS/RFC-8785 cross-impl signing bytes, `key_grant` wrap_algorithm v2 (X25519+ML-KEM-768) at-rest PQC, `doc_integrity` hybrid-signed artifact integrity + CODEOWNERS two-person-rule on threat-model docs, `infrastructure_community` M-of-N trust-root substrate)
+**Last updated:** 2026-06-18 (v6.0 "self-at-login device identity" — AV-43 CEG outbox / AV-44 software-PQC-seed honest-boundary / AV-45 surviving-key revocation; YubiKey PIV §5 row. Prior v5.11.0 "CEG §19 / §19.7 holonomic" — `holonomic` substrate verifiers; §19 cross-impl-proven (Edge v4.1.2), §19.7 promoted to **1.0** (Edge v4.3.0 reproduced Verify-authored vectors), RC16 `EjectAggregatedTierOnly` verdict, RC15 §19.1 Merkle frozen (no RFC-6962 prefix). See [`HOLONOMIC_SUBSTRATE.md`](HOLONOMIC_SUBSTRATE.md). Prior v5.7.0 "CEG 1.0-RC7 / hybrid-required" — **PQC half MANDATORY at every federation-tier admission gate** (#75, RC7 §10.1.5.1.1): `threshold`/`provenance`/license gates reject classical-only ("hybrid-pending") signatures via `HybridPolicy::RequireHybrid`, closing the F-AV-14 "buggy verifier accepts old-classical-only" gap (see §3.2 AV-8 and `FEDERATION_THREAT_MODEL.md` F-AV-14); partnership seven-member set (#76); `infra:*`/`agency:*` delegation scope split makes §1.3 "infrastructure must not have agency" wire-checkable (#77). v5.6.0 "security-audit remediation" — license-signature gate (#72), real TPM sealing (#73), fail-secure keygen (#74), RNS `destination_hash` recompute (#28), producer signing (#63). Prior v5.0.0 "CEG 1.0 / Agent 3.0 substrate" — RNG SP 800-90B startup health-check + fail-secure (AV-39 closed), `boundary_degraded` orthogonal to `hardware_trust_degraded`, JCS/RFC-8785 cross-impl signing bytes, `key_grant` wrap_algorithm v2 (X25519+ML-KEM-768) at-rest PQC, `doc_integrity` hybrid-signed artifact integrity + CODEOWNERS two-person-rule on threat-model docs, `infrastructure_community` M-of-N trust-root substrate)
 
 ## 1. Scope
 
@@ -401,6 +401,44 @@ deny = [
 
 ---
 
+### 3.10 Self-at-Login Device Identity — adversary wants to forge, intercept, or refuse-to-revoke a hardware-rooted login identity (v6.0)
+
+v6.0 ships the hardware-rooted self-at-login surface: a YubiKey-PIV (Ed25519) + software ML-DSA-65 user identity (`self_at_login`), a self-signed genesis `KeyRecord` producer (`federation_self_record`), a filesystem CEG-object outbox (`ceg_outbox`) that CIRISServer drains and relays, and a "revoke the lost/stolen device" producer (`sign_occurrence_revocation`). Three new surfaces; the genesis self-record is covered by the existing self-attestation framing (§3.2 AV-8 + the CLAUDE.md fractal-self reading discipline), not a new AV.
+
+#### AV-43: CEG-outbox tampering / spoofed relay
+
+**Attack surface (local file boundary, mostly adversarial)**: producers (the verify CLI, the KMP client) drop signed CEG objects as files under `~/ciris/ceg/outbox/<kind>/<id>.json`; CIRISServer drains, verifies, and relays them. An attacker with write access to the outbox directory could (a) inject a forged object, (b) overwrite a pending object, or (c) attempt a path-traversal `kind`/`id` to escape the outbox.
+
+**Primary mitigation**: the outbox is a **transport, not a trust root** — by design CIRISServer re-verifies the bound hybrid signature on every drained object before it calls the substrate, and CIRISPersist is signature-blind (the #65 two-quorums split: the substrate's merge logic never counts signatures). An injected or overwritten object without a valid bound hybrid signature (Ed25519 + ML-DSA-65) under a directory-pinned `key_id` is rejected at relay — the file drop confers no authority. A self-signed object (a genesis `KeyRecord`) carries its signature inside `body`; a signed-request object carries it in `signatures` (the `x-ciris-*` header mapping).
+
+**Secondary**: `ceg_outbox::sanitize` reduces every `kind`/`id` to a single path segment (anything outside `[A-Za-z0-9._-]` → `_`), so no `..` or separator survives — a traversal `kind`/`id` cannot escape the outbox (proven by `sanitize_blocks_path_traversal_and_separators`). The same sanitizer guards the CLI's ML-DSA seed-file path.
+
+**Residual**: filesystem ACLs on the `ciris/` root are the local boundary — an attacker with the user's own write permission can still *delete* a pending object (a local availability denial, not a forgery). The outbox is explicitly not a confidentiality or integrity trust anchor; CIRISServer's signature re-check is.
+
+#### AV-44: Software PQC-half seed extraction (honest hardware-boundary disclosure)
+
+**Attack surface (at-rest key material)**: the v6.0 "hardware-rooted" federation identity is **hybrid, and only the Ed25519 (classical) half is in hardware** — sealed in the YubiKey / Secure Enclave / StrongBox / TPM. The ML-DSA-65 (PQC) half is **software**: its 32-byte seed is persisted as a `0600` file at `~/ciris/keys/<key_id>.mldsa.seed` (`load_or_create_mldsa_seed`). An attacker who reads that file recovers the PQC signing seed.
+
+Stated honestly rather than overclaimed: "hardware-rooted" means the *classical* owner-binding half cannot be extracted (AV-1 / AV-13 hold for that half). The PQC half is **software-sealed-pending** (#71): the seed is fail-secure-CSPRNG-generated (AV-39 latch honored), created `0600` atomically, but not yet hardware-sealed.
+
+**Primary mitigation**: the hybrid bound-signature property means extracting the software PQC seed **alone** does not forge an accepted signature — a forger also needs the hardware Ed25519 half, which is non-extractable. So AV-44 in isolation is a *PQC-downgrade* threat (it removes the post-quantum leg for this identity), not an immediate forgery: it reduces this identity's signatures to classical-only strength until the seed is rotated.
+
+**Secondary**: `0600` file mode + the `~/ciris/keys/` location under the user's home ACL. #71 `SealedMlDsa65Signer` / `get_platform_sealed_mldsa65_signer` is the shipped TPM/SE-sealed ML-DSA-65 path; the v6.0 `identity create` CLI does not yet route through it.
+
+**Residual (open)**: until the CLI wires the #71 sealed-seed path, the PQC half's at-rest custody is software `0600`, not hardware. A full host (root) compromise reads the seed. Documented honestly as the current hardware boundary.
+
+#### AV-45: Lost/stolen-device revocation with the compromised key (surviving-key requirement)
+
+**Attack surface (revocation authorization, not propagation)**: when a device (occurrence) is lost or stolen, the owner revokes it via `sign_occurrence_revocation` (CEG §11.7.1 Option-A forward-secrecy removal). The §11.7.4 vouch is single — "the revoking occurrence OR the `identity_key_id`". If the owner's identity has **only one** enrolled key, that key is the stolen one, and there is no *surviving* key to authorize the revocation.
+
+**Primary mitigation**: revocation must be signed by a **surviving** key — a *different* enrolled occurrence or the identity root, never the compromised key. This is the concrete reason the v5.11.0 OR-of-N multi-hardware-key redundancy (`UserIdentityKeyset`) is a **prerequisite**, not a nicety. The bound hybrid revocation signature verifies at threshold 1 against the *revoker's* directory-pinned pubkeys (the `threshold` primitive), so Registry/Server authenticate that the revocation came from a surviving key before writing the row through to Persist (whose merge logic never counts signatures, §5.6.8.13). The producer permits `revoker == revoked` for a *voluntary* leave, but the stolen-device flow MUST use a different key (proven by `revocation_does_not_bind_to_a_forged_revoker_key_id`).
+
+**Secondary**: once authorized, the revocation propagates under the R1 timeliness contract and "most recent observed revocation wins" merge (the AV-4 anti-rollback discipline). AV-45 is the *authorization* half; R1 (FEDERATION_THREAT_MODEL §3.3 Gap A) is the *propagation* half.
+
+**Residual**: an owner who enrolled exactly one key and lost it has no surviving key to revoke with and must fall back to the steward / out-of-band recovery path — the correct security tradeoff (a single-key identity cannot self-heal), and the standing argument for enrolling ≥2 hardware keys at onboarding.
+
+---
+
 ## 4. Mitigation Matrix
 
 | AV | Attack | Primary Mitigation | Secondary | Status | Fix Tracker |
@@ -427,6 +465,9 @@ deny = [
 | AV-40 | Federation-policy violation (bypassing ciris-crypto direct RustCrypto deps) | v2.0 release notes documenting "ciris-crypto is THE crypto authority"; cargo-deny `[bans]` config in downstream consumers banning `aes-gcm`/`hkdf`/`pbkdf2`/`hmac` direct deps | PR-time review; new direct RustCrypto dep is a red flag | 🟡 Convention; ⏳ federation-wide cargo-deny baseline | future |
 | AV-41 | Hardware-bound master derivation gap | Software-master mode uses ciris-crypto KDF directly with caller-managed master lifecycle; master is zeroed after derivation | `HardwareSigner::derive_symmetric_key` lands when CIRISPersist#19's `secrets-hw` is exercised | 🟡 Software-master covered; ⏳ hardware-master deferred to v2.x | CIRISPersist#19 |
 | AV-42 | Spoofed transport-identity ↔ federation-key binding | Binding carried as a signature-covered field of the `FederationEnvelope` (Option C′, §3.9); `transport_epoch` anti-rollback via `TransportEpochGuard`; `domain_sep` separation; `federation_keys` provenance verification (`verify_provenance_chain`); enforcement-capable verify path | Cold first-contact rooted against the directory row (CIRISPersist `root_binding`), not TOFU; authenticated `PeerResolver` (CIRISEdge v0.4.0) | ✓ Mitigated v3.0.0 — residual: the fleet enforcement-cutover flip | CIRISVerify#27, #28, #29 |
+| AV-43 | CEG-outbox tampering / spoofed relay | Outbox is transport, not trust root — CIRISServer re-verifies the bound hybrid signature on every drained object before calling the substrate; Persist signature-blind (#65) | `ceg_outbox::sanitize` reduces `kind`/`id` to a single path segment (no `..`/separator survives) | ✓ Mitigated v6.0 (forgery); 🟡 local file-ACL is the confidentiality/availability boundary | CIRISVerify#63 |
+| AV-44 | Software PQC-half seed extraction (honest HW-boundary disclosure) | Hybrid bound-signature: the software ML-DSA-65 seed alone cannot forge an accepted signature — the hardware Ed25519 half is non-extractable; seed CSPRNG-generated (AV-39 latch) + `0600` atomic | #71 `SealedMlDsa65Signer` is the shipped TPM/SE sealing path | 🟡 PQC half software-sealed-pending — `identity create` CLI not yet routed through #71; classical half hardware | CIRISVerify#71 |
+| AV-45 | Lost/stolen-device revocation with the compromised key | Revocation MUST be signed by a **surviving** key (different occurrence or identity root); OR-of-N keyset redundancy is the prerequisite; threshold-1 bound-hybrid verify against the revoker's pinned pubkeys | R1 propagation + "most recent revocation wins" merge (AV-4 anti-rollback) | ✓ Mitigated v6.0 (authorization); residual: single-key identities have no surviving revoker → steward fallback | CIRISVerify#63, #79 |
 | Audit | Audit trail tampering | Transparency log with Merkle tree | Append-only persistent storage | ✓ Mitigated | Fix 1 |
 
 **Status legend:** ✓ Mitigated • 🟡 Partial mitigation, residual tracked • ⚠ Open / planned
@@ -443,9 +484,12 @@ deny = [
 | TPM 2.0 (Firmware) | 4 (fTPM) | Professional | Moderate (no discrete hardware) | Firmware-isolated |
 | Intel SGX | 4 (Enclave) | Professional | Moderate (remote attestation) | Enclave-isolated |
 | Android Keystore (TEE) | 3 (TEE-backed) | Professional | Moderate (key attestation chain) | TEE-isolated |
+| YubiKey PIV / PKCS#11 (external token) | 5 (Dedicated SE) | Professional | Moderate today — PIV attestation cert (slot f9) not yet read, so reported at the honest external-token tier, NOT software | Hardware-isolated (private key never leaves the token; touch-required presence) |
 | Software-Only | 1 (No hardware) | Community ONLY | None (key extractable) | None |
 
 **Critical invariant**: `SOFTWARE_ONLY` devices are permanently capped at `UNLICENSED_COMMUNITY` tier. No license upgrade path exists without hardware security.
+
+**YubiKey PIV note (v6.0)**: the canonical hardware backend for the hardware-rooted federation identity is a YubiKey in PIV mode signing **Ed25519** via `CKM_EDDSA` (`ciris_keyring::pkcs11`) — byte-identical to the software Ed25519 signer, so a token-signed binding verifies through the same threshold primitive. **Firmware ≥ 5.7 is required for PIV Ed25519**; older firmware offers only P-256 PIV (also supported, but Ed25519 is the federation default). The PIV signing slot SHOULD be **touch-required** so each federation signature is a physical-presence ceremony. The token's own PIV attestation cert (slot f9) is **not yet read** — until it is, the signer reports `PlatformAttestation::Software` (the honest external-token tier), so the hardware binding is *custody-real but attestation-unproven* to a remote verifier. This is orthogonal to AV-44: the token holds the Ed25519 half; the ML-DSA-65 PQC half is the software-sealed-pending seed.
 
 ---
 
@@ -764,6 +808,7 @@ This threat model is **updated on every minor version bump** (v1.X → v1.X+1). 
 - A new feature exposes a new surface (e.g., v1.7's `StorageDescriptor` introduced AV-7).
 - A SOTA review identifies an industry-recognized gap (the v1.8 cycle added AV-11–AV-13 from supply-chain threat literature).
 - A real-world incident in our deployment or a sibling primitive's deployment surfaces a class we hadn't catalogued (lens-scrub-key incident motivated AV-7's elevation from "future concern" to "core mitigation").
+- A new producer/transport surface lands (v6.0's self-at-login device identity added AV-43 CEG outbox, AV-44 software-PQC-seed-at-rest honest-boundary disclosure, AV-45 surviving-key revocation; the YubiKey PIV external-token row in §5).
 
 Patch releases (v1.X.Y) update only the **Status** column of the mitigation matrix when residuals close. The §10 SOTA roadmap is reviewed at minor-version cadence; a yearly full-text SOTA pass is part of the v2.0 plan.
 

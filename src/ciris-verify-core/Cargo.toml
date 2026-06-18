@@ -15,6 +15,10 @@ android = ["ciris-keyring/android"]
 ios = ["ciris-keyring/ios"]
 tpm = ["ciris-keyring/tpm"]
 tpm-windows = ["ciris-keyring/tpm-windows"]  # Experimental: Windows native TPM
+# PKCS#11 hardware-token support (YubiKey PIV / OpenSC) for the `token` CLI
+# subcommand. Pulls in `cryptoki` via the keyring; needs a physical token to
+# exercise (CIRISVerify#80). Bakes the dep into the binary build.
+pkcs11 = ["ciris-keyring/pkcs11", "dep:rpassword"]
 
 [[bin]]
 name = "ciris-verify"
@@ -32,6 +36,9 @@ futures.workspace = true
 
 # CLI
 clap = { version = "4.5", features = ["derive"] }
+# Hidden PIN prompt for the `token` PKCS#11 subcommand (keeps the token PIN out
+# of argv / shell history). Only compiled under the `pkcs11` feature.
+rpassword = { version = "7", optional = true }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }

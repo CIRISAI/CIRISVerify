@@ -193,6 +193,93 @@ enum Commands {
         #[arg(long, default_value = "ciris-verify")]
         project: String,
     },
+
+    /// Inspect / sign with a PKCS#11 hardware token (YubiKey PIV, OpenSC).
+    ///
+    /// The federation owner-binding's classical half (Ed25519) can be
+    /// custodied on a token (CIRISVerify#80). Requires a build with
+    /// `--features pkcs11` and a physical token.
+    Token {
+        #[command(subcommand)]
+        action: TokenAction,
+    },
+
+    /// Federation identity — create your hardware-rooted federation ID and drop
+    /// the signed CEG object in the outbox for CIRISServer to relay.
+    Identity {
+        #[command(subcommand)]
+        action: IdentityAction,
+    },
+}
+
+/// `ciris-verify identity` actions.
+#[derive(Subcommand)]
+enum IdentityAction {
+    /// Create a self-signed genesis federation key record — Ed25519 rooted in a
+    /// PKCS#11 token (YubiKey PIV) + a software ML-DSA-65 half — and write it to
+    /// `~/ciris/ceg/outbox/federation_key_record/<key_id>.json`. CIRISServer
+    /// drains the outbox, verifies, and relays it over CEG.
+    Create {
+        /// Path to the PKCS#11 module (`libykcs11.so` / `opensc-pkcs11.so`).
+        #[arg(long)]
+        module: String,
+        /// Token slot index. Default 0.
+        #[arg(long, default_value = "0")]
+        slot: usize,
+        /// `CKA_LABEL` of the Ed25519 signing key (e.g. PIV slot 9c).
+        #[arg(long)]
+        key_label: Option<String>,
+        /// `CKA_ID` of the key as hex (alternative to `--key-label`).
+        #[arg(long)]
+        key_id: Option<String>,
+        /// CEG `identity_type` (`user` | `agent`). Default `user`.
+        #[arg(long, default_value = "user")]
+        identity_type: String,
+        /// Override the derived federation `key_id` (default: `sha256(ed_pubkey)` hex).
+        #[arg(long)]
+        fed_key_id: Option<String>,
+        /// Prompt for the token user PIN (a token requires login to sign).
+        #[arg(long)]
+        pin: bool,
+    },
+}
+
+/// `ciris-verify token` actions.
+#[derive(Subcommand)]
+enum TokenAction {
+    /// List the token's slots and key objects — discover the `CKA_LABEL` /
+    /// `CKA_ID` and confirm a key is Ed25519 (federation-usable).
+    Probe {
+        /// Path to the PKCS#11 module (`libykcs11.so` / `opensc-pkcs11.so`).
+        #[arg(long)]
+        module: String,
+        /// Token slot index (into the tokens-present list). Default 0.
+        #[arg(long, default_value = "0")]
+        slot: usize,
+        /// Prompt for the user PIN (needed to list private-key objects).
+        #[arg(long)]
+        pin: bool,
+    },
+
+    /// Sign a test preimage on the token and verify it — proves the token can
+    /// custody the federation owner-binding key end-to-end.
+    SignTest {
+        /// Path to the PKCS#11 module.
+        #[arg(long)]
+        module: String,
+        /// Token slot index. Default 0.
+        #[arg(long, default_value = "0")]
+        slot: usize,
+        /// `CKA_LABEL` of the key to sign with (one of `--key-label`/`--key-id`).
+        #[arg(long)]
+        key_label: Option<String>,
+        /// `CKA_ID` of the key as hex (alternative to `--key-label`).
+        #[arg(long)]
+        key_id: Option<String>,
+        /// Prompt for the user PIN (a token requires login to sign).
+        #[arg(long)]
+        pin: bool,
+    },
 }
 
 fn print_banner() {
@@ -1342,6 +1429,523 @@ fn enable_windows_ansi() {
 #[cfg(not(target_os = "windows"))]
 fn enable_windows_ansi() {}
 
+// ===========================================================================
+// `token` — PKCS#11 hardware-token (YubiKey PIV / OpenSC) support (#80)
+// ===========================================================================
+
+/// Resolve the token user PIN, or `None` when not requested. Prefers the
+/// `CIRIS_PKCS11_PIN` env var (automation / no-TTY), falling back to a hidden
+/// interactive prompt. The hidden prompt needs `rpassword`, which is only
+/// compiled under `pkcs11`.
+#[cfg(feature = "pkcs11")]
+fn prompt_pin(enabled: bool) -> Option<String> {
+    if !enabled {
+        return None;
+    }
+    if let Ok(pin) = std::env::var("CIRIS_PKCS11_PIN") {
+        return Some(pin);
+    }
+    match rpassword::prompt_password("Token user PIN: ") {
+        Ok(pin) => Some(pin),
+        Err(e) => {
+            eprintln!("⚠️  could not read PIN: {e}");
+            None
+        },
+    }
+}
+
+#[cfg(not(feature = "pkcs11"))]
+fn prompt_pin(_enabled: bool) -> Option<String> {
+    None
+}
+
+/// Decode a lowercase/uppercase hex string (the `--key-id` form) to bytes.
+fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
+    let s = s.trim().trim_start_matches("0x");
+    if s.len() % 2 != 0 {
+        return Err("hex string must have an even number of digits".into());
+    }
+    (0..s.len())
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&s[i..i + 2], 16).map_err(|e| e.to_string()))
+        .collect()
+}
+
+/// Fail fast with an actionable message when a token command runs on a build
+/// that wasn't compiled with the `pkcs11` feature (otherwise the failure
+/// surfaces deep in the keyring as an opaque `NotSupported`, and `--pin` is
+/// silently dropped).
+#[cfg(not(feature = "pkcs11"))]
+fn require_pkcs11_feature() {
+    eprintln!("❌ this command needs PKCS#11 (YubiKey) support, which is not in this build.");
+    eprintln!("   Rebuild with the feature, then re-run:");
+    eprintln!("     cargo build --release -p ciris-verify-core --features pkcs11");
+    std::process::exit(3);
+}
+
+#[cfg(feature = "pkcs11")]
+fn require_pkcs11_feature() {}
+
+async fn run_token(action: TokenAction, json_output: bool) {
+    require_pkcs11_feature();
+    match action {
+        TokenAction::Probe { module, slot, pin } => {
+            run_token_probe(&module, slot, pin, json_output);
+        },
+        TokenAction::SignTest {
+            module,
+            slot,
+            key_label,
+            key_id,
+            pin,
+        } => {
+            run_token_sign_test(&module, slot, key_label, key_id, pin, json_output).await;
+        },
+    }
+}
+
+fn run_token_probe(module: &str, slot: usize, pin: bool, json_output: bool) {
+    use ciris_keyring::pkcs11::{probe_pkcs11, Pkcs11Config};
+
+    let cfg = Pkcs11Config {
+        module_path: module.into(),
+        user_pin: prompt_pin(pin),
+        key_label: None,
+        key_id: None,
+        slot_index: slot,
+    };
+
+    let probe = match probe_pkcs11(&cfg) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("❌ probe failed: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    if json_output {
+        let tokens: Vec<_> = probe
+            .tokens
+            .iter()
+            .map(|t| {
+                serde_json::json!({
+                    "slot_index": t.slot_index,
+                    "manufacturer": t.manufacturer,
+                    "model": t.model,
+                    "serial": t.serial,
+                    "label": t.label,
+                })
+            })
+            .collect();
+        let keys: Vec<_> = probe
+            .keys
+            .iter()
+            .map(|k| {
+                serde_json::json!({
+                    "class": k.class,
+                    "label": k.label,
+                    "id_hex": k.id_hex,
+                    "key_type": k.key_type,
+                    "ciris_algorithm": k.ciris_algorithm.map(|a| format!("{a:?}")),
+                    "federation_usable": k.ciris_algorithm.is_some(),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::json!({ "tokens": tokens, "keys": keys }));
+        return;
+    }
+
+    println!("🔑 PKCS#11 token probe ({module})\n");
+    if probe.tokens.is_empty() {
+        println!("  (no token present)");
+        return;
+    }
+    for t in &probe.tokens {
+        let sel = if t.slot_index == slot {
+            " ◀ selected"
+        } else {
+            ""
+        };
+        println!("  slot[{}]{sel}", t.slot_index);
+        println!("    manufacturer : {}", t.manufacturer);
+        println!("    model        : {}", t.model);
+        println!("    serial       : {}", t.serial);
+        println!("    label        : {}", t.label);
+    }
+    println!("\n  Key objects in slot[{slot}]:");
+    if probe.keys.is_empty() {
+        println!("    (none visible — private keys need --pin to list)");
+    }
+    for k in &probe.keys {
+        let fed = match k.ciris_algorithm {
+            Some(ciris_keyring::ClassicalAlgorithm::Ed25519) => {
+                "Ed25519 ✅ federation owner-binding"
+            },
+            Some(ciris_keyring::ClassicalAlgorithm::EcdsaP256) => {
+                "P-256 ⚠️ (federation default is Ed25519)"
+            },
+            Some(_) => "(other)",
+            None => "❌ not federation-usable",
+        };
+        println!(
+            "    [{}] label={:?} id={} type={} → {fed}",
+            k.class,
+            k.label.as_deref().unwrap_or("<none>"),
+            k.id_hex.as_deref().unwrap_or("<none>"),
+            k.key_type,
+        );
+    }
+}
+
+async fn run_token_sign_test(
+    module: &str,
+    slot: usize,
+    key_label: Option<String>,
+    key_id: Option<String>,
+    pin: bool,
+    json_output: bool,
+) {
+    use ciris_crypto::{ClassicalVerifier, Ed25519Verifier, P256Verifier};
+    use ciris_keyring::pkcs11::{open_pkcs11_signer, Pkcs11Config};
+    use ciris_keyring::ClassicalAlgorithm;
+
+    let key_id_bytes = match key_id.as_deref().map(parse_hex).transpose() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("❌ --key-id is not valid hex: {e}");
+            std::process::exit(2);
+        },
+    };
+
+    let cfg = Pkcs11Config {
+        module_path: module.into(),
+        user_pin: prompt_pin(pin),
+        key_label,
+        key_id: key_id_bytes,
+        slot_index: slot,
+    };
+
+    let signer = match open_pkcs11_signer("token-sign-test", &cfg) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ open token signer: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    // Same preimage the keyring live test uses — the owner-binding test vector.
+    let msg = b"ciris owner-binding test preimage";
+    let pubkey = match signer.public_key().await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("❌ read public key: {e}");
+            std::process::exit(1);
+        },
+    };
+    let sig = match signer.sign(msg).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ C_Sign on token: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    let alg = signer.algorithm();
+    let verified = match alg {
+        ClassicalAlgorithm::Ed25519 => Ed25519Verifier::new()
+            .verify(&pubkey, msg, &sig)
+            .unwrap_or(false),
+        ClassicalAlgorithm::EcdsaP256 => P256Verifier::new()
+            .verify(&pubkey, msg, &sig)
+            .unwrap_or(false),
+        ClassicalAlgorithm::EcdsaP384 => false,
+    };
+    let federation_usable = matches!(alg, ClassicalAlgorithm::Ed25519);
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({
+                "algorithm": format!("{alg:?}"),
+                "hardware_type": format!("{:?}", signer.hardware_type()),
+                "public_key_len": pubkey.len(),
+                "signature_len": sig.len(),
+                "verified": verified,
+                "federation_usable": federation_usable,
+            })
+        );
+    } else {
+        println!("🔏 YubiKey / PKCS#11 sign-test\n");
+        println!("  algorithm        : {alg:?}");
+        println!("  hardware type    : {:?}", signer.hardware_type());
+        println!("  public key       : {} bytes", pubkey.len());
+        println!("  signature        : {} bytes", sig.len());
+        println!(
+            "  on-token verify  : {}",
+            if verified {
+                "✅ VERIFIED"
+            } else {
+                "❌ FAILED"
+            }
+        );
+        println!(
+            "  federation key   : {}",
+            if federation_usable {
+                "✅ Ed25519 — usable as the owner-binding classical half"
+            } else {
+                "⚠️  not Ed25519 — federation owner-binding requires Ed25519"
+            }
+        );
+        println!(
+            "\n  {}",
+            if verified {
+                "The private key never left the token; the signature it produced \
+                 verifies against the token's public key."
+            } else {
+                "Signature did NOT verify — check the key/slot/PIN."
+            }
+        );
+    }
+
+    if !verified {
+        std::process::exit(1);
+    }
+}
+
+// ===========================================================================
+// `identity create` — hardware-rooted federation ID → CEG outbox (6.0)
+// ===========================================================================
+
+async fn run_identity(action: IdentityAction, json_output: bool) {
+    require_pkcs11_feature();
+    match action {
+        IdentityAction::Create {
+            module,
+            slot,
+            key_label,
+            key_id,
+            identity_type,
+            fed_key_id,
+            pin,
+        } => {
+            run_identity_create(
+                &module,
+                slot,
+                key_label,
+                key_id,
+                &identity_type,
+                fed_key_id,
+                pin,
+                json_output,
+            )
+            .await;
+        },
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn run_identity_create(
+    module: &str,
+    slot: usize,
+    key_label: Option<String>,
+    key_id: Option<String>,
+    identity_type: &str,
+    fed_key_id: Option<String>,
+    pin: bool,
+    json_output: bool,
+) {
+    use std::sync::Arc;
+
+    use ciris_crypto::MlDsa65Signer;
+    use ciris_keyring::pkcs11::{open_pkcs11_signer, Pkcs11Config};
+    use ciris_verify_core::ceg_outbox::{keys_dir, SignedCegObject};
+    use ciris_verify_core::federation_self_record::produce_self_key_record;
+    use ciris_verify_core::self_at_login::HardwareRootedIdentity;
+    use sha2::{Digest, Sha256};
+
+    let key_id_bytes = match key_id.as_deref().map(parse_hex).transpose() {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("❌ --key-id is not valid hex: {e}");
+            std::process::exit(2);
+        },
+    };
+
+    // 1. Root the Ed25519 half in the hardware token (YubiKey PIV).
+    let cfg = Pkcs11Config {
+        module_path: module.into(),
+        user_pin: prompt_pin(pin),
+        key_label,
+        key_id: key_id_bytes,
+        slot_index: slot,
+    };
+    let hw_signer = match open_pkcs11_signer("federation-identity", &cfg) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ open token signer: {e}");
+            std::process::exit(1);
+        },
+    };
+    let ed_pub = match hw_signer.public_key().await {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("❌ read Ed25519 public key: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    // 2. Federation key_id: caller-chosen, else sha256(ed_pubkey) hex.
+    let fed_key_id = fed_key_id.unwrap_or_else(|| hex::encode(Sha256::digest(&ed_pub)));
+
+    // 3. The software ML-DSA-65 half — a stable seed under ~/ciris/keys.
+    let seed = match load_or_create_mldsa_seed(&keys_dir(), &fed_key_id) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ ML-DSA-65 seed: {e}");
+            std::process::exit(1);
+        },
+    };
+    let mldsa = match MlDsa65Signer::from_seed(&seed) {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("❌ construct ML-DSA-65 signer from seed: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    // 4. The hardware-rooted hybrid identity (Ed25519-only enforced).
+    let identity = match HardwareRootedIdentity::new(
+        fed_key_id.clone(),
+        Arc::from(hw_signer),
+        mldsa,
+    ) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("❌ {e}");
+            eprintln!("   (the PIV key must be Ed25519 — generate with `ykman piv keys generate --algorithm ED25519 9c ...`)");
+            std::process::exit(1);
+        },
+    };
+
+    // 5. Produce the self-signed genesis KeyRecord (the Ed25519 half signs on
+    //    the token — a touch-required key blocks here until you tap it).
+    if !json_output {
+        println!(
+            "🔏 signing the genesis key record on the token — tap the YubiKey if it blinks…\n"
+        );
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    let record = match produce_self_key_record(&identity, identity_type, &now).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("❌ produce self key record: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    let body = match serde_json::to_value(&record) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("❌ serialize key record: {e}");
+            std::process::exit(1);
+        },
+    };
+    let obj = SignedCegObject::new("federation_key_record", &fed_key_id, &now, body);
+    let path = match obj.write_to_outbox(&fed_key_id) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("❌ write to CEG outbox: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({
+                "key_id": fed_key_id,
+                "identity_type": identity_type,
+                "hardware_type": format!("{:?}", identity.hardware_type()),
+                "outbox_path": path.display().to_string(),
+            })
+        );
+    } else {
+        println!("✅ federation identity created (self-signed, hardware-rooted)\n");
+        println!("  key_id        : {fed_key_id}");
+        println!("  identity_type : {identity_type}");
+        println!(
+            "  hardware      : {:?} (Ed25519 on token)",
+            identity.hardware_type()
+        );
+        println!("  PQC half      : software ML-DSA-65 (seed under ~/ciris/keys)");
+        println!("  CEG object    : {}", path.display());
+        println!(
+            "\n  CIRISServer drains the outbox, verifies the bound hybrid self-signature,\n  \
+             and relays it over CEG (register_key → federation_keys)."
+        );
+    }
+}
+
+/// Load the 32-byte ML-DSA-65 seed for `key_id` from
+/// `<keys>/<sanitized key_id>.mldsa.seed`, or create one with the fail-secure
+/// CSPRNG. On unix the file is created `0600` **atomically** (an exclusive
+/// `create_new` with mode set) so the seed is never momentarily world-readable
+/// and two concurrent runs can't both mint a key. `key_id` is sanitized to a
+/// single path segment (a `--fed-key-id` override must not escape the keys dir).
+fn load_or_create_mldsa_seed(keys_dir: &std::path::Path, key_id: &str) -> Result<Vec<u8>, String> {
+    let file = format!(
+        "{}.mldsa.seed",
+        ciris_verify_core::ceg_outbox::sanitize_segment(key_id)
+    );
+    let path = keys_dir.join(file);
+
+    if path.exists() {
+        return read_seed(&path);
+    }
+
+    let mut seed = vec![0u8; 32];
+    ciris_crypto::random::fill(&mut seed).map_err(|e| format!("CSPRNG: {e}"))?;
+    std::fs::create_dir_all(keys_dir).map_err(|e| format!("create {}: {e}", keys_dir.display()))?;
+
+    // Atomic, restrictive create — fail if a racing run already wrote it (then
+    // read its seed, so concurrent `identity create` converges on ONE seed).
+    let mut opts = std::fs::OpenOptions::new();
+    opts.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        opts.mode(0o600);
+    }
+    match opts.open(&path) {
+        Ok(mut f) => {
+            use std::io::Write;
+            f.write_all(&seed)
+                .map_err(|e| format!("write seed {}: {e}", path.display()))?;
+            eprintln!(
+                "ℹ️  generated a new ML-DSA-65 seed at {} (0600). NOT yet hardware-sealed — \
+                 back it up; sealing is the #71 TPM/SE follow-up.",
+                path.display()
+            );
+            Ok(seed)
+        },
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => read_seed(&path),
+        Err(e) => Err(format!("create seed {}: {e}", path.display())),
+    }
+}
+
+/// Read + length-check a 32-byte seed.
+fn read_seed(path: &std::path::Path) -> Result<Vec<u8>, String> {
+    let seed = std::fs::read(path).map_err(|e| format!("read seed {}: {e}", path.display()))?;
+    if seed.len() != 32 {
+        return Err(format!(
+            "seed {} is {} bytes, expected 32 (refusing to mint a different identity)",
+            path.display(),
+            seed.len()
+        ));
+    }
+    Ok(seed)
+}
+
 #[tokio::main]
 async fn main() {
     enable_windows_ansi();
@@ -1470,10 +2074,102 @@ async fn main() {
             }
             run_list_manifests(&version, &registry, &project, json_output).await;
         },
+        Some(Commands::Token { action }) => {
+            if !json_output {
+                print_banner();
+            }
+            run_token(action, json_output).await;
+        },
+        Some(Commands::Identity { action }) => {
+            if !json_output {
+                print_banner();
+            }
+            run_identity(action, json_output).await;
+        },
         None => {
             // No command - show help
             print_banner();
             print_explanation();
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn tmp_keys(tag: &str) -> std::path::PathBuf {
+        std::env::temp_dir().join(format!("ciris-seed-{tag}-{}", std::process::id()))
+    }
+
+    #[test]
+    fn seed_create_then_load_is_stable() {
+        let dir = tmp_keys("stable");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        let a = load_or_create_mldsa_seed(&dir, "key-1").unwrap();
+        assert_eq!(a.len(), 32);
+        // Second call must return the SAME seed (no silent re-mint → no identity loss).
+        let b = load_or_create_mldsa_seed(&dir, "key-1").unwrap();
+        assert_eq!(a, b);
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(dir.join("key-1.mldsa.seed"))
+                .unwrap()
+                .permissions()
+                .mode()
+                & 0o777;
+            assert_eq!(mode, 0o600, "seed file must be 0600");
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn seed_wrong_length_is_rejected() {
+        let dir = tmp_keys("badlen");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("key-x.mldsa.seed"), [0u8; 31]).unwrap();
+        let err = load_or_create_mldsa_seed(&dir, "key-x").unwrap_err();
+        assert!(err.contains("expected 32"), "got: {err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn fed_key_id_traversal_cannot_escape_keys_dir() {
+        let dir = tmp_keys("traversal");
+        let _ = std::fs::remove_dir_all(&dir);
+        // A malicious --fed-key-id must collapse to a single filename inside the
+        // keys dir — no subdirectory, no `..` segment, no escape.
+        load_or_create_mldsa_seed(&dir, "../../etc/evil").unwrap();
+        let entries: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(
+            entries.len(),
+            1,
+            "exactly one sanitized seed file, no subdirs"
+        );
+        let name = entries[0].file_name().to_string_lossy().into_owned();
+        assert!(name.ends_with(".mldsa.seed"));
+        // No path separator survives, so the name is a single segment that
+        // cannot escape the keys dir (the embedded `.._..` is a literal, inert
+        // filename, not a traversal component).
+        assert!(!name.contains(std::path::MAIN_SEPARATOR));
+        assert!(
+            entries[0].path().is_file(),
+            "a file, not a traversed directory"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parse_hex_round_trips() {
+        assert_eq!(parse_hex("0a1b").unwrap(), vec![0x0a, 0x1b]);
+        assert_eq!(parse_hex("0x0A1B").unwrap(), vec![0x0a, 0x1b]);
+        assert!(parse_hex("abc").is_err(), "odd length rejected");
     }
 }

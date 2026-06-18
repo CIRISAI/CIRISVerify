@@ -57,6 +57,7 @@ pub mod audit;
 pub mod binary_format;
 pub mod cache;
 pub mod ceg_error;
+pub mod ceg_outbox;
 pub mod config;
 pub mod dns;
 pub mod doc_integrity;
@@ -65,6 +66,7 @@ pub mod error;
 pub mod federation_envelope;
 pub mod federation_keyset;
 pub mod federation_provenance;
+pub mod federation_self_record;
 pub mod hardware_info;
 pub mod holds_bytes;
 /// §19 Holonomic substrate verifiers (CEG 1.0-RC11, CIRISVerify#78) — ALM

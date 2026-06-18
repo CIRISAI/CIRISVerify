@@ -5,7 +5,9 @@
 **Audience**: CIRIS engineering, RATCHET evaluator, federation-protocol stakeholders, external reviewers
 **Scope**: federation-emergent threats; cross-references per-repo threat models for substrate threats
 **Holonomic substrate (CEG §19 / §19.7)**: see [`HOLONOMIC_SUBSTRATE.md`](HOLONOMIC_SUBSTRATE.md) — the WholenessWitness / recursive-bootstrap / fountain / ALM / forever-memory aggregation verifiers and their guardrails (§19 cross-impl-proven vs CIRISEdge v4.1.2; §19.7 **1.0** vs v4.3.0).
-**Last updated**: 2026-06-16
+**Last updated**: 2026-06-16 (v6.0 cross-ref pass 2026-06-17)
+
+**v6.0 cross-ref delta** (CIRISVerify-6.0 hardware-rooted user identity, #80/#71/#63): C1 (§3.1), F-AV-1, and F-AV-11 now carry honest-boundary / authorization cross-refs to `THREAT_MODEL.md` AV-44 (the v6.0 user identity is hybrid where only the Ed25519 half is in hardware; the ML-DSA-65 half is a `0600` software seed, sealed-pending) and AV-45 (`sign_occurrence_revocation` — a lost/stolen-device revocation must be signed by a *surviving* key, the OR-of-N `UserIdentityKeyset` self-healing prerequisite). No F-AV renumbering.
 
 **v1.5 deltas vs v1.4** (CEG 1.0-RC24 + RATCHET crc-v2; CIRISPersist/CIRISEdge threat docs refreshed):
 - **RATCHET calibration is a *corridor*, not a *ceiling*, for some axes** (RATCHET `release/calibration/crc-v2`). A per-axis metric's `concern_direction` is now **`outside_corridor`** — the healthy state is a two-sided band `[lower_bound, upper_bound]`, and a value **too low** is as much a concern as one too high. This is the Coherence-Ratchet finding that *both* extremes are fragile: too little inter-constraint correlation is chaos (no coherence), too much is rigidity (collapse) — the healthy corridor for ρ sits in `[0.1, 0.43]`. **crc-v2 caveat:** the lower bounds are *structurally documented but uncalibrated* — crc-v2 actively flags only the upper pole (`at-or-above corridor.upper_bound`); `corridor.lower_bound` is set in crc-v3+ when corpus variance permits, so lower-pole concern is not yet actively emitted. See §7 / Bet 2 / L-06.
@@ -266,7 +268,7 @@ This reframing has consequences throughout the document. §8.4 redefines the cos
 | Primitive | Property | Filled by | Status |
 |-----------|----------|-----------|--------|
 | C0 RNG | foundational | `ciris_crypto::random` (v2.0+; OsRng facade — Linux `getrandom(2)`, macOS `SecRandomCopyBytes`, Windows `BCryptGenRandom`) | **Deployed** — formalized API in v2.0 (federation crypto authority pattern, §3.5); startup health-check still pending (see §3.3 Gap H, partial closure) |
-| C1 hardware identity | P1 | `CIRISKeyring` + TPM 2.0 / Secure Enclave / Android Keystore | **Deployed** |
+| C1 hardware identity | P1 | `CIRISKeyring` + TPM 2.0 / Secure Enclave / Android Keystore / YubiKey-PIV PKCS#11 (v6.0, #80) | **Deployed** — NB: the v6.0 hardware-rooted *user* identity is **hybrid where only the Ed25519 half is in hardware**; the ML-DSA-65 (C2 PQC) half is a software seed, `0600`-at-rest, sealed-pending (#71). See `THREAT_MODEL.md` AV-44 (honest hardware-boundary disclosure). |
 | C2 hybrid signing | P2 | `CIRISCrypto` (Ed25519 + ML-DSA-65) | **Deployed** |
 | C3 build attestation | P3 | `CIRISVerify` BuildManifest validator + `verify_tree` runtime walk | **Deployed** (v1.8.4 build; v1.13+ runtime walk) |
 | C4 hybrid KEX + KDF | P7 | `ciris_crypto::hybrid_kex` (X25519 + ML-KEM-768 + HKDF-SHA256) | **Impl** (v4.6.0); pending Edge transport wiring (CIRISEdge#54) — Gap C closed at primitive layer |
@@ -585,6 +587,7 @@ Attacks where the adversary creates many federation identities cheaply, exploiti
 **Known weaknesses**:
 - The cloud-vTPM hardware-floor collapse is not yet quantified as a policy parameter. The federation should specify minimum hardware-attestation diversity requirements.
 - Cluster-detection assumes the Sybil identities are observed together; long-range/dormant Sybils (F-AV-DORMANT) may evade by spreading activation across years.
+- **v6.0 honest-boundary note**: the hardware-rooted user identity (`self_at_login`) is hybrid — the Ed25519 owner-binding half is hardware (YubiKey PIV / SE / StrongBox / TPM, non-extractable), but the ML-DSA-65 half is a software `0600` seed, sealed-pending (#71). The hybrid bound-signature property means a stolen PQC seed *alone* does not forge an accepted signature (the hardware half is still required), so this is a PQC-downgrade exposure for the affected identity, not a Sybil-floor collapse. See `THREAT_MODEL.md` AV-44.
 
 **Status**. **Partially mitigated by RATCHET behavioral measurement + bond economics**. Empirically, current operational signal strength is good (100% deceptive-prior detection on Qwen 3.6 across 29 languages, 5 patch levels) but this is a single-model operational result, not a theorem. Defense-in-depth required.
 
@@ -963,7 +966,7 @@ Attacks where individual primitives are correct in isolation but their compositi
 
 **Mitigation surface**. Three layers:
 
-1. **R1 revocation propagation** — when a key is revoked, all peers must invalidate that key's evidence prospectively within `τ_normal ≤ 60s` (normal operation) or `τ_partial ≤ 300s` (partial-failure window) per the v1.1 R1 contract (§3.3 Gap A). The "most recent observed revocation wins" merge rule handles the cross-region race condition where two peers observe the same revocation at different timestamps.
+1. **R1 revocation propagation** — when a key is revoked, all peers must invalidate that key's evidence prospectively within `τ_normal ≤ 60s` (normal operation) or `τ_partial ≤ 300s` (partial-failure window) per the v1.1 R1 contract (§3.3 Gap A). The "most recent observed revocation wins" merge rule handles the cross-region race condition where two peers observe the same revocation at different timestamps. The **authorization** half (distinct from this propagation half) lives in CIRISVerify v6.0 `sign_occurrence_revocation` (`THREAT_MODEL.md` AV-45): a lost/stolen-device revocation MUST be signed by a *surviving* key (a different enrolled occurrence or the identity root), never the compromised key — which is why OR-of-N hardware-key redundancy (`UserIdentityKeyset`) is the prerequisite for self-healing after a single-key compromise.
 2. **Compromise-window analysis (RATCHET)** — when a revocation is logged, RATCHET re-evaluates that key's recent S1 evidence and flags identities whose weight depended on the compromised key's traces or attestations.
 3. **Recursive scrub-signing (S2)** — every S2 row is signed by another row, terminating at bootstrap. A single key compromise doesn't propagate to attestations *issued by other keys* about the compromised one.
 
