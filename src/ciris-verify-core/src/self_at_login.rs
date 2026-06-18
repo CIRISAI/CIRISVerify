@@ -10,16 +10,27 @@
 //! coherent: every shape this module signs round-trips through the matching
 //! verifier (see the module tests — that round-trip *is* the contract).
 //!
-//! ## Scope (the buildable signing pieces of CIRISVerify#63)
+//! ## Scope (CIRISVerify#63 — now hardware-rooted end-to-end)
 //!
-//! The full #63 deliverable also covers the *hardware-rooting* of the user
-//! key (Secure Enclave / StrongBox / YubiKey, `hardware_class` §9.4) and the
-//! WebAuthn/passkey **presence** unlock factor — those need the hardware
-//! signer work tracked in CIRISVerify#62/#65 and are **out of scope here**.
-//! This module takes an already-constructed hybrid signing identity (today
-//! a software [`Ed25519Signer`] + [`MlDsa65Signer`] pair; tomorrow a
-//! hardware-backed one behind the same byte contract) and produces the
-//! federation-tier-promotable signed envelopes:
+//! This module produces the federation-tier-promotable signed envelopes AND
+//! roots the user key in hardware:
+//!
+//! - **The signing seam is [`SelfSigner`]** — every producer has a sync
+//!   software path (over [`HybridSigningIdentity`]) and an `*_async` path over
+//!   any [`SelfSigner`], so the user key may be software *or* hardware-rooted
+//!   ([`HardwareRootedIdentity`]: Ed25519 in a Secure Enclave / Android
+//!   StrongBox / TPM-sealed / YubiKey-PKCS#11 signer via the
+//!   `ciris_keyring::user_identity` backends, CIRISVerify#80; ML-DSA-65 PQC
+//!   half in software). The bound-hybrid wire bytes are identical either way.
+//! - **WebAuthn/passkey is the [`PresencePolicy`] unlock factor** — a verified
+//!   passkey assertion ([`verify_presence`]) gates the [`perform_self_at_login`]
+//!   ceremony. Presence is an unlock, never the owner-binding signature.
+//! - **[`perform_self_at_login`]** runs the whole bilateral ceremony (presence
+//!   gate → user-signed delegation + partnership grant → occurrence-signed
+//!   accept + transport binding → directory members), each piece round-tripped
+//!   through its verifier in the module tests.
+//!
+//! The federation-tier-promotable signed envelopes:
 //!
 //! 1. [`sign_delegation`] — the `delegates_to(user → agent occurrence)`
 //!    `org_membership` grant. Verifies through
@@ -54,8 +65,11 @@
 //! as [`VerifyError`]. There is no "soft" partial output — a function either
 //! returns a fully-signed envelope or an error.
 
+use std::sync::Arc;
+
 use base64::Engine;
 use ciris_crypto::{ClassicalSigner, Ed25519Signer, MlDsa65Signer, PqcSigner};
+use ciris_keyring::{ClassicalAlgorithm, HardwareSigner};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -66,6 +80,7 @@ use crate::transport_binding::{
     compute_destination_hash, EncryptionPubkeys, TransportBinding, TransportBindingSignature,
     TransportDestination,
 };
+use crate::webauthn::{verify_assertion, Assertion, AssertionOutcome, WebauthnError};
 
 /// Standard base64 engine — the one the verifiers decode with.
 fn b64() -> base64::engine::general_purpose::GeneralPurpose {
@@ -193,6 +208,204 @@ fn crypto_err(e: ciris_crypto::CryptoError) -> VerifyError {
     }
 }
 
+fn keyring_err(e: ciris_keyring::KeyringError) -> VerifyError {
+    VerifyError::IntegrityError {
+        message: format!("hardware signer fault: {e}"),
+    }
+}
+
+// ===========================================================================
+// The producer-side signing seam (CIRISVerify#63 hardware-rooting)
+// ===========================================================================
+
+/// The one signing seam every ceremony producer routes through.
+///
+/// `sign_delegation_async` / `sign_partnership_*_async` /
+/// `sign_transport_binding_async` are written against this trait, so the same
+/// CEG-pinned envelope shapes are bound-hybrid-signed *identically* whether
+/// the federation key lives in software ([`HybridSigningIdentity`]) or is
+/// hardware-rooted ([`HardwareRootedIdentity`] — Secure Enclave / Android
+/// StrongBox / TPM-sealed / YubiKey-PKCS#11 via the
+/// `ciris_keyring::user_identity` backends, CIRISVerify#80). The bound-hybrid
+/// byte format is fixed by [`SelfSigner::sign_bound`]; downstream verification
+/// is untouched by *where* the Ed25519 half is sealed.
+///
+/// The async signature is load-bearing: a hardware signer's `sign` is async
+/// (it may touch a secure element / await a YubiKey touch). The software
+/// identity satisfies it trivially (its inner sign is sync).
+#[async_trait::async_trait]
+pub trait SelfSigner: Send + Sync {
+    /// This identity's federation `key_id`.
+    fn key_id(&self) -> &str;
+
+    /// The Ed25519 (classical) public key — 32 raw bytes.
+    ///
+    /// # Errors
+    /// [`VerifyError::IntegrityError`] if the key cannot be read.
+    async fn ed25519_public_key(&self) -> Result<Vec<u8>, VerifyError>;
+
+    /// The ML-DSA-65 (PQC) public key — raw bytes.
+    ///
+    /// # Errors
+    /// [`VerifyError::IntegrityError`] if the key cannot be read.
+    async fn mldsa65_public_key(&self) -> Result<Vec<u8>, VerifyError>;
+
+    /// Bound hybrid sign: Ed25519 over `bytes`, then ML-DSA-65 over
+    /// `bytes ‖ ed25519_sig` (the PQC half binds the classical half). Returns
+    /// `(ed25519_sig_base64, mldsa65_sig_base64)` — byte-identical to the
+    /// software primitive `HybridSigningIdentity::sign_bytes`.
+    ///
+    /// # Errors
+    /// [`VerifyError`] on a hardware-signer or crypto-layer fault.
+    async fn sign_bound(&self, bytes: &[u8]) -> Result<(String, String), VerifyError>;
+
+    /// The [`ThresholdMember`] pinning this identity's public keys — the
+    /// directory entry a verifier binds a signature from this identity to.
+    /// `role` is `None`.
+    ///
+    /// # Errors
+    /// [`VerifyError::IntegrityError`] if either public key cannot be read.
+    async fn directory_member(&self) -> Result<ThresholdMember, VerifyError> {
+        let ed = self.ed25519_public_key().await?;
+        let mldsa = self.mldsa65_public_key().await?;
+        Ok(ThresholdMember {
+            member_id: self.key_id().to_string(),
+            ed25519_public_key_base64: b64().encode(ed),
+            mldsa65_public_key_base64: Some(b64().encode(mldsa)),
+            role: None,
+        })
+    }
+
+    /// Canonicalize `envelope` (JCS, RFC 8785) and bound-hybrid-sign it into a
+    /// [`SignedEnvelope`].
+    ///
+    /// # Errors
+    /// [`VerifyError`] on a canonicalization or signer fault.
+    async fn sign_envelope_async(&self, envelope: Value) -> Result<SignedEnvelope, VerifyError> {
+        let bytes = jcs::canonicalize(&envelope)?;
+        let (ed, mldsa) = self.sign_bound(&bytes).await?;
+        Ok(SignedEnvelope {
+            signed_envelope: envelope,
+            ed25519_signature_base64: ed,
+            mldsa65_signature_base64: mldsa,
+        })
+    }
+}
+
+#[async_trait::async_trait]
+impl SelfSigner for HybridSigningIdentity {
+    fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    async fn ed25519_public_key(&self) -> Result<Vec<u8>, VerifyError> {
+        self.ed.public_key().map_err(crypto_err)
+    }
+
+    async fn mldsa65_public_key(&self) -> Result<Vec<u8>, VerifyError> {
+        self.mldsa.public_key().map_err(crypto_err)
+    }
+
+    async fn sign_bound(&self, bytes: &[u8]) -> Result<(String, String), VerifyError> {
+        // Reuse the sync primitive — byte-identical to the hardware path below.
+        self.sign_bytes(bytes)
+    }
+}
+
+/// A **hardware-rooted** hybrid user identity (CIRISVerify#63).
+///
+/// The Ed25519 federation-signing half lives in a hardware
+/// [`HardwareSigner`] — Secure Enclave / Android StrongBox / TPM-sealed
+/// (CIRISVerify#70) / YubiKey-PKCS#11 (CIRISVerify#80), selected through the
+/// `ciris_keyring::user_identity` backends. The ML-DSA-65 PQC half is software
+/// (its seed sealed-at-rest by CIRISVerify#71 when constructed from a sealed
+/// seed). **The signing seed never leaves the secure element** — only the
+/// bound hybrid signature is exported.
+///
+/// Satisfies the same [`SelfSigner`] contract as the software
+/// [`HybridSigningIdentity`], so every ceremony producer is
+/// hardware/software-agnostic and the wire bytes are identical — a binding
+/// signed here verifies through [`crate::threshold`] /
+/// [`crate::operational_admit`] / [`crate::transport_binding`] exactly as a
+/// software-signed one does.
+///
+/// The hardware signer MUST be Ed25519 ([`ClassicalAlgorithm::Ed25519`]) — the
+/// federation signing algorithm. A P-256-only token is rejected at
+/// [`HardwareRootedIdentity::new`] (fail-closed, not silently downgraded).
+pub struct HardwareRootedIdentity {
+    key_id: String,
+    ed: Arc<dyn HardwareSigner>,
+    mldsa: MlDsa65Signer,
+}
+
+impl HardwareRootedIdentity {
+    /// Construct from a hardware Ed25519 signer plus the software ML-DSA-65
+    /// PQC half.
+    ///
+    /// # Errors
+    /// [`VerifyError::IntegrityError`] if `ed` is not an Ed25519 signer — the
+    /// federation tier requires Ed25519 + ML-DSA-65, and a P-256 hardware key
+    /// cannot stand in for the classical half.
+    pub fn new(
+        key_id: impl Into<String>,
+        ed: Arc<dyn HardwareSigner>,
+        mldsa: MlDsa65Signer,
+    ) -> Result<Self, VerifyError> {
+        if ed.algorithm() != ClassicalAlgorithm::Ed25519 {
+            return Err(VerifyError::IntegrityError {
+                message: format!(
+                    "hardware-rooted federation key must be Ed25519, got {:?}",
+                    ed.algorithm()
+                ),
+            });
+        }
+        Ok(Self {
+            key_id: key_id.into(),
+            ed,
+            mldsa,
+        })
+    }
+
+    /// This identity's federation `key_id`.
+    #[must_use]
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    /// The hardware custody class of the Ed25519 signing half — what feeds the
+    /// CEG §9.4 `hardware_class` / attestation surface a consumer reports.
+    #[must_use]
+    pub fn hardware_type(&self) -> ciris_keyring::HardwareType {
+        self.ed.hardware_type()
+    }
+}
+
+#[async_trait::async_trait]
+impl SelfSigner for HardwareRootedIdentity {
+    fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    async fn ed25519_public_key(&self) -> Result<Vec<u8>, VerifyError> {
+        self.ed.public_key().await.map_err(keyring_err)
+    }
+
+    async fn mldsa65_public_key(&self) -> Result<Vec<u8>, VerifyError> {
+        self.mldsa.public_key().map_err(crypto_err)
+    }
+
+    async fn sign_bound(&self, bytes: &[u8]) -> Result<(String, String), VerifyError> {
+        // Ed25519 in hardware (async — may await a secure-element / touch), then
+        // ML-DSA-65 in software over `bytes ‖ ed_sig`. Byte-identical bound
+        // construction to HybridSigningIdentity::sign_bytes.
+        let ed_sig = self.ed.sign(bytes).await.map_err(keyring_err)?;
+        let mut bound = bytes.to_vec();
+        bound.extend_from_slice(&ed_sig);
+        let pqc_sig = self.mldsa.sign(&bound).map_err(crypto_err)?;
+        Ok((b64().encode(&ed_sig), b64().encode(&pqc_sig)))
+    }
+}
+
 // ===========================================================================
 // 1. delegates_to(user -> agent occurrence) — org_membership grant
 // ===========================================================================
@@ -224,14 +437,55 @@ pub fn sign_delegation(
     role: &str,
     status: &str,
 ) -> Result<SignedEnvelope, VerifyError> {
-    let envelope = json!({
+    granter.sign_envelope(delegation_envelope(
+        &granter.key_id,
+        subject_key_id,
+        org_id,
+        role,
+        status,
+    ))
+}
+
+/// Hardware-rooted async variant of [`sign_delegation`] — same envelope, signed
+/// through any [`SelfSigner`] (software or hardware-rooted).
+///
+/// # Errors
+///
+/// [`VerifyError`] only on a canonicalization or signer fault.
+pub async fn sign_delegation_async(
+    granter: &dyn SelfSigner,
+    subject_key_id: &str,
+    org_id: &str,
+    role: &str,
+    status: &str,
+) -> Result<SignedEnvelope, VerifyError> {
+    granter
+        .sign_envelope_async(delegation_envelope(
+            granter.key_id(),
+            subject_key_id,
+            org_id,
+            role,
+            status,
+        ))
+        .await
+}
+
+/// The canonical `delegates_to` `org_membership` envelope (§8.1.12.7.1) —
+/// shared by the sync and async producers so the signed bytes can never drift.
+fn delegation_envelope(
+    attesting_key_id: &str,
+    subject_key_id: &str,
+    org_id: &str,
+    role: &str,
+    status: &str,
+) -> Value {
+    json!({
         "user_id": subject_key_id,
         "org_id": org_id,
         "role": role,
         "status": status,
-        "attesting_key_id": granter.key_id,
-    });
-    granter.sign_envelope(envelope)
+        "attesting_key_id": attesting_key_id,
+    })
 }
 
 // ===========================================================================
@@ -266,21 +520,60 @@ pub fn sign_partnership_grant(
     bilateral_pair_id: &str,
     signed_at: &str,
 ) -> Result<SignedEnvelope, VerifyError> {
-    // CEG 1.0-RC7 §8.1.12.7.1(a): EXACTLY these seven members, bare-`scores`
-    // shape. `attesting_key_id` is the signer (granter); `subject_key_ids` is
-    // the single-element array `[partner]` (set-sorted trivially); NO
-    // `valid_until` (a PARTNERED pair has no expiry — omitted, not null). JCS
-    // sorts keys, so member order here is irrelevant to the signed bytes.
-    let envelope = json!({
+    granter.sign_envelope(partnership_envelope(
+        "consent:partnership_grant:v1",
+        &granter.key_id,
+        partner_key_id,
+        bilateral_pair_id,
+        signed_at,
+    ))
+}
+
+/// Hardware-rooted async variant of [`sign_partnership_grant`].
+///
+/// # Errors
+///
+/// [`VerifyError`] only on a canonicalization or signer fault.
+pub async fn sign_partnership_grant_async(
+    granter: &dyn SelfSigner,
+    partner_key_id: &str,
+    bilateral_pair_id: &str,
+    signed_at: &str,
+) -> Result<SignedEnvelope, VerifyError> {
+    granter
+        .sign_envelope_async(partnership_envelope(
+            "consent:partnership_grant:v1",
+            granter.key_id(),
+            partner_key_id,
+            bilateral_pair_id,
+            signed_at,
+        ))
+        .await
+}
+
+/// The canonical bilateral-partnership envelope (CEG 1.0-RC7 §8.1.12.7.1(a)):
+/// EXACTLY the seven REQUIRED members, bare-`scores` shape. `attesting_key_id`
+/// is the signer; `subject_key_ids` is the single-element array of the OTHER
+/// party (set-sorted trivially); NO `valid_until` (a PARTNERED pair has no
+/// expiry — omitted, not null). `dimension` selects grant vs accept. JCS sorts
+/// keys, so member order here is irrelevant to the signed bytes. Shared by the
+/// sync and async producers so the JCS signing bytes can never drift.
+fn partnership_envelope(
+    dimension: &str,
+    attesting_key_id: &str,
+    other_party_key_id: &str,
+    bilateral_pair_id: &str,
+    signed_at: &str,
+) -> Value {
+    json!({
         "attestation_type": "scores",
-        "attesting_key_id": granter.key_id,
-        "dimension": "consent:partnership_grant:v1",
+        "attesting_key_id": attesting_key_id,
+        "dimension": dimension,
         "score": PARTNERSHIP_AFFIRMATION_SCORE,
-        "subject_key_ids": [partner_key_id],
+        "subject_key_ids": [other_party_key_id],
         "bilateral_pair_id": bilateral_pair_id,
         "signed_at": signed_at,
-    });
-    granter.sign_envelope(envelope)
+    })
 }
 
 /// Hybrid-sign the `consent:partnership_accept:v1` envelope — the matching
@@ -303,20 +596,35 @@ pub fn sign_partnership_accept(
     bilateral_pair_id: &str,
     signed_at: &str,
 ) -> Result<SignedEnvelope, VerifyError> {
-    // CEG 1.0-RC7 §8.1.12.7.1(a) accept half: same seven-member set, mirrored.
-    // `attesting_key_id` is the accepter (the signer); `subject_key_ids` is the
-    // OTHER party — here the original granter (`[granter_key_id]`). Tied to the
-    // grant by the shared `bilateral_pair_id`.
-    let envelope = json!({
-        "attestation_type": "scores",
-        "attesting_key_id": accepter.key_id,
-        "dimension": "consent:partnership_accept:v1",
-        "score": PARTNERSHIP_AFFIRMATION_SCORE,
-        "subject_key_ids": [granter_key_id],
-        "bilateral_pair_id": bilateral_pair_id,
-        "signed_at": signed_at,
-    });
-    accepter.sign_envelope(envelope)
+    accepter.sign_envelope(partnership_envelope(
+        "consent:partnership_accept:v1",
+        &accepter.key_id,
+        granter_key_id,
+        bilateral_pair_id,
+        signed_at,
+    ))
+}
+
+/// Hardware-rooted async variant of [`sign_partnership_accept`].
+///
+/// # Errors
+///
+/// [`VerifyError`] only on a canonicalization or signer fault.
+pub async fn sign_partnership_accept_async(
+    accepter: &dyn SelfSigner,
+    granter_key_id: &str,
+    bilateral_pair_id: &str,
+    signed_at: &str,
+) -> Result<SignedEnvelope, VerifyError> {
+    accepter
+        .sign_envelope_async(partnership_envelope(
+            "consent:partnership_accept:v1",
+            accepter.key_id(),
+            granter_key_id,
+            bilateral_pair_id,
+            signed_at,
+        ))
+        .await
 }
 
 // ===========================================================================
@@ -375,6 +683,68 @@ pub fn sign_transport_binding(
     mat: &TransportIdentityMaterial<'_>,
     signed_at: &str,
 ) -> Result<TransportBinding, VerifyError> {
+    let (envelope, td, enc) = transport_envelope(
+        &signer.key_id,
+        occurrence_key_id,
+        device_class,
+        mat,
+        signed_at,
+    )?;
+    let bytes = jcs::canonicalize(&envelope)?;
+    let (ed_sig, mldsa_sig) = signer.sign_bytes(&bytes)?;
+    Ok(assemble_transport_binding(
+        signer.key_id.clone(),
+        envelope,
+        td,
+        enc,
+        ed_sig,
+        mldsa_sig,
+    ))
+}
+
+/// Hardware-rooted async variant of [`sign_transport_binding`] — same
+/// occurrence envelope, signed through any [`SelfSigner`].
+///
+/// # Errors
+///
+/// [`VerifyError`] on a canonicalization or signer fault.
+pub async fn sign_transport_binding_async(
+    signer: &dyn SelfSigner,
+    occurrence_key_id: &str,
+    device_class: &str,
+    mat: &TransportIdentityMaterial<'_>,
+    signed_at: &str,
+) -> Result<TransportBinding, VerifyError> {
+    let (envelope, td, enc) = transport_envelope(
+        signer.key_id(),
+        occurrence_key_id,
+        device_class,
+        mat,
+        signed_at,
+    )?;
+    let bytes = jcs::canonicalize(&envelope)?;
+    let (ed_sig, mldsa_sig) = signer.sign_bound(&bytes).await?;
+    Ok(assemble_transport_binding(
+        signer.key_id().to_string(),
+        envelope,
+        td,
+        enc,
+        ed_sig,
+        mldsa_sig,
+    ))
+}
+
+/// Build the `transport_destination` occurrence envelope (§5.6.8.8.1, AV-17)
+/// plus its parsed [`TransportDestination`] / [`EncryptionPubkeys`]. Shared by
+/// the sync and async producers; the only difference between them is which
+/// signer produces the two bound-hybrid halves.
+fn transport_envelope(
+    signer_key_id: &str,
+    occurrence_key_id: &str,
+    device_class: &str,
+    mat: &TransportIdentityMaterial<'_>,
+    signed_at: &str,
+) -> Result<(Value, TransportDestination, Option<EncryptionPubkeys>), VerifyError> {
     // Derive the destination_hash from the same §5.6.8.8.1.1 algorithm the
     // verifier recomputes — a producer never carries an arbitrary hash, or it
     // fails the consumer's recompute. `None` iff an aspect carries an illegal
@@ -407,8 +777,8 @@ pub fn sign_transport_binding(
     let mut envelope = json!({
         "attestation_type": "scores",
         "subject_kind": "identity_occurrence",
-        "attesting_key_id": signer.key_id,
-        "identity_key_id": signer.key_id,
+        "attesting_key_id": signer_key_id,
+        "identity_key_id": signer_key_id,
         "occurrence_key_id": occurrence_key_id,
         "device_class": device_class,
         "transport_destination": {
@@ -426,12 +796,19 @@ pub fn sign_transport_binding(
             "ml_kem_768_base64": enc.ml_kem_768_base64,
         });
     }
+    Ok((envelope, td, enc))
+}
 
-    let bytes = jcs::canonicalize(&envelope)?;
-    let (ed_sig, mldsa_sig) = signer.sign_bytes(&bytes)?;
-
-    Ok(TransportBinding {
-        attesting_key_id: signer.key_id.clone(),
+fn assemble_transport_binding(
+    attesting_key_id: String,
+    envelope: Value,
+    td: TransportDestination,
+    enc: Option<EncryptionPubkeys>,
+    ed_sig: String,
+    mldsa_sig: String,
+) -> TransportBinding {
+    TransportBinding {
+        attesting_key_id,
         signed_envelope: envelope,
         transport_destination: td,
         encryption_pubkeys: enc,
@@ -439,7 +816,7 @@ pub fn sign_transport_binding(
             ed25519_signature_base64: ed_sig,
             mldsa65_signature_base64: Some(mldsa_sig),
         },
-    })
+    }
 }
 
 /// Convert a [`SignedEnvelope`] into an
@@ -452,6 +829,178 @@ pub fn as_membership_grant(signed: &SignedEnvelope) -> crate::operational_admit:
         ed25519_signature_base64: signed.ed25519_signature_base64.clone(),
         mldsa65_signature_base64: Some(signed.mldsa65_signature_base64.clone()),
     }
+}
+
+// ===========================================================================
+// 4. The unified login ceremony (CIRISVerify#63): WebAuthn presence + bundle
+// ===========================================================================
+
+/// The WebAuthn/passkey **presence** policy that gates the login ceremony
+/// (CIRISVerify#63). Presence is an *unlock* factor — proof a human is at the
+/// device — NOT the owner-binding signature. The hardware-rooted
+/// [`SelfSigner`] still produces every federation signature; a verified
+/// passkey only authorizes the ceremony to run.
+///
+/// `rp_id` / `origins` are the anti-phishing binding (exact-match — a passkey
+/// minted for another origin cannot unlock here). Set `require_user_verified`
+/// for high-assurance presence (the authenticator did a biometric/PIN, not a
+/// bare tap) — recommended for a federation-key ceremony.
+pub struct PresencePolicy<'a> {
+    /// The relying-party id the passkey is scoped to (e.g. `"ciris.ai"`).
+    pub rp_id: &'a str,
+    /// The exact allowed `origin`(s) of the `clientDataJSON`.
+    pub origins: &'a [&'a str],
+    /// Require the User-Verified flag (biometric/PIN), not just User-Present.
+    pub require_user_verified: bool,
+}
+
+/// Verify the passkey **presence** assertion that unlocks the ceremony.
+///
+/// A thin, intent-named wrapper over [`verify_assertion`]: it makes the
+/// "presence, not owner-binding" contract explicit at the call site. Returns
+/// the [`AssertionOutcome`] (the `sign_count` for the caller's stateful
+/// clone-detection, and whether UV was set).
+///
+/// # Errors
+///
+/// [`WebauthnError`] if any checkable step fails — the single fail-closed
+/// presence signal.
+pub fn verify_presence(
+    assertion: &Assertion<'_>,
+    expected_challenge: &[u8],
+    policy: &PresencePolicy<'_>,
+) -> Result<AssertionOutcome, WebauthnError> {
+    verify_assertion(
+        assertion,
+        expected_challenge,
+        policy.rp_id,
+        policy.origins,
+        policy.require_user_verified,
+    )
+}
+
+/// The fixed inputs for one self-at-login ceremony.
+pub struct LoginInputs<'a> {
+    /// The org the occurrence is delegated into.
+    pub org_id: &'a str,
+    /// The `OrgRole` wire string granted to the occurrence (e.g. `"operator"`).
+    pub role: &'a str,
+    /// The agent-occurrence federation `key_id` (the partner / delegate).
+    pub occurrence_key_id: &'a str,
+    /// The stable join key tying the partnership grant to its accept.
+    pub bilateral_pair_id: &'a str,
+    /// The occurrence's device class (for the transport binding / §9.4).
+    pub device_class: &'a str,
+    /// The occurrence's transport-identity material (kept separate from the
+    /// federation signing key — AV-17).
+    pub transport: &'a TransportIdentityMaterial<'a>,
+    /// RFC 3339 ceremony timestamp (the caller supplies it — this module is
+    /// clock-free so the signed bytes are reproducible).
+    pub signed_at: &'a str,
+}
+
+/// The complete bilateral self-at-login output — every signed claim a
+/// downstream verifier needs to admit the (user + occurrence) Self.
+pub struct SelfAtLoginBundle {
+    /// The verified passkey presence outcome (sign_count, user_verified).
+    pub presence: AssertionOutcome,
+    /// The user key's directory entry (pin its pubkeys to verify the grants).
+    pub user_directory_member: ThresholdMember,
+    /// The occurrence key's directory entry.
+    pub occurrence_directory_member: ThresholdMember,
+    /// `delegates_to(user → occurrence)` `org_membership` grant — user-signed.
+    pub delegation: SignedEnvelope,
+    /// `consent:partnership_grant:v1` — user-signed.
+    pub partnership_grant: SignedEnvelope,
+    /// `consent:partnership_accept:v1` — occurrence-signed.
+    pub partnership_accept: SignedEnvelope,
+    /// `transport_destination` occurrence binding — occurrence-signed.
+    pub transport_binding: TransportBinding,
+}
+
+/// Run the full self-at-login ceremony (CIRISVerify#63).
+///
+/// 1. **Gate on presence** — the passkey assertion must verify under `policy`
+///    (fail-closed: a [`WebauthnError`] aborts the ceremony, nothing is
+///    signed).
+/// 2. The hardware-rooted **`user`** identity signs the
+///    `delegates_to(user → occurrence)` grant and the partnership grant.
+/// 3. The **`occurrence`** identity signs the matching partnership accept and
+///    its own transport binding.
+///
+/// Every produced envelope round-trips through its verifier
+/// ([`crate::operational_admit`] / [`crate::threshold`] /
+/// [`crate::transport_binding`]) against the directory members returned here —
+/// that round-trip is the contract (see the ceremony test).
+///
+/// `user` and `occurrence` are both [`SelfSigner`]s, so either may be
+/// hardware-rooted ([`HardwareRootedIdentity`]) or software
+/// ([`HybridSigningIdentity`]) — the wire bytes are identical.
+///
+/// # Errors
+///
+/// [`VerifyError::IntegrityError`] if presence fails to verify, or any
+/// [`VerifyError`] from a canonicalization / signer fault.
+#[allow(clippy::too_many_arguments)]
+pub async fn perform_self_at_login(
+    user: &dyn SelfSigner,
+    occurrence: &dyn SelfSigner,
+    presence_assertion: &Assertion<'_>,
+    presence_challenge: &[u8],
+    policy: &PresencePolicy<'_>,
+    inputs: &LoginInputs<'_>,
+) -> Result<SelfAtLoginBundle, VerifyError> {
+    // 1. Presence gate — fail-closed before any federation signature is made.
+    let presence =
+        verify_presence(presence_assertion, presence_challenge, policy).map_err(|e| {
+            VerifyError::IntegrityError {
+                message: format!("self-at-login presence verification failed: {e:?}"),
+            }
+        })?;
+
+    // 2. User-signed: delegation + partnership grant.
+    let delegation = sign_delegation_async(
+        user,
+        inputs.occurrence_key_id,
+        inputs.org_id,
+        inputs.role,
+        "active",
+    )
+    .await?;
+    let partnership_grant = sign_partnership_grant_async(
+        user,
+        inputs.occurrence_key_id,
+        inputs.bilateral_pair_id,
+        inputs.signed_at,
+    )
+    .await?;
+
+    // 3. Occurrence-signed: partnership accept + transport binding.
+    let partnership_accept = sign_partnership_accept_async(
+        occurrence,
+        user.key_id(),
+        inputs.bilateral_pair_id,
+        inputs.signed_at,
+    )
+    .await?;
+    let transport_binding = sign_transport_binding_async(
+        occurrence,
+        inputs.occurrence_key_id,
+        inputs.device_class,
+        inputs.transport,
+        inputs.signed_at,
+    )
+    .await?;
+
+    Ok(SelfAtLoginBundle {
+        presence,
+        user_directory_member: user.directory_member().await?,
+        occurrence_directory_member: occurrence.directory_member().await?,
+        delegation,
+        partnership_grant,
+        partnership_accept,
+        transport_binding,
+    })
 }
 
 #[cfg(test)]
@@ -798,5 +1347,276 @@ mod tests {
         let v = verify_transport_binding(&binding, &dir).unwrap();
         assert!(!v.authentic);
         assert_eq!(v.reason, TransportBindingReason::KeySeparationViolation);
+    }
+
+    // ---- 4. hardware-rooted identity + the self-at-login ceremony --------
+
+    /// A software Ed25519 [`HardwareSigner`] standing in for a real secure
+    /// element (Secure Enclave / StrongBox / YubiKey) — the byte contract is
+    /// identical, so the ceremony is fully exercisable without a physical key.
+    fn software_hw_ed25519(seed: u8, alias: &str) -> Arc<dyn HardwareSigner> {
+        Arc::new(ciris_keyring::Ed25519SoftwareSigner::from_bytes(&[seed; 32], alias).unwrap())
+    }
+
+    fn hardware_rooted(seed: u8, key_id: &str) -> HardwareRootedIdentity {
+        HardwareRootedIdentity::new(
+            key_id,
+            software_hw_ed25519(seed, key_id),
+            MlDsa65Signer::new().unwrap(),
+        )
+        .unwrap()
+    }
+
+    /// Build a valid EdDSA passkey **presence** assertion (the credential key is
+    /// the passkey, distinct from the federation signing key).
+    fn make_passkey(
+        cred: &Ed25519Signer,
+        challenge: &[u8],
+        rp_id: &str,
+        origin: &str,
+        uv: bool,
+        sign_count: u32,
+    ) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
+        use sha2::{Digest, Sha256};
+        let client = json!({
+            "type": "webauthn.get",
+            "challenge": base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(challenge),
+            "origin": origin,
+        });
+        let cdj = serde_json::to_vec(&client).unwrap();
+        let mut auth = Vec::new();
+        auth.extend_from_slice(&<[u8; 32]>::from(Sha256::digest(rp_id.as_bytes())));
+        auth.push(0x01 | if uv { 0x04 } else { 0 }); // UP | UV
+        auth.extend_from_slice(&sign_count.to_be_bytes());
+        let client_hash: [u8; 32] = Sha256::digest(&cdj).into();
+        let mut signed = auth.clone();
+        signed.extend_from_slice(&client_hash);
+        let sig = signer_sign(cred, &signed);
+        (cdj, auth, sig)
+    }
+
+    fn signer_sign(s: &Ed25519Signer, msg: &[u8]) -> Vec<u8> {
+        s.sign(msg).unwrap()
+    }
+
+    #[tokio::test]
+    async fn hardware_rooted_identity_produces_verifiable_delegation() {
+        // The hardware seam: a HardwareRootedIdentity (Ed25519 in a hardware
+        // signer + software ML-DSA) produces bytes byte-identical to the
+        // software path — a delegation it signs verifies through the same
+        // resolve_role_authority.
+        let user = hardware_rooted(0x07, "user-steward-1");
+        assert_eq!(
+            user.hardware_type(),
+            ciris_keyring::HardwareType::SoftwareOnly
+        );
+
+        let signed = sign_delegation_async(&user, "agent-occ-1", "org-x", "operator", "active")
+            .await
+            .unwrap();
+        let grant = as_membership_grant(&signed);
+        let dir = vec![user.directory_member().await.unwrap()];
+        let roots = vec!["user-steward-1".to_string()];
+
+        let v = resolve_role_authority(
+            "agent-occ-1",
+            "org-x",
+            OrgRole::Operator,
+            &[grant],
+            &dir,
+            &roots,
+        );
+        assert!(
+            v.authorized,
+            "a hardware-rooted delegation must verify through resolve_role_authority"
+        );
+        assert_eq!(v.reason, AuthorizationReason::Authorized);
+    }
+
+    #[tokio::test]
+    async fn hardware_rooted_rejects_non_ed25519_signer() {
+        // The federation classical half MUST be Ed25519 — a P-256-only token is
+        // refused at construction (fail-closed, not silently downgraded).
+        let p256 = Arc::from(ciris_keyring::create_software_signer("p256-token").unwrap());
+        let err = HardwareRootedIdentity::new("user-1", p256, MlDsa65Signer::new().unwrap());
+        assert!(err.is_err(), "a P-256 hardware key must be rejected");
+    }
+
+    fn presence_policy() -> PresencePolicy<'static> {
+        PresencePolicy {
+            rp_id: "ciris.ai",
+            origins: &["https://ciris.ai"],
+            require_user_verified: true,
+        }
+    }
+
+    #[tokio::test]
+    async fn full_self_at_login_ceremony_round_trips() {
+        // The end-to-end #63 contract: a hardware-rooted user, a software
+        // occurrence, a WebAuthn presence unlock, and every produced envelope
+        // verifies through its matching verifier.
+        let user = hardware_rooted(0x07, "user-steward-1");
+        let occurrence = HybridSigningIdentity::generate("agent-occ-1").unwrap();
+
+        // Presence: a passkey assertion (credential key ≠ federation key).
+        let passkey = Ed25519Signer::random().unwrap();
+        let passkey_pub = passkey.public_key().unwrap();
+        let challenge = b"server-issued-login-challenge";
+        let (cdj, auth, sig) = make_passkey(
+            &passkey,
+            challenge,
+            "ciris.ai",
+            "https://ciris.ai",
+            true,
+            42,
+        );
+        let assertion = Assertion {
+            alg: crate::webauthn::WebauthnAlg::EdDsa,
+            credential_public_key: &passkey_pub,
+            authenticator_data: &auth,
+            client_data_json: &cdj,
+            signature: &sig,
+        };
+
+        let aspects = vec!["announce".to_string(), "v1".to_string()];
+        let transport = TransportIdentityMaterial {
+            reticulum_x25519_pubkey: &pubkey_bytes(0x02),
+            reticulum_ed25519_pubkey: &pubkey_bytes(0x01),
+            app_name: "ciris.federation",
+            aspects: &aspects,
+            encryption: None,
+        };
+        let inputs = LoginInputs {
+            org_id: "org-x",
+            role: "operator",
+            occurrence_key_id: "agent-occ-1",
+            bilateral_pair_id: "pair-xyz",
+            device_class: "agent",
+            transport: &transport,
+            signed_at: "2026-06-17T00:00:00.000Z",
+        };
+
+        let bundle = perform_self_at_login(
+            &user,
+            &occurrence,
+            &assertion,
+            challenge,
+            &presence_policy(),
+            &inputs,
+        )
+        .await
+        .unwrap();
+
+        // Presence outcome surfaced (sign_count for clone-detection).
+        assert_eq!(bundle.presence.sign_count, 42);
+        assert!(bundle.presence.user_verified);
+
+        // (a) delegation verifies through resolve_role_authority.
+        let v = resolve_role_authority(
+            "agent-occ-1",
+            "org-x",
+            OrgRole::Operator,
+            &[as_membership_grant(&bundle.delegation)],
+            std::slice::from_ref(&bundle.user_directory_member),
+            &["user-steward-1".to_string()],
+        );
+        assert!(
+            v.authorized,
+            "ceremony delegation must authorize the occurrence"
+        );
+
+        // (b) partnership grant (user) + accept (occurrence) each verify at
+        //     threshold 1 against their own signer, joined by bilateral_pair_id.
+        let g_bytes = jcs::canonicalize(&bundle.partnership_grant.signed_envelope).unwrap();
+        assert_eq!(
+            verify_threshold_signatures(
+                &g_bytes,
+                std::slice::from_ref(&bundle.user_directory_member),
+                &[threshold_sig("user-steward-1", &bundle.partnership_grant)],
+                1,
+            ),
+            Ok(1),
+        );
+        let a_bytes = jcs::canonicalize(&bundle.partnership_accept.signed_envelope).unwrap();
+        assert_eq!(
+            verify_threshold_signatures(
+                &a_bytes,
+                std::slice::from_ref(&bundle.occurrence_directory_member),
+                &[threshold_sig("agent-occ-1", &bundle.partnership_accept)],
+                1,
+            ),
+            Ok(1),
+        );
+        assert_eq!(
+            bundle.partnership_grant.signed_envelope["bilateral_pair_id"],
+            bundle.partnership_accept.signed_envelope["bilateral_pair_id"],
+        );
+
+        // (c) transport binding verifies through verify_transport_binding.
+        let tv = verify_transport_binding(
+            &bundle.transport_binding,
+            std::slice::from_ref(&bundle.occurrence_directory_member),
+        )
+        .unwrap();
+        assert!(tv.authentic, "ceremony transport binding must verify");
+        assert_eq!(tv.reason, TransportBindingReason::Verified);
+    }
+
+    #[tokio::test]
+    async fn self_at_login_fails_closed_on_bad_presence() {
+        // A wrong-challenge passkey aborts the ceremony — nothing is signed.
+        let user = hardware_rooted(0x07, "user-steward-1");
+        let occurrence = HybridSigningIdentity::generate("agent-occ-1").unwrap();
+
+        let passkey = Ed25519Signer::random().unwrap();
+        let passkey_pub = passkey.public_key().unwrap();
+        let (cdj, auth, sig) = make_passkey(
+            &passkey,
+            b"real-challenge",
+            "ciris.ai",
+            "https://ciris.ai",
+            true,
+            1,
+        );
+        let assertion = Assertion {
+            alg: crate::webauthn::WebauthnAlg::EdDsa,
+            credential_public_key: &passkey_pub,
+            authenticator_data: &auth,
+            client_data_json: &cdj,
+            signature: &sig,
+        };
+
+        let aspects = vec!["announce".to_string()];
+        let transport = TransportIdentityMaterial {
+            reticulum_x25519_pubkey: &pubkey_bytes(0x02),
+            reticulum_ed25519_pubkey: &pubkey_bytes(0x01),
+            app_name: "ciris.federation",
+            aspects: &aspects,
+            encryption: None,
+        };
+        let inputs = LoginInputs {
+            org_id: "org-x",
+            role: "operator",
+            occurrence_key_id: "agent-occ-1",
+            bilateral_pair_id: "pair-xyz",
+            device_class: "agent",
+            transport: &transport,
+            signed_at: "2026-06-17T00:00:00.000Z",
+        };
+
+        // Verifier is handed a DIFFERENT challenge than the passkey signed.
+        let r = perform_self_at_login(
+            &user,
+            &occurrence,
+            &assertion,
+            b"attacker-substituted-challenge",
+            &presence_policy(),
+            &inputs,
+        )
+        .await;
+        assert!(
+            r.is_err(),
+            "ceremony must fail closed when presence does not verify"
+        );
     }
 }
