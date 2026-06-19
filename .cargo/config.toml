@@ -46,6 +46,11 @@ rustflags = ["-C", "link-arg=-Wl,-z,relro,-z,now"]
 # Development settings
 [env]
 RUST_BACKTRACE = "1"
+# ML-DSA-65 (FIPS 204) sign/verify use large stack buffers; in debug builds a
+# single op approaches the 2 MB default test-thread stack, so a test holding a
+# few hybrid identities live across a verify can overflow it. Raise the floor
+# for every thread cargo spawns (libtest + tokio workers). Release is unaffected.
+RUST_MIN_STACK = "8388608"
 
 [profile.dev]
 # Faster incremental builds
