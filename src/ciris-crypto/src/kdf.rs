@@ -14,6 +14,7 @@
 
 use hkdf::Hkdf;
 use sha2::Sha256;
+use sha3::Sha3_256;
 
 use crate::error::CryptoError;
 
@@ -72,6 +73,34 @@ pub fn hkdf_sha256(
     let mut out = vec![0u8; out_len];
     hk.expand(info, &mut out)
         .map_err(|e| CryptoError::KdfParameter(format!("hkdf_sha256: {e}")))?;
+    Ok(out)
+}
+
+/// HKDF-SHA3-256 (RFC 5869 construction, SHA3-256 hash).
+///
+/// The SHA3 sibling of [`hkdf_sha256`] — same extract-then-expand
+/// structure, same `salt` / `info` semantics, same `255 * 32 = 8160`-byte
+/// output cap (SHA3-256 is a 32-byte digest). Added for the scope-native
+/// privacy surface (CIRISVerify#82, CEWP SCOPE_PRIVACY.md §2.4): the
+/// per-symbol `symbol_key` derivation is
+/// `HKDF-SHA3-256(salt = record_id, ikm = K_symbol, info = ...)`.
+///
+/// `salt` is OPTIONAL per RFC 5869 — pass `&[]` for the "no salt" case.
+///
+/// # Errors
+///
+/// [`CryptoError::KdfParameter`] if `out_len > 8160` (RFC 5869 §2.3 cap).
+pub fn hkdf_sha3_256(
+    ikm: &[u8],
+    salt: &[u8],
+    info: &[u8],
+    out_len: usize,
+) -> Result<Vec<u8>, CryptoError> {
+    let salt_opt = if salt.is_empty() { None } else { Some(salt) };
+    let hk = Hkdf::<Sha3_256>::new(salt_opt, ikm);
+    let mut out = vec![0u8; out_len];
+    hk.expand(info, &mut out)
+        .map_err(|e| CryptoError::KdfParameter(format!("hkdf_sha3_256: {e}")))?;
     Ok(out)
 }
 
@@ -188,5 +217,57 @@ mod tests {
     fn hkdf_at_max_output_succeeds() {
         let got = hkdf_sha256(b"x", b"salt", b"info", 8160).unwrap();
         assert_eq!(got.len(), 8160);
+    }
+
+    /// HKDF-SHA3-256 known-answer — RFC 5869 Test Case 1 *inputs* run
+    /// through the SHA3-256 construction. The expected output was produced
+    /// by an independent Python HKDF built from `hmac` + `hashlib.sha3_256`
+    /// (extract-then-expand per RFC 5869), so this is a genuine cross-impl
+    /// lock, not a self-generated regression value.
+    #[test]
+    fn hkdf_sha3_256_kat_rfc5869_tc1_inputs() {
+        let ikm = hex::decode("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b").unwrap();
+        let salt = hex::decode("000102030405060708090a0b0c").unwrap();
+        let info = hex::decode("f0f1f2f3f4f5f6f7f8f9").unwrap();
+        let expected = hex::decode(
+            "0c5160501d65021deaf2c14f5abce04c5bd2635abceeba61c2edb6e8ed72\
+             674900557728f2c9f2c4c179",
+        )
+        .unwrap();
+        assert_eq!(hkdf_sha3_256(&ikm, &salt, &info, 42).unwrap(), expected);
+    }
+
+    /// HKDF-SHA3-256 with no salt and no info (RFC 5869 TC3 inputs).
+    #[test]
+    fn hkdf_sha3_256_kat_no_salt_no_info() {
+        let ikm = hex::decode("0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b").unwrap();
+        let expected = hex::decode(
+            "bc1342cdd75c05e8b0c3ae609ce4410684d197232875073499b30cdfe2de\
+             2853c1c1bed63d725e885e78",
+        )
+        .unwrap();
+        assert_eq!(hkdf_sha3_256(&ikm, b"", b"", 42).unwrap(), expected);
+    }
+
+    /// HKDF-SHA3-256 input sensitivity + the prefix property (a 32-byte
+    /// derivation is the prefix of a 64-byte one — HKDF concatenates
+    /// HMAC blocks).
+    #[test]
+    fn hkdf_sha3_256_input_sensitivity() {
+        let base = hkdf_sha3_256(b"ikm", b"salt", b"info", 32).unwrap();
+        assert_eq!(base, hkdf_sha3_256(b"ikm", b"salt", b"info", 32).unwrap());
+        assert_ne!(base, hkdf_sha3_256(b"IKM", b"salt", b"info", 32).unwrap());
+        assert_ne!(base, hkdf_sha3_256(b"ikm", b"Salt", b"info", 32).unwrap());
+        assert_ne!(base, hkdf_sha3_256(b"ikm", b"salt", b"Info", 32).unwrap());
+        // SHA3 and SHA256 HKDF must NOT coincide for the same inputs.
+        assert_ne!(base, hkdf_sha256(b"ikm", b"salt", b"info", 32).unwrap());
+        let long = hkdf_sha3_256(b"ikm", b"salt", b"info", 64).unwrap();
+        assert_eq!(long[..32], base[..]);
+    }
+
+    #[test]
+    fn hkdf_sha3_256_output_too_long_rejected() {
+        let err = hkdf_sha3_256(b"any-ikm", b"salt", b"info", 8161).unwrap_err();
+        assert!(matches!(err, CryptoError::KdfParameter(_)));
     }
 }
