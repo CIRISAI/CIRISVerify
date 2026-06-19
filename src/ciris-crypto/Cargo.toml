@@ -46,6 +46,21 @@ hybrid-kex = ["x25519", "ml-kem", "kdf", "random"]
 # bench is exercised. Off by default — `cargo bench` from CI's default
 # feature set will continue to skip the comparison bench entirely.
 bench-liboqs = ["dep:oqs"]
+# v6.3.0+ (CIRISVerify#82, CEWP SCOPE_PRIVACY.md): scope-native privacy
+# crypto surface — the first cut in the cross-cdylib lockstep cascade.
+#  - `xchacha`       — XChaCha20-Poly1305 AEAD (24-byte nonce), the §2.4
+#                      symbol-envelope + §3.1 uniform-framing cipher.
+#  - `hpke`          — RFC 9180 mode_base over the X-Wing hybrid KEM
+#                      (`hybrid-kex`), the §3.3 Welcome-wrap KEM. AES-256-GCM
+#                      AEAD via `aes-gcm`. Sender-auth is a caller-side
+#                      ML-DSA-65 signature over the encap (existing
+#                      `pqc-ml-dsa` re-export) — X-Wing has no AuthEncap.
+#  - `scope-privacy` — §2.2 MLS-exporter helpers + §2.4 record_id / symbol-key
+#                      derivation (HMAC-SHA3-256 + HKDF-SHA3-256, both added to
+#                      `hmac` / `kdf`) + the §3.4 witness cover-leaf PRF.
+xchacha = ["dep:chacha20poly1305"]
+hpke = ["hybrid-kex", "aes-gcm", "kdf"]
+scope-privacy = ["kdf", "hmac"]
 
 [dependencies]
 thiserror.workspace = true
@@ -109,6 +124,11 @@ aws-lc-rs = { version = "1.5", features = ["unstable"], optional = true }
 ring = { version = "0.17", optional = true }
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"], optional = true }
 hmac = { version = "0.12", optional = true }
+
+# v6.3.0+ (CIRISVerify#82): XChaCha20-Poly1305 AEAD for the scope-native
+# privacy surface. Same crate + version already vendored by
+# ciris-verify-core's offline cache (cache.rs), so no new lockfile entry.
+chacha20poly1305 = { version = "0.10", optional = true }
 
 # v4.8.x+ (CIRISVerify#53): liboqs cross-check bench dep. Cargo
 # disallows `optional = true` on `[dev-dependencies]`, so the dep

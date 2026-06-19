@@ -113,6 +113,29 @@ pub enum CryptoError {
     #[error("KDF parameter error: {0}")]
     KdfParameter(String),
 
+    /// XChaCha20-Poly1305 operation failed (seal or open). Open failures
+    /// most commonly mean tampered ciphertext, wrong key, or wrong nonce;
+    /// seal failures are operational. Parallel to [`CryptoError::AesGcm`]
+    /// (CIRISVerify#82 scope-native privacy AEAD).
+    #[error("XChaCha20-Poly1305 {operation} failed: {reason}")]
+    Xchacha {
+        /// `"seal"` or `"open"`.
+        operation: &'static str,
+        /// Underlying reason from the AEAD library or the caller's input.
+        reason: String,
+    },
+
+    /// HPKE (RFC 9180) operation failed (seal_base or open_base) over the
+    /// X-Wing hybrid KEM. Open failures mean a bad encapsulation, wrong
+    /// recipient key, or tampered ciphertext (CIRISVerify#82).
+    #[error("HPKE {operation} failed: {reason}")]
+    Hpke {
+        /// `"seal_base"` or `"open_base"`.
+        operation: &'static str,
+        /// Underlying reason.
+        reason: String,
+    },
+
     /// The startup RNG health-check (SP 800-90B repetition-count +
     /// adaptive-proportion) failed; the OS entropy source is producing
     /// detectably non-random output. Fail-secure: every `random::fill`
