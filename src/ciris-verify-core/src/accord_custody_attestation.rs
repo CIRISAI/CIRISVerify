@@ -24,16 +24,29 @@
 //! 2. The 9c cert chains 9c → f9-intermediate → the **pinned Yubico root**.
 //! 3. The key the 9c cert *attests* equals the holder's federation Ed25519 key
 //!    (the attestation is for *this* holder's signing key, not a borrowed one).
-//! 4. The Yubico extensions show **FIPS-certified + touch=always + firmware ≥
-//!    5.7** → `hardware_class: YubiKey_5_FIPS`.
+//! 4. The Yubico extensions show **FIPS-certified** (slot-f9 `.10`) **+
+//!    touch=always** (slot-9c `.8`) → `hardware_class: YubiKey_5_FIPS`. Firmware
+//!    (`.3`) is recorded, not floored.
 //!
-//! ## ⚠ Cross-confirm against a real key
+//! ## ⚠ Cross-confirm against a real key (#91 physical validation)
 //!
-//! The Yubico attestation extension *byte encodings* below (touch-policy value,
-//! FIPS extension) are pinned from Yubico's published OID table but **MUST be
-//! cross-confirmed against an actual YubiKey 5 FIPS attestation** before the gate
-//! enforces them — the rcgen tests validate the chain + extraction *logic*, not
-//! the real-device byte values. Flagged for #91 validation with the in-hand keys.
+//! The extension parsing follows Yubico's *documented* encoding (PIV attestation
+//! docs + yubico-piv-tool#181): `.3` firmware and `.8` pin/touch are inner DER
+//! OCTET STRINGs (tolerant of the older bare form), and `.10` FIPS rides the
+//! **f9** cert. The rcgen tests now emit that documented shape — but the bytes
+//! still **MUST be confirmed against an actual YubiKey 5 FIPS attestation**
+//! before the gate is trusted in prod. Concretely, with an in-hand key capture
+//! `ykman piv keys attest 9c` + the device f9 + the pinned Yubico root and assert
+//! against the live bytes:
+//!   1. `.8` content is `[pin, touch]` with touch=always == `0x02` (not cached
+//!      `0x03`) — the one **false-accept** risk if the offset is wrong;
+//!   2. `.10` is present on the f9 cert of a FIPS key and absent on a non-FIPS
+//!      one (and whether it carries a payload vs is presence-only);
+//!   3. `.3` unwraps to the real `major.minor.patch`;
+//!   4. the real chain (Yubico signs attestation certs **SHA256-RSA**) verifies
+//!      end-to-end through `x509_parser::verify_signature` — the rcgen mock signs
+//!      the chain with Ed25519, so the RSA path is *not* exercised by these tests;
+//!   5. the 5.7-FIPS slot-9c key is id-Ed25519 with a bare 32-byte subjectPublicKey.
 
 use base64::Engine;
 use serde_json::{json, Value};
@@ -51,6 +64,11 @@ pub const ACCORD_CUSTODY_ATTESTATION_KIND: &str = "accord_holder_custody_attesta
 
 /// The custody tier asserted by the portable USB-wrapped mode (#91 / v6.6.0).
 pub const CUSTODY_TIER_PORTABLE_2FA: &str = "portable_2fa";
+
+/// The custody tiers the verifier recognizes. A holder-signed bundle asserting
+/// any other tier is rejected — the tier is an attested self-claim, so it must
+/// be allowlisted rather than echoed verbatim to a tier-gating consumer.
+const ALLOWED_CUSTODY_TIERS: &[&str] = &[CUSTODY_TIER_PORTABLE_2FA];
 
 // Yubico PIV attestation extension OIDs (arc 1.3.6.1.4.1.41482.3.*).
 const OID_YUBICO_FIRMWARE: &str = "1.3.6.1.4.1.41482.3.3";
@@ -256,7 +274,31 @@ pub fn verify_accord_custody_attestation(
         return Err(CustodyError::SignatureInvalid);
     }
 
+    // The holder signs its own identity into the envelope; bind that self-claim
+    // to the caller-resolved `holder_member` so the signed fields are
+    // load-bearing, not decorative — a holder cannot sign a bundle whose
+    // embedded key_id / pubkey disagree with the key the gate verified against
+    // (closes the confused-deputy / record-drift surface).
+    if str_field(env, "holder_key_id")? != holder_member.member_id {
+        return Err(CustodyError::Malformed {
+            field: "holder_key_id (≠ resolved member_id)".to_string(),
+        });
+    }
+    if str_field(env, "ed25519_public_key_base64")? != holder_member.ed25519_public_key_base64 {
+        return Err(CustodyError::Malformed {
+            field: "ed25519_public_key_base64 (≠ resolved member key)".to_string(),
+        });
+    }
+
+    // `custody_tier` is a holder self-claim — allowlist it so a holder cannot
+    // assert a stronger tier than the one verify recognizes (a consumer that
+    // gates on tier would otherwise inherit an unbounded, unverified string).
     let custody_tier = str_field(env, "custody_tier")?.to_string();
+    if !ALLOWED_CUSTODY_TIERS.contains(&custody_tier.as_str()) {
+        return Err(CustodyError::FloorNotMet {
+            detail: format!("unrecognized custody_tier {custody_tier:?}"),
+        });
+    }
     let attest_9c = hex::decode(str_field(env, "yubikey_piv_attestation_9c_hex")?)
         .map_err(|_| CustodyError::CertParse { which: "9c" })?;
     let inter_f9 = hex::decode(str_field(env, "yubikey_attestation_intermediate_f9_hex")?)
@@ -273,6 +315,24 @@ pub fn verify_accord_custody_attestation(
         verify_yubikey_piv_attestation(&attest_9c, &inter_f9, yubico_root_der, &holder_ed)?;
     verdict.custody_tier = custody_tier;
     Ok(verdict)
+}
+
+/// Unwrap a short-form DER OCTET STRING (`0x04 len content`), returning its
+/// content when the bytes are exactly one OCTET STRING covering the whole
+/// slice; otherwise returns the input unchanged. Yubico wraps the `.3` / `.8`
+/// extension payloads this way on post-fix firmware (yubico-piv-tool#181) but
+/// stored them bare on older firmware — tolerating both is fail-safe here
+/// because the extension bytes are authenticated by the pinned attestation
+/// chain (a forger can't alter them without breaking the signature).
+fn inner_octet_string(raw: &[u8]) -> &[u8] {
+    if raw.len() >= 2 && raw[0] == 0x04 {
+        let len = raw[1] as usize;
+        // Short-form length only (Yubico values are < 128 bytes, high bit clear).
+        if raw[1] & 0x80 == 0 && raw.len() == 2 + len {
+            return &raw[2..];
+        }
+    }
+    raw
 }
 
 /// Verify a YubiKey PIV slot-9c attestation: chain `9c → f9 → root`, confirm the
@@ -318,36 +378,52 @@ pub fn verify_yubikey_piv_attestation(
         return Err(CustodyError::AttestedKeyMismatch);
     }
 
-    // Yubico extensions → FIPS + touch=always + firmware.
+    // Yubico extensions → firmware + touch=always (slot-9c) and FIPS (slot-f9).
+    //
+    // Encoding note (cross-confirmed vs Yubico's PIV attestation docs +
+    // yubico-piv-tool#181): the `.3` firmware and `.8` pin/touch values are an
+    // **inner DER OCTET STRING** wrapping the raw payload (post-fix firmware;
+    // older firmware stored them bare). `inner_octet_string` unwraps when
+    // present and falls back to the raw bytes otherwise, so both encodings
+    // parse — and the touch byte is read from the *unwrapped* `[pin, touch]`
+    // content (reading the wrapper length byte instead would silently accept a
+    // no-touch key, the one false-accept that matters for a kill-switch gate).
     let mut firmware = None;
     let mut serial = None;
     let mut touch_always = false;
-    let mut fips_certified = false;
     for ext in cert_9c.extensions() {
         match ext.oid.to_id_string().as_str() {
-            OID_YUBICO_FIRMWARE if ext.value.len() >= 3 => {
-                firmware = Some(format!(
-                    "{}.{}.{}",
-                    ext.value[0], ext.value[1], ext.value[2]
-                ));
+            OID_YUBICO_FIRMWARE => {
+                let v = inner_octet_string(ext.value);
+                if v.len() >= 3 {
+                    firmware = Some(format!("{}.{}.{}", v[0], v[1], v[2]));
+                }
             },
             OID_YUBICO_SERIAL => {
                 if let Ok((_, n)) = x509_parser::der_parser::asn1_rs::Integer::from_der(ext.value) {
                     serial = n.as_u32().ok();
                 }
             },
-            OID_YUBICO_PIN_TOUCH_POLICY if ext.value.len() >= 2 => {
-                touch_always = ext.value[1] == TOUCH_POLICY_ALWAYS;
-            },
-            OID_YUBICO_FIPS_CERTIFIED => {
-                fips_certified = true;
+            OID_YUBICO_PIN_TOUCH_POLICY => {
+                let v = inner_octet_string(ext.value);
+                if v.len() >= 2 {
+                    touch_always = v[1] == TOUCH_POLICY_ALWAYS;
+                }
             },
             _ => {},
         }
     }
+
+    // The FIPS-certified extension (`.10`) is carried on the factory-loaded
+    // slot-**f9** attestation cert, NOT the per-slot 9c leaf — scanning the 9c
+    // cert (which never carries it) would fail-reject every genuine FIPS key.
+    let fips_certified = cert_f9
+        .extensions()
+        .iter()
+        .any(|ext| ext.oid.to_id_string() == OID_YUBICO_FIPS_CERTIFIED);
     if !fips_certified {
         return Err(CustodyError::FloorNotMet {
-            detail: "YubiKey is not FIPS-certified (no 1.3.6.1.4.1.41482.3.10 extension)"
+            detail: "YubiKey is not FIPS-certified (no 1.3.6.1.4.1.41482.3.10 on the f9 cert)"
                 .to_string(),
         });
     }
@@ -389,31 +465,39 @@ mod tests {
         p
     }
 
-    /// Build a mock attestation chain root → f9 → 9c, where the 9c leaf's subject
-    /// key is `leaf_kp` and it carries the Yubico firmware / touch / (optional)
-    /// FIPS extensions. Returns (9c_der, f9_der, root_der).
+    /// Build a mock attestation chain root → f9 → 9c that mirrors the *documented*
+    /// real YubiKey encoding: the 9c leaf carries the firmware (`.3`) + pin/touch
+    /// (`.8`) extensions as **inner DER OCTET STRINGs**, and the FIPS (`.10`)
+    /// extension rides the **f9** cert (not the leaf). Returns (9c, f9, root) DER.
     fn mock_chain(leaf_kp: &KeyPair, fips: bool, touch: u8) -> (Vec<u8>, Vec<u8>, Vec<u8>) {
         let root_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
         let root = params("Yubico PIV Attestation (test root)")
             .self_signed(&root_kp)
             .unwrap();
         let f9_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
-        let f9 = params("YubiKey PIV Attestation (test f9)")
-            .signed_by(&f9_kp, &root, &root_kp)
-            .unwrap();
+        let mut f9_params = params("YubiKey PIV Attestation (test f9)");
+        if fips {
+            // FIPS `.10` lives on the factory f9 cert (presence = FIPS-certified).
+            f9_params.custom_extensions = vec![CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 4, 1, 41482, 3, 10],
+                vec![],
+            )];
+        }
+        let f9 = f9_params.signed_by(&f9_kp, &root, &root_kp).unwrap();
 
         let mut leaf = params("YubiKey PIV Attestation 9c");
-        let mut exts = vec![
-            CustomExtension::from_oid_content(&[1, 3, 6, 1, 4, 1, 41482, 3, 3], vec![5, 7, 4]),
-            CustomExtension::from_oid_content(&[1, 3, 6, 1, 4, 1, 41482, 3, 8], vec![0x01, touch]),
+        leaf.custom_extensions = vec![
+            // firmware 5.7.4, DER OCTET STRING-wrapped: 04 03 05 07 04
+            CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 4, 1, 41482, 3, 3],
+                vec![0x04, 0x03, 5, 7, 4],
+            ),
+            // [pin_policy=once(0x01), touch_policy], OCTET STRING-wrapped: 04 02 01 <touch>
+            CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 4, 1, 41482, 3, 8],
+                vec![0x04, 0x02, 0x01, touch],
+            ),
         ];
-        if fips {
-            exts.push(CustomExtension::from_oid_content(
-                &[1, 3, 6, 1, 4, 1, 41482, 3, 10],
-                vec![0x01],
-            ));
-        }
-        leaf.custom_extensions = exts;
         let cert_9c = leaf.signed_by(leaf_kp, &f9, &f9_kp).unwrap();
         (
             cert_9c.der().to_vec(),
@@ -542,6 +626,72 @@ mod tests {
             verify_accord_custody_attestation(&obj2, &other_member, &root).unwrap_err(),
             CustodyError::AttestedKeyMismatch
         );
+    }
+
+    #[tokio::test]
+    async fn unrecognized_custody_tier_rejected() {
+        // `custody_tier` is a holder self-claim — a tier outside the allowlist
+        // must be refused, so a tier-gating consumer can't inherit an inflated
+        // unverified claim.
+        use crate::self_at_login::HybridSigningIdentity;
+        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
+
+        let seed = [11u8; 32];
+        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
+        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
+        let holder = HybridSigningIdentity::new(
+            "accord-holder-c1",
+            Ed25519Signer::from_seed(&seed).unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        );
+        let member = holder.directory_member().unwrap();
+        let obj = produce_accord_custody_attestation(
+            &holder,
+            &c9,
+            &f9,
+            "machine_bound_5fa", // a tier verify does not recognize
+            "2026-06-20T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        assert!(matches!(
+            verify_accord_custody_attestation(&obj, &member, &root).unwrap_err(),
+            CustodyError::FloorNotMet { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn envelope_identity_must_match_resolved_member() {
+        // The holder signs its key_id into the envelope; if the gate resolves a
+        // member whose member_id disagrees, admission is refused — the signed
+        // self-claim is load-bearing, not decorative.
+        use crate::self_at_login::HybridSigningIdentity;
+        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
+
+        let seed = [12u8; 32];
+        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
+        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
+        let holder = HybridSigningIdentity::new(
+            "accord-holder-d1",
+            Ed25519Signer::from_seed(&seed).unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        );
+        let obj = produce_accord_custody_attestation(
+            &holder,
+            &c9,
+            &f9,
+            CUSTODY_TIER_PORTABLE_2FA,
+            "2026-06-20T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        // Same pubkeys, different member_id than the envelope's holder_key_id.
+        let mut mismatched = holder.directory_member().unwrap();
+        mismatched.member_id = "accord-holder-IMPOSTER".to_string();
+        assert!(matches!(
+            verify_accord_custody_attestation(&obj, &mismatched, &root).unwrap_err(),
+            CustodyError::Malformed { .. } | CustodyError::SignatureInvalid
+        ));
     }
 
     #[test]

@@ -220,17 +220,24 @@ mod tests {
             .self_signed(&root_kp)
             .unwrap();
         let f9_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
-        let f9 = params("YubiKey f9 (test)")
-            .signed_by(&f9_kp, &root, &root_kp)
-            .unwrap();
+        let mut f9_params = params("YubiKey f9 (test)");
+        // FIPS `.10` rides the factory f9 cert (presence = FIPS-certified).
+        f9_params.custom_extensions = vec![CustomExtension::from_oid_content(
+            &[1, 3, 6, 1, 4, 1, 41482, 3, 10],
+            vec![],
+        )];
+        let f9 = f9_params.signed_by(&f9_kp, &root, &root_kp).unwrap();
         let mut leaf = params("YubiKey 9c (test)");
         leaf.custom_extensions = vec![
-            CustomExtension::from_oid_content(&[1, 3, 6, 1, 4, 1, 41482, 3, 3], vec![5, 7, 4]),
+            // DER OCTET STRING-wrapped firmware + [pin, touch], as a real key emits.
+            CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 4, 1, 41482, 3, 3],
+                vec![0x04, 0x03, 5, 7, 4],
+            ),
             CustomExtension::from_oid_content(
                 &[1, 3, 6, 1, 4, 1, 41482, 3, 8],
-                vec![0x01, TOUCH_ALWAYS],
+                vec![0x04, 0x02, 0x01, TOUCH_ALWAYS],
             ),
-            CustomExtension::from_oid_content(&[1, 3, 6, 1, 4, 1, 41482, 3, 10], vec![0x01]),
         ];
         let cert_9c = leaf.signed_by(leaf_kp, &f9, &f9_kp).unwrap();
         (
