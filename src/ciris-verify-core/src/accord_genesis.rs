@@ -38,10 +38,12 @@ use serde_json::{json, Value};
 use crate::ceg_outbox::SignedCegObject;
 use crate::error::VerifyError;
 use crate::federation_self_record::{produce_self_key_record, SignedKeyRecord};
+use crate::humanity_accord::Invocation;
 use crate::jcs;
 use crate::self_at_login::SelfSigner;
 use crate::threshold::{
-    verify_founder_quorum, Role, ThresholdError, ThresholdMember, ThresholdSignature,
+    verify_founder_quorum, verify_threshold_signatures, Role, ThresholdError, ThresholdMember,
+    ThresholdSignature,
 };
 
 /// CEG §9.3 `identity_type` for a HUMANITY_ACCORD holder key.
@@ -207,6 +209,34 @@ pub enum AccordGenesisError {
         /// The underlying error.
         detail: String,
     },
+    /// The CEG object is not the expected `kind` (e.g. parsing an invocation but
+    /// the object is a family genesis).
+    WrongKind {
+        /// The `kind` actually found.
+        kind: String,
+    },
+    /// The concurring signer is not a member of the invocation's roster.
+    NotARosterMember {
+        /// The signer's key_id.
+        key_id: String,
+    },
+    /// The signer's key_id is in the roster but their **pubkeys do not match**
+    /// the pinned roster entry — concurring as a different identity is refused.
+    RosterIdentityMismatch {
+        /// The mismatched member_id.
+        member_id: String,
+    },
+    /// The signer has already signed this invocation — no double-counting.
+    AlreadySigned {
+        /// The member_id that already signed.
+        member_id: String,
+    },
+    /// A signature already on the object does not verify against its roster
+    /// member — the object is tampered; refuse to concur on it.
+    InvalidExistingSignature {
+        /// The member_id whose existing signature failed.
+        member_id: String,
+    },
 }
 
 impl std::fmt::Display for AccordGenesisError {
@@ -235,6 +265,21 @@ impl std::fmt::Display for AccordGenesisError {
             ),
             Self::Threshold { detail } => write!(f, "founder quorum rejected: {detail}"),
             Self::Canonicalize { detail } => write!(f, "canonicalize: {detail}"),
+            Self::WrongKind { kind } => write!(f, "unexpected object kind {kind:?}"),
+            Self::NotARosterMember { key_id } => {
+                write!(f, "{key_id:?} is not a member of this invocation's roster")
+            },
+            Self::RosterIdentityMismatch { member_id } => write!(
+                f,
+                "{member_id:?} is in the roster but the signer's pubkeys do not match the pinned entry"
+            ),
+            Self::AlreadySigned { member_id } => {
+                write!(f, "{member_id:?} has already signed this invocation")
+            },
+            Self::InvalidExistingSignature { member_id } => write!(
+                f,
+                "an existing signature from {member_id:?} does not verify — object is tampered"
+            ),
         }
     }
 }
@@ -389,6 +434,323 @@ pub fn assemble_accord_family_genesis(
         family_key_id,
         created_at,
         body,
+    ))
+}
+
+// ===========================================================================
+// Invocations — the operational kill-switch concurrence flow (CEG §9.2.1).
+//
+// One holder invokes (signs `accord:invoke:*`), ships the object; another holder
+// picks it up, confirms it's for a family they're a member of, and CONCURS (adds
+// their signature) → the 2/3 quorum is reached. `humanity_accord` owns the
+// `Invocation` type + `verify_invocation`; this is the producer + the
+// self-contained CEG object that carries the roster, invocation, and the
+// accumulating signatures so a concurring holder has everything in one file.
+//
+// Two crown-jewel properties (adversarially verified): (a) one key cannot reach
+// the 2/3 quorum alone — each signature is checked against its OWN roster
+// member's pubkey, and the distinct-key gate (`require_distinct_keys`) applies in
+// both `accord_invocation_status` and `concur_accord_invocation`; (b) a `drill` /
+// `notify` signature cannot be replayed onto a `CONSTITUTIONAL` kill — the
+// invocation_kind + nonce are inside `Invocation::canonical_bytes`, so mutating
+// the kind drops every signature.
+//
+// **Boundary (not a hole, but know it):** the roster is EMBEDDED in the object,
+// so `accord_invocation_status`'s `quorum_met` is computed against caller-
+// supplied pubkeys — a holder controlling N distinct keys CAN make a local object
+// read "quorum met". This is **advisory only**; the authoritative 2/3 check is
+// CIRISServer recomputing against real `federation_keys` accord-holder pubkeys.
+// The CLI labels local quorum as advisory; no automated consumer may treat this
+// layer's `quorum_met` as authoritative.
+//
+// **Cross-impl flag (future §9.2.1 v2):** `Invocation::canonical_bytes` does NOT
+// bind `family_key_id` (the CC 4.2.1.1 preimage is intentionally closed +
+// stable). Harmless today — HUMANITY_ACCORD is the only accord family — but if a
+// second accord family with overlapping holders ever ships, `family_key_id`
+// should join the signed preimage (a coordinated CEG §9.2.1 v2 bump) to prevent
+// cross-family signature binding.
+// ===========================================================================
+
+/// CEG `kind` for an accord invocation object in the outbox.
+pub const ACCORD_INVOCATION_KIND: &str = "accord_invocation";
+
+/// Runbook §9 / CEG §9.2.1 — one holder signs an invocation's canonical bytes on
+/// their own token (bound hybrid). The first signer *invokes*; later signers
+/// *concur* via [`concur_accord_invocation`].
+///
+/// # Errors
+///
+/// [`VerifyError`] on a signer fault.
+pub async fn co_sign_invocation(
+    signer: &dyn SelfSigner,
+    invocation: &Invocation,
+) -> Result<ThresholdSignature, VerifyError> {
+    let (ed_sig_b64, pqc_sig_b64) = signer.sign_bound(&invocation.canonical_bytes()).await?;
+    Ok(ThresholdSignature {
+        member_id: signer.key_id().to_string(),
+        ed25519_signature_base64: ed_sig_b64,
+        mldsa65_signature_base64: Some(pqc_sig_b64),
+    })
+}
+
+/// Package a (partially- or fully-signed) invocation as a self-contained CEG
+/// object — the roster (with pubkeys), the invocation, and the signatures so far.
+#[must_use]
+pub fn build_accord_invocation_object(
+    family_key_id: &str,
+    roster: &[ThresholdMember],
+    invocation: &Invocation,
+    signatures: &[ThresholdSignature],
+    created_at: &str,
+) -> SignedCegObject {
+    let body = json!({
+        "family_key_id": family_key_id,
+        "roster": roster,
+        "invocation": invocation,
+        "signatures": signatures,
+    });
+    SignedCegObject::new(ACCORD_INVOCATION_KIND, family_key_id, created_at, body)
+}
+
+/// The parsed contents of an [`ACCORD_INVOCATION_KIND`] object.
+pub struct ParsedInvocation {
+    /// The family the invocation is scoped to.
+    pub family_key_id: String,
+    /// The embedded roster (with pubkeys).
+    pub roster: Vec<ThresholdMember>,
+    /// The invocation itself.
+    pub invocation: Invocation,
+    /// The signatures collected so far.
+    pub signatures: Vec<ThresholdSignature>,
+}
+
+/// Parse an [`ACCORD_INVOCATION_KIND`] object body.
+///
+/// # Errors
+///
+/// [`AccordGenesisError::MalformedEnvelope`] if a field is missing/ill-typed, or
+/// [`AccordGenesisError::WrongKind`] if `obj.kind` is not an accord invocation.
+pub fn parse_accord_invocation(
+    obj: &SignedCegObject,
+) -> Result<ParsedInvocation, AccordGenesisError> {
+    if obj.kind != ACCORD_INVOCATION_KIND {
+        return Err(AccordGenesisError::WrongKind {
+            kind: obj.kind.clone(),
+        });
+    }
+    let field = |name: &'static str| {
+        obj.body
+            .get(name)
+            .ok_or(AccordGenesisError::MalformedEnvelope {
+                detail: format!("missing `{name}`"),
+            })
+    };
+    let family_key_id = field("family_key_id")?
+        .as_str()
+        .ok_or(AccordGenesisError::MalformedEnvelope {
+            detail: "`family_key_id` not a string".to_string(),
+        })?
+        .to_string();
+    let roster: Vec<ThresholdMember> =
+        serde_json::from_value(field("roster")?.clone()).map_err(|e| {
+            AccordGenesisError::MalformedEnvelope {
+                detail: format!("`roster`: {e}"),
+            }
+        })?;
+    let invocation: Invocation =
+        serde_json::from_value(field("invocation")?.clone()).map_err(|e| {
+            AccordGenesisError::MalformedEnvelope {
+                detail: format!("`invocation`: {e}"),
+            }
+        })?;
+    let signatures: Vec<ThresholdSignature> = serde_json::from_value(field("signatures")?.clone())
+        .map_err(|e| AccordGenesisError::MalformedEnvelope {
+            detail: format!("`signatures`: {e}"),
+        })?;
+    Ok(ParsedInvocation {
+        family_key_id,
+        roster,
+        invocation,
+        signatures,
+    })
+}
+
+/// Is `key_id` a member of `roster`?
+#[must_use]
+pub fn is_roster_member(roster: &[ThresholdMember], key_id: &str) -> bool {
+    roster.iter().any(|m| m.member_id == key_id)
+}
+
+/// Reject a roster whose members are not distinct keys (the same gate genesis
+/// uses — a forged roster could otherwise let one key meet 2/3 alone).
+fn require_distinct_keys(roster: &[ThresholdMember]) -> Result<(), AccordGenesisError> {
+    let mut seen_ed = std::collections::HashSet::new();
+    let mut seen_pqc = std::collections::HashSet::new();
+    for m in roster {
+        if !seen_ed.insert(m.ed25519_public_key_base64.as_str()) {
+            return Err(AccordGenesisError::DuplicateFounderKey {
+                member_id: m.member_id.clone(),
+            });
+        }
+        if let Some(pqc) = m.mldsa65_public_key_base64.as_deref() {
+            if !seen_pqc.insert(pqc) {
+                return Err(AccordGenesisError::DuplicateFounderKey {
+                    member_id: m.member_id.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Inspection summary of an invocation object — for `accord list` and for a
+/// holder deciding whether to concur.
+pub struct InvocationStatus {
+    /// The family the invocation is scoped to.
+    pub family_key_id: String,
+    /// Invocation kind wire string (`CONSTITUTIONAL` / `notify` / `drill`).
+    pub invocation_kind: String,
+    /// The invocation id.
+    pub invocation_id: String,
+    /// Roster member ids.
+    pub roster_member_ids: Vec<String>,
+    /// Member ids whose signature over the invocation verifies (distinct).
+    pub valid_signers: Vec<String>,
+    /// The §9.2.1 quorum threshold (2).
+    pub quorum_threshold: usize,
+    /// Whether the 2/3 quorum is met by distinct valid signers.
+    pub quorum_met: bool,
+}
+
+/// Verify the signatures collected on an invocation object against its embedded
+/// roster and report status. Applies the distinct-key gate to the roster.
+///
+/// # Errors
+///
+/// [`AccordGenesisError::DuplicateFounderKey`] if the embedded roster is not
+/// distinct keys (a forged roster).
+pub fn accord_invocation_status(
+    parsed: &ParsedInvocation,
+) -> Result<InvocationStatus, AccordGenesisError> {
+    require_distinct_keys(&parsed.roster)?;
+    let bytes = parsed.invocation.canonical_bytes();
+    // A signer counts iff its signature verifies against its OWN roster member.
+    let mut valid = Vec::new();
+    for m in &parsed.roster {
+        if let Some(sig) = parsed
+            .signatures
+            .iter()
+            .find(|s| s.member_id == m.member_id)
+        {
+            if verify_threshold_signatures(
+                &bytes,
+                std::slice::from_ref(m),
+                std::slice::from_ref(sig),
+                1,
+            ) == Ok(1)
+            {
+                valid.push(m.member_id.clone());
+            }
+        }
+    }
+    let quorum_met = valid.len() >= ACCORD_QUORUM_THRESHOLD;
+    Ok(InvocationStatus {
+        family_key_id: parsed.family_key_id.clone(),
+        invocation_kind: parsed.invocation.invocation_kind.as_str().to_string(),
+        invocation_id: parsed.invocation.invocation_id.clone(),
+        roster_member_ids: parsed.roster.iter().map(|m| m.member_id.clone()).collect(),
+        valid_signers: valid,
+        quorum_threshold: ACCORD_QUORUM_THRESHOLD,
+        quorum_met,
+    })
+}
+
+/// Holder B picks up A's invocation object and **concurs** — adds their own
+/// signature, reaching toward the 2/3 quorum.
+///
+/// Fail-closed: the signer must be a roster member **by matching pubkeys** (not
+/// just key_id), must not have already signed, the roster must be distinct keys,
+/// and every signature already present must verify (no concurring on a tampered
+/// object). Returns the updated object for the outbox.
+///
+/// # Errors
+///
+/// [`AccordGenesisError`] naming the failing check.
+pub async fn concur_accord_invocation(
+    obj: &SignedCegObject,
+    signer: &dyn SelfSigner,
+    created_at: &str,
+) -> Result<SignedCegObject, AccordGenesisError> {
+    let parsed = parse_accord_invocation(obj)?;
+    require_distinct_keys(&parsed.roster)?;
+
+    // The signer must be in the roster, bound by KEY not just key_id.
+    let me = founder_member(signer)
+        .await
+        .map_err(|e| AccordGenesisError::Canonicalize {
+            detail: e.to_string(),
+        })?;
+    match parsed.roster.iter().find(|m| m.member_id == me.member_id) {
+        None => {
+            return Err(AccordGenesisError::NotARosterMember {
+                key_id: me.member_id,
+            })
+        },
+        Some(m) if m.ed25519_public_key_base64 != me.ed25519_public_key_base64 => {
+            return Err(AccordGenesisError::RosterIdentityMismatch {
+                member_id: me.member_id,
+            })
+        },
+        Some(_) => {},
+    }
+
+    // Don't sign twice.
+    if parsed
+        .signatures
+        .iter()
+        .any(|s| s.member_id == me.member_id)
+    {
+        return Err(AccordGenesisError::AlreadySigned {
+            member_id: me.member_id,
+        });
+    }
+
+    // Don't concur on a tampered object: every existing signature must verify.
+    let bytes = parsed.invocation.canonical_bytes();
+    for s in &parsed.signatures {
+        let member = parsed
+            .roster
+            .iter()
+            .find(|m| m.member_id == s.member_id)
+            .ok_or(AccordGenesisError::MalformedEnvelope {
+                detail: format!("signature from non-roster member {:?}", s.member_id),
+            })?;
+        if verify_threshold_signatures(
+            &bytes,
+            std::slice::from_ref(member),
+            std::slice::from_ref(s),
+            1,
+        ) != Ok(1)
+        {
+            return Err(AccordGenesisError::InvalidExistingSignature {
+                member_id: s.member_id.clone(),
+            });
+        }
+    }
+
+    let sig = co_sign_invocation(signer, &parsed.invocation)
+        .await
+        .map_err(|e| AccordGenesisError::Canonicalize {
+            detail: e.to_string(),
+        })?;
+    let mut signatures = parsed.signatures.clone();
+    signatures.push(sig);
+    Ok(build_accord_invocation_object(
+        &parsed.family_key_id,
+        &parsed.roster,
+        &parsed.invocation,
+        &signatures,
+        created_at,
     ))
 }
 
@@ -654,5 +1016,173 @@ mod tests {
                 key_id: "accord-a".to_string()
             }
         );
+    }
+
+    // -- Invocations: the operational kill-switch concurrence flow -------------
+
+    use crate::humanity_accord::{Invocation, InvocationKind};
+
+    fn drill(id: &str) -> Invocation {
+        Invocation {
+            invocation_kind: InvocationKind::Drill,
+            invocation_id: id.to_string(),
+            nonce: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
+            asserted_at: "2026-06-19T00:00:00.000Z".to_string(),
+            valid_until: "2026-06-20T00:00:00.000Z".to_string(),
+            payload_sha256: "00".repeat(32),
+        }
+    }
+
+    #[tokio::test]
+    async fn invocation_concurrence_reaches_two_of_three() {
+        let hs = holders();
+        let roster = members_of(&hs).await;
+        let inv = drill("drill-2026-06");
+        // Holder A invokes (signs) → object with 1 signature.
+        let sig_a = co_sign_invocation(&hs[0], &inv).await.unwrap();
+        let obj = build_accord_invocation_object(
+            HUMANITY_ACCORD_FAMILY_KEY_ID,
+            &roster,
+            &inv,
+            std::slice::from_ref(&sig_a),
+            TS,
+        );
+        let st = accord_invocation_status(&parse_accord_invocation(&obj).unwrap()).unwrap();
+        assert_eq!(st.valid_signers, vec!["accord-eric-moore-primary"]);
+        assert!(!st.quorum_met);
+
+        // Holder B picks it up and concurs → 2 signatures, quorum met.
+        let obj2 = concur_accord_invocation(&obj, &hs[1], TS).await.unwrap();
+        let parsed = parse_accord_invocation(&obj2).unwrap();
+        let st2 = accord_invocation_status(&parsed).unwrap();
+        assert_eq!(st2.valid_signers.len(), 2);
+        assert!(st2.quorum_met);
+        // Cross-check against the canonical humanity_accord verifier.
+        assert_eq!(
+            crate::humanity_accord::verify_invocation(
+                &parsed.invocation,
+                &roster,
+                &parsed.signatures
+            )
+            .unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn concur_by_non_member_rejected() {
+        let hs = holders();
+        let roster = members_of(&hs).await;
+        let inv = drill("d1");
+        let sig_a = co_sign_invocation(&hs[0], &inv).await.unwrap();
+        let obj = build_accord_invocation_object(
+            HUMANITY_ACCORD_FAMILY_KEY_ID,
+            &roster,
+            &inv,
+            &[sig_a],
+            TS,
+        );
+        let stranger = HybridSigningIdentity::generate("not-a-holder").unwrap();
+        let err = concur_accord_invocation(&obj, &stranger, TS)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            AccordGenesisError::NotARosterMember {
+                key_id: "not-a-holder".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn concur_twice_by_same_holder_rejected() {
+        let hs = holders();
+        let roster = members_of(&hs).await;
+        let inv = drill("d1");
+        let sig_a = co_sign_invocation(&hs[0], &inv).await.unwrap();
+        let obj = build_accord_invocation_object(
+            HUMANITY_ACCORD_FAMILY_KEY_ID,
+            &roster,
+            &inv,
+            &[sig_a],
+            TS,
+        );
+        let err = concur_accord_invocation(&obj, &hs[0], TS)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            AccordGenesisError::AlreadySigned {
+                member_id: "accord-eric-moore-primary".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn concur_refuses_a_tampered_existing_signature() {
+        let hs = holders();
+        let roster = members_of(&hs).await;
+        let inv = drill("d1");
+        let mut sig_a = co_sign_invocation(&hs[0], &inv).await.unwrap();
+        // Corrupt A's signature.
+        sig_a.ed25519_signature_base64 =
+            base64::engine::general_purpose::STANDARD.encode([0u8; 64]);
+        let obj = build_accord_invocation_object(
+            HUMANITY_ACCORD_FAMILY_KEY_ID,
+            &roster,
+            &inv,
+            &[sig_a],
+            TS,
+        );
+        let err = concur_accord_invocation(&obj, &hs[1], TS)
+            .await
+            .unwrap_err();
+        assert_eq!(
+            err,
+            AccordGenesisError::InvalidExistingSignature {
+                member_id: "accord-eric-moore-primary".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn concur_refuses_identity_mismatch() {
+        // The roster entry for "accord-eric-moore-primary" carries B's pubkeys;
+        // A (the real owner of that key_id) tries to concur → mismatch.
+        let ha = HybridSigningIdentity::generate("accord-eric-moore-primary").unwrap();
+        let hb = HybridSigningIdentity::generate("accord-eric-kudzin-primary").unwrap();
+        let hc = HybridSigningIdentity::generate("accord-haley-bradley-primary").unwrap();
+        let mut bad_a = founder_member(&hb).await.unwrap();
+        bad_a.member_id = "accord-eric-moore-primary".to_string(); // A's id, B's keys
+        let roster = vec![
+            bad_a,
+            founder_member(&hb).await.unwrap(),
+            founder_member(&hc).await.unwrap(),
+        ];
+        let inv = drill("d1");
+        // Need a valid existing signature so we reach the identity check; hc signs.
+        let sig_c = co_sign_invocation(&hc, &inv).await.unwrap();
+        let obj = build_accord_invocation_object(
+            HUMANITY_ACCORD_FAMILY_KEY_ID,
+            &roster,
+            &inv,
+            &[sig_c],
+            TS,
+        );
+        let err = concur_accord_invocation(&obj, &ha, TS).await.unwrap_err();
+        // bad_a shares hb's keys → roster has duplicate keys → caught first.
+        assert!(matches!(
+            err,
+            AccordGenesisError::DuplicateFounderKey { .. }
+                | AccordGenesisError::RosterIdentityMismatch { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn is_roster_member_checks_key_id() {
+        let hs = holders();
+        let roster = members_of(&hs).await;
+        assert!(is_roster_member(&roster, "accord-eric-moore-primary"));
+        assert!(!is_roster_member(&roster, "some-stranger"));
     }
 }
