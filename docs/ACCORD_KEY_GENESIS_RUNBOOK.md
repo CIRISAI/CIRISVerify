@@ -162,14 +162,24 @@ object (CEG §9.1):
 
 - Compute the signing bytes via **`jcs::canonicalize`** (CEG §0.9). Honor the
   omit-vs-materialize rule — sign exactly these members, don't inject defaults.
-- **All three** founders sign those bytes (each Ed25519-touch + ML-DSA-65). The
-  consensus_protocol is `quorum:2/3`, so 2 signatures *admit* changes later, but
-  at **genesis all 3 sign** the initial family to establish unanimity of the
-  founding set.
+- The founders sign those bytes (each Ed25519-touch + ML-DSA-65). The
+  consensus_protocol is `quorum:2/3`, so genesis is authorized by a **2-of-3
+  quorum of distinct founder keys** — the *same* threshold the accord uses for
+  everything. Genesis is **not** unanimous: founding must not require every
+  holder present (that would defeat the fault-tolerance 2/3 exists for), and any
+  2-of-3 is a trusted quorum under the accord's own model. Having all three sign
+  at the ceremony is **recommended** (clean record of all-founder consent) but
+  not required. *(Earlier drafts said "all 3 sign / `Ok(3)`"; corrected to 2/3 in
+  v6.4.1 — unanimity was an inconsistency + a bootstrapping single-point-of-failure.)*
 - Verify before publishing: `threshold::verify_founder_quorum(bytes, members, sigs, 2)`
-  must return `Ok(3)` (all three valid). `consensus_protocol_entrenched: true`
-  means the substrate will reject any future `supersedes` that weakens the protocol
-  or moves admission off the founders — that's the entrenchment gate (#31).
+  must return `Ok(n)` with `n ≥ 2`. The roster (`members`) is the full 3 founders;
+  2-of-3 *of them* must validly sign. `consensus_protocol_entrenched: true` means
+  the substrate will reject any future `supersedes` that weakens the protocol or
+  moves admission off the founders — that's the entrenchment gate (#31).
+- Roster integrity at genesis is the **distinct-key gate** (no key may fill two
+  seats — `assemble_accord_family_genesis` enforces distinct Ed25519/ML-DSA
+  pubkeys, since a single key could otherwise meet 2/3 alone) **plus** the §6
+  steward cross-attestation (key↔human binding) — not unanimity.
 
 ## 8. Vault the 3 spares
 
@@ -219,8 +229,9 @@ change the roster, and it requires the existing quorum (2-of-3) to sign the
   `build_accord_family_envelope`, `co_sign_accord_family`,
   `assemble_accord_family_genesis`) + the `ciris-verify accord` CLI, which wraps
   §5–§7 of this runbook** (the "future ceremony tool" called out below). The
-  assembler verifies a **unanimous** founder quorum before anything reaches the
-  outbox — the producer round-trips through `verify_founder_quorum`.
+  assembler verifies the accord's **2/3** founder quorum of distinct keys before
+  anything reaches the outbox — the producer round-trips through
+  `verify_founder_quorum`.
 - **Persist/Registry side:** the `federation_keys` accord_holder row storage +
   the `GET /v1/accord-holders` endpoint + the 2-of-3 role-recognition RPC live in
   CIRISPersist (key material) + ciris-registry-core (verifier logic) per §9.3.
@@ -250,8 +261,8 @@ ciris-verify accord family-envelope \
 ciris-verify accord co-sign --envelope family.json --key-id accord-eric-moore-primary \
     --module … --key-label "…" --pin --out cosign-moore.json
 
-# §7 step 3 — the coordinator assembles. Verifies a UNANIMOUS founder quorum;
-#             writes the genesis object to the outbox only if all founders verify.
+# §7 step 3 — the coordinator assembles. Verifies the accord's 2/3 quorum of
+#             DISTINCT founder keys; writes the genesis to the outbox only if it holds.
 ciris-verify accord assemble --envelope family.json \
     --cosign cosign-moore.json --cosign cosign-kudzin.json --cosign cosign-bradley.json
 ```

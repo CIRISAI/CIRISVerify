@@ -18,8 +18,9 @@
 //! 2. `build_accord_family_envelope` → `co_sign_accord_family` (×founders) →
 //!    `assemble_accord_family_genesis` — runbook §7: the entrenched-`family`
 //!    Contribution. Each founder co-signs the JCS bytes **on their own token**
-//!    (no human signs another's key); the assembler verifies a **unanimous**
-//!    founder quorum before wrapping the genesis object.
+//!    (no human signs another's key); the assembler verifies the accord's
+//!    **2/3** founder quorum of **distinct keys** before wrapping the genesis
+//!    object (genesis is *not* unanimous — see `assemble_accord_family_genesis`).
 //!
 //! **family vs community:** this is the entrenched **family** (§9.1,
 //! `quorum:2/3`, `consensus_protocol_entrenched`); `ciris-canonical` is the
@@ -39,7 +40,9 @@ use crate::error::VerifyError;
 use crate::federation_self_record::{produce_self_key_record, SignedKeyRecord};
 use crate::jcs;
 use crate::self_at_login::SelfSigner;
-use crate::threshold::{verify_founder_quorum, Role, ThresholdMember, ThresholdSignature};
+use crate::threshold::{
+    verify_founder_quorum, Role, ThresholdError, ThresholdMember, ThresholdSignature,
+};
 
 /// CEG §9.3 `identity_type` for a HUMANITY_ACCORD holder key.
 pub const IDENTITY_TYPE_ACCORD_HOLDER: &str = "accord_holder";
@@ -50,8 +53,9 @@ pub const HUMANITY_ACCORD_FAMILY_KEY_ID: &str = "humanity-accord";
 /// The entrenched-family consensus protocol string (runbook §7).
 pub const ACCORD_CONSENSUS_PROTOCOL: &str = "quorum:2/3";
 
-/// The genesis founder quorum threshold (`M` of `quorum:M/N`). Future
-/// `supersedes` admit at this threshold; **genesis itself is unanimous**.
+/// The founder quorum threshold (`M` of `quorum:M/N`) — used for **genesis and
+/// every later `supersedes` alike**. Genesis is *not* unanimous; 2-of-3 of the
+/// declared founders authorizes it, the same bar the accord uses throughout.
 pub const ACCORD_QUORUM_THRESHOLD: usize = 2;
 
 /// CEG `kind` for the entrenched-family genesis object in the outbox.
@@ -169,10 +173,10 @@ pub enum AccordGenesisError {
     },
     /// Two supplied founders carry the **same public key** under different
     /// `member_id`s — one key occupying multiple founder seats. This is the
-    /// attack that defeats "unanimous": `verify_founder_quorum` counts
-    /// distinctness by `member_id` string, so without this gate a
-    /// quorum-minus-one set of keyholders could relabel one key's signature as a
-    /// second seat and forge a false unanimity. Founders MUST be distinct keys.
+    /// attack that defeats the quorum: `verify_founder_quorum` counts
+    /// distinctness by `member_id` string, so without this gate one key could
+    /// sign twice under two `member_id`s and meet 2/3 *by itself*. Founders MUST
+    /// be distinct keys.
     DuplicateFounderKey {
         /// The `member_id` whose key duplicates an earlier founder's.
         member_id: String,
@@ -183,13 +187,14 @@ pub enum AccordGenesisError {
         /// The offending member_id.
         member_id: String,
     },
-    /// Genesis requires **every** founder to sign (unanimous founding set,
-    /// runbook §7); fewer distinct valid signatures than founders.
-    NotUnanimous {
+    /// Fewer distinct valid founder signatures than the accord's 2/3 quorum
+    /// ([`ACCORD_QUORUM_THRESHOLD`]). Genesis is **not** unanimous — a 2-of-3
+    /// quorum of distinct founder keys authorizes it.
+    QuorumNotMet {
         /// Distinct valid founder signatures counted.
         valid: usize,
-        /// The founder roster size (all required at genesis).
-        founders: usize,
+        /// The quorum threshold required (2).
+        required: usize,
     },
     /// The threshold layer rejected the signature set for a reason other than
     /// count (deadlock policy, roster mismatch, a malformed signature, …).
@@ -224,9 +229,9 @@ impl std::fmt::Display for AccordGenesisError {
             Self::NotAllFounders { member_id } => {
                 write!(f, "member {member_id:?} is not role:founder")
             },
-            Self::NotUnanimous { valid, founders } => write!(
+            Self::QuorumNotMet { valid, required } => write!(
                 f,
-                "genesis requires unanimous founders: {valid} valid of {founders}"
+                "founder quorum not met: {valid} valid distinct signatures, need {required}"
             ),
             Self::Threshold { detail } => write!(f, "founder quorum rejected: {detail}"),
             Self::Canonicalize { detail } => write!(f, "canonicalize: {detail}"),
@@ -264,20 +269,23 @@ fn envelope_member_key_ids(envelope: &Value) -> Result<Vec<String>, AccordGenesi
 /// 2. The supplied founders are **distinct keys** — no two share an Ed25519 (or
 ///    ML-DSA-65) public key. This is load-bearing: [`verify_founder_quorum`]
 ///    counts distinctness by `member_id` *string*, so without this gate one key
-///    relabeled under a second `member_id` would inflate the quorum and forge a
-///    false "unanimous" genesis (a quorum-minus-one capture).
+///    relabeled under a second `member_id` would meet the quorum by itself (a
+///    single-key capture).
 /// 3. Every supplied founder is `role: founder`.
-/// 4. [`verify_founder_quorum`] over the JCS bytes at [`ACCORD_QUORUM_THRESHOLD`]
-///    succeeds **unanimously** — every distinct founder key signed (genesis
-///    establishes the founding set's unanimity; 2-of-3 admits *later* changes,
-///    not genesis).
+/// 4. [`verify_founder_quorum`] over the JCS bytes meets the accord's **2/3**
+///    quorum ([`ACCORD_QUORUM_THRESHOLD`]) of distinct founder keys. Genesis is
+///    **not** unanimous — founding must not require every holder present (that
+///    would defeat the fault-tolerance 2/3 exists for), and any 2-of-3 is a
+///    trusted quorum under the accord's own model.
 ///
-/// **Scope of the guarantee:** this proves *N distinct keys each validly signed
-/// the exact family envelope*. It does **not** prove each pubkey belongs to the
-/// named human — that key↔human binding is established out-of-band by the §6
-/// steward cross-attestation, not asserted here (genesis has no pinned directory
-/// yet). The caller supplies the founder pubkeys (from the §5 self-signed holder
-/// records); a downstream consumer re-pins them and re-runs the quorum.
+/// **Scope of the guarantee:** this proves *a 2/3 quorum of distinct keys each
+/// validly signed the exact family envelope*. It does **not** prove each pubkey
+/// belongs to the named human — that key↔human binding is established
+/// out-of-band by the §6 steward cross-attestation, not asserted here (genesis
+/// has no pinned directory yet). The caller supplies all founder pubkeys (the
+/// full roster, from the §5 self-signed holder records); a downstream consumer
+/// re-pins them and re-runs the quorum. (Having all three present at the
+/// ceremony is recommended best practice, but **not** enforced.)
 ///
 /// On success returns a [`SignedCegObject`] (`kind: accord_family_genesis`)
 /// whose body carries the envelope + the founder signature set, ready for the
@@ -317,7 +325,7 @@ pub fn assemble_accord_family_genesis(
 
     // 2. Founders must be DISTINCT KEYS — no key may occupy two seats. (The
     //    quorum verifier dedups by member_id string only, so this gate is what
-    //    actually makes "unanimous" mean N distinct humans/keys.)
+    //    stops one key meeting the 2/3 bar by itself.)
     let mut seen_ed = std::collections::HashSet::new();
     let mut seen_pqc = std::collections::HashSet::new();
     for m in founders {
@@ -342,21 +350,31 @@ pub fn assemble_accord_family_genesis(
         });
     }
 
-    // 4. Unanimous founder quorum over the JCS bytes.
+    // 4. Founder quorum over the JCS bytes — the accord's 2/3, NOT unanimous.
+    //    The roster is the full founder set; a 2-of-3 quorum of distinct keys
+    //    authorizes genesis, consistent with how the accord operates (and with
+    //    its fault-tolerance: founding must not require every holder present).
+    //    Roster integrity is the distinct-key gate (step 2) + the §6 steward
+    //    cross-attestation, not unanimity.
     let bytes =
         accord_family_signing_bytes(envelope).map_err(|e| AccordGenesisError::Canonicalize {
             detail: e.to_string(),
         })?;
-    let valid = verify_founder_quorum(&bytes, founders, signatures, ACCORD_QUORUM_THRESHOLD)
-        .map_err(|e| AccordGenesisError::Threshold {
-            detail: format!("{e:?}"),
-        })?;
-    if valid != founders.len() {
-        return Err(AccordGenesisError::NotUnanimous {
-            valid,
-            founders: founders.len(),
-        });
-    }
+    let _valid = match verify_founder_quorum(&bytes, founders, signatures, ACCORD_QUORUM_THRESHOLD)
+    {
+        Ok(n) => n,
+        Err(ThresholdError::Insufficient { valid, threshold }) => {
+            return Err(AccordGenesisError::QuorumNotMet {
+                valid,
+                required: threshold,
+            })
+        },
+        Err(e) => {
+            return Err(AccordGenesisError::Threshold {
+                detail: format!("{e:?}"),
+            })
+        },
+    };
 
     let family_key_id = envelope
         .get("family_key_id")
@@ -411,7 +429,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn unanimous_three_founders_assembles_and_round_trips() {
+    async fn all_three_founders_assembles_and_round_trips() {
         let hs = holders();
         let envelope = build_accord_family_envelope(
             HUMANITY_ACCORD_FAMILY_KEY_ID,
@@ -440,26 +458,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn genesis_is_unanimous_two_of_three_rejected() {
+    async fn genesis_admits_two_of_three_quorum() {
+        // Genesis is the accord's 2/3, NOT unanimous: two of the three founders
+        // sign the full 3-member roster → genesis is authorized. (Founding must
+        // not require every holder present.)
         let hs = holders();
         let envelope = build_accord_family_envelope(
             HUMANITY_ACCORD_FAMILY_KEY_ID,
             "Humanity Accord",
             &member_ids(&hs),
         );
-        // Only two founders sign — a valid 2-of-3 quorum for *invocations*, but
-        // genesis requires the full founding set.
         let sigs = vec![
             co_sign_accord_family(&hs[0], &envelope).await.unwrap(),
             co_sign_accord_family(&hs[1], &envelope).await.unwrap(),
         ];
+        let founders = members_of(&hs).await; // full 3-member roster pinned
+        let obj = assemble_accord_family_genesis(&envelope, &founders, &sigs, TS)
+            .expect("a 2-of-3 quorum of distinct founders must authorize genesis");
+        // The body re-verifies at the 2/3 quorum against the full roster.
+        let bytes = accord_family_signing_bytes(&obj.body["family"]).unwrap();
+        assert_eq!(verify_founder_quorum(&bytes, &founders, &sigs, 2), Ok(2));
+    }
+
+    #[tokio::test]
+    async fn genesis_one_signature_rejected() {
+        // One signature is below the 2/3 quorum → rejected.
+        let hs = holders();
+        let envelope = build_accord_family_envelope(
+            HUMANITY_ACCORD_FAMILY_KEY_ID,
+            "Humanity Accord",
+            &member_ids(&hs),
+        );
+        let sigs = vec![co_sign_accord_family(&hs[0], &envelope).await.unwrap()];
         let founders = members_of(&hs).await;
         let err = assemble_accord_family_genesis(&envelope, &founders, &sigs, TS).unwrap_err();
         assert_eq!(
             err,
-            AccordGenesisError::NotUnanimous {
-                valid: 2,
-                founders: 3
+            AccordGenesisError::QuorumNotMet {
+                valid: 1,
+                required: 2
             }
         );
     }
@@ -484,7 +521,7 @@ mod tests {
         // Signatures are over the original bytes → quorum collapses to 0.
         assert!(matches!(
             err,
-            AccordGenesisError::NotUnanimous { valid: 0, .. }
+            AccordGenesisError::QuorumNotMet { valid: 0, .. }
                 | AccordGenesisError::Threshold { .. }
         ));
     }
@@ -552,11 +589,12 @@ mod tests {
         assert_eq!(verify_founder_quorum(&bytes, &[m], &[sig], 1), Ok(1));
     }
 
-    /// CRITICAL regression (adversarial review): two keyholders MUST NOT forge a
-    /// "unanimous" 3-founder genesis by relabeling one key's signature as the
-    /// third seat. `verify_founder_quorum` dedups by `member_id` *string*, so the
-    /// distinct-key gate in the assembler is what closes this quorum-minus-one
-    /// capture.
+    /// CRITICAL regression (adversarial review): one keyholder MUST NOT meet the
+    /// quorum alone by relabeling a single key's signatures across multiple
+    /// founder seats. `verify_founder_quorum` dedups by `member_id` *string*, so
+    /// the distinct-key gate in the assembler is what closes this single-key
+    /// capture (decisive under 2/3, where one key in two seats would otherwise
+    /// suffice).
     #[tokio::test]
     async fn one_key_filling_two_seats_is_rejected() {
         let ha = HybridSigningIdentity::generate("accord-a").unwrap();
