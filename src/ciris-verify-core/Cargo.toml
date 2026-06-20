@@ -109,6 +109,7 @@ goblin.workspace = true
 # (Linux / macOS / Windows / iOS) inherits this base entry and links
 # dynamically against the platform's libsqlite3.
 rusqlite.workspace = true
+x509-parser = { version = "0.16", features = ["verify"] }
 
 # SQLite for audit trail verification.
 #
@@ -191,6 +192,7 @@ proptest = { workspace = true }
 pretty_assertions = { workspace = true }
 tempfile = "3"
 criterion.workspace = true
+rcgen = "0.13"
 
 [[bench]]
 name = "build_manifest"

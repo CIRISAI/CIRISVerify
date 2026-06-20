@@ -32,6 +32,7 @@ from .client import CIRISVerify, MockCIRISVerify, verify_tree, DEFAULT_REGISTRY_
 from ._jcs import jcs_canonicalize
 from ._federation_identity import create_federation_identity
 from ._manifest_contribution import verify_build_manifest_contribution
+from ._accord_custody import verify_accord_custody_attestation
 from ._operational_admit import (
     resolve_role_authority,
     verify_delegation_scope_split,
@@ -126,7 +127,7 @@ def get_library_version() -> str:
     return __version__
 
 
-__version__ = "6.6.1"
+__version__ = "6.7.0"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
@@ -134,6 +135,7 @@ __all__ = [
     "jcs_canonicalize",
     "create_federation_identity",
     "verify_build_manifest_contribution",
+    "verify_accord_custody_attestation",
     "resolve_role_authority",
     "verify_partner_record_quorum",
     "verify_delegation_scope_split",
