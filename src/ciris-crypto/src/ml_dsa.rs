@@ -100,12 +100,24 @@ impl MlDsa65Signer {
             )));
         }
 
-        let seed = Seed::try_from(seed)
+        use zeroize::Zeroize;
+        let mut seed = Seed::try_from(seed)
             .map_err(|e| CryptoError::invalid_private_key(format!("Seed construction: {e}")))?;
 
         // ml-dsa 0.1.0-rc.8: Use KeyGen trait's from_seed method
         let signing_key = MlDsa65::from_seed(&seed);
         let verifying_key = signing_key.verifying_key();
+        // Scrub the transient `Seed` copy we constructed.
+        //
+        // NB (upstream limitation, ml-dsa rc.8): the `zeroize` feature makes only
+        // `ExpandedSigningKey` `ZeroizeOnDrop`, NOT the outer `SigningKey<P>`,
+        // which retains its own raw 32-byte `seed` un-zeroized for the signer's
+        // lifetime + on drop. We cannot reach that private field; closing it
+        // needs an ml-dsa upgrade (pinned to rc.8 per CIRISVerify#18). This in-
+        // memory residual is the AV-17 transient-software-PQC carve-out and
+        // affects EVERY software ML-DSA signer here, not just this path.
+        // Tracked: CIRISVerify#87.
+        seed.zeroize();
         Ok(Self {
             signing_key,
             verifying_key,

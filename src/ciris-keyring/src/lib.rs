@@ -111,6 +111,12 @@ pub mod pkcs11;
 #[cfg(feature = "pqc-ml-dsa")]
 pub mod sealed_mldsa65;
 
+/// Portable signature-wrapped ML-DSA-65 custody — the ML-DSA seed on a USB key,
+/// AEAD-wrapped under a YubiKey-Ed25519-signature-derived key (both keys + PIN +
+/// touch required; YubiKey stays signing-only). Accord/high-secure portable mode.
+#[cfg(feature = "pqc-ml-dsa")]
+pub mod usb_wrapped_mldsa65;
+
 /// Platform-specific hardware signer implementations.
 pub mod platform;
 
