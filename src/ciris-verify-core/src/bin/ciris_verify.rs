@@ -14,7 +14,7 @@ use ciris_verify_core::security::file_integrity::{
 };
 use ciris_verify_core::unified::{FullAttestationRequest, UnifiedAttestationEngine};
 use ciris_verify_core::validation::ConsensusValidator;
-use clap::{Parser, Subcommand};
+use clap::{Args, Parser, Subcommand};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
 
@@ -256,6 +256,125 @@ enum Commands {
         #[arg(long)]
         pin: bool,
     },
+
+    /// HUMANITY_ACCORD genesis ceremony (CEG §9.1;
+    /// `docs/ACCORD_KEY_GENESIS_RUNBOOK.md`). Produce holder records, build +
+    /// co-sign the entrenched-`family` envelope, and assemble the unanimous
+    /// founder genesis → outbox. Verify already verifies the 2-of-3; this is the
+    /// producer side. **No human signs another's key** — each founder runs
+    /// `co-sign` on their own token.
+    Accord {
+        #[command(subcommand)]
+        action: AccordAction,
+    },
+}
+
+/// `ciris-verify accord` actions (HUMANITY_ACCORD genesis ceremony).
+#[derive(Subcommand)]
+enum AccordAction {
+    /// Produce a holder's self-signed `accord_holder` genesis KeyRecord → outbox
+    /// (runbook §5). Hardware-rooted via `--module` (YubiKey), else the
+    /// platform-sealed key.
+    Holder(AccordHolderArgs),
+    /// Build the canonical entrenched-`family` envelope (runbook §7) — no signing.
+    /// Pass the 3 primary founder key_ids in roster order.
+    FamilyEnvelope(AccordFamilyEnvelopeArgs),
+    /// Co-sign a family envelope on **your** token (runbook §7) → write a
+    /// `{signature, member}` bundle for the assembler to collect.
+    CoSign(AccordCoSignArgs),
+    /// Verify (unanimous founder quorum) + assemble the founder co-signs into the
+    /// genesis object → outbox. Software-only (no token).
+    Assemble(AccordAssembleArgs),
+}
+
+/// Shared hardware-token args (YubiKey PKCS#11; omit `--module` for the
+/// platform-sealed key).
+#[derive(Args, Clone)]
+struct AccordHwArgs {
+    /// PKCS#11 module for a YubiKey-rooted key (e.g. `libykcs11.so`). Omit → the
+    /// platform-sealed Ed25519 key under `~/ciris/keys`.
+    #[arg(long)]
+    module: Option<String>,
+    /// `CKA_LABEL` of the token Ed25519 key (with `--module`).
+    #[arg(long)]
+    key_label: Option<String>,
+    /// `CKA_ID` of the token key as hex (alternative to `--key-label`).
+    #[arg(long)]
+    pkcs11_key_id: Option<String>,
+    /// Token slot index. Default 0.
+    #[arg(long, default_value = "0")]
+    slot: usize,
+    /// Prompt for the token user PIN (with `--module`).
+    #[arg(long)]
+    pin: bool,
+}
+
+/// `ciris-verify accord holder` args.
+#[derive(Args)]
+struct AccordHolderArgs {
+    /// Your federation `key_id` (e.g. `accord-eric-moore-primary`) — also the
+    /// alias of your sealed ML-DSA-65 half.
+    #[arg(long)]
+    key_id: String,
+    /// RFC-3339 `valid_from` (default: now).
+    #[arg(long)]
+    valid_from: Option<String>,
+    /// Where the sealed keys live (default `~/ciris/keys`).
+    #[arg(long)]
+    seed_dir: Option<String>,
+    #[command(flatten)]
+    hw: AccordHwArgs,
+}
+
+/// `ciris-verify accord family-envelope` args.
+#[derive(Args)]
+struct AccordFamilyEnvelopeArgs {
+    /// The family `key_id` (runbook §7). Default `humanity-accord`.
+    #[arg(long, default_value = "humanity-accord")]
+    family_key_id: String,
+    /// The family display name. Default `Humanity Accord`.
+    #[arg(long, default_value = "Humanity Accord")]
+    family_name: String,
+    /// A founder `key_id` (the live-roster primaries, in order); repeatable.
+    #[arg(long = "member", required = true)]
+    members: Vec<String>,
+    /// Write the envelope JSON here (default: stdout).
+    #[arg(long)]
+    out: Option<String>,
+}
+
+/// `ciris-verify accord co-sign` args.
+#[derive(Args)]
+struct AccordCoSignArgs {
+    /// Path to the family envelope JSON (from `family-envelope`).
+    #[arg(long)]
+    envelope: String,
+    /// Your federation `key_id` (the alias of your sealed ML-DSA-65 half).
+    #[arg(long)]
+    key_id: String,
+    /// Where the sealed keys live (default `~/ciris/keys`).
+    #[arg(long)]
+    seed_dir: Option<String>,
+    /// Write the `{signature, member}` bundle here (default: stdout).
+    #[arg(long)]
+    out: Option<String>,
+    #[command(flatten)]
+    hw: AccordHwArgs,
+}
+
+/// `ciris-verify accord assemble` args.
+#[derive(Args)]
+struct AccordAssembleArgs {
+    /// Path to the family envelope JSON.
+    #[arg(long)]
+    envelope: String,
+    /// Path to a `co-sign` bundle (`{signature, member}`); repeatable, one per
+    /// founder.
+    #[arg(long = "cosign", required = true)]
+    cosigns: Vec<String>,
+    /// RFC-3339 `created_at` for the genesis object (default: now).
+    #[arg(long)]
+    valid_from: Option<String>,
 }
 
 /// `ciris-verify fedcode` actions.
@@ -2406,6 +2525,261 @@ struct DelegateArgs {
     json_output: bool,
 }
 
+/// Build a hardware-rooted (`--module` YubiKey) or platform-sealed SelfSigner
+/// for an accord holder — Ed25519 owner-binding half + sealed ML-DSA-65 half.
+/// Exits the process on a signer fault (mirrors `run_delegate`).
+async fn build_accord_signer(
+    key_id: &str,
+    seed_dir: &str,
+    hw: &AccordHwArgs,
+    json_output: bool,
+) -> ciris_verify_core::self_at_login::HardwareRootedIdentity {
+    use std::sync::Arc;
+
+    use ciris_keyring::HardwareSigner;
+    use ciris_verify_core::self_at_login::HardwareRootedIdentity;
+
+    let ed: Arc<dyn HardwareSigner> = if let Some(module) = hw.module.as_deref() {
+        let key_id_bytes = match hw.pkcs11_key_id.as_deref().map(parse_hex).transpose() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("❌ --pkcs11-key-id is not valid hex: {e}");
+                std::process::exit(2);
+            },
+        };
+        let cfg = ciris_keyring::pkcs11::Pkcs11Config {
+            module_path: module.into(),
+            user_pin: prompt_pin(hw.pin),
+            key_label: hw.key_label.clone(),
+            key_id: key_id_bytes,
+            slot_index: hw.slot,
+        };
+        match ciris_keyring::pkcs11::open_pkcs11_signer("accord-holder", &cfg) {
+            Ok(s) => {
+                if !json_output {
+                    println!("🔏 signing on the token — tap the YubiKey if it blinks…\n");
+                }
+                Arc::from(s)
+            },
+            Err(e) => {
+                eprintln!("❌ open accord token (Ed25519): {e}");
+                std::process::exit(1);
+            },
+        }
+    } else {
+        match ciris_keyring::get_platform_ed25519_signer(key_id, seed_dir) {
+            Ok(s) => Arc::from(s),
+            Err(e) => {
+                eprintln!("❌ open accord Ed25519 identity: {e}");
+                std::process::exit(1);
+            },
+        }
+    };
+    let mldsa = match ciris_keyring::get_platform_sealed_mldsa65_signer(key_id, seed_dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ open accord ML-DSA-65 identity: {e}");
+            std::process::exit(1);
+        },
+    };
+    match HardwareRootedIdentity::new(key_id.to_string(), ed, Arc::from(mldsa)) {
+        Ok(i) => i,
+        Err(e) => {
+            eprintln!("❌ {e}");
+            std::process::exit(1);
+        },
+    }
+}
+
+/// Read + parse a JSON file or exit with a message.
+fn read_json_or_exit(path: &str) -> serde_json::Value {
+    match std::fs::read_to_string(path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+    {
+        Some(v) => v,
+        None => {
+            eprintln!("❌ read/parse JSON {path}");
+            std::process::exit(1);
+        },
+    }
+}
+
+async fn run_accord(action: AccordAction, json_output: bool) {
+    match action {
+        AccordAction::Holder(a) => run_accord_holder(a, json_output).await,
+        AccordAction::FamilyEnvelope(a) => run_accord_family_envelope(&a, json_output),
+        AccordAction::CoSign(a) => run_accord_cosign(a, json_output).await,
+        AccordAction::Assemble(a) => run_accord_assemble(&a, json_output),
+    }
+}
+
+async fn run_accord_holder(a: AccordHolderArgs, json_output: bool) {
+    use ciris_verify_core::accord_genesis::produce_accord_holder_record;
+    use ciris_verify_core::ceg_outbox::{keys_dir, SignedCegObject};
+
+    let seed_dir = a
+        .seed_dir
+        .clone()
+        .unwrap_or_else(|| keys_dir().to_string_lossy().into_owned());
+    let valid_from = a
+        .valid_from
+        .clone()
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    let signer = build_accord_signer(&a.key_id, &seed_dir, &a.hw, json_output).await;
+    let rec = match produce_accord_holder_record(&signer, &valid_from).await {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("❌ produce accord holder record: {e}");
+            std::process::exit(1);
+        },
+    };
+    let body = serde_json::to_value(&rec).unwrap_or_default();
+    let obj = SignedCegObject::new("federation_key_record", &a.key_id, &valid_from, body);
+    let path = match obj.write_to_outbox(&a.key_id) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("❌ write CEG outbox: {e}");
+            std::process::exit(1);
+        },
+    };
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({
+                "key_id": a.key_id,
+                "identity_type": "accord_holder",
+                "outbox": path.display().to_string(),
+            })
+        );
+    } else {
+        println!(
+            "✅ accord_holder genesis record for {} → {}",
+            a.key_id,
+            path.display()
+        );
+    }
+}
+
+fn run_accord_family_envelope(a: &AccordFamilyEnvelopeArgs, json_output: bool) {
+    use ciris_verify_core::accord_genesis::build_accord_family_envelope;
+
+    let env = build_accord_family_envelope(&a.family_key_id, &a.family_name, &a.members);
+    let pretty = serde_json::to_string_pretty(&env).unwrap_or_default();
+    if let Some(out) = a.out.as_deref() {
+        if let Err(e) = std::fs::write(out, &pretty) {
+            eprintln!("❌ write {out}: {e}");
+            std::process::exit(1);
+        }
+        if !json_output {
+            println!("✅ family envelope ({} founders) → {out}", a.members.len());
+        }
+    } else {
+        println!("{pretty}");
+    }
+}
+
+async fn run_accord_cosign(a: AccordCoSignArgs, json_output: bool) {
+    use ciris_verify_core::accord_genesis::{co_sign_accord_family, founder_member};
+    use ciris_verify_core::ceg_outbox::keys_dir;
+
+    let envelope = read_json_or_exit(&a.envelope);
+    let seed_dir = a
+        .seed_dir
+        .clone()
+        .unwrap_or_else(|| keys_dir().to_string_lossy().into_owned());
+    let signer = build_accord_signer(&a.key_id, &seed_dir, &a.hw, json_output).await;
+    let sig = match co_sign_accord_family(&signer, &envelope).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ co-sign: {e}");
+            std::process::exit(1);
+        },
+    };
+    let member = match founder_member(&signer).await {
+        Ok(m) => m,
+        Err(e) => {
+            eprintln!("❌ founder member: {e}");
+            std::process::exit(1);
+        },
+    };
+    let bundle = serde_json::json!({ "signature": sig, "member": member });
+    let pretty = serde_json::to_string_pretty(&bundle).unwrap_or_default();
+    if let Some(out) = a.out.as_deref() {
+        if let Err(e) = std::fs::write(out, &pretty) {
+            eprintln!("❌ write {out}: {e}");
+            std::process::exit(1);
+        }
+        if !json_output {
+            println!("✅ co-signed as {} → {out}", a.key_id);
+        }
+    } else {
+        println!("{pretty}");
+    }
+}
+
+fn run_accord_assemble(a: &AccordAssembleArgs, json_output: bool) {
+    use ciris_verify_core::accord_genesis::assemble_accord_family_genesis;
+    use ciris_verify_core::threshold::{ThresholdMember, ThresholdSignature};
+
+    let envelope = read_json_or_exit(&a.envelope);
+    let mut members: Vec<ThresholdMember> = Vec::new();
+    let mut sigs: Vec<ThresholdSignature> = Vec::new();
+    for path in &a.cosigns {
+        let bundle = read_json_or_exit(path);
+        let m: ThresholdMember = match serde_json::from_value(bundle["member"].clone()) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("❌ cosign {path}: bad member: {e}");
+                std::process::exit(1);
+            },
+        };
+        let s: ThresholdSignature = match serde_json::from_value(bundle["signature"].clone()) {
+            Ok(s) => s,
+            Err(e) => {
+                eprintln!("❌ cosign {path}: bad signature: {e}");
+                std::process::exit(1);
+            },
+        };
+        members.push(m);
+        sigs.push(s);
+    }
+    let created_at = a
+        .valid_from
+        .clone()
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+    let obj = match assemble_accord_family_genesis(&envelope, &members, &sigs, &created_at) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("❌ assemble (verification failed, nothing written): {e}");
+            std::process::exit(1);
+        },
+    };
+    let path = match obj.write_to_outbox(&obj.key_id) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("❌ write outbox: {e}");
+            std::process::exit(1);
+        },
+    };
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({
+                "family_key_id": obj.key_id,
+                "founders": members.len(),
+                "outbox": path.display().to_string(),
+            })
+        );
+    } else {
+        println!(
+            "✅ accord family genesis ({} founders, unanimous) → {}",
+            members.len(),
+            path.display()
+        );
+    }
+}
+
 async fn run_delegate(a: DelegateArgs) {
     use std::sync::Arc;
 
@@ -2689,6 +3063,12 @@ async fn main() {
                 json_output,
             })
             .await;
+        },
+        Some(Commands::Accord { action }) => {
+            if !json_output {
+                print_banner();
+            }
+            run_accord(action, json_output).await;
         },
         None => {
             // No command - show help
