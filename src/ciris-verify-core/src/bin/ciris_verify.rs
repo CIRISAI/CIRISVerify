@@ -2159,6 +2159,7 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
         args.fed_key_id.clone(),
         args.label.as_deref(),
         &now,
+        None, // CLI: seal under key_id (back-compat); the Server USER path uses seal_alias
     )
     .await
     {

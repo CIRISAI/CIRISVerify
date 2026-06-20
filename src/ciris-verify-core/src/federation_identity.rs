@@ -63,6 +63,17 @@ pub struct CreatedIdentity {
 /// `label` is given; else `derive_key_id("id", …)`. The returned
 /// [`CreatedIdentity::code`] is the shareable fedcode for `identity_type`.
 ///
+/// `seal_alias` keys the **ML-DSA-65 seal storage** independently of the
+/// recorded/encoded `key_id` (CIRISVerify#89). Pass `None` for the back-compat
+/// default — the seal is keyed by `key_id`, exactly as before. Pass `Some(alias)`
+/// to record under the derived `key_id` while sealing (and re-opening) the PQC
+/// half under a **stable keystore alias** — so a switch to derived key_ids needs
+/// no custody re-open / lockout for already-sealed seeds. The ML-DSA *pubkey* is
+/// a function of the sealed *seed* (under `seal_alias`), not the alias string,
+/// so the recorded record stays self-consistent and re-open by `seal_alias`
+/// reproduces it. (CIRISServer's USER path: record under
+/// `derive_key_id("<alias>-user", ed_pub)`, seal under the stable `<alias>-user`.)
+///
 /// # Errors
 ///
 /// [`VerifyError`] if the signer is not Ed25519, the pubkey/seed cannot be
@@ -73,6 +84,7 @@ pub async fn create_federation_identity(
     fed_key_id: Option<String>,
     label: Option<&str>,
     valid_from: &str,
+    seal_alias: Option<&str>,
 ) -> Result<CreatedIdentity, VerifyError> {
     let ed_pub = hw_signer.public_key().await.map_err(keyring_err)?;
     let key_id =
@@ -83,7 +95,12 @@ pub async fn create_federation_identity(
     // Secure Enclave / StrongBox on mobile; software-sealed AES-GCM fallback
     // otherwise — never a plaintext file) and unsealed only transiently to
     // sign. Auto-generates + seals on first call, adopts the sealed seed after.
-    let mldsa = ciris_keyring::get_platform_sealed_mldsa65_signer(&key_id, keys_dir())
+    //
+    // #89: the seal is keyed by `seal_alias` when given (a stable keystore
+    // alias), else by the recorded `key_id` (back-compat). Decoupling lets the
+    // recorded key_id move to the derived form without re-sealing every seed.
+    let seal_id = seal_alias.unwrap_or(&key_id);
+    let mldsa = ciris_keyring::get_platform_sealed_mldsa65_signer(seal_id, keys_dir())
         .map_err(keyring_err)?;
 
     let identity = HardwareRootedIdentity::new(key_id.clone(), hw_signer, Arc::from(mldsa))?;
@@ -150,6 +167,7 @@ mod tests {
             None,
             Some("Eric Moore"),
             "2026-06-18T00:00:00Z",
+            None,
         )
         .await
         .unwrap();
@@ -174,6 +192,55 @@ mod tests {
         assert_eq!(rec["identity_type"], "user");
         assert_eq!(rec["algorithm"], "hybrid");
         assert!(created.object.signatures.is_none());
+
+        std::env::remove_var(crate::ceg_outbox::CIRIS_HOME_ENV);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn seal_alias_decouples_recorded_key_id_from_seal_storage() {
+        // #89: record under the derived key_id, seal the ML-DSA half under a
+        // stable keystore alias — and re-opening the seal by that alias must
+        // reproduce the recorded ML-DSA pubkey (no custody migration).
+        let _g = crate::ceg_outbox::CIRIS_HOME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tmp("seal-alias");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var(crate::ceg_outbox::CIRIS_HOME_ENV, &dir);
+
+        let hw: Arc<dyn HardwareSigner> =
+            Arc::new(ciris_keyring::Ed25519SoftwareSigner::from_bytes(&[5u8; 32], "fed").unwrap());
+        let recorded = "eric-moore-derivedfp00".to_string();
+        let seal_alias = "stable-keystore-alias-user";
+        let created = create_federation_identity(
+            hw,
+            "user",
+            Some(recorded.clone()),
+            Some("Eric Moore"),
+            "2026-06-18T00:00:00Z",
+            Some(seal_alias),
+        )
+        .await
+        .unwrap();
+
+        // Recorded/encoded under the derived key_id, NOT the seal alias.
+        assert_eq!(created.key_id, recorded);
+        assert_eq!(created.object.key_id, recorded);
+        assert_eq!(created.object.body["record"]["key_id"], recorded);
+        assert_ne!(created.key_id, seal_alias);
+
+        // The recorded ML-DSA pubkey == the seed sealed under `seal_alias`, so a
+        // re-open by the alias (resolve_user_signer) reproduces it — no lockout.
+        let recorded_mldsa_pub = created.object.body["record"]["pubkey_ml_dsa_65_base64"]
+            .as_str()
+            .unwrap();
+        let reopened =
+            ciris_keyring::get_platform_sealed_mldsa65_signer(seal_alias, keys_dir()).unwrap();
+        let reopened_pub =
+            base64::engine::general_purpose::STANDARD.encode(reopened.public_key().await.unwrap());
+        assert_eq!(recorded_mldsa_pub, reopened_pub);
 
         std::env::remove_var(crate::ceg_outbox::CIRIS_HOME_ENV);
         let _ = std::fs::remove_dir_all(&dir);
