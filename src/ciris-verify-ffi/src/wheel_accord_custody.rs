@@ -293,7 +293,7 @@ mod tests {
         let obj = produce_accord_custody_attestation(
             &holder,
             &c9,
-            &f9,
+            &[f9.as_slice()],
             CUSTODY_TIER_PORTABLE_2FA,
             "2026-06-20T00:00:00Z",
         )
@@ -326,7 +326,7 @@ mod tests {
         let obj = produce_accord_custody_attestation(
             &holder,
             &c9,
-            &f9,
+            &[f9.as_slice()],
             CUSTODY_TIER_PORTABLE_2FA,
             "2026-06-20T00:00:00Z",
         )

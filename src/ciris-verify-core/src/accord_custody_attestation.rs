@@ -21,32 +21,34 @@
 //!
 //! 1. The bundle's bound-hybrid signature verifies against the holder's pinned
 //!    pubkeys (the holder authored it).
-//! 2. The 9c cert chains 9c → f9-intermediate → the **pinned Yubico root**.
+//! 2. The 9c cert chains `9c → f9 → [intermediate(s)…] → ` the **pinned Yubico
+//!    root** — a variable-length path (3 certs for the pre-fw-5.7 PKI, 4 for the
+//!    2024-12 PKI), every link a real signature verification.
 //! 3. The key the 9c cert *attests* equals the holder's federation Ed25519 key
 //!    (the attestation is for *this* holder's signing key, not a borrowed one).
 //! 4. The Yubico extensions show **FIPS-certified** (slot-f9 `.10`) **+
 //!    touch=always** (slot-9c `.8`) → `hardware_class: YubiKey_5_FIPS`. Firmware
 //!    (`.3`) is recorded, not floored.
 //!
-//! ## ⚠ Cross-confirm against a real key (#91 physical validation)
+//! ## ✓ Confirmed against a real key (#91, 2026-06-20)
 //!
-//! The extension parsing follows Yubico's *documented* encoding (PIV attestation
-//! docs + yubico-piv-tool#181): `.3` firmware and `.8` pin/touch are inner DER
-//! OCTET STRINGs (tolerant of the older bare form), and `.10` FIPS rides the
-//! **f9** cert. The rcgen tests now emit that documented shape — but the bytes
-//! still **MUST be confirmed against an actual YubiKey 5 FIPS attestation**
-//! before the gate is trusted in prod. Concretely, with an in-hand key capture
-//! `ykman piv keys attest 9c` + the device f9 + the pinned Yubico root and assert
-//! against the live bytes:
-//!   1. `.8` content is `[pin, touch]` with touch=always == `0x02` (not cached
-//!      `0x03`) — the one **false-accept** risk if the offset is wrong;
-//!   2. `.10` is present on the f9 cert of a FIPS key and absent on a non-FIPS
-//!      one (and whether it carries a payload vs is presence-only);
-//!   3. `.3` unwraps to the real `major.minor.patch`;
-//!   4. the real chain (Yubico signs attestation certs **SHA256-RSA**) verifies
-//!      end-to-end through `x509_parser::verify_signature` — the rcgen mock signs
-//!      the chain with Ed25519, so the RSA path is *not* exercised by these tests;
-//!   5. the 5.7-FIPS slot-9c key is id-Ed25519 with a bare 32-byte subjectPublicKey.
+//! Validated end-to-end against a physical **YubiKey 5 FIPS fw 5.7.4** (Ed25519
+//! slot-9c key, touch=always) via `examples/validate_yubikey_attestation`:
+//! `verify_yubikey_piv_attestation` ADMITTED with `fips_certified:true`,
+//! `touch_always:true`, `firmware:5.7.4`. So the documented Yubico encodings hold
+//! on real hardware: `.3` firmware and `.8` pin/touch are inner DER OCTET STRINGs
+//! (`inner_octet_string` unwraps; the touch byte is read from the unwrapped
+//! `[pin, touch]` — reading the wrapper length byte would false-accept a no-touch
+//! key), `.10` FIPS rides the **f9** device cert, the attested key is a bare
+//! 32-byte id-Ed25519 SPKI, and the **SHA256-RSA** chain verifies through
+//! `x509_parser::verify_signature`.
+//!
+//! **PKI note (load-bearing for the pin):** Yubico's 2024-12 overhaul made the
+//! chain 4 levels — `9c → f9 (CN=Yubico PIV Attestation) → CN=Yubico PIV
+//! Attestation B 1 → CN=Yubico Attestation Root 1`. Pin the durable **root**
+//! (`Yubico Attestation Root 1`, `developers.yubico.com/PKI/yubico-ca-1.pem`),
+//! not the rotating `B 1` intermediate; the bundle carries `[f9, B 1]`. Pre-5.7
+//! keys still verify with `[f9]` under the old `Yubico PIV Root CA Serial 263751`.
 
 use base64::Engine;
 use serde_json::{json, Value};
@@ -164,7 +166,7 @@ fn custody_envelope(
     ed25519_pubkey_b64: &str,
     mldsa65_pubkey_b64: &str,
     attestation_9c_hex: &str,
-    intermediate_f9_hex: &str,
+    attestation_chain_hex: &[String],
     custody_tier: &str,
     signed_at: &str,
 ) -> Value {
@@ -173,7 +175,9 @@ fn custody_envelope(
         "ed25519_public_key_base64": ed25519_pubkey_b64,
         "mldsa65_public_key_base64": mldsa65_pubkey_b64,
         "yubikey_piv_attestation_9c_hex": attestation_9c_hex,
-        "yubikey_attestation_intermediate_f9_hex": intermediate_f9_hex,
+        // The path above the 9c leaf, leaf-first: [f9, …intermediates…] up to but
+        // excluding the pinned root. The verifier pins the root out-of-band.
+        "yubikey_attestation_chain_hex": attestation_chain_hex,
         "custody_tier": custody_tier,
         "signed_at": signed_at,
     })
@@ -181,8 +185,10 @@ fn custody_envelope(
 
 /// Produce a signed accord-holder custody attestation — the holder hybrid-signs
 /// an envelope binding their identity + pubkeys to the YubiKey PIV attestation
-/// certs. `attestation_9c_der` is the slot-9c attestation (e.g. from
-/// `ykman piv keys attest 9c`); `intermediate_f9_der` is the device's f9 cert.
+/// chain. `attestation_9c_der` is the slot-9c attestation (e.g. from
+/// `ykman piv keys attest 9c`); `attestation_chain_ders` is the path above it,
+/// leaf-first — `[f9]` for the pre-fw-5.7 PKI, `[f9, "Yubico PIV Attestation B
+/// 1"]` for the 2024-12 PKI — excluding the pinned root the verifier holds.
 ///
 /// # Errors
 ///
@@ -190,19 +196,20 @@ fn custody_envelope(
 pub async fn produce_accord_custody_attestation(
     holder: &dyn SelfSigner,
     attestation_9c_der: &[u8],
-    intermediate_f9_der: &[u8],
+    attestation_chain_ders: &[&[u8]],
     custody_tier: &str,
     signed_at: &str,
 ) -> Result<SignedCegObject, VerifyError> {
     let b64 = base64::engine::general_purpose::STANDARD;
     let ed_pub = holder.ed25519_public_key().await?;
     let mldsa_pub = holder.mldsa65_public_key().await?;
+    let chain_hex: Vec<String> = attestation_chain_ders.iter().map(hex::encode).collect();
     let envelope = custody_envelope(
         holder.key_id(),
         &b64.encode(&ed_pub),
         &b64.encode(&mldsa_pub),
         &hex::encode(attestation_9c_der),
-        &hex::encode(intermediate_f9_der),
+        &chain_hex,
         custody_tier,
         signed_at,
     );
@@ -301,8 +308,25 @@ pub fn verify_accord_custody_attestation(
     }
     let attest_9c = hex::decode(str_field(env, "yubikey_piv_attestation_9c_hex")?)
         .map_err(|_| CustodyError::CertParse { which: "9c" })?;
-    let inter_f9 = hex::decode(str_field(env, "yubikey_attestation_intermediate_f9_hex")?)
-        .map_err(|_| CustodyError::CertParse { which: "f9" })?;
+    let chain_vals = env
+        .get("yubikey_attestation_chain_hex")
+        .and_then(Value::as_array)
+        .ok_or(CustodyError::Malformed {
+            field: "yubikey_attestation_chain_hex".to_string(),
+        })?;
+    let chain: Vec<Vec<u8>> = chain_vals
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .ok_or(CustodyError::Malformed {
+                    field: "yubikey_attestation_chain_hex[]".to_string(),
+                })
+                .and_then(|s| {
+                    hex::decode(s).map_err(|_| CustodyError::CertParse { which: "chain" })
+                })
+        })
+        .collect::<Result<_, _>>()?;
+    let chain_refs: Vec<&[u8]> = chain.iter().map(Vec::as_slice).collect();
     let holder_ed = base64::engine::general_purpose::STANDARD
         .decode(&holder_member.ed25519_public_key_base64)
         .map_err(|_| CustodyError::Malformed {
@@ -312,7 +336,7 @@ pub fn verify_accord_custody_attestation(
     // 2-4: the YubiKey PIV attestation — chain to the pinned Yubico root, the
     // attested key == the holder's Ed25519, and the FIPS/touch floor.
     let mut verdict =
-        verify_yubikey_piv_attestation(&attest_9c, &inter_f9, yubico_root_der, &holder_ed)?;
+        verify_yubikey_piv_attestation(&attest_9c, &chain_refs, yubico_root_der, &holder_ed)?;
     verdict.custody_tier = custody_tier;
     Ok(verdict)
 }
@@ -335,36 +359,65 @@ fn inner_octet_string(raw: &[u8]) -> &[u8] {
     raw
 }
 
-/// Verify a YubiKey PIV slot-9c attestation: chain `9c → f9 → root`, confirm the
-/// attested key equals `expected_ed`, and extract + enforce the FIPS + touch
-/// floor. The security-critical core, factored out so it is directly testable
-/// against a generated chain (without the bundle-signature layer).
+/// Verify a YubiKey PIV slot-9c attestation chain `9c → f9 → [intermediates…] →
+/// pinned root`, confirm the attested key equals `expected_ed`, and extract +
+/// enforce the FIPS + touch floor. The security-critical core, factored out so
+/// it is directly testable against a generated chain (without the
+/// bundle-signature layer).
+///
+/// `attestation_chain_ders` is the path **above** the 9c leaf, leaf-first:
+/// `[f9, …intermediates…]` — `chain[0]` (f9) is the device attestation cert that
+/// signs the 9c leaf and carries the FIPS `.10` extension; the last entry is
+/// verified against `pinned_root_der`. For the pre-fw-5.7 PKI this is a single
+/// `[f9]` and `pinned_root_der` is `Yubico PIV Root CA Serial 263751`; for the
+/// 2024-12 PKI it is `[f9, "Yubico PIV Attestation B 1"]` and `pinned_root_der`
+/// is the durable `Yubico Attestation Root 1`. Every link is a real signature
+/// verification; no name/CA-flag trust is inferred.
 ///
 /// # Errors
 ///
-/// [`CustodyError`] naming the first failing check.
+/// [`CustodyError`] naming the first failing check (incl. an empty chain).
 pub fn verify_yubikey_piv_attestation(
     attest_9c_der: &[u8],
-    intermediate_f9_der: &[u8],
-    yubico_root_der: &[u8],
+    attestation_chain_ders: &[&[u8]],
+    pinned_root_der: &[u8],
     expected_ed: &[u8],
 ) -> Result<CustodyVerdict, CustodyError> {
+    if attestation_chain_ders.is_empty() {
+        return Err(CustodyError::ChainInvalid {
+            detail: "empty attestation chain (need at least the f9 device cert)".to_string(),
+        });
+    }
     let (_, cert_9c) = X509Certificate::from_der(attest_9c_der)
         .map_err(|_| CustodyError::CertParse { which: "9c" })?;
-    let (_, cert_f9) = X509Certificate::from_der(intermediate_f9_der)
-        .map_err(|_| CustodyError::CertParse { which: "f9" })?;
-    let (_, cert_root) = X509Certificate::from_der(yubico_root_der)
+    let chain: Vec<X509Certificate> = attestation_chain_ders
+        .iter()
+        .map(|der| {
+            X509Certificate::from_der(der)
+                .map(|(_, c)| c)
+                .map_err(|_| CustodyError::CertParse { which: "chain" })
+        })
+        .collect::<Result<_, _>>()?;
+    let (_, cert_root) = X509Certificate::from_der(pinned_root_der)
         .map_err(|_| CustodyError::CertParse { which: "root" })?;
 
+    // 9c signed by chain[0] (f9); chain[i] signed by chain[i+1]; chain.last by root.
     cert_9c
-        .verify_signature(Some(cert_f9.public_key()))
+        .verify_signature(Some(chain[0].public_key()))
         .map_err(|e| CustodyError::ChainInvalid {
             detail: format!("9c not signed by f9: {e:?}"),
         })?;
-    cert_f9
+    for i in 0..chain.len() - 1 {
+        chain[i]
+            .verify_signature(Some(chain[i + 1].public_key()))
+            .map_err(|e| CustodyError::ChainInvalid {
+                detail: format!("attestation chain link {i}→{} broken: {e:?}", i + 1),
+            })?;
+    }
+    chain[chain.len() - 1]
         .verify_signature(Some(cert_root.public_key()))
         .map_err(|e| CustodyError::ChainInvalid {
-            detail: format!("f9 not signed by the pinned Yubico root: {e:?}"),
+            detail: format!("top of chain not signed by the pinned Yubico root: {e:?}"),
         })?;
 
     // The attested key == the holder's federation Ed25519 key.
@@ -415,9 +468,10 @@ pub fn verify_yubikey_piv_attestation(
     }
 
     // The FIPS-certified extension (`.10`) is carried on the factory-loaded
-    // slot-**f9** attestation cert, NOT the per-slot 9c leaf — scanning the 9c
-    // cert (which never carries it) would fail-reject every genuine FIPS key.
-    let fips_certified = cert_f9
+    // slot-**f9** device attestation cert (`chain[0]`), NOT the per-slot 9c leaf
+    // — scanning the 9c cert (which never carries it) would fail-reject every
+    // genuine FIPS key. Confirmed against a real YubiKey 5 FIPS fw 5.7.4 (#91).
+    let fips_certified = chain[0]
         .extensions()
         .iter()
         .any(|ext| ext.oid.to_id_string() == OID_YUBICO_FIPS_CERTIFIED);
@@ -510,7 +564,7 @@ mod tests {
     fn fips_touch_chain_verifies_and_extracts() {
         let leaf_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
         let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
-        let v = verify_yubikey_piv_attestation(&c9, &f9, &root, &raw_ed(&leaf_kp))
+        let v = verify_yubikey_piv_attestation(&c9, &[f9.as_slice()], &root, &raw_ed(&leaf_kp))
             .expect("a FIPS, touch-always, root-chained attestation must verify");
         assert_eq!(v.hardware_class, "YubiKey_5_FIPS");
         assert!(v.fips_certified && v.touch_always);
@@ -524,8 +578,13 @@ mod tests {
         // A different (attacker) root the f9 does not chain to.
         let other_root_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
         let other_root = params("attacker root").self_signed(&other_root_kp).unwrap();
-        let err = verify_yubikey_piv_attestation(&c9, &f9, other_root.der(), &raw_ed(&leaf_kp))
-            .unwrap_err();
+        let err = verify_yubikey_piv_attestation(
+            &c9,
+            &[f9.as_slice()],
+            other_root.der(),
+            &raw_ed(&leaf_kp),
+        )
+        .unwrap_err();
         assert!(matches!(err, CustodyError::ChainInvalid { .. }));
     }
 
@@ -533,7 +592,8 @@ mod tests {
     fn non_fips_yubikey_rejected() {
         let leaf_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
         let (c9, f9, root) = mock_chain(&leaf_kp, false, TOUCH_POLICY_ALWAYS);
-        let err = verify_yubikey_piv_attestation(&c9, &f9, &root, &raw_ed(&leaf_kp)).unwrap_err();
+        let err = verify_yubikey_piv_attestation(&c9, &[f9.as_slice()], &root, &raw_ed(&leaf_kp))
+            .unwrap_err();
         assert!(matches!(err, CustodyError::FloorNotMet { .. }));
     }
 
@@ -541,7 +601,8 @@ mod tests {
     fn touch_not_always_rejected() {
         let leaf_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
         let (c9, f9, root) = mock_chain(&leaf_kp, true, 0x01 /* not always */);
-        let err = verify_yubikey_piv_attestation(&c9, &f9, &root, &raw_ed(&leaf_kp)).unwrap_err();
+        let err = verify_yubikey_piv_attestation(&c9, &[f9.as_slice()], &root, &raw_ed(&leaf_kp))
+            .unwrap_err();
         assert!(matches!(err, CustodyError::FloorNotMet { .. }));
     }
 
@@ -550,8 +611,88 @@ mod tests {
         let leaf_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
         let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
         let someone_else = raw_ed(&KeyPair::generate_for(&PKCS_ED25519).unwrap());
-        let err = verify_yubikey_piv_attestation(&c9, &f9, &root, &someone_else).unwrap_err();
+        let err = verify_yubikey_piv_attestation(&c9, &[f9.as_slice()], &root, &someone_else)
+            .unwrap_err();
         assert_eq!(err, CustodyError::AttestedKeyMismatch);
+    }
+
+    #[test]
+    fn four_level_chain_with_intermediate_verifies() {
+        // The 2024-12 Yubico PKI: 9c → f9 → intermediate → root. The verifier
+        // must walk the intermediate up to the pinned *root* (not a fixed
+        // 3-cert chain), with FIPS .10 still read off the f9 device cert.
+        let leaf_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let root_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let root = params("Yubico Attestation Root 1 (test)")
+            .self_signed(&root_kp)
+            .unwrap();
+        let mid_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let mid = params("Yubico PIV Attestation B 1 (test)")
+            .signed_by(&mid_kp, &root, &root_kp)
+            .unwrap();
+        let mut f9p = params("Yubico PIV Attestation (test f9)");
+        f9p.custom_extensions = vec![CustomExtension::from_oid_content(
+            &[1, 3, 6, 1, 4, 1, 41482, 3, 10],
+            vec![],
+        )];
+        let f9_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let f9 = f9p.signed_by(&f9_kp, &mid, &mid_kp).unwrap();
+        let mut leaf = params("YubiKey 9c (test)");
+        leaf.custom_extensions = vec![
+            CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 4, 1, 41482, 3, 3],
+                vec![0x04, 0x03, 5, 7, 4],
+            ),
+            CustomExtension::from_oid_content(
+                &[1, 3, 6, 1, 4, 1, 41482, 3, 8],
+                vec![0x04, 0x02, 0x01, TOUCH_POLICY_ALWAYS],
+            ),
+        ];
+        let c9 = leaf.signed_by(&leaf_kp, &f9, &f9_kp).unwrap();
+
+        let c9d = c9.der().to_vec();
+        let f9d = f9.der().to_vec();
+        let midd = mid.der().to_vec();
+        let rootd = root.der().to_vec();
+        let expected = raw_ed(&leaf_kp);
+
+        // Full 4-level chain to the pinned root verifies.
+        let v = verify_yubikey_piv_attestation(
+            &c9d,
+            &[f9d.as_slice(), midd.as_slice()],
+            &rootd,
+            &expected,
+        )
+        .expect("a 9c → f9 → intermediate → root chain must verify");
+        assert_eq!(v.hardware_class, "YubiKey_5_FIPS");
+        assert!(v.fips_certified && v.touch_always);
+        assert_eq!(v.firmware, "5.7.4");
+
+        // Pinning a *stranger* root (the intermediate doesn't chain to it) fails.
+        let stranger_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let stranger = params("stranger root").self_signed(&stranger_kp).unwrap();
+        assert!(matches!(
+            verify_yubikey_piv_attestation(
+                &c9d,
+                &[f9d.as_slice(), midd.as_slice()],
+                stranger.der(),
+                &expected
+            )
+            .unwrap_err(),
+            CustodyError::ChainInvalid { .. }
+        ));
+
+        // A missing intermediate (chain=[f9], root pinned) cannot bridge to root.
+        assert!(matches!(
+            verify_yubikey_piv_attestation(&c9d, &[f9d.as_slice()], &rootd, &expected).unwrap_err(),
+            CustodyError::ChainInvalid { .. }
+        ));
+
+        // An empty chain is fail-closed.
+        assert!(matches!(
+            verify_yubikey_piv_attestation(&c9d, &[], &rootd, &expected).unwrap_err(),
+            CustodyError::ChainInvalid { .. }
+        ));
     }
 
     /// PKCS#8-PEM for an Ed25519 `seed`, so rcgen and `Ed25519Signer::from_seed`
@@ -589,7 +730,7 @@ mod tests {
         let obj = produce_accord_custody_attestation(
             &holder,
             &c9,
-            &f9,
+            &[f9.as_slice()],
             CUSTODY_TIER_PORTABLE_2FA,
             "2026-06-20T00:00:00Z",
         )
@@ -616,7 +757,7 @@ mod tests {
         let obj2 = produce_accord_custody_attestation(
             &other,
             &c9,
-            &f9,
+            &[f9.as_slice()],
             CUSTODY_TIER_PORTABLE_2FA,
             "2026-06-20T00:00:00Z",
         )
@@ -648,7 +789,7 @@ mod tests {
         let obj = produce_accord_custody_attestation(
             &holder,
             &c9,
-            &f9,
+            &[f9.as_slice()],
             "machine_bound_5fa", // a tier verify does not recognize
             "2026-06-20T00:00:00Z",
         )
@@ -679,7 +820,7 @@ mod tests {
         let obj = produce_accord_custody_attestation(
             &holder,
             &c9,
-            &f9,
+            &[f9.as_slice()],
             CUSTODY_TIER_PORTABLE_2FA,
             "2026-06-20T00:00:00Z",
         )
