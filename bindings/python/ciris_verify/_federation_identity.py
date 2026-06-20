@@ -91,6 +91,11 @@ def create_federation_identity(config: dict[str, Any]) -> dict[str, Any]:
             ``seed_dir`` (str, REQUIRED — where the sealed Ed25519 + ML-DSA seeds live),
             ``identity_type`` (``"user"`` | ``"agent"``; default ``"user"``),
             ``fed_key_id`` (str | None; default ``sha256(ed_pubkey)`` hex),
+            ``label`` (str | None; for the ``label-fingerprint`` derived key_id),
+            ``seal_alias`` (str | None; CIRISVerify#89 — key the ML-DSA seal under a
+                stable keystore alias while recording under the derived ``key_id``,
+                so a switch to derived key_ids needs no custody re-open. Omit for
+                back-compat: the seal is keyed by ``key_id``),
             ``valid_from`` (RFC-3339 str; default host-now),
             ``write_outbox`` (bool; default ``True``).
 

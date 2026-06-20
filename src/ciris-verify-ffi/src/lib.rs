@@ -1740,6 +1740,12 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
             .get("label")
             .and_then(|v| v.as_str())
             .map(str::to_string);
+        // #89: optional — key the ML-DSA seal under a stable alias while the
+        // recorded key_id is the derived form. Omit for back-compat (seal == key_id).
+        let seal_alias = cfg
+            .get("seal_alias")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let valid_from = cfg
             .get("valid_from")
             .and_then(|v| v.as_str())
@@ -1767,6 +1773,7 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
                 fed_key_id,
                 label.as_deref(),
                 &valid_from,
+                seal_alias.as_deref(),
             )
             .await
             .map_err(|e| format!("create identity: {e}"))?;
