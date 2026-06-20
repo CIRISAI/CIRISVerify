@@ -282,9 +282,85 @@ enum AccordAction {
     /// Co-sign a family envelope on **your** token (runbook §7) → write a
     /// `{signature, member}` bundle for the assembler to collect.
     CoSign(AccordCoSignArgs),
-    /// Verify (unanimous founder quorum) + assemble the founder co-signs into the
-    /// genesis object → outbox. Software-only (no token).
+    /// Verify (2/3 distinct-key founder quorum) + assemble the founder co-signs
+    /// into the genesis object → outbox. Software-only (no token).
     Assemble(AccordAssembleArgs),
+    /// Invoke an accord action (CONSTITUTIONAL kill / notify / drill) — sign it on
+    /// **your** token → a partially-signed object another holder can concur with.
+    /// (Closed vocabulary per CIRIS Constitution CC 4.2.1 — no other kinds.)
+    Invoke(AccordInvokeArgs),
+    /// Concur with a pending invocation you're a roster member of — add your
+    /// signature toward the 2/3 quorum → updated object → outbox.
+    Concur(AccordConcurArgs),
+    /// List accord objects in a directory (default: the CEG outbox); show each
+    /// object's family, your roster membership, and quorum progress.
+    List(AccordListArgs),
+}
+
+/// `ciris-verify accord invoke` args.
+#[derive(Args)]
+struct AccordInvokeArgs {
+    /// Your federation `key_id` (the alias of your sealed ML-DSA-65 half).
+    #[arg(long)]
+    key_id: String,
+    /// The roster — a JSON array of founder members **with pubkeys** (from the
+    /// genesis co-sign bundles' `member` field, or the holder records).
+    #[arg(long)]
+    roster: String,
+    /// Invocation kind (closed set per CC 4.2.1).
+    #[arg(long, value_parser = ["constitutional", "notify", "drill"])]
+    kind: String,
+    /// Per-kind unique id (`halt_id` / `notify_id` / `drill_id`).
+    #[arg(long)]
+    invocation_id: String,
+    /// Lowercase-hex SHA-256 of the application payload (§0.6).
+    #[arg(long)]
+    payload_sha256: String,
+    /// Validity window in minutes (default 1440 = 24h).
+    #[arg(long, default_value = "1440")]
+    valid_mins: i64,
+    /// The family `key_id` (default `humanity-accord`).
+    #[arg(long, default_value = "humanity-accord")]
+    family_key_id: String,
+    /// Where the sealed keys live (default `~/ciris/keys`).
+    #[arg(long)]
+    seed_dir: Option<String>,
+    /// Write the object here instead of the outbox.
+    #[arg(long)]
+    out: Option<String>,
+    #[command(flatten)]
+    hw: AccordHwArgs,
+}
+
+/// `ciris-verify accord concur` args.
+#[derive(Args)]
+struct AccordConcurArgs {
+    /// Path to the pending invocation object (received from the first signer).
+    #[arg(long)]
+    object: String,
+    /// Your federation `key_id`.
+    #[arg(long)]
+    key_id: String,
+    /// Where the sealed keys live (default `~/ciris/keys`).
+    #[arg(long)]
+    seed_dir: Option<String>,
+    /// Write the updated object here instead of the outbox.
+    #[arg(long)]
+    out: Option<String>,
+    #[command(flatten)]
+    hw: AccordHwArgs,
+}
+
+/// `ciris-verify accord list` args.
+#[derive(Args)]
+struct AccordListArgs {
+    /// Directory to scan (default: the CEG outbox `~/ciris/ceg/outbox`).
+    #[arg(long)]
+    dir: Option<String>,
+    /// Your fedcode `key_id` — flag objects whose roster you're a member of (and
+    /// whether you've already signed).
+    #[arg(long)]
+    mine: Option<String>,
 }
 
 /// Shared hardware-token args (YubiKey PKCS#11; omit `--module` for the
@@ -2611,6 +2687,301 @@ async fn run_accord(action: AccordAction, json_output: bool) {
         AccordAction::FamilyEnvelope(a) => run_accord_family_envelope(&a, json_output),
         AccordAction::CoSign(a) => run_accord_cosign(a, json_output).await,
         AccordAction::Assemble(a) => run_accord_assemble(&a, json_output),
+        AccordAction::Invoke(a) => run_accord_invoke(a, json_output).await,
+        AccordAction::Concur(a) => run_accord_concur(a, json_output).await,
+        AccordAction::List(a) => run_accord_list(&a, json_output),
+    }
+}
+
+fn read_members_or_exit(path: &str) -> Vec<ciris_verify_core::threshold::ThresholdMember> {
+    match serde_json::from_value(read_json_or_exit(path)) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("❌ {path}: not a JSON array of roster members: {e}");
+            std::process::exit(1);
+        },
+    }
+}
+
+async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
+    use base64::Engine;
+
+    use ciris_verify_core::accord_genesis::{build_accord_invocation_object, co_sign_invocation};
+    use ciris_verify_core::ceg_outbox::keys_dir;
+    use ciris_verify_core::humanity_accord::{Invocation, InvocationKind};
+
+    let roster = read_members_or_exit(&a.roster);
+    let kind = match a.kind.as_str() {
+        "constitutional" => InvocationKind::Constitutional,
+        "notify" => InvocationKind::Notify,
+        "drill" => InvocationKind::Drill,
+        other => {
+            eprintln!("❌ unknown invocation kind {other:?} (constitutional|notify|drill)");
+            std::process::exit(2);
+        },
+    };
+    let now = chrono::Utc::now();
+    let nonce_bytes = ciris_crypto::random::bytes(32).unwrap_or_else(|e| {
+        eprintln!("❌ RNG: {e}");
+        std::process::exit(1);
+    });
+    let invocation = Invocation {
+        invocation_kind: kind,
+        invocation_id: a.invocation_id.clone(),
+        nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&nonce_bytes),
+        asserted_at: now.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
+        valid_until: (now + chrono::Duration::minutes(a.valid_mins))
+            .format("%Y-%m-%dT%H:%M:%S%.3fZ")
+            .to_string(),
+        payload_sha256: a.payload_sha256.clone(),
+    };
+    let seed_dir = a
+        .seed_dir
+        .clone()
+        .unwrap_or_else(|| keys_dir().to_string_lossy().into_owned());
+    let signer = build_accord_signer(&a.key_id, &seed_dir, &a.hw, json_output).await;
+    let sig = match co_sign_invocation(&signer, &invocation).await {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ sign invocation: {e}");
+            std::process::exit(1);
+        },
+    };
+    let created_at = now.to_rfc3339();
+    let obj = build_accord_invocation_object(
+        &a.family_key_id,
+        &roster,
+        &invocation,
+        std::slice::from_ref(&sig),
+        &created_at,
+    );
+    let id = format!("{}-{}", a.kind, a.invocation_id);
+    let path = write_object(&obj, &id, a.out.as_deref());
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({
+                "kind": a.kind, "invocation_id": a.invocation_id,
+                "signatures": 1, "quorum_threshold": 2, "object": path,
+            })
+        );
+    } else {
+        println!(
+            "✅ invoked {} {} as {} — 1/2 signatures (needs 1 more to concur) → {path}",
+            a.kind, a.invocation_id, a.key_id
+        );
+    }
+}
+
+async fn run_accord_concur(a: AccordConcurArgs, json_output: bool) {
+    use ciris_verify_core::accord_genesis::{
+        accord_invocation_status, concur_accord_invocation, parse_accord_invocation,
+    };
+    use ciris_verify_core::ceg_outbox::{keys_dir, SignedCegObject};
+
+    let obj: SignedCegObject = match serde_json::from_value(read_json_or_exit(&a.object)) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("❌ {}: not a CEG object: {e}", a.object);
+            std::process::exit(1);
+        },
+    };
+    let seed_dir = a
+        .seed_dir
+        .clone()
+        .unwrap_or_else(|| keys_dir().to_string_lossy().into_owned());
+    let signer = build_accord_signer(&a.key_id, &seed_dir, &a.hw, json_output).await;
+    let now = chrono::Utc::now().to_rfc3339();
+    let updated = match concur_accord_invocation(&obj, &signer, &now).await {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("❌ concur refused (nothing written): {e}");
+            std::process::exit(1);
+        },
+    };
+    let parsed = parse_accord_invocation(&updated).expect("just-built object parses");
+    let st = accord_invocation_status(&parsed).expect("just-built object verifies");
+    let id = format!(
+        "{}-{}",
+        parsed.invocation.invocation_kind.as_str(),
+        parsed.invocation.invocation_id
+    );
+    let path = write_object(&updated, &id, a.out.as_deref());
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({
+                "invocation_id": parsed.invocation.invocation_id,
+                "signatures": st.valid_signers.len(),
+                "quorum_threshold": st.quorum_threshold,
+                "quorum_met": st.quorum_met,
+                // `quorum_met` is computed against the object's EMBEDDED roster —
+                // advisory only. Authoritative 2/3 verification is server-side
+                // against `federation_keys` (real accord-holder pubkeys).
+                "quorum_advisory": true,
+                "object": path,
+            })
+        );
+    } else {
+        println!(
+            "✅ concurred as {} — {}/{} signatures{} → {path}",
+            a.key_id,
+            st.valid_signers.len(),
+            st.quorum_threshold,
+            if st.quorum_met {
+                " — QUORUM MET (advisory; canonical 2/3 verified server-side vs federation_keys)"
+            } else {
+                ""
+            }
+        );
+    }
+}
+
+fn run_accord_list(a: &AccordListArgs, json_output: bool) {
+    use ciris_verify_core::accord_genesis::{
+        accord_invocation_status, is_roster_member, parse_accord_invocation,
+        ACCORD_FAMILY_GENESIS_KIND, ACCORD_INVOCATION_KIND,
+    };
+    use ciris_verify_core::ceg_outbox::{ceg_outbox, SignedCegObject};
+
+    let dir = a
+        .dir
+        .clone()
+        .map_or_else(ceg_outbox, std::path::PathBuf::from);
+    let mut rows = Vec::new();
+    let mut stack = vec![dir.clone()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&d) else {
+            continue;
+        };
+        for e in entries.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                stack.push(p);
+                continue;
+            }
+            if p.extension().and_then(|s| s.to_str()) != Some("json") {
+                continue;
+            }
+            let Ok(text) = std::fs::read_to_string(&p) else {
+                continue;
+            };
+            let Ok(obj) = serde_json::from_str::<SignedCegObject>(&text) else {
+                continue;
+            };
+            if obj.kind == ACCORD_INVOCATION_KIND {
+                if let Ok(parsed) = parse_accord_invocation(&obj) {
+                    let st = accord_invocation_status(&parsed).ok();
+                    let mine = a.mine.as_deref().map(|k| {
+                        (
+                            is_roster_member(&parsed.roster, k),
+                            parsed.signatures.iter().any(|s| s.member_id == k),
+                        )
+                    });
+                    rows.push(serde_json::json!({
+                        "path": p.display().to_string(),
+                        "kind": ACCORD_INVOCATION_KIND,
+                        "family": parsed.family_key_id,
+                        "invocation_kind": parsed.invocation.invocation_kind.as_str(),
+                        "invocation_id": parsed.invocation.invocation_id,
+                        "signatures": st.as_ref().map(|s| s.valid_signers.len()),
+                        "quorum_threshold": 2,
+                        "quorum_met": st.as_ref().map(|s| s.quorum_met),
+                        "i_am_member": mine.map(|(m, _)| m),
+                        "i_signed": mine.map(|(_, s)| s),
+                    }));
+                }
+            } else if obj.kind == ACCORD_FAMILY_GENESIS_KIND {
+                let members: Vec<String> = obj.body["family"]["members"]
+                    .as_array()
+                    .map(|a| {
+                        a.iter()
+                            .filter_map(|m| m["key_id"].as_str().map(String::from))
+                            .collect()
+                    })
+                    .unwrap_or_default();
+                let mine = a.mine.as_deref().map(|k| members.iter().any(|m| m == k));
+                rows.push(serde_json::json!({
+                    "path": p.display().to_string(),
+                    "kind": ACCORD_FAMILY_GENESIS_KIND,
+                    "family": obj.key_id,
+                    "members": members,
+                    "i_am_member": mine,
+                }));
+            }
+        }
+    }
+    if json_output {
+        println!("{}", serde_json::json!({ "objects": rows }));
+        return;
+    }
+    if rows.is_empty() {
+        println!("No accord objects under {}", dir.display());
+        return;
+    }
+    println!("Accord objects under {}:\n", dir.display());
+    for r in &rows {
+        if r["kind"] == ACCORD_INVOCATION_KIND {
+            let mem = match r["i_am_member"].as_bool() {
+                Some(true) if r["i_signed"].as_bool() == Some(true) => "  [you: member, signed]",
+                Some(true) => "  [you: member — you can concur]",
+                Some(false) => "  [you: not a member]",
+                None => "",
+            };
+            println!(
+                "  • {} {} ({})  {}/{}{}{}",
+                r["invocation_kind"].as_str().unwrap_or("?"),
+                r["invocation_id"].as_str().unwrap_or("?"),
+                r["family"].as_str().unwrap_or("?"),
+                r["signatures"]
+                    .as_u64()
+                    .map_or("?".to_string(), |n| n.to_string()),
+                r["quorum_threshold"].as_u64().unwrap_or(2),
+                if r["quorum_met"].as_bool() == Some(true) {
+                    " — QUORUM MET (advisory)"
+                } else {
+                    ""
+                },
+                mem,
+            );
+        } else {
+            let mem = match r["i_am_member"].as_bool() {
+                Some(true) => "  [you: founder]",
+                Some(false) => "  [you: not a founder]",
+                None => "",
+            };
+            println!(
+                "  • family genesis {} ({} members){}",
+                r["family"].as_str().unwrap_or("?"),
+                r["members"].as_array().map_or(0, std::vec::Vec::len),
+                mem,
+            );
+        }
+    }
+}
+
+/// Write a CEG object to `out` (if given) or the outbox under `id`; print errors
+/// and exit on failure. Returns the written path as a string.
+fn write_object(
+    obj: &ciris_verify_core::ceg_outbox::SignedCegObject,
+    id: &str,
+    out: Option<&str>,
+) -> String {
+    if let Some(out) = out {
+        let text = serde_json::to_string_pretty(obj).unwrap_or_default();
+        if let Err(e) = std::fs::write(out, &text) {
+            eprintln!("❌ write {out}: {e}");
+            std::process::exit(1);
+        }
+        out.to_string()
+    } else {
+        match obj.write_to_outbox(id) {
+            Ok(p) => p.display().to_string(),
+            Err(e) => {
+                eprintln!("❌ write CEG outbox: {e}");
+                std::process::exit(1);
+            },
+        }
     }
 }
 
