@@ -211,10 +211,13 @@ impl MlDsa65SoftwareSigner {
         let mut seed = [0u8; 32];
         seed.copy_from_slice(seed_bytes);
 
-        let inner = Box::new(ciris_crypto::MlDsa65Signer::from_seed(&seed).map_err(|e| {
-            KeyringError::InvalidKey {
-                reason: format!("ML-DSA-65 seed rejected by ciris-crypto: {e}"),
-            }
+        // Build the signer, then scrub our seed copy on EVERY path (success or
+        // error) — don't leave a plaintext ML-DSA seed on the stack.
+        let built = ciris_crypto::MlDsa65Signer::from_seed(&seed);
+        seed.iter_mut().for_each(|b| *b = 0);
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        let inner = Box::new(built.map_err(|e| KeyringError::InvalidKey {
+            reason: format!("ML-DSA-65 seed rejected by ciris-crypto: {e}"),
         })?);
 
         tracing::info!(alias = %alias, "MlDsa65SoftwareSigner: key imported from bytes");

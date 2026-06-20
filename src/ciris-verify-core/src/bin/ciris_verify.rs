@@ -383,6 +383,12 @@ struct AccordHwArgs {
     /// Prompt for the token user PIN (with `--module`).
     #[arg(long)]
     pin: bool,
+    /// **Portable high-secure mode.** Directory on a USB key where the ML-DSA-65
+    /// half is signature-wrapped (requires `--module` — the YubiKey derives the
+    /// unwrap key by signing, touch+PIN). Both the USB and the YubiKey + PIN +
+    /// touch are then required; the identity is portable, not machine-bound.
+    #[arg(long)]
+    portable_usb: Option<String>,
 }
 
 /// `ciris-verify accord holder` args.
@@ -2609,9 +2615,11 @@ async fn build_accord_signer(
     seed_dir: &str,
     hw: &AccordHwArgs,
     json_output: bool,
+    provision: bool,
 ) -> ciris_verify_core::self_at_login::HardwareRootedIdentity {
     use std::sync::Arc;
 
+    use ciris_keyring::pqc::PqcSigner;
     use ciris_keyring::HardwareSigner;
     use ciris_verify_core::self_at_login::HardwareRootedIdentity;
 
@@ -2651,14 +2659,44 @@ async fn build_accord_signer(
             },
         }
     };
-    let mldsa = match ciris_keyring::get_platform_sealed_mldsa65_signer(key_id, seed_dir) {
-        Ok(s) => s,
-        Err(e) => {
-            eprintln!("❌ open accord ML-DSA-65 identity: {e}");
-            std::process::exit(1);
-        },
+    // ML-DSA-65 half: portable USB-wrapped (signature-derived) when `--portable-usb`
+    // is set, else the machine-sealed seed.
+    let mldsa: Arc<dyn PqcSigner> = if let Some(usb) = hw.portable_usb.as_deref() {
+        use ciris_keyring::usb_wrapped_mldsa65::UsbWrappedMlDsa65Signer;
+        if hw.module.is_none() {
+            eprintln!(
+                "❌ --portable-usb requires --module: the YubiKey derives the USB unwrap key by signing"
+            );
+            std::process::exit(2);
+        }
+        if !json_output {
+            println!("🔐 portable mode: deriving the USB unwrap key on the token — tap again…\n");
+        }
+        let res = if provision {
+            UsbWrappedMlDsa65Signer::provision(ed.as_ref(), key_id, usb, None).await
+        } else {
+            UsbWrappedMlDsa65Signer::open(ed.as_ref(), key_id, usb).await
+        };
+        match res {
+            Ok(s) => Arc::new(s),
+            Err(e) => {
+                eprintln!(
+                    "❌ portable USB ML-DSA-65 ({}): {e}",
+                    if provision { "provision" } else { "open" }
+                );
+                std::process::exit(1);
+            },
+        }
+    } else {
+        match ciris_keyring::get_platform_sealed_mldsa65_signer(key_id, seed_dir) {
+            Ok(s) => Arc::from(s),
+            Err(e) => {
+                eprintln!("❌ open accord ML-DSA-65 identity: {e}");
+                std::process::exit(1);
+            },
+        }
     };
-    match HardwareRootedIdentity::new(key_id.to_string(), ed, Arc::from(mldsa)) {
+    match HardwareRootedIdentity::new(key_id.to_string(), ed, mldsa) {
         Ok(i) => i,
         Err(e) => {
             eprintln!("❌ {e}");
@@ -2739,7 +2777,7 @@ async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
         .seed_dir
         .clone()
         .unwrap_or_else(|| keys_dir().to_string_lossy().into_owned());
-    let signer = build_accord_signer(&a.key_id, &seed_dir, &a.hw, json_output).await;
+    let signer = build_accord_signer(&a.key_id, &seed_dir, &a.hw, json_output, false).await;
     let sig = match co_sign_invocation(&signer, &invocation).await {
         Ok(s) => s,
         Err(e) => {
@@ -2790,7 +2828,7 @@ async fn run_accord_concur(a: AccordConcurArgs, json_output: bool) {
         .seed_dir
         .clone()
         .unwrap_or_else(|| keys_dir().to_string_lossy().into_owned());
-    let signer = build_accord_signer(&a.key_id, &seed_dir, &a.hw, json_output).await;
+    let signer = build_accord_signer(&a.key_id, &seed_dir, &a.hw, json_output, false).await;
     let now = chrono::Utc::now().to_rfc3339();
     let updated = match concur_accord_invocation(&obj, &signer, &now).await {
         Ok(o) => o,
@@ -2997,7 +3035,7 @@ async fn run_accord_holder(a: AccordHolderArgs, json_output: bool) {
         .valid_from
         .clone()
         .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
-    let signer = build_accord_signer(&a.key_id, &seed_dir, &a.hw, json_output).await;
+    let signer = build_accord_signer(&a.key_id, &seed_dir, &a.hw, json_output, true).await;
     let rec = match produce_accord_holder_record(&signer, &valid_from).await {
         Ok(r) => r,
         Err(e) => {
@@ -3059,7 +3097,7 @@ async fn run_accord_cosign(a: AccordCoSignArgs, json_output: bool) {
         .seed_dir
         .clone()
         .unwrap_or_else(|| keys_dir().to_string_lossy().into_owned());
-    let signer = build_accord_signer(&a.key_id, &seed_dir, &a.hw, json_output).await;
+    let signer = build_accord_signer(&a.key_id, &seed_dir, &a.hw, json_output, false).await;
     let sig = match co_sign_accord_family(&signer, &envelope).await {
         Ok(s) => s,
         Err(e) => {

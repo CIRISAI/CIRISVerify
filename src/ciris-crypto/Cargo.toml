@@ -18,7 +18,7 @@ ecdsa-p256 = ["p256"]
 ed25519 = ["ed25519-dalek"]
 secp256k1 = ["k256"]
 # PQC feature - enable one of these
-pqc-ml-dsa = ["ml-dsa", "rand_chacha", "dep:pkcs8"]
+pqc-ml-dsa = ["ml-dsa", "rand_chacha", "dep:pkcs8", "dep:zeroize"]
 pqc-aws-lc = ["aws-lc-rs"]
 
 # v2.0+ — federation symmetric / KDF / MAC / RNG primitives. Each is
@@ -94,7 +94,11 @@ hex = "0.4"    # Hex encoding for EVM addresses
 # downstream consumer that fresh-resolves Cargo deps. We compile and KAT-test
 # against rc.8 (matches the Cargo.lock at the v2.0.0 release). See
 # CIRISVerify#18 for the incident writeup.
-ml-dsa = { version = "=0.1.0-rc.8", optional = true }
+ml-dsa = { version = "=0.1.0-rc.8", optional = true, features = ["zeroize"] }
+# Zeroes the transient `Seed` in `from_seed` + zeroizes `ExpandedSigningKey` on
+# drop. NB rc.8 does NOT zeroize the outer `SigningKey.seed` (the raw seed lingers
+# for the signer's lifetime — upstream gap, AV-17 transient, tracked CIRISVerify#87).
+zeroize = { version = "1", optional = true }
 
 # v2.0.2: ml-dsa rc.8 transitively pulls pkcs8 via `^0.11.0-rc.11`, which
 # caret-resolves to `pkcs8 0.11.0` (stable, 2026-04-27). Between rc.11

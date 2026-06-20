@@ -98,6 +98,13 @@ Do this **once per YubiKey**, owned by that human, air-gapped for step 4.2.
   passphrase the holder controls. `[harden]` wrap it to the holder's YubiKey
   (OpenPGP decryption subkey) so the software key can only be decrypted with the
   physical token present — re-coupling the PQC half to the hardware presence.
+  **Tooled since v6.6.0 — the portable mode** (`accord … --portable-usb <dir>`,
+  `ciris_keyring::usb_wrapped_mldsa65`): the ML-DSA-65 seed is AES-256-GCM-wrapped
+  on a USB key under a key derived from the YubiKey's deterministic Ed25519
+  *signature* (so the YubiKey stays signing-only — no decrypt capability added),
+  requiring **both** the USB and the YubiKey + PIN + touch to unwrap, and making
+  the identity **portable** rather than machine-TPM-bound. Provision it during §5
+  (`accord holder --portable-usb …`).
 - Export the **public** key → `mldsa65_pub` (1952 bytes).
 - The encrypted ML-DSA-65 private key is this identity's most sensitive artifact.
   For a **primary**, it lives on the holder's signing machine (encrypted). For a
