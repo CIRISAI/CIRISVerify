@@ -56,6 +56,7 @@ mod constructor;
 // (reconsider_dos), v4.6 (hybrid_kex). Each module owns its own
 // `wheel_guard!` panic catch (sibling modules cannot see the
 // crate-root `ffi_guard!` macro without `#[macro_export]`).
+mod wheel_accord_custody;
 mod wheel_hybrid_kex;
 mod wheel_jcs;
 mod wheel_key_grant;

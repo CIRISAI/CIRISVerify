@@ -84,5 +84,9 @@ webpki-roots = { workspace = true }
 # Force ring backend for rustls (consistent with Android)
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
+[dev-dependencies]
+# Mock YubiKey PIV attestation chains for the accord custody FFI tests (#91).
+rcgen = "0.13"
+
 [build-dependencies]
 cbindgen = "0.26"

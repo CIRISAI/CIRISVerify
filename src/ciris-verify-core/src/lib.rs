@@ -50,6 +50,10 @@
 #![allow(clippy::module_name_repetitions)] // Allow Type in module::Type
 #![allow(clippy::must_use_candidate)] // Not all functions need must_use
 
+/// Accord-holder custody attestation — the hardware-unforgeable YubiKey PIV
+/// attestation the CIRISServer admission gate verifies (the safe-mesh floor,
+/// CIRISVerify#91 / CIRISServer#41) before admitting an accord kill-switch key.
+pub mod accord_custody_attestation;
 /// HUMANITY_ACCORD genesis producer (CEG §9.1, CIRISVerify#82-followup) — holder
 /// `accord_holder` records + the entrenched-`family` 2-of-3 genesis, round-tripped
 /// through `threshold::verify_founder_quorum`.

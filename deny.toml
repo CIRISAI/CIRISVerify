@@ -47,6 +47,16 @@ ignore = [
     # attacker-controlled input. Fix path requires hickory-resolver 0.26
     # which has API breaking changes; tracked alongside 0098/0099/0104.
     "RUSTSEC-2026-0119",
+    # time 0.3 stack-exhaustion via the RFC 2822 *string* parser (fixed in
+    # 0.3.47, which requires rustc 1.88 and would break our MSRV 1.86). `time`
+    # is pulled only transitively by x509-parser (#91 accord custody attestation)
+    # for ASN.1 cert-validity times (GeneralizedTime/UTCTime) — a different code
+    # path. Neither x509-parser's validity handling nor any CIRISVerify code ever
+    # feeds input to time's RFC 2822 `parse`, so the vulnerable path is
+    # unreachable. The advisory itself notes "non-malicious input will never
+    # encounter this scenario." Revisit if MSRV moves to >=1.88 (then unpin time
+    # to >=0.3.47 and drop this).
+    "RUSTSEC-2026-0009",
 ]
 
 [licenses]
