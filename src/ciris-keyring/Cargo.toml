@@ -29,6 +29,10 @@ async-trait.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 serde = { workspace = true, features = ["derive"] }
+# Common (all targets): the USB-wrapped ML-DSA blob (usb_wrapped_mldsa65, gated on
+# pqc-ml-dsa which builds on every platform) serializes its blob as JSON. Was
+# previously Linux/Windows-only (TPM/pkcs11 StorageDescriptor) — promoted here.
+serde_json.workspace = true
 p256 = { workspace = true }
 ed25519-dalek.workspace = true
 rand_core.workspace = true
@@ -75,7 +79,6 @@ block2 = "0.6"
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 tss-esapi = { version = "7.4", optional = true }
 cryptoki = { version = "0.12", optional = true }
-serde_json = "1.0"
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.9"
@@ -99,11 +102,8 @@ tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 tempfile = "3"
 criterion.workspace = true
-# serde_json is pulled transitively into the dev tree on Linux via
-# secret-service, but not on macOS where the keychain backend doesn't
-# need it. Declare explicitly so StorageDescriptor serde tests build
-# on every platform.
-serde_json.workspace = true
+# serde_json now a common dependency (above) — used by usb_wrapped_mldsa65 on
+# every platform — so it no longer needs a separate dev-dependency declaration.
 
 [[bench]]
 name = "storage_descriptor"
