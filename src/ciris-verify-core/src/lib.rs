@@ -50,6 +50,10 @@
 #![allow(clippy::module_name_repetitions)] // Allow Type in module::Type
 #![allow(clippy::must_use_candidate)] // Not all functions need must_use
 
+/// HUMANITY_ACCORD genesis producer (CEG §9.1, CIRISVerify#82-followup) — holder
+/// `accord_holder` records + the entrenched-`family` 2-of-3 genesis, round-tripped
+/// through `threshold::verify_founder_quorum`.
+pub mod accord_genesis;
 pub mod app_attest;
 pub mod attest_bundle;
 pub mod attest_heartbeat;

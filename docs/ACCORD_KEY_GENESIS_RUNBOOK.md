@@ -214,14 +214,55 @@ change the roster, and it requires the existing quorum (2-of-3) to sign the
   `jcs::canonicalize` (+ `jcs_canonicalize` Python binding) for the Contribution
   signing bytes, `threshold::verify_founder_quorum`, `humanity_accord::{Invocation,
   verify_invocation, InvocationDedup}` for §9.2.1, the `boundary_degraded` /
-  hardware attestation surface.
+  hardware attestation surface, **and — since v6.4.0 — the producer side:
+  `ciris_verify_core::accord_genesis` (`produce_accord_holder_record`,
+  `build_accord_family_envelope`, `co_sign_accord_family`,
+  `assemble_accord_family_genesis`) + the `ciris-verify accord` CLI, which wraps
+  §5–§7 of this runbook** (the "future ceremony tool" called out below). The
+  assembler verifies a **unanimous** founder quorum before anything reaches the
+  outbox — the producer round-trips through `verify_founder_quorum`.
 - **Persist/Registry side:** the `federation_keys` accord_holder row storage +
   the `GET /v1/accord-holders` endpoint + the 2-of-3 role-recognition RPC live in
   CIRISPersist (key material) + ciris-registry-core (verifier logic) per §9.3.
 - **Manual ceremony (this runbook):** YubiKey Ed25519 generation + touch policy,
   air-gapped ML-DSA-65 generation + encryption, the steward cross-attestation
-  read-back, vaulting. No single "provision-accord-genesis" command exists yet;
-  this is the script humans run. A future ceremony tool could wrap §4–§7.
+  read-back, vaulting. The CLI tools the *signing + assembly* (§5/§7); the
+  hardware/air-gap/vault steps remain hands-on by design.
+
+### 11.1 CLI — the `ciris-verify accord` ceremony commands (v6.4.0+)
+
+```bash
+# §5 — each holder, on their own machine, produces their accord_holder genesis
+#       record (YubiKey via --module, else platform-sealed). → CEG outbox.
+ciris-verify accord holder --key-id accord-eric-moore-primary \
+    --module /usr/lib/.../libykcs11.so --key-label "…" --pin
+
+# §7 step 1 — a coordinator builds the canonical family envelope (the 3 PRIMARIES,
+#             roster order). No signing.
+ciris-verify accord family-envelope \
+    --member accord-eric-moore-primary \
+    --member accord-eric-kudzin-primary \
+    --member accord-haley-bradley-primary \
+    --out family.json
+
+# §7 step 2 — EACH founder co-signs family.json on THEIR token → a {signature,member}
+#             bundle. No human signs another's key.
+ciris-verify accord co-sign --envelope family.json --key-id accord-eric-moore-primary \
+    --module … --key-label "…" --pin --out cosign-moore.json
+
+# §7 step 3 — the coordinator assembles. Verifies a UNANIMOUS founder quorum;
+#             writes the genesis object to the outbox only if all founders verify.
+ciris-verify accord assemble --envelope family.json \
+    --cosign cosign-moore.json --cosign cosign-kudzin.json --cosign cosign-bradley.json
+```
+
+`--module` omitted → the platform-sealed Ed25519 key (`~/ciris/keys`); the
+ML-DSA-65 half is always the sealed software seed. Assembly is offline + tokenless.
+
+> No single "provision-accord-genesis" command exists yet; this is the script
+> humans run. A future ceremony tool could wrap §4–§7. — *partially done: §5–§7
+> signing + assembly are now `ciris-verify accord` (§11.1). §4 keygen
+> (YubiKey/air-gap) stays manual.*
 
 ## 12. Security non-negotiables (the short list)
 
