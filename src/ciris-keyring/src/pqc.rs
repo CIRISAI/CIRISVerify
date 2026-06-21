@@ -192,8 +192,8 @@ impl MlDsa65SoftwareSigner {
     /// Create a signer from raw 32-byte ML-DSA-65 seed.
     ///
     /// The seed bytes are consumed into an `ml_dsa::SigningKey` via
-    /// `MlDsa65::from_seed`. This is the format the lens-steward bootstrap
-    /// uses (matches `dilithium-py`'s `from_seed`).
+    /// `SigningKey::<MlDsa65>::from_seed`. This is the format the lens-steward
+    /// bootstrap uses (matches `dilithium-py`'s `from_seed`).
     ///
     /// # Errors
     ///
@@ -248,10 +248,18 @@ impl MlDsa65SoftwareSigner {
     ) -> Result<Self, KeyringError> {
         let path = path.into();
         let alias = alias.into();
-        let bytes = std::fs::read(&path).map_err(|e| KeyringError::OperationFailed {
+        let mut bytes = std::fs::read(&path).map_err(|e| KeyringError::OperationFailed {
             reason: format!("reading ML-DSA-65 seed from {}: {e}", path.display()),
         })?;
-        let mut signer = Self::from_seed_bytes(&bytes, alias)?;
+        // CIRISVerify#87: `std::fs::read` lands the raw 32-byte ML-DSA seed in
+        // a heap `Vec<u8>` that lives past `from_seed_bytes` (which scrubs only
+        // its own stack copy). Scrub this file buffer on EVERY exit path —
+        // success or the error `?` below — using the crate-wide manual-fence
+        // idiom (see sealed_mldsa65.rs / usb_wrapped_mldsa65.rs).
+        let built = Self::from_seed_bytes(&bytes, alias);
+        bytes.iter_mut().for_each(|b| *b = 0);
+        core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+        let mut signer = built?;
         signer.seed_path = Some(path);
         Ok(signer)
     }
