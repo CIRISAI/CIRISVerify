@@ -307,8 +307,9 @@ struct AccordInvokeArgs {
     /// genesis co-sign bundles' `member` field, or the holder records).
     #[arg(long)]
     roster: String,
-    /// Invocation kind (closed set per CC 4.2.1).
-    #[arg(long, value_parser = ["constitutional", "notify", "drill"])]
+    /// Invocation kind (closed set per CC 4.2.1). `reactivate` is the
+    /// `accord:lifecycle:active` resumption after a halt (separate scope).
+    #[arg(long, value_parser = ["constitutional", "notify", "drill", "reactivate"])]
     kind: String,
     /// Per-kind unique id (`halt_id` / `notify_id` / `drill_id`).
     #[arg(long)]
@@ -2754,8 +2755,11 @@ async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
         "constitutional" => InvocationKind::Constitutional,
         "notify" => InvocationKind::Notify,
         "drill" => InvocationKind::Drill,
+        "reactivate" => InvocationKind::LifecycleActive,
         other => {
-            eprintln!("❌ unknown invocation kind {other:?} (constitutional|notify|drill)");
+            eprintln!(
+                "❌ unknown invocation kind {other:?} (constitutional|notify|drill|reactivate)"
+            );
             std::process::exit(2);
         },
     };

@@ -1894,6 +1894,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn reactivate_lifecycle_reaches_two_of_three() {
+        // #95 Gap 1: the `accord:lifecycle:active` resumption (the server's
+        // `reactivate`) rides the SAME 2/3 concurrence flow as any invocation —
+        // one holder invokes, another concurs, quorum met.
+        let hs = holders();
+        let roster = members_of(&hs).await;
+        let inv = Invocation {
+            invocation_kind: InvocationKind::LifecycleActive,
+            invocation_id: "resume-2026-06".to_string(),
+            nonce: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_string(),
+            asserted_at: "2026-06-21T00:00:00.000Z".to_string(),
+            valid_until: "2026-06-22T00:00:00.000Z".to_string(),
+            payload_sha256: "11".repeat(32),
+        };
+        let sig_a = co_sign_invocation(&hs[0], &inv).await.unwrap();
+        let obj = build_accord_invocation_object(
+            HUMANITY_ACCORD_FAMILY_KEY_ID,
+            &roster,
+            &inv,
+            std::slice::from_ref(&sig_a),
+            TS,
+        );
+        let obj2 = concur_accord_invocation(&obj, &hs[1], TS).await.unwrap();
+        let parsed = parse_accord_invocation(&obj2).unwrap();
+        let st = accord_invocation_status(&parsed).unwrap();
+        assert_eq!(st.invocation_kind, "lifecycle:active");
+        assert!(st.quorum_met);
+        assert_eq!(
+            crate::humanity_accord::verify_invocation(
+                &parsed.invocation,
+                &roster,
+                &parsed.signatures
+            )
+            .unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
     async fn invocation_concurrence_reaches_two_of_three() {
         let hs = holders();
         let roster = members_of(&hs).await;

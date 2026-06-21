@@ -52,6 +52,15 @@ use crate::threshold::{verify_threshold_signatures, ThresholdMember, ThresholdSi
 /// Trailing newline is part of the prefix.
 pub const INVOCATION_DOMAIN_PREFIX: &str = "ciris.accord_invoke.v1\n";
 
+/// Domain prefix for the **separate** `accord:lifecycle:active` scope
+/// (CC 4.2.1 / CEG §9.2 resumption) — wire-isolated from `accord:invoke:*` so no
+/// signature crosses scopes. Trailing newline is part of the prefix.
+///
+/// **First-impl note:** CC §4.2.1.1 normatively pins only the `accord:invoke`
+/// preimage; this `accord:lifecycle` layout is verify-authored and flagged for
+/// CEG cross-confirmation (CIRISRegistry).
+pub const LIFECYCLE_DOMAIN_PREFIX: &str = "ciris.accord_lifecycle.v1\n";
+
 /// CEG §9.2.1 invocation discriminator. Stable wire constants;
 /// JSON serialization uses spec-exact casing.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -66,6 +75,19 @@ pub enum InvocationKind {
     /// `accord:invoke:drill:{drill_id}`.
     #[serde(rename = "drill")]
     Drill,
+    /// `accord:lifecycle:active` (CC 4.2.1 / CEG §9.2) — the ONLY
+    /// constitutionally-valid **resumption** after a halt (CIRISVerify#95
+    /// "Gap 1"; the server's `reactivate`). This is a **separate scope** from
+    /// `accord:invoke:*`: the CC §4.2.1.1 invocation preimage is closed to
+    /// exactly {CONSTITUTIONAL, notify, drill}, and accord scopes are
+    /// "wire-isolated AND scope-isolated", so a `LifecycleActive` signs a
+    /// **distinct** canonical-bytes domain ([`LIFECYCLE_DOMAIN_PREFIX`]) — never
+    /// the invoke preimage. It is still quorum-cleared 2/3 and rides the same
+    /// concurrence flow. **NB:** CC §4.2.1.1 pins only the `accord:invoke`
+    /// preimage; the `accord:lifecycle` canonical-bytes layout here is
+    /// verify-authored (first impl) and flagged for CEG cross-confirmation.
+    #[serde(rename = "lifecycle:active")]
+    LifecycleActive,
 }
 
 impl InvocationKind {
@@ -77,6 +99,20 @@ impl InvocationKind {
             Self::Constitutional => "CONSTITUTIONAL",
             Self::Notify => "notify",
             Self::Drill => "drill",
+            Self::LifecycleActive => "lifecycle:active",
+        }
+    }
+
+    /// The canonical-bytes **domain prefix** for this kind. `accord:invoke:*`
+    /// (the three) share [`INVOCATION_DOMAIN_PREFIX`]; the separate
+    /// `accord:lifecycle:active` scope uses [`LIFECYCLE_DOMAIN_PREFIX`] —
+    /// wire-isolation so no signature crosses between the invoke and lifecycle
+    /// scopes.
+    #[must_use]
+    fn domain_prefix(self) -> &'static str {
+        match self {
+            Self::LifecycleActive => LIFECYCLE_DOMAIN_PREFIX,
+            _ => INVOCATION_DOMAIN_PREFIX,
         }
     }
 }
@@ -113,7 +149,7 @@ impl Invocation {
     pub fn canonical_bytes(&self) -> Vec<u8> {
         let body = format!(
             "{prefix}invocation_kind={kind}\ninvocation_id={id}\nnonce={nonce}\nasserted_at={ts}\nvalid_until={vu}\npayload_sha256={hash}",
-            prefix = INVOCATION_DOMAIN_PREFIX,
+            prefix = self.invocation_kind.domain_prefix(),
             kind = self.invocation_kind.as_str(),
             id = self.invocation_id,
             nonce = self.nonce,
@@ -312,6 +348,33 @@ mod tests {
         assert_eq!(InvocationKind::Constitutional.as_str(), "CONSTITUTIONAL");
         assert_eq!(InvocationKind::Notify.as_str(), "notify");
         assert_eq!(InvocationKind::Drill.as_str(), "drill");
+        assert_eq!(InvocationKind::LifecycleActive.as_str(), "lifecycle:active");
+    }
+
+    /// #95 Gap 1: `accord:lifecycle:active` is a SEPARATE scope — its canonical
+    /// bytes use the `ciris.accord_lifecycle.v1` domain, NOT the invoke domain, so
+    /// no signature can cross between the invoke and lifecycle scopes (CC 4.2.1
+    /// "wire-isolated AND scope-isolated") even with identical id/nonce/payload.
+    #[test]
+    fn lifecycle_scope_is_wire_isolated_from_invoke() {
+        let halt = sample_invocation(InvocationKind::Constitutional, "shared-id");
+        let mut reactivate = halt.clone();
+        reactivate.invocation_kind = InvocationKind::LifecycleActive;
+        let bytes = String::from_utf8(reactivate.canonical_bytes()).unwrap();
+        assert!(bytes.starts_with("ciris.accord_lifecycle.v1\n"));
+        assert!(bytes.contains("invocation_kind=lifecycle:active\n"));
+        // Distinct domain ⇒ distinct bytes + digest from the CONSTITUTIONAL kill.
+        assert_ne!(halt.canonical_bytes(), reactivate.canonical_bytes());
+        assert_ne!(halt.canonical_digest(), reactivate.canonical_digest());
+    }
+
+    /// The lifecycle kind serde-round-trips on the spec wire string.
+    #[test]
+    fn lifecycle_kind_serde_round_trips() {
+        let json = serde_json::to_string(&InvocationKind::LifecycleActive).unwrap();
+        assert_eq!(json, "\"lifecycle:active\"");
+        let back: InvocationKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, InvocationKind::LifecycleActive);
     }
 
     /// §9.2.1 canonical-bytes layout — exact spec form.

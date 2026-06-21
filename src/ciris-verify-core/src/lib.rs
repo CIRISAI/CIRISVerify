@@ -145,7 +145,7 @@ pub use federation_provenance::{
 pub use holds_bytes::{verify_holds_bytes, HoldsBytesError};
 pub use humanity_accord::{
     verify_invocation, Invocation, InvocationDedup, InvocationError, InvocationKind,
-    INVOCATION_DOMAIN_PREFIX,
+    INVOCATION_DOMAIN_PREFIX, LIFECYCLE_DOMAIN_PREFIX,
 };
 pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
 pub use keys::{
