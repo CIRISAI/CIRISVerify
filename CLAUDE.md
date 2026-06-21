@@ -13,6 +13,7 @@ CIRISVerify is the **hardware-rooted license verification module** for the CIRIS
 | Path | Purpose |
 |------|---------|
 | `FSD/FSD-001_CIRISVERIFY_PROTOCOL.md` | Full technical specification (authoritative) |
+| `FSD/FSD-004_ACCORD_DECIMATION_RECOVERY.md` | DRAFT design — accord catastrophic-decimation recovery (emergency opposite-quorum; adversarial-AGI first-strike threat model). CIRISVerify#98. Not ratified, not implemented. |
 | `protocol/ciris_verify.proto` | Public API contract (gRPC/protobuf) |
 | `docs/THREAT_MODEL.md` | Formal threat model (6 attack vectors, mitigations) |
 | `docs/HOLONOMIC_SUBSTRATE.md` | CEG §19 / §19.7 holonomic verifiers — threat model, module map, conformance status (§19 + §19.7 cross-impl-proven) |
