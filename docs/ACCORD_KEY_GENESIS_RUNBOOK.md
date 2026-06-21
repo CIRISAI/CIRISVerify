@@ -30,7 +30,7 @@ canonical bytes (CEG §9.2.1) — **both halves required** to produce a valid
 
 | Half | Where it lives | Extractable? | Touch-gated? |
 |---|---|---|---|
-| **Ed25519** | YubiKey 5 FIPS (OpenPGP applet) | **No** (hardware-bound) | Yes (`fixed`) |
+| **Ed25519** | YubiKey 5 FIPS (**PIV applet, slot 9c**) | **No** (hardware-bound) | Yes (`touch-policy ALWAYS`) |
 | **ML-DSA-65** | **Software** (no YubiKey has a PQC applet, 2026) | Yes — so it MUST be protected at rest | No |
 
 Consequence: "hardware-backed accord key" = **classical half in hardware,
@@ -57,37 +57,107 @@ row). They are not copies of one key.
 - The three humans physically present (or in a synchronous secure session) — each
   must touch their own YubiKey and enter their own PINs. **No human provisions
   another's key.**
-- `ykman` (YubiKey Manager CLI), GnuPG (OpenPGP/Ed25519 on the key), and the CIRIS
-  tooling that wraps `ciris_crypto` hybrid signing + `jcs::canonicalize` (see §7).
+- **`ykman` ≥ 5.5** (YubiKey Manager CLI — needed for PIV Ed25519; the OS-packaged
+  `ykman` is usually too old: `python3 -m pip install --user -U yubikey-manager`),
+  and the CIRIS tooling that wraps `ciris_crypto` hybrid signing + `jcs::canonicalize`
+  (see §7). *(The accord Ed25519 key lives in the **PIV** applet, slot 9c — not
+  OpenPGP — because the §91 hardware-unforgeable custody attestation chain
+  `9c → f9 → Yubico root` is a PIV-applet feature.)*
 - A secure vault for the 3 spares (sealed envelopes / safe / split-custody per
   your operational preference).
 
-## 3. Pre-flight (per YubiKey, before any keygen)
+## 3. Pre-flight — enter FIPS Approved Mode (per YubiKey, before any keygen)
 
-For each of the 6 keys:
+A YubiKey 5 FIPS **refuses PIV key generation until it is in FIPS Approved Mode**
+(`ERROR: YubiKey FIPS must be in FIPS approved mode prior to key generation` —
+confirmed on a real key, #91). Approved mode is entered by moving **all three**
+PIV credentials off their factory defaults. Each holder does this on **their own**
+key (the PIN is the holder's secret; no one provisions another's key):
 
-1. Confirm firmware ≥ 5.7.4 and FIPS: `ykman info` → check firmware + FIPS line.
-2. **Set FIPS Approved Mode** if not already (so Ed25519 is in-boundary). Verify
-   X25519 is *blocked* in approved mode — that's expected and fine (accord keys
-   sign only; they never do key exchange).
-3. Set a strong OpenPGP **PIN + Admin PIN** (the holder sets their own; on-device
-   where the applet allows). Record nothing in plaintext.
-4. Reset the OpenPGP applet to a known-clean state before generating the key.
+```sh
+ykman piv info     # confirm "PIV version: 5.7.x" and the key is detected
+
+# Move all 3 creds off defaults → FIPS Approved Mode.
+ykman piv access change-pin    # current 123456    → your PIN  (6–8 chars, non-trivial)
+ykman piv access change-puk    # current 12345678  → your PUK  (8 chars, non-trivial)
+ykman piv access change-management-key --generate --protect      # (enter your PIN)
+```
+
+Gotchas (all hit + solved during the #91 validation):
+
+- **Order matters.** `change-management-key --protect` itself requires approved
+  mode, so change **PIN + PUK first**. If `--protect` still errors, run it once as
+  plain `--generate` (save the printed key), which flips approved mode, then re-run
+  with `--protect` to store the mgmt key under the PIN.
+- **FIPS PIN complexity.** A weak new PIN is rejected with `SW=0x6985` — no
+  `123456`, sequential, or repeated values. Mixed alphanumeric is safest.
+- **X25519 is blocked** in approved mode — expected and fine; accord keys sign
+  only, they never do key exchange (CC §9.2).
+- **Record the PIN + PUK** for each key somewhere durable and secret. They are
+  **not recoverable**: 3 wrong PINs → blocked → PUK; 3 wrong PUKs → **PIV bricked
+  → the accord key is permanently lost.** (The spare YubiKey + 2/3 quorum is the
+  recovery story for a lost device; a lost PIN/PUK on a sole key is not.)
 
 ## 4. Per-identity key generation (×6: 3 humans × {primary, spare})
 
 Do this **once per YubiKey**, owned by that human, air-gapped for step 4.2.
 
-### 4.1 Ed25519 on the YubiKey (classical half)
+### 4.1 Ed25519 on the YubiKey — PIV slot 9c (classical half)
 
-- Generate the Ed25519 signing key **on the device** (OpenPGP applet) — it never
-  leaves the key. `gpg --edit-card` → `admin` → `generate` → choose ECC / Ed25519
-  for the signing slot. **Do not** allow off-device generation + import.
-- Set **touch policy `fixed`** for the signing key (`ykman openpgp keys set-touch sig fixed`)
-  — touch required every signature, and `fixed` means it can never be downgraded
-  to off. This is the "a specific human was physically present" property.
-- Export the **public** key: `gpg --export --armor <fpr>` → `ed25519_pub` (and the
-  raw 32-byte pubkey for the `federation_keys` row).
+Generate the Ed25519 signing key **on the device, in PIV slot 9c** — it never
+leaves the key. Slot 9c + the device's f9 attestation cert are what make the §91
+custody attestation possible, so this MUST be PIV (not OpenPGP). The key is
+generated with **`pin-policy ONCE`** (PIN once per session) and **`touch-policy
+ALWAYS`** — a physical touch is required for *every* signature, and the policy is
+fixed at generation (it can't be downgraded without regenerating, which would
+change the key). This is the "a specific human was physically present" property.
+
+```sh
+# (already in FIPS Approved Mode from §3.) Enter PIN, then TOUCH the key when it blinks.
+ykman piv keys generate --algorithm ED25519 --pin-policy ONCE --touch-policy ALWAYS 9c pub_9c.pem
+```
+
+- **Do not** allow off-device generation + import — `attest` only works on
+  on-device-generated keys (an imported key has no valid attestation, by design).
+- `--algorithm ED25519` needs **ykman ≥ 5.5** and **firmware ≥ 5.7** (§2/§3).
+- `pub_9c.pem` is the public key (the raw 32-byte Ed25519 pubkey is its SPKI tail).
+  It is **regenerable from the key anytime** (`ykman piv keys attest 9c` embeds it),
+  so it is a convenience record, not a must-save artifact.
+- **Once 9c is generated on a key you're keeping, do NOT regenerate it** — that key
+  *is* the accord identity; regenerating rotates it.
+
+**Capture the attestation chain + validate (read-only).** This proves the key is a
+genuine FIPS YubiKey to the §91 custody gate, and is the input to §5's custody
+attestation:
+
+```sh
+ykman piv keys attest 9c 9c.pem            # the slot-9c attestation (signed inside the key)
+ykman piv certificates export f9 f9.pem    # the device f9 attestation cert
+
+# One-time: the Yubico trust bundle (2024-12 PKI — pin the durable ROOT, not the
+# rotating "B 1" intermediate). The real chain is 5 levels:
+#   9c → Yubico PIV Attestation → PIV Attestation B 1 → Attestation Intermediate B 1 → Attestation Root 1
+curl -fL -o yubico-intermediate.pem https://developers.yubico.com/PKI/yubico-intermediate.pem
+curl -fL -o yubico-ca-1.pem         https://developers.yubico.com/PKI/yubico-ca-1.pem
+cat yubico-intermediate.pem yubico-ca-1.pem > yubico-trust.pem
+
+# Run the real key through the production verifier — expect ✅ ADMITTED.
+cargo run -p ciris-verify-core --example validate_yubikey_attestation -- 9c.pem f9.pem yubico-trust.pem
+```
+
+Expected (cross-check firmware/serial against the physical key via `ykman piv info`):
+
+```
+✅ ADMITTED — chain, attested-key, and FIPS+touch floor all hold.
+   pinned root    : CN=Yubico Attestation Root 1
+   hardware_class : YubiKey_5_FIPS
+   firmware       : 5.7.4      fips_certified: true      touch_always: true
+```
+
+`9c.pem` / `f9.pem` are also regenerable from the key, so they need not be archived
+long-term — but you need them in hand when you build the custody attestation (§5).
+The CIRISServer admission gate (#41) pins **`Yubico Attestation Root 1`**
+(`yubico-ca-1.pem`) and carries the intermediates in the bundle.
 
 ### 4.2 ML-DSA-65 in software (PQC half) — air-gapped
 
@@ -95,9 +165,10 @@ Do this **once per YubiKey**, owned by that human, air-gapped for step 4.2.
   (`MlDsa65Signer::new()` → `public_key()`); FIPS 204 final, byte-compatible with
   the verifiers.
 - **Encrypt the private key at rest immediately.** Minimum: AES-256-GCM under a
-  passphrase the holder controls. `[harden]` wrap it to the holder's YubiKey
-  (OpenPGP decryption subkey) so the software key can only be decrypted with the
-  physical token present — re-coupling the PQC half to the hardware presence.
+  passphrase the holder controls. The accord PIV key is **signing-only** (no
+  decryption capability — CC §9.2 scope isolation), so we do **not** add an
+  OpenPGP/PIV decryption subkey to re-couple it; instead the seed is re-coupled to
+  hardware presence via the holder's Ed25519 *signature*.
   **Tooled since v6.6.0 — the portable mode** (`accord … --portable-usb <dir>`,
   `ciris_keyring::usb_wrapped_mldsa65`): the ML-DSA-65 seed is AES-256-GCM-wrapped
   on a USB key under a key derived from the YubiKey's deterministic Ed25519
