@@ -594,23 +594,41 @@ pub fn accord_roster_from_family(
     family_genesis: &SignedCegObject,
     directory: &[ThresholdMember],
 ) -> Result<Vec<ThresholdMember>, AccordGenesisError> {
-    let envelope = family_envelope(family_genesis)?;
+    roster_from_envelope(family_envelope(family_genesis)?, directory)
+}
+
+/// Resolve + integrity-check a roster from any group envelope's `members` against
+/// a pinned directory (CIRISVerify#104 — the role-agnostic core shared by the
+/// accord and a plain `quorum:M/N` community). Rejects a duplicate member
+/// `key_id`, two members resolving to the **same pubkey** (one-seat gate), a
+/// member missing from `directory`, or an empty roster — fail-closed.
+///
+/// **Trust boundary:** the caller MUST pass a pre-verified envelope and an
+/// authoritative `directory` (key↔human binding established upstream); this reads
+/// the members, it does not re-verify the group's signatures.
+///
+/// # Errors
+///
+/// [`AccordGenesisError`] on a malformed/empty/duplicate roster or a member not
+/// in `directory`.
+pub fn roster_from_envelope(
+    envelope: &Value,
+    directory: &[ThresholdMember],
+) -> Result<Vec<ThresholdMember>, AccordGenesisError> {
     let member_ids = envelope_member_key_ids(envelope)?;
     if member_ids.is_empty() {
         return Err(AccordGenesisError::MalformedEnvelope {
-            detail: "family has no members".to_string(),
+            detail: "group has no members".to_string(),
         });
     }
     // Defense-in-depth: even though a verified genesis cannot carry duplicate
     // members (the assembler rejects them), a caller may pass an unverified
     // object — reject duplicate key_ids and duplicate pubkeys at derivation too,
-    // so a malformed `family.members` can never silently double-seat a human.
-    {
-        let mut seen = std::collections::HashSet::new();
-        for k in &member_ids {
-            if !seen.insert(k.as_str()) {
-                return Err(AccordGenesisError::DuplicateMemberKeyId { key_id: k.clone() });
-            }
+    // so a malformed `members` can never silently double-seat a human.
+    let mut seen = std::collections::HashSet::new();
+    for k in &member_ids {
+        if !seen.insert(k.as_str()) {
+            return Err(AccordGenesisError::DuplicateMemberKeyId { key_id: k.clone() });
         }
     }
     let roster = resolve_members(&member_ids, directory)?;
@@ -662,101 +680,106 @@ fn family_envelope(family_genesis: &SignedCegObject) -> Result<&Value, AccordGen
         })
 }
 
-/// Build a **membership-change** envelope that supersedes `prior_family` with a
-/// new member roster (CIRISVerify#95) — the sanctioned path to **grow** the
-/// accord (add a person), **swap** a primary for one of that person's spares, or
-/// otherwise rotate the live roster. The `consensus_protocol` is recomputed to
-/// the strict majority for the new member count ([`accord_consensus_protocol`]),
-/// and a `supersedes` block binds the change to the exact prior state so it
-/// cannot be replayed against a different roster.
+/// Build a **general** membership-change envelope that supersedes `prior_envelope`
+/// with a new member roster (CIRISVerify#104) — the role-agnostic,
+/// entrenchment-optional core that both the accord and a plain `quorum:M/N`
+/// community share. A `supersedes` block binds the change to the exact prior
+/// state so it cannot be replayed against a different roster.
+///
+/// - `role` — stamped on every new member (`Founder` for an entrenched accord
+///   family, `Member` for a plain community).
+/// - `entrenched` — sets `consensus_protocol_entrenched` (the verifier refuses to
+///   *lift* it once set).
+/// - `consensus_protocol` — `None` ⇒ the strict-majority `quorum:M/N` for the new
+///   member count ([`accord_consensus_protocol`]); `Some(s)` ⇒ a caller-pinned
+///   policy (still validated strict-majority at verify, so no split-brain `1/2`).
 ///
 /// The returned envelope is co-signed by the **prior** roster (each on their own
 /// token, via [`co_sign_accord_family`]) and assembled with
-/// [`verify_accord_membership_change`] — the *existing* holders authorize who
+/// [`verify_membership_change`] — the *existing* members authorize who
 /// joins/leaves, never the incoming key itself.
-///
-/// # Errors
-///
-/// [`AccordGenesisError`] if `prior_family` is malformed.
-pub fn build_accord_membership_change(
-    prior_family: &SignedCegObject,
+#[must_use]
+pub fn build_membership_change(
+    prior_envelope: &Value,
     new_member_key_ids: &[String],
-) -> Result<Value, AccordGenesisError> {
-    let prior_env = family_envelope(prior_family)?;
-    let family_key_id = prior_env
+    role: Role,
+    entrenched: bool,
+    consensus_protocol: Option<&str>,
+) -> Value {
+    let group_key_id = prior_envelope
         .get("family_key_id")
         .and_then(Value::as_str)
         .unwrap_or(HUMANITY_ACCORD_FAMILY_KEY_ID);
-    let family_name = prior_env
+    let group_name = prior_envelope
         .get("family_name")
         .and_then(Value::as_str)
         .unwrap_or("");
-    let prior_members = envelope_member_key_ids(prior_env)?;
-    let prior_cp = prior_env
+    let prior_members = envelope_member_key_ids(prior_envelope).unwrap_or_default();
+    let prior_cp = prior_envelope
         .get("consensus_protocol")
         .and_then(Value::as_str)
         .unwrap_or(ACCORD_CONSENSUS_PROTOCOL);
+    let role_str = match role {
+        Role::Founder => "founder",
+        Role::Member => "member",
+    };
     let members: Vec<Value> = new_member_key_ids
         .iter()
-        .map(|k| json!({ "key_id": k, "role": "founder" }))
+        .map(|k| json!({ "key_id": k, "role": role_str }))
         .collect();
-    Ok(json!({
-        "family_key_id": family_key_id,
-        "family_name": family_name,
+    let cp = consensus_protocol
+        .map(str::to_string)
+        .unwrap_or_else(|| accord_consensus_protocol(new_member_key_ids.len()));
+    json!({
+        "family_key_id": group_key_id,
+        "family_name": group_name,
         "members": members,
-        "consensus_protocol": accord_consensus_protocol(new_member_key_ids.len()),
-        "consensus_protocol_entrenched": true,
+        "consensus_protocol": cp,
+        "consensus_protocol_entrenched": entrenched,
         "supersedes": {
             "prior_member_key_ids": prior_members,
             "prior_consensus_protocol": prior_cp,
         },
-    }))
+    })
 }
 
-/// Verify + assemble an accord **membership change** (CIRISVerify#95). The change
-/// is authorized by the **prior** family's strict-majority quorum signing the new
-/// envelope's JCS bytes — the current holders decide who joins or leaves; an
-/// incoming/spare key never authorizes its own admission.
+/// Verify a **general** membership change (CIRISVerify#104) — the role-agnostic,
+/// entrenchment-optional core. Authorized by the **prior** roster's
+/// strict-majority quorum signing the new envelope's JCS bytes; the current
+/// members decide who joins or leaves, an incoming key never authorizes its own
+/// admission.
 ///
 /// Fail-closed checks, in order:
 /// 1. The new envelope is well-formed, lists **distinct** member `key_id`s, and
-///    its `consensus_protocol` is the strict-majority `quorum:M/N` for the new
-///    member count (the growable-family invariant, `2·M > N`).
-/// 2. **Entrenchment preserved**: the `family_key_id` is unchanged,
-///    `consensus_protocol_entrenched` stays `true` (the entrenchment can't be
-///    lifted), and the `supersedes.prior_member_key_ids` equals the actual prior
-///    family's member set (binding the change to the real prior state — no replay
-///    against a different roster).
-/// 3. The **new** roster's members all resolve in `directory` to **distinct
-///    pubkeys** — the same one-key/one-human-one-seat gate genesis enforces, so a
-///    grown/swapped roster can't seat one human's primary + spare (two distinct
-///    key_ids, same human) as two live seats.
-/// 4. The **prior** roster's strict-majority quorum validly signed the new
-///    envelope, verified against `directory` (the pinned prior pubkeys).
+///    its `consensus_protocol` is a strict-majority `quorum:M/N` (`2·M > N`) over
+///    the new member count.
+/// 2. The **new** roster resolves in `directory` to **distinct pubkeys** — the
+///    one-key/one-human-one-seat gate (no two key_ids backed by the same pubkey).
+/// 3. **Entrenchment + identity preserved:** `family_key_id` unchanged; an
+///    entrenched prior may **not** be de-entrenched (`true → false` rejected);
+///    `supersedes.prior_member_key_ids` equals the actual prior member set
+///    (anti-replay — no presenting the change against a different prior state).
+/// 4. The **prior** roster's strict-majority quorum (read off the prior
+///    envelope's `consensus_protocol`) validly signed the new envelope — counted
+///    **role-agnostically** over the resolved prior roster.
 ///
-/// On success returns the new family-genesis [`SignedCegObject`], carrying the
-/// **prior** roster's authorizing signatures.
+/// On success returns `Ok(())`; the caller wraps the verified `new_envelope` in
+/// whatever CEG object kind its cohort uses.
 ///
 /// **Trust boundary:** `directory` MUST be the authoritative `federation_keys`
-/// pin set (covering both the prior and new members; key↔human binding from the
-/// §6 steward cross-attestation), never anything derived from the change bundle.
-/// Authorization is exactly as strong as `directory`: the prior family object
-/// stores only member `key_id`s, so the prior pubkeys come from `directory` — a
-/// poisoned directory makes attacker signatures verify (the same boundary the
-/// invocation path documents).
+/// pin set (covering both the prior and new members; key↔human binding
+/// established upstream), never anything derived from the change bundle —
+/// authorization is exactly as strong as `directory`.
 ///
 /// # Errors
 ///
 /// [`AccordGenesisError`] naming the first failing step.
-pub fn verify_accord_membership_change(
-    prior_family: &SignedCegObject,
+pub fn verify_membership_change(
+    prior_envelope: &Value,
     new_envelope: &Value,
     prior_quorum_signatures: &[ThresholdSignature],
     directory: &[ThresholdMember],
-    created_at: &str,
-) -> Result<SignedCegObject, AccordGenesisError> {
-    let prior_env = family_envelope(prior_family)?;
-
+) -> Result<(), AccordGenesisError> {
     // 1. New envelope well-formed + distinct members + strict-majority M/N.
     let new_ids = envelope_member_key_ids(new_envelope)?;
     {
@@ -769,23 +792,24 @@ pub fn verify_accord_membership_change(
     }
     let _new_threshold = quorum_threshold_from_envelope(new_envelope)?; // validates strict majority
 
-    // 1b. The NEW roster must be distinct KEYS — resolve the incoming members
-    //     against the authoritative directory and apply the same one-seat gate
-    //     genesis uses (a grown roster must not seat one human under two key_ids).
+    // 2. The NEW roster must be distinct KEYS — resolve against the authoritative
+    //    directory and apply the one-seat gate (no human under two key_ids).
     let new_roster = resolve_members(&new_ids, directory)?;
     reject_duplicate_member_keys(&new_roster)?;
 
-    // 2. Entrenchment preserved.
-    let prior_fkid = prior_env.get("family_key_id").and_then(Value::as_str);
-    let new_fkid = new_envelope.get("family_key_id").and_then(Value::as_str);
-    if new_fkid != prior_fkid {
+    // 3. Entrenchment + identity preserved.
+    if new_envelope.get("family_key_id") != prior_envelope.get("family_key_id") {
         return Err(AccordGenesisError::MalformedEnvelope {
             detail: "membership change must keep the same family_key_id".to_string(),
         });
     }
-    if new_envelope.get("consensus_protocol_entrenched") != Some(&Value::Bool(true)) {
+    let prior_entrenched =
+        prior_envelope.get("consensus_protocol_entrenched") == Some(&Value::Bool(true));
+    let new_entrenched =
+        new_envelope.get("consensus_protocol_entrenched") == Some(&Value::Bool(true));
+    if prior_entrenched && !new_entrenched {
         return Err(AccordGenesisError::MalformedEnvelope {
-            detail: "membership change must keep consensus_protocol_entrenched:true".to_string(),
+            detail: "membership change must not lift consensus_protocol_entrenched".to_string(),
         });
     }
     let supersedes =
@@ -803,41 +827,87 @@ pub fn verify_accord_membership_change(
                 .collect()
         })
         .unwrap_or_default();
-    if claimed_prior != envelope_member_key_ids(prior_env)? {
+    if claimed_prior != envelope_member_key_ids(prior_envelope)? {
         return Err(AccordGenesisError::MalformedEnvelope {
-            detail: "supersedes.prior_member_key_ids does not match the prior family".to_string(),
+            detail: "supersedes.prior_member_key_ids does not match the prior group".to_string(),
         });
     }
 
-    // 3. Authorized by the PRIOR roster's strict-majority quorum.
-    let prior_roster = accord_roster_from_family(prior_family, directory)?;
-    let prior_threshold = quorum_threshold_from_envelope(prior_env)?;
+    // 4. Authorized by the PRIOR roster's strict-majority quorum (role-agnostic).
+    let prior_roster = roster_from_envelope(prior_envelope, directory)?;
+    let prior_threshold = quorum_threshold_from_envelope(prior_envelope)?;
     let bytes = accord_family_signing_bytes(new_envelope).map_err(|e| {
         AccordGenesisError::Canonicalize {
             detail: e.to_string(),
         }
     })?;
-    match verify_founder_quorum(
+    match verify_threshold_signatures(
         &bytes,
         &prior_roster,
         prior_quorum_signatures,
         prior_threshold,
     ) {
-        Ok(_) => {},
+        Ok(_) => Ok(()),
         Err(ThresholdError::Insufficient { valid, threshold }) => {
-            return Err(AccordGenesisError::QuorumNotMet {
+            Err(AccordGenesisError::QuorumNotMet {
                 valid,
                 required: threshold,
             })
         },
-        Err(e) => {
-            return Err(AccordGenesisError::Threshold {
-                detail: format!("{e:?}"),
-            })
-        },
+        Err(e) => Err(AccordGenesisError::Threshold {
+            detail: format!("{e:?}"),
+        }),
     }
+}
 
-    let family_key_id = new_fkid.unwrap_or(HUMANITY_ACCORD_FAMILY_KEY_ID);
+/// Build an **accord** membership-change envelope (CIRISVerify#95) — the
+/// entrenched + `founder`-role specialization of [`build_membership_change`]: the
+/// sanctioned path to **grow** the accord (add a person), **swap** a primary for
+/// a spare, or otherwise rotate the live roster, at the strict-majority
+/// `quorum:M/N` for the new count.
+///
+/// # Errors
+///
+/// [`AccordGenesisError`] if `prior_family` is the wrong kind / malformed.
+pub fn build_accord_membership_change(
+    prior_family: &SignedCegObject,
+    new_member_key_ids: &[String],
+) -> Result<Value, AccordGenesisError> {
+    let prior_env = family_envelope(prior_family)?;
+    Ok(build_membership_change(
+        prior_env,
+        new_member_key_ids,
+        Role::Founder,
+        true,
+        None,
+    ))
+}
+
+/// Verify + assemble an **accord** membership change (CIRISVerify#95) — the
+/// entrenched specialization of [`verify_membership_change`]. On success returns
+/// the new family-genesis [`SignedCegObject`] carrying the **prior** roster's
+/// authorizing signatures. See [`verify_membership_change`] for the checks and
+/// the `directory` trust-boundary contract; the accord additionally pins the
+/// object `kind` to `accord_family_genesis` and requires the change stay
+/// entrenched (guaranteed because the prior accord family is entrenched).
+///
+/// # Errors
+///
+/// [`AccordGenesisError`] naming the first failing step.
+pub fn verify_accord_membership_change(
+    prior_family: &SignedCegObject,
+    new_envelope: &Value,
+    prior_quorum_signatures: &[ThresholdSignature],
+    directory: &[ThresholdMember],
+    created_at: &str,
+) -> Result<SignedCegObject, AccordGenesisError> {
+    let prior_env = family_envelope(prior_family)?;
+    verify_membership_change(prior_env, new_envelope, prior_quorum_signatures, directory)?;
+
+    let family_key_id = new_envelope
+        .get("family_key_id")
+        .and_then(Value::as_str)
+        .unwrap_or(HUMANITY_ACCORD_FAMILY_KEY_ID);
     let body = json!({
         "family": new_envelope,
         "founder_signatures": prior_quorum_signatures,
@@ -1495,6 +1565,117 @@ mod tests {
         assert!(matches!(
             verify_accord_membership_change(&prior, &change, &auth, &prior_dir, TS).unwrap_err(),
             AccordGenesisError::MalformedEnvelope { .. }
+        ));
+    }
+
+    // -- General (role-agnostic, non-entrenched) membership change (#104) -------
+
+    /// A plain community envelope of `role: member` keys.
+    fn community_envelope(member_key_ids: &[String], cp: &str) -> Value {
+        let members: Vec<Value> = member_key_ids
+            .iter()
+            .map(|k| json!({ "key_id": k, "role": "member" }))
+            .collect();
+        json!({
+            "family_key_id": "test-community",
+            "family_name": "Test Community",
+            "members": members,
+            "consensus_protocol": cp,
+            "consensus_protocol_entrenched": false,
+        })
+    }
+
+    async fn member_directory(hs: &[HybridSigningIdentity]) -> Vec<ThresholdMember> {
+        let mut v = Vec::new();
+        for h in hs {
+            let mut m = founder_member(h).await.unwrap();
+            m.role = Some(Role::Member); // a community of NON-founders
+            v.push(m);
+        }
+        v
+    }
+
+    #[tokio::test]
+    async fn general_community_member_role_change_authorizes() {
+        // #104: a plain community of `role: member` keys (NOT founders) authorizes
+        // a membership change via the general pair. The accord's founder-only path
+        // (`verify_founder_quorum`) would count ZERO here; the general role-agnostic
+        // path counts them.
+        let hs = holders(); // A1, B1, C1
+        let prior_env = community_envelope(&member_ids(&hs), "quorum:2/3");
+        let mut dir = member_directory(&hs).await;
+        let d1 = HybridSigningIdentity::generate("D1").unwrap();
+        let mut d1m = founder_member(&d1).await.unwrap();
+        d1m.role = Some(Role::Member);
+        dir.push(d1m);
+
+        // Non-entrenched, member-role change: grow to 4 (add D1) → strict-majority 3/4.
+        let mut new_ids = member_ids(&hs);
+        new_ids.push("D1".to_string());
+        let change = build_membership_change(&prior_env, &new_ids, Role::Member, false, None);
+        assert_eq!(change["consensus_protocol"], "quorum:3/4");
+        assert_eq!(change["consensus_protocol_entrenched"], false);
+        assert_eq!(change["members"][0]["role"], "member");
+
+        // Authorized by the prior community's 2/3 (A1 + B1, role-agnostic count).
+        let auth = vec![
+            co_sign_accord_family(&hs[0], &change).await.unwrap(),
+            co_sign_accord_family(&hs[1], &change).await.unwrap(),
+        ];
+        verify_membership_change(&prior_env, &change, &auth, &dir).unwrap();
+
+        // One signature is below the prior 2/3 → rejected.
+        let one = vec![co_sign_accord_family(&hs[0], &change).await.unwrap()];
+        assert!(matches!(
+            verify_membership_change(&prior_env, &change, &one, &dir).unwrap_err(),
+            AccordGenesisError::QuorumNotMet { required: 2, .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn general_caller_pinned_supermajority_accepted() {
+        // A community may pin a stronger-than-minimal policy (quorum:4/5).
+        let ids: Vec<HybridSigningIdentity> = (0..5)
+            .map(|i| HybridSigningIdentity::generate(format!("C{i}")).unwrap())
+            .collect();
+        let prior_env = community_envelope(&member_ids(&ids), "quorum:3/5");
+        let dir = member_directory(&ids).await;
+        let change = build_membership_change(
+            &prior_env,
+            &member_ids(&ids),
+            Role::Member,
+            false,
+            Some("quorum:4/5"),
+        );
+        assert_eq!(change["consensus_protocol"], "quorum:4/5");
+        // Prior policy was 3/5 → 3 prior signers authorize.
+        let mut auth = Vec::new();
+        for h in &ids[..3] {
+            auth.push(co_sign_accord_family(h, &change).await.unwrap());
+        }
+        verify_membership_change(&prior_env, &change, &auth, &dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn general_split_brain_policy_rejected() {
+        // A caller-supplied NON-strict-majority policy (quorum:1/2) is refused —
+        // the federation's single quorum rule (2·M > N) holds for communities too.
+        let hs: Vec<HybridSigningIdentity> = (0..2)
+            .map(|i| HybridSigningIdentity::generate(format!("S{i}")).unwrap())
+            .collect();
+        let prior_env = community_envelope(&member_ids(&hs), "quorum:2/2");
+        let dir = member_directory(&hs).await;
+        let change = build_membership_change(
+            &prior_env,
+            &member_ids(&hs),
+            Role::Member,
+            false,
+            Some("quorum:1/2"),
+        );
+        let auth = vec![co_sign_accord_family(&hs[0], &change).await.unwrap()];
+        assert!(matches!(
+            verify_membership_change(&prior_env, &change, &auth, &dir).unwrap_err(),
+            AccordGenesisError::WeakQuorum { m: 1, n: 2 }
         ));
     }
 
