@@ -310,26 +310,29 @@ mod tests {
     #[cfg(feature = "pqc-ml-dsa")]
     #[test]
     fn test_pqc_signature_sizes_runtime_canary() {
-        use ml_dsa::signature::Signer;
-        use ml_dsa::{KeyGen, MlDsa44, MlDsa65, MlDsa87};
+        use ml_dsa::signature::{Keypair, Signer};
+        use ml_dsa::{MlDsa44, MlDsa65, MlDsa87, SigningKey};
 
         let seed = [0u8; 32].into();
 
-        let kp44 = MlDsa44::from_seed(&seed);
-        let sig44 = kp44.signing_key().sign(b"sig-size-canary");
-        let pk44 = kp44.signing_key().verifying_key().encode();
+        // ml-dsa 0.1.1: seed construction moved off the removed `KeyGen` trait
+        // onto `SigningKey::from_seed`, which returns the signing key directly
+        // (rc.8 returned a key pair with a `.signing_key()` accessor).
+        let sk44 = SigningKey::<MlDsa44>::from_seed(&seed);
+        let sig44 = sk44.sign(b"sig-size-canary");
+        let pk44 = sk44.verifying_key().encode();
         assert_eq!(sig44.encode().len(), PqcAlgorithm::MlDsa44.signature_size());
         assert_eq!(pk44.len(), PqcAlgorithm::MlDsa44.public_key_size());
 
-        let kp65 = MlDsa65::from_seed(&seed);
-        let sig65 = kp65.signing_key().sign(b"sig-size-canary");
-        let pk65 = kp65.signing_key().verifying_key().encode();
+        let sk65 = SigningKey::<MlDsa65>::from_seed(&seed);
+        let sig65 = sk65.sign(b"sig-size-canary");
+        let pk65 = sk65.verifying_key().encode();
         assert_eq!(sig65.encode().len(), PqcAlgorithm::MlDsa65.signature_size());
         assert_eq!(pk65.len(), PqcAlgorithm::MlDsa65.public_key_size());
 
-        let kp87 = MlDsa87::from_seed(&seed);
-        let sig87 = kp87.signing_key().sign(b"sig-size-canary");
-        let pk87 = kp87.signing_key().verifying_key().encode();
+        let sk87 = SigningKey::<MlDsa87>::from_seed(&seed);
+        let sig87 = sk87.sign(b"sig-size-canary");
+        let pk87 = sk87.verifying_key().encode();
         assert_eq!(sig87.encode().len(), PqcAlgorithm::MlDsa87.signature_size());
         assert_eq!(pk87.len(), PqcAlgorithm::MlDsa87.public_key_size());
     }

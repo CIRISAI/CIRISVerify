@@ -25,9 +25,9 @@
 //! [`crate::sealed_mldsa65`]. What this mode closes is **at-rest exfil +
 //! portability**: the USB seed is useless without the YubiKey, and the identity
 //! is no longer machine-bound (it travels on the two keys). The *in-memory*
-//! residual — that ml-dsa rc.8's `SigningKey` keeps the raw seed un-zeroized for
-//! its lifetime — is orthogonal, codebase-wide (every software ML-DSA signer),
-//! and tracked at CIRISVerify#87; it is **not** what this at-rest mode protects.
+//! residual that used to leave ml-dsa's outer `SigningKey` seed un-zeroized for
+//! its lifetime is orthogonal to this at-rest mode and was closed codebase-wide
+//! by the ml-dsa 0.1.1 bump (`SigningKey<P>: ZeroizeOnDrop`, CIRISVerify#87).
 //! When a FIPS ML-DSA token ships, this whole layer swaps for a hardware
 //! `PqcSigner` with no change above the trait.
 //!
