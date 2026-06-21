@@ -1,9 +1,9 @@
 # HUMANITY_ACCORD Key Genesis Provisioning Runbook
 
-**Status:** DRAFT (2026-06-09). Genesis ceremony for the 3 HUMANITY_ACCORD
-holders, 6 keys total. Scoped for the nascent-project genesis — proportionate
-security, not a full production HSM ceremony. Production-hardening notes are
-marked **[harden]**.
+**Status:** DRAFT (2026-06-09; M-of-N + name-free key labels 2026-06-21). Genesis
+ceremony for the HUMANITY_ACCORD holders. Scoped for the nascent-project genesis
+— proportionate security, not a full production HSM ceremony. Production-hardening
+notes are marked **[harden]**.
 
 **Authoritative spec:** CEG 0.15 §9 (`CIRISRegistry/FSD/CEG/.../ceg-0.15.tex`).
 This runbook is the operational counterpart; where it and the spec disagree,
@@ -13,14 +13,26 @@ the spec wins.
 
 ## 0. What you're provisioning, in one paragraph
 
-Three named humans (Eric Moore, Eric Kudzin, Haley Bradley — CEG §9.1) each get
-**two** accord-holder identities: a **primary** (goes in the live
-`humanity-accord` roster) and a **cold-spare** (vaulted, swapped in only via the
-replacement ceremony). 3 × 2 = **6 identities**. Each identity is a **hybrid
-keypair**: Ed25519 (classical) **+** ML-DSA-65 (post-quantum), per CEG §5.2.1.
-The `humanity-accord` structure is an entrenched **`family`** (`quorum:2/3`,
-`consensus_protocol_entrenched: true`) — *not* a community (that's
-`ciris-canonical`; don't conflate them).
+Each accord holder (a human — referred to here **only** by key label, never by
+name, for the family's structural-invisibility; CEG §9.1) gets a **primary** key
+(goes in the live `humanity-accord` roster) plus **one or more cold-spares**
+(vaulted, swapped in only via the replacement ceremony, §10). Key labels are
+**`A1`/`B1`/`C1`** for the primaries and **`A2`/`B2`/`C2`** (and `A3`… for
+additional spares) for the cold-spares — no human names anywhere in the key_ids.
+The genesis instance is **3 holders** → `A1`/`B1`/`C1` live + their spares. Each
+identity is a **hybrid keypair**: Ed25519 (classical) **+** ML-DSA-65
+(post-quantum), per CEG §5.2.1.
+
+The `humanity-accord` structure is an entrenched **`family`**
+(`consensus_protocol_entrenched: true`) — *not* a community (that's
+`ciris-canonical`; don't conflate them). The family is **growable, M-of-N**: the
+quorum is a **strict majority** of the live member count — `quorum:2/3` at the
+3-holder genesis, `quorum:3/5` once grown to five, etc. The threshold is read off
+the family object's `consensus_protocol`, not hardcoded; a member is added (grow)
+or a primary swapped for a spare via a **`supersedes`** signed by the *current*
+roster's strict-majority quorum (verify: `build_accord_membership_change` /
+`verify_accord_membership_change`, §10). Strict majority can never be weakened —
+the entrenchment gate enforces `2·M > N` across every change.
 
 ## 1. The load-bearing hardware reality (read this first)
 
@@ -185,7 +197,7 @@ The CIRISServer admission gate (#41) pins **`Yubico Attestation Root 1`**
 
 This identity is `(ed25519_pub, mldsa65_pub)`. Record both pubkeys + the
 `hardware_class: "YubiKey_5_FIPS"` + a stable `key_id`
-(e.g. `accord-eric-moore-primary`, `accord-eric-moore-spare`, …).
+(e.g. `A1`, `A2`, …).
 
 ## 5. Build the `federation_keys` accord-holder rows (×6)
 
@@ -206,6 +218,30 @@ Row fields (confirm exact schema against CIRISPersist `federation_keys`):
 `key_id`, `identity_type="accord_holder"`, `ed25519_public_key`,
 `mldsa65_public_key`, `hardware_class="YubiKey_5_FIPS"`, `valid_from`,
 self-signature.
+
+### 5.1 Spares are pre-attested + vaulted — **never live roster seats** (CIRISVerify#96)
+
+A `federation_keys` `accord_holder` row exists for spares too (so a swap is fast),
+but **the kill-switch quorum roster is the family `members` set, NOT "every
+accord_holder row."** This is load-bearing:
+
+- The quorum roster = the entrenched family object's `members` (the live primaries
+  `A1`/`B1`/`C1`). Resolve it with `accord_genesis::accord_roster_from_family`
+  (members → pinned pubkeys) and the threshold with `accord_quorum_from_family`
+  (the strict-majority `M` from `consensus_protocol`). **Never** assemble the
+  kill-switch roster by listing all `accord_holder` rows.
+- **Why:** the distinct-key gate is per-*key* (it stops one key filling two seats).
+  It does **not** stop one *human* holding two distinct keys — a primary `A1` and a
+  spare `A2` are distinct keys, so if both were roster seats that human could
+  self-quorum (1 person → 2 of N). One-seat-per-**human** comes precisely from
+  `roster = family.members`.
+- A spare enters the roster **only** via a `supersedes` that simultaneously removes
+  the primary it replaces (§10), keeping the roster at exactly N distinct human
+  seats. A person may hold several spares; only one of their keys is ever a live
+  seat at a time.
+
+The CIRISServer admission gate (CIRISServer#41/#61) MUST enforce this: build the
+quorum roster from `family.members`, ignore non-member `accord_holder` rows.
 
 ## 6. Cross-attestation by the 3 regional stewards (§9.3)
 
@@ -229,9 +265,9 @@ object (CEG §9.1):
   "family_key_id": "humanity-accord",
   "family_name": "Humanity Accord",
   "members": [
-    {"key_id": "accord-eric-moore-primary",    "role": "founder"},
-    {"key_id": "accord-eric-kudzin-primary",   "role": "founder"},
-    {"key_id": "accord-haley-bradley-primary", "role": "founder"}
+    {"key_id": "A1",    "role": "founder"},
+    {"key_id": "B1",   "role": "founder"},
+    {"key_id": "C1", "role": "founder"}
   ],
   "consensus_protocol": "quorum:2/3",
   "consensus_protocol_entrenched": true
@@ -287,14 +323,41 @@ ML-DSA-65 decryption secret across two custodians.
 Mark genesis complete only when 1–5 pass. Use `drill`, never `CONSTITUTIONAL`, for
 testing — and per §9.2.2 any human-visible surface MUST show `[DRILL]`.
 
-## 10. Replacement / spare-swap (post-genesis, for reference)
+## 10. Membership change — grow / shrink / spare-swap (post-genesis)
 
-If a primary key is lost/compromised, swap its spare in via the entrenched-family
-replacement ceremony — **CEG §9.2 / `CIRISNodeCore/FSD/FEDERATION_ANNOUNCEMENT.md`
-§4.5.3**. Because the family is entrenched, replacement is the *only* path to
-change the roster, and it requires the existing quorum (2-of-3) to sign the
-`supersedes` that swaps `…-primary` for `…-spare`. The spare is pre-attested
-(§8), so the swap is a roster `supersedes`, not a fresh provisioning.
+Changing the roster (lost/compromised primary, adding a holder, retiring one) is
+the entrenched-family `supersedes` ceremony — **CEG §9.2 /
+`CIRISNodeCore/FSD/FEDERATION_ANNOUNCEMENT.md` §4.5.3**. Because the family is
+entrenched, a `supersedes` is the *only* path to change the roster, and it must be
+signed by the **current** roster's strict-majority quorum (the existing holders
+authorize who joins/leaves; an incoming/spare key never authorizes its own
+admission). Tooled in CIRISVerify (#95):
+
+```text
+# Coordinator builds the new-roster envelope superseding the prior family genesis.
+accord_genesis::build_accord_membership_change(&prior_family_genesis, &new_member_key_ids)
+  → new envelope (consensus_protocol auto-set to strict-majority quorum:M/N for the new count,
+    + a `supersedes` block binding it to the exact prior member set)
+
+# Each CURRENT holder co-signs the new envelope on their own token (no one signs another's key):
+accord_genesis::co_sign_accord_family(&current_holder, &new_envelope)
+
+# Coordinator assembles + verifies: requires the PRIOR roster's strict-majority quorum,
+# preserves entrenchment (2·M > N, entrenched flag, same family_key_id), binds to prior state.
+accord_genesis::verify_accord_membership_change(&prior_family_genesis, &new_envelope,
+    &prior_quorum_signatures, &prior_directory, created_at)  → new family genesis
+```
+
+- **Spare-swap:** new roster = prior with one person's `…1` replaced by their
+  `…2` (e.g. `A1` → `A2`). The spare is pre-attested (§8 / §5.1), so this is a
+  roster `supersedes`, not a fresh provisioning. Roster size unchanged.
+- **Grow:** new roster adds a holder (`…→ A1,B1,C1,D1,E1`); the quorum auto-moves
+  to the new strict majority (`quorum:2/3 → quorum:3/5`). Authorized by the *prior*
+  2/3, not the new 3/5.
+- **Invariant:** `verify_accord_membership_change` refuses anything that lifts the
+  entrenchment flag, changes `family_key_id`, drops below strict majority, or
+  whose `supersedes.prior_member_key_ids` doesn't match the real prior roster
+  (anti-replay).
 
 ## 11. What's tooled vs. manual today (honest status)
 
@@ -323,26 +386,26 @@ change the roster, and it requires the existing quorum (2-of-3) to sign the
 ```bash
 # §5 — each holder, on their own machine, produces their accord_holder genesis
 #       record (YubiKey via --module, else platform-sealed). → CEG outbox.
-ciris-verify accord holder --key-id accord-eric-moore-primary \
+ciris-verify accord holder --key-id A1 \
     --module /usr/lib/.../libykcs11.so --key-label "…" --pin
 
 # §7 step 1 — a coordinator builds the canonical family envelope (the 3 PRIMARIES,
 #             roster order). No signing.
 ciris-verify accord family-envelope \
-    --member accord-eric-moore-primary \
-    --member accord-eric-kudzin-primary \
-    --member accord-haley-bradley-primary \
+    --member A1 \
+    --member B1 \
+    --member C1 \
     --out family.json
 
 # §7 step 2 — EACH founder co-signs family.json on THEIR token → a {signature,member}
 #             bundle. No human signs another's key.
-ciris-verify accord co-sign --envelope family.json --key-id accord-eric-moore-primary \
-    --module … --key-label "…" --pin --out cosign-moore.json
+ciris-verify accord co-sign --envelope family.json --key-id A1 \
+    --module … --key-label "…" --pin --out cosign-a1.json
 
 # §7 step 3 — the coordinator assembles. Verifies the accord's 2/3 quorum of
 #             DISTINCT founder keys; writes the genesis to the outbox only if it holds.
 ciris-verify accord assemble --envelope family.json \
-    --cosign cosign-moore.json --cosign cosign-kudzin.json --cosign cosign-bradley.json
+    --cosign cosign-a1.json --cosign cosign-b1.json --cosign cosign-c1.json
 ```
 
 `--module` omitted → the platform-sealed Ed25519 key (`~/ciris/keys`); the
