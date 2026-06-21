@@ -665,6 +665,44 @@ pub fn accord_quorum_from_family(
     quorum_threshold_from_envelope(envelope)
 }
 
+/// The **baked** canonical HUMANITY_ACCORD family-genesis object as JSON
+/// (CIRISVerify#107). **Empty until the real ceremony genesis is baked** —
+/// mirrors CIRISServer's `CANONICAL_BOOTSTRAP_PEERS = &[]` until 0.6. When the
+/// 2-of-3-cosigned ceremony `SignedCegObject` is in hand, paste its JSON here;
+/// the bake is a one-line const update, not a code change.
+const HUMANITY_ACCORD_GENESIS_JSON: &str = "";
+
+/// The pinned, **no-TOFU** HUMANITY_ACCORD family-genesis recognition root
+/// (CIRISVerify#107). A node that was **not** at the ceremony resolves the accord
+/// kill-switch roster + quorum from **this** baked object (via
+/// [`accord_roster_from_family`] / [`accord_quorum_from_family`]), **never** from
+/// a peer — fetching the genesis would be trust-on-first-use.
+///
+/// This is a constitutional trust root in the same class as the steward /
+/// `ciris-canonical` / Yubico custody roots verify already pins, and explicitly
+/// does **NOT** ride CIRISServer's `CANONICAL_BOOTSTRAP_PEERS` (infra/node trust,
+/// not constitutional kill-switch trust).
+///
+/// Returns `Some(genesis)` once baked (parsed once, cached); `None` until then —
+/// **absence means "not yet pinned"; a cold-start consumer MUST NOT fall back to
+/// fetching it from a peer.** Parses to a [`ACCORD_FAMILY_GENESIS_KIND`] object or
+/// stays `None` (a malformed bake is treated as not-baked, fail-closed).
+#[must_use]
+pub fn humanity_accord_genesis() -> Option<&'static SignedCegObject> {
+    static PARSED: std::sync::OnceLock<Option<SignedCegObject>> = std::sync::OnceLock::new();
+    PARSED
+        .get_or_init(|| {
+            let trimmed = HUMANITY_ACCORD_GENESIS_JSON.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            serde_json::from_str::<SignedCegObject>(trimmed)
+                .ok()
+                .filter(|o| o.kind == ACCORD_FAMILY_GENESIS_KIND)
+        })
+        .as_ref()
+}
+
 /// Extract the `family` envelope from a family-genesis object.
 fn family_envelope(family_genesis: &SignedCegObject) -> Result<&Value, AccordGenesisError> {
     if family_genesis.kind != ACCORD_FAMILY_GENESIS_KIND {
@@ -1335,6 +1373,14 @@ mod tests {
                 .collect::<Vec<_>>()
         );
         assert!(!roster.iter().any(|m| m.member_id == "A2"));
+    }
+
+    #[test]
+    fn humanity_accord_genesis_is_empty_until_baked() {
+        // #107: the pinned recognition root is intentionally EMPTY until the real
+        // ceremony genesis is baked (no-TOFU — None means "not yet pinned", never
+        // "go fetch it from a peer"). Mirrors CANONICAL_BOOTSTRAP_PEERS = &[].
+        assert!(humanity_accord_genesis().is_none());
     }
 
     #[tokio::test]
