@@ -131,12 +131,21 @@ All thresholds are taken **over `L`**, never over the absent standing roster.
 
 | Action | Threshold over `L` | Rationale |
 |---|---|---|
-| **Fire** (CONSTITUTIONAL kill, §9.2.1) | a **low floor** — a small fraction of `L`, down to **1** in deep decimation | missed fire is terminal, false fire recoverable → lean easiest |
+| **Fire** (CONSTITUTIONAL kill, §9.2.1) | **floor = 1** — a **single reachable survivor** may fire (Q1 resolved) | missed fire is terminal, false fire recoverable → lean easiest |
 | **Roster change** (add / remove / swap; the `supersedes`) | **strict majority of `L`** (`2·M > \|L\|`) | the live set governs its own membership |
 | **Standing-quorum acts** (non-emergency) | strict majority of the standing roster (unchanged) | normal operation when not decimated |
 
-The firing floor sitting **below** the roster-change threshold is the whole point:
-even a partially-captured live set's honest minority can still fire (§8).
+**The fire floor is one (Q1 resolved).** A single reachable, key-capable holder
+can fire the constitutional kill. This is the deliberate maximum lean toward
+firing: in the limit of a first strike that leaves *one* survivor, that survivor
+can still pull the plug. The cost of the only thing this admits — a lone *coerced*
+key firing falsely — is a recoverable halt (governance re-licenses the agent),
+whereas the failure it prevents — the adversary reduces the holders below any
+higher floor and the switch goes dead — is terminal. The firing floor sitting
+**below** the roster-change threshold is the whole point: even a partially-captured
+live set's honest minority (down to one) can still fire (§8). **Firing has no
+challenge window** — it is immediate on a fresh survivor signature; the window
+(§9) applies only to roster changes.
 
 ### 4.4 Steward floor when `L` is tiny
 
@@ -154,6 +163,71 @@ in the standing roster going forward** — modifying the quorum for subsequent
 decisions. Past actions validly decided by the then-live set stand; the returnee
 simply rejoins. This is the legal rebuttable-presumption-of-death pattern: the
 absent are presumed gone so the present may act, and the returning are reinstated.
+
+### 4.6 The proof-of-life physical channel — reaching a relay without satellites
+
+The whole mechanism rests on a holder being able to **get a signed proof-of-life
+to a relaying node**. Under the §2 threat model the convenient channels are gone:
+**assume satellites are down** (no Starlink/Iridium/GPS), grid power is unreliable,
+and the internet is partitioned or hostile. Proof-of-life is a *tiny* payload (a
+hybrid signature + vote, a few hundred bytes), so the requirement is not bandwidth
+— it is **reach with no infrastructure.** That rules out the obvious mesh radio and
+points squarely at **HF (shortwave) skywave**.
+
+**Band selection (why not LoRa, why not VLF):**
+
+- **LoRa / UHF mesh (433–915 MHz)** — Reticulum's usual `RNode` radio. Line-of-sight
+  + modest NLOS, tens of km. Excellent as the **last hop** to a *local* relay, but it
+  **cannot bridge continents** without standing infrastructure. Insufficient alone.
+- **HF / shortwave (3–30 MHz)** — **the answer.** Ionospheric **skywave** gives
+  **intercontinental** reach (thousands of km) and **NVIS** (near-vertical-incidence,
+  ~2–10 MHz) fills the 0–~400 mi regional skip zone — both **requiring no satellites,
+  repeaters, or internet** (the ionosphere is the "satellite"). This is the
+  battle-tested grid-down / military / EmComm channel.
+  ([NVIS overview](https://www.qsl.net/wb5ude/nvis/), [Skywave](https://en.wikipedia.org/wiki/Skywave))
+- **VLF / ULF (< 30 kHz)** — *longer* range still and earth/water-penetrating, but
+  **transmit** requires miles-long antennas and megawatt plants (national submarine-
+  comms infrastructure). VLF *reception* is cheap; VLF *transmission* is **not
+  buildable at any holder budget** — out of scope. (Receive-only VLF/MF as a
+  one-way command backstop is a possible future note, not a proof-of-life path.)
+
+**The mode is the relay: JS8Call over HF.** The payload rides a **weak-signal**
+digital mode so it punches through globally at minimal power, and — critically —
+the mode itself provides the **"node that repeats."** [JS8Call](https://js8call.com/)
+(derived from FT8) decodes down to **−24 dB SNR on 5–25 W and a simple antenna**,
+and its **store-and-forward** `@ALLCALL` inbox means *"any JS8Call station that hears
+the message relays it… building a distributed message relay network"* until it
+reaches its destination — exactly the repeat-toward-a-gateway behavior this design
+needs, with no central server.
+([JS8Call guide](https://www.hamradiobase.com/ham-radio-digital-js8call/))
+VARA HF / Winlink is the higher-throughput alternative when conditions allow.
+
+**The chain:** holder's HF station → JS8Call weak-signal beacon (NVIS for regional,
+skywave/long-path for intercontinental) → **store-and-forward relay** across any
+hearing JS8Call station → an **HF↔Reticulum gateway** (a Transport Node running a
+KISS/VARA TNC bridging HF into RNS) → the mesh → CIRISServer live-quorum tally. The
+signed proof-of-life is verifiable end-to-end regardless of how many untrusted RF
+hops it traversed (the hybrid signature is the trust, not the path).
+
+**A ~$50k resilient station (satellites-gone, off-grid):** an HF transceiver
+(≈ $1–3k, e.g. IC-7300 / IC-7610) + a ~1 kW solid-state linear amplifier (≈ $4–6k)
++ a dual antenna system (an **NVIS** low-dipole for regional + a **directional
+beam/vertical** for long-haul, with mast/tuner; ≈ $8–18k) + **fully off-grid power**
+(solar + LiFePO₄ bank + generator; ≈ $8–12k) + a ruggedized controller (Raspberry
+Pi running JS8Call + the Reticulum gateway; ≈ $1k) + **EMP/Carrington hardening**
+(Faraday-stored spare transceiver + Pi + controller — because "satellites gone"
+plausibly implies a kinetic/cyber/EMP event) + spares and a secondary site. $50k
+comfortably funds a serious station *or* 2–3 redundant simpler ones for
+geographic + failure diversity. **Time without GPS:** the freshness nonce is
+server-issued and relayed in (it does not depend on GPS); HF time standards
+(WWV/WWVH/CHU) give coarse wall-clock if needed.
+
+> **Note (Q6, new):** the **relay/gateway backbone** — the set of always-listening
+> HF↔RNS Transport Nodes that carry proof-of-life into the mesh — is itself
+> infrastructure an adversary will target. It must be **geographically distributed,
+> off-grid, and EMP-hardened**, and ideally co-located with the steward sites
+> (§4.4). This is the physical complement to the steward backstop and belongs in
+> the deployment spec.
 
 ## 5. Prior art
 
@@ -256,23 +330,32 @@ honest case made *easy* rather than braked.
 
 ## 9. Parameters to pin
 
-| Parameter | Meaning | Candidate | Open |
+| Parameter | Meaning | Setting | Open |
 |---|---|---|---|
-| `W` | participation window per proposal (may differ fire vs roster) | hours (fire) / days (roster) | Q2 |
-| fire floor | min live participants to admit a `CONSTITUTIONAL` fire | a small fraction, ≥ 1 | Q1, Q2 |
+| **fire floor** | min live participants to admit a `CONSTITUTIONAL` fire | **1** (a single reachable survivor) — **Q1 resolved** | — |
+| fire window | challenge window for a fire | **none** — immediate on a fresh survivor signature | — |
+| roster window `W` | participation window for a roster change | **72 h** baseline (extensible to 7 d under a declared severe-degradation state); anchored to the 24–72 h social-recovery norm, lengthened for HF store-and-forward relay latency (§4.6) | Q2 |
 | roster threshold | quorum for a roster change over `L` | strict majority of `\|L\|` | — |
 | `L_floor` | `\|L\|` below which a roster change needs the steward backstop | `3` (always for `1`) | Q2 |
 | steward quorum | M-of-N of the 3 regional stewards | `2-of-3` | — |
 | recursion floor | smallest roster a change may produce | ≥ 1, never to attacker-only | Q4 |
 
+The asymmetry in the table is deliberate and is the whole design: **firing is
+floor-1 and window-0** (a lone survivor fires *now*), while a **roster change** is
+strict-majority-of-`L` over a multi-day window — because a missed fire is terminal
+but a false reconstitution is the thing the steward floor + window + transparency
+exist to bound.
+
 ## 10. Open questions (must resolve before build)
 
-- **Q1 — How low is the fire floor?** "Lean easiest" vs. a minimum that resists a
-  trivially-captured single coerced key firing. (Note: a false fire is recoverable,
-  which argues for a very low floor.)
-- **Q2 — Window / floor calibration.** `W` long enough to let honest holders enter
-  `L` against censorship, short enough to fire/recover before the adversary
-  consolidates. Needs explicit modeling.
+- **Q1 — Fire floor — RESOLVED: floor = 1.** A single reachable survivor may fire
+  (§4.3). A false fire is recoverable; a higher floor would let the adversary kill
+  the switch by reducing holders below it. Settled by the maintainer.
+- **Q2 — Roster-window calibration.** `W = 72 h` baseline is set; the open part is
+  the extension policy (when/who declares severe-degradation to stretch toward 7 d)
+  and whether `W` should scale with `|L|`. Long enough for HF store-and-forward
+  (§4.6) to carry an honest proof-of-life in; short enough to recover before the
+  adversary consolidates.
 - **Q3 — Coercion / duress.** Proof-of-life cannot detect a gun-to-the-head
   signature. Is steward floor + live majority + transparency + post-hoc reversal
   sufficient, or is a duress canary warranted?
@@ -281,7 +364,12 @@ honest case made *easy* rather than braked.
 - **Q5 — Constitutional grounding.** This redefines the §9 quorum (standing-roster →
   live set). It needs an explicit basis in the Constitution / CEG §9 plus a proof
   that the live quorum *restores* the accord and cannot be used to *weaken* or
-  *seize* it beyond the §8 residual.
+  *seize* it beyond the §8 residual. *(Tracked for CC ratification — CIRISRegistry.)*
+- **Q6 — HF↔RNS relay/gateway backbone (deployment).** The always-listening,
+  off-grid, EMP-hardened, geographically-distributed Transport Nodes that bridge HF
+  proof-of-life into the mesh (§4.6) are infrastructure the adversary will target —
+  the physical complement to the steward floor. Belongs in a deployment spec,
+  ideally co-located with the steward sites.
 
 ## 11. Relationship to existing modules
 
