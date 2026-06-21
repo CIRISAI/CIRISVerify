@@ -380,10 +380,61 @@ fn quorum_threshold_from_envelope(envelope: &Value) -> Result<usize, AccordGenes
             detail: format!("consensus_protocol N={n} != member count {n_members}"),
         });
     }
-    if m == 0 || 2 * m <= n {
+    // Strict majority: `2·M > N` (no minimum-N floor — the family is M-of-N and
+    // may legitimately degrade to 1/1, 2/2, 2/3, 3/5, …; only split-brain ratios
+    // like 1/2 are refused). `checked_mul` guards a parsed-giant `M` from an
+    // overflow panic (fail-closed: an un-doublable M is rejected).
+    if m == 0 || m.checked_mul(2).is_none_or(|two_m| two_m <= n) {
         return Err(AccordGenesisError::WeakQuorum { m, n });
     }
     Ok(m)
+}
+
+/// Reject a roster where any two members share an Ed25519 or ML-DSA-65 public
+/// key — one key occupying two seats. `verify_founder_quorum` dedups by
+/// `member_id` *string*, so without this a single key relabeled under two
+/// member_ids (or one human's primary+spare both seated) meets the quorum by
+/// itself. The load-bearing one-key/one-human-one-seat gate, shared by genesis,
+/// the roster derivation, and the membership-change verifier.
+fn reject_duplicate_member_keys(members: &[ThresholdMember]) -> Result<(), AccordGenesisError> {
+    let mut seen_ed = std::collections::HashSet::new();
+    let mut seen_pqc = std::collections::HashSet::new();
+    for m in members {
+        if !seen_ed.insert(m.ed25519_public_key_base64.as_str()) {
+            return Err(AccordGenesisError::DuplicateFounderKey {
+                member_id: m.member_id.clone(),
+            });
+        }
+        if let Some(pqc) = m.mldsa65_public_key_base64.as_deref() {
+            if !seen_pqc.insert(pqc) {
+                return Err(AccordGenesisError::DuplicateFounderKey {
+                    member_id: m.member_id.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Resolve a list of member `key_id`s to their pinned [`ThresholdMember`]s from
+/// a caller-supplied `directory`, preserving order. Fail-closed: a `key_id` with
+/// no directory entry is [`AccordGenesisError::MemberNotInDirectory`].
+fn resolve_members(
+    member_ids: &[String],
+    directory: &[ThresholdMember],
+) -> Result<Vec<ThresholdMember>, AccordGenesisError> {
+    member_ids
+        .iter()
+        .map(|key_id| {
+            directory
+                .iter()
+                .find(|m| &m.member_id == key_id)
+                .cloned()
+                .ok_or(AccordGenesisError::MemberNotInDirectory {
+                    key_id: key_id.clone(),
+                })
+        })
+        .collect()
 }
 
 /// Runbook §7 — assemble + **round-trip-verify** the entrenched-family genesis.
@@ -450,23 +501,8 @@ pub fn assemble_accord_family_genesis(
 
     // 2. Founders must be DISTINCT KEYS — no key may occupy two seats. (The
     //    quorum verifier dedups by member_id string only, so this gate is what
-    //    stops one key meeting the 2/3 bar by itself.)
-    let mut seen_ed = std::collections::HashSet::new();
-    let mut seen_pqc = std::collections::HashSet::new();
-    for m in founders {
-        if !seen_ed.insert(m.ed25519_public_key_base64.as_str()) {
-            return Err(AccordGenesisError::DuplicateFounderKey {
-                member_id: m.member_id.clone(),
-            });
-        }
-        if let Some(pqc) = m.mldsa65_public_key_base64.as_deref() {
-            if !seen_pqc.insert(pqc) {
-                return Err(AccordGenesisError::DuplicateFounderKey {
-                    member_id: m.member_id.clone(),
-                });
-            }
-        }
-    }
+    //    stops one key meeting the quorum bar by itself.)
+    reject_duplicate_member_keys(founders)?;
 
     // 3. Founders-only.
     if let Some(m) = founders.iter().find(|m| m.role != Some(Role::Founder)) {
@@ -534,42 +570,52 @@ pub fn assemble_accord_family_genesis(
 /// (runbook §10), never by being an additional directory row.
 ///
 /// Members are returned in the family-declared order (JCS array order is
-/// significant). Fail-closed: a declared member missing from `directory` is a
-/// [`AccordGenesisError::MemberNotInDirectory`] reject.
+/// significant). Fail-closed: a declared member missing from `directory`, a
+/// duplicate member `key_id`, two members resolving to the **same pubkey**, or
+/// an empty roster are all rejects.
+///
+/// **Trust boundary (load-bearing — read this):** this helper *reads* the
+/// roster off `family_genesis.body.family.members`; it does **not** re-verify
+/// the object's `founder_signatures`. The caller MUST pass a genesis object
+/// whose quorum it has already verified (via [`assemble_accord_family_genesis`]
+/// or an equivalent re-check against pinned keys), and `directory` MUST be the
+/// authoritative `federation_keys` pin set (key↔human binding established by the
+/// §6 steward cross-attestation) — never anything sourced from the bundle being
+/// admitted. The function trusts both; a forged genesis or poisoned directory
+/// yields a poisoned roster, exactly as the invocation path documents for its
+/// embedded roster.
 ///
 /// # Errors
 ///
-/// [`AccordGenesisError`] if `family_genesis` is the wrong kind / malformed, or a
-/// declared family member has no pinned `directory` entry.
+/// [`AccordGenesisError`] if `family_genesis` is the wrong kind / malformed, a
+/// declared member has no pinned `directory` entry, or the resolved roster has a
+/// duplicate key_id / duplicate pubkey / is empty.
 pub fn accord_roster_from_family(
     family_genesis: &SignedCegObject,
     directory: &[ThresholdMember],
 ) -> Result<Vec<ThresholdMember>, AccordGenesisError> {
-    if family_genesis.kind != ACCORD_FAMILY_GENESIS_KIND {
-        return Err(AccordGenesisError::WrongKind {
-            kind: family_genesis.kind.clone(),
+    let envelope = family_envelope(family_genesis)?;
+    let member_ids = envelope_member_key_ids(envelope)?;
+    if member_ids.is_empty() {
+        return Err(AccordGenesisError::MalformedEnvelope {
+            detail: "family has no members".to_string(),
         });
     }
-    let envelope =
-        family_genesis
-            .body
-            .get("family")
-            .ok_or(AccordGenesisError::MalformedEnvelope {
-                detail: "missing `family`".to_string(),
-            })?;
-    let member_ids = envelope_member_key_ids(envelope)?;
-    member_ids
-        .iter()
-        .map(|key_id| {
-            directory
-                .iter()
-                .find(|m| &m.member_id == key_id)
-                .cloned()
-                .ok_or(AccordGenesisError::MemberNotInDirectory {
-                    key_id: key_id.clone(),
-                })
-        })
-        .collect()
+    // Defense-in-depth: even though a verified genesis cannot carry duplicate
+    // members (the assembler rejects them), a caller may pass an unverified
+    // object — reject duplicate key_ids and duplicate pubkeys at derivation too,
+    // so a malformed `family.members` can never silently double-seat a human.
+    {
+        let mut seen = std::collections::HashSet::new();
+        for k in &member_ids {
+            if !seen.insert(k.as_str()) {
+                return Err(AccordGenesisError::DuplicateMemberKeyId { key_id: k.clone() });
+            }
+        }
+    }
+    let roster = resolve_members(&member_ids, directory)?;
+    reject_duplicate_member_keys(&roster)?;
+    Ok(roster)
 }
 
 /// The live kill-switch **quorum threshold** `M` for a family genesis object —
@@ -681,11 +727,23 @@ pub fn build_accord_membership_change(
 ///    lifted), and the `supersedes.prior_member_key_ids` equals the actual prior
 ///    family's member set (binding the change to the real prior state — no replay
 ///    against a different roster).
-/// 3. The **prior** roster's strict-majority quorum validly signed the new
-///    envelope, verified against `prior_directory` (the pinned prior pubkeys).
+/// 3. The **new** roster's members all resolve in `directory` to **distinct
+///    pubkeys** — the same one-key/one-human-one-seat gate genesis enforces, so a
+///    grown/swapped roster can't seat one human's primary + spare (two distinct
+///    key_ids, same human) as two live seats.
+/// 4. The **prior** roster's strict-majority quorum validly signed the new
+///    envelope, verified against `directory` (the pinned prior pubkeys).
 ///
 /// On success returns the new family-genesis [`SignedCegObject`], carrying the
 /// **prior** roster's authorizing signatures.
+///
+/// **Trust boundary:** `directory` MUST be the authoritative `federation_keys`
+/// pin set (covering both the prior and new members; key↔human binding from the
+/// §6 steward cross-attestation), never anything derived from the change bundle.
+/// Authorization is exactly as strong as `directory`: the prior family object
+/// stores only member `key_id`s, so the prior pubkeys come from `directory` — a
+/// poisoned directory makes attacker signatures verify (the same boundary the
+/// invocation path documents).
 ///
 /// # Errors
 ///
@@ -694,7 +752,7 @@ pub fn verify_accord_membership_change(
     prior_family: &SignedCegObject,
     new_envelope: &Value,
     prior_quorum_signatures: &[ThresholdSignature],
-    prior_directory: &[ThresholdMember],
+    directory: &[ThresholdMember],
     created_at: &str,
 ) -> Result<SignedCegObject, AccordGenesisError> {
     let prior_env = family_envelope(prior_family)?;
@@ -710,6 +768,12 @@ pub fn verify_accord_membership_change(
         }
     }
     let _new_threshold = quorum_threshold_from_envelope(new_envelope)?; // validates strict majority
+
+    // 1b. The NEW roster must be distinct KEYS — resolve the incoming members
+    //     against the authoritative directory and apply the same one-seat gate
+    //     genesis uses (a grown roster must not seat one human under two key_ids).
+    let new_roster = resolve_members(&new_ids, directory)?;
+    reject_duplicate_member_keys(&new_roster)?;
 
     // 2. Entrenchment preserved.
     let prior_fkid = prior_env.get("family_key_id").and_then(Value::as_str);
@@ -746,7 +810,7 @@ pub fn verify_accord_membership_change(
     }
 
     // 3. Authorized by the PRIOR roster's strict-majority quorum.
-    let prior_roster = accord_roster_from_family(prior_family, prior_directory)?;
+    let prior_roster = accord_roster_from_family(prior_family, directory)?;
     let prior_threshold = quorum_threshold_from_envelope(prior_env)?;
     let bytes = accord_family_signing_bytes(new_envelope).map_err(|e| {
         AccordGenesisError::Canonicalize {
@@ -1273,8 +1337,11 @@ mod tests {
         let prior_dir = members_of(&hs).await;
         let prior = assemble_accord_family_genesis(&envelope, &prior_dir, &sigs, TS).unwrap();
 
-        // New roster swaps A1's seat for the spare A2.
+        // New roster swaps A1's seat for the spare A2. The directory is the
+        // authoritative pin set covering prior + new members.
         let a2 = HybridSigningIdentity::generate("A2").unwrap();
+        let mut dir = prior_dir.clone();
+        dir.push(founder_member(&a2).await.unwrap());
         let new_ids = vec![
             "A2".to_string(),
             hs[1].key_id().to_string(),
@@ -1289,13 +1356,49 @@ mod tests {
             co_sign_accord_family(&hs[2], &change).await.unwrap(),
         ];
         let new_genesis =
-            verify_accord_membership_change(&prior, &change, &auth, &prior_dir, TS).unwrap();
+            verify_accord_membership_change(&prior, &change, &auth, &dir, TS).unwrap();
         assert_eq!(
             envelope_member_key_ids(&new_genesis.body["family"]).unwrap(),
             new_ids
         );
-        // a2 unused beyond constructing the new roster key_id; ensure it built.
-        let _ = a2;
+    }
+
+    #[tokio::test]
+    async fn membership_change_one_human_two_seats_rejected() {
+        // The R1 #5 fix: a grown roster must not seat one human under two distinct
+        // key_ids backed by the SAME pubkey (primary + a relabel) — the distinct-
+        // PUBKEY gate that genesis has, now enforced on the change too.
+        let hs = holders();
+        let envelope = build_accord_family_envelope(
+            HUMANITY_ACCORD_FAMILY_KEY_ID,
+            "Humanity Accord",
+            &member_ids(&hs),
+        );
+        let mut sigs = Vec::new();
+        for h in &hs {
+            sigs.push(co_sign_accord_family(h, &envelope).await.unwrap());
+        }
+        let prior_dir = members_of(&hs).await;
+        let prior = assemble_accord_family_genesis(&envelope, &prior_dir, &sigs, TS).unwrap();
+
+        // Directory has a second row "A1-dup" carrying A1's exact pubkeys.
+        let mut a1_dup = prior_dir[0].clone();
+        a1_dup.member_id = "A1-dup".to_string();
+        let mut dir = prior_dir.clone();
+        dir.push(a1_dup);
+        // Grow to 4 seating both A1 and A1-dup (same human, two seats).
+        let new_ids = vec![
+            "A1".to_string(),
+            "A1-dup".to_string(),
+            hs[1].key_id().to_string(),
+            hs[2].key_id().to_string(),
+        ];
+        let change = build_accord_membership_change(&prior, &new_ids).unwrap();
+        // Rejected at the distinct-pubkey gate, before the quorum is even counted.
+        assert!(matches!(
+            verify_accord_membership_change(&prior, &change, &[], &dir, TS).unwrap_err(),
+            AccordGenesisError::DuplicateFounderKey { .. }
+        ));
     }
 
     #[tokio::test]
@@ -1313,7 +1416,12 @@ mod tests {
         let prior_dir = members_of(&hs).await;
         let prior = assemble_accord_family_genesis(&envelope, &prior_dir, &sigs, TS).unwrap();
 
-        // Grow to 5 (add D1, E1).
+        // Grow to 5 (add D1, E1) — both pinned in the directory.
+        let d1 = HybridSigningIdentity::generate("D1").unwrap();
+        let e1 = HybridSigningIdentity::generate("E1").unwrap();
+        let mut dir = prior_dir.clone();
+        dir.push(founder_member(&d1).await.unwrap());
+        dir.push(founder_member(&e1).await.unwrap());
         let mut new_ids = member_ids(&hs);
         new_ids.push("D1".to_string());
         new_ids.push("E1".to_string());
@@ -1326,7 +1434,7 @@ mod tests {
             co_sign_accord_family(&hs[1], &change).await.unwrap(),
         ];
         let new_genesis =
-            verify_accord_membership_change(&prior, &change, &auth, &prior_dir, TS).unwrap();
+            verify_accord_membership_change(&prior, &change, &auth, &dir, TS).unwrap();
         assert_eq!(accord_quorum_from_family(&new_genesis).unwrap(), 3); // now 3/5
     }
 
@@ -1345,6 +1453,9 @@ mod tests {
         let prior_dir = members_of(&hs).await;
         let prior = assemble_accord_family_genesis(&envelope, &prior_dir, &sigs, TS).unwrap();
 
+        let a2 = HybridSigningIdentity::generate("A2").unwrap();
+        let mut dir = prior_dir.clone();
+        dir.push(founder_member(&a2).await.unwrap());
         let new_ids = vec![
             "A2".to_string(),
             hs[1].key_id().to_string(),
@@ -1354,7 +1465,7 @@ mod tests {
         // Only ONE prior signature — below the prior 2/3.
         let auth = vec![co_sign_accord_family(&hs[1], &change).await.unwrap()];
         assert!(matches!(
-            verify_accord_membership_change(&prior, &change, &auth, &prior_dir, TS).unwrap_err(),
+            verify_accord_membership_change(&prior, &change, &auth, &dir, TS).unwrap_err(),
             AccordGenesisError::QuorumNotMet { required: 2, .. }
         ));
     }
