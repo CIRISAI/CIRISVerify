@@ -6,9 +6,12 @@
 > file. Methodology: `~/CIRISAgent/FSD/MISSION_DRIVEN_DEVELOPMENT.md`
 > and the overview at [ciris.ai/mdd](https://ciris.ai/mdd).
 
-**Version**: 1.1
-**Status**: Active — reverse-engineered against `main` at v4.0.0 ("CEG 0.2 Federation Conformance")
-**Date**: 2026-05-28
+**Version**: 1.2
+**Status**: Active — tracking `main` at v6.11.0. v1.2 adds the HUMANITY_ACCORD
+kill-switch as a first-class mission pillar (§1.7) — the most direct realization
+of the Accord's halt mandate, which had grown from a one-line M-of-N use to a
+major surface since v1.1.
+**Date**: 2026-06-21
 
 This is the reverse-engineered MDD charter for CIRISVerify: it maps the
 four pillars — Mission (WHY) / Protocols (WHO) / Schemas (WHAT) / Logic
@@ -249,6 +252,57 @@ prove hardware backing is tier-capped, not rejected. That is Justice
 (the burden of unprovable hardware falls as a capability ceiling, not
 as exclusion) and it keeps the corridor's anti-rigidity side open.
 
+### 1.7 The accord kill-switch — the Accord's halt mandate, as cryptography
+
+The CIRIS Accord names a cryptographically-signed halt as a **non-negotiable
+safety surface**: *"a cryptographically signed remote Accord Invocation triggering
+full prohibition lockdown"* (Accord Addendum 1 §1.5) and the creator duty to
+*"incorporate reliable and tested kill-switch mechanisms … accessible under defined
+emergency conditions"* (Book VI §4.C). CIRISVerify is where that mandate becomes
+**verifiable cryptography rather than a promise.**
+
+The authority is rooted in **accountable humans, not the substrate** — the
+entrenched HUMANITY_ACCORD family (CC 4.2.1 / CEG §9.1: `quorum:2/3`, three
+hardware-custodied human holders, scope-isolated to *halt authority alone* —
+accord keys cannot sign grants, licenses, or amendments). Verify owns the
+verification half, in three layers, each anchored:
+
+- **Custody** — `src/ciris-verify-core/src/accord_custody_attestation.rs`
+  (`verify_accord_custody_attestation` / `verify_yubikey_piv_attestation`):
+  hardware-unforgeable proof a holder's signing key lives on a genuine FIPS
+  YubiKey, the 9c→f9→pinned-Yubico-root chain (#91, **validated on real
+  hardware**). Pure §1.4 discipline — it *authenticates custody*, never confers
+  trust or admits a verdict.
+- **Roster** — `src/ciris-verify-core/src/accord_genesis.rs`: the growable
+  **M-of-N** family (`accord_consensus_protocol`/`strict_majority`), the
+  membership-change `supersedes` (`verify_accord_membership_change` and the
+  general `verify_membership_change`, #95/#104), **roster = `family.members`**
+  (`accord_roster_from_family` — one-seat-per-human, #96), and the **no-TOFU
+  pinned recognition root** `humanity_accord_genesis()` (#107).
+- **Invocation** — `src/ciris-verify-core/src/humanity_accord.rs`
+  (`Invocation`, `InvocationKind`): the closed `CONSTITUTIONAL | notify | drill`
+  vocabulary (CC §4.2.1.1) **plus** the wire-isolated `accord:lifecycle:active`
+  resumption (#95 Gap 1) — each signing its **own** canonical-bytes domain
+  (`INVOCATION_DOMAIN_PREFIX` vs `LIFECYCLE_DOMAIN_PREFIX`) so no signature
+  crosses scopes.
+
+The kill-switch is the **sharpest expression of §1.6 fail-secure**: under
+catastrophic loss the design **leans toward firing** (`FSD-004` — the only
+*terminal* error is a *missed* fire; a false fire is governance-recoverable). This
+is the Accord's Order-Maximisation Veto (Book II §II Step 2) applied to the
+off-switch: optimization — keeping an agent running — **may never override the
+human ability to halt it.**
+
+**Apophatic note (§1.4, sharpened): a kill-switch is a coercion surface as much as
+a safety one.** Verify's job is to keep it *authentic* (real, accountable humans on
+real hardware) and *fail-secure* — **never** to make it wieldable as a weapon. The
+seize-and-suppress residual and the coercion/duress open problem are **named, not
+assumed away** (`FSD-004` §8 / Q3), and the decimation-recovery quorum-bypass is
+**gated on CC ratification** (CIRISRegistry#108) and is deliberately **NOT on
+`main`** — an un-grounded halt authority would itself violate the mission. The
+discipline of refusing to ship power before it is constitutionally falsifiable *is*
+the mission working.
+
 ---
 
 ## 2. PROTOCOLS (WHO)
@@ -277,6 +331,15 @@ with deliberate cross-repo coordination.
   `ciris-crypto` (`docs/THREAT_MODEL.md` AV-40). One audit surface, one
   advisory feed, one place a primitive can be reviewed or replaced —
   e.g. the v2.8.0 AES-GCM backend swap (#26) touched exactly one module.
+  - **One acknowledged boundary (#91):** the YubiKey PIV custody chain
+    (`accord_custody_attestation.rs`) verifies an external **vendor PKI** —
+    Yubico's X.509 attestation certs, SHA256-RSA — through `x509-parser`
+    (which uses `ring`), *not* `ciris-crypto`. This is **consuming Yubico's
+    attestation, not implementing a federation primitive** (ciris-crypto has
+    no X.509 path-validation surface, by design), so it is out of the AV-40
+    authority's scope rather than a violation of it. It is named here so the
+    boundary is a conscious decision, not a silent drift; if a federation
+    X.509 need ever arises, it routes through the authority.
 
 ## 3. SCHEMAS (WHAT)
 
@@ -300,6 +363,17 @@ peer claims something an entity never said.
   `bootstrap_keyset/v1.json`, embedded via `include_bytes!`.
 - **`FederationEnvelope`** (incoming — CIRISVerify#27) — the federation
   message envelope's canonical signing-bytes.
+- **Accord invocation + lifecycle canonical bytes** (`humanity_accord.rs`) —
+  `Invocation::canonical_bytes` binds the discriminator AND a per-invocation
+  nonce (CC §4.2.1.1 anti-replay: a `notify`/`drill` signature can never replay
+  onto a `CONSTITUTIONAL` kill). The closed `accord:invoke:*` vocabulary signs
+  `INVOCATION_DOMAIN_PREFIX`; the **separate** `accord:lifecycle:active`
+  resumption signs `LIFECYCLE_DOMAIN_PREFIX` — distinct domains so no signature
+  crosses the invoke↔lifecycle scope boundary ("wire-isolated AND scope-isolated",
+  CC 4.2.1). The lifecycle layout is verify-authored (first impl) and **flagged
+  for CEG ratification** (CIRISRegistry#109) before freeze — exactly the §3
+  mandate: a new signed-byte layout is a coordinated wire definition, never a
+  casual edit.
 
 **The mandate:** a canonical-bytes change is a coordinated, versioned
 wire break — `schema_version` tag, flag-day, never a casual edit. The
@@ -340,7 +414,24 @@ discipline is enforced by known-answer tests (NIST GCM vectors in
 - **M-of-N threshold-signature verifier** (v3.1.0,
   `src/ciris-verify-core/src/threshold.rs`) — generic hybrid M-of-N
   primitive powering federation-keyset rotation (#31) and constitutional
-  shutdown (#32 Ask 3). Mitigates single-steward compromise.
+  shutdown (#32 Ask 3). Mitigates single-steward compromise. The federation's
+  *one* quorum rule is **strict majority** (`QuorumPolicy::validate`, `2M > N`,
+  no `M==1` escape); `verify_quorum_policy` (founder-only) and
+  `verify_threshold_signatures` (role-agnostic) are its two evaluators.
+- **The HUMANITY_ACCORD kill-switch surface** (v6.x, §1.7) — the Accord's halt
+  mandate as logic, on the threshold primitive:
+  - `accord_custody_attestation.rs` — hardware-unforgeable holder custody
+    (#91, real-hardware-validated); fail-closed `CustodyError`.
+  - `accord_genesis.rs` — growable M-of-N family genesis + the entrenchment-
+    preserving membership-change `supersedes` (accord-specific and the general
+    `build/verify_membership_change`, #95/#104), `roster = family.members`
+    one-seat-per-human (#96), and the no-TOFU pinned `humanity_accord_genesis()`
+    recognition root (#107).
+  - `humanity_accord.rs` — `verify_invocation` over the 2/3 quorum, the closed
+    invocation vocabulary + the wire-isolated `accord:lifecycle:active`
+    resumption (#95 Gap 1).
+  - Forward: `FSD/FSD-004` (live-quorum decimation recovery) — designed, gated
+    on CC ratification (CIRISRegistry#108), **not on `main`**.
 - **`BuildManifest::to_attestation_entries`** (v3.4.0,
   `src/ciris-verify-core/src/security/build_manifest.rs`) — emits the
   `provenance:build_manifest:{target}` PASS entry after
@@ -469,6 +560,16 @@ CIRISVerify does not stand alone. The authoritative federation map is
   canonical-bytes tightening (TupleHash128 / domain-separation
   labels per §5.2.1 scaffold note; strict JCS on §10.2 body
   canonicalization). Verify joins per the §11.2 amendment process.
+- **The HUMANITY_ACCORD kill-switch is a cross-repo guarantee** (§1.7). Verify
+  owns the verification half (custody, roster, invocation, the pinned genesis
+  root); the rest is coordinated: CIRISServer adopts the admission gate
+  (CIRISServer#64) + roster=`family.members` rule (#61, shipped server-side) +
+  the genesis bake; CIRISPersist seeds `federation_keys`/`federation_families`
+  from the baked genesis (#249); CIRISRegistry holds the two constitutional
+  ratifications — the `accord:lifecycle` preimage (#109) and the live-quorum
+  decimation recovery (#108). The **safe-mesh floor** discipline holds: no
+  canonical-mesh bootstrap until the kill-switch is enforceable under genuine
+  distributed-human custody.
 
 ## 8. License-locked mission preservation
 
@@ -505,6 +606,8 @@ code.
 - `~/CIRISAgent/ACCORD.md` — Meta-Goal M-1 + the six principles (canonical)
 - `~/CIRISAgent/FSD/PROOF_OF_BENEFIT_FEDERATION.md` — the federation primitive + threat model
 - `FSD/FSD-001_CIRISVERIFY_PROTOCOL.md` — full protocol specification
+- `FSD/FSD-004_ACCORD_DECIMATION_RECOVERY.md` — live-quorum kill-switch recovery (design, gated on ratification)
+- `docs/ACCORD_KEY_GENESIS_RUNBOOK.md` — the HUMANITY_ACCORD provisioning ceremony (the human + hardware roots of §1.7)
 - `docs/THREAT_MODEL.md`, `docs/FEDERATION_THREAT_MODEL.md` — adversary model + AVs
 - `docs/HOW_IT_WORKS.md` — end-to-end verification walkthrough
 - `docs/BENCHMARKS.md` — performance, the leak gate, SOTA comparison
