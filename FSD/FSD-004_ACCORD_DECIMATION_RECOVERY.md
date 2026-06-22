@@ -1,10 +1,9 @@
 # FSD-004 — Accord Live-Quorum Operation & Recovery Under Decimation
 
-**Status:** DRAFT (2026-06-21; rewritten to the live-quorum model 2026-06-21).
-Design specification — **not yet ratified, not yet implemented.** Changing how the
-kill-switch quorum is computed is a §9 governance change; nothing here ships
-without (a) constitutional grounding in CEG §9 / the CIRIS Constitution and (b) an
-adversarial review on par with #91/#95.
+**Status:** RATIFIED (constitutional grounding landed) — **not yet implemented.**
+Changing how the kill-switch quorum is computed is a §9 governance change; nothing
+here ships without (a) constitutional grounding in CEG §9 / the CIRIS Constitution —
+**DONE: ratified in [CC 0.3 §4.2.6 `live-quorum`](https://github.com/CIRISAI/CIRISRegistry/blob/main/FSD/CIRIS_Constitution/part_4_composition_governance.md)** (CIRISRegistry `c27d794`, issue #108; ratified by the founder under the CC 4.5.1 maturity gate) — and (b) an adversarial review on par with #91/#95. Phase 0 is therefore complete on the constitutional axis; Phases 1–3 (implementation) are unblocked. (Originally DRAFT 2026-06-21; rewritten to the live-quorum model 2026-06-21.)
 
 **Tracks:** CIRISVerify#98. **Builds on:** FSD-001 (protocol), the v6.8.0 growable
 M-of-N accord family + membership-change `supersedes` (`ciris_verify_core::
@@ -361,10 +360,12 @@ exist to bound.
   sufficient, or is a duress canary warranted?
 - **Q4 — Recursion termination / minimum viable accord.** Below some `\|L\|`, does
   the accord enter a steward-custodied regime rather than a 1-of-1?
-- **Q5 — Constitutional grounding.** This redefines the §9 quorum (standing-roster →
-  live set). It needs an explicit basis in the Constitution / CEG §9 plus a proof
-  that the live quorum *restores* the accord and cannot be used to *weaken* or
-  *seize* it beyond the §8 residual. *(Tracked for CC ratification — CIRISRegistry.)*
+- **Q5 — Constitutional grounding — RESOLVED.** Ratified in **CC 0.3 §4.2.6**
+  (CIRISRegistry `c27d794`, issue #108). The live quorum is grounded in CC §4.2 /
+  CEG §9; the *restores-not-seizes* proof (live quorum restores operability, cannot
+  forge or seize the accord beyond the §8 seize-and-suppress residual) is the
+  entrenchment-proof paragraph of §4.2.6. Ratified by the founder under the
+  CC 4.5.1 maturity gate (pre-maturity authority over the entrenched §4.2 surface).
 - **Q6 — HF↔RNS relay/gateway backbone (deployment).** The always-listening,
   off-grid, EMP-hardened, geographically-distributed Transport Nodes that bridge HF
   proof-of-life into the mesh (§4.6) are infrastructure the adversary will target —
@@ -388,8 +389,10 @@ exist to bound.
 
 ## 12. Implementation phases (when grounded + reviewed)
 
-1. **Phase 0 — ratify.** Resolve Q1–Q5; constitutional grounding; threat-model
-   sign-off. *No code.*
+1. **Phase 0 — ratify.** Q1 resolved (fire floor = 1); **Q5 resolved (constitutional
+   grounding — CC 0.3 §4.2.6)**. Remaining before code: Q2 (window calibration),
+   Q3 (duress), Q4 (recursion floor), and the threat-model sign-off / adversarial
+   review. *No code until those close.*
 2. **Phase 1 — live-quorum tally + roster change.** `accord_proposal` /
    `accord_participation` / `accord_decision` objects + `tally_live_quorum` +
    `verify_membership_change_by_live_quorum`, reusing the membership-change core.
