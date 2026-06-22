@@ -127,16 +127,29 @@ change the key). This is the "a specific human was physically present" property.
 ```sh
 # (already in FIPS Approved Mode from §3.) Enter PIN, then TOUCH the key when it blinks.
 ykman piv keys generate --algorithm ED25519 --pin-policy ONCE --touch-policy ALWAYS 9c pub_9c.pem
+
+# REQUIRED: populate slot 9c's CERTIFICATE object with a self-signed cert. The
+# raw keygen above leaves the slot with a key but NO cert, and the PKCS#11 layer
+# (cryptoki / `ciris-verify token probe`) enumerates keys *via their certificate*
+# — so without this the key is invisible to PKCS#11, and the CN is the label
+# `token probe --key-label` matches. CN = the per-key label (A1/B1/C1…). PIN + TOUCH.
+ykman piv keys export 9c pub_9c.pem                                  # (re-export if not kept from keygen)
+ykman piv certificates generate --subject "CN=ciris-accord-A1" 9c pub_9c.pem
 ```
 
 - **Do not** allow off-device generation + import — `attest` only works on
   on-device-generated keys (an imported key has no valid attestation, by design).
 - `--algorithm ED25519` needs **ykman ≥ 5.5** and **firmware ≥ 5.7** (§2/§3).
+- The **self-signed slot cert is a separate object from the f9 *attestation* cert**
+  — it does NOT interfere with attestation (`attest 9c` attests the bare key); it
+  exists only so PKCS#11 can discover + label the key. Set `CN` to this key's
+  federation label (`A1` / `B1` / `C1`, or your `ciris-accord-<label>` convention).
 - `pub_9c.pem` is the public key (the raw 32-byte Ed25519 pubkey is its SPKI tail).
   It is **regenerable from the key anytime** (`ykman piv keys attest 9c` embeds it),
   so it is a convenience record, not a must-save artifact.
 - **Once 9c is generated on a key you're keeping, do NOT regenerate it** — that key
-  *is* the accord identity; regenerating rotates it.
+  *is* the accord identity; regenerating rotates it. (Re-issuing the slot *cert*
+  with a new CN is fine — it doesn't touch the key.)
 
 **Capture the attestation chain + validate (read-only).** This proves the key is a
 genuine FIPS YubiKey to the §91 custody gate, and is the input to §5's custody
