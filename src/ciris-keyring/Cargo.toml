@@ -36,6 +36,14 @@ serde_json.workspace = true
 p256 = { workspace = true }
 ed25519-dalek.workspace = true
 rand_core.workspace = true
+# pkcs11 (cryptoki) builds on ALL targets for feature parity (CIRISVerify#80
+# follow-up — so the wheel/FFI can carry `default = ["pkcs11"]` uniformly across
+# linux/macos/windows/android/ios; coordinated with the ciris-server cut). cryptoki
+# is libloading-based (no PKCS#11 .so linked at build, cryptoki-sys ships
+# pre-generated bindings → no libclang) so it cross-compiles; the backend is simply
+# unavailable at runtime on a target with no token (`open_pkcs11` errors honestly).
+# Was Linux/Windows-only — promoted here. NB this is NOT TPM (tss-esapi stays gated).
+cryptoki = { version = "0.12", optional = true }
 
 # Cross-platform data directories for key persistence.
 # v6 (windows-sys 0.59 → windows-targets raw-dylib) — the old dirs 5 →
@@ -77,8 +85,8 @@ objc2-foundation = "0.3"
 block2 = "0.6"
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+# TPM 2.0 is genuinely Linux/Windows-only hardware → stays target-gated.
 tss-esapi = { version = "7.4", optional = true }
-cryptoki = { version = "0.12", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.9"

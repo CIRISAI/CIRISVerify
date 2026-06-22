@@ -693,7 +693,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-build-tool"
-version = "6.11.0"
+version = "6.12.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -716,7 +716,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "6.11.0"
+version = "6.12.0"
 dependencies = [
  "aws-lc-rs",
  "chacha20poly1305",
@@ -751,7 +751,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "6.11.0"
+version = "6.12.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -790,7 +790,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "6.11.0"
+version = "6.12.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -810,7 +810,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "6.11.0"
+version = "6.12.0"
 dependencies = [
  "android_system_properties",
  "anyhow",
@@ -860,7 +860,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "6.11.0"
+version = "6.12.0"
 dependencies = [
  "aes-gcm",
  "android_logger",
@@ -3430,9 +3430,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.14"
+version = "0.11.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "434b42fec591c96ef50e21e886936e66d3cc3f737104fdb9b737c40ffb94c098"
+checksum = "4fcb935c5bec503c2f0e306bdd3e58bb9029dcb14fa8d9ac76e3a5256ac0763e"
 dependencies = [
  "bytes",
  "getrandom 0.3.4",
