@@ -184,7 +184,7 @@ impl std::error::Error for CustodyError {}
 fn custody_envelope(
     holder_key_id: &str,
     ed25519_pubkey_b64: &str,
-    mldsa65_pubkey_b64: &str,
+    mldsa65_pubkey_sha256: &str,
     attestation_9c_sha256: &str,
     attestation_chain_sha256: &[String],
     custody_tier: &str,
@@ -199,9 +199,15 @@ fn custody_envelope(
         "ed25519_public_key_base64".to_string(),
         json!(ed25519_pubkey_b64),
     );
+    // The ML-DSA-65 public key is 1952 B (~2604 b64 chars) — embedding it inline
+    // blew the hardware-Ed25519 preimage past the YubiKey's PKCS#11 EdDSA input
+    // ceiling once the (also-committed) cert chain grew. The verifier resolves the
+    // holder's ML-DSA key out-of-band (the `holder_member`) and never reads this
+    // field, so we COMMIT to its sha256 instead — same pattern as the cert hashes
+    // (#113) — keeping the preimage small while preserving a tamper-evident binding.
     m.insert(
-        "mldsa65_public_key_base64".to_string(),
-        json!(mldsa65_pubkey_b64),
+        "mldsa65_public_key_sha256".to_string(),
+        json!(mldsa65_pubkey_sha256),
     );
     // #113: sign a COMMITMENT to the certs, not the certs. The slot-9c cert hash;
     // and the chain above the 9c leaf, leaf-first: sha256 of each of [f9,
@@ -246,7 +252,7 @@ pub async fn produce_accord_custody_attestation(
     let envelope = custody_envelope(
         holder.key_id(),
         &b64.encode(&ed_pub),
-        &b64.encode(&mldsa_pub),
+        &sha256_hex(&mldsa_pub),
         &sha256_hex(attestation_9c_der),
         &chain_sha256,
         custody_tier,
@@ -346,6 +352,26 @@ pub fn verify_accord_custody_attestation(
         return Err(CustodyError::Malformed {
             field: "ed25519_public_key_base64 (≠ resolved member key)".to_string(),
         });
+    }
+    // The ML-DSA-65 half is hash-COMMITTED (not inline) to keep the hardware
+    // Ed25519 preimage under the YubiKey's EdDSA input ceiling (#116). Keep it
+    // load-bearing anyway: bind the committed sha256 to the resolved member's
+    // ML-DSA key (RequireHybrid guarantees the member has one once the signature
+    // verified above), so a holder can't commit a different PQC half than the one
+    // the gate trusts — the same record-drift gate the ed25519 field gets.
+    if let Some(member_mldsa_b64) = &holder_member.mldsa65_public_key_base64 {
+        let member_mldsa = base64::engine::general_purpose::STANDARD
+            .decode(member_mldsa_b64)
+            .map_err(|_| CustodyError::Malformed {
+                field: "holder mldsa65 pubkey (base64)".to_string(),
+            })?;
+        if !sha256_hex(&member_mldsa)
+            .eq_ignore_ascii_case(str_field(env, "mldsa65_public_key_sha256")?)
+        {
+            return Err(CustodyError::Malformed {
+                field: "mldsa65_public_key_sha256 (≠ resolved member key)".to_string(),
+            });
+        }
     }
 
     // `custody_tier` is a holder self-claim — allowlist it so a holder cannot
@@ -913,6 +939,49 @@ mod tests {
         ));
     }
 
+    #[tokio::test]
+    async fn committed_mldsa_must_match_resolved_member(/* #116 */) {
+        // The ML-DSA half is hash-committed (not inline) so it fits the token's
+        // EdDSA ceiling — but it must stay load-bearing: a member whose ML-DSA key
+        // hashes to something other than the committed value is refused, even with
+        // a matching ed25519 half. (Else the commitment would be decorative.)
+        use crate::self_at_login::HybridSigningIdentity;
+        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
+
+        let seed = [19u8; 32];
+        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
+        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
+        let holder = HybridSigningIdentity::new(
+            "accord-holder-a1",
+            Ed25519Signer::from_seed(&seed).unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        );
+        let obj = produce_accord_custody_attestation(
+            &holder,
+            &c9,
+            &[f9.as_slice()],
+            CUSTODY_TIER_PORTABLE_2FA,
+            "2026-06-20T00:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        // Resolve a member with the SAME ed25519 half but a DIFFERENT ML-DSA key.
+        let mut swapped = holder.directory_member().unwrap();
+        let other_mldsa = HybridSigningIdentity::new(
+            "accord-holder-a1",
+            Ed25519Signer::from_seed(&seed).unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        )
+        .directory_member()
+        .unwrap();
+        swapped.mldsa65_public_key_base64 = other_mldsa.mldsa65_public_key_base64;
+        assert!(matches!(
+            verify_accord_custody_attestation(&obj, &swapped, &root).unwrap_err(),
+            CustodyError::Malformed { .. } | CustodyError::SignatureInvalid
+        ));
+    }
+
     #[test]
     fn wrong_kind_object_rejected() {
         let obj = SignedCegObject::new("something_else", "k", "t", serde_json::json!({}));
@@ -987,6 +1056,14 @@ mod tests {
             len_huge.saturating_sub(len_small) < 256,
             "signed preimage grew {} bytes for a 10 KB cert — it must be cert-size-independent (#113)",
             len_huge.saturating_sub(len_small)
+        );
+        // #116: with the certs AND the ML-DSA-65 pubkey (2604 b64 chars) all
+        // hash-committed, the whole signed preimage is now a few hundred bytes —
+        // well under any YubiKey's single-shot EdDSA input ceiling. Lock an
+        // absolute ceiling (the inline-ML-DSA preimage was ~3 KB and failed).
+        assert!(
+            len_small < 1024,
+            "signed preimage is {len_small} bytes — must stay small (was ~3 KB with the ML-DSA pubkey inline, #116)"
         );
         // And the raw certs ARE carried — but only as outer-body evidence, never
         // inside the signed envelope (that is what kept them out of the preimage).
