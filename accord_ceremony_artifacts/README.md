@@ -12,13 +12,10 @@ verify can **bake the no-TOFU genesis recognition root** and use them as fixture
 - `humanity_accord_genesis.json` — the assembled family genesis carrying the
   **2-of-3 founder cosignatures** (`founder_signatures`, 3 collected) over the
   family envelope. This is the seed for `humanity_accord_genesis()` /
-  `HUMANITY_ACCORD_GENESIS_JSON` (accord_genesis.rs).
-  - NOTE: this file is currently the genesis **`.body`** (`{ family,
-    founder_signatures }`). `assemble_accord_family_genesis` returns the full
-    `SignedCegObject`; the CIRISServer node was updated to save the **whole**
-    object, so re-running `POST /v1/accord/genesis/assemble` (the cosigns are
-    deterministic) yields the directly-pasteable `SignedCegObject`. This will be
-    pushed to this PR.
+  `HUMANITY_ACCORD_GENESIS_JSON` (accord_genesis.rs). This is the **full
+  founder-signed `SignedCegObject`** (`kind: accord_family_genesis`, `key_id:
+  humanity-accord`, 3 founder cosignatures) — **directly pasteable** into
+  `HUMANITY_ACCORD_GENESIS_JSON` to bake `humanity_accord_genesis()`.
 - `holders/{A1,A2,B1,B2,C1,C2}.json` — per-key bundles: `{ key_id, holder_record
   (SignedKeyRecord), custody_attestation (SignedCegObject) }`.
 - `custody_attestations/{A1,A2,B1,B2,C1,C2}.json` — the `portable_2fa` custody
