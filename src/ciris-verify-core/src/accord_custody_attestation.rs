@@ -52,6 +52,7 @@
 
 use base64::Engine;
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use x509_parser::der_parser::asn1_rs::FromDer;
 use x509_parser::prelude::*;
 
@@ -66,6 +67,25 @@ pub const ACCORD_CUSTODY_ATTESTATION_KIND: &str = "accord_holder_custody_attesta
 
 /// The custody tier asserted by the portable USB-wrapped mode (#91 / v6.6.0).
 pub const CUSTODY_TIER_PORTABLE_2FA: &str = "portable_2fa";
+
+// #113 — the attestation certs are signed by COMMITMENT, not inline. A YubiKey
+// `CKM_EDDSA` is single-part with a bounded input; the old inline multi-KB hex
+// chain overran it (`CKR_DATA_LEN_RANGE`). The signed envelope carries the
+// sha256 of each cert; the cert DERs themselves ride in the (unsigned) outer
+// `SignedCegObject.body` as hash-bound evidence the verifier recomputes.
+/// Signed-envelope field: hex sha256 of the slot-9c attestation cert DER.
+const COMMIT_9C_SHA256: &str = "yubikey_piv_attestation_9c_sha256";
+/// Signed-envelope field: hex sha256 of each chain cert DER, leaf-first.
+const COMMIT_CHAIN_SHA256: &str = "yubikey_attestation_chain_sha256";
+/// Outer-body evidence field: the slot-9c attestation cert DER, hex.
+const EVIDENCE_9C_HEX: &str = "yubikey_piv_attestation_9c_hex";
+/// Outer-body evidence field: each chain cert DER, hex, leaf-first.
+const EVIDENCE_CHAIN_HEX: &str = "yubikey_attestation_chain_hex";
+
+/// Hex sha256 of `bytes` — the cert commitment encoding (#113).
+fn sha256_hex(bytes: &[u8]) -> String {
+    hex::encode(Sha256::digest(bytes))
+}
 
 /// The custody tiers the verifier recognizes. A holder-signed bundle asserting
 /// any other tier is rejected — the tier is an attested self-claim, so it must
@@ -165,22 +185,37 @@ fn custody_envelope(
     holder_key_id: &str,
     ed25519_pubkey_b64: &str,
     mldsa65_pubkey_b64: &str,
-    attestation_9c_hex: &str,
-    attestation_chain_hex: &[String],
+    attestation_9c_sha256: &str,
+    attestation_chain_sha256: &[String],
     custody_tier: &str,
     signed_at: &str,
 ) -> Value {
-    json!({
-        "holder_key_id": holder_key_id,
-        "ed25519_public_key_base64": ed25519_pubkey_b64,
-        "mldsa65_public_key_base64": mldsa65_pubkey_b64,
-        "yubikey_piv_attestation_9c_hex": attestation_9c_hex,
-        // The path above the 9c leaf, leaf-first: [f9, …intermediates…] up to but
-        // excluding the pinned root. The verifier pins the root out-of-band.
-        "yubikey_attestation_chain_hex": attestation_chain_hex,
-        "custody_tier": custody_tier,
-        "signed_at": signed_at,
-    })
+    // Built as an explicit map so the #113 commitment field names can be the
+    // shared consts (the json! macro only accepts literal keys). JCS sorts keys
+    // at signing, so insertion order is immaterial to the signed bytes.
+    let mut m = serde_json::Map::new();
+    m.insert("holder_key_id".to_string(), json!(holder_key_id));
+    m.insert(
+        "ed25519_public_key_base64".to_string(),
+        json!(ed25519_pubkey_b64),
+    );
+    m.insert(
+        "mldsa65_public_key_base64".to_string(),
+        json!(mldsa65_pubkey_b64),
+    );
+    // #113: sign a COMMITMENT to the certs, not the certs. The slot-9c cert hash;
+    // and the chain above the 9c leaf, leaf-first: sha256 of each of [f9,
+    // …intermediates…] up to but excluding the pinned root (the verifier pins the
+    // root out-of-band). The cert DERs themselves ride as hash-bound evidence in
+    // the outer body — keeping the hardware-Ed25519 preimage small.
+    m.insert(COMMIT_9C_SHA256.to_string(), json!(attestation_9c_sha256));
+    m.insert(
+        COMMIT_CHAIN_SHA256.to_string(),
+        json!(attestation_chain_sha256),
+    );
+    m.insert("custody_tier".to_string(), json!(custody_tier));
+    m.insert("signed_at".to_string(), json!(signed_at));
+    Value::Object(m)
 }
 
 /// Produce a signed accord-holder custody attestation — the holder hybrid-signs
@@ -203,20 +238,36 @@ pub async fn produce_accord_custody_attestation(
     let b64 = base64::engine::general_purpose::STANDARD;
     let ed_pub = holder.ed25519_public_key().await?;
     let mldsa_pub = holder.mldsa65_public_key().await?;
-    let chain_hex: Vec<String> = attestation_chain_ders.iter().map(hex::encode).collect();
+    // #113: the holder signs a commitment (sha256 per cert), not the cert bytes.
+    let chain_sha256: Vec<String> = attestation_chain_ders
+        .iter()
+        .map(|d| sha256_hex(d))
+        .collect();
     let envelope = custody_envelope(
         holder.key_id(),
         &b64.encode(&ed_pub),
         &b64.encode(&mldsa_pub),
-        &hex::encode(attestation_9c_der),
-        &chain_hex,
+        &sha256_hex(attestation_9c_der),
+        &chain_sha256,
         custody_tier,
         signed_at,
     );
     let signed = holder.sign_envelope_async(envelope).await?;
-    let body = serde_json::to_value(&signed).map_err(|e| VerifyError::IntegrityError {
+    let mut body = serde_json::to_value(&signed).map_err(|e| VerifyError::IntegrityError {
         message: format!("serialize custody attestation: {e}"),
     })?;
+    // Attach the attestation certs as hash-bound evidence in the (unsigned) outer
+    // body — bound to the holder signature through the sha256 commitments in the
+    // signed envelope, so tampering breaks verification, while the actual
+    // multi-KB cert bytes never enter the hardware-Ed25519 preimage (#113).
+    let chain_hex: Vec<String> = attestation_chain_ders.iter().map(hex::encode).collect();
+    if let Some(map) = body.as_object_mut() {
+        map.insert(
+            EVIDENCE_9C_HEX.to_string(),
+            json!(hex::encode(attestation_9c_der)),
+        );
+        map.insert(EVIDENCE_CHAIN_HEX.to_string(), json!(chain_hex));
+    }
     Ok(SignedCegObject::new(
         ACCORD_CUSTODY_ATTESTATION_KIND,
         holder.key_id(),
@@ -306,26 +357,53 @@ pub fn verify_accord_custody_attestation(
             detail: format!("unrecognized custody_tier {custody_tier:?}"),
         });
     }
-    let attest_9c = hex::decode(str_field(env, "yubikey_piv_attestation_9c_hex")?)
+    // #113: the certs travel as hash-bound evidence in the OUTER body (unsigned),
+    // committed to by the sha256 fields INSIDE the signed envelope. Recompute the
+    // digest of each supplied cert and require it to equal the signed commitment —
+    // this binds the (large) certs to the (small) holder signature without ever
+    // putting them in the Ed25519 preimage. A swapped cert breaks the equality.
+    let attest_9c = hex::decode(str_field(&obj.body, EVIDENCE_9C_HEX)?)
         .map_err(|_| CustodyError::CertParse { which: "9c" })?;
-    let chain_vals = env
-        .get("yubikey_attestation_chain_hex")
+    if !sha256_hex(&attest_9c).eq_ignore_ascii_case(str_field(env, COMMIT_9C_SHA256)?) {
+        return Err(CustodyError::Malformed {
+            field: "yubikey_piv_attestation_9c (evidence ≠ signed sha256 commitment)".to_string(),
+        });
+    }
+    let commit_chain = env
+        .get(COMMIT_CHAIN_SHA256)
         .and_then(Value::as_array)
         .ok_or(CustodyError::Malformed {
-            field: "yubikey_attestation_chain_hex".to_string(),
+            field: COMMIT_CHAIN_SHA256.to_string(),
         })?;
-    let chain: Vec<Vec<u8>> = chain_vals
-        .iter()
-        .map(|v| {
-            v.as_str()
-                .ok_or(CustodyError::Malformed {
-                    field: "yubikey_attestation_chain_hex[]".to_string(),
-                })
-                .and_then(|s| {
-                    hex::decode(s).map_err(|_| CustodyError::CertParse { which: "chain" })
-                })
-        })
-        .collect::<Result<_, _>>()?;
+    let evidence_chain = obj
+        .body
+        .get(EVIDENCE_CHAIN_HEX)
+        .and_then(Value::as_array)
+        .ok_or(CustodyError::Malformed {
+            field: EVIDENCE_CHAIN_HEX.to_string(),
+        })?;
+    if evidence_chain.len() != commit_chain.len() {
+        return Err(CustodyError::Malformed {
+            field: "chain evidence length ≠ signed commitment length".to_string(),
+        });
+    }
+    let mut chain: Vec<Vec<u8>> = Vec::with_capacity(evidence_chain.len());
+    for (ev, com) in evidence_chain.iter().zip(commit_chain.iter()) {
+        let der = hex::decode(ev.as_str().ok_or(CustodyError::Malformed {
+            field: format!("{EVIDENCE_CHAIN_HEX}[]"),
+        })?)
+        .map_err(|_| CustodyError::CertParse { which: "chain" })?;
+        let com = com.as_str().ok_or(CustodyError::Malformed {
+            field: format!("{COMMIT_CHAIN_SHA256}[]"),
+        })?;
+        if !sha256_hex(&der).eq_ignore_ascii_case(com) {
+            return Err(CustodyError::Malformed {
+                field: "yubikey_attestation_chain (evidence ≠ signed sha256 commitment)"
+                    .to_string(),
+            });
+        }
+        chain.push(der);
+    }
     let chain_refs: Vec<&[u8]> = chain.iter().map(Vec::as_slice).collect();
     let holder_ed = base64::engine::general_purpose::STANDARD
         .decode(&holder_member.ed25519_public_key_base64)
@@ -847,6 +925,120 @@ mod tests {
         assert!(matches!(
             verify_accord_custody_attestation(&obj, &m, &[]).unwrap_err(),
             CustodyError::WrongKind { .. }
+        ));
+    }
+
+    #[tokio::test]
+    async fn signed_preimage_is_independent_of_chain_size(/* #113 */) {
+        // The bug: the holder's hardware Ed25519 (YubiKey CKM_EDDSA, single-part,
+        // bounded input) was handed the full attestation chain INLINE → a preimage
+        // that grew with every cert (several KB) → CKR_DATA_LEN_RANGE. The fix
+        // signs a per-cert sha256 commitment, so the signed preimage no longer
+        // depends on cert size at all — it stays in the same small class as a
+        // normal accord holder record (whose ~2.6 KB is the ML-DSA-65 pubkey, not
+        // the certs, and which signs fine on the token). Lock the *invariant*:
+        // blowing the chain up by ~10 KB must NOT change the signed preimage.
+        // (No token needed — we measure the JCS bytes the signer would consume.)
+        use crate::self_at_login::HybridSigningIdentity;
+        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
+
+        let seed = [21u8; 32];
+        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
+        let (c9, f9, _root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
+        let holder = HybridSigningIdentity::new(
+            "accord-holder-a1",
+            Ed25519Signer::from_seed(&seed).unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        );
+        let preimage_len = |obj: &SignedCegObject| {
+            jcs::canonicalize(obj.body.get("signed_envelope").unwrap())
+                .unwrap()
+                .len()
+        };
+
+        let obj_small = produce_accord_custody_attestation(
+            &holder,
+            &c9,
+            &[f9.as_slice()],
+            CUSTODY_TIER_PORTABLE_2FA,
+            "2026-06-20T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        let len_small = preimage_len(&obj_small);
+
+        // A pathologically large chain — 10 KB of extra "cert" bytes.
+        let huge = vec![0xABu8; 10 * 1024];
+        let obj_huge = produce_accord_custody_attestation(
+            &holder,
+            &c9,
+            &[f9.as_slice(), huge.as_slice()],
+            CUSTODY_TIER_PORTABLE_2FA,
+            "2026-06-20T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        let len_huge = preimage_len(&obj_huge);
+
+        // The commitment is fixed-width (64 hex chars per cert), so one extra cert
+        // adds only its 64-char hash to the signed bytes — NOT its 10 KB. The
+        // preimage must not balloon with cert size.
+        assert!(
+            len_huge.saturating_sub(len_small) < 256,
+            "signed preimage grew {} bytes for a 10 KB cert — it must be cert-size-independent (#113)",
+            len_huge.saturating_sub(len_small)
+        );
+        // And the raw certs ARE carried — but only as outer-body evidence, never
+        // inside the signed envelope (that is what kept them out of the preimage).
+        assert!(obj_small.body.get(EVIDENCE_9C_HEX).is_some());
+        let env_small = obj_small.body.get("signed_envelope").unwrap();
+        assert!(!env_small.as_object().unwrap().contains_key(EVIDENCE_9C_HEX));
+        assert!(!env_small
+            .as_object()
+            .unwrap()
+            .contains_key(EVIDENCE_CHAIN_HEX));
+    }
+
+    #[tokio::test]
+    async fn tampered_evidence_cert_breaks_the_commitment(/* #113 */) {
+        // The certs live in the unsigned outer body — so prove they are *bound*:
+        // swapping an evidence cert that no longer matches the signed sha256
+        // commitment must fail closed (else the hash-commitment would be hollow).
+        use crate::self_at_login::HybridSigningIdentity;
+        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
+
+        let seed = [22u8; 32];
+        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
+        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
+        let holder = HybridSigningIdentity::new(
+            "accord-holder-a1",
+            Ed25519Signer::from_seed(&seed).unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        );
+        let member = holder.directory_member().unwrap();
+        let mut obj = produce_accord_custody_attestation(
+            &holder,
+            &c9,
+            &[f9.as_slice()],
+            CUSTODY_TIER_PORTABLE_2FA,
+            "2026-06-20T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        // Baseline: it verifies.
+        assert!(verify_accord_custody_attestation(&obj, &member, &root).is_ok());
+
+        // Flip a byte of the 9c evidence cert (still valid hex) — commitment mismatch.
+        let mut tampered = c9.clone();
+        let last = tampered.len() - 1;
+        tampered[last] ^= 0x01;
+        obj.body.as_object_mut().unwrap().insert(
+            EVIDENCE_9C_HEX.to_string(),
+            serde_json::json!(hex::encode(&tampered)),
+        );
+        assert!(matches!(
+            verify_accord_custody_attestation(&obj, &member, &root).unwrap_err(),
+            CustodyError::Malformed { .. }
         ));
     }
 }
