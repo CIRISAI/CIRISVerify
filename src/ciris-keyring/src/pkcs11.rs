@@ -19,11 +19,23 @@
 //! ## How a YubiKey is reached
 //!
 //! Point `Pkcs11Config::module_path` at the token's PKCS#11 module — Yubico's
-//! `libykcs11` (PIV) or OpenSC's `opensc-pkcs11.so` — set the user PIN and the
-//! key's `CKA_LABEL` / `CKA_ID` (the PIV slot, e.g. `9c` digital-signature), and
-//! `open_pkcs11_signer` logs in, locates the key, and reads its public key.
-//! Each `HardwareSigner::sign` opens a session, logs in, and runs `C_Sign` on
-//! the token — **the private key never leaves the hardware**.
+//! `libykcs11` (PIV) or OpenSC's `opensc-pkcs11.so` — set the user PIN and a key
+//! selector, and `open_pkcs11_signer` logs in, locates the key, and reads its
+//! public key. Each `HardwareSigner::sign` opens a session, logs in, and runs
+//! `C_Sign` on the token — **the private key never leaves the hardware**.
+//!
+//! ## Selecting a YubiKey PIV slot — prefer `CKA_ID` (CIRISVerify#112)
+//!
+//! ykcs11 names objects **per class**, so a single `CKA_LABEL` cannot match both
+//! the private and public halves of a slot: slot `9c` is `"Private key for
+//! Digital Signature"` / `"Public key for Digital Signature"` / `"X.509
+//! Certificate for Digital Signature"`. Only `CKA_ID` is identical across the
+//! triple (`9a→01, 9c→02, 9d→03, 9e→04`). So the robust selector is
+//! `Pkcs11Config { key_id: Some(vec![0x02]), key_label: None, .. }` for slot 9c.
+//! A `key_label` naming the **private** object still works: `open` finds the
+//! private key with it, reads its `CKA_ID`, and resolves the public key by that
+//! id (never by the private label). Tokens with no `CKA_ID` fall back to the
+//! label path.
 
 use std::path::PathBuf;
 
@@ -182,6 +194,10 @@ mod real {
         alias: String,
         algorithm: ClassicalAlgorithm,
         public_key: Vec<u8>,
+        /// The slot's `CKA_ID`, resolved at open from the private key — the
+        /// portable join key across the `{private, public, certificate}` triple.
+        /// `None` for a token that exposes no `CKA_ID` (legacy label-only path).
+        resolved_id: Option<Vec<u8>>,
     }
 
     impl Pkcs11Signer {
@@ -199,16 +215,35 @@ mod real {
                 .ok_or_else(|| err(format!("no token in slot index {}", config.slot_index)))?;
 
             // Read the public key + key type in a logged-in session, then drop it.
-            let (algorithm, public_key) = {
+            let (algorithm, public_key, resolved_id) = {
                 let session = ctx
                     .open_ro_session(slot)
                     .map_err(|e| err(format!("open session: {e}")))?;
                 login(&session, config)?;
-                let pub_handle = find_key(&session, config, ObjectClass::PUBLIC_KEY)?;
+                // ykcs11 labels objects PER CLASS — the caller's `key_label` names
+                // the PRIVATE object ("Private key for Digital Signature"), whose
+                // public counterpart carries a *different* label ("Public key for
+                // …"). Only `CKA_ID` is shared across the slot's {private, public,
+                // certificate} triple. So find the private key with the caller's
+                // config, read its `CKA_ID`, and resolve the public key by that id
+                // — never by the (private-key) label, which matches no public
+                // object and used to fail `open()` with `KeyNotFound`
+                // (CIRISVerify#112).
+                let priv_handle = find_key(&session, config, ObjectClass::PRIVATE_KEY)?;
+                let resolved_id = read_key_id(&session, priv_handle)
+                    .ok()
+                    .filter(|id| !id.is_empty());
+                let pub_handle = match &resolved_id {
+                    Some(id) => find_object_by_class_id(&session, ObjectClass::PUBLIC_KEY, id)?,
+                    // A token that exposes no `CKA_ID` (e.g. SoftHSM keyed by label
+                    // only, where labels are not class-specific) — fall back to the
+                    // legacy label lookup.
+                    None => find_key(&session, config, ObjectClass::PUBLIC_KEY)?,
+                };
                 let key_type = read_key_type(&session, pub_handle)?;
                 let algorithm = algorithm_for(key_type)?;
                 let public_key = read_public_key(&session, pub_handle, algorithm)?;
-                (algorithm, public_key)
+                (algorithm, public_key, resolved_id)
             };
 
             Ok(Self {
@@ -218,6 +253,7 @@ mod real {
                 alias: alias.to_string(),
                 algorithm,
                 public_key,
+                resolved_id,
             })
         }
 
@@ -227,7 +263,14 @@ mod real {
                 .open_ro_session(self.slot)
                 .map_err(|e| err(format!("open session: {e}")))?;
             login(&session, &self.config)?;
-            let priv_handle = find_key(&session, &self.config, ObjectClass::PRIVATE_KEY)?;
+            // Resolve the private key by the `CKA_ID` we pinned at open (the same
+            // join key used for the public lookup), so the per-class label
+            // asymmetry never bites here either (#112). Legacy no-`CKA_ID` tokens
+            // keep the label path.
+            let priv_handle = match &self.resolved_id {
+                Some(id) => find_object_by_class_id(&session, ObjectClass::PRIVATE_KEY, id)?,
+                None => find_key(&session, &self.config, ObjectClass::PRIVATE_KEY)?,
+            };
             match self.algorithm {
                 // Ed25519: CKM_EDDSA signs the message directly (Ed25519 hashes
                 // internally) — byte-identical to the software Ed25519 signer.
@@ -237,7 +280,21 @@ mod real {
                         priv_handle,
                         data,
                     )
-                    .map_err(|e| err(format!("C_Sign (EdDSA): {e}"))),
+                    .map_err(|e| {
+                        // ykcs11 `CKM_EDDSA` is single-part with a bounded input; a
+                        // large preimage returns `CKR_DATA_LEN_RANGE`. Make that
+                        // actionable instead of a generic fault (CIRISVerify#113).
+                        if e.to_string().contains("DATA_LEN_RANGE") {
+                            err(format!(
+                                "C_Sign (EdDSA): preimage is {} bytes — exceeds the token's \
+                                 single-shot EdDSA input limit; keep the signed preimage small \
+                                 (e.g. sign a hash-commitment, not inline certs)",
+                                data.len()
+                            ))
+                        } else {
+                            err(format!("C_Sign (EdDSA): {e}"))
+                        }
+                    }),
                 // ECDSA P-256: CKM_ECDSA signs a pre-computed hash and returns
                 // raw r‖s — prehash with SHA-256 to match the P-256 verifier.
                 ClassicalAlgorithm::EcdsaP256 => {
@@ -285,6 +342,39 @@ mod real {
                     .key_label
                     .clone()
                     .unwrap_or_else(|| "<by id>".to_string()),
+            })
+    }
+
+    /// Read an object's `CKA_ID` — the portable identifier shared across a PIV
+    /// slot's `{private, public, certificate}` triple (unlike `CKA_LABEL`, which
+    /// ykcs11 makes class-specific). See CIRISVerify#112.
+    fn read_key_id(session: &Session, handle: ObjectHandle) -> Result<Vec<u8>, KeyringError> {
+        let attrs = session
+            .get_attributes(handle, &[AttributeType::Id])
+            .map_err(|e| err(format!("get_attributes(Id): {e}")))?;
+        for a in attrs {
+            if let Attribute::Id(id) = a {
+                return Ok(id);
+            }
+        }
+        Err(err("token did not return CKA_ID"))
+    }
+
+    /// Find a single object by `CKA_CLASS + CKA_ID` only (no label) — the robust
+    /// PIV lookup, since ykcs11 labels differ per object class (CIRISVerify#112).
+    fn find_object_by_class_id(
+        session: &Session,
+        class: ObjectClass,
+        id: &[u8],
+    ) -> Result<ObjectHandle, KeyringError> {
+        let template = vec![Attribute::Class(class), Attribute::Id(id.to_vec())];
+        session
+            .find_objects(&template)
+            .map_err(|e| err(format!("find_objects: {e}")))?
+            .into_iter()
+            .next()
+            .ok_or_else(|| KeyringError::KeyNotFound {
+                alias: format!("class={class:?} id={}", hex::encode(id)),
             })
     }
 
