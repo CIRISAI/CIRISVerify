@@ -153,6 +153,50 @@ pub enum PlatformAttestation {
 
     /// Software-only (no attestation)
     Software(SoftwareAttestation),
+
+    /// External hardware-security-token attestation (YubiKey PIV / smartcard
+    /// over PKCS#11) — the user-held secure element, distinct from a platform
+    /// TPM/SE. Maps to [`HardwareType::ExternalSecureElement`]. Carries the
+    /// token's own attestation certificate chain so a verifier can prove the key
+    /// lives on genuine hardware (CIRISVerify#117 — the accord-holder
+    /// custody-attestation → persist `attestation_evidence` path).
+    ExternalSecureElement(ExternalSecureElementAttestation),
+}
+
+/// External secure-element (YubiKey PIV / smartcard) attestation (CIRISVerify#117).
+///
+/// Carries the token's hardware attestation certificate chain — for a YubiKey
+/// PIV slot 9c that is `9c → f9 → …intermediates… ` up to but **excluding** the
+/// pinned root (the verifier pins the root out-of-band, exactly as the accord
+/// custody attestation does). A consumer (CIRISPersist's `accord_holder`
+/// admission gate) validates `attestation_cert_der` chains through
+/// `attestation_chain_der` to its pinned Yubico root, then trusts the extracted
+/// `fips_certified` / `touch_always` floor.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalSecureElementAttestation {
+    /// The §9.4 hardware class the attestation established (e.g.
+    /// `"YubiKey_5_FIPS"`).
+    pub hardware_class: String,
+
+    /// The token's leaf attestation certificate (DER) — for a YubiKey PIV key,
+    /// the slot-9c attestation certificate.
+    pub attestation_cert_der: Vec<u8>,
+
+    /// The certificate chain above the leaf, **leaf-first**, up to but excluding
+    /// the pinned root (DER each). For a YubiKey: `[f9, …intermediates…]`.
+    pub attestation_chain_der: Vec<Vec<u8>>,
+
+    /// Token firmware `major.minor.patch`, if the attestation carried it.
+    pub firmware: Option<String>,
+
+    /// Token serial number, if the attestation carried it.
+    pub serial: Option<u32>,
+
+    /// Whether the token reported FIPS-certified (YubiKey `…3.10`).
+    pub fips_certified: bool,
+
+    /// Whether the key requires touch on every use (YubiKey `…3.8` == always).
+    pub touch_always: bool,
 }
 
 /// Android-specific attestation.

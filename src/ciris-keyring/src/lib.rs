@@ -131,8 +131,9 @@ pub use hw_token::{
 };
 pub use signer::{HardwareSigner, KeyGenConfig};
 pub use types::{
-    AndroidAttestation, ClassicalAlgorithm, HardwareType, IosAttestation, KeyringScope,
-    PlatformAttestation, SoftwareAttestation, StorageDescriptor, TpmAttestation,
+    AndroidAttestation, ClassicalAlgorithm, ExternalSecureElementAttestation, HardwareType,
+    IosAttestation, KeyringScope, PlatformAttestation, SoftwareAttestation, StorageDescriptor,
+    TpmAttestation,
 };
 
 pub use platform::{
