@@ -61,6 +61,7 @@ use crate::error::VerifyError;
 use crate::jcs;
 use crate::self_at_login::SelfSigner;
 use crate::threshold::{verify_threshold_signatures, ThresholdMember, ThresholdSignature};
+use ciris_keyring::{ExternalSecureElementAttestation, PlatformAttestation};
 
 /// CEG `kind` of an accord-holder custody attestation in the outbox.
 pub const ACCORD_CUSTODY_ATTESTATION_KIND: &str = "accord_holder_custody_attestation";
@@ -443,6 +444,64 @@ pub fn verify_accord_custody_attestation(
         verify_yubikey_piv_attestation(&attest_9c, &chain_refs, yubico_root_der, &holder_ed)?;
     verdict.custody_tier = custody_tier;
     Ok(verdict)
+}
+
+/// Convert a **verified** accord-holder custody attestation into a
+/// [`PlatformAttestation::ExternalSecureElement`] (CIRISVerify#117) — the bridge
+/// from a verify-side custody attestation to CIRISPersist's `attestation_evidence`
+/// shape, so a registrar can admit/entrench an `accord_holder` **non-interactively**
+/// from the outbox artifacts (no human / YubiKey in the loop once the ceremony is
+/// done).
+///
+/// Call [`verify_accord_custody_attestation`] FIRST and pass its `obj` plus the
+/// returned [`CustodyVerdict`] here. This does **not** re-verify — the caller's
+/// prior `Ok(verdict)` is the proof; it reads the (already hash-bound) attestation
+/// cert DERs back out of the bundle's evidence and packages them with the verdict's
+/// hardware floor. The consumer re-validates the chain to its own pinned root.
+///
+/// # Errors
+///
+/// [`CustodyError`] if the bundle's evidence certs are missing or malformed.
+pub fn custody_attestation_to_platform_attestation(
+    obj: &SignedCegObject,
+    verdict: &CustodyVerdict,
+) -> Result<PlatformAttestation, CustodyError> {
+    let attestation_cert_der = hex::decode(str_field(&obj.body, EVIDENCE_9C_HEX)?)
+        .map_err(|_| CustodyError::CertParse { which: "9c" })?;
+    let chain_vals = obj
+        .body
+        .get(EVIDENCE_CHAIN_HEX)
+        .and_then(Value::as_array)
+        .ok_or(CustodyError::Malformed {
+            field: EVIDENCE_CHAIN_HEX.to_string(),
+        })?;
+    let attestation_chain_der = chain_vals
+        .iter()
+        .map(|v| {
+            v.as_str()
+                .ok_or(CustodyError::Malformed {
+                    field: format!("{EVIDENCE_CHAIN_HEX}[]"),
+                })
+                .and_then(|s| {
+                    hex::decode(s).map_err(|_| CustodyError::CertParse { which: "chain" })
+                })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(PlatformAttestation::ExternalSecureElement(
+        ExternalSecureElementAttestation {
+            hardware_class: verdict.hardware_class.clone(),
+            attestation_cert_der,
+            attestation_chain_der,
+            firmware: if verdict.firmware.is_empty() {
+                None
+            } else {
+                Some(verdict.firmware.clone())
+            },
+            serial: verdict.serial,
+            fips_certified: verdict.fips_certified,
+            touch_always: verdict.touch_always,
+        },
+    ))
 }
 
 /// Unwrap a short-form DER OCTET STRING (`0x04 len content`), returning its
@@ -980,6 +1039,52 @@ mod tests {
             verify_accord_custody_attestation(&obj, &swapped, &root).unwrap_err(),
             CustodyError::Malformed { .. } | CustodyError::SignatureInvalid
         ));
+    }
+
+    #[tokio::test]
+    async fn custody_attestation_wraps_to_external_se_platform_attestation(/* #117 */) {
+        // The registration bridge: a verified custody attestation must convert to
+        // a PlatformAttestation::ExternalSecureElement carrying the cert chain +
+        // hardware floor, so persist can admit/entrench the accord_holder
+        // non-interactively. The cert DERs must round-trip out of the evidence.
+        use crate::self_at_login::HybridSigningIdentity;
+        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
+
+        let seed = [33u8; 32];
+        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
+        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
+        let holder = HybridSigningIdentity::new(
+            "accord-holder-a1",
+            Ed25519Signer::from_seed(&seed).unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        );
+        let member = holder.directory_member().unwrap();
+        let obj = produce_accord_custody_attestation(
+            &holder,
+            &c9,
+            &[f9.as_slice()],
+            CUSTODY_TIER_PORTABLE_2FA,
+            "2026-06-20T00:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        let verdict = verify_accord_custody_attestation(&obj, &member, &root).unwrap();
+        let pa = custody_attestation_to_platform_attestation(&obj, &verdict).unwrap();
+        match pa {
+            PlatformAttestation::ExternalSecureElement(ese) => {
+                assert_eq!(ese.hardware_class, "YubiKey_5_FIPS");
+                assert!(ese.fips_certified && ese.touch_always);
+                assert_eq!(ese.attestation_cert_der, c9, "9c cert DER must round-trip");
+                assert_eq!(
+                    ese.attestation_chain_der,
+                    vec![f9.clone()],
+                    "chain must round-trip as [f9]"
+                );
+                assert!(ese.firmware.is_some(), "firmware should be carried");
+            },
+            other => panic!("expected ExternalSecureElement, got {other:?}"),
+        }
     }
 
     #[test]
