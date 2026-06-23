@@ -873,6 +873,7 @@ version = "8.3.0"
 dependencies = [
  "aes-gcm",
  "android_logger",
+ "async-trait",
  "base64 0.21.7",
  "cbindgen",
  "chrono",

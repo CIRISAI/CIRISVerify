@@ -46,6 +46,7 @@
 #![allow(clippy::missing_safety_doc)] // FFI functions are inherently unsafe
 
 mod bootstrap_keyset;
+mod callback_signer;
 mod conformance;
 mod constructor;
 
@@ -1773,6 +1774,156 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
                 .map_err(|e| format!("open platform Ed25519 signer: {e}"))?;
             let created = ciris_verify_core::federation_identity::create_federation_identity(
                 std::sync::Arc::from(signer),
+                &identity_type,
+                fed_key_id,
+                label.as_deref(),
+                &valid_from,
+                seal_alias.as_deref(),
+            )
+            .await
+            .map_err(|e| format!("create identity: {e}"))?;
+
+            let outbox_path = if write_outbox {
+                Some(
+                    created
+                        .object
+                        .write_to_outbox(&created.key_id)
+                        .map_err(|e| format!("write outbox: {e}"))?
+                        .display()
+                        .to_string(),
+                )
+            } else {
+                None
+            };
+            let ceg_object = serde_json::to_value(&created.object)
+                .map_err(|e| format!("serialize CEG object: {e}"))?;
+            Ok(serde_json::json!({
+                "ok": true,
+                "key_id": created.key_id,
+                "code": created.code,
+                "outbox_path": outbox_path,
+                "ceg_object": ceg_object,
+            }))
+        });
+
+        match outcome {
+            Ok(v) => emit(v),
+            Err(msg) => emit(err(msg)),
+        }
+    })
+}
+
+/// Like [`ciris_verify_create_federation_identity`], but the Ed25519 half is an
+/// EXTERNAL token reached via a caller-supplied sign callback (e.g. a YubiKey over
+/// NFC on mobile, driven by YubiKit). The caller pre-reads the 32-byte Ed25519
+/// public key + (optionally) the slot-9c PIV attestation DER; the core composes the
+/// `self_key_record` + the platform-sealed ML-DSA-65 half as usual and delegates
+/// ONLY the classical signature to `sign_cb`. See the `callback_signer` module.
+///
+/// # Safety
+///
+/// `config_json` (NUL-terminated UTF-8) and `result_out` must be valid non-null
+/// pointers. `ed25519_pubkey` must point to `pubkey_len` (== 32) bytes;
+/// `attestation_der` may be NULL when `attestation_len` == 0. `sign_cb` is invoked
+/// synchronously with `sign_ctx`. On success `*result_out` is a heap C string the
+/// caller frees with `ciris_verify_free_string`.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_create_federation_identity_with_callback(
+    config_json: *const c_char,
+    ed25519_pubkey: *const u8,
+    pubkey_len: usize,
+    attestation_der: *const u8,
+    attestation_len: usize,
+    sign_ctx: *mut c_void,
+    sign_cb: crate::callback_signer::FfiEd25519SignCallback,
+    result_out: *mut *mut c_char,
+) -> i32 {
+    ffi_guard!("ciris_verify_create_federation_identity_with_callback", {
+        if config_json.is_null() || result_out.is_null() || ed25519_pubkey.is_null() {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        if pubkey_len != 32 {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        let cfg_str = match std::ffi::CStr::from_ptr(config_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return CirisVerifyError::InvalidArgument as i32,
+        };
+
+        let emit = |value: serde_json::Value| -> i32 {
+            match std::ffi::CString::new(value.to_string()) {
+                Ok(c) => {
+                    *result_out = c.into_raw();
+                    CirisVerifyError::Success as i32
+                },
+                Err(_) => CirisVerifyError::InternalError as i32,
+            }
+        };
+        let err = |msg: String| serde_json::json!({ "ok": false, "error": msg });
+
+        let cfg: serde_json::Value = match serde_json::from_str(cfg_str) {
+            Ok(v) => v,
+            Err(e) => return emit(err(format!("invalid config JSON: {e}"))),
+        };
+        let alias = cfg
+            .get("alias")
+            .and_then(|v| v.as_str())
+            .unwrap_or("federation-user")
+            .to_string();
+        let identity_type = cfg
+            .get("identity_type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("user")
+            .to_string();
+        let fed_key_id = cfg
+            .get("fed_key_id")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let label = cfg
+            .get("label")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let seal_alias = cfg
+            .get("seal_alias")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
+        let valid_from = cfg
+            .get("valid_from")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        let write_outbox = cfg
+            .get("write_outbox")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(true);
+
+        let pubkey = std::slice::from_raw_parts(ed25519_pubkey, pubkey_len).to_vec();
+        let attestation = if attestation_der.is_null() || attestation_len == 0 {
+            Vec::new()
+        } else {
+            std::slice::from_raw_parts(attestation_der, attestation_len).to_vec()
+        };
+
+        let signer: std::sync::Arc<dyn ciris_keyring::HardwareSigner> =
+            std::sync::Arc::new(crate::callback_signer::CallbackHardwareSigner::new(
+                alias,
+                pubkey,
+                attestation,
+                sign_ctx,
+                sign_cb,
+            ));
+
+        let rt = match tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+        {
+            Ok(rt) => rt,
+            Err(e) => return emit(err(format!("runtime: {e}"))),
+        };
+
+        let outcome: Result<serde_json::Value, String> = rt.block_on(async {
+            let created = ciris_verify_core::federation_identity::create_federation_identity(
+                signer,
                 &identity_type,
                 fed_key_id,
                 label.as_deref(),
