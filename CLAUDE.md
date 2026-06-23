@@ -14,6 +14,7 @@ CIRISVerify is the **hardware-rooted license verification module** for the CIRIS
 |------|---------|
 | `FSD/FSD-001_CIRISVERIFY_PROTOCOL.md` | Full technical specification (authoritative) |
 | `FSD/FSD-004_ACCORD_DECIMATION_RECOVERY.md` | DRAFT design — accord **live-quorum** operation & recovery under decimation (quorum floats over who proves life; proof-of-life modifies the quorum + carries a vote; always leans toward firing; adversarial-AGI first-strike threat model). CIRISVerify#98. Not ratified, not implemented. |
+| `FSD/FSD-005_HUMANITY_ACCORD.md` | **The Humanity Accord — what & why** (DESCRIPTIVE, current as of v7.2.0): the constitutional kill-switch rooted in hardware-attested human custody. Recognition root (no-TOFU baked genesis #107) + custody attestation (YubiKey PIV→pinned Yubico root #91) + invocation concurrence (CC 4.2.1). Precise crypto (M-of-N not threshold; PQC at the authority layer, Ed25519-strength custody), honest boundaries, prior-art delta, verifiable-claim receipts. |
 | `protocol/ciris_verify.proto` | Public API contract (gRPC/protobuf) |
 | `docs/THREAT_MODEL.md` | Formal threat model (6 attack vectors, mitigations) |
 | `docs/HOLONOMIC_SUBSTRATE.md` | CEG §19 / §19.7 holonomic verifiers — threat model, module map, conformance status (§19 + §19.7 cross-impl-proven) |
