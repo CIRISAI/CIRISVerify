@@ -666,11 +666,13 @@ pub fn accord_quorum_from_family(
 }
 
 /// The **baked** canonical HUMANITY_ACCORD family-genesis object as JSON
-/// (CIRISVerify#107). **Empty until the real ceremony genesis is baked** —
-/// mirrors CIRISServer's `CANONICAL_BOOTSTRAP_PEERS = &[]` until 0.6. When the
-/// 2-of-3-cosigned ceremony `SignedCegObject` is in hand, paste its JSON here;
-/// the bake is a one-line const update, not a code change.
-const HUMANITY_ACCORD_GENESIS_JSON: &str = "";
+/// (CIRISVerify#107). **BAKED 2026-06-23** from the real 6-key ceremony (#118):
+/// `key_id: "humanity-accord"`, `quorum:2/3` entrenched, founders A1/B1/C1, all
+/// three hardware-rooted on FIPS YubiKeys and **3-of-3 cosigned** (≥ the 2/3
+/// floor). The genesis object lives as a checked-in artifact (`genesis/…json`)
+/// so it is auditable as a file; `humanity_accord_genesis_is_baked_and_quorum_valid`
+/// re-verifies its founder quorum against the ceremony's published holder pubkeys.
+const HUMANITY_ACCORD_GENESIS_JSON: &str = include_str!("genesis/humanity_accord_genesis.json");
 
 /// The pinned, **no-TOFU** HUMANITY_ACCORD family-genesis recognition root
 /// (CIRISVerify#107). A node that was **not** at the ceremony resolves the accord
@@ -1376,11 +1378,52 @@ mod tests {
     }
 
     #[test]
-    fn humanity_accord_genesis_is_empty_until_baked() {
-        // #107: the pinned recognition root is intentionally EMPTY until the real
-        // ceremony genesis is baked (no-TOFU — None means "not yet pinned", never
-        // "go fetch it from a peer"). Mirrors CANONICAL_BOOTSTRAP_PEERS = &[].
-        assert!(humanity_accord_genesis().is_none());
+    fn humanity_accord_genesis_is_baked_and_quorum_valid() {
+        use crate::threshold::{verify_founder_quorum, ThresholdMember, ThresholdSignature};
+        // #107 BAKED from the #118 six-key ceremony (was empty/no-TOFU until the
+        // real genesis was in hand). Prove (a) the pinned recognition root parses
+        // + is the right kind/key_id/protocol, and (b) its founder quorum
+        // CRYPTOGRAPHICALLY verifies — full hybrid Ed25519 + ML-DSA-65, against the
+        // ceremony's PUBLISHED holder pubkeys. The bake is validated, not pasted.
+        let genesis = humanity_accord_genesis().expect("the genesis must be baked");
+        assert_eq!(genesis.kind, ACCORD_FAMILY_GENESIS_KIND);
+        assert_eq!(genesis.key_id, "humanity-accord");
+
+        let family = genesis.body.get("family").expect("family");
+        assert_eq!(
+            family.get("consensus_protocol").and_then(Value::as_str),
+            Some("quorum:2/3")
+        );
+        assert_eq!(
+            family
+                .get("consensus_protocol_entrenched")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+
+        // The ceremony's published founder pubkeys (the holders/ records, #118),
+        // checked in alongside the genesis so the quorum is independently auditable.
+        let founders: Vec<ThresholdMember> =
+            serde_json::from_str(include_str!("genesis/founder_pubkeys.json")).unwrap();
+        assert!(
+            founders
+                .iter()
+                .all(|m| m.mldsa65_public_key_base64.is_some()),
+            "every founder must carry its ML-DSA-65 half (hybrid-required)"
+        );
+        let sigs: Vec<ThresholdSignature> =
+            serde_json::from_value(genesis.body.get("founder_signatures").unwrap().clone())
+                .unwrap();
+
+        let bytes = accord_family_signing_bytes(family).unwrap();
+        let threshold = quorum_threshold_from_envelope(family).unwrap();
+        assert_eq!(threshold, 2, "quorum:2/3 → strict-majority threshold 2");
+        let count = verify_founder_quorum(&bytes, &founders, &sigs, threshold)
+            .expect("the 2-of-3 hybrid founder quorum MUST verify");
+        assert_eq!(
+            count, 3,
+            "all three founders cosigned (3-of-3, ≥ the 2/3 floor)"
+        );
     }
 
     #[tokio::test]
