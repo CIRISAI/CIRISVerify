@@ -34,7 +34,10 @@ key-grant = ["ciris-crypto/key-grant"]
 [dependencies]
 ciris-verify-core.workspace = true
 ciris-keyring.workspace = true
-ciris-crypto.workspace = true
+# scope-privacy (#82): the §2.2/§2.4/§3.4 derivation helpers are exposed on the
+# wheel (`wheel_scope_privacy`), so the wheel build always needs the feature.
+# Pure Rust (kdf + hmac), no platform/heavy deps — safe to enable unconditionally.
+ciris-crypto = { workspace = true, features = ["scope-privacy"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 prost.workspace = true
 tracing.workspace = true
