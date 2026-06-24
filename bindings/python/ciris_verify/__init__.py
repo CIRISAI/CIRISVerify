@@ -31,6 +31,7 @@ import logging as _logging
 from .client import CIRISVerify, MockCIRISVerify, verify_tree, DEFAULT_REGISTRY_URL
 from ._jcs import jcs_canonicalize
 from ._rns_dest_hash import rns_destination_hash
+from . import _scope_privacy as scope_privacy
 from ._federation_identity import create_federation_identity
 from ._manifest_contribution import verify_build_manifest_contribution
 from ._accord_custody import verify_accord_custody_attestation
@@ -128,13 +129,14 @@ def get_library_version() -> str:
     return __version__
 
 
-__version__ = "7.3.0"
+__version__ = "7.4.0"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
     "verify_tree",
     "jcs_canonicalize",
     "rns_destination_hash",
+    "scope_privacy",
     "create_federation_identity",
     "verify_build_manifest_contribution",
     "verify_accord_custody_attestation",
