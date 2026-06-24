@@ -64,6 +64,7 @@ mod wheel_locale_merkle;
 mod wheel_manifest_contribution;
 mod wheel_operational_admit;
 mod wheel_reconsider_dos;
+mod wheel_rns_dest_hash;
 mod wheel_skill_import;
 
 #[cfg(target_os = "android")]
