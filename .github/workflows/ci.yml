@@ -405,7 +405,12 @@ jobs:
           # `set -e`; flagged back there + on the persist/edge adopters.)
           ver() { { grep -A1 "name = \"$1\"" Cargo.lock | grep -m1 '^version' | sed -E 's/.*"([^"]+)".*/\1/'; } || true; }
           P=$(ver ciris-persist); E=$(ver ciris-edge); V=$(ver ciris-verify-core)
-          KEY="ciris-substrate-v1-${RUNNER_OS,,}-${RUNNER_ARCH,,}-release-rustc${RUSTC}-p${P:-none}-e${E:-none}-v${V:-none}"
+          # `tr` for lowercasing, NOT bash's ${VAR,,} — GitHub macOS runners ship
+          # bash 3.2, where ${,,} is a "bad substitution" fatal error. (Second
+          # latent bug in the #99 snippet, also flagged upstream.)
+          OS=$(printf '%s' "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
+          ARCH=$(printf '%s' "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')
+          KEY="ciris-substrate-v1-${OS}-${ARCH}-release-rustc${RUSTC}-p${P:-none}-e${E:-none}-v${V:-none}"
           echo "CIRISCACHE_KEY=${KEY}-${{ matrix.target }}" >> "$GITHUB_ENV"
       - uses: CIRISAI/CIRISCache/restore@v1
         continue-on-error: true
