@@ -1,0 +1,9 @@
+# Common toolchain pin across the four Rust-compiling CIRIS repos (server /
+# persist / edge / verify) — the rustc version is part of the sccache cache key,
+# so a drift = zero cross-repo cache hits (CIRISVerify#126 / CIRISServer#99).
+# Matches CIRISServer's pin. Stable for all targets except the Win7 Tier-3
+# build-std lane, which the release workflow pins to nightly + rust-src per-job
+# (CIRISVerify#67 pattern); MSRV is enforced separately in CI.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]
