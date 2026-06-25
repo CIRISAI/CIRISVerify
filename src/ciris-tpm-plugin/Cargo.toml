@@ -1,0 +1,32 @@
+[package]
+name = "ciris-tpm-plugin"
+description = "Runtime-loaded TPM 2.0 backend for ciris-keyring — links tss-esapi behind a small C ABI so the keyring dlopens it and carries no tss2 link dependency (CIRISVerify#125/#127)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+
+# cdylib: the shipped `libciris_tpm_plugin.so` the keyring dlopens.
+# rlib: so tests / a future static-link path can use it in-process.
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+# `real` pulls tss-esapi (the actual TPM backend). Off by default so the crate
+# builds on every target (stub ABI returning "unavailable"); the published
+# plugin is built with `--features real` only on glibc-linux / windows, exactly
+# where tss-esapi can link. This is what lets the *keyring* drop its hard tss2
+# link entirely (it dlopens this instead).
+default = []
+real = ["tss-esapi"]
+
+[dependencies]
+tracing.workspace = true
+
+# tss-esapi link-binds the system tss2 C libs → glibc-linux + windows only
+# (no aarch64-musl libtss2). The crate still *builds* everywhere without `real`;
+# only the published plugin enables it where the link works.
+[target.'cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "windows"))'.dependencies]
+tss-esapi = { version = "7.4", optional = true }

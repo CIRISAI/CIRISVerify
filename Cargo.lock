@@ -809,6 +809,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciris-tpm-plugin"
+version = "7.5.0"
+dependencies = [
+ "tracing",
+ "tss-esapi",
+]
+
+[[package]]
 name = "ciris-verify-core"
 version = "7.5.0"
 dependencies = [

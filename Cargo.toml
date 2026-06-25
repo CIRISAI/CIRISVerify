@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "src/ciris-keyring",
+    "src/ciris-tpm-plugin",
     "src/ciris-crypto",
     "src/ciris-verify-core",
     "src/ciris-verify-ffi",
