@@ -55,10 +55,16 @@
 //! ```
 
 // Platform-specific implementations
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub mod tpm;
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub use tpm::TpmSecureBlobStorage;
 
 #[cfg(target_os = "android")]
@@ -524,7 +530,10 @@ pub fn create_platform_storage(
     let storage_dir = storage_dir.into();
 
     // Try TPM on Linux/Windows
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     {
         // Check if TPM is available using detection module
         let tpm_available = crate::platform::tpm::detect_tpm()

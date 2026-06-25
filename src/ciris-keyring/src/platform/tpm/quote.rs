@@ -3,10 +3,16 @@
 //! This module handles TPM2_Quote operations for PCR attestation
 //! and reading the Endorsement Key (EK) certificate from NV storage.
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use crate::error::KeyringError;
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use tss_esapi::{
     handles::{KeyHandle, NvIndexHandle, TpmHandle},
     interface_types::{algorithm::HashingAlgorithm, resource_handles::NvAuth},
@@ -42,7 +48,10 @@ pub struct TpmQuote {
 /// # Returns
 ///
 /// Returns the quote data structure.
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub fn generate_quote(
     context: &mut Context,
     ak_handle: KeyHandle,
@@ -146,14 +155,20 @@ pub fn generate_quote(
 
 /// ECC EK certificate NV index (TCG spec).
 /// RSA would be 0x01C00002, but we use ECC P-256.
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub const ECC_EK_CERT_NV_INDEX: u32 = 0x01C0_000A;
 
 /// Read the Endorsement Key (EK) certificate from TPM NV storage.
 ///
 /// EK certificates are provisioned by TPM manufacturers and can be used
 /// to verify the TPM is genuine. ECC EK cert is at NV index 0x01C0000A.
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub fn read_ek_certificate(context: &mut Context) -> Result<Vec<u8>, KeyringError> {
     tracing::info!("TPM: reading EK certificate from NV storage");
 
@@ -232,7 +247,10 @@ pub fn read_ek_certificate(context: &mut Context) -> Result<Vec<u8>, KeyringErro
 /// Read PCR values for slots 0-7.
 ///
 /// Returns a map of PCR slot index to SHA-256 digest (32 bytes each).
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub fn read_pcr_values(
     context: &mut Context,
 ) -> Result<std::collections::HashMap<u8, Vec<u8>>, KeyringError> {
@@ -319,7 +337,10 @@ mod tests {
         assert!(debug_str.contains("TpmQuote"));
     }
 
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_ek_cert_nv_index_constant() {
         // ECC EK cert is at TCG-specified index

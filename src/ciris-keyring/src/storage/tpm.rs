@@ -42,31 +42,55 @@
 //! `is_hardware_backed() == false`. The genesis/unseal round-trip itself is
 //! validated on hardware (see report on #73).
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use crate::error::KeyringError;
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use crate::storage::SecureBlobStorage;
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use std::path::PathBuf;
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use std::sync::Mutex;
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use tracing::{debug, error, info, warn};
 
 /// AES-256-GCM nonce size
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 const AES_GCM_NONCE_SIZE: usize = 12;
 
 /// Size of the sealed master secret.
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 const MASTER_SECRET_SIZE: usize = 32;
 
 /// Magic bytes for the sealed-master file format.
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 const SEAL_FILE_MAGIC: &[u8; 4] = b"TSL1";
 
 /// How the master secret backing this storage was established.
@@ -74,7 +98,10 @@ const SEAL_FILE_MAGIC: &[u8; 4] = b"TSL1";
 /// This is the single source of truth for `is_hardware_backed()`. It is set
 /// once, lazily, the first time a master secret is needed (load or store), and
 /// is never silently upgraded.
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 #[derive(Clone)]
 enum MasterState {
     /// Master is held inside a TPM2 sealing object — genuinely hardware-bound.
@@ -86,7 +113,10 @@ enum MasterState {
     SoftwareFallback { master: [u8; MASTER_SECRET_SIZE] },
 }
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 impl MasterState {
     fn master(&self) -> &[u8; MASTER_SECRET_SIZE] {
         match self {
@@ -105,7 +135,10 @@ impl MasterState {
 /// local TPM (`TPM2_Create` keyed-hash sealing object). Recovering the master
 /// requires `TPM2_Unseal` on the same TPM, so a copy of the storage directory
 /// cannot decrypt anything on another machine.
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub struct TpmSecureBlobStorage {
     /// Base directory for storing encrypted blobs
     storage_dir: PathBuf,
@@ -115,7 +148,10 @@ pub struct TpmSecureBlobStorage {
     master_state: Mutex<Option<MasterState>>,
 }
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 impl TpmSecureBlobStorage {
     /// Create new TPM-backed storage.
     pub fn new(
@@ -593,7 +629,10 @@ impl TpmSecureBlobStorage {
     }
 }
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 impl SecureBlobStorage for TpmSecureBlobStorage {
     fn store(&self, key_id: &str, data: &[u8]) -> Result<(), KeyringError> {
         let state = self.get_master_state()?;
@@ -716,10 +755,16 @@ impl SecureBlobStorage for TpmSecureBlobStorage {
 }
 
 // Stub for non-TPM platforms
-#[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
+#[cfg(not(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+)))]
 pub struct TpmSecureBlobStorage;
 
-#[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
+#[cfg(not(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+)))]
 impl TpmSecureBlobStorage {
     pub fn new(
         _alias: impl Into<String>,
@@ -731,7 +776,10 @@ impl TpmSecureBlobStorage {
     }
 }
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -760,7 +760,10 @@ pub struct MutableEd25519Signer {
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     hardware_wrapper: Option<crate::platform::ios::SecureEnclaveWrappedEd25519Signer>,
     /// Hardware wrapper for Linux/Windows (AES-256-GCM via TPM-derived key)
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     tpm_wrapper: Option<crate::platform::tpm::TpmWrappedEd25519Signer>,
 }
 
@@ -858,7 +861,10 @@ impl MutableEd25519Signer {
         };
 
         // On Linux/Windows with TPM, try to initialize TPM wrapper
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         let tpm_wrapper = {
             let key_dir = std::env::var("CIRIS_DATA_DIR")
                 .map(std::path::PathBuf::from)
@@ -895,7 +901,10 @@ impl MutableEd25519Signer {
             hardware_wrapper,
             #[cfg(any(target_os = "ios", target_os = "macos"))]
             hardware_wrapper,
-            #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+            #[cfg(all(
+                feature = "tpm",
+                any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+            ))]
             tpm_wrapper,
         };
 
@@ -952,7 +961,10 @@ impl MutableEd25519Signer {
         {
             self.hardware_wrapper.is_some()
         }
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             self.tpm_wrapper
                 .as_ref()
@@ -962,7 +974,10 @@ impl MutableEd25519Signer {
             target_os = "android",
             target_os = "ios",
             target_os = "macos",
-            all(feature = "tpm", any(target_os = "linux", target_os = "windows"))
+            all(
+                feature = "tpm",
+                any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+            )
         )))]
         {
             false
@@ -1150,7 +1165,10 @@ impl MutableEd25519Signer {
         }
 
         // On Linux/Windows with TPM, try TPM-backed loading first
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             if let Some(ref tpm) = self.tpm_wrapper {
                 tracing::info!("Attempting to load TPM-backed Ed25519 key...");
@@ -1324,7 +1342,10 @@ impl MutableEd25519Signer {
         }
 
         // On Linux/Windows: migrate existing plaintext key to TPM-backed storage
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             drop(inner); // Release the lock before migration
             if let Some(ref tpm) = self.tpm_wrapper {
@@ -1604,7 +1625,10 @@ impl MutableEd25519Signer {
         }
 
         // On Linux/Windows with TPM, use TPM-backed import if available
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             if let Some(ref tpm) = self.tpm_wrapper {
                 tracing::info!("Using TPM-backed import (AES-256-GCM via TPM-derived key)");
@@ -1764,7 +1788,10 @@ impl MutableEd25519Signer {
         }
 
         // On Linux/Windows with TPM, also check TPM wrapper
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             if let Some(ref tpm) = self.tpm_wrapper {
                 if tpm.key_exists() {
@@ -1824,7 +1851,10 @@ impl MutableEd25519Signer {
         }
 
         // Delete from TPM-backed storage if available
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             if let Some(ref tpm) = self.tpm_wrapper {
                 match tpm.delete_key() {
@@ -2046,7 +2076,10 @@ impl MutableEd25519Signer {
         }
 
         // On Linux/Windows with TPM, try TPM wrapper first
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             if let Some(ref tpm) = self.tpm_wrapper {
                 // Check if TPM key exists before attempting to access it.
@@ -2336,7 +2369,10 @@ impl MutableEd25519Signer {
         }
 
         // On Linux/Windows with TPM, try TPM wrapper first
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             if let Some(ref tpm) = self.tpm_wrapper {
                 // Check if TPM key exists before attempting to sign.
@@ -2470,7 +2506,10 @@ impl MutableEd25519Signer {
             "DISABLED (software-only)"
         };
 
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         let hw_status = if hardware_backed {
             "ENABLED (AES-256-GCM via TPM-derived key)"
         } else {
@@ -2481,7 +2520,10 @@ impl MutableEd25519Signer {
             target_os = "android",
             target_os = "ios",
             target_os = "macos",
-            all(feature = "tpm", any(target_os = "linux", target_os = "windows"))
+            all(
+                feature = "tpm",
+                any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+            )
         )))]
         let hw_status = "N/A (no hardware wrapper on this platform)";
 

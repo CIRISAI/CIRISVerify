@@ -5,10 +5,16 @@
 //! - Signing key (non-restricted, for arbitrary data)
 //! - Attestation key (restricted, for TPM quotes)
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use crate::error::KeyringError;
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use tss_esapi::{
     attributes::ObjectAttributesBuilder,
     handles::KeyHandle,
@@ -28,7 +34,10 @@ use tss_esapi::{
 ///
 /// This is a restricted storage key (decrypt=true, restricted=true) that
 /// protects child keys with AES-128-CFB encryption.
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub fn get_or_create_primary(context: &mut Context) -> Result<KeyHandle, KeyringError> {
     tracing::debug!("TPM: creating primary key under owner hierarchy");
 
@@ -92,7 +101,10 @@ pub fn get_or_create_primary(context: &mut Context) -> Result<KeyHandle, Keyring
 /// Create a non-restricted signing key under the primary key.
 ///
 /// This key can sign arbitrary external data using ECDSA P-256.
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub fn create_signing_key(
     context: &mut Context,
     primary_handle: KeyHandle,
@@ -173,7 +185,10 @@ pub fn create_signing_key(
 /// This is required for TPM2_Quote operations.
 ///
 /// Returns the key handle and the public key bytes (uncompressed SEC1 format).
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub fn create_attestation_key(
     context: &mut Context,
     primary_handle: KeyHandle,
@@ -268,7 +283,10 @@ pub fn create_attestation_key(
 /// Extract public key bytes from TPM Public structure.
 ///
 /// Returns the public key in uncompressed SEC1 format: 0x04 || X (32 bytes) || Y (32 bytes)
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub fn extract_public_key_from_public(public: &Public) -> Result<Vec<u8>, KeyringError> {
     let ecc_point = match public {
         Public::Ecc { unique, .. } => unique,
@@ -303,12 +321,18 @@ pub fn extract_public_key_from_public(public: &Public) -> Result<Vec<u8>, Keyrin
 
 #[cfg(test)]
 mod tests {
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     use super::*;
 
     /// Test that key creation functions exist and have correct signatures.
     /// Actual TPM operations require hardware - see examples/tpm_attest.rs.
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_key_functions_compile() {
         // This test verifies the module compiles correctly.

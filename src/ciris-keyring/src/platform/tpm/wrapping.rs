@@ -28,34 +28,61 @@
 //! Subsequent operations use the stored signature directly for HKDF derivation,
 //! avoiding the ECDSA non-determinism problem.
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use crate::error::KeyringError;
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use tss_esapi::traits::{Marshall, UnMarshall};
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use tracing::{debug, error, info, warn};
 
 /// Magic bytes for TPM wrapped key file format
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 const TPM_FILE_MAGIC: &[u8; 4] = b"TPM2";
 /// Current file format version
 /// v1: Stored blobs but re-signed on load (broken due to ECDSA non-determinism)
 /// v2: Stores signature from genesis for deterministic AES key derivation
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 const TPM_FILE_VERSION: u32 = 2;
 /// Legacy magic for v1 format (broken)
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 const TPM_FILE_MAGIC_V1: &[u8; 4] = b"TPM1";
 /// Size of Ed25519 private key
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 const ED25519_PRIVATE_KEY_SIZE: usize = 32;
 /// AES-256-GCM nonce size
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 const AES_GCM_NONCE_SIZE: usize = 12;
 /// AES-256-GCM tag size
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 const AES_GCM_TAG_SIZE: usize = 16;
 
 /// TPM-wrapped Ed25519 signer for Linux/Windows.
@@ -63,7 +90,10 @@ const AES_GCM_TAG_SIZE: usize = 16;
 /// Uses a TPM-derived AES-256-GCM key to protect the Ed25519 private key.
 /// The AES key is derived by signing a fixed challenge with a TPM key,
 /// providing binding to the specific TPM while allowing key import.
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub struct TpmWrappedEd25519Signer {
     /// Path to the encrypted Ed25519 key file
     encrypted_key_path: std::path::PathBuf,
@@ -73,7 +103,10 @@ pub struct TpmWrappedEd25519Signer {
     alias: String,
 }
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 impl TpmWrappedEd25519Signer {
     /// Create a new TPM-wrapped Ed25519 signer.
     ///
@@ -861,12 +894,18 @@ impl TpmWrappedEd25519Signer {
 }
 
 /// Stub implementation for non-TPM platforms
-#[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
+#[cfg(not(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+)))]
 pub struct TpmWrappedEd25519Signer {
     _private: (),
 }
 
-#[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
+#[cfg(not(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+)))]
 impl TpmWrappedEd25519Signer {
     /// Create a new TPM-wrapped Ed25519 signer (stub - returns error).
     pub fn new(
@@ -924,14 +963,20 @@ mod tests {
     #[test]
     fn test_tpm_wrapped_signer_stub() {
         // On non-TPM platforms, creation should fail gracefully
-        #[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
+        #[cfg(not(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        )))]
         {
             let result = TpmWrappedEd25519Signer::new("test", "/tmp");
             assert!(result.is_err());
         }
     }
 
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_tpm_wrapped_signer_creation() {
         // This test just verifies the struct can be created
@@ -943,7 +988,10 @@ mod tests {
         assert!(signer.is_hardware_backed());
     }
 
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_tpm_file_format_roundtrip() {
         // Test that build_tpm_file and parse_tpm_file are inverses
@@ -969,7 +1017,10 @@ mod tests {
         assert_eq!(encrypted, parsed_encrypted, "Encrypted data mismatch");
     }
 
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_tpm_file_format_magic_check() {
         let signer = TpmWrappedEd25519Signer::new("test_magic", "/tmp/ciris_test_magic")
@@ -989,7 +1040,10 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_tpm_file_format_v1_detection() {
         // Test that v1 format (TPM1 magic) is detected and rejected
@@ -1010,7 +1064,10 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_tpm_file_format_version_check() {
         let signer = TpmWrappedEd25519Signer::new("test_version", "/tmp/ciris_test_version")
@@ -1030,7 +1087,10 @@ mod tests {
         );
     }
 
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_import_refuses_overwrite() {
         // Test that import_key refuses to overwrite existing key
@@ -1064,7 +1124,10 @@ mod tests {
         let _ = fs::remove_dir_all(test_dir);
     }
 
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_legacy_format_auto_migration() {
         // Test that legacy TPM1 format is auto-migrated (file deleted)
@@ -1105,7 +1168,10 @@ mod tests {
         let _ = fs::remove_dir_all(test_dir);
     }
 
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_needs_migration_detects_formats() {
         use std::fs;
@@ -1144,7 +1210,10 @@ mod tests {
         let _ = fs::remove_dir_all(test_dir);
     }
 
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_legacy_format_detection() {
         // Test that old format (no header) is detected and requires re-import
