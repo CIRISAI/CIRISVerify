@@ -2,10 +2,16 @@
 
 use crate::error::KeyringError;
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use std::str::FromStr;
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use tss_esapi::{
     tcti_ldr::{DeviceConfig, TctiNameConf},
     Context,
@@ -177,7 +183,10 @@ pub fn probe_tbs_device_info() -> Option<&'static str> {
 }
 
 /// Create a TPM context for the current platform.
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub fn create_context() -> Result<Context, KeyringError> {
     #[cfg(target_os = "linux")]
     let tcti = {
@@ -241,7 +250,10 @@ mod tests {
         let _manufacturer = get_tpm_manufacturer();
     }
 
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_create_context_on_tpm_system() {
         // Only run this test if TPM is actually available

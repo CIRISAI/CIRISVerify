@@ -3,16 +3,25 @@
 //! This module contains helpers for TPM signing operations,
 //! including ECDSA signature extraction.
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use crate::error::KeyringError;
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use tss_esapi::structures::Signature;
 
 /// Extract ECDSA signature bytes from TPM Signature structure.
 ///
 /// Returns signature in raw format: r (32 bytes) || s (32 bytes)
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub fn extract_ecdsa_signature(signature: &Signature) -> Result<Vec<u8>, KeyringError> {
     match signature {
         Signature::EcDsa(ecdsa_sig) => {
@@ -46,7 +55,10 @@ pub fn extract_ecdsa_signature(signature: &Signature) -> Result<Vec<u8>, Keyring
 ///
 /// TPM signing of external (non-TPM-generated) data requires a validation
 /// ticket with TPM2_RH_NULL hierarchy.
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub fn create_null_validation_ticket(
 ) -> Result<tss_esapi::structures::HashcheckTicket, KeyringError> {
     tss_esapi::structures::HashcheckTicket::try_from(tss_esapi::tss2_esys::TPMT_TK_HASHCHECK {
@@ -64,10 +76,16 @@ pub fn create_null_validation_ticket(
 
 #[cfg(test)]
 mod tests {
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     use super::*;
 
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     #[test]
     fn test_create_null_validation_ticket() {
         let result = create_null_validation_ticket();

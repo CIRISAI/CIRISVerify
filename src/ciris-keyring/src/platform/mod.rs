@@ -12,7 +12,10 @@ pub mod android;
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 pub mod ios;
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+// TPM backend — gated to glibc-linux + windows; tss-esapi link-binds the tss2 C
+// libs, which won't cross-link on musl (the keyring builds without TPM there,
+// CIRISVerify#127).
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "windows"))]
 pub mod tpm;
 
 // Windows-native TPM via Platform Crypto Provider (experimental)
@@ -32,7 +35,7 @@ pub use android::{AndroidKeystoreSigner, HardwareWrappedEd25519Signer};
 #[cfg(any(target_os = "ios", target_os = "macos"))]
 pub use ios::{SecureEnclaveSigner, SecureEnclaveWrappedEd25519Signer};
 
-#[cfg(any(target_os = "linux", target_os = "windows"))]
+#[cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "windows"))]
 pub use tpm::TpmSigner;
 
 // Windows-native TPM signer (experimental)

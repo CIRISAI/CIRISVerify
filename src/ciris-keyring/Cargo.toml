@@ -84,8 +84,14 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 block2 = "0.6"
 
-[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
-# TPM 2.0 is genuinely Linux/Windows-only hardware → stays target-gated.
+# TPM 2.0 via tss-esapi. tss-esapi-sys LINK-binds the system tss2 C libs via
+# pkg-config, which has no aarch64-musl libtss2 + no cross sysroot → it hard-fails
+# the *build* when cross-compiling to musl (Alpine / Home Assistant), CIRISVerify#127.
+# tss2 is glibc-oriented, so gate the dep to glibc-linux (target_env = "gnu") +
+# windows; on musl the keyring builds with no TPM (the existing runtime
+# `NotSupported` fallback). The full runtime-loaded backend that restores TPM on
+# musl is the #125/#127 dlopen follow-up.
+[target.'cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "windows"))'.dependencies]
 tss-esapi = { version = "7.4", optional = true }
 
 [target.'cfg(target_os = "macos")'.dependencies]

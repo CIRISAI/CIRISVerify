@@ -24,16 +24,28 @@ pub use detection::{detect_tpm, get_tpm_manufacturer};
 pub use detection::probe_tbs_device_info;
 
 // TPM-specific functions require the tpm feature
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub use detection::create_context;
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub use keys::{
     create_attestation_key, create_signing_key, extract_public_key_from_public,
     get_or_create_primary,
 };
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub use quote::{read_ek_certificate, read_pcr_values};
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 pub use signing::{create_null_validation_ticket, extract_ecdsa_signature};
 
 // TpmQuote is always available (just a data struct)
@@ -49,10 +61,16 @@ use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
 use crate::types::{ClassicalAlgorithm, HardwareType, PlatformAttestation, StorageDescriptor};
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use crate::types::{TpmAttestation, TpmQuoteData};
 
-#[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+#[cfg(all(
+    feature = "tpm",
+    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+))]
 use tss_esapi::{
     handles::KeyHandle,
     interface_types::algorithm::HashingAlgorithm,
@@ -82,19 +100,31 @@ pub struct TpmSigner {
     #[allow(dead_code)]
     persistent_handle: Option<u32>,
     /// TPM context (wrapped in Mutex for interior mutability)
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     context: Mutex<Option<Context>>,
     /// Cached public key bytes
     #[allow(dead_code)]
     cached_public_key: Mutex<Option<Vec<u8>>>,
     /// Signing key handle (non-restricted, for external data)
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     key_handle: Mutex<Option<KeyHandle>>,
     /// Attestation key handle (restricted, for quotes)
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     attestation_key_handle: Mutex<Option<KeyHandle>>,
     /// Cached attestation key public key
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     ak_public_key: Mutex<Option<Vec<u8>>>,
 }
 
@@ -120,7 +150,10 @@ impl TpmSigner {
             "TpmSigner: creating new TPM signer"
         );
 
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             let context = create_context()?;
             tracing::info!("TPM context created successfully");
@@ -137,7 +170,10 @@ impl TpmSigner {
             })
         }
 
-        #[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
+        #[cfg(not(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        )))]
         {
             Err(KeyringError::HardwareNotAvailable {
                 reason: "TPM support not compiled in (enable 'tpm' feature)".into(),
@@ -146,7 +182,10 @@ impl TpmSigner {
     }
 
     /// Ensure the signing key is available.
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     fn ensure_key(&self) -> Result<KeyHandle, KeyringError> {
         {
             let handle_guard = self
@@ -197,7 +236,10 @@ impl TpmSigner {
     /// Ensure the attestation key (AK) is available for quote operations.
     ///
     /// Returns both the key handle and the public key bytes.
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     fn ensure_attestation_key(&self) -> Result<(KeyHandle, Vec<u8>), KeyringError> {
         // Check if we have a cached attestation key
         {
@@ -265,7 +307,10 @@ impl TpmSigner {
     }
 
     /// Sign data using the TPM signing key.
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     async fn tpm_sign(&self, data: &[u8]) -> Result<Vec<u8>, KeyringError> {
         use sha2::{Digest as Sha2Digest, Sha256};
 
@@ -317,7 +362,10 @@ impl TpmSigner {
     }
 
     /// Get the public key from the TPM signing key.
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     async fn tpm_get_public_key(&self) -> Result<Vec<u8>, KeyringError> {
         {
             let cache = self
@@ -374,7 +422,10 @@ impl TpmSigner {
     }
 
     /// Generate a new key in the TPM.
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     async fn tpm_generate_key(&self, config: &KeyGenConfig) -> Result<(), KeyringError> {
         tracing::info!(alias = %config.alias, "TPM: generating new key");
 
@@ -420,7 +471,10 @@ impl TpmSigner {
     }
 
     /// Delete the key from the TPM.
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     async fn tpm_delete_key(&self) -> Result<(), KeyringError> {
         tracing::info!("TPM: deleting key");
 
@@ -463,7 +517,10 @@ impl TpmSigner {
     }
 
     /// Generate a TPM quote using the attestation key.
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     fn generate_quote(
         &self,
         external_nonce: Option<&[u8]>,
@@ -495,7 +552,10 @@ impl TpmSigner {
     }
 
     /// Read the EK certificate from TPM NV storage.
-    #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+    #[cfg(all(
+        feature = "tpm",
+        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+    ))]
     fn read_ek_cert(&self) -> Result<Vec<u8>, KeyringError> {
         let mut context_guard = self
             .context
@@ -529,24 +589,36 @@ impl HardwareSigner for TpmSigner {
     }
 
     async fn public_key(&self) -> Result<Vec<u8>, KeyringError> {
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             self.tpm_get_public_key().await
         }
 
-        #[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
+        #[cfg(not(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        )))]
         {
             Err(KeyringError::NoPlatformSupport)
         }
     }
 
     async fn sign(&self, data: &[u8]) -> Result<Vec<u8>, KeyringError> {
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             self.tpm_sign(data).await
         }
 
-        #[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
+        #[cfg(not(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        )))]
         {
             let _ = data;
             Err(KeyringError::NoPlatformSupport)
@@ -562,7 +634,10 @@ impl HardwareSigner for TpmSigner {
         &self,
         nonce: Option<&[u8]>,
     ) -> Result<PlatformAttestation, KeyringError> {
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             tracing::debug!(
                 external_nonce = nonce.is_some(),
@@ -645,7 +720,10 @@ impl HardwareSigner for TpmSigner {
             }))
         }
 
-        #[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
+        #[cfg(not(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        )))]
         {
             let _ = nonce;
             Err(KeyringError::NoPlatformSupport)
@@ -653,12 +731,18 @@ impl HardwareSigner for TpmSigner {
     }
 
     async fn generate_key(&self, config: &KeyGenConfig) -> Result<(), KeyringError> {
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             self.tpm_generate_key(config).await
         }
 
-        #[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
+        #[cfg(not(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        )))]
         {
             let _ = config;
             Err(KeyringError::NoPlatformSupport)
@@ -666,7 +750,10 @@ impl HardwareSigner for TpmSigner {
     }
 
     async fn key_exists(&self, _alias: &str) -> Result<bool, KeyringError> {
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             let handle_guard = self
                 .key_handle
@@ -680,19 +767,28 @@ impl HardwareSigner for TpmSigner {
             Ok(exists)
         }
 
-        #[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
+        #[cfg(not(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        )))]
         {
             Err(KeyringError::NoPlatformSupport)
         }
     }
 
     async fn delete_key(&self, _alias: &str) -> Result<(), KeyringError> {
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             self.tpm_delete_key().await
         }
 
-        #[cfg(not(all(feature = "tpm", any(target_os = "linux", target_os = "windows"))))]
+        #[cfg(not(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        )))]
         {
             Err(KeyringError::NoPlatformSupport)
         }
@@ -775,7 +871,10 @@ mod tests {
         let _ = detect_tpm;
         let _ = get_tpm_manufacturer;
 
-        #[cfg(all(feature = "tpm", any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))]
         {
             let _ = create_context;
             let _ = get_or_create_primary;

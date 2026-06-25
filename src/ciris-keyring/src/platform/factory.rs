@@ -260,7 +260,7 @@ pub fn create_hardware_signer(
             }
         }
 
-        #[cfg(any(target_os = "linux", target_os = "windows"))]
+        #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "windows"))]
         {
             if capabilities.has_hardware {
                 use super::TpmSigner;
@@ -304,10 +304,13 @@ pub fn create_hardware_signer(
             }
         }
 
+        // musl-linux falls here too: the TPM arm above is glibc-only (tss-esapi
+        // won't cross-link on musl, CIRISVerify#127), so musl gets the software
+        // signer — matching the runtime `NotSupported` the keyring already returns.
         #[cfg(not(any(
             target_os = "android",
             target_os = "ios",
-            target_os = "linux",
+            all(target_os = "linux", target_env = "gnu"),
             target_os = "windows",
             target_os = "macos"
         )))]

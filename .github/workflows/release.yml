@@ -23,11 +23,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Linux x86_64 (with TPM support)
+          # Linux x86_64. NB: deliberately built WITHOUT the `tpm` feature
+          # (CIRISVerify#125). The `tpm` feature link-binds tss-esapi-sys → the
+          # cdylib DT_NEEDEDs libtss2-tctildr.so.0, so the published wheel failed
+          # to load on any host without the TPM2 runtime stack — even for pure
+          # surfaces (rns_destination_hash, scope_privacy, jcs, license verify).
+          # The macOS lanes already build the FFI tpm-less (ciris_verify_tpm_-
+          # attestation is gated not(android|ios), not on `feature=tpm`, so it
+          # still compiles and degrades to software). Restoring TPM-in-the-wheel
+          # is the #125/#127 runtime-loaded (dlopen) backend follow-up.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: libciris_verify_ffi.so
-            features: tpm
 
           # Linux ARM64 (cross-compile - native ARM64 runners have limited availability)
           # Note: TPM support disabled in cross-compile; use self-hosted ARM64 for TPM
