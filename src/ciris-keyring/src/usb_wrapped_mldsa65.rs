@@ -437,7 +437,8 @@ mod tests {
     // A deterministic Ed25519 HardwareSigner standing in for the YubiKey
     // (Ed25519 is RFC-8032 deterministic — exactly the property the wrap needs).
     fn yubikey(alias: &str) -> SealedEd25519Signer {
-        SealedEd25519Signer::open(alias, tmp_dir("ed")).unwrap()
+        // Deliberate mint of a fresh mock key (open() is now re-open-only, #134).
+        SealedEd25519Signer::open_or_create(alias, tmp_dir("ed"), None).unwrap()
     }
 
     #[tokio::test]

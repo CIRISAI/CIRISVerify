@@ -100,8 +100,14 @@ pub async fn create_federation_identity(
     // alias), else by the recorded `key_id` (back-compat). Decoupling lets the
     // recorded key_id move to the derived form without re-sealing every seed.
     let seal_id = seal_alias.unwrap_or(&key_id);
-    let mldsa = ciris_keyring::get_platform_sealed_mldsa65_signer(seal_id, keys_dir())
-        .map_err(keyring_err)?;
+    // CREATE is a deliberate mint-or-adopt: `open_or_create(None)` re-opens a
+    // sealed seed if present, else mints + seals a fresh one. The bare factory
+    // `get_platform_sealed_mldsa65_signer` is now **re-open-only** and fails
+    // loud (CIRISVerify#134), so identity *creation* must use this explicit path.
+    let mldsa: Box<dyn ciris_keyring::PqcSigner> = Box::new(
+        ciris_keyring::SealedMlDsa65Signer::open_or_create(seal_id, keys_dir(), None)
+            .map_err(keyring_err)?,
+    );
 
     let identity = HardwareRootedIdentity::new(key_id.clone(), hw_signer, Arc::from(mldsa))?;
     let record = produce_self_key_record(&identity, identity_type, valid_from).await?;

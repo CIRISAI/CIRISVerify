@@ -27,7 +27,7 @@
 //!   32-byte seed **byte-identically** (the software-Ed25519 → TPM migration:
 //!   the destination hash / `key_id` is unchanged, so announces and routing
 //!   survive). Only seals if no sealed seed is present yet — idempotent.
-//! - **Generate** — [`SealedEd25519Signer::open`] on a fresh `seed_dir`
+//! - **Generate** — [`SealedEd25519Signer::open_or_create`] (`None`) on a fresh `seed_dir`
 //!   generates a 32-byte seed from the OS CSPRNG and seals it.
 //!
 //! Same AV-17 carve-out as #68: hardware-backed at rest; the seed is in
@@ -72,21 +72,14 @@ impl SealedEd25519Signer {
     ) -> Result<Self, KeyringError> {
         let alias = alias.into();
         let seed_dir = seed_dir.into();
-        let storage = create_platform_storage(&alias, &seed_dir)?;
 
-        let mut seed: [u8; SEED_LEN] = match storage.load(SEED_KEY_ID) {
-            // Already sealed → adopt verbatim (key_id preserved).
-            Ok(raw) => raw
-                .as_slice()
-                .try_into()
-                .map_err(|_| KeyringError::InvalidKey {
-                    reason: format!(
-                        "sealed Ed25519 seed is {} bytes, expected {SEED_LEN}",
-                        raw.len()
-                    ),
-                })?,
-            // Not yet sealed → adopt the provided seed, or generate one.
+        // Deliberate first-seal: re-open if present, else seal. Re-open paths
+        // must NOT come through here with `None` (that would mint a fresh key
+        // on a missing seed — the #134 hazard); they use `open_existing`.
+        match Self::open_existing(alias.clone(), seed_dir.clone()) {
+            Ok(signer) => Ok(signer),
             Err(KeyringError::KeyNotFound { .. }) => {
+                let storage = create_platform_storage(&alias, &seed_dir)?;
                 let mut s = [0u8; SEED_LEN];
                 match adopt_seed {
                     Some(existing) => s.copy_from_slice(existing),
@@ -96,10 +89,44 @@ impl SealedEd25519Signer {
                     },
                 }
                 storage.store(SEED_KEY_ID, &s)?;
-                s
+                let inner = Ed25519SoftwareSigner::from_bytes(&s, alias.clone())?;
+                s.iter_mut().for_each(|b| *b = 0);
+                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+                Ok(Self {
+                    inner,
+                    storage,
+                    alias,
+                    seed_dir,
+                })
             },
-            Err(e) => return Err(e),
-        };
+            Err(e) => Err(e),
+        }
+    }
+
+    /// **Re-open** an existing sealed Ed25519 signer — **load-only**. Errors
+    /// [`KeyringError::KeyNotFound`] if no sealed seed is present at `seed_dir`.
+    /// Re-opening an identity must never mint a fresh seed (it would swap the
+    /// key for an unverifiable one; CIRISVerify#134). The deliberate first-seal
+    /// is [`Self::adopt`] / [`Self::open_or_create`].
+    pub fn open_existing(
+        alias: impl Into<String>,
+        seed_dir: impl Into<PathBuf>,
+    ) -> Result<Self, KeyringError> {
+        let alias = alias.into();
+        let seed_dir = seed_dir.into();
+        let storage = create_platform_storage(&alias, &seed_dir)?;
+
+        // `KeyNotFound` propagates — re-open does NOT fabricate a seed (#134).
+        let raw = storage.load(SEED_KEY_ID)?;
+        let mut seed: [u8; SEED_LEN] =
+            raw.as_slice()
+                .try_into()
+                .map_err(|_| KeyringError::InvalidKey {
+                    reason: format!(
+                        "sealed Ed25519 seed is {} bytes, expected {SEED_LEN}",
+                        raw.len()
+                    ),
+                })?;
 
         let inner = Ed25519SoftwareSigner::from_bytes(&seed, alias.clone())?;
         // Scrub the local seed copy; the live key now lives in `inner`, the
@@ -116,12 +143,15 @@ impl SealedEd25519Signer {
         })
     }
 
-    /// Open at `seed_dir`: adopt the sealed seed, or generate+seal a fresh one.
+    /// **Re-open** an existing sealed signer (load-only). Errors
+    /// [`KeyringError::KeyNotFound`] if absent — re-opening never mints
+    /// (CIRISVerify#134). Use [`Self::adopt`] / [`Self::open_or_create`] for the
+    /// deliberate first-seal.
     pub fn open(
         alias: impl Into<String>,
         seed_dir: impl Into<PathBuf>,
     ) -> Result<Self, KeyringError> {
-        Self::open_or_create(alias, seed_dir, None)
+        Self::open_existing(alias, seed_dir)
     }
 
     /// Adopt an existing 32-byte Ed25519 `seed` byte-identically (the
@@ -139,9 +169,11 @@ impl SealedEd25519Signer {
 
 /// Best-tier sealed **Ed25519** federation signer (CIRISVerify#70) — the
 /// Ed25519 counterpart to `get_platform_signer` (which yields TPM-native
-/// ECDSA). Auto-detects the hardware tier with software fallback; generates on
-/// first use and adopts a previously-sealed seed verbatim. Returns a
-/// `Box<dyn HardwareSigner>` whose `public_key()` is the 32-byte Ed25519 key,
+/// ECDSA). Auto-detects the hardware tier with software fallback. **Re-opens** a
+/// previously-sealed seed; errors `KeyNotFound` if absent — it never mints, so a
+/// missing seed surfaces instead of silently swapping the identity (#134;
+/// deliberate first-seal is `SealedEd25519Signer::adopt` / `open_or_create`).
+/// Returns a `Box<dyn HardwareSigner>` whose `public_key()` is the 32-byte Ed25519 key,
 /// ready for `ciris_persist::Engine::with_hardware_signer` /
 /// `ciris_edge::LocalSigner`.
 pub fn get_platform_ed25519_signer(
@@ -251,7 +283,8 @@ mod tests {
     #[tokio::test]
     async fn pubkey_is_32_byte_ed25519_and_signs() {
         let dir = tmpdir();
-        let signer = get_platform_ed25519_signer("fed-key", &dir).unwrap();
+        // Mint (deliberate first-seal) — re-open is load-only now (#134).
+        let signer = SealedEd25519Signer::open_or_create("fed-key", &dir, None).unwrap();
         assert_eq!(signer.algorithm(), ClassicalAlgorithm::Ed25519);
         let pk = signer.public_key().await.unwrap();
         assert_eq!(pk.len(), 32, "federation pubkey must be 32-byte Ed25519");
@@ -284,10 +317,11 @@ mod tests {
     async fn sealed_seed_persists_and_readopt_is_idempotent() {
         let dir = tmpdir();
         let pk1 = {
-            let s = SealedEd25519Signer::open("fed-key", &dir).unwrap();
+            // Mint (deliberate first-seal).
+            let s = SealedEd25519Signer::open_or_create("fed-key", &dir, None).unwrap();
             s.public_key().await.unwrap()
         };
-        // Reopen → same key.
+        // Reopen (load-only) → same key.
         let pk2 = {
             let s = SealedEd25519Signer::open("fed-key", &dir).unwrap();
             s.public_key().await.unwrap()
@@ -315,7 +349,7 @@ mod tests {
         // Linux release wheel) it lands on the Hardware arm. Either is honest;
         // a disagreement is the bug.
         let dir = tmpdir();
-        let signer = get_platform_ed25519_signer("fed-key", &dir).unwrap();
+        let signer = SealedEd25519Signer::open_or_create("fed-key", &dir, None).unwrap();
         let tier_is_software = signer.hardware_type() == HardwareType::SoftwareOnly;
         let descriptor_is_software = matches!(
             signer.storage_descriptor(),
@@ -331,7 +365,7 @@ mod tests {
     #[tokio::test]
     async fn delete_then_key_absent() {
         let dir = tmpdir();
-        let signer = get_platform_ed25519_signer("fed-key", &dir).unwrap();
+        let signer = SealedEd25519Signer::open_or_create("fed-key", &dir, None).unwrap();
         assert!(signer.key_exists("fed-key").await.unwrap());
         signer.delete_key("fed-key").await.unwrap();
         assert!(!signer.key_exists("fed-key").await.unwrap());
@@ -342,9 +376,31 @@ mod tests {
     async fn holds_as_arc_dyn_hardware_signer() {
         // The CIRISServer consumption: Arc<dyn HardwareSigner> for persist/edge.
         let dir = tmpdir();
+        // Mint first; the factory re-opens (load-only) now (#134).
+        SealedEd25519Signer::open_or_create("fed-key", &dir, None).unwrap();
         let signer: std::sync::Arc<dyn HardwareSigner> =
             std::sync::Arc::from(get_platform_ed25519_signer("fed-key", &dir).unwrap());
         assert_eq!(signer.public_key().await.unwrap().len(), 32);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #134 regression: re-opening a non-existent sealed seed must FAIL, never
+    /// silently mint a fresh key (which would swap the federation identity).
+    #[tokio::test]
+    async fn open_fails_loud_on_missing_seed() {
+        let dir = tmpdir();
+        assert!(matches!(
+            SealedEd25519Signer::open("fed-key", &dir),
+            Err(KeyringError::KeyNotFound { .. })
+        ));
+        assert!(matches!(
+            SealedEd25519Signer::open_existing("fed-key", &dir),
+            Err(KeyringError::KeyNotFound { .. })
+        ));
+        assert!(
+            get_platform_ed25519_signer("fed-key", &dir).is_err(),
+            "the factory re-opens — it must not mint on a missing seed"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
