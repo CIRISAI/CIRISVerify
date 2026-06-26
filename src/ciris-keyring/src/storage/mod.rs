@@ -511,6 +511,102 @@ impl SecureBlobStorage for SoftwareSecureBlobStorage {
 }
 
 // =============================================================================
+// Legacy-key supersession notice (CIRISVerify#141/#145)
+// =============================================================================
+
+/// A legacy at-rest key artifact that was archived because a higher-tier backend
+/// minted a fresh master for the same alias (storage-backend drift between
+/// installs). Non-destructive: the file is renamed, never deleted.
+#[derive(Debug, Clone)]
+pub struct SupersededLegacyKey {
+    /// Where the legacy artifact used to live.
+    pub original: PathBuf,
+    /// Where it was moved (`*.superseded-pre-v8`), retained for recovery.
+    pub archived: PathBuf,
+}
+
+/// Suffix appended when archiving a superseded legacy key artifact.
+const SUPERSEDED_SUFFIX: &str = "superseded-pre-v8";
+
+/// When a higher-tier backend (`new_backend`) mints a fresh master for `alias`,
+/// announce — loudly and non-silently — any **prior** at-rest artifacts for that
+/// alias left by an earlier install in a lower tier, and **archive** them (rename
+/// to `*.superseded-pre-v8`, never delete) so the supersession is visible and
+/// recoverable rather than a silent orphaning (CIRISVerify#141/#145).
+///
+/// This is the v8 "rotate, don't migrate" handling: hardware keys can't be
+/// exported to migrate, and no federated/signed state exists yet, so a fresh
+/// hardware key supersedes the old one. The old material is archived, never lost
+/// silently. If/when keys are federated, rotation rides Persist's `supersede`.
+///
+/// Returns what was archived (empty if nothing prior existed).
+pub fn archive_superseded_legacy_keys(
+    alias: &str,
+    storage_dir: &std::path::Path,
+    new_backend: &str,
+) -> Vec<SupersededLegacyKey> {
+    // Legacy at-rest artifacts a prior install may have written under `alias`:
+    //  - software:   `{alias}.master.key`, `{alias}.*.blob`
+    //  - pre-v8 TPM: `{alias}.tpm_seal`, `{alias}.*.tpm_blob`, `{alias}.tpm_softfallback`
+    // (the new plugin tier writes `{alias}.tpmplugin_seal` / `{alias}.*.tpmp_blob`,
+    //  which are NOT matched here.)
+    let is_legacy = |name: &str| -> bool {
+        let p = format!("{alias}.");
+        if !name.starts_with(&p) {
+            return false;
+        }
+        name == format!("{alias}.master.key")
+            || name == format!("{alias}.tpm_seal")
+            || name == format!("{alias}.tpm_softfallback")
+            || name.ends_with(".blob")
+            || name.ends_with(".tpm_blob")
+    };
+
+    let mut archived = Vec::new();
+    let Ok(entries) = std::fs::read_dir(storage_dir) else {
+        return archived;
+    };
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if name.ends_with(SUPERSEDED_SUFFIX) || !is_legacy(&name) {
+            continue;
+        }
+        let original = entry.path();
+        let dest = storage_dir.join(format!("{name}.{SUPERSEDED_SUFFIX}"));
+        match std::fs::rename(&original, &dest) {
+            Ok(()) => {
+                tracing::warn!(
+                    alias = %alias,
+                    backend = %new_backend,
+                    legacy = %original.display(),
+                    archived = %dest.display(),
+                    "KEY SUPERSEDED — a higher-tier backend minted a FRESH key for this alias; a \
+                     prior-install key was found and ARCHIVED (not deleted, not silently orphaned). \
+                     The fresh key is the active one. No federated/signed state references the old \
+                     key (no FedIDs minted), so nothing needs re-signing; if that changes, rotation \
+                     rides Persist supersede."
+                );
+                archived.push(SupersededLegacyKey {
+                    original,
+                    archived: dest,
+                });
+            },
+            Err(e) => {
+                tracing::warn!(
+                    alias = %alias,
+                    legacy = %original.display(),
+                    error = %e,
+                    "Found a prior-install key but could not archive it (left in place)."
+                );
+            },
+        }
+    }
+    archived
+}
+
+// =============================================================================
 // Factory Function
 // =============================================================================
 
@@ -633,6 +729,38 @@ pub fn create_platform_storage(
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn archive_superseded_legacy_keys_is_non_destructive_and_scoped() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path();
+        // A prior software install left a master + a blob under alias "agent".
+        std::fs::write(p.join("agent.master.key"), b"old-master").unwrap();
+        std::fs::write(p.join("agent.identity.blob"), b"old-blob").unwrap();
+        // Unrelated alias + the NEW plugin tier's own files must be left alone.
+        std::fs::write(p.join("other.master.key"), b"keep").unwrap();
+        std::fs::write(p.join("agent.tpmplugin_seal"), b"new-tier").unwrap();
+
+        let archived = archive_superseded_legacy_keys("agent", p, "ciris-tpm-plugin");
+
+        // Both legacy artifacts archived (renamed), never deleted.
+        assert_eq!(archived.len(), 2, "master + blob archived");
+        assert!(!p.join("agent.master.key").exists());
+        assert!(!p.join("agent.identity.blob").exists());
+        assert!(p.join("agent.master.key.superseded-pre-v8").exists());
+        assert!(p.join("agent.identity.blob.superseded-pre-v8").exists());
+        // Content preserved (archived, not lost).
+        assert_eq!(
+            std::fs::read(p.join("agent.master.key.superseded-pre-v8")).unwrap(),
+            b"old-master"
+        );
+        // Other alias + the new tier untouched.
+        assert!(p.join("other.master.key").exists());
+        assert!(p.join("agent.tpmplugin_seal").exists());
+
+        // Idempotent: a second sweep finds nothing new (already archived).
+        assert!(archive_superseded_legacy_keys("agent", p, "ciris-tpm-plugin").is_empty());
+    }
 
     #[test]
     fn test_software_storage_roundtrip() {

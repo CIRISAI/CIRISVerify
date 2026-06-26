@@ -147,15 +147,14 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install libtss2 runtime (Linux wheel TPM dep)
-        # The Linux x86_64 wheel is built with `--features tpm` (see
-        # release.yml), so its bundled libciris_verify_ffi.so dlopen()s
-        # libtss2-tctildr.so.0 at load time. Stock Ubuntu runners don't
-        # carry libtss2; without this step `ctypes.CDLL(...)` raises
-        # OSError before any verify_tree work can run.
-        # NB: downstream consumers of the Linux wheel hit the same
-        # requirement — this isn't CI-specific. Tracked as a follow-up
-        # to consider a no-TPM wheel for non-TPM hosts.
+      - name: Install libtss2 runtime (optional — for the bundled TPM plugin)
+        # v8.0.0 (CIRISVerify#141): the wheel's libciris_verify_ffi.so NO LONGER
+        # links libtss2 (0 DT_NEEDED) — it loads on ANY host. tss-esapi now lives
+        # ONLY in the bundled libciris_tpm_plugin.so, which the keyring dlopens at
+        # runtime; only THAT plugin .so DT_NEEDEDs libtss2. So this step is no
+        # longer required for the wheel to load — it only lets the bundled plugin
+        # actually reach a TPM here (absent libtss2 → plugin load fails → software
+        # fallback, still loads + works fine).
         run: |
           sudo apt-get update
           # libtss2-dev libsqlite3-dev pulls in all the runtime libtss2-* packages as

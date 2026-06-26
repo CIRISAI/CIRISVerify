@@ -114,6 +114,12 @@ impl PluginTpmSecureBlobStorage {
             m.copy_from_slice(&unsealed);
             m
         } else {
+            // Genesis: minting a FRESH TPM master. If a prior install left
+            // lower-tier (software / pre-v8 TPM) key material for this alias,
+            // announce it loudly and archive it — never a silent orphaning
+            // (CIRISVerify#141/#145; the v8 "rotate, don't migrate" handling).
+            super::archive_superseded_legacy_keys(&alias, &storage_dir, "ciris-tpm-plugin");
+
             let mut m = [0u8; MASTER_SECRET_SIZE];
             use rand::RngCore;
             rand::rngs::OsRng.fill_bytes(&mut m);

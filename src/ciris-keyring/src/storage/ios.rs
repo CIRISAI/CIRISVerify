@@ -166,6 +166,15 @@ impl SecureEnclaveSecureBlobStorage {
                     tag = %self.wrapper_key_tag,
                     "Generating ECIES wrapper key for blob storage"
                 );
+                // Genesis: minting a FRESH SE/keychain wrapper. Announce + archive
+                // any prior-install lower-tier key material for this alias — never
+                // a silent orphaning (CIRISVerify#141/#145; the v8 "rotate, don't
+                // migrate" handling, parity with the plugin TPM tier).
+                crate::storage::archive_superseded_legacy_keys(
+                    &self.alias,
+                    &self.storage_dir,
+                    "secure-enclave",
+                );
                 self.generate_wrapper_key()
             },
             Err(e) => Err(e),
