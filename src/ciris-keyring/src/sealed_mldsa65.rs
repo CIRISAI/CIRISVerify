@@ -32,7 +32,7 @@
 //!   32-byte seed **byte-identically** (the software→sealed migration: the
 //!   ML-DSA-65 pubkey and therefore the hybrid `key_id` are preserved).
 //!   Idempotent — won't clobber an already-sealed key.
-//! - **Generate** — [`SealedMlDsa65Signer::open`] on a fresh `seed_dir`
+//! - **Generate** — [`SealedMlDsa65Signer::open_or_create`] (`None`) on a fresh `seed_dir`
 //!   generates a 32-byte seed from the OS CSPRNG and seals it.
 
 use std::path::PathBuf;
@@ -59,43 +59,32 @@ pub struct SealedMlDsa65Signer {
 }
 
 impl SealedMlDsa65Signer {
-    /// Open the sealed ML-DSA-65 signer at `seed_dir`. A sealed seed already
-    /// present is adopted verbatim; otherwise, if `adopt_seed` is `Some`, that
-    /// 32-byte seed is sealed byte-identically; otherwise a fresh seed is
-    /// generated from the OS CSPRNG and sealed.
-    pub fn open_or_create(
+    /// **Re-open** an existing sealed ML-DSA-65 signer — **load-only**. Errors
+    /// [`KeyringError::KeyNotFound`] if no sealed seed is present at `seed_dir`.
+    ///
+    /// Re-opening an identity must **never** mint a fresh seed: doing so swaps
+    /// the PQC half of the hybrid federation key for an unverifiable one and
+    /// silently destroys the original (CIRISVerify#134, the #275 hazard class).
+    /// The deliberate first-seal is [`Self::adopt`] / [`Self::open_or_create`].
+    pub fn open_existing(
         alias: impl Into<String>,
         seed_dir: impl Into<PathBuf>,
-        adopt_seed: Option<&[u8; SEED_LEN]>,
     ) -> Result<Self, KeyringError> {
         let alias = alias.into();
         let seed_dir = seed_dir.into();
         let storage = create_platform_storage(&alias, &seed_dir)?;
 
-        let mut seed: [u8; SEED_LEN] = match storage.load(SEED_KEY_ID) {
-            Ok(raw) => raw
-                .as_slice()
+        // `KeyNotFound` propagates — re-open does NOT fabricate a seed (#134).
+        let raw = storage.load(SEED_KEY_ID)?;
+        let mut seed: [u8; SEED_LEN] =
+            raw.as_slice()
                 .try_into()
                 .map_err(|_| KeyringError::InvalidKey {
                     reason: format!(
                         "sealed ML-DSA-65 seed is {} bytes, expected {SEED_LEN}",
                         raw.len()
                     ),
-                })?,
-            Err(KeyringError::KeyNotFound { .. }) => {
-                let mut s = [0u8; SEED_LEN];
-                match adopt_seed {
-                    Some(existing) => s.copy_from_slice(existing),
-                    None => {
-                        use rand_core::{OsRng, RngCore};
-                        OsRng.fill_bytes(&mut s);
-                    },
-                }
-                storage.store(SEED_KEY_ID, &s)?;
-                s
-            },
-            Err(e) => return Err(e),
-        };
+                })?;
 
         let inner = MlDsa65SoftwareSigner::from_seed_bytes(&seed, alias.clone())?;
         // Scrub the local seed copy; the durable copy is sealed in `storage`.
@@ -110,12 +99,57 @@ impl SealedMlDsa65Signer {
         })
     }
 
-    /// Open at `seed_dir`: adopt the sealed seed, or generate+seal a fresh one.
+    /// **Deliberate first-seal.** Re-opens a sealed seed if present; otherwise
+    /// seals one — `adopt_seed = Some` seals that exact 32-byte seed (the
+    /// software→hardware migration), `None` mints a fresh OS-CSPRNG seed.
+    ///
+    /// Call this **only on a deliberate mint** (identity creation). Re-open
+    /// paths (node startup) must use [`Self::open`] / [`Self::open_existing`],
+    /// which fail loud rather than fabricate a key (CIRISVerify#134).
+    pub fn open_or_create(
+        alias: impl Into<String>,
+        seed_dir: impl Into<PathBuf>,
+        adopt_seed: Option<&[u8; SEED_LEN]>,
+    ) -> Result<Self, KeyringError> {
+        let alias = alias.into();
+        let seed_dir = seed_dir.into();
+
+        match Self::open_existing(alias.clone(), seed_dir.clone()) {
+            Ok(signer) => Ok(signer),
+            Err(KeyringError::KeyNotFound { .. }) => {
+                let storage = create_platform_storage(&alias, &seed_dir)?;
+                let mut s = [0u8; SEED_LEN];
+                match adopt_seed {
+                    Some(existing) => s.copy_from_slice(existing),
+                    None => {
+                        use rand_core::{OsRng, RngCore};
+                        OsRng.fill_bytes(&mut s);
+                    },
+                }
+                storage.store(SEED_KEY_ID, &s)?;
+                let inner = MlDsa65SoftwareSigner::from_seed_bytes(&s, alias.clone())?;
+                s.iter_mut().for_each(|b| *b = 0);
+                core::sync::atomic::compiler_fence(core::sync::atomic::Ordering::SeqCst);
+                Ok(Self {
+                    inner,
+                    storage,
+                    alias,
+                    seed_dir,
+                })
+            },
+            Err(e) => Err(e),
+        }
+    }
+
+    /// **Re-open** an existing sealed signer (load-only). Errors
+    /// [`KeyringError::KeyNotFound`] if absent — re-opening never mints
+    /// (CIRISVerify#134). Use [`Self::adopt`] / [`Self::open_or_create`] for the
+    /// deliberate first-seal.
     pub fn open(
         alias: impl Into<String>,
         seed_dir: impl Into<PathBuf>,
     ) -> Result<Self, KeyringError> {
-        Self::open_or_create(alias, seed_dir, None)
+        Self::open_existing(alias, seed_dir)
     }
 
     /// Adopt an existing 32-byte ML-DSA-65 `seed` byte-identically (the
@@ -131,10 +165,12 @@ impl SealedMlDsa65Signer {
 }
 
 /// Best-tier sealed **ML-DSA-65** federation signer (CIRISVerify#70 PQC analog)
-/// — the post-quantum counterpart to `get_platform_ed25519_signer`. Generates
-/// on first use, adopts a previously-sealed seed verbatim, returns a
-/// `Box<dyn PqcSigner>` whose `public_key()` is the ML-DSA-65 pubkey. Pair it
-/// with `get_platform_ed25519_signer` to give both halves of the hybrid
+/// — the post-quantum counterpart to `get_platform_ed25519_signer`. **Re-opens**
+/// a previously-sealed seed (errors `KeyNotFound` if absent — it never mints, so
+/// a missing seed surfaces instead of silently swapping the PQC identity, #134;
+/// deliberate first-seal is `SealedMlDsa65Signer::adopt` / `open_or_create`),
+/// returns a `Box<dyn PqcSigner>` whose `public_key()` is the ML-DSA-65 pubkey.
+/// Pair it with `get_platform_ed25519_signer` to give both halves of the hybrid
 /// federation key hardware-backed-at-rest custody.
 pub fn get_platform_sealed_mldsa65_signer(
     alias: &str,
@@ -206,7 +242,8 @@ mod tests {
     #[tokio::test]
     async fn pubkey_is_mldsa65_and_signs_verifiably() {
         let dir = tmpdir();
-        let signer = get_platform_sealed_mldsa65_signer("fed-pqc", &dir).unwrap();
+        // Mint (deliberate first-seal) — re-open is load-only now (#134).
+        let signer = SealedMlDsa65Signer::open_or_create("fed-pqc", &dir, None).unwrap();
         assert_eq!(signer.algorithm(), PqcAlgorithm::MlDsa65);
         let pk = signer.public_key().await.unwrap();
         assert_eq!(pk.len(), 1952, "ML-DSA-65 pubkey length");
@@ -236,12 +273,12 @@ mod tests {
     #[tokio::test]
     async fn sealed_seed_persists_and_readopt_is_idempotent() {
         let dir = tmpdir();
-        let pk1 = SealedMlDsa65Signer::open("fed-pqc", &dir)
+        let pk1 = SealedMlDsa65Signer::open_or_create("fed-pqc", &dir, None)
             .unwrap()
             .public_key()
             .await
             .unwrap();
-        // Reopen → same key.
+        // Reopen (load-only) → same key.
         let pk2 = SealedMlDsa65Signer::open("fed-pqc", &dir)
             .unwrap()
             .public_key()
@@ -268,7 +305,7 @@ mod tests {
         // the sealed seed is genuinely hardware-backed and both move to the
         // Hardware arm. A disagreement between the two is the bug.
         let dir = tmpdir();
-        let signer = get_platform_sealed_mldsa65_signer("fed-pqc", &dir).unwrap();
+        let signer = SealedMlDsa65Signer::open_or_create("fed-pqc", &dir, None).unwrap();
         let tier_is_software = signer.hardware_type() == HardwareType::SoftwareOnly;
         let descriptor_is_software = matches!(
             signer.storage_descriptor(),
@@ -284,9 +321,32 @@ mod tests {
     #[tokio::test]
     async fn holds_as_arc_dyn_pqc_signer() {
         let dir = tmpdir();
+        // Mint first; the factory re-opens (load-only) now (#134).
+        SealedMlDsa65Signer::open_or_create("fed-pqc", &dir, None).unwrap();
         let signer: std::sync::Arc<dyn PqcSigner> =
             std::sync::Arc::from(get_platform_sealed_mldsa65_signer("fed-pqc", &dir).unwrap());
         assert_eq!(signer.algorithm(), PqcAlgorithm::MlDsa65);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// #134 regression: re-opening a non-existent sealed seed must FAIL, never
+    /// silently mint a fresh ML-DSA key (which would destroy the PQC half of
+    /// the hybrid federation identity, leaving an unverifiable signer).
+    #[tokio::test]
+    async fn open_fails_loud_on_missing_seed() {
+        let dir = tmpdir();
+        assert!(matches!(
+            SealedMlDsa65Signer::open("fed-pqc", &dir),
+            Err(KeyringError::KeyNotFound { .. })
+        ));
+        assert!(matches!(
+            SealedMlDsa65Signer::open_existing("fed-pqc", &dir),
+            Err(KeyringError::KeyNotFound { .. })
+        ));
+        assert!(
+            get_platform_sealed_mldsa65_signer("fed-pqc", &dir).is_err(),
+            "the factory re-opens — it must not mint on a missing seed"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
