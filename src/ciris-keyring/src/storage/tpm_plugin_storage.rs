@@ -1,6 +1,7 @@
 //! Plugin-backed TPM secure blob storage (CIRISVerify#130, stage 4).
 //!
-//! The runtime-`dlopen` counterpart to [`super::tpm::TpmSecureBlobStorage`].
+//! The runtime-`dlopen` TPM secure-blob storage (v8.0.0; the former link-time
+//! `TpmSecureBlobStorage` was deleted with `tss-esapi`, #141).
 //! Identical at-rest design — a random 32-byte **master** sealed *once*, then
 //! per-blob AES-256-GCM under `HKDF("CIRIS-TPM-blob-v2", master)` keyed by
 //! `key_id` — with one difference: the master is sealed/unsealed through the
@@ -113,6 +114,12 @@ impl PluginTpmSecureBlobStorage {
             m.copy_from_slice(&unsealed);
             m
         } else {
+            // Genesis: minting a FRESH TPM master. If a prior install left
+            // lower-tier (software / pre-v8 TPM) key material for this alias,
+            // announce it loudly and archive it — never a silent orphaning
+            // (CIRISVerify#141/#145; the v8 "rotate, don't migrate" handling).
+            super::archive_superseded_legacy_keys(&alias, &storage_dir, "ciris-tpm-plugin");
+
             let mut m = [0u8; MASTER_SECRET_SIZE];
             use rand::RngCore;
             rand::rngs::OsRng.fill_bytes(&mut m);

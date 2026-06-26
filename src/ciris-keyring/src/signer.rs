@@ -98,7 +98,7 @@ impl KeyGenConfig {
 ///
 /// - Android: `AndroidKeystoreSigner` (feature: `android`)
 /// - iOS: `SecureEnclaveSigner` (feature: `ios`)
-/// - TPM: `TpmSigner` (feature: `tpm`)
+/// - TPM: `PluginTpmSigner` over the runtime `dlopen` plugin (feature: `tpm-plugin`)
 /// - Fallback: `SoftwareSigner` (feature: `software`)
 ///
 /// ## Example

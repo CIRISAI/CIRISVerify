@@ -759,12 +759,6 @@ pub struct MutableEd25519Signer {
     /// Hardware wrapper for iOS/macOS (ECIES encryption via Secure Enclave)
     #[cfg(any(target_os = "ios", target_os = "macos"))]
     hardware_wrapper: Option<crate::platform::ios::SecureEnclaveWrappedEd25519Signer>,
-    /// Hardware wrapper for Linux/Windows (AES-256-GCM via TPM-derived key)
-    #[cfg(all(
-        feature = "tpm",
-        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-    ))]
-    tpm_wrapper: Option<crate::platform::tpm::TpmWrappedEd25519Signer>,
 }
 
 impl MutableEd25519Signer {
@@ -860,40 +854,6 @@ impl MutableEd25519Signer {
             }
         };
 
-        // On Linux/Windows with TPM, try to initialize TPM wrapper
-        #[cfg(all(
-            feature = "tpm",
-            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-        ))]
-        let tpm_wrapper = {
-            let key_dir = std::env::var("CIRIS_DATA_DIR")
-                .map(std::path::PathBuf::from)
-                .or_else(|_| {
-                    dirs::data_local_dir()
-                        .map(|d| d.join("ciris-verify"))
-                        .ok_or(())
-                })
-                .unwrap_or_else(|_| std::path::PathBuf::from("."));
-
-            match crate::platform::tpm::TpmWrappedEd25519Signer::new(alias.clone(), key_dir) {
-                Ok(wrapper) => {
-                    tracing::info!(
-                        alias = %alias,
-                        "TPM-backed Ed25519 wrapper initialized (AES-256-GCM via TPM-derived key)"
-                    );
-                    Some(wrapper)
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        alias = %alias,
-                        error = %e,
-                        "Failed to initialize TPM wrapper - falling back to software-only"
-                    );
-                    None
-                },
-            }
-        };
-
         let signer = Self {
             inner: std::sync::RwLock::new(Ed25519SoftwareSigner::new(alias.clone())),
             storage_path: std::sync::RwLock::new(None),
@@ -901,11 +861,6 @@ impl MutableEd25519Signer {
             hardware_wrapper,
             #[cfg(any(target_os = "ios", target_os = "macos"))]
             hardware_wrapper,
-            #[cfg(all(
-                feature = "tpm",
-                any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-            ))]
-            tpm_wrapper,
         };
 
         // Try to load persisted key (with panic protection)
@@ -961,24 +916,7 @@ impl MutableEd25519Signer {
         {
             self.hardware_wrapper.is_some()
         }
-        #[cfg(all(
-            feature = "tpm",
-            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-        ))]
-        {
-            self.tpm_wrapper
-                .as_ref()
-                .is_some_and(|w| w.is_hardware_backed())
-        }
-        #[cfg(not(any(
-            target_os = "android",
-            target_os = "ios",
-            target_os = "macos",
-            all(
-                feature = "tpm",
-                any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-            )
-        )))]
+        #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "macos")))]
         {
             false
         }
@@ -1164,48 +1102,6 @@ impl MutableEd25519Signer {
             }
         }
 
-        // On Linux/Windows with TPM, try TPM-backed loading first
-        #[cfg(all(
-            feature = "tpm",
-            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-        ))]
-        {
-            if let Some(ref tpm) = self.tpm_wrapper {
-                tracing::info!("Attempting to load TPM-backed Ed25519 key...");
-
-                if tpm.key_exists() {
-                    match tpm.public_key() {
-                        Ok(pubkey) => {
-                            // Compute fingerprint (first 8 chars of hex pubkey)
-                            let fingerprint =
-                                hex::encode(&pubkey).chars().take(8).collect::<String>();
-
-                            tracing::info!(
-                                pubkey_len = pubkey.len(),
-                                fingerprint = %fingerprint,
-                                "TPM-backed Ed25519 key loaded successfully (AES-256-GCM via TPM)"
-                            );
-
-                            // Set hardware marker to PREVENT software fallback
-                            if let Ok(mut inner) = self.inner.write() {
-                                inner.set_hardware_marker(&fingerprint);
-                            }
-
-                            return Ok(true);
-                        },
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "TPM-backed key exists but failed to load - will try software fallback"
-                            );
-                        },
-                    }
-                } else {
-                    tracing::debug!("No TPM-backed key found");
-                }
-            }
-        }
-
         // Software fallback (or platforms without hardware wrapper)
         let path = match self.get_storage_path() {
             Some(p) => p,
@@ -1337,44 +1233,6 @@ impl MutableEd25519Signer {
                     }
                 } else {
                     tracing::debug!("SE-backed key already exists, no migration needed");
-                }
-            }
-        }
-
-        // On Linux/Windows: migrate existing plaintext key to TPM-backed storage
-        #[cfg(all(
-            feature = "tpm",
-            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-        ))]
-        {
-            drop(inner); // Release the lock before migration
-            if let Some(ref tpm) = self.tpm_wrapper {
-                tracing::info!(
-                    "Migrating existing software key to TPM-backed storage (AES-256-GCM)..."
-                );
-
-                if !tpm.key_exists() {
-                    match tpm.import_key(&key_bytes) {
-                        Ok(()) => {
-                            tracing::info!(
-                                "✓ Software key migrated to TPM-backed storage successfully"
-                            );
-                            tracing::info!(
-                                "Note: Old plaintext key file still exists at {:?} - \
-                                 consider deleting it for improved security",
-                                path
-                            );
-                        },
-                        Err(e) => {
-                            tracing::warn!(
-                                error = %e,
-                                "Failed to migrate key to TPM-backed storage - \
-                                 will continue with software-only key"
-                            );
-                        },
-                    }
-                } else {
-                    tracing::debug!("TPM-backed key already exists, no migration needed");
                 }
             }
         }
@@ -1624,52 +1482,6 @@ impl MutableEd25519Signer {
             }
         }
 
-        // On Linux/Windows with TPM, use TPM-backed import if available
-        #[cfg(all(
-            feature = "tpm",
-            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-        ))]
-        {
-            if let Some(ref tpm) = self.tpm_wrapper {
-                tracing::info!("Using TPM-backed import (AES-256-GCM via TPM-derived key)");
-
-                // Delete existing key if any (ignore errors)
-                let _ = tpm.delete_key();
-
-                match tpm.import_key(key_bytes) {
-                    Ok(()) => {
-                        // Get the public key to compute fingerprint
-                        let pubkey = tpm.public_key().map_err(|e| KeyringError::PlatformError {
-                            message: format!("Failed to get public key after import: {}", e),
-                        })?;
-                        let fingerprint = hex::encode(&pubkey).chars().take(8).collect::<String>();
-
-                        tracing::info!(
-                            fingerprint = %fingerprint,
-                            "Ed25519 key imported with TPM-backed AES-256-GCM encryption"
-                        );
-
-                        // Set hardware marker to PREVENT software fallback
-                        let mut inner =
-                            self.inner
-                                .write()
-                                .map_err(|_| KeyringError::PlatformError {
-                                    message: "Lock poisoned".into(),
-                                })?;
-                        inner.set_hardware_marker(&fingerprint);
-                        return Ok(());
-                    },
-                    Err(e) => {
-                        tracing::warn!(
-                            error = %e,
-                            "TPM-backed import failed - falling back to software-only"
-                        );
-                        // Fall through to software import
-                    },
-                }
-            }
-        }
-
         // Software import (or fallback)
         // First import to memory
         {
@@ -1787,24 +1599,6 @@ impl MutableEd25519Signer {
             }
         }
 
-        // On Linux/Windows with TPM, also check TPM wrapper
-        #[cfg(all(
-            feature = "tpm",
-            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-        ))]
-        {
-            if let Some(ref tpm) = self.tpm_wrapper {
-                if tpm.key_exists() {
-                    tracing::debug!(
-                        has_key = true,
-                        hardware_backed = true,
-                        "MutableEd25519Signer::has_key check (TPM AES-256-GCM)"
-                    );
-                    return true;
-                }
-            }
-        }
-
         let has = self
             .inner
             .read()
@@ -1845,24 +1639,6 @@ impl MutableEd25519Signer {
                     },
                     Err(e) => {
                         tracing::warn!(error = %e, "Failed to delete SE-backed key");
-                    },
-                }
-            }
-        }
-
-        // Delete from TPM-backed storage if available
-        #[cfg(all(
-            feature = "tpm",
-            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-        ))]
-        {
-            if let Some(ref tpm) = self.tpm_wrapper {
-                match tpm.delete_key() {
-                    Ok(()) => {
-                        tracing::info!("TPM-backed Ed25519 key deleted");
-                    },
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to delete TPM-backed key");
                     },
                 }
             }
@@ -2071,74 +1847,6 @@ impl MutableEd25519Signer {
                     }
                 } else {
                     tracing::debug!("SE key does not exist, skipping hardware access");
-                }
-            }
-        }
-
-        // On Linux/Windows with TPM, try TPM wrapper first
-        #[cfg(all(
-            feature = "tpm",
-            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-        ))]
-        {
-            if let Some(ref tpm) = self.tpm_wrapper {
-                // Check if TPM key exists before attempting to access it.
-                // This prevents unnecessary TPM context creation and file read attempts
-                // that could cause issues when the key file doesn't exist yet.
-                if tpm.key_exists() {
-                    match tpm.public_key() {
-                        Ok(pubkey) => {
-                            tracing::debug!(
-                                pubkey_len = pubkey.len(),
-                                hardware_backed = true,
-                                "get_public_key from TPM wrapper"
-                            );
-                            return Some(pubkey);
-                        },
-                        Err(e) => {
-                            // Check if software signer has hardware marker - if so, validate it's not stale
-                            if let Ok(inner) = self.inner.read() {
-                                if inner.is_hardware_marker_set() {
-                                    // Verify the key is still accessible (not deleted/corrupted)
-                                    if !tpm.key_accessible() {
-                                        // Key is gone — marker is orphaned.
-                                        // Self-heal: clear marker and regenerate a new HW-bound key.
-                                        drop(inner); // Release read lock
-                                        if let Ok(mut inner_write) = self.inner.write() {
-                                            tracing::warn!(
-                                                marker = ?inner_write.hardware_key_fingerprint(),
-                                                "Clearing stale hardware marker - TPM key no longer accessible (get_public_key). \
-                                                 Will regenerate a new hardware-bound key."
-                                            );
-                                            inner_write.clear_hardware_marker();
-                                        }
-                                        // Regenerate: create a fresh HW-bound key
-                                        match self.generate_key() {
-                                            Ok(()) => {
-                                                tracing::info!("Self-healed: new TPM-backed key generated after stale marker (get_public_key)");
-                                                return tpm.public_key().ok();
-                                            },
-                                            Err(regen_err) => {
-                                                tracing::error!(error = %regen_err, "Self-heal failed: could not regenerate key");
-                                                return None;
-                                            },
-                                        }
-                                    }
-
-                                    // Key exists but access failed - transient hardware error
-                                    tracing::error!(
-                                        error = %e,
-                                        marker = ?inner.hardware_key_fingerprint(),
-                                        "TPM key access failed and marker is set - NOT falling back"
-                                    );
-                                    return None;
-                                }
-                            }
-                            tracing::warn!(error = %e, "TPM key access failed, trying software");
-                        },
-                    }
-                } else {
-                    tracing::debug!("TPM key file does not exist, skipping TPM access");
                 }
             }
         }
@@ -2368,85 +2076,6 @@ impl MutableEd25519Signer {
             }
         }
 
-        // On Linux/Windows with TPM, try TPM wrapper first
-        #[cfg(all(
-            feature = "tpm",
-            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-        ))]
-        {
-            if let Some(ref tpm) = self.tpm_wrapper {
-                // Check if TPM key exists before attempting to sign.
-                // This prevents unnecessary TPM context creation and file read attempts
-                // that could cause issues when the key file doesn't exist yet.
-                if tpm.key_exists() {
-                    match tpm.sign(data) {
-                        Ok(sig) => {
-                            tracing::debug!(
-                                data_len = data.len(),
-                                sig_len = sig.len(),
-                                hardware_backed = true,
-                                "Signed with TPM-backed Ed25519 key"
-                            );
-                            return Ok(sig);
-                        },
-                        Err(e) => {
-                            // Check if software signer has hardware marker - if so, validate it's not stale
-                            if let Ok(inner) = self.inner.read() {
-                                if inner.is_hardware_marker_set() {
-                                    // Verify the key is still accessible (not deleted/corrupted)
-                                    if !tpm.key_accessible() {
-                                        // Key is gone — marker is orphaned.
-                                        // Self-heal: clear marker and regenerate a new HW-bound key.
-                                        drop(inner); // Release read lock
-                                        if let Ok(mut inner_write) = self.inner.write() {
-                                            tracing::warn!(
-                                                marker = ?inner_write.hardware_key_fingerprint(),
-                                                "Clearing stale hardware marker - TPM key no longer accessible (sign). \
-                                                 Will regenerate a new hardware-bound key."
-                                            );
-                                            inner_write.clear_hardware_marker();
-                                        }
-                                        // Regenerate: create a fresh HW-bound key
-                                        match self.generate_key() {
-                                            Ok(()) => {
-                                                tracing::info!("Self-healed: new TPM-backed key generated after stale marker (sign)");
-                                                return tpm.sign(data).map_err(|sign_err| KeyringError::HardwareError {
-                                                    reason: format!("Sign failed after key regeneration: {}", sign_err),
-                                                });
-                                            },
-                                            Err(regen_err) => {
-                                                tracing::error!(error = %regen_err, "Self-heal failed: could not regenerate key");
-                                                return Err(KeyringError::HardwareNotAvailable {
-                                                    reason: format!("Hardware key lost and regeneration failed: {}", regen_err),
-                                                });
-                                            },
-                                        }
-                                    }
-
-                                    // Key exists but sign failed - transient hardware error
-                                    tracing::error!(
-                                        error = %e,
-                                        marker = ?inner.hardware_key_fingerprint(),
-                                        "TPM signing failed and marker is set - NOT falling back"
-                                    );
-                                    return Err(KeyringError::HardwareError {
-                                        reason: format!(
-                                            "TPM key access failed (marker={}): {}",
-                                            inner.hardware_key_fingerprint().unwrap_or("unknown"),
-                                            e
-                                        ),
-                                    });
-                                }
-                            }
-                            tracing::warn!(error = %e, "TPM signing failed, trying software");
-                        },
-                    }
-                } else {
-                    tracing::debug!("TPM key file does not exist, skipping TPM sign");
-                }
-            }
-        }
-
         // Software fallback - but NOT if hardware marker is set
         let inner = self.inner.read().map_err(|_| KeyringError::PlatformError {
             message: "Lock poisoned".into(),
@@ -2506,25 +2135,7 @@ impl MutableEd25519Signer {
             "DISABLED (software-only)"
         };
 
-        #[cfg(all(
-            feature = "tpm",
-            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-        ))]
-        let hw_status = if hardware_backed {
-            "ENABLED (AES-256-GCM via TPM-derived key)"
-        } else {
-            "DISABLED (TPM not available or initialization failed)"
-        };
-
-        #[cfg(not(any(
-            target_os = "android",
-            target_os = "ios",
-            target_os = "macos",
-            all(
-                feature = "tpm",
-                any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-            )
-        )))]
+        #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "macos")))]
         let hw_status = "N/A (no hardware wrapper on this platform)";
 
         format!(
