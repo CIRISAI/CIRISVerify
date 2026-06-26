@@ -344,6 +344,15 @@ pub enum LiveQuorumError {
         /// The halt commitment the proposal carried.
         got: String,
     },
+    /// A steward recovery roll-back (H7) targets a roster that is NOT a known-good
+    /// prior snapshot — stewards may only **restore** a logged honest roster, never
+    /// **install** a novel one (so they can undo a capture but never seize it).
+    RecoveryNotKnownGood {
+        /// The member set the recovery would install.
+        recovered: Vec<String>,
+        /// The server-supplied known-good prior roster it had to match.
+        known_good: Vec<String>,
+    },
     /// The hybrid signature did not verify over the recomputed canonical bytes.
     Signature(String),
 }
@@ -399,6 +408,14 @@ impl std::fmt::Display for LiveQuorumError {
             Self::HaltMismatch { expected, got } => write!(
                 f,
                 "resumption payload {got} != active-halt commitment {expected} (H2)"
+            ),
+            Self::RecoveryNotKnownGood {
+                recovered,
+                known_good,
+            } => write!(
+                f,
+                "recovery roster {recovered:?} is not the known-good snapshot {known_good:?} \
+                 — stewards may restore, never install novel (H7)"
             ),
             Self::Signature(e) => write!(f, "participation signature invalid: {e}"),
         }
@@ -747,6 +764,89 @@ pub fn verify_resume_by_live_quorum(
         tally,
         used_steward_backstop,
     })
+}
+
+/// The verdict of a steward recovery roll-back (H7).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecoveryVerdict {
+    /// Whether the steward quorum validly authorized the roll-back.
+    pub authorized: bool,
+}
+
+/// Verify a **bounded steward recovery roll-back** (H7) — the *only* path to
+/// reverse a captured, entrenched accord roster.
+///
+/// If an adversary ever wins a takeover (a live-majority roster seizure *and* the
+/// steward backstop), the seized roster is entrenched — only *its* quorum could
+/// change it, so the honest side cannot undo it. This deliberately-bounded
+/// override lets the **steward quorum restore a previously-logged known-good
+/// roster**, so stewards can **undo** a capture but never **seize**:
+///
+/// - **structure:** `recovery_envelope` is a structurally-valid entrenched
+///   supersede of `seized_envelope` (same `family_key_id`, entrenchment preserved,
+///   `supersedes.prior_member_key_ids ==` the seized members — it targets the
+///   specific captured state);
+/// - **bounded to known-good (no seize):** the recovery roster's members MUST
+///   equal `known_good_member_ids` — a roster the **server** supplies from its
+///   append-only log of prior honest decisions. Stewards therefore can only sign
+///   a roster the log already blessed, never a novel one;
+/// - **authority:** the **steward quorum** (strict majority of an independent
+///   steward set), NOT the seized roster's quorum — the captured roster cannot
+///   block its own reversal.
+///
+/// ⚠ This bends the entrenchment "only the roster's own quorum changes it" rule,
+/// deliberately, for the captured-roster case only. It **MUST be cross-confirmed
+/// with the CIRIS Constitution** (CC §4.2 / §4.5.1) before deployment — it grants
+/// the stewards a real (if bounded) override of an entrenched surface.
+///
+/// `directory` is the authoritative `federation_keys` pin set (covering the
+/// seized + recovery members). The "known-good" determination is server policy
+/// (verify-core enforces the binding the server provides; it cannot know history).
+///
+/// # Errors
+/// [`LiveQuorumError`] for a structural violation or a recovery roster that isn't
+/// the known-good snapshot. The yes/no is [`RecoveryVerdict::authorized`].
+#[allow(clippy::too_many_arguments)]
+pub fn verify_recovery_supersede(
+    seized_envelope: &serde_json::Value,
+    recovery_envelope: &serde_json::Value,
+    directory: &[ThresholdMember],
+    known_good_member_ids: &[String],
+    steward_members: &[ThresholdMember],
+    steward_signatures: &[ThresholdSignature],
+) -> Result<RecoveryVerdict, LiveQuorumError> {
+    // 1. Structure: a valid entrenched supersede of the SEIZED roster (the
+    //    anti-replay anchor binds to the seized members — it targets that state).
+    crate::accord_genesis::validate_membership_change_structure(
+        seized_envelope,
+        recovery_envelope,
+        directory,
+    )
+    .map_err(|e| LiveQuorumError::Structure(e.to_string()))?;
+
+    // 2. Bounded: the recovery roster MUST be a known-good prior snapshot — no
+    //    novel roster (stewards restore, never seize).
+    let recovered = crate::accord_genesis::envelope_member_key_ids(recovery_envelope)
+        .map_err(|e| LiveQuorumError::Structure(e.to_string()))?;
+    if recovered != known_good_member_ids {
+        return Err(LiveQuorumError::RecoveryNotKnownGood {
+            recovered,
+            known_good: known_good_member_ids.to_vec(),
+        });
+    }
+
+    // 3. Authority: the steward quorum ONLY (the seized roster can't block).
+    let bytes = crate::accord_genesis::accord_family_signing_bytes(recovery_envelope)
+        .map_err(|e| LiveQuorumError::Structure(e.to_string()))?;
+    let steward_threshold = crate::accord_genesis::strict_majority(steward_members.len().max(1));
+    let authorized = verify_threshold_signatures(
+        &bytes,
+        steward_members,
+        steward_signatures,
+        steward_threshold,
+    )
+    .is_ok();
+    Ok(RecoveryVerdict { authorized })
 }
 
 /// The frozen, server-attested outcome of a live-quorum decision (M2).
@@ -1587,5 +1687,77 @@ mod tests {
                 ..
             })
         ));
+    }
+
+    // --- bounded steward recovery roll-back (step 6, H7) --------------------
+
+    /// (seized roster [X1,X2]) + (honest known-good [A1,B1,C1]) + directory + 3
+    /// stewards. Returns (seized_env, recovery_env, directory, known_good_ids,
+    /// steward_members, steward_holders).
+    fn recovery_fixture() -> (
+        Value,
+        Value,
+        Vec<ThresholdMember>,
+        Vec<String>,
+        Vec<ThresholdMember>,
+        Vec<Holder>,
+    ) {
+        let honest: Vec<Holder> = ["A1", "B1", "C1"]
+            .iter()
+            .map(|id| Holder::new(id))
+            .collect();
+        let captured: Vec<Holder> = ["X1", "X2"].iter().map(|id| Holder::new(id)).collect();
+        let mut dir: Vec<ThresholdMember> = honest.iter().map(Holder::member).collect();
+        dir.extend(captured.iter().map(Holder::member));
+        let seized = family_envelope(&["X1", "X2"]); // the adversary's entrenched roster
+        let known_good = vec!["A1".to_string(), "B1".to_string(), "C1".to_string()];
+        // recovery: restore A1,B1,C1, superseding the seized X1,X2.
+        let recovery = build_membership_change(&seized, &known_good, Role::Founder, true, None);
+        let stewards: Vec<Holder> = ["S1", "S2", "S3"]
+            .iter()
+            .map(|id| Holder::new(id))
+            .collect();
+        let sm: Vec<ThresholdMember> = stewards.iter().map(Holder::member).collect();
+        (seized, recovery, dir, known_good, sm, stewards)
+    }
+
+    #[test]
+    fn steward_quorum_can_roll_back_to_known_good() {
+        let (seized, recovery, dir, kg, sm, stewards) = recovery_fixture();
+        let bytes = accord_family_signing_bytes(&recovery).unwrap();
+        let ss: Vec<ThresholdSignature> = stewards[..2].iter().map(|s| s.sign(&bytes)).collect();
+        let v = verify_recovery_supersede(&seized, &recovery, &dir, &kg, &sm, &ss).unwrap();
+        assert!(v.authorized, "2-of-3 stewards restore a known-good roster");
+    }
+
+    #[test]
+    fn recovery_to_a_novel_roster_is_rejected() {
+        // The seize-prevention: stewards CANNOT install a roster that isn't the
+        // known-good snapshot — even with a full steward quorum.
+        let (seized, _recovery, mut dir, kg, sm, stewards) = recovery_fixture();
+        // adversary-friendly stewards try to install [A1,B1,Z1] instead of [A1,B1,C1].
+        let z = Holder::new("Z1");
+        dir.push(z.member());
+        let novel = build_membership_change(
+            &seized,
+            &["A1", "B1", "Z1"].map(String::from),
+            Role::Founder,
+            true,
+            None,
+        );
+        let bytes = accord_family_signing_bytes(&novel).unwrap();
+        let ss: Vec<ThresholdSignature> = stewards.iter().map(|s| s.sign(&bytes)).collect();
+        assert!(matches!(
+            verify_recovery_supersede(&seized, &novel, &dir, &kg, &sm, &ss),
+            Err(LiveQuorumError::RecoveryNotKnownGood { .. })
+        ));
+    }
+
+    #[test]
+    fn recovery_without_steward_quorum_is_not_authorized() {
+        let (seized, recovery, dir, kg, sm, _stewards) = recovery_fixture();
+        // no steward signatures → not authorized (but structurally a valid target).
+        let v = verify_recovery_supersede(&seized, &recovery, &dir, &kg, &sm, &[]).unwrap();
+        assert!(!v.authorized, "the steward quorum is required to roll back");
     }
 }

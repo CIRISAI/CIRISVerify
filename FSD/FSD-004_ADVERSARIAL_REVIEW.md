@@ -20,6 +20,37 @@ seizure shapes (one-key-quorum, double-seating-via-spare, lifting entrenchment,
 
 ---
 
+## Resolution status — verify-core machinery IMPLEMENTED
+
+The stateless verify-core obligations are built in `ciris_verify_core::accord_live_quorum`
+(`AccordProposal` / `AccordParticipation` / `AccordDecision`, `tally_live_quorum`,
+`verify_fire_by_live_quorum`, `verify_membership_change_by_live_quorum`,
+`verify_resume_by_live_quorum`, `verify_recovery_supersede`, `decisions_equivocate`),
+each tested:
+
+| Finding | Status |
+|---|---|
+| C1 vote/proposal/family/window in the preimage | ✅ implemented + tested |
+| C2 window in signed bytes; `signed_at` advisory (server-arrival is authoritative) | ✅ verify-core part; the arrival clock is Phase-3 server |
+| C3 anti-replay anchor on the standing roster | ✅ |
+| H1 resumption at roster-change threshold, never fire floor | ✅ (one-yes-fires-but-doesn't-un-fire proven) |
+| H2 resumption binds the active halt | ✅ (`HaltMismatch`) |
+| H3 equivocation gate | ✅ (`decisions_equivocate`) |
+| H5 `N_min` + removal-continuity | ✅ |
+| H6 steward backstop (independent set, server-recomputed `\|L\|`) | ✅ |
+| **H7 reversal** | ✅ **bounded steward roll-back** (`verify_recovery_supersede`) — stewards may **restore a known-good logged snapshot, never install a novel roster**; ⚠ **MUST be CC-cross-confirmed** (it bends the entrenchment rule for the captured-roster case) |
+| M1 fire floor pinned to 1 | ✅ |
+| M2 frozen-`L` snapshot | ✅ (`AccordDecision`) |
+| M3 directory-only resolution, dedup by pinned member | ✅ |
+| M5 `family_key_id` bound | ✅ |
+
+**Remaining (Phase 3 — CIRISServer state, not verify-core):** the authoritative
+window/arrival clock (C2), proposal coalescing + rate-limit (H4), the active-halt
+state (H2 enforcement point), the issued-nonce set + signed-proposal origin (M4),
+durable dedup (M6), and the HF↔RNS relay backbone (Q6).
+
+---
+
 ## Severity-ranked findings → Phase-1 obligations
 
 ### CRITICAL
