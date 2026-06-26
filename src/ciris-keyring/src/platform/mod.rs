@@ -22,6 +22,12 @@ pub mod tpm;
 #[cfg(all(feature = "tpm-windows", target_os = "windows"))]
 pub mod tpm_windows;
 
+// Runtime-loaded TPM signer (CIRISVerify#141) — the ECDSA P-256 `HardwareSigner`
+// over the `dlopen` plugin, so the native TPM signing path works on every target
+// that can load the plugin (incl. the wheel + musl), with no tss-esapi link.
+#[cfg(feature = "tpm-plugin")]
+pub mod tpm_plugin_signer;
+
 mod factory;
 
 pub use factory::{
@@ -37,6 +43,9 @@ pub use ios::{SecureEnclaveSigner, SecureEnclaveWrappedEd25519Signer};
 
 #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "windows"))]
 pub use tpm::TpmSigner;
+
+#[cfg(feature = "tpm-plugin")]
+pub use tpm_plugin_signer::PluginTpmSigner;
 
 // Windows-native TPM signer (experimental)
 #[cfg(all(feature = "tpm-windows", target_os = "windows"))]
