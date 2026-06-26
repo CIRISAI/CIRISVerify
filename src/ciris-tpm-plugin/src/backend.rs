@@ -25,8 +25,9 @@ mod imp {
             resource_handles::Hierarchy,
         },
         structures::{
-            EccPoint, EccScheme, KeyDerivationFunctionScheme, KeyedHashScheme, Private, Public,
-            PublicBuilder, PublicEccParametersBuilder, PublicKeyedHashParameters, SensitiveData,
+            Digest, EccPoint, EccScheme, HashScheme, HashcheckTicket, KeyDerivationFunctionScheme,
+            KeyedHashScheme, Private, Public, PublicBuilder, PublicEccParametersBuilder,
+            PublicKeyedHashParameters, SensitiveData, Signature, SignatureScheme,
             SymmetricDefinitionObject,
         },
         tcti_ldr::TctiNameConf,
@@ -198,6 +199,189 @@ mod imp {
 
         Ok(unsealed.value().to_vec())
     }
+
+    // ----------------------------------------------------------------------
+    // Signer path (#141, ABI v2): a non-restricted ECC P-256 (ECDSA-SHA256)
+    // signing key created under the SRK, persisted as the same opaque blob
+    // shape as seal (`u32_le(private_len) ‖ private ‖ public`). Pure: the
+    // keyring owns the blob; the plugin loads it transiently per op. Faithful
+    // port of `ciris_keyring::platform::tpm::{create_signing_key, tpm_sign,
+    // extract_ecdsa_signature, extract_public_key_from_public}`.
+    // ----------------------------------------------------------------------
+
+    /// Create a non-restricted ECDSA P-256 signing key under the SRK and return
+    /// its persistable blob (`u32_le(private_len) ‖ private ‖ public`).
+    pub fn signer_create() -> Result<Vec<u8>, String> {
+        let mut context = create_context()?;
+        let primary = get_or_create_primary(&mut context)?;
+
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_sensitive_data_origin(true)
+            .with_user_with_auth(true)
+            .with_sign_encrypt(true)
+            .build()
+            .map_err(|e| format!("signer attrs: {e}"))?;
+
+        let ecc_params = PublicEccParametersBuilder::new()
+            .with_ecc_scheme(EccScheme::EcDsa(HashScheme::new(HashingAlgorithm::Sha256)))
+            .with_curve(EccCurve::NistP256)
+            .with_key_derivation_function_scheme(KeyDerivationFunctionScheme::Null)
+            .with_symmetric(SymmetricDefinitionObject::Null)
+            .with_is_signing_key(true)
+            .with_is_decryption_key(false)
+            .with_restricted(false)
+            .build()
+            .map_err(|e| format!("signer ecc params: {e}"))?;
+
+        let signing_public = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::Ecc)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_ecc_parameters(ecc_params)
+            .with_ecc_unique_identifier(EccPoint::default())
+            .build()
+            .map_err(|e| format!("signer public: {e}"))?;
+
+        let result = context
+            .execute_with_nullauth_session(|ctx| {
+                ctx.create(primary, signing_public.clone(), None, None, None, None)
+            })
+            .map_err(|e| format!("TPM2_Create (signer): {e}"))?;
+
+        let private_blob = result.out_private.to_vec();
+        let public_blob = result
+            .out_public
+            .marshall()
+            .map_err(|e| format!("marshall signer public: {e}"))?;
+        let _ = context.flush_context(primary.into());
+
+        frame_blob(private_blob, public_blob)
+    }
+
+    /// Load a signer blob and return its SEC1-uncompressed public key
+    /// (`0x04 ‖ X(32) ‖ Y(32)`, 65 bytes).
+    pub fn signer_public(blob: &[u8]) -> Result<Vec<u8>, String> {
+        let (private, public) = parse_blob(blob)?;
+        let mut context = create_context()?;
+        let primary = get_or_create_primary(&mut context)?;
+        let loaded = context
+            .execute_with_nullauth_session(|ctx| ctx.load(primary, private, public))
+            .map_err(|e| format!("TPM2_Load (signer, wrong TPM?): {e}"))?;
+        let (public, _, _) = context
+            .execute_without_session(|ctx| ctx.read_public(loaded))
+            .map_err(|e| format!("read_public (signer): {e}"))?;
+        let _ = context.flush_context(loaded.into());
+        let _ = context.flush_context(primary.into());
+        extract_public_key(&public)
+    }
+
+    /// Load a signer blob, hash `data` with SHA-256, and ECDSA-sign it →
+    /// raw `r(32) ‖ s(32)` (64 bytes).
+    pub fn signer_sign(blob: &[u8], data: &[u8]) -> Result<Vec<u8>, String> {
+        use sha2::{Digest as _, Sha256};
+
+        let (private, public) = parse_blob(blob)?;
+        let mut context = create_context()?;
+        let primary = get_or_create_primary(&mut context)?;
+        let key = context
+            .execute_with_nullauth_session(|ctx| ctx.load(primary, private, public))
+            .map_err(|e| format!("TPM2_Load (signer, wrong TPM?): {e}"))?;
+
+        let hash = Sha256::digest(data);
+        let digest = Digest::try_from(&hash[..]).map_err(|e| format!("signer digest: {e}"))?;
+
+        // External (non-TPM-generated) data signs under a NULL-hierarchy ticket.
+        let validation = HashcheckTicket::try_from(tss_esapi::tss2_esys::TPMT_TK_HASHCHECK {
+            tag: tss_esapi::constants::tss::TPM2_ST_HASHCHECK,
+            hierarchy: tss_esapi::constants::tss::TPM2_RH_NULL,
+            digest: tss_esapi::tss2_esys::TPM2B_DIGEST {
+                size: 0,
+                buffer: [0; 64],
+            },
+        })
+        .map_err(|e| format!("signer validation ticket: {e}"))?;
+
+        let signature = context
+            .execute_with_nullauth_session(|ctx| {
+                ctx.sign(
+                    key,
+                    digest.clone(),
+                    SignatureScheme::EcDsa {
+                        hash_scheme: HashScheme::new(HashingAlgorithm::Sha256),
+                    },
+                    validation.clone(),
+                )
+            })
+            .map_err(|e| format!("TPM2_Sign (signer): {e}"))?;
+        let _ = context.flush_context(key.into());
+        let _ = context.flush_context(primary.into());
+
+        extract_ecdsa_signature(&signature)
+    }
+
+    /// `u32_le(private_len) ‖ private ‖ public` — the opaque blob framing
+    /// shared with seal.
+    fn frame_blob(private: Vec<u8>, public: Vec<u8>) -> Result<Vec<u8>, String> {
+        let plen = u32::try_from(private.len()).map_err(|_| "private blob too large")?;
+        let mut blob = Vec::with_capacity(4 + private.len() + public.len());
+        blob.extend_from_slice(&plen.to_le_bytes());
+        blob.extend_from_slice(&private);
+        blob.extend_from_slice(&public);
+        Ok(blob)
+    }
+
+    fn parse_blob(blob: &[u8]) -> Result<(Private, Public), String> {
+        if blob.len() < 4 {
+            return Err("signer blob too short".into());
+        }
+        let plen = u32::from_le_bytes([blob[0], blob[1], blob[2], blob[3]]) as usize;
+        if blob.len() < 4 + plen {
+            return Err("signer blob truncated".into());
+        }
+        let private = Private::try_from(blob[4..4 + plen].to_vec())
+            .map_err(|e| format!("signer private: {e}"))?;
+        let public =
+            Public::unmarshall(&blob[4 + plen..]).map_err(|e| format!("signer public: {e}"))?;
+        Ok((private, public))
+    }
+
+    /// SEC1-uncompressed pubkey from an ECC `Public` (`0x04 ‖ X ‖ Y`).
+    fn extract_public_key(public: &Public) -> Result<Vec<u8>, String> {
+        let ecc_point = match public {
+            Public::Ecc { unique, .. } => unique,
+            _ => return Err("expected ECC public key".into()),
+        };
+        let x = ecc_point.x().value();
+        let y = ecc_point.y().value();
+        let mut out = Vec::with_capacity(65);
+        out.push(0x04);
+        pad32(&mut out, x);
+        pad32(&mut out, y);
+        Ok(out)
+    }
+
+    /// Raw `r(32) ‖ s(32)` from a TPM ECDSA `Signature`.
+    fn extract_ecdsa_signature(signature: &Signature) -> Result<Vec<u8>, String> {
+        match signature {
+            Signature::EcDsa(sig) => {
+                let mut out = Vec::with_capacity(64);
+                pad32(&mut out, sig.signature_r().value());
+                pad32(&mut out, sig.signature_s().value());
+                Ok(out)
+            },
+            _ => Err("unexpected signature type from TPM".into()),
+        }
+    }
+
+    /// Left-pad `bytes` to 32 (or take the low 32) and append.
+    fn pad32(out: &mut Vec<u8>, bytes: &[u8]) {
+        if bytes.len() < 32 {
+            out.extend(std::iter::repeat_n(0u8, 32 - bytes.len()));
+        }
+        out.extend(&bytes[bytes.len().saturating_sub(32)..]);
+    }
 }
 
 #[cfg(not(all(
@@ -214,6 +398,15 @@ mod imp {
     pub fn unseal(_blob: &[u8]) -> Result<Vec<u8>, String> {
         Err("ciris-tpm-plugin built without the `real` backend".to_string())
     }
+    pub fn signer_create() -> Result<Vec<u8>, String> {
+        Err("ciris-tpm-plugin built without the `real` backend".to_string())
+    }
+    pub fn signer_public(_blob: &[u8]) -> Result<Vec<u8>, String> {
+        Err("ciris-tpm-plugin built without the `real` backend".to_string())
+    }
+    pub fn signer_sign(_blob: &[u8], _data: &[u8]) -> Result<Vec<u8>, String> {
+        Err("ciris-tpm-plugin built without the `real` backend".to_string())
+    }
 }
 
-pub use imp::{available, seal, unseal};
+pub use imp::{available, seal, signer_create, signer_public, signer_sign, unseal};

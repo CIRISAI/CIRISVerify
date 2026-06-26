@@ -33,9 +33,14 @@ use libloading::{Library, Symbol};
 
 use crate::error::KeyringError;
 
-/// The ABI version this client speaks. Must match the plugin's
-/// `CIRIS_TPM_ABI_VERSION`.
-const EXPECTED_ABI_VERSION: u32 = 1;
+/// The minimum plugin ABI this client understands (v1 = `available`/`seal`/
+/// `unseal`/`free`).
+const MIN_ABI_VERSION: u32 = 1;
+/// The newest plugin ABI this client knows about (v2 = + the signer path). The
+/// client accepts any version in `[MIN, CURRENT]` and resolves newer ops lazily
+/// (a v1 plugin simply lacks the signer symbols → those methods fail-closed); it
+/// refuses a version `> CURRENT` it can't reason about (fail-closed = "no TPM").
+const CURRENT_ABI_VERSION: u32 = 2;
 
 /// Plugin C ABI return codes (mirror `ciris-tpm-plugin`).
 const CIRIS_TPM_OK: i32 = 0;
@@ -43,6 +48,11 @@ const CIRIS_TPM_OK: i32 = 0;
 type AbiVersionFn = unsafe extern "C" fn() -> u32;
 type AvailableFn = unsafe extern "C" fn() -> i32;
 type BlobOpFn = unsafe extern "C" fn(*const u8, usize, *mut *mut u8, *mut usize) -> i32;
+/// Signer-create: no input, one out-buffer (the key blob).
+type CreateFn = unsafe extern "C" fn(*mut *mut u8, *mut usize) -> i32;
+/// Signer-sign: two inputs (key blob + data), one out-buffer (the signature).
+type SignFn =
+    unsafe extern "C" fn(*const u8, usize, *const u8, usize, *mut *mut u8, *mut usize) -> i32;
 type FreeFn = unsafe extern "C" fn(*mut u8, usize);
 
 fn err(reason: impl std::fmt::Display) -> KeyringError {
@@ -91,6 +101,11 @@ pub struct TpmPlugin {
     available: AvailableFn,
     seal: BlobOpFn,
     unseal: BlobOpFn,
+    // Signer path (ABI v2): None on an older v1 plugin → those methods
+    // fail-closed with NotSupported.
+    signer_create: Option<CreateFn>,
+    signer_public: Option<BlobOpFn>,
+    signer_sign: Option<SignFn>,
     free: FreeFn,
 }
 
@@ -131,9 +146,9 @@ impl TpmPlugin {
             *s
         };
         let version = unsafe { abi_version() };
-        if version != EXPECTED_ABI_VERSION {
+        if !(MIN_ABI_VERSION..=CURRENT_ABI_VERSION).contains(&version) {
             return Err(not_supported(format!(
-                "ciris-tpm-plugin ABI v{version} unrecognized (this build speaks v{EXPECTED_ABI_VERSION})"
+                "ciris-tpm-plugin ABI v{version} unsupported (this build speaks v{MIN_ABI_VERSION}..=v{CURRENT_ABI_VERSION})"
             )));
         }
 
@@ -154,11 +169,31 @@ impl TpmPlugin {
                 .map_err(|e| err(format!("plugin missing free symbol: {e}")))?
         };
 
+        // Signer path (ABI v2): optional — absent on a v1 plugin. Resolve all
+        // three or none (a partial set is a malformed plugin → treat as absent).
+        let (signer_create, signer_public, signer_sign) = if version >= 2 {
+            // SAFETY: a v2 plugin declares all three; copy out the fn pointers.
+            unsafe {
+                let c = lib.get::<CreateFn>(b"ciris_tpm_signer_create\0").ok();
+                let p = lib.get::<BlobOpFn>(b"ciris_tpm_signer_public\0").ok();
+                let s = lib.get::<SignFn>(b"ciris_tpm_signer_sign\0").ok();
+                match (c, p, s) {
+                    (Some(c), Some(p), Some(s)) => (Some(*c), Some(*p), Some(*s)),
+                    _ => (None, None, None),
+                }
+            }
+        } else {
+            (None, None, None)
+        };
+
         Ok(Self {
             _lib: lib,
             available,
             seal,
             unseal,
+            signer_create,
+            signer_public,
+            signer_sign,
             free,
         })
     }
@@ -186,12 +221,88 @@ impl TpmPlugin {
         self.blob_op(self.unseal, blob, "unseal")
     }
 
+    /// Whether this plugin exposes the signer path (ABI v2). A v1 plugin lacks
+    /// it; the signer methods then fail-closed with [`KeyringError::NotSupported`].
+    #[must_use]
+    pub fn signer_supported(&self) -> bool {
+        self.signer_create.is_some()
+    }
+
+    /// Create an ECDSA P-256 signing key in the TPM; returns its opaque,
+    /// TPM-bound key blob (pass to [`Self::signer_public`] / [`Self::signer_sign`]).
+    ///
+    /// # Errors
+    /// [`KeyringError::NotSupported`] on a v1 plugin; [`KeyringError::HardwareError`]
+    /// if the TPM op fails.
+    pub fn signer_create(&self) -> Result<Vec<u8>, KeyringError> {
+        let op = self
+            .signer_create
+            .ok_or_else(|| not_supported("ciris-tpm-plugin has no signer path (ABI v1)"))?;
+        let mut out: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        // SAFETY: valid out-params; a successful op hands back a plugin-owned
+        // buffer freed via `free`.
+        let rc = unsafe { op(&mut out, &mut out_len) };
+        self.finish(rc, out, out_len, "signer_create")
+    }
+
+    /// Return the SEC1-uncompressed public key (`0x04 ‖ X ‖ Y`, 65 bytes) of a
+    /// signer key blob.
+    ///
+    /// # Errors
+    /// [`KeyringError::NotSupported`] on a v1 plugin; [`KeyringError::HardwareError`]
+    /// if the TPM op fails.
+    pub fn signer_public(&self, key_blob: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        let op = self
+            .signer_public
+            .ok_or_else(|| not_supported("ciris-tpm-plugin has no signer path (ABI v1)"))?;
+        self.blob_op(op, key_blob, "signer_public")
+    }
+
+    /// SHA-256-hash `data` and ECDSA-sign it with `key_blob`; returns raw
+    /// `r(32) ‖ s(32)` (64 bytes).
+    ///
+    /// # Errors
+    /// [`KeyringError::NotSupported`] on a v1 plugin; [`KeyringError::HardwareError`]
+    /// if the TPM op fails.
+    pub fn signer_sign(&self, key_blob: &[u8], data: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        let op = self
+            .signer_sign
+            .ok_or_else(|| not_supported("ciris-tpm-plugin has no signer path (ABI v1)"))?;
+        let mut out: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        // SAFETY: `key_blob`/`data` are valid slices; valid out-params.
+        let rc = unsafe {
+            op(
+                key_blob.as_ptr(),
+                key_blob.len(),
+                data.as_ptr(),
+                data.len(),
+                &mut out,
+                &mut out_len,
+            )
+        };
+        self.finish(rc, out, out_len, "signer_sign")
+    }
+
     fn blob_op(&self, op: BlobOpFn, input: &[u8], what: &str) -> Result<Vec<u8>, KeyringError> {
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
         // SAFETY: `input` is a valid slice; `out`/`out_len` are valid out-params;
         // a successful op hands back a plugin-owned buffer we free via `free`.
         let rc = unsafe { op(input.as_ptr(), input.len(), &mut out, &mut out_len) };
+        self.finish(rc, out, out_len, what)
+    }
+
+    /// Common tail for every op: check the return code, copy out the
+    /// plugin-owned buffer, free it, and return the bytes.
+    fn finish(
+        &self,
+        rc: i32,
+        out: *mut u8,
+        out_len: usize,
+        what: &str,
+    ) -> Result<Vec<u8>, KeyringError> {
         if rc != CIRIS_TPM_OK {
             return Err(err(format!("ciris-tpm-plugin {what} failed (code {rc})")));
         }
