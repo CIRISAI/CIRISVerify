@@ -7,6 +7,16 @@ on:
     branches: [main, develop]
   workflow_dispatch:
 
+# Auto-cancel superseded CI runs. Without this, every push to a PR branch starts
+# a fresh full matrix while the prior push's run keeps churning to completion —
+# stacking obsolete runs that starve the runner pool (the cause of the slow-CI
+# congestion). One run per ref: a new push cancels the branch's in-flight CI.
+# Keyed on the ref so different branches/PRs never cancel each other; `main` is
+# protected from accidental cancel by excluding it from the group below.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
