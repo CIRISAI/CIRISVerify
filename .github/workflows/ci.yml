@@ -10,6 +10,14 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # crates.io fetch hardening. The recurring CI failure
+  #   `download of <crate> failed: curl failed … OpenSSL SSL_read: unexpected eof`
+  # is an HTTP/2 multiplexing stream-drop against the crates.io CDN, not a real
+  # build error. Force HTTP/1.1 (no multiplexing), retry downloads aggressively,
+  # and raise the per-op timeout so a transient drop never fails the job.
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_NET_TIMEOUT: "60"
 
 # CIRISCache (CIRISVerify#126 / CIRISServer#99): the GHCR-backed cross-repo Rust
 # build cache. `restore` is anonymous (public package); `save` (main only)

@@ -7,6 +7,13 @@ on:
 
 env:
   CARGO_TERM_COLOR: always
+  # crates.io fetch hardening — see ci.yml. The recurring
+  #   `download of <crate> failed: curl failed … SSL_read: unexpected eof`
+  # (e.g. the Android `cargo install cargo-ndk` lane) is an HTTP/2 CDN stream
+  # drop, not a real failure. Force HTTP/1.1 + many retries + a longer timeout.
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_NET_TIMEOUT: "60"
 
 permissions:
   contents: write
