@@ -293,6 +293,39 @@ pub enum LiveQuorumError {
         /// The action the proposal actually carries.
         got: &'static str,
     },
+    /// The proposed roster-change envelope failed a structural invariant
+    /// (distinct/strict-majority/entrenchment/anti-replay anchor) — wraps the
+    /// `accord_genesis` validator's reason (C3).
+    Structure(String),
+    /// `proposal.payload_sha256` does not equal the digest of the proposed new
+    /// family envelope (the proposal doesn't bind *what* is being installed).
+    PayloadMismatch {
+        /// Digest of the proposed new envelope.
+        expected: String,
+        /// `payload_sha256` the proposal carried.
+        got: String,
+    },
+    /// `proposal.prior_family_digest` does not equal the digest of the standing
+    /// family envelope (the C3 anti-replay anchor is not bound to this prior state).
+    AnchorMismatch {
+        /// Digest of the standing (prior) envelope.
+        expected: String,
+        /// `prior_family_digest` the proposal carried.
+        got: String,
+    },
+    /// The proposed roster has fewer than 2 members — a `1/1` rebuild is a single
+    /// point of compromise and is rejected (H5, `N_min > 1`).
+    RosterTooSmall {
+        /// The proposed roster size.
+        size: usize,
+    },
+    /// A standing member was removed by the change but did NOT prove life (∉ `L`)
+    /// — removal-under-cover-of-absence is forbidden (H5): a censored member can't
+    /// be dropped by the live quorum.
+    RemovedAbsentMember {
+        /// The `member_id` that would be removed without consenting/participating.
+        member_id: String,
+    },
     /// The hybrid signature did not verify over the recomputed canonical bytes.
     Signature(String),
 }
@@ -329,6 +362,22 @@ impl std::fmt::Display for LiveQuorumError {
             Self::WrongAction { expected, got } => {
                 write!(f, "wrong proposal action: expected {expected}, got {got}")
             },
+            Self::Structure(e) => write!(f, "roster-change structure invalid: {e}"),
+            Self::PayloadMismatch { expected, got } => write!(
+                f,
+                "proposal payload_sha256 {got} != proposed new-envelope digest {expected}"
+            ),
+            Self::AnchorMismatch { expected, got } => write!(
+                f,
+                "proposal prior_family_digest {got} != standing envelope digest {expected} (C3)"
+            ),
+            Self::RosterTooSmall { size } => {
+                write!(f, "proposed roster has {size} members; N_min is 2 (H5)")
+            },
+            Self::RemovedAbsentMember { member_id } => write!(
+                f,
+                "standing member {member_id} removed without proving life ∉ L (H5)"
+            ),
             Self::Signature(e) => write!(f, "participation signature invalid: {e}"),
         }
     }
@@ -450,6 +499,149 @@ pub fn verify_fire_by_live_quorum(
     Ok(FireVerdict {
         fired: tally.yes >= 1,
         tally,
+    })
+}
+
+/// The `L_floor` below which a roster change additionally requires the steward
+/// backstop (CC §4.2.6 / FSD-004 Q4). At `|L| < 3` a lone or pair of (possibly
+/// coerced) survivors must not be able to rebuild the roster unaided.
+pub const L_FLOOR: usize = 3;
+
+/// The verdict of a live-quorum roster change.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RosterChangeVerdict {
+    /// Whether the change is authorized (strict-majority-of-`L` yes votes, plus
+    /// the steward backstop when it was required).
+    pub authorized: bool,
+    /// The frozen tally over `L`.
+    pub tally: LiveQuorumTally,
+    /// Whether `|L| < L_FLOOR` forced the steward 2-of-3 backstop (H6).
+    pub used_steward_backstop: bool,
+}
+
+/// Verify a live-quorum **roster change** (grow / shrink / swap) — the
+/// decimation-recovery rebuild (FSD-004 / CC §4.2.6).
+///
+/// Authorization is the live set `L`'s strict majority, but **every other
+/// invariant is anchored to the standing roster, never `L`** (C3). Checks:
+/// 1. the proposal is a [`AccordAction::RosterChange`];
+/// 2. **structure** ([`crate::accord_genesis::validate_membership_change_structure`]):
+///    distinct + strict-majority new roster, distinct pubkeys, entrenchment +
+///    `family_key_id` preserved, and `supersedes.prior_member_key_ids ==` the
+///    **standing** roster (the C3 anti-replay anchor);
+/// 3. the proposal binds the change — `payload_sha256 ==` the new envelope digest
+///    and `prior_family_digest ==` the standing envelope digest (C3);
+/// 4. the tally over `L` (signers resolved only in the standing roster, M3);
+/// 5. **`N_min`** — the new roster has ≥ 2 members (no `1/1` rebuild, H5);
+/// 6. **removal-continuity** — any standing member *removed* by the change MUST
+///    have proved life (`∈ L`); a censored/absent member can't be dropped (H5);
+/// 7. **authorization** — `yes ≥ strict_majority(|L|)`, AND when `|L| < L_FLOOR`
+///    the **steward 2-of-3 backstop** over the proposal (a key-independent trust
+///    domain, H6) computed on the **server-recomputed** `|L|`.
+///
+/// Steps 1-6 fail-closed with an error (the change is malformed/illegal); step 7
+/// is reported as [`RosterChangeVerdict::authorized`] (a valid tally that did or
+/// didn't reach the bar).
+///
+/// # Errors
+/// [`LiveQuorumError`] for a wrong action, a structural/binding violation, an
+/// undersized roster, or removal of an absent member.
+#[allow(clippy::too_many_arguments)]
+pub fn verify_membership_change_by_live_quorum(
+    proposal: &AccordProposal,
+    participations: &[AccordParticipation],
+    prior_envelope: &serde_json::Value,
+    new_envelope: &serde_json::Value,
+    standing_roster: &[ThresholdMember],
+    steward_members: &[ThresholdMember],
+    steward_signatures: &[ThresholdSignature],
+) -> Result<RosterChangeVerdict, LiveQuorumError> {
+    // 1. Action.
+    if proposal.action != AccordAction::RosterChange {
+        return Err(LiveQuorumError::WrongAction {
+            expected: "roster_change",
+            got: proposal.action.as_str(),
+        });
+    }
+
+    // 2. Structure (C3 anchor on the standing roster, entrenchment, distinct, etc.)
+    crate::accord_genesis::validate_membership_change_structure(
+        prior_envelope,
+        new_envelope,
+        standing_roster,
+    )
+    .map_err(|e| LiveQuorumError::Structure(e.to_string()))?;
+
+    // 3. The proposal binds the proposed change + the standing prior state (C3).
+    let envelope_digest = |env: &serde_json::Value| -> Result<String, LiveQuorumError> {
+        let bytes = crate::accord_genesis::accord_family_signing_bytes(env)
+            .map_err(|e| LiveQuorumError::Structure(e.to_string()))?;
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        Ok(hex::encode(h.finalize()))
+    };
+    let new_digest = envelope_digest(new_envelope)?;
+    if proposal.payload_sha256 != new_digest {
+        return Err(LiveQuorumError::PayloadMismatch {
+            expected: new_digest,
+            got: proposal.payload_sha256.clone(),
+        });
+    }
+    let prior_digest = envelope_digest(prior_envelope)?;
+    if proposal.prior_family_digest != prior_digest {
+        return Err(LiveQuorumError::AnchorMismatch {
+            expected: prior_digest,
+            got: proposal.prior_family_digest.clone(),
+        });
+    }
+
+    // 4. Tally over L (anchored to the standing roster, M3/C3).
+    let tally = tally_live_quorum(proposal, participations, standing_roster)?;
+
+    // 5. N_min (H5): no 1/1 rebuild.
+    let new_ids = crate::accord_genesis::envelope_member_key_ids(new_envelope)
+        .map_err(|e| LiveQuorumError::Structure(e.to_string()))?;
+    if new_ids.len() < 2 {
+        return Err(LiveQuorumError::RosterTooSmall {
+            size: new_ids.len(),
+        });
+    }
+
+    // 6. Removal-continuity (H5): a removed standing member must have proved life.
+    let prior_ids = crate::accord_genesis::envelope_member_key_ids(prior_envelope)
+        .map_err(|e| LiveQuorumError::Structure(e.to_string()))?;
+    for removed in prior_ids.iter().filter(|id| !new_ids.contains(id)) {
+        if !tally.live_set.iter().any(|id| id == removed) {
+            return Err(LiveQuorumError::RemovedAbsentMember {
+                member_id: removed.clone(),
+            });
+        }
+    }
+
+    // 7. Authorization: strict-majority-of-L + the L_floor steward backstop (H6).
+    let majority_met = tally.yes >= crate::accord_genesis::strict_majority(tally.live_count());
+    let used_steward_backstop = tally.live_count() < L_FLOOR;
+    let steward_ok = if used_steward_backstop {
+        // 2-of-3 (strict majority) of an INDEPENDENT steward set, over the proposal
+        // bytes (which transitively bind the new roster via payload_sha256). The
+        // |L| trigger is the SERVER-recomputed tally, never a claimed value.
+        let steward_threshold =
+            crate::accord_genesis::strict_majority(steward_members.len().max(1));
+        verify_threshold_signatures(
+            &proposal.canonical_bytes(),
+            steward_members,
+            steward_signatures,
+            steward_threshold,
+        )
+        .is_ok()
+    } else {
+        true
+    };
+
+    Ok(RosterChangeVerdict {
+        authorized: majority_met && steward_ok,
+        tally,
+        used_steward_backstop,
     })
 }
 
@@ -758,6 +950,239 @@ mod tests {
                 expected: "fire",
                 ..
             })
+        ));
+    }
+
+    // --- roster-change (step 3) ---------------------------------------------
+
+    use crate::accord_genesis::{accord_family_signing_bytes, build_membership_change};
+    use crate::threshold::Role;
+    use serde_json::{json, Value};
+
+    /// A standing (prior) accord family envelope over `ids`, entrenched.
+    fn family_envelope(ids: &[&str]) -> Value {
+        let members: Vec<Value> = ids
+            .iter()
+            .map(|k| json!({ "key_id": k, "role": "founder" }))
+            .collect();
+        json!({
+            "family_key_id": "humanity-accord",
+            "family_name": "HUMANITY_ACCORD",
+            "members": members,
+            "consensus_protocol": format!("quorum:{}/{}", crate::accord_genesis::strict_majority(ids.len()), ids.len()),
+            "consensus_protocol_entrenched": true,
+        })
+    }
+
+    fn env_digest(env: &Value) -> String {
+        let bytes = accord_family_signing_bytes(env).unwrap();
+        let mut h = Sha256::new();
+        h.update(&bytes);
+        hex::encode(h.finalize())
+    }
+
+    fn roster_proposal(prior: &Value, new: &Value) -> AccordProposal {
+        AccordProposal {
+            family_key_id: "humanity-accord".to_string(),
+            action: AccordAction::RosterChange,
+            nonce: "roster-nonce-XXXXXXXXXXXXXXXXXXXXXXXX".to_string(),
+            window_until: "2026-06-29T00:00:00.000Z".to_string(),
+            prior_family_digest: env_digest(prior),
+            payload_sha256: env_digest(new),
+        }
+    }
+
+    /// Holders A1,B1,C1 (standing) + D1 (candidate) + the directory over all four.
+    fn roster_fixture() -> (Vec<Holder>, Vec<ThresholdMember>) {
+        let hs: Vec<Holder> = ["A1", "B1", "C1", "D1"]
+            .iter()
+            .map(|id| Holder::new(id))
+            .collect();
+        let dir: Vec<ThresholdMember> = hs.iter().map(Holder::member).collect();
+        (hs, dir)
+    }
+
+    #[test]
+    fn roster_grow_authorized_by_live_majority() {
+        let (hs, dir) = roster_fixture();
+        let prior = family_envelope(&["A1", "B1", "C1"]);
+        // grow A1,B1,C1 → A1,B1,C1,D1 (quorum 3/4), entrenched preserved.
+        let new = build_membership_change(
+            &prior,
+            &["A1", "B1", "C1", "D1"].map(String::from),
+            Role::Founder,
+            true,
+            None,
+        );
+        let prop = roster_proposal(&prior, &new);
+        // A1,B1,C1 prove life + vote yes → |L|=3, strict-majority(3)=2, met.
+        let parts: Vec<_> = hs[..3]
+            .iter()
+            .map(|h| participate(h, &prop, Vote::Yes))
+            .collect();
+        let v =
+            verify_membership_change_by_live_quorum(&prop, &parts, &prior, &new, &dir, &[], &[])
+                .unwrap();
+        assert!(v.authorized);
+        assert!(!v.used_steward_backstop, "|L|=3 ≥ L_FLOOR");
+        assert_eq!(v.tally.live_count(), 3);
+    }
+
+    #[test]
+    fn roster_change_below_majority_is_not_authorized() {
+        let (hs, dir) = roster_fixture();
+        let prior = family_envelope(&["A1", "B1", "C1"]);
+        let new = build_membership_change(
+            &prior,
+            &["A1", "B1", "C1", "D1"].map(String::from),
+            Role::Founder,
+            true,
+            None,
+        );
+        let prop = roster_proposal(&prior, &new);
+        // 3 live, only 1 yes (2 no) → strict-majority(3)=2 not met.
+        let parts = vec![
+            participate(&hs[0], &prop, Vote::Yes),
+            participate(&hs[1], &prop, Vote::No),
+            participate(&hs[2], &prop, Vote::No),
+        ];
+        let v =
+            verify_membership_change_by_live_quorum(&prop, &parts, &prior, &new, &dir, &[], &[])
+                .unwrap();
+        assert!(!v.authorized, "1 of 3 yes does not reach strict majority");
+    }
+
+    #[test]
+    fn shrink_to_one_member_is_rejected_n_min() {
+        // H5: a 1/1 rebuild is a single point of compromise.
+        let (hs, dir) = roster_fixture();
+        let prior = family_envelope(&["A1", "B1", "C1"]);
+        // attempt A1,B1,C1 → A1 only (would be quorum:1/1). Removed B1,C1 ARE in L
+        // (so it's not the removal-continuity error — it's the size floor).
+        let new = build_membership_change(&prior, &["A1".to_string()], Role::Founder, true, None);
+        let prop = roster_proposal(&prior, &new);
+        let parts: Vec<_> = hs[..3]
+            .iter()
+            .map(|h| participate(h, &prop, Vote::Yes))
+            .collect();
+        assert!(matches!(
+            verify_membership_change_by_live_quorum(&prop, &parts, &prior, &new, &dir, &[], &[]),
+            Err(LiveQuorumError::RosterTooSmall { size: 1 })
+        ));
+    }
+
+    #[test]
+    fn removing_a_censored_member_is_rejected() {
+        // H5 removal-continuity: C1 is censored (∉ L) and the change drops C1.
+        let (hs, dir) = roster_fixture();
+        let prior = family_envelope(&["A1", "B1", "C1"]);
+        // shrink A1,B1,C1 → A1,B1 (quorum 2/2 — valid 2·2>2). C1 removed.
+        let new = build_membership_change(
+            &prior,
+            &["A1", "B1"].map(String::from),
+            Role::Founder,
+            true,
+            None,
+        );
+        let prop = roster_proposal(&prior, &new);
+        // only A1,B1 prove life — C1 is absent/censored.
+        let parts = vec![
+            participate(&hs[0], &prop, Vote::Yes),
+            participate(&hs[1], &prop, Vote::Yes),
+        ];
+        // |L|=2 < L_FLOOR triggers the steward backstop; supply valid stewards so
+        // the test isolates the removal-continuity check (which fires first).
+        let stewards: Vec<Holder> = ["S1", "S2", "S3"]
+            .iter()
+            .map(|id| Holder::new(id))
+            .collect();
+        let sm: Vec<ThresholdMember> = stewards.iter().map(Holder::member).collect();
+        let ss: Vec<ThresholdSignature> = stewards[..2]
+            .iter()
+            .map(|s| s.sign(&prop.canonical_bytes()))
+            .collect();
+        assert!(matches!(
+            verify_membership_change_by_live_quorum(&prop, &parts, &prior, &new, &dir, &sm, &ss),
+            Err(LiveQuorumError::RemovedAbsentMember { .. })
+        ));
+    }
+
+    #[test]
+    fn steward_backstop_required_below_l_floor() {
+        // H6: |L| < 3 requires the 2-of-3 steward co-sign; without it, not authorized.
+        let (hs, dir) = roster_fixture();
+        let prior = family_envelope(&["A1", "B1", "C1"]);
+        // grow A1,B1,C1 → A1,B1,C1,D1; only A1,B1 prove life → |L|=2 < L_FLOOR.
+        let new = build_membership_change(
+            &prior,
+            &["A1", "B1", "C1", "D1"].map(String::from),
+            Role::Founder,
+            true,
+            None,
+        );
+        let prop = roster_proposal(&prior, &new);
+        let parts = vec![
+            participate(&hs[0], &prop, Vote::Yes),
+            participate(&hs[1], &prop, Vote::Yes),
+        ];
+        let stewards: Vec<Holder> = ["S1", "S2", "S3"]
+            .iter()
+            .map(|id| Holder::new(id))
+            .collect();
+        let sm: Vec<ThresholdMember> = stewards.iter().map(Holder::member).collect();
+
+        // Without steward sigs → backstop unmet → not authorized.
+        let v_no =
+            verify_membership_change_by_live_quorum(&prop, &parts, &prior, &new, &dir, &sm, &[])
+                .unwrap();
+        assert!(v_no.used_steward_backstop);
+        assert!(
+            !v_no.authorized,
+            "|L|<3 with no steward co-sign is not authorized"
+        );
+
+        // With 2-of-3 valid steward sigs → authorized.
+        let ss: Vec<ThresholdSignature> = stewards[..2]
+            .iter()
+            .map(|s| s.sign(&prop.canonical_bytes()))
+            .collect();
+        let v_yes =
+            verify_membership_change_by_live_quorum(&prop, &parts, &prior, &new, &dir, &sm, &ss)
+                .unwrap();
+        assert!(v_yes.used_steward_backstop);
+        assert!(v_yes.authorized, "|L|<3 + 2-of-3 stewards authorizes");
+    }
+
+    #[test]
+    fn roster_anchor_and_payload_must_bind() {
+        let (hs, dir) = roster_fixture();
+        let prior = family_envelope(&["A1", "B1", "C1"]);
+        let new = build_membership_change(
+            &prior,
+            &["A1", "B1", "C1", "D1"].map(String::from),
+            Role::Founder,
+            true,
+            None,
+        );
+        // Wrong prior_family_digest (C3 anchor) → AnchorMismatch.
+        let mut bad_anchor = roster_proposal(&prior, &new);
+        bad_anchor.prior_family_digest = "f".repeat(64);
+        // participations must bind THIS (bad) proposal to reach the anchor check
+        let parts_bad: Vec<_> = hs[..3]
+            .iter()
+            .map(|h| participate(h, &bad_anchor, Vote::Yes))
+            .collect();
+        assert!(matches!(
+            verify_membership_change_by_live_quorum(
+                &bad_anchor,
+                &parts_bad,
+                &prior,
+                &new,
+                &dir,
+                &[],
+                &[]
+            ),
+            Err(LiveQuorumError::AnchorMismatch { .. })
         ));
     }
 }
