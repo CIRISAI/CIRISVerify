@@ -645,6 +645,67 @@ pub fn verify_membership_change_by_live_quorum(
     })
 }
 
+/// The frozen, server-attested outcome of a live-quorum decision (M2).
+///
+/// Once a window closes, `L` is **final**: it carries the immutable live-set
+/// snapshot + tally for `proposal`. A later proof-of-life is only ever admissible
+/// against a *new* proposal nonce — it never re-opens a closed window
+/// (Enoch-Arden: re-enrollment is *going-forward* only, never a retroactive
+/// recompute of a decided denominator). The authoritative server emits and
+/// append-only-logs this; consumers treat the snapshot as immutable.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccordDecision {
+    /// The proposal this decides (binds the action, nonce, window, the standing
+    /// `prior_family_digest`, and `payload_sha256`).
+    pub proposal: AccordProposal,
+    /// The frozen live set `L` — the `member_id`s who proved life within `W`.
+    pub live_set: Vec<String>,
+    /// `yes` / `no` / `abstain` over `L`.
+    pub yes: usize,
+    /// See [`Self::yes`].
+    pub no: usize,
+    /// See [`Self::yes`].
+    pub abstain: usize,
+    /// The verdict (fired, or roster-change authorized).
+    pub authorized: bool,
+}
+
+impl AccordDecision {
+    /// Assemble a decision from a proposal + its frozen tally + the verdict.
+    #[must_use]
+    pub fn new(proposal: AccordProposal, tally: &LiveQuorumTally, authorized: bool) -> Self {
+        Self {
+            proposal,
+            live_set: tally.live_set.clone(),
+            yes: tally.yes,
+            no: tally.no,
+            abstain: tally.abstain,
+            authorized,
+        }
+    }
+}
+
+/// Whether two decisions **equivocate** — the H3 split-brain fork.
+///
+/// Two roster-change decisions equivocate iff they supersede the **same standing
+/// roster** (same `family_key_id` + `prior_family_digest`) into **different new
+/// rosters** (`payload_sha256` differs). Under partition each may be locally
+/// "authorized" by a different live set, but installing two different rosters off
+/// one prior state is a fork: the authoritative server MUST treat a detected
+/// equivocation as a **hard fail-closed conflict**, admitting neither pending the
+/// steward reconciliation, rather than last-writer-wins.
+///
+/// (A re-proposal of the *same* outcome — identical `payload_sha256` — is not an
+/// equivocation; that's the H4 coalescing case, handled server-side.)
+#[must_use]
+pub fn decisions_equivocate(a: &AccordDecision, b: &AccordDecision) -> bool {
+    a.proposal.action == AccordAction::RosterChange
+        && b.proposal.action == AccordAction::RosterChange
+        && a.proposal.family_key_id == b.proposal.family_key_id
+        && a.proposal.prior_family_digest == b.proposal.prior_family_digest
+        && a.proposal.payload_sha256 != b.proposal.payload_sha256
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1184,5 +1245,122 @@ mod tests {
             ),
             Err(LiveQuorumError::AnchorMismatch { .. })
         ));
+    }
+
+    // --- decision + equivocation (step 4) -----------------------------------
+
+    fn decision_for(
+        prop: AccordProposal,
+        yes: usize,
+        no: usize,
+        authorized: bool,
+    ) -> AccordDecision {
+        let tally = LiveQuorumTally {
+            live_set: (0..(yes + no)).map(|i| format!("M{i}")).collect(),
+            yes,
+            no,
+            abstain: 0,
+        };
+        AccordDecision::new(prop, &tally, authorized)
+    }
+
+    #[test]
+    fn decision_freezes_the_tally() {
+        let prior = family_envelope(&["A1", "B1", "C1"]);
+        let new = build_membership_change(
+            &prior,
+            &["A1", "B1", "C1", "D1"].map(String::from),
+            Role::Founder,
+            true,
+            None,
+        );
+        let prop = roster_proposal(&prior, &new);
+        let tally = LiveQuorumTally {
+            live_set: vec!["A1".into(), "B1".into(), "C1".into()],
+            yes: 3,
+            no: 0,
+            abstain: 0,
+        };
+        let d = AccordDecision::new(prop.clone(), &tally, true);
+        assert_eq!(d.live_set, tally.live_set);
+        assert_eq!((d.yes, d.no, d.abstain), (3, 0, 0));
+        assert!(d.authorized);
+        assert_eq!(d.proposal, prop);
+    }
+
+    #[test]
+    fn two_rosters_off_the_same_prior_equivocate() {
+        // H3: two roster-changes superseding the SAME standing roster into
+        // DIFFERENT new rosters are a fork — both must be rejected.
+        let prior = family_envelope(&["A1", "B1", "C1"]);
+        let new_x = build_membership_change(
+            &prior,
+            &["A1", "B1", "C1", "D1"].map(String::from),
+            Role::Founder,
+            true,
+            None,
+        );
+        let new_y = build_membership_change(
+            &prior,
+            &["A1", "B1", "C1", "E1"].map(String::from), // different new member
+            Role::Founder,
+            true,
+            None,
+        );
+        let dx = decision_for(roster_proposal(&prior, &new_x), 3, 0, true);
+        let dy = decision_for(roster_proposal(&prior, &new_y), 3, 0, true);
+        assert!(
+            decisions_equivocate(&dx, &dy),
+            "different new rosters off one prior = equivocation"
+        );
+    }
+
+    #[test]
+    fn same_outcome_re_proposal_does_not_equivocate() {
+        // The H4 coalescing case (same outcome, different nonce) is NOT a fork.
+        let prior = family_envelope(&["A1", "B1", "C1"]);
+        let new = build_membership_change(
+            &prior,
+            &["A1", "B1", "C1", "D1"].map(String::from),
+            Role::Founder,
+            true,
+            None,
+        );
+        let mut p1 = roster_proposal(&prior, &new);
+        let mut p2 = roster_proposal(&prior, &new);
+        p1.nonce = "nonce-one-aaaaaaaaaaaaaaaaaaaaaaaa".into();
+        p2.nonce = "nonce-two-bbbbbbbbbbbbbbbbbbbbbbbb".into();
+        let d1 = decision_for(p1, 2, 1, true);
+        let d2 = decision_for(p2, 3, 0, true);
+        assert!(
+            !decisions_equivocate(&d1, &d2),
+            "same prior + same new roster (different nonce) is coalescing, not a fork"
+        );
+    }
+
+    #[test]
+    fn decisions_off_different_priors_do_not_equivocate() {
+        let prior_a = family_envelope(&["A1", "B1", "C1"]);
+        let prior_b = family_envelope(&["A1", "B1", "D1"]); // different standing roster
+        let new_a = build_membership_change(
+            &prior_a,
+            &["A1", "B1", "C1", "D1"].map(String::from),
+            Role::Founder,
+            true,
+            None,
+        );
+        let new_b = build_membership_change(
+            &prior_b,
+            &["A1", "B1", "D1", "E1"].map(String::from),
+            Role::Founder,
+            true,
+            None,
+        );
+        let da = decision_for(roster_proposal(&prior_a, &new_a), 3, 0, true);
+        let db = decision_for(roster_proposal(&prior_b, &new_b), 3, 0, true);
+        assert!(
+            !decisions_equivocate(&da, &db),
+            "different prior digests are sequential states, not a fork"
+        );
     }
 }
