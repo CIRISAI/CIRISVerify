@@ -622,11 +622,27 @@ pub fn create_platform_storage(
     {
         match SecureEnclaveSecureBlobStorage::new(&alias, &storage_dir) {
             Ok(storage) => {
-                tracing::info!(
-                    alias = %alias,
-                    hw_backed = storage.is_hardware_backed(),
-                    "Using Secure Enclave-backed secure storage for wallet seeds"
-                );
+                // The constructor may succeed yet still fall back to a
+                // keychain/software P-256 key (e.g. an unsigned macOS CLI
+                // process: SE keygen → errSecMissingEntitlement). Don't name the
+                // Enclave unless the master is actually SE-held — a
+                // "Secure Enclave-backed ... hw_backed=false" line reads, to an
+                // operator, as "it used the Enclave" when it did NOT (#139).
+                if storage.is_hardware_backed() {
+                    tracing::info!(
+                        alias = %alias,
+                        hw_backed = true,
+                        "secure storage: Secure Enclave (hardware-backed) for wallet seeds"
+                    );
+                } else {
+                    tracing::warn!(
+                        alias = %alias,
+                        hw_backed = false,
+                        "secure storage: KEYCHAIN FALLBACK — Secure Enclave unavailable, key is \
+                         software-at-rest (custody degraded; on a macOS CLI this is an \
+                         entitlement/code-signing gap, not a hardware fault)"
+                    );
+                }
                 return Ok(Box::new(storage));
             },
             Err(e) => {
