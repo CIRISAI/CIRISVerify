@@ -40,7 +40,7 @@ const MIN_ABI_VERSION: u32 = 1;
 /// client accepts any version in `[MIN, CURRENT]` and resolves newer ops lazily
 /// (a v1 plugin simply lacks the signer symbols → those methods fail-closed); it
 /// refuses a version `> CURRENT` it can't reason about (fail-closed = "no TPM").
-const CURRENT_ABI_VERSION: u32 = 2;
+const CURRENT_ABI_VERSION: u32 = 3;
 
 /// Plugin C ABI return codes (mirror `ciris-tpm-plugin`).
 const CIRIS_TPM_OK: i32 = 0;
@@ -65,6 +65,35 @@ fn not_supported(reason: impl Into<String>) -> KeyringError {
     KeyringError::NotSupported {
         operation: reason.into(),
     }
+}
+
+/// Split the plugin's `u32_le(len)‖bytes` × 4 quote framing into a
+/// [`PluginQuote`]. Mirrors the plugin's `frame_fields`.
+fn parse_quote(framed: &[u8]) -> Result<PluginQuote, KeyringError> {
+    let mut fields = Vec::with_capacity(4);
+    let mut i = 0usize;
+    while i + 4 <= framed.len() {
+        let len =
+            u32::from_le_bytes([framed[i], framed[i + 1], framed[i + 2], framed[i + 3]]) as usize;
+        i += 4;
+        if i + len > framed.len() {
+            return Err(err("ciris-tpm-plugin quote framing truncated"));
+        }
+        fields.push(framed[i..i + len].to_vec());
+        i += len;
+    }
+    if fields.len() != 4 || i != framed.len() {
+        return Err(err(
+            "ciris-tpm-plugin quote framing malformed (expected 4 fields)",
+        ));
+    }
+    let mut it = fields.into_iter();
+    Ok(PluginQuote {
+        quoted: it.next().unwrap(),
+        signature: it.next().unwrap(),
+        pcr_selection: it.next().unwrap(),
+        ak_public_key: it.next().unwrap(),
+    })
 }
 
 /// The dylib base name for the current platform.
@@ -106,7 +135,25 @@ pub struct TpmPlugin {
     signer_create: Option<CreateFn>,
     signer_public: Option<BlobOpFn>,
     signer_sign: Option<SignFn>,
+    // Quote/attestation path (ABI v3): None on a v1/v2 plugin.
+    ak_create: Option<CreateFn>,
+    // `quote` has the same (in, in, out) signature as `signer_sign`.
+    quote: Option<SignFn>,
+    ek_certificate: Option<CreateFn>,
     free: FreeFn,
+}
+
+/// A parsed TPM quote from [`TpmPlugin::quote`].
+#[derive(Debug, Clone)]
+pub struct PluginQuote {
+    /// The marshalled `TPMS_ATTEST` quoted structure.
+    pub quoted: Vec<u8>,
+    /// Raw ECDSA `r ‖ s` over the quote (verify under `ak_public_key`).
+    pub signature: Vec<u8>,
+    /// PCR-selection bitmap (PCRs 0-7 → `0xFF`).
+    pub pcr_selection: Vec<u8>,
+    /// The AK's SEC1-uncompressed public key (`0x04 ‖ X ‖ Y`).
+    pub ak_public_key: Vec<u8>,
 }
 
 impl TpmPlugin {
@@ -186,6 +233,22 @@ impl TpmPlugin {
             (None, None, None)
         };
 
+        // Quote/attestation path (ABI v3): optional. Same all-or-none discipline.
+        let (ak_create, quote, ek_certificate) = if version >= 3 {
+            // SAFETY: a v3 plugin declares all three; copy out the fn pointers.
+            unsafe {
+                let a = lib.get::<CreateFn>(b"ciris_tpm_ak_create\0").ok();
+                let q = lib.get::<SignFn>(b"ciris_tpm_quote\0").ok();
+                let e = lib.get::<CreateFn>(b"ciris_tpm_ek_certificate\0").ok();
+                match (a, q, e) {
+                    (Some(a), Some(q), Some(e)) => (Some(*a), Some(*q), Some(*e)),
+                    _ => (None, None, None),
+                }
+            }
+        } else {
+            (None, None, None)
+        };
+
         Ok(Self {
             _lib: lib,
             available,
@@ -194,6 +257,9 @@ impl TpmPlugin {
             signer_create,
             signer_public,
             signer_sign,
+            ak_create,
+            quote,
+            ek_certificate,
             free,
         })
     }
@@ -283,6 +349,72 @@ impl TpmPlugin {
             )
         };
         self.finish(rc, out, out_len, "signer_sign")
+    }
+
+    /// Whether this plugin exposes the quote/attestation path (ABI v3).
+    #[must_use]
+    pub fn quote_supported(&self) -> bool {
+        self.ak_create.is_some()
+    }
+
+    /// Create a restricted ECDSA P-256 attestation key (AK); returns its opaque,
+    /// TPM-bound blob (pass to [`Self::quote`]).
+    ///
+    /// # Errors
+    /// [`KeyringError::NotSupported`] on a v1/v2 plugin; [`KeyringError::HardwareError`]
+    /// if the TPM op fails.
+    pub fn ak_create(&self) -> Result<Vec<u8>, KeyringError> {
+        let op = self
+            .ak_create
+            .ok_or_else(|| not_supported("ciris-tpm-plugin has no quote path (ABI < v3)"))?;
+        let mut out: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        // SAFETY: valid out-params.
+        let rc = unsafe { op(&mut out, &mut out_len) };
+        self.finish(rc, out, out_len, "ak_create")
+    }
+
+    /// Quote PCRs 0-7 under `ak_blob`, bound to `nonce`; returns the parsed
+    /// [`PluginQuote`].
+    ///
+    /// # Errors
+    /// [`KeyringError::NotSupported`] on a v1/v2 plugin; [`KeyringError::HardwareError`]
+    /// if the TPM op fails or the framed result can't be parsed.
+    pub fn quote(&self, ak_blob: &[u8], nonce: &[u8]) -> Result<PluginQuote, KeyringError> {
+        let op = self
+            .quote
+            .ok_or_else(|| not_supported("ciris-tpm-plugin has no quote path (ABI < v3)"))?;
+        let mut out: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        // SAFETY: `ak_blob`/`nonce` are valid slices; valid out-params.
+        let rc = unsafe {
+            op(
+                ak_blob.as_ptr(),
+                ak_blob.len(),
+                nonce.as_ptr(),
+                nonce.len(),
+                &mut out,
+                &mut out_len,
+            )
+        };
+        let framed = self.finish(rc, out, out_len, "quote")?;
+        parse_quote(&framed)
+    }
+
+    /// Read the ECC EK certificate (X.509 DER) from NV.
+    ///
+    /// # Errors
+    /// [`KeyringError::NotSupported`] on a v1/v2 plugin; [`KeyringError::HardwareError`]
+    /// if the cert isn't provisioned or the read fails.
+    pub fn ek_certificate(&self) -> Result<Vec<u8>, KeyringError> {
+        let op = self
+            .ek_certificate
+            .ok_or_else(|| not_supported("ciris-tpm-plugin has no quote path (ABI < v3)"))?;
+        let mut out: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        // SAFETY: valid out-params.
+        let rc = unsafe { op(&mut out, &mut out_len) };
+        self.finish(rc, out, out_len, "ek_certificate")
     }
 
     fn blob_op(&self, op: BlobOpFn, input: &[u8], what: &str) -> Result<Vec<u8>, KeyringError> {

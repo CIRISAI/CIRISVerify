@@ -62,6 +62,18 @@ fn loads_real_plugin_and_completes_abi_handshake() {
         plugin.signer_sign(b"blob", b"data").is_err(),
         "stub signer_sign errors"
     );
+
+    // Quote path (ABI v3): symbols present (v3 plugin), ops fail cleanly w/o a TPM.
+    assert!(
+        plugin.quote_supported(),
+        "v3 plugin must expose the quote path"
+    );
+    assert!(plugin.ak_create().is_err(), "stub ak_create errors");
+    assert!(plugin.quote(b"ak", b"nonce").is_err(), "stub quote errors");
+    assert!(
+        plugin.ek_certificate().is_err(),
+        "stub ek_certificate errors"
+    );
 }
 
 /// Hardware validation of the ABI-v2 signer path (#141) against a **real** TPM.
@@ -173,4 +185,41 @@ async fn plugin_tpm_signer_persists_and_reopens_on_real_tpm() {
 
     let _ = std::fs::remove_dir_all(&dir);
     eprintln!("✓ PluginTpmSigner persist + re-open verified on real hardware");
+}
+
+/// Hardware validation of the ABI-v3 quote path (#141 stage C) against a real
+/// TPM: create a restricted AK, quote PCRs 0-7 bound to a nonce, and confirm the
+/// quote signature verifies under the AK's exported public key. `#[ignore]`d.
+#[test]
+#[ignore = "requires a real TPM + the `real` plugin via CIRIS_TPM_PLUGIN"]
+fn quote_verifies_under_ak_pubkey_on_real_tpm() {
+    use p256::ecdsa::signature::Verifier;
+
+    let path = std::env::var_os("CIRIS_TPM_PLUGIN")
+        .or_else(|| built_plugin().map(Into::into))
+        .expect("set CIRIS_TPM_PLUGIN to a `real` plugin .so");
+    let plugin = TpmPlugin::load_from(&path).expect("plugin loads");
+    if !plugin.available() {
+        eprintln!("no usable TPM; skipping quote validation");
+        return;
+    }
+
+    let ak_blob = plugin.ak_create().expect("create AK");
+    let nonce = [0x5au8; 32];
+    let q = plugin.quote(&ak_blob, &nonce).expect("quote");
+
+    assert_eq!(q.ak_public_key.len(), 65, "SEC1 AK pubkey");
+    assert!(!q.quoted.is_empty(), "TPMS_ATTEST present");
+    assert_eq!(q.signature.len(), 64, "raw r||s");
+    assert_eq!(q.pcr_selection, vec![0xFF], "PCRs 0-7 selected");
+
+    // The TPM signs SHA-256(TPMS_ATTEST) with the restricted AK. p256's
+    // `verify(msg, sig)` hashes the message with SHA-256, so verifying over the
+    // marshalled `quoted` is the right check.
+    let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(&q.ak_public_key).expect("AK pubkey");
+    let sig = p256::ecdsa::Signature::from_slice(&q.signature).expect("r||s");
+    vk.verify(&q.quoted, &sig)
+        .expect("quote signature must verify under the AK public key");
+
+    eprintln!("✓ TPM quote verified under the AK public key on real hardware");
 }

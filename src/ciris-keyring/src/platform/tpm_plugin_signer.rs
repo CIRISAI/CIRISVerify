@@ -22,10 +22,12 @@
 //!
 //! ## Attestation
 //!
-//! Stage B reports a [`HardwareType::TpmFirmware`] attestation with **no quote**
-//! (`quote: None`) — honest: the signing key is TPM-held, but the quote /
-//! EK-cert path is the stage-C port. It is **not** a software attestation, so
-//! consumers see TPM custody without an over-claimed quote.
+//! `attestation_with_nonce` produces a real PCR 0-7 quote bound to the caller's
+//! nonce plus the EK certificate, via the plugin's ABI-v3 quote path (#141 stage
+//! C) under a lazily-provisioned restricted attestation key. If the plugin/TPM
+//! can't quote it degrades to a no-quote [`HardwareType::TpmFirmware`]
+//! attestation — honest, never an over-claimed quote and never a *software*
+//! attestation.
 
 #![cfg(feature = "tpm-plugin")]
 
@@ -45,6 +47,9 @@ use crate::types::{
 pub struct PluginTpmSigner {
     alias: String,
     blob_path: PathBuf,
+    /// Where the restricted attestation-key blob lives (provisioned lazily on the
+    /// first attestation-with-quote).
+    ak_blob_path: PathBuf,
     plugin: TpmPlugin,
     /// The TPM-wrapped key blob (private half sealed to this TPM).
     key_blob: Vec<u8>,
@@ -87,6 +92,7 @@ impl PluginTpmSigner {
             reason: format!("create storage dir: {e}"),
         })?;
         let blob_path = storage_dir.join(format!("{alias}.tpmplugin_signer"));
+        let ak_blob_path = storage_dir.join(format!("{alias}.tpmplugin_ak"));
 
         let key_blob = if blob_path.exists() {
             std::fs::read(&blob_path).map_err(|e| KeyringError::StorageFailed {
@@ -106,10 +112,79 @@ impl PluginTpmSigner {
         Ok(Self {
             alias,
             blob_path,
+            ak_blob_path,
             plugin,
             key_blob,
             public_key,
             lock: Mutex::new(()),
+        })
+    }
+
+    /// Load-or-create the restricted attestation key blob (re-open discipline:
+    /// a present-but-unloadable AK is re-minted — unlike the signing key, the AK
+    /// carries no identity, only attests current PCRs, so a fresh one is safe).
+    fn ensure_ak_blob(&self) -> Result<Vec<u8>, KeyringError> {
+        if self.ak_blob_path.exists() {
+            if let Ok(blob) = std::fs::read(&self.ak_blob_path) {
+                // Validate it loads on this TPM; if not, fall through to re-create.
+                if self.plugin.quote(&blob, &[0u8; 16]).is_ok() {
+                    return Ok(blob);
+                }
+            }
+        }
+        let blob = self.plugin.ak_create()?;
+        write_atomic(&self.ak_blob_path, &blob)?;
+        Ok(blob)
+    }
+
+    /// Build a full TPM attestation with a PCR quote bound to `nonce`, falling
+    /// back to a no-quote TPM attestation if the quote path is unavailable.
+    fn attest(&self, nonce: Option<&[u8]>) -> PlatformAttestation {
+        use rand::RngCore;
+
+        if self.plugin.quote_supported() {
+            let mut random = [0u8; 32];
+            let nonce: &[u8] = match nonce {
+                Some(n) => n,
+                None => {
+                    rand::rngs::OsRng.fill_bytes(&mut random);
+                    &random
+                },
+            };
+            // Serialize TPM access across AK provisioning + quote + EK read.
+            let _guard = self.lock.lock();
+            if let Ok(ak_blob) = self.ensure_ak_blob() {
+                if let Ok(q) = self.plugin.quote(&ak_blob, nonce) {
+                    let ek_cert = self.plugin.ek_certificate().ok();
+                    return PlatformAttestation::Tpm(TpmAttestation {
+                        tpm_version: "2.0".to_string(),
+                        manufacturer: "unknown".to_string(),
+                        discrete: false,
+                        quote: Some(crate::types::TpmQuoteData {
+                            quoted: q.quoted,
+                            signature: q.signature,
+                            pcr_selection: q.pcr_selection,
+                            qualifying_data: nonce.to_vec(),
+                            pcr_values: None,
+                            timestamp: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH)
+                                .map(|d| d.as_secs())
+                                .unwrap_or(0),
+                        }),
+                        ek_cert,
+                        ak_public_key: Some(q.ak_public_key),
+                    });
+                }
+            }
+        }
+        // No quote path / quote failed → honest no-quote TPM attestation.
+        PlatformAttestation::Tpm(TpmAttestation {
+            tpm_version: "2.0".to_string(),
+            manufacturer: "unknown".to_string(),
+            discrete: false,
+            quote: None,
+            ek_cert: None,
+            ak_public_key: None,
         })
     }
 }
@@ -149,17 +224,17 @@ impl HardwareSigner for PluginTpmSigner {
     }
 
     async fn attestation(&self) -> Result<PlatformAttestation, KeyringError> {
-        // Stage B: TPM-held signing key, but the quote/EK port is stage C — so
-        // report a TPM attestation with no quote (honest, not over-claimed, and
-        // NOT a software attestation).
-        Ok(PlatformAttestation::Tpm(TpmAttestation {
-            tpm_version: "2.0".to_string(),
-            manufacturer: "unknown".to_string(),
-            discrete: false,
-            quote: None,
-            ek_cert: None,
-            ak_public_key: None,
-        }))
+        Ok(self.attest(None))
+    }
+
+    async fn attestation_with_nonce(
+        &self,
+        nonce: Option<&[u8]>,
+    ) -> Result<PlatformAttestation, KeyringError> {
+        // Stage C: a real PCR 0-7 quote bound to `nonce` + the EK cert, via the
+        // plugin's ABI-v3 quote path. Degrades to a no-quote TPM attestation if
+        // the plugin/TPM can't quote (honest, never a software attestation).
+        Ok(self.attest(nonce))
     }
 
     async fn generate_key(&self, _config: &KeyGenConfig) -> Result<(), KeyringError> {

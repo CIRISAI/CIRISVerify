@@ -47,7 +47,9 @@
 /// - **v1:** `available` / `seal` / `unseal` / `free`.
 /// - **v2 (#141):** adds the signer path — `signer_create` / `signer_public` /
 ///   `signer_sign` (ECDSA P-256, stateless blob-based).
-pub const CIRIS_TPM_ABI_VERSION: u32 = 2;
+/// - **v3 (#141):** adds the quote/attestation path — `ak_create` (restricted
+///   AK) / `quote` (PCR 0-7, nonce-bound) / `ek_certificate`.
+pub const CIRIS_TPM_ABI_VERSION: u32 = 3;
 
 /// Operation succeeded.
 pub const CIRIS_TPM_OK: i32 = 0;
@@ -246,6 +248,92 @@ pub unsafe extern "C" fn ciris_tpm_signer_sign(
         },
         Err(e) => {
             tracing::error!("ciris_tpm_signer_sign: {e}");
+            CIRIS_TPM_ERROR
+        },
+    }
+}
+
+/// Create a restricted ECDSA P-256 attestation key (AK) in the TPM → its
+/// persistable blob in `out`/`out_len` (ABI v3, #141). The AK quotes only
+/// TPM-generated data; pass its blob to [`ciris_tpm_quote`].
+///
+/// # Safety
+/// `out`/`out_len` valid; the returned buffer is freed via [`ciris_tpm_free`].
+#[no_mangle]
+pub unsafe extern "C" fn ciris_tpm_ak_create(out: *mut *mut u8, out_len: *mut usize) -> i32 {
+    if out.is_null() || out_len.is_null() {
+        return CIRIS_TPM_ERROR;
+    }
+    match backend::ak_create() {
+        Ok(blob) => {
+            emit(blob, out, out_len);
+            CIRIS_TPM_OK
+        },
+        Err(e) => {
+            tracing::error!("ciris_tpm_ak_create: {e}");
+            CIRIS_TPM_ERROR
+        },
+    }
+}
+
+/// Quote PCRs 0-7 under the AK `ak_blob`, bound to `nonce` → the framed quote
+/// (`quoted ‖ signature ‖ pcr_selection ‖ ak_pubkey`, each `u32_le`-prefixed) in
+/// `out`/`out_len`.
+///
+/// # Safety
+/// `ak_blob` valid for `ak_blob_len`; `nonce` valid for `nonce_len` (or null iff
+/// `nonce_len == 0`); `out`/`out_len` valid. Buffer freed via [`ciris_tpm_free`].
+#[no_mangle]
+pub unsafe extern "C" fn ciris_tpm_quote(
+    ak_blob: *const u8,
+    ak_blob_len: usize,
+    nonce: *const u8,
+    nonce_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    if ak_blob.is_null()
+        || out.is_null()
+        || out_len.is_null()
+        || (nonce.is_null() && nonce_len != 0)
+    {
+        return CIRIS_TPM_ERROR;
+    }
+    let ak_blob = std::slice::from_raw_parts(ak_blob, ak_blob_len);
+    let nonce = if nonce_len == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(nonce, nonce_len)
+    };
+    match backend::quote(ak_blob, nonce) {
+        Ok(q) => {
+            emit(q, out, out_len);
+            CIRIS_TPM_OK
+        },
+        Err(e) => {
+            tracing::error!("ciris_tpm_quote: {e}");
+            CIRIS_TPM_ERROR
+        },
+    }
+}
+
+/// Read the ECC EK certificate (X.509 DER) from NV → `out`/`out_len`. Returns
+/// [`CIRIS_TPM_ERROR`] if the EK cert isn't provisioned.
+///
+/// # Safety
+/// `out`/`out_len` valid; the returned buffer is freed via [`ciris_tpm_free`].
+#[no_mangle]
+pub unsafe extern "C" fn ciris_tpm_ek_certificate(out: *mut *mut u8, out_len: *mut usize) -> i32 {
+    if out.is_null() || out_len.is_null() {
+        return CIRIS_TPM_ERROR;
+    }
+    match backend::ek_certificate() {
+        Ok(cert) => {
+            emit(cert, out, out_len);
+            CIRIS_TPM_OK
+        },
+        Err(e) => {
+            tracing::error!("ciris_tpm_ek_certificate: {e}");
             CIRIS_TPM_ERROR
         },
     }
