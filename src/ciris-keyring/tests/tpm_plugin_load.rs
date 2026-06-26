@@ -115,3 +115,62 @@ fn signer_roundtrip_verifies_on_real_tpm() {
     );
     eprintln!("✓ TPM signer roundtrip verified on real hardware");
 }
+
+/// Hardware validation of `PluginTpmSigner` (the `HardwareSigner` wrapper, #141
+/// stage B): the full open → public_key → sign → verify path, plus the #134
+/// re-open discipline (a second `open` of the same alias loads the persisted
+/// blob and reproduces the SAME key — it does not mint a fresh one).
+///
+/// `#[ignore]`d; run as in [`signer_roundtrip_verifies_on_real_tpm`].
+#[tokio::test]
+#[ignore = "requires a real TPM + the `real` plugin via CIRIS_TPM_PLUGIN"]
+async fn plugin_tpm_signer_persists_and_reopens_on_real_tpm() {
+    use ciris_keyring::platform::PluginTpmSigner;
+    use ciris_keyring::HardwareSigner;
+    use p256::ecdsa::signature::Verifier;
+
+    // The factory loads the plugin by name; the hardware test points at the real
+    // one via CIRIS_TPM_PLUGIN, which PluginTpmSigner::open honors through the
+    // client's plugin_path(). Skip if it can't reach a TPM.
+    if std::env::var_os("CIRIS_TPM_PLUGIN").is_none() {
+        if let Some(p) = built_plugin() {
+            std::env::set_var("CIRIS_TPM_PLUGIN", p);
+        }
+    }
+
+    let dir = std::env::temp_dir().join(format!("ciris-plugsigner-hw-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+
+    let signer = match PluginTpmSigner::open("fed-ecdsa", &dir) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("no usable TPM signer ({e}); skipping");
+            return;
+        },
+    };
+
+    let pubkey = signer.public_key().await.expect("public_key");
+    assert_eq!(pubkey.len(), 65);
+    let message = b"PluginTpmSigner stage-B hardware validation";
+    let sig = signer.sign(message).await.expect("sign");
+
+    let vk = p256::ecdsa::VerifyingKey::from_sec1_bytes(&pubkey).unwrap();
+    let signature = p256::ecdsa::Signature::from_slice(&sig).unwrap();
+    vk.verify(message, &signature).expect("signature verifies");
+
+    // Re-open the SAME alias: must load the persisted blob and reproduce the same
+    // public key (no silent re-mint, #134) — and still sign verifiably.
+    drop(signer);
+    let reopened = PluginTpmSigner::open("fed-ecdsa", &dir).expect("re-open");
+    let pubkey2 = reopened.public_key().await.expect("public_key 2");
+    assert_eq!(
+        pubkey, pubkey2,
+        "re-open must reproduce the same key (#134)"
+    );
+    let sig2 = reopened.sign(message).await.expect("sign 2");
+    vk.verify(message, &p256::ecdsa::Signature::from_slice(&sig2).unwrap())
+        .expect("re-opened signer signs verifiably under the same key");
+
+    let _ = std::fs::remove_dir_all(&dir);
+    eprintln!("✓ PluginTpmSigner persist + re-open verified on real hardware");
+}

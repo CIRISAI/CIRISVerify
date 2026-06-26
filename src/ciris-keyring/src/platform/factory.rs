@@ -238,6 +238,37 @@ pub fn create_hardware_signer(
         });
     }
 
+    // Opportunistic runtime-loaded TPM signer (CIRISVerify#141). Reaches TPM via
+    // the `dlopen` plugin with no tss-esapi link, so it covers the wheel + musl +
+    // any tpm-less build where the plugin .so + a device are present. Tried only
+    // where the link-time `TpmSigner` arm WON'T run (i.e. not a gnu-linux/windows
+    // build with the `tpm` feature) so existing link-tpm deployments keep their
+    // `.tpm` key. Gated by the plugin's own `available()` — a no-op fall-through
+    // where no plugin/TPM exists.
+    #[cfg(all(
+        feature = "tpm-plugin",
+        not(all(
+            feature = "tpm",
+            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
+        ))
+    ))]
+    {
+        match super::tpm_plugin_signer::PluginTpmSigner::open(alias, default_key_dir()) {
+            Ok(signer) => {
+                tracing::info!("Using ciris-tpm-plugin (dlopen) TPM signer for hardware security");
+                let boxed: Box<dyn HardwareSigner> = Box::new(signer);
+                log_storage_descriptor(boxed.as_ref());
+                return Ok(boxed);
+            },
+            Err(e) => {
+                tracing::debug!(
+                    error = %e,
+                    "TPM plugin signer unavailable, continuing signer selection"
+                );
+            },
+        }
+    }
+
     let signer: Box<dyn HardwareSigner> = {
         #[cfg(target_os = "android")]
         {
