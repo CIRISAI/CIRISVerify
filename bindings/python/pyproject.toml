@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "ciris-verify"
-version = "7.5.1"
+version = "7.6.0"
 description = "Python bindings for CIRISVerify hardware-rooted license verification"
 readme = "README.md"
 license = "AGPL-3.0-or-later"
@@ -60,5 +60,10 @@ ciris_verify = [
     "libciris_verify_ffi.so",
     "libciris_verify_ffi.dylib",
     "ciris_verify_ffi.dll",
+    # Runtime TPM plugin (CIRISVerify#130) — bundled where built (x86_64-linux in
+    # v7.6.0); dlopen'ed via CIRIS_TPM_PLUGIN (set in __init__). Absent elsewhere.
+    "libciris_tpm_plugin.so",
+    "libciris_tpm_plugin.dylib",
+    "ciris_tpm_plugin.dll",
     "_bin/*",
 ]

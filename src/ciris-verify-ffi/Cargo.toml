@@ -21,6 +21,10 @@ hybrid-kex = ["ciris-crypto/hybrid-kex"]
 android = ["ciris-verify-core/android"]
 ios = ["ciris-verify-core/ios"]
 tpm = ["ciris-verify-core/tpm"]
+# Runtime-loaded TPM backend (CIRISVerify#130) — dlopen the plugin instead of
+# link-binding tss-esapi. Pulls only `libloading`, NO libtss2 DT_NEEDED, so this
+# is the TPM feature that is safe to enable on the published wheel cdylib + musl.
+tpm-plugin = ["ciris-verify-core/tpm-plugin"]
 tpm-windows = ["ciris-verify-core/tpm-windows"]  # Experimental: Windows native TPM
 secp256k1 = ["ciris-crypto/secp256k1"]  # EVM wallet signing support
 # v4.7.0+ (CIRISVerify#50): wheel surface for the v4.4.0 key_grant
