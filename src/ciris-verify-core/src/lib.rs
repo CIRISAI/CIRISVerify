@@ -58,6 +58,12 @@ pub mod accord_custody_attestation;
 /// `accord_holder` records + the entrenched-`family` 2-of-3 genesis, round-tripped
 /// through `threshold::verify_founder_quorum`.
 pub mod accord_genesis;
+/// HUMANITY_ACCORD live-quorum decimation-recovery objects (FSD-004 / CC §4.2.6)
+/// — Phase 1, step 1: the `AccordProposal` / `AccordParticipation` preimages with
+/// the adversarial-review CRITICAL bindings (vote + proposal digest + member +
+/// family + window in the signed bytes). The tally / fire / membership-change
+/// surfaces are step 2.
+pub mod accord_live_quorum;
 pub mod app_attest;
 pub mod attest_bundle;
 pub mod attest_heartbeat;

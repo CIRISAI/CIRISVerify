@@ -1,0 +1,518 @@
+//! HUMANITY_ACCORD live-quorum objects — Phase 1, step 1 (FSD-004 / CC §4.2.6).
+//!
+//! The wire objects the live-quorum decimation-recovery rides on:
+//! `AccordProposal` (the action + server-issued nonce + window) and
+//! `AccordParticipation` (a holder's **proof-of-life bundled with a vote** in
+//! ONE signed object — entering the live set `L` and voting are the same act).
+//! The tally / membership-change / fire surfaces are step 2.
+//!
+//! This module exists to satisfy the **CRITICAL** obligations the adversarial
+//! review (`FSD/FSD-004_ADVERSARIAL_REVIEW.md`) found in the design's soft
+//! underbelly — the participation preimage — *before* any tally code is written:
+//!
+//! - **C1 (vote-flip / cross-proposal replay):** `AccordParticipation` has an
+//!   exact, domain-separated `canonical_bytes`
+//!   that binds — INSIDE the signed preimage — the **vote**, the **full proposal
+//!   digest** (not a bare nonce), the **member seat**, the **family**, and the
+//!   **window**. A relay/server cannot flip a recorded vote or replay a
+//!   participation into a different proposal without breaking the signature.
+//! - **C3 (anti-replay anchor):** the proposal binds `prior_family_digest` — the
+//!   digest of the **standing** family envelope — so a participation is bound to a
+//!   decision over a specific standing roster, never the manipulable live set.
+//!   (The tally in step 2 keeps the anti-replay anchor on the standing roster.)
+//! - **M3 (directory-only resolution):** a participation's signature is verified
+//!   against the holder's **pinned** `ThresholdMember` key, and its `member_id`
+//!   self-attests its seat in the preimage.
+//! - **M5 (`family_key_id` binding):** bound in the preimage, so a participation
+//!   is non-transferable across families by construction.
+//!
+//! Both preimages use the same line-format `domain_prefix ‖ k=v\n…` discipline as
+//! `crate::humanity_accord::Invocation`, with **distinct domain prefixes** so a
+//! participation signature can never verify as an invoke / lifecycle / proposal
+//! signature (the CC §9.2 "wire-isolated AND scope-isolated" property).
+
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+
+use crate::threshold::{verify_threshold_signatures, ThresholdMember, ThresholdSignature};
+
+/// Domain prefix for `AccordProposal` canonical bytes (trailing `\n` included).
+pub const PROPOSAL_DOMAIN_PREFIX: &str = "ciris.accord_proposal.v1\n";
+/// Domain prefix for `AccordParticipation` canonical bytes (trailing `\n`).
+pub const PARTICIPATION_DOMAIN_PREFIX: &str = "ciris.accord_participation.v1\n";
+
+/// The action an `AccordProposal` opens for a live-quorum decision.
+///
+/// `DECIMATION` is a quorum-computation rule over the existing `CONSTITUTIONAL`
+/// kind, not a new invocation verb (FSD-004 §11) — so the *action* is just which
+/// of the two decision shapes this proposal seeks. The closed set keeps an
+/// unknown action fail-closed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AccordAction {
+    /// A live-quorum `CONSTITUTIONAL` fire (tallied at the floor of 1 in step 2).
+    Fire,
+    /// A roster grow / shrink / swap (tallied at strict-majority-of-`L` + the
+    /// `L_floor` steward backstop in step 2), carried as a family `supersedes`.
+    RosterChange,
+}
+
+impl AccordAction {
+    /// Canonical wire token.
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Fire => "fire",
+            Self::RosterChange => "roster_change",
+        }
+    }
+}
+
+/// A holder's vote, carried INSIDE the signed `AccordParticipation` preimage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Vote {
+    /// In favour of the proposed action.
+    Yes,
+    /// Against the proposed action.
+    No,
+    /// Present (counts toward `L`) but expresses no preference.
+    Abstain,
+}
+
+impl Vote {
+    /// Canonical wire token — part of the signed bytes (C1).
+    #[must_use]
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Yes => "yes",
+            Self::No => "no",
+            Self::Abstain => "abstain",
+        }
+    }
+}
+
+/// An accord live-quorum proposal: the action, the **server-issued** freshness
+/// nonce, the window upper bound, and the standing-roster anti-replay anchor.
+///
+/// The proposal's `digest` is what every
+/// `AccordParticipation` binds to — so a participation is non-transferable
+/// between proposals even if a nonce ever collided (C1/C3).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccordProposal {
+    /// The accord family this decision is for (e.g. `humanity-accord`).
+    pub family_key_id: String,
+    /// What is being decided.
+    pub action: AccordAction,
+    /// Server-issued freshness nonce, `base64url(rand_32)`. Verify checks form;
+    /// the authoritative server owns issuance + the issued-nonce set (M4).
+    pub nonce: String,
+    /// §0.5 canonical RFC 3339 — the window upper bound `W`. The authoritative
+    /// `L` membership is server-observed arrival within `W`, NOT a holder's
+    /// self-asserted `signed_at` (C2); this field pins `W` into the signed bytes.
+    pub window_until: String,
+    /// Lowercase-hex SHA-256 of the **standing** family envelope this decision
+    /// supersedes — the anti-replay anchor (C3). Bound here so two decisions over
+    /// the same prior digest are detectable as a fork (the step-2 equivocation
+    /// gate, H3).
+    pub prior_family_digest: String,
+    /// Lowercase-hex SHA-256 of the action payload (the proposed `supersedes` for
+    /// a roster change, or the halt payload for a fire). Binds *what* is proposed.
+    pub payload_sha256: String,
+}
+
+impl AccordProposal {
+    /// §4.2.6 canonical bytes — the line-format preimage, domain-separated.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        format!(
+            "{PROPOSAL_DOMAIN_PREFIX}family_key_id={fk}\naction={action}\nnonce={nonce}\nwindow_until={wu}\nprior_family_digest={pfd}\npayload_sha256={ph}",
+            fk = self.family_key_id,
+            action = self.action.as_str(),
+            nonce = self.nonce,
+            wu = self.window_until,
+            pfd = self.prior_family_digest,
+            ph = self.payload_sha256,
+        )
+        .into_bytes()
+    }
+
+    /// Lowercase-hex SHA-256 of the canonical bytes — the `proposal_digest` every
+    /// participation binds to (C1/C3).
+    #[must_use]
+    pub fn digest(&self) -> String {
+        let mut h = Sha256::new();
+        h.update(self.canonical_bytes());
+        hex::encode(h.finalize())
+    }
+}
+
+/// A holder's proof-of-life **bundled with** a vote — entering `L` and voting are
+/// one signed act (FSD-004 §4.2 / §6). The signature is a hybrid (Ed25519 +
+/// ML-DSA-65) `ThresholdSignature` over `canonical_bytes`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AccordParticipation {
+    /// MUST equal the proposal's `family_key_id` (M5; checked in `verify`).
+    pub family_key_id: String,
+    /// Lowercase-hex digest of the ONE proposal this participates in (C1/C3).
+    pub proposal_digest: String,
+    /// The holder's roster seat — self-attested in the preimage (M3).
+    pub member_id: String,
+    /// The vote, INSIDE the signed bytes (C1) — un-flippable post-signature.
+    pub vote: Vote,
+    /// The proposal's `window_until`, bound into the signed bytes (C2). The
+    /// authoritative `L`-gate is server arrival time; this is the signed copy.
+    pub window_until: String,
+    /// §0.5 RFC 3339. **Advisory display only** — MUST NOT gate `L` (C2). Bound
+    /// in the preimage for completeness/audit, never trusted as the window clock.
+    pub signed_at: String,
+    /// The holder's hybrid signature over the canonical bytes.
+    pub signature: ThresholdSignature,
+}
+
+impl AccordParticipation {
+    /// CC §4.2.6 canonical bytes — domain-separated, with the **vote**, **proposal
+    /// digest**, **member seat**, **family**, and **window** all inside the signed
+    /// preimage (C1/C2/M3/M5). `proof_of_life=true` is implicit in a valid
+    /// participation existing; it is written explicitly so the preimage reads as
+    /// the proof-of-life-plus-vote bundle it is.
+    #[must_use]
+    pub fn canonical_bytes(&self) -> Vec<u8> {
+        format!(
+            "{PARTICIPATION_DOMAIN_PREFIX}family_key_id={fk}\nproposal_digest={pd}\nmember_id={mid}\nproof_of_life=true\nvote={vote}\nwindow_until={wu}\nsigned_at={sa}",
+            fk = self.family_key_id,
+            pd = self.proposal_digest,
+            mid = self.member_id,
+            vote = self.vote.as_str(),
+            wu = self.window_until,
+            sa = self.signed_at,
+        )
+        .into_bytes()
+    }
+
+    /// Verify this participation against the proposal it claims and the holder's
+    /// **pinned** directory key — fail-closed on every mismatch.
+    ///
+    /// Checks, in order: the participation binds THIS proposal's digest (C1/C3),
+    /// the family matches (M5), the `member_id` is consistent across the object +
+    /// the signature + the pinned member (M3), and the holder's **hybrid**
+    /// signature verifies over the recomputed canonical bytes (RequireHybrid at
+    /// the federation tier). A participation that passes is a valid, vote-bound
+    /// member of `L` for `proposal`.
+    ///
+    /// # Errors
+    /// `LiveQuorumError` describing the first failed check.
+    pub fn verify(
+        &self,
+        member: &ThresholdMember,
+        proposal: &AccordProposal,
+    ) -> Result<(), LiveQuorumError> {
+        // C1/C3: bound to exactly this proposal — a participation for a different
+        // proposal (or a bare-nonce replay) does not carry this digest.
+        let expected = proposal.digest();
+        if self.proposal_digest != expected {
+            return Err(LiveQuorumError::ProposalMismatch {
+                expected,
+                got: self.proposal_digest.clone(),
+            });
+        }
+        // M5: same family.
+        if self.family_key_id != proposal.family_key_id {
+            return Err(LiveQuorumError::FamilyMismatch {
+                proposal: proposal.family_key_id.clone(),
+                participation: self.family_key_id.clone(),
+            });
+        }
+        // M3: the seat self-attested in the object, in the signature, and in the
+        // pinned directory member must all agree.
+        if self.member_id != self.signature.member_id || self.member_id != member.member_id {
+            return Err(LiveQuorumError::MemberMismatch {
+                participation: self.member_id.clone(),
+                signature: self.signature.member_id.clone(),
+                pinned: member.member_id.clone(),
+            });
+        }
+        // The hybrid signature must verify over the recomputed canonical bytes,
+        // against the pinned key, at the federation tier (RequireHybrid default).
+        let canonical = self.canonical_bytes();
+        verify_threshold_signatures(
+            &canonical,
+            std::slice::from_ref(member),
+            std::slice::from_ref(&self.signature),
+            1,
+        )
+        .map_err(|e| LiveQuorumError::Signature(format!("{e:?}")))?;
+        Ok(())
+    }
+}
+
+/// Why a live-quorum object failed verification — fail-closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LiveQuorumError {
+    /// The participation's `proposal_digest` does not match the proposal it was
+    /// verified against (C1/C3 — cross-proposal replay / vote for a different
+    /// proposal).
+    ProposalMismatch {
+        /// The digest of the proposal being verified against.
+        expected: String,
+        /// The digest the participation carried.
+        got: String,
+    },
+    /// `family_key_id` mismatch between participation and proposal (M5).
+    FamilyMismatch {
+        /// The proposal's family.
+        proposal: String,
+        /// The participation's family.
+        participation: String,
+    },
+    /// The seat is inconsistent across the object / signature / pinned member (M3).
+    MemberMismatch {
+        /// `member_id` on the participation object.
+        participation: String,
+        /// `member_id` on the signature.
+        signature: String,
+        /// `member_id` of the pinned directory member.
+        pinned: String,
+    },
+    /// The hybrid signature did not verify over the recomputed canonical bytes.
+    Signature(String),
+}
+
+impl std::fmt::Display for LiveQuorumError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::ProposalMismatch { expected, got } => write!(
+                f,
+                "participation binds proposal {got} but was verified against {expected} (C1/C3)"
+            ),
+            Self::FamilyMismatch {
+                proposal,
+                participation,
+            } => write!(
+                f,
+                "family mismatch: proposal {proposal} vs participation {participation} (M5)"
+            ),
+            Self::MemberMismatch {
+                participation,
+                signature,
+                pinned,
+            } => write!(
+                f,
+                "member_id mismatch: object {participation} / sig {signature} / pinned {pinned} (M3)"
+            ),
+            Self::Signature(e) => write!(f, "participation signature invalid: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for LiveQuorumError {}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use base64::Engine;
+    use ciris_crypto::{ClassicalSigner, Ed25519Signer, MlDsa65Signer, PqcSigner};
+
+    const B64: base64::engine::general_purpose::GeneralPurpose =
+        base64::engine::general_purpose::STANDARD;
+
+    /// A holder with hybrid keys (mirrors the `threshold` test `Party`).
+    struct Holder {
+        member_id: String,
+        ed: Ed25519Signer,
+        mldsa: MlDsa65Signer,
+    }
+
+    impl Holder {
+        fn new(id: &str) -> Self {
+            Self {
+                member_id: id.to_string(),
+                ed: Ed25519Signer::random().unwrap(),
+                mldsa: MlDsa65Signer::new().unwrap(),
+            }
+        }
+        fn member(&self) -> ThresholdMember {
+            ThresholdMember {
+                member_id: self.member_id.clone(),
+                ed25519_public_key_base64: B64.encode(self.ed.public_key().unwrap()),
+                mldsa65_public_key_base64: Some(B64.encode(self.mldsa.public_key().unwrap())),
+                role: None,
+            }
+        }
+        fn sign(&self, bytes: &[u8]) -> ThresholdSignature {
+            let ed_sig = self.ed.sign(bytes).unwrap();
+            let mut bound = bytes.to_vec();
+            bound.extend_from_slice(&ed_sig);
+            ThresholdSignature {
+                member_id: self.member_id.clone(),
+                ed25519_signature_base64: B64.encode(&ed_sig),
+                mldsa65_signature_base64: Some(B64.encode(self.mldsa.sign(&bound).unwrap())),
+            }
+        }
+    }
+
+    fn sample_proposal() -> AccordProposal {
+        AccordProposal {
+            family_key_id: "humanity-accord".to_string(),
+            action: AccordAction::RosterChange,
+            nonce: "AAAAbase64url-nonce-XXXXXXXXXXXXXXXXXXXX".to_string(),
+            window_until: "2026-06-29T00:00:00.000Z".to_string(),
+            prior_family_digest: "a".repeat(64),
+            payload_sha256: "b".repeat(64),
+        }
+    }
+
+    /// Build a holder's valid, signed participation in `proposal`.
+    fn participate(h: &Holder, proposal: &AccordProposal, vote: Vote) -> AccordParticipation {
+        let mut p = AccordParticipation {
+            family_key_id: proposal.family_key_id.clone(),
+            proposal_digest: proposal.digest(),
+            member_id: h.member_id.clone(),
+            vote,
+            window_until: proposal.window_until.clone(),
+            signed_at: "2026-06-26T12:00:00.000Z".to_string(),
+            // placeholder; replaced below once we can sign the canonical bytes.
+            signature: ThresholdSignature {
+                member_id: h.member_id.clone(),
+                ed25519_signature_base64: String::new(),
+                mldsa65_signature_base64: None,
+            },
+        };
+        p.signature = h.sign(&p.canonical_bytes());
+        p
+    }
+
+    #[test]
+    fn proposal_digest_is_stable_and_field_sensitive() {
+        let p = sample_proposal();
+        assert_eq!(p.digest(), p.clone().digest(), "deterministic");
+        let mut p2 = p.clone();
+        p2.nonce = "different-nonce".to_string();
+        assert_ne!(p.digest(), p2.digest(), "nonce change → different digest");
+        let mut p3 = p.clone();
+        p3.action = AccordAction::Fire;
+        assert_ne!(p.digest(), p3.digest(), "action change → different digest");
+        let mut p4 = p.clone();
+        p4.prior_family_digest = "c".repeat(64);
+        assert_ne!(p.digest(), p4.digest(), "anchor change → different digest");
+    }
+
+    #[test]
+    fn participation_preimage_binds_the_vote() {
+        // C1: changing the vote MUST change the signed bytes.
+        let prop = sample_proposal();
+        let base = AccordParticipation {
+            family_key_id: prop.family_key_id.clone(),
+            proposal_digest: prop.digest(),
+            member_id: "A1".to_string(),
+            vote: Vote::Yes,
+            window_until: prop.window_until.clone(),
+            signed_at: "2026-06-26T12:00:00.000Z".to_string(),
+            signature: ThresholdSignature {
+                member_id: "A1".to_string(),
+                ed25519_signature_base64: String::new(),
+                mldsa65_signature_base64: None,
+            },
+        };
+        let mut no = base.clone();
+        no.vote = Vote::No;
+        assert_ne!(base.canonical_bytes(), no.canonical_bytes());
+        // and the vote is actually present in the bytes
+        let s = String::from_utf8(base.canonical_bytes()).unwrap();
+        assert!(s.contains("\nvote=yes\n"));
+        assert!(s.starts_with("ciris.accord_participation.v1\n"));
+    }
+
+    #[test]
+    fn participation_scope_is_isolated_from_proposal_and_invoke() {
+        // Distinct domain prefixes ⇒ a participation signature can't verify as a
+        // proposal/invoke/lifecycle signature even with identical content.
+        let prop = sample_proposal();
+        let part = AccordParticipation {
+            family_key_id: prop.family_key_id.clone(),
+            proposal_digest: prop.digest(),
+            member_id: "A1".to_string(),
+            vote: Vote::Yes,
+            window_until: prop.window_until.clone(),
+            signed_at: "2026-06-26T12:00:00.000Z".to_string(),
+            signature: ThresholdSignature {
+                member_id: "A1".to_string(),
+                ed25519_signature_base64: String::new(),
+                mldsa65_signature_base64: None,
+            },
+        };
+        assert!(part
+            .canonical_bytes()
+            .starts_with(b"ciris.accord_participation.v1\n"));
+        assert!(prop
+            .canonical_bytes()
+            .starts_with(b"ciris.accord_proposal.v1\n"));
+        assert_ne!(part.canonical_bytes(), prop.canonical_bytes());
+    }
+
+    #[test]
+    fn valid_participation_verifies() {
+        let h = Holder::new("A1");
+        let prop = sample_proposal();
+        let part = participate(&h, &prop, Vote::Yes);
+        assert_eq!(part.verify(&h.member(), &prop), Ok(()));
+    }
+
+    #[test]
+    fn cross_proposal_replay_is_rejected() {
+        // C1/C3: a participation signed for proposal A must not verify against B.
+        let h = Holder::new("A1");
+        let prop_a = sample_proposal();
+        let mut prop_b = sample_proposal();
+        prop_b.nonce = "a-totally-different-nonce".to_string();
+        assert_ne!(prop_a.digest(), prop_b.digest());
+
+        let part_for_a = participate(&h, &prop_a, Vote::Yes);
+        assert!(matches!(
+            part_for_a.verify(&h.member(), &prop_b),
+            Err(LiveQuorumError::ProposalMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn flipped_vote_breaks_the_signature() {
+        // C1: take a valid yes-participation, flip the recorded vote to no without
+        // re-signing — the recomputed bytes no longer match the signature.
+        let h = Holder::new("A1");
+        let prop = sample_proposal();
+        let mut part = participate(&h, &prop, Vote::Yes);
+        part.vote = Vote::No; // tamper, keep the old signature
+        assert!(matches!(
+            part.verify(&h.member(), &prop),
+            Err(LiveQuorumError::Signature(_))
+        ));
+    }
+
+    #[test]
+    fn signature_from_a_different_holder_is_rejected() {
+        // M3: a participation claiming A1 but signed by B's key fails.
+        let a = Holder::new("A1");
+        let b = Holder::new("A1"); // same claimed id, different keys
+        let prop = sample_proposal();
+        let part = participate(&b, &prop, Vote::Yes);
+        // verify against A1's pinned (real) directory key → signature mismatch
+        assert!(matches!(
+            part.verify(&a.member(), &prop),
+            Err(LiveQuorumError::Signature(_))
+        ));
+    }
+
+    #[test]
+    fn classical_only_participation_is_rejected_at_federation_tier() {
+        // The accord is a federation-tier gate (RequireHybrid): a participation
+        // with no ML-DSA half does not count.
+        let h = Holder::new("A1");
+        let prop = sample_proposal();
+        let mut part = participate(&h, &prop, Vote::Yes);
+        part.signature.mldsa65_signature_base64 = None; // strip the PQC half
+        assert!(matches!(
+            part.verify(&h.member(), &prop),
+            Err(LiveQuorumError::Signature(_))
+        ));
+    }
+}
