@@ -17,23 +17,26 @@
 mod imp {
     use tss_esapi::{
         attributes::ObjectAttributesBuilder,
-        handles::KeyHandle,
+        handles::{KeyHandle, NvIndexHandle, TpmHandle},
         interface_types::{
             algorithm::{HashingAlgorithm, PublicAlgorithm},
             ecc::EccCurve,
             key_bits::AesKeyBits,
-            resource_handles::Hierarchy,
+            resource_handles::{Hierarchy, NvAuth},
         },
         structures::{
-            Digest, EccPoint, EccScheme, HashScheme, HashcheckTicket, KeyDerivationFunctionScheme,
-            KeyedHashScheme, Private, Public, PublicBuilder, PublicEccParametersBuilder,
-            PublicKeyedHashParameters, SensitiveData, Signature, SignatureScheme,
-            SymmetricDefinitionObject,
+            Data, Digest, EccPoint, EccScheme, HashScheme, HashcheckTicket,
+            KeyDerivationFunctionScheme, KeyedHashScheme, PcrSelectionListBuilder, PcrSlot,
+            Private, Public, PublicBuilder, PublicEccParametersBuilder, PublicKeyedHashParameters,
+            SensitiveData, Signature, SignatureScheme, SymmetricDefinitionObject,
         },
         tcti_ldr::TctiNameConf,
         traits::{Marshall, UnMarshall},
         Context,
     };
+
+    /// ECC EK certificate NV index (TCG spec; ECC P-256 EK).
+    const ECC_EK_CERT_NV_INDEX: u32 = 0x01C0_000A;
 
     /// Open an ESYS context over the platform TCTI (Linux device / Windows TBS).
     /// Ported from `ciris_keyring::platform::tpm::create_context`.
@@ -382,6 +385,179 @@ mod imp {
         }
         out.extend(&bytes[bytes.len().saturating_sub(32)..]);
     }
+
+    // ----------------------------------------------------------------------
+    // Quote/attestation path (#141, ABI v3): a *restricted* ECDSA P-256
+    // attestation key (AK) under the SRK (quotes only TPM-generated data), a
+    // PCR 0-7 quote bound to a caller nonce, and the EK certificate from NV.
+    // Faithful port of `ciris_keyring::platform::tpm::{create_attestation_key,
+    // generate_quote, read_ek_certificate}`. Stateless: the keyring owns the AK
+    // blob, the plugin loads it transiently.
+    // ----------------------------------------------------------------------
+
+    /// Create a *restricted* ECDSA P-256 attestation key (AK) under the SRK and
+    /// return its persistable blob (same framing as the signer key).
+    pub fn ak_create() -> Result<Vec<u8>, String> {
+        let mut context = create_context()?;
+        let primary = get_or_create_primary(&mut context)?;
+
+        let object_attributes = ObjectAttributesBuilder::new()
+            .with_restricted(true)
+            .with_user_with_auth(true)
+            .with_sign_encrypt(true)
+            .with_decrypt(false)
+            .with_fixed_tpm(true)
+            .with_fixed_parent(true)
+            .with_sensitive_data_origin(true)
+            .build()
+            .map_err(|e| format!("ak attrs: {e}"))?;
+
+        let ecc_params = PublicEccParametersBuilder::new()
+            .with_symmetric(SymmetricDefinitionObject::Null)
+            .with_ecc_scheme(EccScheme::EcDsa(HashScheme::new(HashingAlgorithm::Sha256)))
+            .with_curve(EccCurve::NistP256)
+            .with_key_derivation_function_scheme(KeyDerivationFunctionScheme::Null)
+            .with_is_signing_key(true)
+            .with_is_decryption_key(false)
+            .with_restricted(true)
+            .build()
+            .map_err(|e| format!("ak ecc params: {e}"))?;
+
+        let ak_public = PublicBuilder::new()
+            .with_public_algorithm(PublicAlgorithm::Ecc)
+            .with_name_hashing_algorithm(HashingAlgorithm::Sha256)
+            .with_object_attributes(object_attributes)
+            .with_ecc_parameters(ecc_params)
+            .with_ecc_unique_identifier(EccPoint::default())
+            .build()
+            .map_err(|e| format!("ak public: {e}"))?;
+
+        let result = context
+            .execute_with_nullauth_session(|ctx| {
+                ctx.create(primary, ak_public.clone(), None, None, None, None)
+            })
+            .map_err(|e| format!("TPM2_Create (ak): {e}"))?;
+
+        let private_blob = result.out_private.to_vec();
+        let public_blob = result
+            .out_public
+            .marshall()
+            .map_err(|e| format!("marshall ak public: {e}"))?;
+        let _ = context.flush_context(primary.into());
+
+        frame_blob(private_blob, public_blob)
+    }
+
+    /// Quote PCRs 0-7 (SHA-256) under the AK, bound to `nonce` (qualifying data).
+    /// Returns the framed `quoted ‖ signature ‖ pcr_selection ‖ ak_pubkey`
+    /// (each `u32_le`-length-prefixed) — everything a verifier needs.
+    pub fn quote(ak_blob: &[u8], nonce: &[u8]) -> Result<Vec<u8>, String> {
+        let (private, public) = parse_blob(ak_blob)?;
+        let mut context = create_context()?;
+        let primary = get_or_create_primary(&mut context)?;
+        let ak = context
+            .execute_with_nullauth_session(|ctx| ctx.load(primary, private, public))
+            .map_err(|e| format!("TPM2_Load (ak, wrong TPM?): {e}"))?;
+
+        let ak_pub = {
+            let (p, _, _) = context
+                .execute_without_session(|ctx| ctx.read_public(ak))
+                .map_err(|e| format!("read_public (ak): {e}"))?;
+            extract_public_key(&p)?
+        };
+
+        let qualifying_data = Data::try_from(nonce.to_vec())
+            .map_err(|e| format!("qualifying data (nonce too long?): {e}"))?;
+
+        let pcr_selection = PcrSelectionListBuilder::new()
+            .with_selection(
+                HashingAlgorithm::Sha256,
+                &[
+                    PcrSlot::Slot0,
+                    PcrSlot::Slot1,
+                    PcrSlot::Slot2,
+                    PcrSlot::Slot3,
+                    PcrSlot::Slot4,
+                    PcrSlot::Slot5,
+                    PcrSlot::Slot6,
+                    PcrSlot::Slot7,
+                ],
+            )
+            .build()
+            .map_err(|e| format!("pcr selection: {e}"))?;
+
+        let (attest, signature) = context
+            .execute_with_nullauth_session(|ctx| {
+                ctx.quote(
+                    ak,
+                    qualifying_data.clone(),
+                    SignatureScheme::EcDsa {
+                        hash_scheme: HashScheme::new(HashingAlgorithm::Sha256),
+                    },
+                    pcr_selection.clone(),
+                )
+            })
+            .map_err(|e| format!("TPM2_Quote: {e}"))?;
+        let _ = context.flush_context(ak.into());
+        let _ = context.flush_context(primary.into());
+
+        let quoted = attest
+            .marshall()
+            .map_err(|e| format!("marshall attest: {e}"))?;
+        let sig = extract_ecdsa_signature(&signature)?;
+        // PCRs 0-7 selected → bitmap 0xFF (matches the link-time backend).
+        let pcr_sel = vec![0xFFu8];
+
+        Ok(frame_fields(&[&quoted, &sig, &pcr_sel, &ak_pub]))
+    }
+
+    /// Read the ECC EK certificate (X.509 DER) from NV. Errs if not provisioned.
+    pub fn ek_certificate() -> Result<Vec<u8>, String> {
+        let mut context = create_context()?;
+        let tpm_handle = TpmHandle::NvIndex(
+            ECC_EK_CERT_NV_INDEX
+                .try_into()
+                .map_err(|e| format!("invalid NV index: {e:?}"))?,
+        );
+        let object_handle = context
+            .execute_without_session(|ctx| ctx.tr_from_tpm_public(tpm_handle))
+            .map_err(|e| format!("EK cert NV index not accessible (not provisioned?): {e}"))?;
+        let nv_index_handle = NvIndexHandle::from(object_handle);
+
+        let (nv_public, _name) = context
+            .execute_without_session(|ctx| ctx.nv_read_public(nv_index_handle))
+            .map_err(|e| format!("EK cert NV read public: {e}"))?;
+        let cert_size = nv_public.data_size() as u16;
+        if cert_size == 0 {
+            return Err("EK certificate NV area is empty".into());
+        }
+
+        let mut cert = Vec::with_capacity(cert_size as usize);
+        let mut offset = 0u16;
+        const MAX_NV_READ: u16 = 1024;
+        while offset < cert_size {
+            let read_size = std::cmp::min(MAX_NV_READ, cert_size.saturating_sub(offset));
+            let chunk = context
+                .execute_with_nullauth_session(|ctx| {
+                    ctx.nv_read(NvAuth::Owner, nv_index_handle, read_size, offset)
+                })
+                .map_err(|e| format!("NV read at offset {offset}: {e}"))?;
+            cert.extend_from_slice(&chunk);
+            offset += read_size;
+        }
+        Ok(cert)
+    }
+
+    /// Length-prefix each field (`u32_le(len) ‖ bytes`) and concatenate — the
+    /// quote wire framing the keyring client splits back apart.
+    fn frame_fields(fields: &[&[u8]]) -> Vec<u8> {
+        let mut out = Vec::new();
+        for f in fields {
+            out.extend_from_slice(&(f.len() as u32).to_le_bytes());
+            out.extend_from_slice(f);
+        }
+        out
+    }
 }
 
 #[cfg(not(all(
@@ -407,6 +583,18 @@ mod imp {
     pub fn signer_sign(_blob: &[u8], _data: &[u8]) -> Result<Vec<u8>, String> {
         Err("ciris-tpm-plugin built without the `real` backend".to_string())
     }
+    pub fn ak_create() -> Result<Vec<u8>, String> {
+        Err("ciris-tpm-plugin built without the `real` backend".to_string())
+    }
+    pub fn quote(_ak_blob: &[u8], _nonce: &[u8]) -> Result<Vec<u8>, String> {
+        Err("ciris-tpm-plugin built without the `real` backend".to_string())
+    }
+    pub fn ek_certificate() -> Result<Vec<u8>, String> {
+        Err("ciris-tpm-plugin built without the `real` backend".to_string())
+    }
 }
 
-pub use imp::{available, seal, signer_create, signer_public, signer_sign, unseal};
+pub use imp::{
+    ak_create, available, ek_certificate, quote, seal, signer_create, signer_public, signer_sign,
+    unseal,
+};
