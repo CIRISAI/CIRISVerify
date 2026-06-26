@@ -21,11 +21,14 @@
 //!
 //! # Status — staged
 //!
-//! **Stage 1 (this):** the C ABI surface + the `available`/version vertical
-//! slice. The seal / unseal / sign / quote operations are declared and return
-//! [`CIRIS_TPM_NOT_IMPLEMENTED`] until staged in (they port the existing
-//! `ciris_keyring::platform::tpm` / `storage::tpm` logic into the plugin behind
-//! this ABI). The keyring `dlopen` client is a later stage.
+//! - **Stage 1:** the C ABI surface + ABI version + the `available` detection
+//!   vertical slice.
+//! - **Stage 2 (this):** `seal` / `unseal` implemented in the `real` backend —
+//!   a pure (no-file-I/O) port of `ciris_keyring::storage::tpm`'s SRK-parented
+//!   `KeyedHash` sealing (see `backend.rs`). The sealed blob is opaque.
+//! - **Later:** `sign` / `quote` (the native `TpmSigner` path — they will use
+//!   [`CIRIS_TPM_NOT_IMPLEMENTED`] until staged in), then the keyring `dlopen`
+//!   client, then the flip that removes `tss-esapi` from the keyring entirely.
 //!
 //! # ABI discipline
 //!
@@ -78,68 +81,81 @@ pub unsafe extern "C" fn ciris_tpm_free(ptr: *mut u8, len: usize) {
     }
 }
 
-// ── Staged operations (declared; implemented in later stages) ─────────────
-// Each ports the corresponding ciris_keyring::platform::tpm / storage::tpm op
-// into the plugin behind this ABI: seal/unseal (master-key blob under the SRK),
-// sign (slot key), quote (attestation). Until then they fail closed.
+/// Allocate `bytes` on the plugin heap and hand ownership out via the
+/// out-pointers (freed by [`ciris_tpm_free`]).
+unsafe fn emit(bytes: Vec<u8>, out: *mut *mut u8, out_len: *mut usize) {
+    let mut boxed = bytes.into_boxed_slice();
+    *out_len = boxed.len();
+    *out = boxed.as_mut_ptr();
+    std::mem::forget(boxed);
+}
 
-/// Seal `input` under the TPM SRK → sealed blob in `out`/`out_len`. (Stage 2.)
+/// Seal `input` under the TPM SRK → sealed blob in `out`/`out_len` (stage 2).
+///
+/// The blob is opaque (`u32_le(private_len) ‖ private ‖ public`); only the same
+/// TPM can unseal it. Returns [`CIRIS_TPM_OK`], [`CIRIS_TPM_UNAVAILABLE`] (no
+/// real backend), or [`CIRIS_TPM_ERROR`] (a TPM fault).
 ///
 /// # Safety
-/// Pointers must be valid; `out`/`out_len` receive a `ciris_tpm_free`-able buffer.
+/// `input` valid for `input_len` (or null iff `input_len == 0`); `out`/`out_len`
+/// valid. The returned buffer is freed via [`ciris_tpm_free`].
 #[no_mangle]
 pub unsafe extern "C" fn ciris_tpm_seal(
-    _input: *const u8,
-    _input_len: usize,
-    _out: *mut *mut u8,
-    _out_len: *mut usize,
+    input: *const u8,
+    input_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
 ) -> i32 {
-    CIRIS_TPM_NOT_IMPLEMENTED
+    if out.is_null() || out_len.is_null() || (input.is_null() && input_len != 0) {
+        return CIRIS_TPM_ERROR;
+    }
+    let data = if input_len == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(input, input_len)
+    };
+    match backend::seal(data) {
+        Ok(blob) => {
+            emit(blob, out, out_len);
+            CIRIS_TPM_OK
+        },
+        Err(e) => {
+            tracing::error!("ciris_tpm_seal: {e}");
+            CIRIS_TPM_ERROR
+        },
+    }
 }
 
-/// Unseal a blob produced by [`ciris_tpm_seal`]. (Stage 2.)
+/// Unseal a blob produced by [`ciris_tpm_seal`] → plaintext in `out`/`out_len`.
 ///
 /// # Safety
-/// Pointers must be valid; `out`/`out_len` receive a `ciris_tpm_free`-able buffer.
+/// `sealed` valid for `sealed_len`; `out`/`out_len` valid. The returned buffer
+/// is freed via [`ciris_tpm_free`].
 #[no_mangle]
 pub unsafe extern "C" fn ciris_tpm_unseal(
-    _sealed: *const u8,
-    _sealed_len: usize,
-    _out: *mut *mut u8,
-    _out_len: *mut usize,
+    sealed: *const u8,
+    sealed_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
 ) -> i32 {
-    CIRIS_TPM_NOT_IMPLEMENTED
-}
-
-/// The real (tss-esapi) backend, gated to where it can link; otherwise a stub
-/// that honestly reports "unavailable".
-mod backend {
-    #[cfg(all(
-        feature = "real",
-        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-    ))]
-    pub fn available() -> i32 {
-        // A usable TPM = an ESYS context opens over the default TCTI.
-        match tss_esapi::Context::new(
-            tss_esapi::TctiNameConf::from_environment_variable()
-                .unwrap_or(tss_esapi::TctiNameConf::Tabrmd(Default::default())),
-        ) {
-            Ok(_) => 1,
-            Err(e) => {
-                tracing::debug!("ciris-tpm-plugin: no usable TPM ({e})");
-                0
-            },
-        }
+    if sealed.is_null() || out.is_null() || out_len.is_null() {
+        return CIRIS_TPM_ERROR;
     }
-
-    #[cfg(not(all(
-        feature = "real",
-        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-    )))]
-    pub fn available() -> i32 {
-        super::CIRIS_TPM_UNAVAILABLE
+    let blob = std::slice::from_raw_parts(sealed, sealed_len);
+    match backend::unseal(blob) {
+        Ok(plain) => {
+            emit(plain, out, out_len);
+            CIRIS_TPM_OK
+        },
+        Err(e) => {
+            tracing::error!("ciris_tpm_unseal: {e}");
+            CIRIS_TPM_ERROR
+        },
     }
 }
+
+/// The TPM backend — real (`tss-esapi`, gnu/win) or stub. See `backend.rs`.
+mod backend;
 
 #[cfg(test)]
 mod tests {
@@ -151,11 +167,27 @@ mod tests {
     }
 
     #[test]
-    fn staged_ops_fail_closed_until_implemented() {
+    fn seal_fails_closed_without_a_tpm() {
+        // No test environment has a TPM (stub build: no backend; real build: no
+        // device), so seal must never report success here — it fails closed.
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
-        let rc = unsafe { ciris_tpm_seal(std::ptr::null(), 0, &mut out, &mut out_len) };
-        assert_eq!(rc, CIRIS_TPM_NOT_IMPLEMENTED);
+        let data = [1u8, 2, 3];
+        let rc = unsafe { ciris_tpm_seal(data.as_ptr(), data.len(), &mut out, &mut out_len) };
+        assert_ne!(rc, CIRIS_TPM_OK, "seal must fail closed with no usable TPM");
+    }
+
+    #[test]
+    fn null_pointers_are_rejected_not_dereferenced() {
+        let rc = unsafe {
+            ciris_tpm_seal(
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, CIRIS_TPM_ERROR);
     }
 
     #[test]
