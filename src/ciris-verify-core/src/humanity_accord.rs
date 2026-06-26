@@ -30,6 +30,7 @@
 //! ## Canonical bytes (§9.2.1)
 //!
 //! ```text
+//! // invoke kinds (CC §4.2.1.1):
 //! canonical = sha256(
 //!     "ciris.accord_invoke.v1\n" ||
 //!     "invocation_kind=" || ("CONSTITUTIONAL" | "notify" | "drill") || "\n" ||
@@ -38,6 +39,17 @@
 //!     "asserted_at=" || rfc3339_canonical || "\n" ||   // per §0.5
 //!     "valid_until=" || rfc3339_canonical || "\n" ||
 //!     "payload_sha256=" || sha256_hex_lowercase_of_payload   // per §0.6
+//! )
+//!
+//! // resumption (CC 0.4 §4.2.1.3) — distinct domain + a mandatory
+//! // `resumes_halt_id` line interposed after `invocation_id`:
+//! canonical = sha256(
+//!     "ciris.accord_lifecycle.v1\n" ||                 // NOT accord_invoke.v1
+//!     "invocation_kind=lifecycle:active\n" ||
+//!     "invocation_id=" || resumption_id || "\n" ||
+//!     "resumes_halt_id=" || prior_constitutional_invocation_id || "\n" ||
+//!     "nonce=" || … || "asserted_at=" || … || "valid_until=" || … ||
+//!     "payload_sha256=" || …
 //! )
 //! ```
 
@@ -125,10 +137,21 @@ impl InvocationKind {
 /// is §0.6 canonical lowercase hex.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Invocation {
-    /// CONSTITUTIONAL / notify / drill discriminator.
+    /// CONSTITUTIONAL / notify / drill / lifecycle:active discriminator.
     pub invocation_kind: InvocationKind,
-    /// Per-kind unique id (`halt_id` / `notify_id` / `drill_id`).
+    /// Per-kind unique id (`halt_id` / `notify_id` / `drill_id` /
+    /// `resumption_id`).
     pub invocation_id: String,
+    /// **`lifecycle:active` ONLY** (CC 0.4 §4.2.1.3): the `invocation_id` of the
+    /// single `CONSTITUTIONAL` halt this resumption ends — `Some(prior_halt_id)`.
+    /// **Mandatory** for `lifecycle:active` and **forbidden** for every other
+    /// kind ([`verify_invocation`] enforces both). It binds a resumption to the
+    /// one halt it names, so a stockpiled / replayed `lifecycle:active` cannot
+    /// silently un-halt a *later*, unrelated `CONSTITUTIONAL` kill: the signature
+    /// is worthless against any halt but the one in `resumes_halt_id`. It rides
+    /// the canonical bytes immediately after `invocation_id` (and so is signed).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resumes_halt_id: Option<String>,
     /// `base64url(rand_32_bytes)`. Verify only checks form; CSPRNG
     /// is the producer's responsibility.
     pub nonce: String,
@@ -147,11 +170,24 @@ impl Invocation {
     /// exact byte sequence per §5.2.1 bound-payload convention.
     #[must_use]
     pub fn canonical_bytes(&self) -> Vec<u8> {
+        // CC 0.4 §4.2.1.3: `lifecycle:active` interposes a mandatory
+        // `resumes_halt_id` line between `invocation_id` and `nonce`, binding the
+        // resumption to the one halt it ends. The invoke kinds
+        // (CONSTITUTIONAL / notify / drill) have NO such line — their preimage
+        // layout (CC §4.2.1.1) is unchanged. The line is emitted iff
+        // (kind == LifecycleActive AND resumes_halt_id is Some): a malformed
+        // object (lifecycle:active without the field, or an invoke kind with it)
+        // is rejected structurally by `verify_invocation`, not silently re-laid.
+        let resumes_line = match (self.invocation_kind, &self.resumes_halt_id) {
+            (InvocationKind::LifecycleActive, Some(id)) => format!("resumes_halt_id={id}\n"),
+            _ => String::new(),
+        };
         let body = format!(
-            "{prefix}invocation_kind={kind}\ninvocation_id={id}\nnonce={nonce}\nasserted_at={ts}\nvalid_until={vu}\npayload_sha256={hash}",
+            "{prefix}invocation_kind={kind}\ninvocation_id={id}\n{resumes}nonce={nonce}\nasserted_at={ts}\nvalid_until={vu}\npayload_sha256={hash}",
             prefix = self.invocation_kind.domain_prefix(),
             kind = self.invocation_kind.as_str(),
             id = self.invocation_id,
+            resumes = resumes_line,
             nonce = self.nonce,
             ts = self.asserted_at,
             vu = self.valid_until,
@@ -192,6 +228,15 @@ pub enum InvocationError {
         /// Which kind it duplicates against (per-kind unique).
         invocation_kind: InvocationKind,
     },
+    /// CC 0.4 §4.2.1.3 structural violation of the `resumes_halt_id` rule:
+    /// a `lifecycle:active` resumption is missing its mandatory `resumes_halt_id`,
+    /// or a non-`lifecycle:active` kind carries one (it is not in their preimage).
+    MalformedResumption {
+        /// The offending kind.
+        invocation_kind: InvocationKind,
+        /// Whether `resumes_halt_id` was present.
+        had_resumes_halt_id: bool,
+    },
     /// Underlying threshold-signature error.
     Threshold(String),
 }
@@ -213,6 +258,21 @@ impl std::fmt::Display for InvocationError {
                     f,
                     "§9.2.1: duplicate invocation_id {:?} within valid_until window (kind {:?})",
                     invocation_id,
+                    invocation_kind.as_str(),
+                )
+            },
+            Self::MalformedResumption {
+                invocation_kind,
+                had_resumes_halt_id,
+            } => {
+                write!(
+                    f,
+                    "CC 4.2.1.3: {} resumes_halt_id (kind {:?})",
+                    if *had_resumes_halt_id {
+                        "non-lifecycle:active kind must not carry"
+                    } else {
+                        "lifecycle:active is missing its mandatory"
+                    },
                     invocation_kind.as_str(),
                 )
             },
@@ -239,6 +299,19 @@ pub fn verify_invocation(
     holders: &[ThresholdMember],
     signatures: &[ThresholdSignature],
 ) -> Result<usize, InvocationError> {
+    // CC 0.4 §4.2.1.3 structural gate: `resumes_halt_id` is mandatory for
+    // `lifecycle:active` and forbidden for every other kind. Enforce before the
+    // signature check so a malformed resumption is rejected on its own terms,
+    // not merely as a preimage mismatch.
+    let is_lifecycle = matches!(invocation.invocation_kind, InvocationKind::LifecycleActive);
+    let has_resumes = invocation.resumes_halt_id.is_some();
+    if is_lifecycle != has_resumes {
+        return Err(InvocationError::MalformedResumption {
+            invocation_kind: invocation.invocation_kind,
+            had_resumes_halt_id: has_resumes,
+        });
+    }
+
     let canonical = invocation.canonical_bytes();
     let valid = verify_threshold_signatures(&canonical, holders, signatures, 2).map_err(|e| {
         // Map the threshold error: short quorum is "quorum not met";
@@ -333,6 +406,9 @@ mod tests {
         Invocation {
             invocation_kind: kind,
             invocation_id: id.to_string(),
+            // lifecycle:active requires resumes_halt_id; other kinds forbid it.
+            resumes_halt_id: matches!(kind, InvocationKind::LifecycleActive)
+                .then(|| format!("halt-for-{id}")),
             nonce: "AAAA-base64url-32-bytes-XXXXXXXXXXXX".to_string(),
             asserted_at: "2026-05-29T17:00:00.000Z".to_string(),
             valid_until: "2026-05-29T17:15:00.000Z".to_string(),
@@ -360,12 +436,66 @@ mod tests {
         let halt = sample_invocation(InvocationKind::Constitutional, "shared-id");
         let mut reactivate = halt.clone();
         reactivate.invocation_kind = InvocationKind::LifecycleActive;
+        reactivate.resumes_halt_id = Some("shared-id".to_string());
         let bytes = String::from_utf8(reactivate.canonical_bytes()).unwrap();
         assert!(bytes.starts_with("ciris.accord_lifecycle.v1\n"));
         assert!(bytes.contains("invocation_kind=lifecycle:active\n"));
+        // CC 0.4 §4.2.1.3: the resumes_halt_id line rides right after invocation_id.
+        assert!(bytes.contains("invocation_id=shared-id\nresumes_halt_id=shared-id\nnonce="));
         // Distinct domain ⇒ distinct bytes + digest from the CONSTITUTIONAL kill.
         assert_ne!(halt.canonical_bytes(), reactivate.canonical_bytes());
         assert_ne!(halt.canonical_digest(), reactivate.canonical_digest());
+    }
+
+    /// CC 0.4 §4.2.1.3: `resumes_halt_id` is part of the SIGNED canonical bytes,
+    /// so a stockpiled `lifecycle:active` cannot be re-pointed at a *different*
+    /// (later) halt without breaking every holder signature.
+    #[test]
+    fn resumes_halt_id_is_bound_in_canonical_bytes() {
+        let mut a = sample_invocation(InvocationKind::LifecycleActive, "resume-1");
+        a.resumes_halt_id = Some("halt-A".to_string());
+        let mut b = a.clone();
+        b.resumes_halt_id = Some("halt-B".to_string());
+        assert_ne!(
+            a.canonical_bytes(),
+            b.canonical_bytes(),
+            "re-pointing resumes_halt_id must change the signed preimage"
+        );
+    }
+
+    /// CC 0.4 §4.2.1.3 structural gate (verify-side): `lifecycle:active` MUST
+    /// carry `resumes_halt_id`; every other kind MUST NOT.
+    #[test]
+    fn verify_rejects_malformed_resumption_structurally() {
+        // lifecycle:active WITHOUT resumes_halt_id → rejected before signatures.
+        let mut bad = sample_invocation(InvocationKind::LifecycleActive, "r-1");
+        bad.resumes_halt_id = None;
+        assert!(matches!(
+            verify_invocation(&bad, &[], &[]),
+            Err(InvocationError::MalformedResumption {
+                had_resumes_halt_id: false,
+                ..
+            })
+        ));
+
+        // An invoke kind WITH resumes_halt_id → also rejected (not in its preimage).
+        let mut bad2 = sample_invocation(InvocationKind::Constitutional, "halt-1");
+        bad2.resumes_halt_id = Some("halt-0".to_string());
+        assert!(matches!(
+            verify_invocation(&bad2, &[], &[]),
+            Err(InvocationError::MalformedResumption {
+                had_resumes_halt_id: true,
+                ..
+            })
+        ));
+
+        // A well-formed CONSTITUTIONAL (no resumes_halt_id) passes the structural
+        // gate — it fails later on signatures, NOT on the resumption structure.
+        let ok = sample_invocation(InvocationKind::Constitutional, "halt-2");
+        assert!(!matches!(
+            verify_invocation(&ok, &[], &[]),
+            Err(InvocationError::MalformedResumption { .. })
+        ));
     }
 
     /// The lifecycle kind serde-round-trips on the spec wire string.
@@ -383,6 +513,7 @@ mod tests {
         let inv = Invocation {
             invocation_kind: InvocationKind::Constitutional,
             invocation_id: "halt-001".to_string(),
+            resumes_halt_id: None,
             nonce: "NONCE".to_string(),
             asserted_at: "2026-05-29T17:00:00.000Z".to_string(),
             valid_until: "2026-05-29T17:15:00.000Z".to_string(),
@@ -404,6 +535,7 @@ mod tests {
         let c = Invocation {
             invocation_kind: InvocationKind::Constitutional,
             invocation_id: "id-001".to_string(),
+            resumes_halt_id: None,
             nonce: "same-nonce".to_string(),
             asserted_at: "2026-05-29T17:00:00.000Z".to_string(),
             valid_until: "2026-05-29T17:15:00.000Z".to_string(),
