@@ -25,6 +25,12 @@ on:
     workflows: ["Release"]
     types: [completed]
 
+env:
+  # crates.io fetch hardening — see ci.yml (HTTP/2 CDN stream-drop workaround).
+  CARGO_NET_RETRY: "10"
+  CARGO_HTTP_MULTIPLEXING: "false"
+  CARGO_NET_TIMEOUT: "60"
+
 jobs:
   live-verify:
     if: >
