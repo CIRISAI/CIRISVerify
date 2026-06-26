@@ -103,13 +103,22 @@ impl TpmPlugin {
     /// software), or its ABI version is unrecognized;
     /// [`KeyringError::HardwareError`] if a required symbol is missing.
     pub fn load() -> Result<Self, KeyringError> {
-        let path = plugin_path();
+        Self::load_from(plugin_path())
+    }
+
+    /// `dlopen` the plugin at an explicit path (the [`Self::load`] core; lets
+    /// tests point at a known path without mutating the process-global env).
+    ///
+    /// # Errors
+    /// As [`Self::load`].
+    pub fn load_from(path: impl AsRef<std::ffi::OsStr>) -> Result<Self, KeyringError> {
+        let path = path.as_ref();
         // SAFETY: loading a trusted, version-checked plugin. The library is kept
         // alive in the returned struct.
-        let lib = unsafe { Library::new(&path) }.map_err(|e| {
+        let lib = unsafe { Library::new(path) }.map_err(|e| {
             not_supported(format!(
                 "ciris-tpm-plugin not loadable ({}): {e}",
-                PathBuf::from(&path).display()
+                PathBuf::from(path).display()
             ))
         })?;
 
@@ -204,11 +213,10 @@ mod tests {
 
     #[test]
     fn missing_plugin_is_not_supported_not_a_crash() {
-        // No plugin .so is present in the test env → load() must degrade to
-        // NotSupported (the software-fallback signal), never panic.
-        std::env::set_var("CIRIS_TPM_PLUGIN", "/nonexistent/libciris_tpm_plugin.so");
-        let err = TpmPlugin::load().err();
-        std::env::remove_var("CIRIS_TPM_PLUGIN");
+        // A path that doesn't resolve → load() must degrade to NotSupported (the
+        // software-fallback signal), never panic. Uses load_from (no global env
+        // mutation) so it can't race other tests in this binary.
+        let err = TpmPlugin::load_from("/nonexistent/libciris_tpm_plugin.so").err();
         assert!(
             matches!(err, Some(KeyringError::NotSupported { .. })),
             "missing plugin must be NotSupported, got {err:?}"
@@ -216,11 +224,12 @@ mod tests {
     }
 
     #[test]
-    fn plugin_path_honors_env_override() {
-        std::env::set_var("CIRIS_TPM_PLUGIN", "/custom/path.so");
-        assert_eq!(plugin_path(), OsString::from("/custom/path.so"));
-        std::env::remove_var("CIRIS_TPM_PLUGIN");
-        // Default is the platform library name.
-        assert_eq!(plugin_path(), OsString::from(plugin_lib_name()));
+    fn plugin_path_default_is_platform_lib_name() {
+        // With no override set, the default is the bare platform library name.
+        // (The env-override branch is exercised via the FFI/integration path,
+        // not here — mutating CIRIS_TPM_PLUGIN would race parallel tests.)
+        if std::env::var_os("CIRIS_TPM_PLUGIN").is_none() {
+            assert_eq!(plugin_path(), OsString::from(plugin_lib_name()));
+        }
     }
 }

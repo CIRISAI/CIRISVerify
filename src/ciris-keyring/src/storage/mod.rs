@@ -67,6 +67,15 @@ pub mod tpm;
 ))]
 pub use tpm::TpmSecureBlobStorage;
 
+/// Runtime-`dlopen` TPM storage (CIRISVerify#130) — TPM custody on every target
+/// (incl. the wheel cdylib + musl), via the plugin instead of link-bound
+/// tss-esapi.
+#[cfg(feature = "tpm-plugin")]
+pub mod tpm_plugin_storage;
+
+#[cfg(feature = "tpm-plugin")]
+pub use tpm_plugin_storage::PluginTpmSecureBlobStorage;
+
 #[cfg(target_os = "android")]
 pub mod android;
 
@@ -557,6 +566,32 @@ pub fn create_platform_storage(
                     );
                 },
             }
+        }
+    }
+
+    // Runtime-loaded TPM plugin (CIRISVerify#130) — tried after the link-time
+    // backend (which wins for existing Linux/Windows-gnu deployments) so TPM
+    // custody also works where tss-esapi can't link: the wheel cdylib, musl, and
+    // any target carrying the plugin .so + a TPM. `new` returns NotSupported when
+    // no plugin/TPM is present, so this is a no-op fall-through on mobile/desktop
+    // without one.
+    #[cfg(feature = "tpm-plugin")]
+    {
+        match PluginTpmSecureBlobStorage::new(&alias, &storage_dir) {
+            Ok(storage) => {
+                tracing::info!(
+                    alias = %alias,
+                    "Using ciris-tpm-plugin (dlopen) TPM-backed secure storage for wallet seeds"
+                );
+                return Ok(Box::new(storage));
+            },
+            Err(e) => {
+                tracing::debug!(
+                    alias = %alias,
+                    error = %e,
+                    "TPM plugin storage unavailable, continuing backend selection"
+                );
+            },
         }
     }
 
