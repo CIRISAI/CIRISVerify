@@ -50,11 +50,19 @@ pub const PARTICIPATION_DOMAIN_PREFIX: &str = "ciris.accord_participation.v1\n";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccordAction {
-    /// A live-quorum `CONSTITUTIONAL` fire (tallied at the floor of 1 in step 2).
+    /// A live-quorum `CONSTITUTIONAL` fire — tallied at the floor of 1 (the easy
+    /// end of the bias gradient; a missed fire is terminal).
     Fire,
-    /// A roster grow / shrink / swap (tallied at strict-majority-of-`L` + the
-    /// `L_floor` steward backstop in step 2), carried as a family `supersedes`.
+    /// A roster grow / shrink / swap — tallied at strict-majority-of-`L` + the
+    /// `L_floor` steward backstop (the hard end), carried as a family `supersedes`.
     RosterChange,
+    /// A resumption (un-fire) of the currently-active `CONSTITUTIONAL` halt
+    /// (`accord:lifecycle:active`, CC §4.2.1.3) — tallied at the **roster-change
+    /// threshold**, NEVER the fire floor: un-firing leans hard, because a lone
+    /// coerced/replayed key undoing a legitimate halt is the failure the
+    /// halt-authority exists to prevent (the `fire ≤ roster-change ≤ standing`
+    /// gradient).
+    Resume,
 }
 
 impl AccordAction {
@@ -64,6 +72,7 @@ impl AccordAction {
         match self {
             Self::Fire => "fire",
             Self::RosterChange => "roster_change",
+            Self::Resume => "resume",
         }
     }
 }
@@ -326,6 +335,15 @@ pub enum LiveQuorumError {
         /// The `member_id` that would be removed without consenting/participating.
         member_id: String,
     },
+    /// A resumption does not target the currently-active `CONSTITUTIONAL` halt
+    /// (H2): `proposal.payload_sha256 != sha256(active_halt_id)`. A stockpiled /
+    /// replayed resumption naming a different (e.g. later) halt is rejected.
+    HaltMismatch {
+        /// `sha256(active_halt_id)` — the halt actually in force.
+        expected: String,
+        /// The halt commitment the proposal carried.
+        got: String,
+    },
     /// The hybrid signature did not verify over the recomputed canonical bytes.
     Signature(String),
 }
@@ -377,6 +395,10 @@ impl std::fmt::Display for LiveQuorumError {
             Self::RemovedAbsentMember { member_id } => write!(
                 f,
                 "standing member {member_id} removed without proving life ∉ L (H5)"
+            ),
+            Self::HaltMismatch { expected, got } => write!(
+                f,
+                "resumption payload {got} != active-halt commitment {expected} (H2)"
             ),
             Self::Signature(e) => write!(f, "participation signature invalid: {e}"),
         }
@@ -618,13 +640,34 @@ pub fn verify_membership_change_by_live_quorum(
         }
     }
 
-    // 7. Authorization: strict-majority-of-L + the L_floor steward backstop (H6).
+    // 7. Authorization: the "roster-change tier" — strict-majority-of-L + the
+    //    L_floor steward backstop (H6).
+    let (authorized, used_steward_backstop) =
+        authorize_roster_tier(proposal, &tally, steward_members, steward_signatures);
+
+    Ok(RosterChangeVerdict {
+        authorized,
+        tally,
+        used_steward_backstop,
+    })
+}
+
+/// The **roster-change tier** authorization — the *hard* end of the
+/// `fire ≤ roster-change ≤ standing` bias gradient (CC §4.2.1.3). Requires
+/// strict-majority-of-`L` yes votes, AND — when `|L| < L_FLOOR` — the steward
+/// 2-of-3 backstop over `proposal` (a key-independent steward set, H6), computed
+/// on the **server-recomputed** `|L|` (never a claimed value). Shared by roster
+/// change and resumption (un-fire), which both lean hard — the deliberate
+/// opposite of the fire floor of 1. Returns `(authorized, used_steward_backstop)`.
+fn authorize_roster_tier(
+    proposal: &AccordProposal,
+    tally: &LiveQuorumTally,
+    steward_members: &[ThresholdMember],
+    steward_signatures: &[ThresholdSignature],
+) -> (bool, bool) {
     let majority_met = tally.yes >= crate::accord_genesis::strict_majority(tally.live_count());
     let used_steward_backstop = tally.live_count() < L_FLOOR;
     let steward_ok = if used_steward_backstop {
-        // 2-of-3 (strict majority) of an INDEPENDENT steward set, over the proposal
-        // bytes (which transitively bind the new roster via payload_sha256). The
-        // |L| trigger is the SERVER-recomputed tally, never a claimed value.
         let steward_threshold =
             crate::accord_genesis::strict_majority(steward_members.len().max(1));
         verify_threshold_signatures(
@@ -637,9 +680,70 @@ pub fn verify_membership_change_by_live_quorum(
     } else {
         true
     };
+    (majority_met && steward_ok, used_steward_backstop)
+}
 
-    Ok(RosterChangeVerdict {
-        authorized: majority_met && steward_ok,
+/// The verdict of a live-quorum resumption (un-fire).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeVerdict {
+    /// Whether the currently-active halt is resumed (un-fired).
+    pub resumed: bool,
+    /// The frozen tally over `L`.
+    pub tally: LiveQuorumTally,
+    /// Whether `|L| < L_FLOOR` forced the steward backstop (H6).
+    pub used_steward_backstop: bool,
+}
+
+/// Verify a live-quorum **resumption** (un-fire) of the currently-active
+/// `CONSTITUTIONAL` halt — the decimation-mode `accord:lifecycle:active`
+/// (CC §4.2.1.3).
+///
+/// Two obligations beyond a normal tally:
+/// - **H1 (asymmetry):** authorized at the **roster-change threshold**
+///   (`authorize_roster_tier` — strict-majority-of-`L` + the `L_floor` steward
+///   backstop), **never** the fire floor of 1. Un-firing leans hard.
+/// - **H2 (active-halt binding):** the proposal MUST target the halt actually in
+///   force — `proposal.payload_sha256 == sha256(active_halt_id)`. A stockpiled or
+///   replayed resumption naming a *different* (e.g. later) halt is rejected
+///   ([`LiveQuorumError::HaltMismatch`]); once a halt is resumed it is no longer
+///   `active`, so a second resumption of it fails this check (the server holds
+///   the active-halt state).
+///
+/// # Errors
+/// [`LiveQuorumError`] for a wrong action, an active-halt mismatch, or a bad
+/// participation. The yes/no outcome is [`ResumeVerdict::resumed`].
+pub fn verify_resume_by_live_quorum(
+    proposal: &AccordProposal,
+    participations: &[AccordParticipation],
+    standing_roster: &[ThresholdMember],
+    steward_members: &[ThresholdMember],
+    steward_signatures: &[ThresholdSignature],
+    active_halt_id: &str,
+) -> Result<ResumeVerdict, LiveQuorumError> {
+    if proposal.action != AccordAction::Resume {
+        return Err(LiveQuorumError::WrongAction {
+            expected: "resume",
+            got: proposal.action.as_str(),
+        });
+    }
+    // H2: the resumption targets the CURRENTLY-ACTIVE halt.
+    let expected = {
+        let mut h = Sha256::new();
+        h.update(active_halt_id.as_bytes());
+        hex::encode(h.finalize())
+    };
+    if proposal.payload_sha256 != expected {
+        return Err(LiveQuorumError::HaltMismatch {
+            expected,
+            got: proposal.payload_sha256.clone(),
+        });
+    }
+    let tally = tally_live_quorum(proposal, participations, standing_roster)?;
+    // H1: roster-change threshold, NEVER the fire floor.
+    let (authorized, used_steward_backstop) =
+        authorize_roster_tier(proposal, &tally, steward_members, steward_signatures);
+    Ok(ResumeVerdict {
+        resumed: authorized,
         tally,
         used_steward_backstop,
     })
@@ -1362,5 +1466,126 @@ mod tests {
             !decisions_equivocate(&da, &db),
             "different prior digests are sequential states, not a fork"
         );
+    }
+
+    // --- resumption / un-fire (step 5) --------------------------------------
+
+    fn halt_commitment(active_halt_id: &str) -> String {
+        let mut h = Sha256::new();
+        h.update(active_halt_id.as_bytes());
+        hex::encode(h.finalize())
+    }
+
+    fn resume_proposal(active_halt_id: &str) -> AccordProposal {
+        AccordProposal {
+            family_key_id: "humanity-accord".to_string(),
+            action: AccordAction::Resume,
+            nonce: "resume-nonce-XXXXXXXXXXXXXXXXXXXXXXXX".to_string(),
+            window_until: "2026-06-29T00:00:00.000Z".to_string(),
+            prior_family_digest: "a".repeat(64),
+            payload_sha256: halt_commitment(active_halt_id),
+        }
+    }
+
+    #[test]
+    fn resume_requires_majority_not_the_fire_floor() {
+        // H1 — THE asymmetry. In a 3-live set, ONE yes FIRES (floor 1) but does
+        // NOT un-fire (resumption needs strict-majority = 2). Un-firing leans hard.
+        let (hs, dir) = roster_fixture();
+        let halt = "halt-2026-06-26";
+        let prop = resume_proposal(halt);
+        // 1 yes, 2 no → |L|=3, strict-majority(3)=2 NOT met.
+        let parts = vec![
+            participate(&hs[0], &prop, Vote::Yes),
+            participate(&hs[1], &prop, Vote::No),
+            participate(&hs[2], &prop, Vote::No),
+        ];
+        let v = verify_resume_by_live_quorum(&prop, &parts, &dir, &[], &[], halt).unwrap();
+        assert!(
+            !v.resumed,
+            "one yes does not un-fire (the fire-floor-of-1 is NOT used)"
+        );
+
+        // Sanity: the SAME single yes WOULD fire if it were a fire proposal.
+        let mut fire = prop.clone();
+        fire.action = AccordAction::Fire;
+        let fparts = vec![participate(&hs[0], &fire, Vote::Yes)];
+        let fdir = vec![hs[0].member()];
+        assert!(
+            verify_fire_by_live_quorum(&fire, &fparts, &fdir)
+                .unwrap()
+                .fired
+        );
+    }
+
+    #[test]
+    fn resume_authorized_by_live_majority() {
+        let (hs, dir) = roster_fixture();
+        let halt = "halt-2026-06-26";
+        let prop = resume_proposal(halt);
+        let parts: Vec<_> = hs[..3]
+            .iter()
+            .map(|h| participate(h, &prop, Vote::Yes))
+            .collect();
+        let v = verify_resume_by_live_quorum(&prop, &parts, &dir, &[], &[], halt).unwrap();
+        assert!(v.resumed, "strict-majority-of-L yes resumes");
+        assert!(!v.used_steward_backstop);
+    }
+
+    #[test]
+    fn resume_targeting_the_wrong_halt_is_rejected() {
+        // H2: a resumption naming a different (e.g. later/stockpiled) halt fails.
+        let (hs, dir) = roster_fixture();
+        let prop = resume_proposal("halt-OLD"); // payload commits to halt-OLD
+        let parts: Vec<_> = hs[..3]
+            .iter()
+            .map(|h| participate(h, &prop, Vote::Yes))
+            .collect();
+        // but the currently-active halt is a DIFFERENT one.
+        assert!(matches!(
+            verify_resume_by_live_quorum(&prop, &parts, &dir, &[], &[], "halt-CURRENT-different"),
+            Err(LiveQuorumError::HaltMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn resume_below_l_floor_needs_steward_backstop() {
+        // H6 applies to resumption too — |L| < 3 requires the steward co-sign.
+        let (hs, dir) = roster_fixture();
+        let halt = "halt-2026-06-26";
+        let prop = resume_proposal(halt);
+        let parts = vec![
+            participate(&hs[0], &prop, Vote::Yes),
+            participate(&hs[1], &prop, Vote::Yes),
+        ];
+        let stewards: Vec<Holder> = ["S1", "S2", "S3"]
+            .iter()
+            .map(|id| Holder::new(id))
+            .collect();
+        let sm: Vec<ThresholdMember> = stewards.iter().map(Holder::member).collect();
+
+        let v_no = verify_resume_by_live_quorum(&prop, &parts, &dir, &sm, &[], halt).unwrap();
+        assert!(v_no.used_steward_backstop && !v_no.resumed);
+
+        let ss: Vec<ThresholdSignature> = stewards[..2]
+            .iter()
+            .map(|s| s.sign(&prop.canonical_bytes()))
+            .collect();
+        let v_yes = verify_resume_by_live_quorum(&prop, &parts, &dir, &sm, &ss, halt).unwrap();
+        assert!(v_yes.resumed, "|L|<3 + 2-of-3 stewards un-fires");
+    }
+
+    #[test]
+    fn resume_verifier_rejects_a_non_resume_proposal() {
+        let (hs, dir) = roster_fixture();
+        let prop = fire_proposal(); // Fire, not Resume
+        let parts = vec![participate(&hs[0], &prop, Vote::Yes)];
+        assert!(matches!(
+            verify_resume_by_live_quorum(&prop, &parts, &dir, &[], &[], "h"),
+            Err(LiveQuorumError::WrongAction {
+                expected: "resume",
+                ..
+            })
+        ));
     }
 }
