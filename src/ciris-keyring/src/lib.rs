@@ -117,6 +117,13 @@ pub mod sealed_mldsa65;
 #[cfg(feature = "pqc-ml-dsa")]
 pub mod usb_wrapped_mldsa65;
 
+/// Runtime-loaded TPM backend — `dlopen`s `libciris_tpm_plugin.so` over a small
+/// C ABI (CIRISVerify#130) so the keyring uses TPM without link-binding
+/// `tss-esapi`. Builds on every target (incl. musl); TPM is opportunistic where
+/// the plugin .so + libtss2 exist at runtime, else the software fallback.
+#[cfg(feature = "tpm-plugin")]
+pub mod tpm_plugin;
+
 /// Platform-specific hardware signer implementations.
 pub mod platform;
 

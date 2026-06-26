@@ -14,6 +14,12 @@ software = []
 android = ["jni"]
 ios = []
 tpm = ["tss-esapi"]
+# Runtime-loaded TPM backend (CIRISVerify#130): dlopen `libciris_tpm_plugin.so`
+# instead of link-binding tss-esapi. Builds on EVERY target (libloading is
+# pure-Rust dlopen) — TPM is opportunistic where the plugin .so + libtss2 exist
+# at runtime, else the existing `NotSupported`/software fallback. The path that
+# removes tss-esapi from the keyring link graph entirely (musl + the wheel).
+tpm-plugin = ["dep:libloading"]
 # YubiKey / PKCS#11 hardware-token user-identity signer (CIRISVerify#80).
 # Real cryptoki C_Sign behind a physical token; off by default (needs a token).
 pkcs11 = ["dep:cryptoki"]
@@ -44,6 +50,11 @@ rand_core.workspace = true
 # unavailable at runtime on a target with no token (`open_pkcs11` errors honestly).
 # Was Linux/Windows-only — promoted here. NB this is NOT TPM (tss-esapi stays gated).
 cryptoki = { version = "0.12", optional = true }
+
+# Runtime dlopen of the TPM plugin (#130, `tpm-plugin` feature). Pure-Rust
+# (no C link); builds on every target incl. musl, so the keyring carries no
+# tss-esapi link dependency.
+libloading = { version = "0.8", optional = true }
 
 # Cross-platform data directories for key persistence.
 # v6 (windows-sys 0.59 → windows-targets raw-dylib) — the old dirs 5 →
