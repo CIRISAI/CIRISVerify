@@ -6,12 +6,12 @@
 //! `tss-esapi` itself — so it builds on every target (incl. musl) and the wheel
 //! cdylib carries no `libtss2` dependency. TPM is opportunistic: if the plugin
 //! `.so` + libtss2 are present at runtime, sealing is hardware-backed; if not,
-//! [`load`] returns [`KeyringError::NotSupported`] and the caller falls back to
-//! software, exactly as before.
+//! `TpmPlugin::load` returns [`KeyringError::NotSupported`] and the caller
+//! falls back to software, exactly as before.
 //!
 //! ## Loading
 //!
-//! [`plugin_path`] resolves the dylib from (in order): the `CIRIS_TPM_PLUGIN`
+//! `plugin_path()` resolves the dylib from (in order): the `CIRIS_TPM_PLUGIN`
 //! env var (an explicit path), then the platform library name (so the dynamic
 //! loader searches `LD_LIBRARY_PATH` / the exe directory / system paths). The
 //! plugin ships alongside the main library wherever TPM is wanted.
@@ -21,7 +21,7 @@
 //! On load we call `ciris_tpm_plugin_abi_version` and **refuse** any version we
 //! don't recognize (fail-closed: an unrecognized plugin is treated as "no TPM",
 //! not blindly invoked). The resolved C function pointers are stored alongside
-//! the owning [`libloading::Library`] in [`TpmPlugin`], so they stay valid for
+//! the owning `libloading::Library` in `TpmPlugin`, so they stay valid for
 //! the loader's lifetime and are dropped together.
 
 #![cfg(feature = "tpm-plugin")]

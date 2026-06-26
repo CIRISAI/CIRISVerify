@@ -1,6 +1,7 @@
 //! Plugin-backed TPM secure blob storage (CIRISVerify#130, stage 4).
 //!
-//! The runtime-`dlopen` counterpart to [`super::tpm::TpmSecureBlobStorage`].
+//! The runtime-`dlopen` TPM secure-blob storage (v8.0.0; the former link-time
+//! `TpmSecureBlobStorage` was deleted with `tss-esapi`, #141).
 //! Identical at-rest design — a random 32-byte **master** sealed *once*, then
 //! per-blob AES-256-GCM under `HKDF("CIRIS-TPM-blob-v2", master)` keyed by
 //! `key_id` — with one difference: the master is sealed/unsealed through the

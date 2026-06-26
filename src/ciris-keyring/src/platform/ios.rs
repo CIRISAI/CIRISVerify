@@ -832,8 +832,14 @@ impl SecureEnclaveWrappedEd25519Signer {
             {
                 tracing::warn!(
                     tag = %self.wrapper_key_tag,
-                    "SE key generation failed (errSecMissingEntitlement) — \
-                     macOS CLI process lacks entitlements. Falling back to keychain P-256 key."
+                    custody = "KEYCHAIN_FALLBACK",
+                    hw_backed = false,
+                    "UNSIGNED/UNENTITLED BINARY — unable to use the Secure Enclave \
+                     (errSecMissingEntitlement -34018). The Secure Enclave needs the process to be \
+                     code-signed and carry the SE/keychain-access entitlement (a bare CLI \
+                     subprocess cannot reach it by design). FALLING BACK to a keychain-wrapped \
+                     P-256 key: software-grade custody, NOT the Secure Enclave (hw_backed=false). \
+                     To get real SE custody, run from a signed, entitled app bundle."
                 );
                 self.generate_wrapper_key_inner(false)
             },

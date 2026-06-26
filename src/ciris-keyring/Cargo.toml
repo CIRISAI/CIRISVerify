@@ -9,16 +9,20 @@ repository.workspace = true
 authors.workspace = true
 
 [features]
-default = ["software", "keyring-storage"]
+# v8.0.0 (CIRISVerify#141): `tpm-plugin` is now a DEFAULT feature — the keyring's
+# only TPM backend is the runtime-loaded `dlopen` plugin; the link-time `tpm`
+# (tss-esapi) backend was DELETED. So the default build carries zero tss-esapi /
+# libtss2 on every target (incl. musl + the wheel) and reaches TPM purely at
+# runtime where the plugin .so + a device exist.
+default = ["software", "keyring-storage", "tpm-plugin"]
 software = []
 android = ["jni"]
 ios = []
-tpm = ["tss-esapi"]
-# Runtime-loaded TPM backend (CIRISVerify#130): dlopen `libciris_tpm_plugin.so`
-# instead of link-binding tss-esapi. Builds on EVERY target (libloading is
-# pure-Rust dlopen) — TPM is opportunistic where the plugin .so + libtss2 exist
-# at runtime, else the existing `NotSupported`/software fallback. The path that
-# removes tss-esapi from the keyring link graph entirely (musl + the wheel).
+# Runtime-loaded TPM backend (CIRISVerify#130/#141): dlopen `libciris_tpm_plugin.so`
+# (seal/unseal + signer + quote over a versioned C ABI) instead of link-binding
+# tss-esapi. Pure-Rust dlopen (`libloading`); builds on EVERY target. TPM is
+# opportunistic where the plugin .so + a device exist at runtime, else the
+# software fallback. This is the keyring's sole TPM backend as of v8.0.0.
 tpm-plugin = ["dep:libloading"]
 # YubiKey / PKCS#11 hardware-token user-identity signer (CIRISVerify#80).
 # Real cryptoki C_Sign behind a physical token; off by default (needs a token).
@@ -78,7 +82,7 @@ keyring = { version = "3", optional = true }
 
 # CIRIS cryptographic primitives — gated behind pqc-ml-dsa so the existing
 # default ciris-keyring build doesn't pull in ml-dsa.
-ciris-crypto = { path = "../ciris-crypto", version = "7", optional = true, default-features = false, features = ["pqc-ml-dsa", "ed25519"] }
+ciris-crypto = { path = "../ciris-crypto", version = "8", optional = true, default-features = false, features = ["pqc-ml-dsa", "ed25519"] }
 
 # Platform-specific
 [target.'cfg(target_os = "android")'.dependencies]
@@ -95,15 +99,11 @@ objc2 = "0.6"
 objc2-foundation = "0.3"
 block2 = "0.6"
 
-# TPM 2.0 via tss-esapi. tss-esapi-sys LINK-binds the system tss2 C libs via
-# pkg-config, which has no aarch64-musl libtss2 + no cross sysroot → it hard-fails
-# the *build* when cross-compiling to musl (Alpine / Home Assistant), CIRISVerify#127.
-# tss2 is glibc-oriented, so gate the dep to glibc-linux (target_env = "gnu") +
-# windows; on musl the keyring builds with no TPM (the existing runtime
-# `NotSupported` fallback). The full runtime-loaded backend that restores TPM on
-# musl is the #125/#127 dlopen follow-up.
-[target.'cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "windows"))'.dependencies]
-tss-esapi = { version = "7.4", optional = true }
+# NB (v8.0.0, CIRISVerify#141): the link-time `tss-esapi` TPM dependency was
+# DELETED here. The keyring no longer link-binds tss2 on ANY target — TPM is
+# reached purely at runtime by `dlopen`ing `ciris-tpm-plugin` (the `tpm-plugin`
+# feature, default-on). This is what makes the keyring build + load everywhere
+# (musl, the wheel, cross) with zero libtss2 DT_NEEDED.
 
 [target.'cfg(target_os = "macos")'.dependencies]
 security-framework = "2.9"

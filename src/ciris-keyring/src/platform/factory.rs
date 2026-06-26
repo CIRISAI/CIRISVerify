@@ -158,25 +158,29 @@ fn detect_linux_capabilities() -> PlatformCapabilities {
     }
 }
 
-/// Whether a TBS-probed TPM version string counts as **usable hardware**
-/// for the keyring's signer tier. Only **TPM 2.0** qualifies: the Windows
-/// signer path (PCP/CNG) issues TPM-2.0 ECDSA-P256 operations, which a
-/// TPM **1.2** device — the ceiling of Windows 7's TBS — cannot service.
-/// So a 1.2 TPM, like an absent one, degrades to the software tier rather
-/// than advertising a hardware tier it can't deliver (CIRISVerify#67).
-/// Extracted as a pure fn so the policy is unit-testable off-Windows.
-#[cfg_attr(not(target_os = "windows"), allow(dead_code))]
-fn tpm_probe_is_usable_hardware(probe: Option<&str>) -> bool {
-    matches!(probe, Some("2.0"))
+/// Whether the runtime TPM plugin reports a usable TPM (v8.0.0, CIRISVerify#141).
+/// Drives Windows hardware detection now that the link-time TBS/tss-esapi probe
+/// is gone — the plugin's `available()` opens a TBS context and answers honestly.
+#[cfg(target_os = "windows")]
+fn plugin_reports_tpm() -> bool {
+    #[cfg(feature = "tpm-plugin")]
+    {
+        crate::tpm_plugin::TpmPlugin::load()
+            .map(|p| p.available())
+            .unwrap_or(false)
+    }
+    #[cfg(not(feature = "tpm-plugin"))]
+    {
+        false
+    }
 }
 
 #[cfg(target_os = "windows")]
 fn detect_windows_capabilities() -> PlatformCapabilities {
-    // Probe TBS (user-mode, no admin needed). If TBS is missing, no TPM is
-    // present, or only TPM 1.2 is exposed (Windows 7), fall back to
-    // software-only with the same posture as Linux without a usable TPM —
-    // and without uselessly attempting a doomed TPM-2.0 signer init.
-    let has_tpm = tpm_probe_is_usable_hardware(crate::platform::tpm::probe_tbs_device_info());
+    // v8.0.0 (CIRISVerify#141): TPM detection now goes through the runtime plugin
+    // (no link-time TBS/tss-esapi). The plugin's `available()` opens a TBS context
+    // and answers honestly; absent plugin/TPM → software tier.
+    let has_tpm = plugin_reports_tpm();
     if has_tpm {
         PlatformCapabilities {
             hardware_type: HardwareType::TpmFirmware,
@@ -238,20 +242,12 @@ pub fn create_hardware_signer(
         });
     }
 
-    // Opportunistic runtime-loaded TPM signer (CIRISVerify#141). Reaches TPM via
-    // the `dlopen` plugin with no tss-esapi link, so it covers the wheel + musl +
-    // any tpm-less build where the plugin .so + a device are present. Tried only
-    // where the link-time `TpmSigner` arm WON'T run (i.e. not a gnu-linux/windows
-    // build with the `tpm` feature) so existing link-tpm deployments keep their
-    // `.tpm` key. Gated by the plugin's own `available()` — a no-op fall-through
-    // where no plugin/TPM exists.
-    #[cfg(all(
-        feature = "tpm-plugin",
-        not(all(
-            feature = "tpm",
-            any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-        ))
-    ))]
+    // Runtime-loaded TPM signer (CIRISVerify#141) — the keyring's sole TPM signer
+    // as of v8.0.0. Reaches TPM via the `dlopen` plugin with no tss-esapi link, so
+    // it covers every target (incl. the wheel + musl) where the plugin .so + a
+    // device are present. Gated by the plugin's own `available()` — a no-op
+    // fall-through to the platform/software arms below where no plugin/TPM exists.
+    #[cfg(feature = "tpm-plugin")]
     {
         match super::tpm_plugin_signer::PluginTpmSigner::open(alias, default_key_dir()) {
             Ok(signer) => {
@@ -291,28 +287,6 @@ pub fn create_hardware_signer(
             }
         }
 
-        #[cfg(any(all(target_os = "linux", target_env = "gnu"), target_os = "windows"))]
-        {
-            if capabilities.has_hardware {
-                use super::TpmSigner;
-                match TpmSigner::new(alias, None) {
-                    Ok(signer) => {
-                        tracing::info!("Using TPM signer for hardware security");
-                        Box::new(signer) as Box<dyn HardwareSigner>
-                    },
-                    Err(e) => {
-                        tracing::warn!(
-                            "TPM initialization failed ({}), falling back to software signer",
-                            e
-                        );
-                        fallback_software_signer(alias, require_hardware)?
-                    },
-                }
-            } else {
-                fallback_software_signer(alias, require_hardware)?
-            }
-        }
-
         #[cfg(target_os = "macos")]
         {
             if capabilities.has_hardware {
@@ -335,16 +309,10 @@ pub fn create_hardware_signer(
             }
         }
 
-        // musl-linux falls here too: the TPM arm above is glibc-only (tss-esapi
-        // won't cross-link on musl, CIRISVerify#127), so musl gets the software
-        // signer — matching the runtime `NotSupported` the keyring already returns.
-        #[cfg(not(any(
-            target_os = "android",
-            target_os = "ios",
-            all(target_os = "linux", target_env = "gnu"),
-            target_os = "windows",
-            target_os = "macos"
-        )))]
+        // Linux (gnu + musl), Windows, and any other target: TPM, if present, was
+        // already taken by the `tpm-plugin` arm above; reaching here means no
+        // plugin/TPM, so use the software signer (v8.0.0 — no link-time TPM).
+        #[cfg(not(any(target_os = "android", target_os = "ios", target_os = "macos")))]
         {
             fallback_software_signer(alias, require_hardware)?
         }
@@ -477,16 +445,6 @@ mod tests {
         // Cleanup: delete persisted key file
         let key_path = default_key_dir().join("test_factory_key.p256.key");
         let _ = std::fs::remove_file(&key_path);
-    }
-
-    #[test]
-    fn tpm_usable_hardware_policy() {
-        // Only TPM 2.0 is usable hardware; 1.2 (Windows 7 / TBS ceiling)
-        // and absent/unknown degrade to the software tier (CIRISVerify#67).
-        assert!(tpm_probe_is_usable_hardware(Some("2.0")));
-        assert!(!tpm_probe_is_usable_hardware(Some("1.2")));
-        assert!(!tpm_probe_is_usable_hardware(None));
-        assert!(!tpm_probe_is_usable_hardware(Some("9.9")));
     }
 
     #[test]

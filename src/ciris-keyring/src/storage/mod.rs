@@ -54,18 +54,11 @@
 //! }
 //! ```
 
-// Platform-specific implementations
-#[cfg(all(
-    feature = "tpm",
-    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-))]
-pub mod tpm;
-
-#[cfg(all(
-    feature = "tpm",
-    any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-))]
-pub use tpm::TpmSecureBlobStorage;
+// Platform-specific implementations.
+//
+// NB (v8.0.0, CIRISVerify#141): the link-time `TpmSecureBlobStorage` (tss-esapi)
+// was DELETED. TPM-sealed blob storage is now provided solely by the runtime
+// `dlopen` plugin (`PluginTpmSecureBlobStorage` below).
 
 /// Runtime-`dlopen` TPM storage (CIRISVerify#130) — TPM custody on every target
 /// (incl. the wheel cdylib + musl), via the plugin instead of link-bound
@@ -538,42 +531,11 @@ pub fn create_platform_storage(
     let alias = alias.into();
     let storage_dir = storage_dir.into();
 
-    // Try TPM on Linux/Windows
-    #[cfg(all(
-        feature = "tpm",
-        any(all(target_os = "linux", target_env = "gnu"), target_os = "windows")
-    ))]
-    {
-        // Check if TPM is available using detection module
-        let tpm_available = crate::platform::tpm::detect_tpm()
-            .map(|(avail, _)| avail)
-            .unwrap_or(false);
-
-        if tpm_available {
-            match TpmSecureBlobStorage::new(&alias, &storage_dir) {
-                Ok(storage) => {
-                    tracing::info!(
-                        alias = %alias,
-                        "Using TPM-backed secure storage for wallet seeds"
-                    );
-                    return Ok(Box::new(storage));
-                },
-                Err(e) => {
-                    tracing::warn!(
-                        alias = %alias,
-                        error = %e,
-                        "TPM storage initialization failed, falling back to software"
-                    );
-                },
-            }
-        }
-    }
-
-    // Runtime-loaded TPM plugin (CIRISVerify#130) — tried after the link-time
-    // backend (which wins for existing Linux/Windows-gnu deployments) so TPM
-    // custody also works where tss-esapi can't link: the wheel cdylib, musl, and
-    // any target carrying the plugin .so + a TPM. `new` returns NotSupported when
-    // no plugin/TPM is present, so this is a no-op fall-through on mobile/desktop
+    // Runtime-loaded TPM plugin (CIRISVerify#130/#141) — the keyring's sole TPM
+    // backend as of v8.0.0. TPM custody works wherever the plugin .so + a device
+    // exist, incl. the wheel cdylib, musl, and any target — with no tss-esapi
+    // link. `new` returns NotSupported when no plugin/TPM is present, so this is
+    // a no-op fall-through on mobile/desktop
     // without one.
     #[cfg(feature = "tpm-plugin")]
     {

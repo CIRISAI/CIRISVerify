@@ -267,8 +267,13 @@ impl SecureEnclaveSecureBlobStorage {
             {
                 warn!(
                     tag = %self.wrapper_key_tag,
-                    "SE key generation failed (errSecMissingEntitlement) — \
-                     macOS CLI process lacks entitlements. Falling back to keychain P-256 key."
+                    custody = "KEYCHAIN_FALLBACK",
+                    hw_backed = false,
+                    "UNSIGNED/UNENTITLED BINARY — unable to use the Secure Enclave \
+                     (errSecMissingEntitlement -34018). The Secure Enclave needs a code-signed, \
+                     entitled process (a bare CLI subprocess cannot reach it by design). FALLING \
+                     BACK to a keychain-wrapped P-256 key: software-grade custody, NOT the Secure \
+                     Enclave (hw_backed=false). For real SE custody, run from a signed app bundle."
                 );
                 self.is_secure_enclave = false;
                 self.generate_wrapper_key_inner(false)

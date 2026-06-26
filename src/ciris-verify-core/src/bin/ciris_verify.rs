@@ -1054,11 +1054,11 @@ fn show_system_info() {
     #[cfg(target_os = "ios")]
     println!("  Secure Enclave: Available (iOS)");
 
-    #[cfg(all(target_os = "linux", feature = "tpm"))]
-    println!("  TPM 2.0: Enabled (Linux)");
+    #[cfg(all(target_os = "linux", feature = "tpm-plugin"))]
+    println!("  TPM 2.0: Runtime plugin (loaded if libciris_tpm_plugin.so + a device are present)");
 
-    #[cfg(all(target_os = "linux", not(feature = "tpm")))]
-    println!("  TPM 2.0: Not enabled (compile with --features tpm)");
+    #[cfg(all(target_os = "linux", not(feature = "tpm-plugin")))]
+    println!("  TPM 2.0: Not enabled (build with the tpm-plugin feature)");
 
     #[cfg(all(target_os = "windows", feature = "tpm-windows"))]
     println!("  TPM (PCP): Enabled (Windows - EXPERIMENTAL)");
@@ -2210,7 +2210,7 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
              hybrid self-signature and relays via register_key → federation_keys, then moves\n  \
              the object to ~/ciris/ceg/sent/.\n  \
              The ML-DSA-65 seed in ~/ciris/keys is sealed by your platform secure storage\n  \
-             (TPM when built --features tpm; software-sealed otherwise). A TPM-sealed seed is\n  \
+             (TPM via the runtime plugin when present; software-sealed otherwise). A TPM-sealed seed is\n  \
              bound to THIS machine — enroll a second device key (OR-of-N) for redundancy."
         );
     }

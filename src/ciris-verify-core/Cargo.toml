@@ -13,12 +13,12 @@ default = ["pqc"]
 pqc = ["ciris-crypto/pqc-ml-dsa", "ciris-keyring/pqc-ml-dsa"]
 android = ["ciris-keyring/android"]
 ios = ["ciris-keyring/ios"]
-tpm = ["ciris-keyring/tpm"]
-# Runtime-loaded TPM backend (CIRISVerify#130): the keyring dlopens
-# `libciris_tpm_plugin.so` instead of link-binding tss-esapi. Pulls in only
-# `libloading` (pure-Rust dlopen) — NO tss-esapi, NO libtss2 DT_NEEDED — so it is
-# safe on the wheel cdylib + musl, unlike `tpm`. TPM is opportunistic where the
-# plugin .so + a device exist at runtime, else the software fallback.
+# Runtime-loaded TPM backend (CIRISVerify#141): the keyring's sole TPM backend —
+# it `dlopen`s `libciris_tpm_plugin.so` (seal/unseal + signer + quote) instead of
+# link-binding tss-esapi. Pulls only `libloading` — NO tss-esapi, NO libtss2
+# DT_NEEDED — safe on the wheel cdylib + musl. Default-on in the keyring as of
+# v8.0.0 (the link-time `tpm` feature was deleted), so this is inherited by
+# default; named here for explicit control.
 tpm-plugin = ["ciris-keyring/tpm-plugin"]
 tpm-windows = ["ciris-keyring/tpm-windows"]  # Experimental: Windows native TPM
 # PKCS#11 hardware-token support (YubiKey PIV / OpenSC) for the `token` CLI

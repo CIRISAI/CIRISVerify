@@ -20,10 +20,9 @@ default = ["secp256k1", "key-grant", "hybrid-kex"]
 hybrid-kex = ["ciris-crypto/hybrid-kex"]
 android = ["ciris-verify-core/android"]
 ios = ["ciris-verify-core/ios"]
-tpm = ["ciris-verify-core/tpm"]
-# Runtime-loaded TPM backend (CIRISVerify#130) — dlopen the plugin instead of
-# link-binding tss-esapi. Pulls only `libloading`, NO libtss2 DT_NEEDED, so this
-# is the TPM feature that is safe to enable on the published wheel cdylib + musl.
+# Runtime-loaded TPM backend (CIRISVerify#141) — the keyring's sole TPM backend,
+# dlopen'd, no libtss2 DT_NEEDED. Default-on via the keyring as of v8.0.0; named
+# here for explicit control.
 tpm-plugin = ["ciris-verify-core/tpm-plugin"]
 tpm-windows = ["ciris-verify-core/tpm-windows"]  # Experimental: Windows native TPM
 secp256k1 = ["ciris-crypto/secp256k1"]  # EVM wallet signing support
