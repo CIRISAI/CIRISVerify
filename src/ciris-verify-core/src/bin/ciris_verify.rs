@@ -311,9 +311,14 @@ struct AccordInvokeArgs {
     /// `accord:lifecycle:active` resumption after a halt (separate scope).
     #[arg(long, value_parser = ["constitutional", "notify", "drill", "reactivate"])]
     kind: String,
-    /// Per-kind unique id (`halt_id` / `notify_id` / `drill_id`).
+    /// Per-kind unique id (`halt_id` / `notify_id` / `drill_id` / `resumption_id`).
     #[arg(long)]
     invocation_id: String,
+    /// **`reactivate` ONLY** (CC 0.4 §4.2.1.3): the `invocation_id` of the single
+    /// CONSTITUTIONAL halt this resumption ends. **Required** for `--kind
+    /// reactivate`; rejected for any other kind.
+    #[arg(long)]
+    resumes_halt_id: Option<String>,
     /// Lowercase-hex SHA-256 of the application payload (§0.6).
     #[arg(long)]
     payload_sha256: String,
@@ -2763,6 +2768,16 @@ async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
             std::process::exit(2);
         },
     };
+    // CC 0.4 §4.2.1.3: resumes_halt_id is mandatory for reactivate, forbidden else.
+    if matches!(kind, InvocationKind::LifecycleActive) {
+        if a.resumes_halt_id.is_none() {
+            eprintln!("❌ --kind reactivate requires --resumes-halt-id <prior CONSTITUTIONAL halt id> (CC 4.2.1.3)");
+            std::process::exit(2);
+        }
+    } else if a.resumes_halt_id.is_some() {
+        eprintln!("❌ --resumes-halt-id is only valid with --kind reactivate (CC 4.2.1.3)");
+        std::process::exit(2);
+    }
     let now = chrono::Utc::now();
     let nonce_bytes = ciris_crypto::random::bytes(32).unwrap_or_else(|e| {
         eprintln!("❌ RNG: {e}");
@@ -2771,6 +2786,7 @@ async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
     let invocation = Invocation {
         invocation_kind: kind,
         invocation_id: a.invocation_id.clone(),
+        resumes_halt_id: a.resumes_halt_id.clone(),
         nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&nonce_bytes),
         asserted_at: now.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         valid_until: (now + chrono::Duration::minutes(a.valid_mins))

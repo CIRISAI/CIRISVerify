@@ -1975,6 +1975,7 @@ mod tests {
         Invocation {
             invocation_kind: InvocationKind::Drill,
             invocation_id: id.to_string(),
+            resumes_halt_id: None,
             nonce: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
             asserted_at: "2026-06-19T00:00:00.000Z".to_string(),
             valid_until: "2026-06-20T00:00:00.000Z".to_string(),
@@ -1992,6 +1993,7 @@ mod tests {
         let inv = Invocation {
             invocation_kind: InvocationKind::LifecycleActive,
             invocation_id: "resume-2026-06".to_string(),
+            resumes_halt_id: Some("halt-2026-05".to_string()),
             nonce: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_string(),
             asserted_at: "2026-06-21T00:00:00.000Z".to_string(),
             valid_until: "2026-06-22T00:00:00.000Z".to_string(),

@@ -1,9 +1,13 @@
 # FSD-004 — Accord Live-Quorum Operation & Recovery Under Decimation
 
-**Status:** RATIFIED (constitutional grounding landed) — **not yet implemented.**
+**Status:** RATIFIED + EXPANDED (constitutional grounding landed and generalized) — **not yet implemented.**
 Changing how the kill-switch quorum is computed is a §9 governance change; nothing
 here ships without (a) constitutional grounding in CEG §9 / the CIRIS Constitution —
 **DONE: ratified in [CC 0.3 §4.2.6 `live-quorum`](https://github.com/CIRISAI/CIRISRegistry/blob/main/FSD/CIRIS_Constitution/part_4_composition_governance.md)** (CIRISRegistry `c27d794`, issue #108; ratified by the founder under the CC 4.5.1 maturity gate) — and (b) an adversarial review on par with #91/#95. Phase 0 is therefore complete on the constitutional axis; Phases 1–3 (implementation) are unblocked. (Originally DRAFT 2026-06-21; rewritten to the live-quorum model 2026-06-21.)
+
+**Constitutional expansions since ratification (synced to CC 0.5, CIRISRegistry `19fb3d2`):**
+- **CC 0.4 (`2fb7a2c`, §4.2.1.3) — the bias gradient + the resumption direction.** §4.2.6 firing is the *easy* end of an explicit gradient **`fire ≤ roster-change ≤ standing`**: firing leans easiest (floor = 1, a missed fire is terminal) and **un-firing leans hardest**. CC 0.4 ratifies the resumption verb `accord:lifecycle:active` (the *opposite* of a fire — resuming from a CONSTITUTIONAL halt) and pins it to **no less than the roster-change threshold — strict majority of the live set `L`, never a lone signature**, with the §4.2.6 steward backstop when `|L|` is small. This refines this FSD's §3 "always lean toward firing": the no-asymmetry rule is for the *fire* direction; *resumption* is deliberately asymmetric the other way. **⚠ Verify code gap:** CC 0.4 ratifies the v6.10.0 lifecycle:active layout **with one addition the implementation flagged open (its sub-Q1): the mandatory `resumes_halt_id` field** binding a resumption to the single halt it ends (anti-stockpile / anti-replay). `humanity_accord::canonical_bytes` does **not** yet emit `resumes_halt_id` — a one-field preimage change, tracked for the §4.2.1.3 / #109 lifecycle path (adjacent to this FSD).
+- **CC 0.5 (`19fb3d2`, §4.5.13 `reverse-quorum`) — §4.2.6 generalized.** The live-quorum is no longer a one-off kill-switch rule; CC 0.5 ratifies it as the federation's **general governance shape** — *"presence is authority, absence forfeits it, a timer decides."* This FSD's accord live-quorum is now the **constitutional instance**; community-scope moderation is the **first community instance** (lone-survivor-fires ↔ lone-steward-acts; live-quorum-over-`L` ↔ live-majority-over-present-members; Enoch-Arden return ↔ merit re-auto-promotion). Same mechanism, two scopes. (CC 0.5's "stewardship reframe" also renamed the federation's `owner_bound` → `steward_bound` terminology throughout §4.5; the accord §4.2.6 surface is unchanged by it.)
 
 **Tracks:** CIRISVerify#98. **Builds on:** FSD-001 (protocol), the v6.8.0 growable
 M-of-N accord family + membership-change `supersedes` (`ciris_verify_core::
@@ -350,22 +354,39 @@ exist to bound.
 - **Q1 — Fire floor — RESOLVED: floor = 1.** A single reachable survivor may fire
   (§4.3). A false fire is recoverable; a higher floor would let the adversary kill
   the switch by reducing holders below it. Settled by the maintainer.
-- **Q2 — Roster-window calibration.** `W = 72 h` baseline is set; the open part is
-  the extension policy (when/who declares severe-degradation to stretch toward 7 d)
-  and whether `W` should scale with `|L|`. Long enough for HF store-and-forward
-  (§4.6) to carry an honest proof-of-life in; short enough to recover before the
-  adversary consolidates.
-- **Q3 — Coercion / duress.** Proof-of-life cannot detect a gun-to-the-head
-  signature. Is steward floor + live majority + transparency + post-hoc reversal
-  sufficient, or is a duress canary warranted?
-- **Q4 — Recursion termination / minimum viable accord.** Below some `\|L\|`, does
-  the accord enter a steward-custodied regime rather than a 1-of-1?
-- **Q5 — Constitutional grounding — RESOLVED.** Ratified in **CC 0.3 §4.2.6**
+- **Q2 — Roster-window calibration — RESOLVED: fixed `W = 72 h`, no extension.**
+  The window is a single, fixed 72 h — *no* severe-degradation stretch and *no*
+  scaling with `|L|`. One predictable rule with no mid-crisis "declare an
+  emergency to change the timing" lever (which would itself be an attack surface);
+  72 h is long enough for HF store-and-forward (§4.6) to carry an honest
+  proof-of-life in, short enough to recover before the adversary consolidates.
+  Settled by the maintainer; matches the CC §4.2.6 `W = 72 h` baseline.
+- **Q3 — Coercion / duress — RESOLVED: existing safeguards, no canary.** Proof-of-
+  life cannot detect a gun-to-the-head signature, and we do **not** add a duress
+  canary (its own failure modes — panic-forgotten, threat-model-leaked — outweigh
+  the gain). Coercion stays a **named, bounded residual**, mitigated by the steward
+  floor (Q4) + live majority + append-only transparency + post-hoc reversal, not
+  claimed "solved." Settled by the maintainer; matches the CC §4.2.6 "bounded, not
+  solved" framing.
+- **Q4 — Recursion termination / minimum viable accord — RESOLVED: steward-co-sign
+  below 3, not full custody.** *Firing* stays floor-of-1 (Q1). *Rebuilding* the
+  roster when `|L| < 3` additionally requires a **2-of-3 regional-steward co-sign**
+  (so a lone coerced survivor cannot quietly rebuild a captured accord) — but the
+  accord is **never handed to the stewards outright** (they are infrastructure, not
+  the human off-switch). Settled by the maintainer; matches the CC §4.2.6
+  `L_floor = 3` steward-backstop rule exactly.
+- **Q5 — Constitutional grounding — RESOLVED + EXPANDED.** Ratified in **CC 0.3 §4.2.6**
   (CIRISRegistry `c27d794`, issue #108). The live quorum is grounded in CC §4.2 /
   CEG §9; the *restores-not-seizes* proof (live quorum restores operability, cannot
   forge or seize the accord beyond the §8 seize-and-suppress residual) is the
   entrenchment-proof paragraph of §4.2.6. Ratified by the founder under the
   CC 4.5.1 maturity gate (pre-maturity authority over the entrenched §4.2 surface).
+  **Expanded since:** CC 0.4 §4.2.1.3 (the `fire ≤ roster-change ≤ standing` bias
+  gradient + the resumption direction at the roster-change threshold) and CC 0.5
+  §4.5.13 (§4.2.6 ratified as the general `reverse-quorum` governance pattern) —
+  see the Status header. §4.2.6 itself reads (line ~210): *"The verify-side
+  construction is staged in CIRISVerify FSD-004; the constitutional grounding it
+  required (its Q5) is this section."* — i.e. this FSD and CC §4.2.6 cite each other.
 - **Q6 — HF↔RNS relay/gateway backbone (deployment).** The always-listening,
   off-grid, EMP-hardened, geographically-distributed Transport Nodes that bridge HF
   proof-of-life into the mesh (§4.6) are infrastructure the adversary will target —
@@ -389,10 +410,14 @@ exist to bound.
 
 ## 12. Implementation phases (when grounded + reviewed)
 
-1. **Phase 0 — ratify.** Q1 resolved (fire floor = 1); **Q5 resolved (constitutional
-   grounding — CC 0.3 §4.2.6)**. Remaining before code: Q2 (window calibration),
-   Q3 (duress), Q4 (recursion floor), and the threat-model sign-off / adversarial
-   review. *No code until those close.*
+1. **Phase 0 — ratify — DECISIONS COMPLETE.** Q1 (fire floor = 1), Q5
+   (constitutional grounding — CC 0.3 §4.2.6), **and now Q2 (fixed 72 h window),
+   Q3 (existing safeguards, no duress canary), Q4 (2-of-3 steward co-sign for
+   rebuilds below `|L| = 3`, never full steward custody)** are all resolved by the
+   maintainer — each matching the CC §4.2.6 default, so no new constitutional text
+   is required. **The one remaining gate before Phase 1 code is the threat-model
+   sign-off / adversarial review (≥ #91/#95 rigor).** Q6 (the HF↔RNS relay
+   backbone) is deployment, not verify code.
 2. **Phase 1 — live-quorum tally + roster change.** `accord_proposal` /
    `accord_participation` / `accord_decision` objects + `tally_live_quorum` +
    `verify_membership_change_by_live_quorum`, reusing the membership-change core.
