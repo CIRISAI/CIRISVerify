@@ -767,6 +767,7 @@ dependencies = [
  "hkdf",
  "jni",
  "keyring",
+ "libloading",
  "objc2",
  "objc2-foundation",
  "p256",
