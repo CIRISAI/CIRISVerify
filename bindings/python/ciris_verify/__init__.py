@@ -27,6 +27,31 @@ Logging:
 """
 
 import logging as _logging
+import os as _os
+from pathlib import Path as _Path
+
+
+def _point_at_bundled_tpm_plugin() -> None:
+    """Make the runtime TPM plugin (CIRISVerify#130) loadable from the wheel.
+
+    The keyring inside the FFI ``dlopen``s ``libciris_tpm_plugin.so`` by bare
+    name, which the dynamic loader won't find in site-packages. When the wheel
+    bundles the plugin next to the FFI, point ``CIRIS_TPM_PLUGIN`` at that exact
+    path so opportunistic TPM custody works out of the box. Respect an operator
+    override (never clobber a pre-set value); a no-op where no plugin is bundled
+    (macOS / mobile / aarch64) — the keyring then falls back to software.
+    """
+    if _os.environ.get("CIRIS_TPM_PLUGIN"):
+        return
+    here = _Path(__file__).resolve().parent
+    for name in ("libciris_tpm_plugin.so", "libciris_tpm_plugin.dylib", "ciris_tpm_plugin.dll"):
+        candidate = here / name
+        if candidate.exists():
+            _os.environ["CIRIS_TPM_PLUGIN"] = str(candidate)
+            return
+
+
+_point_at_bundled_tpm_plugin()
 
 from .client import CIRISVerify, MockCIRISVerify, verify_tree, DEFAULT_REGISTRY_URL
 from ._jcs import jcs_canonicalize
@@ -129,7 +154,7 @@ def get_library_version() -> str:
     return __version__
 
 
-__version__ = "7.5.1"
+__version__ = "7.6.0"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",

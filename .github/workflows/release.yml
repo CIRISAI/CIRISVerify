@@ -31,10 +31,19 @@ jobs:
           # The macOS lanes already build the FFI tpm-less (ciris_verify_tpm_-
           # attestation is gated not(android|ios), not on `feature=tpm`, so it
           # still compiles and degrades to software). Restoring TPM-in-the-wheel
-          # is the #125/#127 runtime-loaded (dlopen) backend follow-up.
+          # is the #125/#127 runtime-loaded (dlopen) backend — DELIVERED in
+          # v7.6.0 (#130): the FFI here builds with the `tpm-plugin` feature,
+          # which pulls ONLY `libloading` (pure-Rust dlopen, NO tss-esapi → NO
+          # libtss2 DT_NEEDED, verified), so the wheel stays loadable everywhere
+          # while gaining opportunistic TPM. The TPM code itself rides in the
+          # separately-built `libciris_tpm_plugin.so` (real backend, `tpm_plugin`
+          # field below), bundled into this wheel and `dlopen`ed at runtime where
+          # a TPM exists.
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             artifact: libciris_verify_ffi.so
+            features: tpm-plugin
+            tpm_plugin: "true"
 
           # Linux ARM64 (cross-compile - native ARM64 runners have limited availability)
           # Note: TPM support disabled in cross-compile; use self-hosted ARM64 for TPM
@@ -199,6 +208,36 @@ jobs:
           if [ -f "target/${{ matrix.build_target || matrix.target }}/release/${{ matrix.artifact }}" ]; then
             strip "target/${{ matrix.build_target || matrix.target }}/release/${{ matrix.artifact }}" || true
           fi
+
+      # Build the runtime TPM plugin (CIRISVerify#130) on the targets where the
+      # FFI is built with `tpm-plugin`. `--features real` link-binds tss-esapi
+      # (libtss2 dev libs installed above) into THIS cdylib only — the FFI cdylib
+      # stays libtss2-free. The .so is bundled next to the FFI in the wheel and
+      # `dlopen`ed at runtime. Scoped to x86_64-linux-gnu for v7.6.0 (native build
+      # + TPM libs present); aarch64 (cross, no cross-libtss2) and Windows
+      # (tss-esapi-on-MSVC) are documented follow-ups.
+      - name: Build TPM plugin (real)
+        if: ${{ matrix.tpm_plugin == 'true' }}
+        shell: bash
+        run: |
+          cargo build --release --target "${{ matrix.target }}" \
+            -p ciris-tpm-plugin --features real
+          # Confirm the FFI cdylib did NOT pick up a libtss2 dependency (the
+          # #125 invariant): fail the build loudly if it ever regresses.
+          FFI="target/${{ matrix.target }}/release/${{ matrix.artifact }}"
+          if readelf -d "$FFI" | grep -qi tss2; then
+            echo "::error::FFI cdylib DT_NEEDEDs libtss2 — tpm-plugin must stay dlopen-only (#125)"
+            exit 1
+          fi
+          strip "target/${{ matrix.target }}/release/libciris_tpm_plugin.so" || true
+
+      - name: Upload TPM plugin artifact
+        if: ${{ matrix.tpm_plugin == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ciris-tpm-plugin-${{ matrix.target }}
+          path: target/${{ matrix.target }}/release/libciris_tpm_plugin.so
+          if-no-files-found: error
 
       # Upload artifacts
       # Artifact NAME stays keyed on matrix.target (x86_64-pc-windows-msvc) so
@@ -837,6 +876,17 @@ jobs:
             fi
           done
 
+          # Runtime TPM plugin (CIRISVerify#130) — alongside the native lib for
+          # the target(s) it was built for, so native (non-wheel) consumers can
+          # place it next to their binary and set CIRIS_TPM_PLUGIN.
+          for dir in artifacts/ciris-tpm-plugin-*; do
+            if [ -d "$dir" ]; then
+              target=$(basename "$dir" | sed 's/ciris-tpm-plugin-//')
+              mkdir -p "release/$target"
+              cp -r "$dir"/* "release/$target/" || true
+            fi
+          done
+
           # Copy Android libraries
           for dir in artifacts/ciris-verify-android-*; do
             if [ -d "$dir" ]; then
@@ -1436,6 +1486,10 @@ jobs:
             build_tool_artifact: build-tool-x86_64-unknown-linux-gnu
             lib_name: libciris_verify_ffi.so
             bin_ext: ""
+            # Runtime TPM plugin (CIRISVerify#130) — bundled only on the target it
+            # is built for (x86_64-linux-gnu in v7.6.0).
+            tpm_plugin_artifact: ciris-tpm-plugin-x86_64-unknown-linux-gnu
+            tpm_plugin_lib: libciris_tpm_plugin.so
 
           - os: ubuntu-latest
             platform: manylinux_aarch64
@@ -1484,6 +1538,14 @@ jobs:
           name: ${{ matrix.build_tool_artifact }}
           path: build-tool-bin
 
+      # Runtime TPM plugin (CIRISVerify#130) — only on platforms that built one.
+      - name: Download TPM plugin artifact
+        if: ${{ matrix.tpm_plugin_artifact != '' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.tpm_plugin_artifact }}
+          path: tpm-plugin-lib
+
       - name: Build wheel
         shell: bash
         run: |
@@ -1494,6 +1556,14 @@ jobs:
 
           # Copy the CI-built FFI library into the package
           cp ../../ffi-lib/${{ matrix.lib_name }} ciris_verify/
+
+          # Bundle the runtime TPM plugin next to the FFI where one was built
+          # (#130). __init__ points CIRIS_TPM_PLUGIN at it so the keyring dlopens
+          # it for opportunistic TPM custody; absent → software fallback.
+          if [ -n "${{ matrix.tpm_plugin_lib }}" ] && [ -f "../../tpm-plugin-lib/${{ matrix.tpm_plugin_lib }}" ]; then
+            cp "../../tpm-plugin-lib/${{ matrix.tpm_plugin_lib }}" ciris_verify/
+            echo "Bundled TPM plugin: ${{ matrix.tpm_plugin_lib }}"
+          fi
 
           # Bundle ciris-build-sign + ciris-build-verify into the wheel
           # (v1.8.6+: console scripts ciris-build-sign / ciris-build-verify
