@@ -40,9 +40,14 @@
 
 #![allow(clippy::missing_safety_doc)]
 
-/// ABI version. Bump on any breaking change to an exported signature; the
-/// keyring refuses to load a plugin whose version it doesn't recognize.
-pub const CIRIS_TPM_ABI_VERSION: u32 = 1;
+/// ABI version. Bump on any **additive** revision so a client can detect which
+/// ops exist; the keyring accepts any version in its supported range and
+/// resolves newer ops lazily (fail-closed if a symbol is absent).
+///
+/// - **v1:** `available` / `seal` / `unseal` / `free`.
+/// - **v2 (#141):** adds the signer path — `signer_create` / `signer_public` /
+///   `signer_sign` (ECDSA P-256, stateless blob-based).
+pub const CIRIS_TPM_ABI_VERSION: u32 = 2;
 
 /// Operation succeeded.
 pub const CIRIS_TPM_OK: i32 = 0;
@@ -154,6 +159,98 @@ pub unsafe extern "C" fn ciris_tpm_unseal(
     }
 }
 
+/// Create an ECDSA P-256 signing key in the TPM → its persistable key blob in
+/// `out`/`out_len` (ABI v2, #141).
+///
+/// The blob is opaque (`u32_le(private_len) ‖ private ‖ public`) and bound to
+/// this TPM (only it can load + sign with it). The keyring stores the blob and
+/// passes it back to [`ciris_tpm_signer_public`] / [`ciris_tpm_signer_sign`].
+/// Returns [`CIRIS_TPM_OK`], [`CIRIS_TPM_UNAVAILABLE`], or [`CIRIS_TPM_ERROR`].
+///
+/// # Safety
+/// `out`/`out_len` valid; the returned buffer is freed via [`ciris_tpm_free`].
+#[no_mangle]
+pub unsafe extern "C" fn ciris_tpm_signer_create(out: *mut *mut u8, out_len: *mut usize) -> i32 {
+    if out.is_null() || out_len.is_null() {
+        return CIRIS_TPM_ERROR;
+    }
+    match backend::signer_create() {
+        Ok(blob) => {
+            emit(blob, out, out_len);
+            CIRIS_TPM_OK
+        },
+        Err(e) => {
+            tracing::error!("ciris_tpm_signer_create: {e}");
+            CIRIS_TPM_ERROR
+        },
+    }
+}
+
+/// Load a signer blob from [`ciris_tpm_signer_create`] → its SEC1-uncompressed
+/// public key (`0x04 ‖ X(32) ‖ Y(32)`, 65 bytes) in `out`/`out_len`.
+///
+/// # Safety
+/// `blob` valid for `blob_len`; `out`/`out_len` valid. Buffer freed via
+/// [`ciris_tpm_free`].
+#[no_mangle]
+pub unsafe extern "C" fn ciris_tpm_signer_public(
+    blob: *const u8,
+    blob_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    if blob.is_null() || out.is_null() || out_len.is_null() {
+        return CIRIS_TPM_ERROR;
+    }
+    let blob = std::slice::from_raw_parts(blob, blob_len);
+    match backend::signer_public(blob) {
+        Ok(pk) => {
+            emit(pk, out, out_len);
+            CIRIS_TPM_OK
+        },
+        Err(e) => {
+            tracing::error!("ciris_tpm_signer_public: {e}");
+            CIRIS_TPM_ERROR
+        },
+    }
+}
+
+/// Load a signer blob, SHA-256-hash `data`, and ECDSA-sign it → raw
+/// `r(32) ‖ s(32)` (64 bytes) in `out`/`out_len`.
+///
+/// # Safety
+/// `blob` valid for `blob_len`; `data` valid for `data_len` (or null iff
+/// `data_len == 0`); `out`/`out_len` valid. Buffer freed via [`ciris_tpm_free`].
+#[no_mangle]
+pub unsafe extern "C" fn ciris_tpm_signer_sign(
+    blob: *const u8,
+    blob_len: usize,
+    data: *const u8,
+    data_len: usize,
+    out: *mut *mut u8,
+    out_len: *mut usize,
+) -> i32 {
+    if blob.is_null() || out.is_null() || out_len.is_null() || (data.is_null() && data_len != 0) {
+        return CIRIS_TPM_ERROR;
+    }
+    let blob = std::slice::from_raw_parts(blob, blob_len);
+    let data = if data_len == 0 {
+        &[][..]
+    } else {
+        std::slice::from_raw_parts(data, data_len)
+    };
+    match backend::signer_sign(blob, data) {
+        Ok(sig) => {
+            emit(sig, out, out_len);
+            CIRIS_TPM_OK
+        },
+        Err(e) => {
+            tracing::error!("ciris_tpm_signer_sign: {e}");
+            CIRIS_TPM_ERROR
+        },
+    }
+}
+
 /// The TPM backend — real (`tss-esapi`, gnu/win) or stub. See `backend.rs`.
 mod backend;
 
@@ -195,5 +292,38 @@ mod tests {
         // Default build (no `real`) must report unavailable, never crash.
         #[cfg(not(feature = "real"))]
         assert_eq!(ciris_tpm_available(), CIRIS_TPM_UNAVAILABLE);
+    }
+
+    #[test]
+    fn abi_version_advertises_v2_signer() {
+        // The signer path (#141) is ABI v2; the version must advertise it so a
+        // client can resolve the signer symbols.
+        assert!(ciris_tpm_plugin_abi_version() >= 2);
+    }
+
+    #[test]
+    fn signer_create_fails_closed_without_a_tpm() {
+        // No TPM in any test env → signer_create must never report success.
+        let mut out: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc = unsafe { ciris_tpm_signer_create(&mut out, &mut out_len) };
+        assert_ne!(rc, CIRIS_TPM_OK, "signer_create must fail closed");
+    }
+
+    #[test]
+    fn signer_null_pointers_are_rejected() {
+        let rc = unsafe { ciris_tpm_signer_create(std::ptr::null_mut(), std::ptr::null_mut()) };
+        assert_eq!(rc, CIRIS_TPM_ERROR);
+        let rc = unsafe {
+            ciris_tpm_signer_sign(
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                0,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            )
+        };
+        assert_eq!(rc, CIRIS_TPM_ERROR);
     }
 }

@@ -20,10 +20,13 @@ crate-type = ["cdylib", "rlib"]
 # where tss-esapi can link. This is what lets the *keyring* drop its hard tss2
 # link entirely (it dlopens this instead).
 default = []
-real = ["tss-esapi"]
+real = ["tss-esapi", "dep:sha2"]
 
 [dependencies]
 tracing.workspace = true
+# SHA-256 for the signer path (#141) — hashing data before ECDSA. Pure Rust,
+# pulled only by `real` (the stub backend never hashes).
+sha2 = { workspace = true, optional = true }
 
 # tss-esapi link-binds the system tss2 C libs → glibc-linux + windows only
 # (no aarch64-musl libtss2). The crate still *builds* everywhere without `real`;
