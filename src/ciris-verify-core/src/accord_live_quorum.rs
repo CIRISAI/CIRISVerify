@@ -274,6 +274,25 @@ pub enum LiveQuorumError {
         /// `member_id` of the pinned directory member.
         pinned: String,
     },
+    /// A participation names a member that is NOT in the pinned standing roster
+    /// (C3 — `L ⊆ standing roster`; only real, key-holding members count).
+    NotInStandingRoster {
+        /// The unrecognized `member_id`.
+        member_id: String,
+    },
+    /// The same member appears twice in one tally — a member counts once (M3).
+    DuplicateParticipant {
+        /// The duplicated `member_id`.
+        member_id: String,
+    },
+    /// The proposal's action is not the one this verifier handles (fire vs.
+    /// roster-change).
+    WrongAction {
+        /// The action this verifier expects.
+        expected: &'static str,
+        /// The action the proposal actually carries.
+        got: &'static str,
+    },
     /// The hybrid signature did not verify over the recomputed canonical bytes.
     Signature(String),
 }
@@ -300,12 +319,139 @@ impl std::fmt::Display for LiveQuorumError {
                 f,
                 "member_id mismatch: object {participation} / sig {signature} / pinned {pinned} (M3)"
             ),
+            Self::NotInStandingRoster { member_id } => write!(
+                f,
+                "participant {member_id} is not in the pinned standing roster (C3)"
+            ),
+            Self::DuplicateParticipant { member_id } => {
+                write!(f, "member {member_id} participated twice in one tally (M3)")
+            },
+            Self::WrongAction { expected, got } => {
+                write!(f, "wrong proposal action: expected {expected}, got {got}")
+            },
             Self::Signature(e) => write!(f, "participation signature invalid: {e}"),
         }
     }
 }
 
 impl std::error::Error for LiveQuorumError {}
+
+/// The result of tallying participations over the live set — the frozen `L` (M2)
+/// plus the vote breakdown. `live_set` is the distinct set of members who proved
+/// life, each verified against the **standing** roster (C3).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LiveQuorumTally {
+    /// `member_id`s who proved life within the window — distinct, each a verified
+    /// standing-roster member. This is the live set `L`.
+    pub live_set: Vec<String>,
+    /// `yes` votes within `L`.
+    pub yes: usize,
+    /// `no` votes within `L`.
+    pub no: usize,
+    /// `abstain` votes within `L` (present, no preference).
+    pub abstain: usize,
+}
+
+impl LiveQuorumTally {
+    /// `|L|` — the size of the live set.
+    #[must_use]
+    pub fn live_count(&self) -> usize {
+        self.live_set.len()
+    }
+}
+
+/// Tally `participations` against `proposal` over the **standing** roster.
+///
+/// Each participation is cryptographically verified ([`AccordParticipation::verify`]
+/// — sig + proposal-digest binding + family), and its signer is resolved **only**
+/// against `standing_roster` (C3/M3: `L ⊆ standing roster`, never a bundle-embedded
+/// roster). `L` is deduped by member (a member counts once). **Fail-closed:** any
+/// participation that fails verification, names a non-standing member, or duplicates
+/// a member rejects the whole tally.
+///
+/// **Window boundary (C2):** the authoritative-server window gate — `L` membership
+/// by **server-observed arrival within `W`** — is the *caller's* responsibility.
+/// This function is the cryptographic + roster-membership core; CIRISServer filters
+/// participations by arrival time before calling it. `signed_at` is never trusted
+/// as the clock.
+///
+/// # Errors
+/// [`LiveQuorumError`] on the first failed participation.
+pub fn tally_live_quorum(
+    proposal: &AccordProposal,
+    participations: &[AccordParticipation],
+    standing_roster: &[ThresholdMember],
+) -> Result<LiveQuorumTally, LiveQuorumError> {
+    let mut live_set: Vec<String> = Vec::with_capacity(participations.len());
+    let (mut yes, mut no, mut abstain) = (0usize, 0usize, 0usize);
+    for p in participations {
+        // C3/M3: resolve the signer ONLY in the pinned standing roster.
+        let member = standing_roster
+            .iter()
+            .find(|m| m.member_id == p.member_id)
+            .ok_or_else(|| LiveQuorumError::NotInStandingRoster {
+                member_id: p.member_id.clone(),
+            })?;
+        p.verify(member, proposal)?;
+        // M3: a member counts once.
+        if live_set.iter().any(|id| id == &p.member_id) {
+            return Err(LiveQuorumError::DuplicateParticipant {
+                member_id: p.member_id.clone(),
+            });
+        }
+        live_set.push(p.member_id.clone());
+        match p.vote {
+            Vote::Yes => yes += 1,
+            Vote::No => no += 1,
+            Vote::Abstain => abstain += 1,
+        }
+    }
+    Ok(LiveQuorumTally {
+        live_set,
+        yes,
+        no,
+        abstain,
+    })
+}
+
+/// The verdict of a live-quorum FIRE.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FireVerdict {
+    /// Whether the kill-switch fired.
+    pub fired: bool,
+    /// The frozen tally the verdict was computed over.
+    pub tally: LiveQuorumTally,
+}
+
+/// Whether a live-quorum `CONSTITUTIONAL` FIRE is authorized.
+///
+/// **M1 — the fire floor is pinned to 1:** a SINGLE `yes` participation in `L`
+/// fires. Firing leans easiest because a missed fire is terminal; the floor is
+/// **never** `strict_majority(|L|)` (which would let an adversary inflate `|L|`
+/// with captured keys to raise the fire bar — a suppression lever). The
+/// `fire ≤ roster-change ≤ standing` bias gradient (CC §4.2.1.3) starts here.
+///
+/// # Errors
+/// [`LiveQuorumError::WrongAction`] if `proposal.action` isn't [`AccordAction::Fire`];
+/// any [`tally_live_quorum`] error.
+pub fn verify_fire_by_live_quorum(
+    proposal: &AccordProposal,
+    participations: &[AccordParticipation],
+    standing_roster: &[ThresholdMember],
+) -> Result<FireVerdict, LiveQuorumError> {
+    if proposal.action != AccordAction::Fire {
+        return Err(LiveQuorumError::WrongAction {
+            expected: "fire",
+            got: proposal.action.as_str(),
+        });
+    }
+    let tally = tally_live_quorum(proposal, participations, standing_roster)?;
+    // Floor of 1: any single `yes` fires.
+    Ok(FireVerdict {
+        fired: tally.yes >= 1,
+        tally,
+    })
+}
 
 #[cfg(test)]
 mod tests {
@@ -513,6 +659,105 @@ mod tests {
         assert!(matches!(
             part.verify(&h.member(), &prop),
             Err(LiveQuorumError::Signature(_))
+        ));
+    }
+
+    fn fire_proposal() -> AccordProposal {
+        let mut p = sample_proposal();
+        p.action = AccordAction::Fire;
+        p
+    }
+
+    #[test]
+    fn tally_builds_live_set_and_counts_votes() {
+        let prop = sample_proposal();
+        let hs: Vec<Holder> = ["A1", "B1", "C1"]
+            .iter()
+            .map(|id| Holder::new(id))
+            .collect();
+        let roster: Vec<ThresholdMember> = hs.iter().map(Holder::member).collect();
+        let parts = vec![
+            participate(&hs[0], &prop, Vote::Yes),
+            participate(&hs[1], &prop, Vote::Yes),
+            participate(&hs[2], &prop, Vote::No),
+        ];
+        let t = tally_live_quorum(&prop, &parts, &roster).unwrap();
+        assert_eq!(t.live_count(), 3);
+        assert_eq!((t.yes, t.no, t.abstain), (2, 1, 0));
+    }
+
+    #[test]
+    fn tally_rejects_a_non_standing_participant() {
+        // C3: only members of the pinned standing roster count.
+        let prop = sample_proposal();
+        let a = Holder::new("A1");
+        let intruder = Holder::new("X9"); // not in the roster
+        let roster = vec![a.member()];
+        let parts = vec![
+            participate(&a, &prop, Vote::Yes),
+            participate(&intruder, &prop, Vote::Yes),
+        ];
+        assert!(matches!(
+            tally_live_quorum(&prop, &parts, &roster),
+            Err(LiveQuorumError::NotInStandingRoster { .. })
+        ));
+    }
+
+    #[test]
+    fn tally_rejects_a_duplicate_participant() {
+        // M3: a member counts once.
+        let prop = sample_proposal();
+        let a = Holder::new("A1");
+        let roster = vec![a.member()];
+        let parts = vec![
+            participate(&a, &prop, Vote::Yes),
+            participate(&a, &prop, Vote::No), // same member twice
+        ];
+        assert!(matches!(
+            tally_live_quorum(&prop, &parts, &roster),
+            Err(LiveQuorumError::DuplicateParticipant { .. })
+        ));
+    }
+
+    #[test]
+    fn fire_floor_is_one_even_with_a_large_live_set() {
+        // M1: a SINGLE yes fires, regardless of |L| — the floor is never
+        // strict-majority-of-L. A big live set that mostly votes no but with one
+        // yes still fires (a missed fire is terminal; firing leans easiest).
+        let prop = fire_proposal();
+        let hs: Vec<Holder> = (0..7).map(|i| Holder::new(&format!("H{i}"))).collect();
+        let roster: Vec<ThresholdMember> = hs.iter().map(Holder::member).collect();
+        let mut parts: Vec<AccordParticipation> =
+            hs.iter().map(|h| participate(h, &prop, Vote::No)).collect();
+        // flip exactly one to yes
+        parts[3] = participate(&hs[3], &prop, Vote::Yes);
+        let v = verify_fire_by_live_quorum(&prop, &parts, &roster).unwrap();
+        assert!(v.fired, "one yes fires even with 6 no in L");
+        assert_eq!(v.tally.yes, 1);
+    }
+
+    #[test]
+    fn fire_does_not_fire_without_a_yes() {
+        let prop = fire_proposal();
+        let a = Holder::new("A1");
+        let roster = vec![a.member()];
+        let parts = vec![participate(&a, &prop, Vote::Abstain)];
+        let v = verify_fire_by_live_quorum(&prop, &parts, &roster).unwrap();
+        assert!(!v.fired, "presence without a yes does not fire");
+    }
+
+    #[test]
+    fn fire_verifier_rejects_a_roster_change_proposal() {
+        let prop = sample_proposal(); // RosterChange
+        let a = Holder::new("A1");
+        let roster = vec![a.member()];
+        let parts = vec![participate(&a, &prop, Vote::Yes)];
+        assert!(matches!(
+            verify_fire_by_live_quorum(&prop, &parts, &roster),
+            Err(LiveQuorumError::WrongAction {
+                expected: "fire",
+                ..
+            })
         ));
     }
 }
