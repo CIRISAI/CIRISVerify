@@ -354,16 +354,27 @@ exist to bound.
 - **Q1 — Fire floor — RESOLVED: floor = 1.** A single reachable survivor may fire
   (§4.3). A false fire is recoverable; a higher floor would let the adversary kill
   the switch by reducing holders below it. Settled by the maintainer.
-- **Q2 — Roster-window calibration.** `W = 72 h` baseline is set; the open part is
-  the extension policy (when/who declares severe-degradation to stretch toward 7 d)
-  and whether `W` should scale with `|L|`. Long enough for HF store-and-forward
-  (§4.6) to carry an honest proof-of-life in; short enough to recover before the
-  adversary consolidates.
-- **Q3 — Coercion / duress.** Proof-of-life cannot detect a gun-to-the-head
-  signature. Is steward floor + live majority + transparency + post-hoc reversal
-  sufficient, or is a duress canary warranted?
-- **Q4 — Recursion termination / minimum viable accord.** Below some `\|L\|`, does
-  the accord enter a steward-custodied regime rather than a 1-of-1?
+- **Q2 — Roster-window calibration — RESOLVED: fixed `W = 72 h`, no extension.**
+  The window is a single, fixed 72 h — *no* severe-degradation stretch and *no*
+  scaling with `|L|`. One predictable rule with no mid-crisis "declare an
+  emergency to change the timing" lever (which would itself be an attack surface);
+  72 h is long enough for HF store-and-forward (§4.6) to carry an honest
+  proof-of-life in, short enough to recover before the adversary consolidates.
+  Settled by the maintainer; matches the CC §4.2.6 `W = 72 h` baseline.
+- **Q3 — Coercion / duress — RESOLVED: existing safeguards, no canary.** Proof-of-
+  life cannot detect a gun-to-the-head signature, and we do **not** add a duress
+  canary (its own failure modes — panic-forgotten, threat-model-leaked — outweigh
+  the gain). Coercion stays a **named, bounded residual**, mitigated by the steward
+  floor (Q4) + live majority + append-only transparency + post-hoc reversal, not
+  claimed "solved." Settled by the maintainer; matches the CC §4.2.6 "bounded, not
+  solved" framing.
+- **Q4 — Recursion termination / minimum viable accord — RESOLVED: steward-co-sign
+  below 3, not full custody.** *Firing* stays floor-of-1 (Q1). *Rebuilding* the
+  roster when `|L| < 3` additionally requires a **2-of-3 regional-steward co-sign**
+  (so a lone coerced survivor cannot quietly rebuild a captured accord) — but the
+  accord is **never handed to the stewards outright** (they are infrastructure, not
+  the human off-switch). Settled by the maintainer; matches the CC §4.2.6
+  `L_floor = 3` steward-backstop rule exactly.
 - **Q5 — Constitutional grounding — RESOLVED + EXPANDED.** Ratified in **CC 0.3 §4.2.6**
   (CIRISRegistry `c27d794`, issue #108). The live quorum is grounded in CC §4.2 /
   CEG §9; the *restores-not-seizes* proof (live quorum restores operability, cannot
@@ -399,10 +410,14 @@ exist to bound.
 
 ## 12. Implementation phases (when grounded + reviewed)
 
-1. **Phase 0 — ratify.** Q1 resolved (fire floor = 1); **Q5 resolved (constitutional
-   grounding — CC 0.3 §4.2.6)**. Remaining before code: Q2 (window calibration),
-   Q3 (duress), Q4 (recursion floor), and the threat-model sign-off / adversarial
-   review. *No code until those close.*
+1. **Phase 0 — ratify — DECISIONS COMPLETE.** Q1 (fire floor = 1), Q5
+   (constitutional grounding — CC 0.3 §4.2.6), **and now Q2 (fixed 72 h window),
+   Q3 (existing safeguards, no duress canary), Q4 (2-of-3 steward co-sign for
+   rebuilds below `|L| = 3`, never full steward custody)** are all resolved by the
+   maintainer — each matching the CC §4.2.6 default, so no new constitutional text
+   is required. **The one remaining gate before Phase 1 code is the threat-model
+   sign-off / adversarial review (≥ #91/#95 rigor).** Q6 (the HF↔RNS relay
+   backbone) is deployment, not verify code.
 2. **Phase 1 — live-quorum tally + roster change.** `accord_proposal` /
    `accord_participation` / `accord_decision` objects + `tally_live_quorum` +
    `verify_membership_change_by_live_quorum`, reusing the membership-change core.
