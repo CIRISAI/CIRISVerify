@@ -386,13 +386,36 @@ jobs:
         with:
           targets: ${{ matrix.target }}
 
-      # CIRISCache (CIRISVerify#126) — per-target key (multiple targets share
-      # the ubuntu host, so the default os-arch key would collide); lock-hash
-      # busts on dependency changes. Hardened continue-on-error.
+      # CIRISCache (CIRISVerify#126) — the **canonical cross-repo key** pinned in
+      # CIRISServer#99, suffixed with the matrix target (verify's build-native is
+      # a cross-compile matrix, so each target is a distinct build that must not
+      # collide on the shared os-arch host). For verify p=e=none (no
+      # ciris-persist / ciris-edge dep), v=ciris-verify-core's resolved version —
+      # so verify keeps its own compiled blob but shares the always-on ~/.cargo
+      # registry blob with the other repos. Derivation is byte-identical across
+      # repos (see #99) so the rustc/version segments line up.
+      - name: Compute CIRISCache key (canonical, CIRISServer#99)
+        shell: bash
+        run: |
+          RUSTC=$(rustc -V | awk '{print $2}')
+          # `|| true` so a crate absent from Cargo.lock (verify has no
+          # ciris-persist / ciris-edge) yields empty instead of grep's exit-1
+          # aborting under GitHub bash's `set -e -o pipefail` — then ${X:-none}
+          # supplies the slot. (The CIRISServer#99 snippet omits this and trips
+          # `set -e`; flagged back there + on the persist/edge adopters.)
+          ver() { { grep -A1 "name = \"$1\"" Cargo.lock | grep -m1 '^version' | sed -E 's/.*"([^"]+)".*/\1/'; } || true; }
+          P=$(ver ciris-persist); E=$(ver ciris-edge); V=$(ver ciris-verify-core)
+          # `tr` for lowercasing, NOT bash's ${VAR,,} — GitHub macOS runners ship
+          # bash 3.2, where ${,,} is a "bad substitution" fatal error. (Second
+          # latent bug in the #99 snippet, also flagged upstream.)
+          OS=$(printf '%s' "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
+          ARCH=$(printf '%s' "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')
+          KEY="ciris-substrate-v1-${OS}-${ARCH}-release-rustc${RUSTC}-p${P:-none}-e${E:-none}-v${V:-none}"
+          echo "CIRISCACHE_KEY=${KEY}-${{ matrix.target }}" >> "$GITHUB_ENV"
       - uses: CIRISAI/CIRISCache/restore@v1
         continue-on-error: true
         with:
-          key: ciris-verify-build-${{ matrix.target }}-${{ hashFiles('Cargo.lock') }}
+          key: ${{ env.CIRISCACHE_KEY }}
 
       # Install cross for ARM64 Linux
 
@@ -450,11 +473,12 @@ jobs:
           path: target/${{ matrix.target }}/release/${{ matrix.artifact }}
           if-no-files-found: warn
 
-      # Save the warmed per-target cache (main only).
+      # Save the warmed cache under the canonical key (main only).
       - uses: CIRISAI/CIRISCache/save@v1
         if: github.ref == 'refs/heads/main'
         continue-on-error: true
         with:
+          key: ${{ env.CIRISCACHE_KEY }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
   # ==========================================================================
