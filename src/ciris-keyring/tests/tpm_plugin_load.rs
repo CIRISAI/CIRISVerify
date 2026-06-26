@@ -36,11 +36,8 @@ fn loads_real_plugin_and_completes_abi_handshake() {
         eprintln!("ciris-tpm-plugin not built alongside; skipping load test");
         return;
     };
-    std::env::set_var("CIRIS_TPM_PLUGIN", &path);
-    let loaded = TpmPlugin::load();
-    std::env::remove_var("CIRIS_TPM_PLUGIN");
-
-    let plugin = loaded.expect("real plugin must load + pass the ABI version check");
+    let plugin =
+        TpmPlugin::load_from(&path).expect("real plugin must load + pass the ABI version check");
     // Stub backend → no TPM device; the contract is "answers honestly", and a
     // seal attempt fails cleanly rather than panicking.
     assert!(!plugin.available(), "stub plugin reports no TPM");
