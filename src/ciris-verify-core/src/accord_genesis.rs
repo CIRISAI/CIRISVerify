@@ -342,7 +342,7 @@ impl std::fmt::Display for AccordGenesisError {
 impl std::error::Error for AccordGenesisError {}
 
 /// Extract the envelope's member `key_id`s in order.
-fn envelope_member_key_ids(envelope: &Value) -> Result<Vec<String>, AccordGenesisError> {
+pub(crate) fn envelope_member_key_ids(envelope: &Value) -> Result<Vec<String>, AccordGenesisError> {
     let members = envelope.get("members").and_then(Value::as_array).ok_or(
         AccordGenesisError::MalformedEnvelope {
             detail: "missing or non-array `members`".to_string(),
@@ -820,6 +820,59 @@ pub fn verify_membership_change(
     prior_quorum_signatures: &[ThresholdSignature],
     directory: &[ThresholdMember],
 ) -> Result<(), AccordGenesisError> {
+    // Steps 1-3: the structural invariants (distinct + strict-majority, distinct
+    // pubkeys/one-seat, entrenchment/identity preserved, and the anti-replay anchor
+    // `supersedes.prior_member_key_ids == prior roster`). Factored out so the
+    // live-quorum path reuses the identical structure (CIRISVerify#98 / FSD-004).
+    validate_membership_change_structure(prior_envelope, new_envelope, directory)?;
+
+    // 4. Authorized by the PRIOR roster's strict-majority quorum (role-agnostic).
+    let prior_roster = roster_from_envelope(prior_envelope, directory)?;
+    let prior_threshold = quorum_threshold_from_envelope(prior_envelope)?;
+    let bytes = accord_family_signing_bytes(new_envelope).map_err(|e| {
+        AccordGenesisError::Canonicalize {
+            detail: e.to_string(),
+        }
+    })?;
+    match verify_threshold_signatures(
+        &bytes,
+        &prior_roster,
+        prior_quorum_signatures,
+        prior_threshold,
+    ) {
+        Ok(_) => Ok(()),
+        Err(ThresholdError::Insufficient { valid, threshold }) => {
+            Err(AccordGenesisError::QuorumNotMet {
+                valid,
+                required: threshold,
+            })
+        },
+        Err(e) => Err(AccordGenesisError::Threshold {
+            detail: format!("{e:?}"),
+        }),
+    }
+}
+
+/// The **structural** invariants of a membership change — everything except the
+/// authorization (who signed). Factored out of [`verify_membership_change`] so the
+/// live-quorum path ([`crate::accord_live_quorum`]) reuses the *exact same*
+/// structure checks while authorizing over the live set `L` instead of the prior
+/// roster's quorum (CIRISVerify#98 / FSD-004 C3).
+///
+/// Validates: the new envelope is well-formed + lists **distinct** members at a
+/// strict-majority `quorum:M/N` (`2·M > N`); the new roster resolves in
+/// `directory` to **distinct pubkeys** (one-key/one-human-one-seat); `family_key_id`
+/// is unchanged and an entrenched prior is not de-entrenched; and
+/// `supersedes.prior_member_key_ids` **equals the actual prior member set** — the
+/// anti-replay anchor, bound to the **prior/standing** roster (never the live set).
+///
+/// # Errors
+/// [`AccordGenesisError`] naming the first failing invariant.
+pub fn validate_membership_change_structure(
+    prior_envelope: &Value,
+    new_envelope: &Value,
+    directory: &[ThresholdMember],
+) -> Result<(), AccordGenesisError> {
     // 1. New envelope well-formed + distinct members + strict-majority M/N.
     let new_ids = envelope_member_key_ids(new_envelope)?;
     {
@@ -872,32 +925,7 @@ pub fn verify_membership_change(
             detail: "supersedes.prior_member_key_ids does not match the prior group".to_string(),
         });
     }
-
-    // 4. Authorized by the PRIOR roster's strict-majority quorum (role-agnostic).
-    let prior_roster = roster_from_envelope(prior_envelope, directory)?;
-    let prior_threshold = quorum_threshold_from_envelope(prior_envelope)?;
-    let bytes = accord_family_signing_bytes(new_envelope).map_err(|e| {
-        AccordGenesisError::Canonicalize {
-            detail: e.to_string(),
-        }
-    })?;
-    match verify_threshold_signatures(
-        &bytes,
-        &prior_roster,
-        prior_quorum_signatures,
-        prior_threshold,
-    ) {
-        Ok(_) => Ok(()),
-        Err(ThresholdError::Insufficient { valid, threshold }) => {
-            Err(AccordGenesisError::QuorumNotMet {
-                valid,
-                required: threshold,
-            })
-        },
-        Err(e) => Err(AccordGenesisError::Threshold {
-            detail: format!("{e:?}"),
-        }),
-    }
+    Ok(())
 }
 
 /// Build an **accord** membership-change envelope (CIRISVerify#95) — the

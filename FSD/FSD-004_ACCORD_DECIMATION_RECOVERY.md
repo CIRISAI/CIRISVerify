@@ -410,14 +410,19 @@ exist to bound.
 
 ## 12. Implementation phases (when grounded + reviewed)
 
-1. **Phase 0 — ratify — DECISIONS COMPLETE.** Q1 (fire floor = 1), Q5
-   (constitutional grounding — CC 0.3 §4.2.6), **and now Q2 (fixed 72 h window),
-   Q3 (existing safeguards, no duress canary), Q4 (2-of-3 steward co-sign for
-   rebuilds below `|L| = 3`, never full steward custody)** are all resolved by the
-   maintainer — each matching the CC §4.2.6 default, so no new constitutional text
-   is required. **The one remaining gate before Phase 1 code is the threat-model
-   sign-off / adversarial review (≥ #91/#95 rigor).** Q6 (the HF↔RNS relay
-   backbone) is deployment, not verify code.
+1. **Phase 0 — ratify — COMPLETE.** Q1 (fire floor = 1), Q5 (constitutional
+   grounding — CC 0.3 §4.2.6), Q2 (fixed 72 h window), Q3 (existing safeguards, no
+   duress canary), Q4 (2-of-3 steward co-sign for rebuilds below `|L| = 3`, never
+   full steward custody) all resolved by the maintainer — each matching the CC
+   §4.2.6 default, so no new constitutional text is required. **The adversarial
+   review is DONE** — see [`FSD-004_ADVERSARIAL_REVIEW.md`](FSD-004_ADVERSARIAL_REVIEW.md)
+   (four independent red-team passes ≥ #91/#95 rigor). It found no design
+   rejections; its findings are **build obligations folded into Phases 1-3 below**
+   (the participation canonical-bytes preimage, server-clocked window membership,
+   the standing-roster anti-replay anchor, the equivocation gate, `N_min`/removal-
+   continuity, the resumption-threshold asymmetry, reversal expressibility). Q6
+   (the HF↔RNS relay backbone) is deployment, not verify code. **Phase 1 code is
+   now unblocked.**
 2. **Phase 1 — live-quorum tally + roster change.** `accord_proposal` /
    `accord_participation` / `accord_decision` objects + `tally_live_quorum` +
    `verify_membership_change_by_live_quorum`, reusing the membership-change core.
