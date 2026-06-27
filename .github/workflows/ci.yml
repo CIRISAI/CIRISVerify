@@ -546,6 +546,24 @@ jobs:
           cache-bin: false
           key: android-${{ matrix.abi }}
 
+      # CIRISCache (CIRISVerify#126 / #155) — canonical cross-repo key for the
+      # android PLAT. <PLAT> = android-<abi> (matches the edge + persist
+      # convention) so downstream mobile lanes hit verify's substrate-leaf blob.
+      # Restored AFTER Swatinem so the canonical GHCR blob wins; p=e=none for
+      # verify (no ciris-persist / ciris-edge dep), v=ciris-verify-core.
+      - name: Compute CIRISCache key (canonical, CIRISServer#99 / #155)
+        shell: bash
+        run: |
+          RUSTC=$(rustc -V | awk '{print $2}')
+          ver() { { grep -A1 "name = \"$1\"" Cargo.lock | grep -m1 '^version' | sed -E 's/.*"([^"]+)".*/\1/'; } || true; }
+          P=$(ver ciris-persist); E=$(ver ciris-edge); V=$(ver ciris-verify-core)
+          KEY="ciris-substrate-v1-android-${{ matrix.abi }}-release-rustc${RUSTC}-p${P:-none}-e${E:-none}-v${V:-none}"
+          echo "CIRISCACHE_KEY=${KEY}" >> "$GITHUB_ENV"
+      - uses: CIRISAI/CIRISCache/restore@v1
+        continue-on-error: true
+        with:
+          key: ${{ env.CIRISCACHE_KEY }}
+
       - name: Repair toolchain if rustup-init shadow (cache-poison heal)
         # v2.1.2 detected; v2.1.3 moved after cache restore; v2.1.4 active heal.
         # macOS runners occasionally cache a `~/.cargo/bin/cargo` that IS the
@@ -604,6 +622,17 @@ jobs:
           path: target/${{ matrix.target }}/release/libciris_verify_ffi.so
           if-no-files-found: warn
 
+      # CIRISCache (CIRISVerify#126 / #155): publish the warm verify blob (main
+      # only) so downstream mobile lanes (CIRISEdge android-ndk, sibling repos)
+      # HIT the substrate-leaf verify layer on android instead of recompiling
+      # ML-DSA / ML-KEM / HPKE / Ed25519 / X25519 + keyring from scratch.
+      - uses: CIRISAI/CIRISCache/save@v1
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        with:
+          key: ${{ env.CIRISCACHE_KEY }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
   # ==========================================================================
   # Build Matrix - iOS
   # ==========================================================================
@@ -637,6 +666,24 @@ jobs:
           # poisoning. See ci.yml comment block above.
           cache-bin: false
           key: ios-${{ matrix.target }}
+
+      # CIRISCache (CIRISVerify#126 / #155) — canonical cross-repo key for the
+      # ios PLAT. <PLAT> = ios-<target> (matches the edge + persist convention)
+      # so downstream mobile lanes hit verify's substrate-leaf blob. Restored
+      # AFTER Swatinem so the canonical GHCR blob wins; p=e=none for verify,
+      # v=ciris-verify-core.
+      - name: Compute CIRISCache key (canonical, CIRISServer#99 / #155)
+        shell: bash
+        run: |
+          RUSTC=$(rustc -V | awk '{print $2}')
+          ver() { { grep -A1 "name = \"$1\"" Cargo.lock | grep -m1 '^version' | sed -E 's/.*"([^"]+)".*/\1/'; } || true; }
+          P=$(ver ciris-persist); E=$(ver ciris-edge); V=$(ver ciris-verify-core)
+          KEY="ciris-substrate-v1-ios-${{ matrix.target }}-release-rustc${RUSTC}-p${P:-none}-e${E:-none}-v${V:-none}"
+          echo "CIRISCACHE_KEY=${KEY}" >> "$GITHUB_ENV"
+      - uses: CIRISAI/CIRISCache/restore@v1
+        continue-on-error: true
+        with:
+          key: ${{ env.CIRISCACHE_KEY }}
 
       - name: Repair toolchain if rustup-init shadow (cache-poison heal)
         # v2.1.2 detected; v2.1.3 moved after cache restore; v2.1.4 active heal.
@@ -674,6 +721,17 @@ jobs:
           name: ciris-verify-ios-${{ matrix.target }}
           path: target/${{ matrix.target }}/release/libciris_verify_ffi.a
           if-no-files-found: warn
+
+      # CIRISCache (CIRISVerify#126 / #155): publish the warm verify blob (main
+      # only) so downstream mobile lanes (CIRISEdge build-ios / ios-pyo3, sibling
+      # repos) HIT the substrate-leaf verify layer on ios instead of recompiling
+      # ML-DSA / ML-KEM / HPKE / Ed25519 / X25519 + keyring from scratch.
+      - uses: CIRISAI/CIRISCache/save@v1
+        if: github.ref == 'refs/heads/main'
+        continue-on-error: true
+        with:
+          key: ${{ env.CIRISCACHE_KEY }}
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   # ==========================================================================
   # Platform Conformance Tests (v1.6.2+)
