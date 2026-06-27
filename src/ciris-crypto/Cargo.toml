@@ -41,6 +41,12 @@ key-grant = ["x25519", "aes-gcm", "kdf", "random"]
 # decrypt-later vulnerability).
 ml-kem = ["dep:ml-kem"]
 hybrid-kex = ["x25519", "ml-kem", "kdf", "random"]
+# v8.x+ (CIRISVerify#151): deterministic self content-encryption keypair
+# derivation (X25519 + ML-KEM-768) from the Ed25519 base seed, mirroring the
+# secp256k1 wallet pattern. HKDF is already a non-optional dep. `random` mirrors
+# the `hybrid-kex` consumer combo (x25519 + ml-kem + random); the derivation
+# itself is fully deterministic and draws no randomness.
+self-enc = ["x25519", "ml-kem", "random"]
 # v4.8.x+ (CIRISVerify#53): liboqs cross-check bench. Gates the `oqs`
 # dev-dep so the (expensive cmake) liboqs build is only paid when the
 # bench is exercised. Off by default — `cargo bench` from CI's default

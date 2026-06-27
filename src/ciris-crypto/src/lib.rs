@@ -87,6 +87,11 @@ pub mod ml_kem;
 #[cfg(feature = "hybrid-kex")]
 pub mod hybrid_kex;
 
+// v8.x+ — deterministic self content-encryption keypair derivation
+// (X25519 + ML-KEM-768) from the Ed25519 base seed (CIRISVerify#151).
+#[cfg(feature = "self-enc")]
+pub mod self_enc;
+
 // v6.3.0+ — scope-native privacy surface (CIRISVerify#82, CEWP
 // SCOPE_PRIVACY.md). First cut in the cross-cdylib lockstep cascade:
 // XChaCha20-Poly1305 AEAD, HPKE mode_base over the X-Wing hybrid KEM,
