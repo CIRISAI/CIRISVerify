@@ -66,6 +66,7 @@ mod wheel_operational_admit;
 mod wheel_reconsider_dos;
 mod wheel_rns_dest_hash;
 mod wheel_scope_privacy;
+mod wheel_self_enc;
 mod wheel_skill_import;
 
 #[cfg(target_os = "android")]

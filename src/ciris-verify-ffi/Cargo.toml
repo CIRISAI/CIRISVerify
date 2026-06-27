@@ -40,7 +40,9 @@ ciris-keyring.workspace = true
 # scope-privacy (#82): the §2.2/§2.4/§3.4 derivation helpers are exposed on the
 # wheel (`wheel_scope_privacy`), so the wheel build always needs the feature.
 # Pure Rust (kdf + hmac), no platform/heavy deps — safe to enable unconditionally.
-ciris-crypto = { workspace = true, features = ["scope-privacy"] }
+# self-enc (#151): deterministic self content-encryption keypair derivation
+# (X25519 + ML-KEM-768) exposed on the wheel via `wheel_self_enc` — also always-on.
+ciris-crypto = { workspace = true, features = ["scope-privacy", "self-enc"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
 prost.workspace = true
 tracing.workspace = true
