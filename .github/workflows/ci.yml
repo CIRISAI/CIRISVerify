@@ -405,14 +405,19 @@ jobs:
           targets: ${{ matrix.target }}
 
       # CIRISCache (CIRISVerify#126) — the **canonical cross-repo key** pinned in
-      # CIRISServer#99, suffixed with the matrix target (verify's build-native is
-      # a cross-compile matrix, so each target is a distinct build that must not
-      # collide on the shared os-arch host). For verify p=e=none (no
-      # ciris-persist / ciris-edge dep), v=ciris-verify-core's resolved version —
-      # so verify keeps its own compiled blob but shares the always-on ~/.cargo
-      # registry blob with the other repos. Derivation is byte-identical across
-      # repos (see #99) so the rustc/version segments line up.
-      - name: Compute CIRISCache key (canonical, CIRISServer#99)
+      # CIRISServer#99. The <PLAT> token is derived from the BUILD TARGET triple
+      # (not the runner host), so it is byte-identical to the per-platform key
+      # CIRISServer computes — and each of verify's 5 cross-matrix targets maps to
+      # a DISTINCT platform token, so there is no host collision and NO -<target>
+      # suffix is needed (the suffix is what defeated CIRISServer's cross-repo
+      # restore; CIRISVerify#153). For verify p=e=none (no ciris-persist /
+      # ciris-edge dep), v=ciris-verify-core's resolved version — so verify keeps
+      # its own compiled blob but shares the always-on ~/.cargo registry blob with
+      # the other repos. NB: coarse whole-dir target/ reuse across repos is
+      # fingerprint-sensitive (feature flags differ); the reliable cross-repo win
+      # is the cargo registry/git layer — key alignment is the prerequisite either
+      # way (#153 item 3).
+      - name: Compute CIRISCache key (canonical, CIRISServer#99 / #153)
         shell: bash
         run: |
           RUSTC=$(rustc -V | awk '{print $2}')
@@ -423,13 +428,19 @@ jobs:
           # `set -e`; flagged back there + on the persist/edge adopters.)
           ver() { { grep -A1 "name = \"$1\"" Cargo.lock | grep -m1 '^version' | sed -E 's/.*"([^"]+)".*/\1/'; } || true; }
           P=$(ver ciris-persist); E=$(ver ciris-edge); V=$(ver ciris-verify-core)
-          # `tr` for lowercasing, NOT bash's ${VAR,,} — GitHub macOS runners ship
-          # bash 3.2, where ${,,} is a "bad substitution" fatal error. (Second
-          # latent bug in the #99 snippet, also flagged upstream.)
-          OS=$(printf '%s' "$RUNNER_OS" | tr '[:upper:]' '[:lower:]')
-          ARCH=$(printf '%s' "$RUNNER_ARCH" | tr '[:upper:]' '[:lower:]')
-          KEY="ciris-substrate-v1-${OS}-${ARCH}-release-rustc${RUSTC}-p${P:-none}-e${E:-none}-v${V:-none}"
-          echo "CIRISCACHE_KEY=${KEY}-${{ matrix.target }}" >> "$GITHUB_ENV"
+          # Canonical <PLAT> token from the target triple — must match the table
+          # CIRISServer#99 uses for the equivalent platform (linux/macos use the
+          # x86_64/aarch64 arch spelling, NOT the runner's x64/arm64 token).
+          case "${{ matrix.target }}" in
+            x86_64-unknown-linux-gnu)  PLAT="linux-x86_64" ;;
+            aarch64-unknown-linux-gnu) PLAT="linux-aarch64" ;;
+            x86_64-apple-darwin)       PLAT="macos-x86_64" ;;
+            aarch64-apple-darwin)      PLAT="macos-aarch64" ;;
+            x86_64-pc-windows-msvc)    PLAT="windows-x64" ;;
+            *) PLAT="${{ matrix.target }}" ;;  # fail-safe: keep the triple for an unmapped target
+          esac
+          KEY="ciris-substrate-v1-${PLAT}-release-rustc${RUSTC}-p${P:-none}-e${E:-none}-v${V:-none}"
+          echo "CIRISCACHE_KEY=${KEY}" >> "$GITHUB_ENV"
       - uses: CIRISAI/CIRISCache/restore@v1
         continue-on-error: true
         with:
