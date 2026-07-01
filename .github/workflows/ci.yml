@@ -262,11 +262,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: EmbarkStudios/cargo-deny-action@v2
-        with:
-          log-level: warn
-          command: check
-          arguments: ""
+      # Run cargo-deny RUNNER-NATIVE, not via EmbarkStudios/cargo-deny-action@v2.
+      # That action is a Docker container action whose *musl* rustup reads our
+      # rust-toolchain.toml and emits a spurious
+      #   error: override toolchain 'stable-x86_64-unknown-linux-musl' is not installed
+      # on every run (cosmetic, but permanent log noise), and — being containerized —
+      # it does NOT inherit this workflow's CARGO_NET_* crates.io-flake hardening.
+      # Native uses the installed gnu stable toolchain (zero override noise) and
+      # inherits the flake env for the advisory-DB fetch. (CIRISVerify CI hardening)
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check
 
   # ==========================================================================
   # Tests (using cargo-nextest for reliable parallel execution)
@@ -739,7 +745,11 @@ jobs:
   conformance-macos:
     name: Conformance (macOS)
     runs-on: macos-latest
-    timeout-minutes: 10
+    # macOS runners are slow; a COLD `cargo build --release` (cache miss) plus the
+    # conformance script routinely exceeded a 10-min job budget, which killed the
+    # test step mid-run (conclusion: cancelled — a false red, not a real failure).
+    # 25 min gives a cold build headroom. (CIRISVerify CI hardening)
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

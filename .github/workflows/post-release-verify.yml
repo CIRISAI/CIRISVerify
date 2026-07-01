@@ -115,7 +115,11 @@ jobs:
         # "install will succeed." Retry until success or 5 min.
         run: |
           set -eux
-          DEADLINE=$((SECONDS + 300))
+          # 15-min deadline (was 5): PyPI CDN propagation occasionally exceeds
+          # 5 min after upload (observed on v8.3.0, where the 300s window elapsed
+          # before pip could resolve a perfectly-good wheel — a false red on a
+          # post-release gate that isn't latency-critical). (CIRISVerify CI hardening)
+          DEADLINE=$((SECONDS + 900))
           VER="${{ steps.ver.outputs.version }}"
           # v4.11.0: PyPI's CDN edges propagate independently — two
           # back-to-back `--no-cache-dir` resolutions can hit different
@@ -179,7 +183,9 @@ jobs:
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 5
-          max_attempts: 2
+          # 3 attempts (was 2): one more backoff cycle for a late-propagating
+          # CDN edge, matching the widened propagation deadline above.
+          max_attempts: 3
           retry_wait_seconds: 30
           retry_on: timeout
           command: pip install "ciris-verify==${{ steps.ver.outputs.version }}"
