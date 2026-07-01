@@ -671,7 +671,16 @@ jobs:
           # v2.1.4+: exclude ~/.cargo/bin to prevent rustup-init shadow
           # poisoning. See ci.yml comment block above.
           cache-bin: false
-          key: ios-${{ matrix.target }}
+          # Partition the cache by runner arch. Swatinem only bakes CPU arch into
+          # the key for arm64 *Linux*; on macOS (macos-latest is now arm64;
+          # macos-13 was the last x86_64) a cross-arch or one-time-corrupted
+          # target/ restore surfaces as `ahash build-script-build: cannot execute
+          # binary file` (an exec-format error on a host build script). This
+          # build-ios lane cross-compiles (host-arch build scripts + iOS target
+          # artifacts share one target/ tree), so it's the sensitive one. Adding
+          # runner.arch evicts any wrong-arch/stale blob and keeps caches
+          # arch-distinct going forward. (CIRISVerify CI hardening)
+          key: ios-${{ matrix.target }}-${{ runner.arch }}
 
       # CIRISCache (CIRISVerify#126 / #155) — canonical cross-repo key for the
       # ios PLAT. <PLAT> = ios-<target> (matches the edge + persist convention)
