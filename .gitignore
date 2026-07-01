@@ -29,6 +29,9 @@ Thumbs.db
 *.key
 *.p12
 *.pfx
+# Exception: the pinned PUBLIC Yubico Attestation Root 1 CA cert is a deliberate,
+# public trust-anchor fixture for the accord custody-chain audit test (no secret).
+!accord_ceremony_artifacts/yubico-attestation-root-1.pem
 *.der
 *.jks
 secrets/
