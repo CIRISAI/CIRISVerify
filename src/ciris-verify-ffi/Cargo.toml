@@ -44,6 +44,7 @@ ciris-keyring.workspace = true
 # (X25519 + ML-KEM-768) exposed on the wheel via `wheel_self_enc` — also always-on.
 ciris-crypto = { workspace = true, features = ["scope-privacy", "self-enc"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
+async-trait.workspace = true
 prost.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
