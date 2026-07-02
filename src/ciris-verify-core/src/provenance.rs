@@ -617,6 +617,57 @@ mod tests {
         ));
     }
 
+    /// #160 centipede-head rooting semantics (locked): a genesis chain whose
+    /// terminus is a HUMANITY_ACCORD holder seeded as `steward,accord_holder`
+    /// roots under a **1-of-N** anchor that contains only that one holder key.
+    /// The `identity_type` is a comma-joined SET, so `steward,accord_holder`
+    /// satisfies the terminus-is-steward check; and the anchor is set-MEMBERSHIP,
+    /// so A1 alone roots the mesh even though the kill-switch needs 2-of-3. A
+    /// different single key does NOT root it (membership, not blanket-accept).
+    #[test]
+    fn accord_holder_terminus_roots_under_one_of_n_anchor() {
+        let holder = Keypair::new(); // an accord holder, e.g. A1
+        let node = Keypair::new(); // the canonical mesh node
+        let holder_link = make_link(
+            "A1",
+            "steward,accord_holder", // seeded role set (persist's genesis row)
+            &holder,
+            &holder,
+            "A1",
+            [0x11u8; 32],
+            true,
+        );
+        let node_link = make_link(
+            "canonical-node-1",
+            "node",
+            &node,
+            &holder, // scrubbed by A1 (1/3 during bootstrap)
+            "A1",
+            [0x22u8; 32],
+            true,
+        );
+        let chain = ProvenanceChain {
+            key_id: "canonical-node-1".to_string(),
+            chain: vec![node_link, holder_link],
+            terminates_at_steward_bootstrap: true,
+        };
+
+        // 1-of-N: roots with ONLY A1 in the anchor.
+        assert!(
+            verify_provenance_chain(&chain, &[holder.ed_pub()]).is_ok(),
+            "chain scrubbed by A1 must root under an anchor containing A1"
+        );
+        // Set membership, not blanket-accept: a different single key rejects.
+        assert!(matches!(
+            verify_provenance_chain(&chain, &[Keypair::new().ed_pub()]),
+            Err(ProvenanceError::UntrustedAnchor { .. })
+        ));
+        // N>1 anchor that includes A1 still roots (1 of the N matches).
+        assert!(
+            verify_provenance_chain(&chain, &[Keypair::new().ed_pub(), holder.ed_pub()]).is_ok()
+        );
+    }
+
     #[test]
     fn empty_chain_is_rejected() {
         let chain = ProvenanceChain {

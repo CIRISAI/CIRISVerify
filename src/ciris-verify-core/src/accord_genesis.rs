@@ -674,6 +674,12 @@ pub fn accord_quorum_from_family(
 /// re-verifies its founder quorum against the ceremony's published holder pubkeys.
 const HUMANITY_ACCORD_GENESIS_JSON: &str = include_str!("genesis/humanity_accord_genesis.json");
 
+/// The ceremony's published founder pubkeys (A1/B1/C1 hybrid keys), checked in
+/// alongside the genesis so the 2-of-3 quorum — and the #160 bootstrap anchor —
+/// are independently auditable from a pinned file. Deserializes to
+/// [`ThresholdMember`]s.
+const FOUNDER_PUBKEYS_JSON: &str = include_str!("genesis/founder_pubkeys.json");
+
 /// The pinned, **no-TOFU** HUMANITY_ACCORD family-genesis recognition root
 /// (CIRISVerify#107). A node that was **not** at the ceremony resolves the accord
 /// kill-switch roster + quorum from **this** baked object (via
@@ -703,6 +709,56 @@ pub fn humanity_accord_genesis() -> Option<&'static SignedCegObject> {
                 .filter(|o| o.kind == ACCORD_FAMILY_GENESIS_KIND)
         })
         .as_ref()
+}
+
+/// The trusted-bootstrap **rooting anchor** for genesis mesh seeding
+/// (CIRISVerify#160, the "centipede head"): the Ed25519 public keys of the
+/// **seated** HUMANITY_ACCORD holders (A1/B1/C1).
+///
+/// A provenance chain that terminates at **any one** of these seated holder keys
+/// roots during cold-start bootstrap — the anchor check in
+/// [`crate::provenance::verify_provenance_chain`] is set-**membership** (1-of-N),
+/// NOT a 2/3 threshold. (The 2/3 quorum governs accord *invocation* — the
+/// kill-switch — not rooting.) So a mesh whose canonical node is scrubbed by A1
+/// alone roots, while the constitutional off-switch still needs 2-of-3.
+///
+/// **One source of truth, cross-validated:** the anchor is the *seated roster*
+/// resolved from the baked [`humanity_accord_genesis()`] against the pinned
+/// `founder_pubkeys.json` directory (via [`accord_roster_from_family`], which
+/// applies the one-seat / no-duplicate-pubkey integrity gates). So the anchor and
+/// the kill-switch roster can never drift, and spares (A2/B2/C2) are excluded —
+/// only *seated* holders are a rooting terminus.
+///
+/// Returns **empty** (fail-closed) if the genesis is not baked, the pinned
+/// founder directory is malformed, the roster fails to resolve, or any holder key
+/// is not a valid 32-byte Ed25519 key — no anchor → nothing roots, never a
+/// partial/ambiguous anchor.
+#[must_use]
+pub fn accord_holder_bootstrap_anchor() -> Vec<[u8; 32]> {
+    let Some(genesis) = humanity_accord_genesis() else {
+        return Vec::new();
+    };
+    let Ok(founders) = serde_json::from_str::<Vec<ThresholdMember>>(FOUNDER_PUBKEYS_JSON) else {
+        return Vec::new();
+    };
+    let Ok(roster) = accord_roster_from_family(genesis, &founders) else {
+        return Vec::new();
+    };
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let mut anchor = Vec::with_capacity(roster.len());
+    for member in &roster {
+        match b64
+            .decode(&member.ed25519_public_key_base64)
+            .ok()
+            .and_then(|v| <[u8; 32]>::try_from(v).ok())
+        {
+            Some(key) => anchor.push(key),
+            // A bad/short key in the pinned directory is a hard fault: fail the
+            // WHOLE anchor closed rather than root against a partial set.
+            None => return Vec::new(),
+        }
+    }
+    anchor
 }
 
 /// Extract the `family` envelope from a family-genesis object.
@@ -1451,6 +1507,44 @@ mod tests {
         assert_eq!(
             count, 3,
             "all three founders cosigned (3-of-3, ≥ the 2/3 floor)"
+        );
+    }
+
+    /// #160: the bootstrap rooting anchor is exactly the 3 seated holders'
+    /// Ed25519 keys, cross-checked against the pinned founder directory, and
+    /// stays in lockstep with the kill-switch roster (one source of truth).
+    #[test]
+    fn accord_holder_bootstrap_anchor_is_the_seated_holder_ed25519_keys() {
+        let anchor = accord_holder_bootstrap_anchor();
+        assert_eq!(
+            anchor.len(),
+            3,
+            "3 seated holders (A1/B1/C1); spares are not a rooting terminus"
+        );
+
+        // Every anchor key is exactly a pinned founder ed25519 key, and vice
+        // versa (order-independent set equality).
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let founders: Vec<ThresholdMember> =
+            serde_json::from_str(include_str!("genesis/founder_pubkeys.json")).unwrap();
+        let expected: Vec<[u8; 32]> = founders
+            .iter()
+            .map(|m| {
+                <[u8; 32]>::try_from(b64.decode(&m.ed25519_public_key_base64).unwrap()).unwrap()
+            })
+            .collect();
+        assert_eq!(anchor.len(), expected.len());
+        for e in &expected {
+            assert!(anchor.contains(e), "founder key missing from the anchor");
+        }
+        // The anchor is the SAME set the accord roster resolves to (lockstep).
+        let roster =
+            accord_roster_from_family(humanity_accord_genesis().expect("baked"), &founders)
+                .expect("roster resolves");
+        assert_eq!(
+            roster.len(),
+            anchor.len(),
+            "anchor tracks the seated roster"
         );
     }
 
