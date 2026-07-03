@@ -17,9 +17,8 @@ default = ["ecdsa-p256", "ed25519", "secp256k1", "random"]
 ecdsa-p256 = ["p256"]
 ed25519 = ["ed25519-dalek"]
 secp256k1 = ["k256"]
-# PQC feature - enable one of these
-pqc-ml-dsa = ["ml-dsa", "rand_chacha", "dep:pkcs8", "dep:zeroize"]
-pqc-aws-lc = ["aws-lc-rs"]
+# PQC feature (ML-DSA-65 / FIPS 204)
+pqc-ml-dsa = ["ml-dsa", "dep:zeroize"]
 
 # v2.0+ — federation symmetric / KDF / MAC / RNG primitives. Each is
 # its own feature so consumers (CIRISPersist#19's federated SecretsService,
@@ -73,7 +72,6 @@ thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
 sha2.workspace = true
 rand_core.workspace = true
-rand_chacha = { version = "0.3", optional = true }
 subtle = "2.6"
 
 # Classical cryptography
@@ -106,15 +104,9 @@ ml-dsa = { version = "=0.1.1", optional = true, features = ["zeroize"] }
 # `SigningKey.seed` is also `ZeroizeOnDrop` (CIRISVerify#87 closed).
 zeroize = { version = "1", optional = true }
 
-# v6.x (CIRISVerify#87): ml-dsa 0.1.1 (stable line) builds against the
-# stable `pkcs8 0.11.0`. The rc.8-era `=0.11.0-rc.11` pin existed only to
-# dodge an rc.8↔stable `Error::KeyMalformed` unit-vs-function mismatch in
-# ml-dsa's own source; ml-dsa 0.1.1 uses the stable variant correctly, so
-# the workaround is retired and we pin the stable `=0.11.0` to keep the
-# federation crypto authority pattern (one place owns every crypto-
-# transitive). Tested: `rm -f Cargo.lock && cargo build` fresh-resolves.
-pkcs8 = { version = "=0.11.0", optional = true, default-features = false }
-aws-lc-rs = { version = "1.5", features = ["unstable"], optional = true }
+# NB (CIRISVerify#164): the direct `pkcs8 =0.11.0` pin + the aspirational
+# `aws-lc-rs`/`pqc-aws-lc` backend were dropped as provably-unused — ml-dsa 0.1.1
+# already forces `pkcs8 0.11.0` transitively, and no source referenced aws_lc_rs.
 
 # v2.0+ — symmetric / MAC primitives. PBKDF2 is a separate dep from hkdf
 # because RustCrypto split them across crates.

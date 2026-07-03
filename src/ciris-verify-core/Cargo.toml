@@ -61,11 +61,9 @@ serde_json.workspace = true
 # crate's `ryu-js` backend rather than being hand-rolled. Behavior is
 # locked by RFC 8785 Appendix B KAT vectors in `jcs::tests`.
 serde_jcs = "0.2"
-prost.workspace = true
 
 # Error handling
 thiserror.workspace = true
-anyhow.workspace = true
 
 # Logging
 tracing.workspace = true
@@ -188,9 +186,6 @@ windows-sys = { version = "0.52", features = [
     "Win32_System_Threading",
     "Win32_System_Diagnostics_Debug",
 ] }
-
-[build-dependencies]
-prost-build = "0.12"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }

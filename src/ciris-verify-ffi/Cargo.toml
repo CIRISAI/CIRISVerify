@@ -44,7 +44,6 @@ ciris-keyring.workspace = true
 # (X25519 + ML-KEM-768) exposed on the wheel via `wheel_self_enc` — also always-on.
 ciris-crypto = { workspace = true, features = ["scope-privacy", "self-enc"] }
 tokio = { workspace = true, features = ["rt-multi-thread"] }
-prost.workspace = true
 tracing.workspace = true
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }
 serde = { workspace = true, features = ["derive"] }
@@ -52,7 +51,6 @@ serde_json.workspace = true
 base64.workspace = true
 libc = "0.2"
 hex.workspace = true
-getrandom = "0.2"
 ed25519-dalek = { workspace = true }
 # v6 drops the windows-sys 0.48 → windows-targets 0.48.5 chain that fails to
 # link on the Tier-3 x86_64-win7-windows-msvc target (CIRISVerify#67).
