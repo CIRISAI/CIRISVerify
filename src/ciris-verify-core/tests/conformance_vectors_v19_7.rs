@@ -129,6 +129,9 @@ fn aggregation_meta_canonical_bytes() {
         source_count: members.len() as u32,
         member_commitment: member_commitment(&members),
         noise_floor_descriptor: "mean+stddev".into(),
+        // v1: n_eff is a neutral, un-signed placeholder — NOT in the v1 preimage,
+        // so `expected_canonical_bytes_hex` is byte-identical to the pre-#167 golden.
+        n_eff: members.len() as u32,
     };
     emit_or_verify(
         "aggregation_meta/canonical_bytes.json",
@@ -145,6 +148,51 @@ fn aggregation_meta_canonical_bytes() {
             "source_member_ids": ["src-001", "src-002", "src-003"],
             "member_commitment_hex": hex::encode(m.member_commitment),
             "noise_floor_descriptor": m.noise_floor_descriptor,
+            "expected_canonical_bytes_hex": hex::encode(m.signing_preimage()),
+        }),
+    );
+}
+
+// ---- §19.7.1.2 AggregationMetaV1 v2 preimage — signed n_eff (#167) ------
+#[test]
+fn aggregation_meta_v2_canonical_bytes_with_n_eff() {
+    let members = ids(&["src-001", "src-002", "src-003"]);
+    let m = AggregationMetaV1 {
+        version: 2,
+        content_id: "content-root-fixed".into(),
+        corpus_kind: "trace".into(),
+        tier: 2,
+        aggregation_algorithm_id: "raptorq-pyramid-v1".into(),
+        source_count: members.len() as u32,
+        member_commitment: member_commitment(&members),
+        noise_floor_descriptor: "mean+stddev".into(),
+        // A v2 tier carries a signed effective-source-count in the preimage.
+        n_eff: 3,
+    };
+    // The v2 preimage is the v1 layout + a trailing u32(n_eff): strictly longer.
+    let mut v1 = m.clone();
+    v1.version = 1;
+    assert_eq!(
+        m.signing_preimage().len(),
+        v1.signing_preimage().len() + 4,
+        "v2 appends exactly u32(n_eff) to the v1 layout"
+    );
+    emit_or_verify(
+        "aggregation_meta/canonical_bytes_v2.json",
+        json!({
+            "vector_id": "aggregation_meta/canonical_bytes_v2",
+            "description": "AggregationMetaV1 §19.7.1.2 v2 preimage — v1 layout followed by a trailing big-endian u32(n_eff) (CIRISVerify#167 dominance surface).",
+            "domain_separator_hex": hex::encode(DOMAIN_AGG_META),
+            "version": m.version,
+            "content_id": m.content_id,
+            "corpus_kind": m.corpus_kind,
+            "tier": m.tier,
+            "aggregation_algorithm_id": m.aggregation_algorithm_id,
+            "source_count": m.source_count,
+            "source_member_ids": ["src-001", "src-002", "src-003"],
+            "member_commitment_hex": hex::encode(m.member_commitment),
+            "noise_floor_descriptor": m.noise_floor_descriptor,
+            "n_eff": m.n_eff,
             "expected_canonical_bytes_hex": hex::encode(m.signing_preimage()),
         }),
     );

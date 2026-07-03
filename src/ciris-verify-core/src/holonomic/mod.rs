@@ -53,8 +53,9 @@ pub use preimage::{
 };
 
 pub use aggregation::{
-    eject_aggregated_tier, ejection_verdict, member_commitment, verify_aggregation_meta,
-    verify_member_commitment, AggregationMetaV1, AggregationMetaVerification, EjectionVerdict,
+    effective_source_count, eject_aggregated_tier, ejection_verdict, member_commitment,
+    passes_dominance_gate, verify_aggregation_meta, verify_member_commitment, AggregationMetaV1,
+    AggregationMetaVerification, EjectionVerdict,
 };
 
 pub use wholeness_witness::{

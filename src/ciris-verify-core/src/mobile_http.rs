@@ -14,10 +14,8 @@ use crate::error::VerifyError;
 
 /// Create a TLS-enabled ureq agent with bundled Mozilla CA certificates.
 pub fn create_tls_agent(timeout: Duration) -> Result<ureq::Agent, VerifyError> {
-    // Use extern crate names from Cargo.toml
-    use rustls_mobile as rustls;
-    use webpki_roots_mobile as webpki_roots;
-
+    // rustls (0.23) + webpki-roots (0.26) come from the common [dependencies]
+    // (unified after the hickory 0.25 bump, CIRISVerify#165).
     let root_store =
         rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 
