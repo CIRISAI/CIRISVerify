@@ -172,22 +172,23 @@ jobs:
           # step, so the runtime exactly mirrors the build environment.
           sudo apt-get install -y libtss2-dev libsqlite3-dev
 
-      - name: Install ciris-verify from PyPI (bundled .so, retry on timeout)
-        # CI hardening (v2.1.1+): the propagation poll above already
-        # bounded-retries until pip can resolve the version, but there
-        # can be a tiny window between dry-run success and real install
-        # (e.g. CDN cache eviction between the two requests). Wrap the
-        # actual install in retry-on-timeout — 2 attempts, 30s backoff.
-        # Doesn't retry on real install errors (auth, 404 for a typoed
-        # version, dep resolution failure); those still surface immediately.
+      - name: Install ciris-verify from PyPI (bundled .so, retry on any error)
+        # CI hardening: the propagation poll above already requires TWO
+        # consecutive `pip install --dry-run` successes, so the version IS
+        # broadly resolvable by the time we get here. But PyPI's CDN edges
+        # propagate independently — the real `pip install` can still hit a
+        # *lagging* edge whose index doesn't yet list the version, which pip
+        # reports as **"No matching distribution found"** (NOT a timeout). With
+        # `retry_on: timeout` that error failed the gate on the first attempt
+        # without retrying (observed on v8.6.0). `retry_on: any` retries it —
+        # safe, because the poll already proved the version is installable, so
+        # any failure here is transient CDN-edge lag, not a real bad wheel.
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 5
-          # 3 attempts (was 2): one more backoff cycle for a late-propagating
-          # CDN edge, matching the widened propagation deadline above.
-          max_attempts: 3
-          retry_wait_seconds: 30
-          retry_on: timeout
+          max_attempts: 4
+          retry_wait_seconds: 45
+          retry_on: any
           command: pip install "ciris-verify==${{ steps.ver.outputs.version }}"
 
       - name: Wheel version round-trip (Python FFI surface)
