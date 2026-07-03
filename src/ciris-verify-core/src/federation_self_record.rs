@@ -172,6 +172,94 @@ pub async fn produce_self_key_record(
     Ok(SignedKeyRecord { record })
 }
 
+/// The node an accord holder is admitting to the trust root — the identity
+/// fields the scrubbed record carries (the *target*, not the signer). The
+/// pubkeys are the node's already-minted hybrid keys (base64 standard); the
+/// holder never derives them.
+#[derive(Debug, Clone)]
+pub struct ScrubTarget {
+    /// The target node's `key_id` (e.g. `canonical-server-1`).
+    pub key_id: String,
+    /// The target's Ed25519 public key, base64 standard.
+    pub pubkey_ed25519_base64: String,
+    /// The target's ML-DSA-65 public key, base64 standard.
+    pub pubkey_ml_dsa_65_base64: String,
+    /// The target's `identity_type` (e.g. `node`).
+    pub identity_type: String,
+}
+
+/// Produce an **accord-scrubbed** key record — the scrub twin of
+/// [`produce_self_key_record`] (CIRISVerify#160/#162, the genesis-mesh
+/// "centipede tail").
+///
+/// An accord holder (`scrubber`, e.g. A1) admits a node to the trust root by
+/// scrub-signing that node's registration with the accord key. The produced
+/// record is **byte-identical in envelope + JCS canonicalization** to a
+/// self-signed record for the same target fields — the *only* difference is that
+/// the scrub-signature and `scrub_key_id` are the **scrubber's**, not the
+/// target's. So the node's provenance chain is `node → A1 (self-signed
+/// steward,accord_holder anchor)` and **roots** at the [`accord_holder_bootstrap_anchor`](crate::accord_genesis::accord_holder_bootstrap_anchor).
+///
+/// **Single source of truth (why this lives in verify):** the envelope shape and
+/// canonicalization are shared with [`produce_self_key_record`], which is exactly
+/// what CIRISPersist's `register_key` / `root_binding` recanonicalize and verify.
+/// A hand-rolled producer in a consumer would silently drift from that
+/// canonicalization (CIRISPersist#345) and every genesis record would fail to
+/// root.
+///
+/// # Errors
+///
+/// [`VerifyError`] if the scrubber's signer fails or the envelope can't be
+/// canonicalized.
+pub async fn produce_scrubbed_key_record(
+    scrubber: &dyn SelfSigner,
+    target: ScrubTarget,
+    valid_from: &str,
+) -> Result<SignedKeyRecord, VerifyError> {
+    // Same rich envelope as `produce_self_key_record`, but over the TARGET's
+    // fields — so persist recanonicalizes byte-identical bytes and the
+    // scrub-signature (below) verifies against `scrub_key_id`'s pinned pubkey.
+    let registration_envelope = json!({
+        "key_id": target.key_id,
+        "purpose": REGISTRATION_PURPOSE,
+        "algorithm": ALGORITHM_HYBRID,
+        "identity_type": target.identity_type,
+        "pubkey_ed25519_base64": target.pubkey_ed25519_base64,
+        "pubkey_ml_dsa_65_base64": target.pubkey_ml_dsa_65_base64,
+        "valid_from": valid_from,
+    });
+    let canonical = jcs::canonicalize(&registration_envelope)?;
+    let original_content_hash = hex::encode(Sha256::digest(&canonical));
+
+    // The SCRUBBER (A1) signs the TARGET's canonical envelope — the bound
+    // hybrid signature over the exact bytes register_key recomputes.
+    let (ed_sig_b64, pqc_sig_b64) = scrubber.sign_bound(&canonical).await?;
+
+    let record = KeyRecord {
+        // Identity fields are the TARGET's …
+        key_id: target.key_id.clone(),
+        pubkey_ed25519_base64: target.pubkey_ed25519_base64,
+        pubkey_ml_dsa_65_base64: Some(target.pubkey_ml_dsa_65_base64),
+        algorithm: ALGORITHM_HYBRID.to_string(),
+        identity_type: target.identity_type,
+        identity_ref: target.key_id.clone(),
+        valid_from: valid_from.to_string(),
+        valid_until: None,
+        registration_envelope,
+        original_content_hash,
+        // … the signature + scrub_key_id are the SCRUBBER's (the whole point:
+        // scrub_key_id != key_id ⇒ the chain roots at the accord holder).
+        scrub_signature_classical: ed_sig_b64,
+        scrub_signature_pqc: Some(pqc_sig_b64),
+        scrub_key_id: scrubber.key_id().to_string(),
+        scrub_timestamp: valid_from.to_string(),
+        pqc_completed_at: Some(valid_from.to_string()),
+        persist_row_hash: String::new(),
+        roles: Vec::new(),
+    };
+    Ok(SignedKeyRecord { record })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +307,124 @@ mod tests {
             Ok(1),
             "the self-signed record must hybrid-verify (Strict) by construction"
         );
+    }
+
+    /// #162: an accord holder (A1) scrub-signs a node's registration. The record
+    /// carries the TARGET's identity but the SCRUBBER's signature + scrub_key_id,
+    /// and verifies through persist's `register_key` / `root_binding` path
+    /// (recanonicalize → hash cross-check → Strict hybrid-verify against
+    /// `scrub_key_id`'s — A1's — pinned pubkey). That is what makes the node's
+    /// chain `node → A1` root at the accord anchor.
+    #[tokio::test]
+    async fn scrubbed_record_carries_target_identity_and_verifies_against_the_scrubber() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let node = HybridSigningIdentity::generate("canonical-server-1").unwrap();
+        let node_ed = b64().encode(node.ed25519_public_key().await.unwrap());
+        let node_mldsa = b64().encode(node.mldsa65_public_key().await.unwrap());
+
+        let signed = produce_scrubbed_key_record(
+            &a1,
+            ScrubTarget {
+                key_id: "canonical-server-1".to_string(),
+                pubkey_ed25519_base64: node_ed.clone(),
+                pubkey_ml_dsa_65_base64: node_mldsa.clone(),
+                identity_type: "node".to_string(),
+            },
+            "2026-07-02T00:00:00Z",
+        )
+        .await
+        .unwrap();
+        let r = &signed.record;
+
+        // Identity fields are the TARGET's; the scrub is the SCRUBBER's.
+        assert_eq!(r.key_id, "canonical-server-1");
+        assert_eq!(r.identity_type, "node");
+        assert_eq!(r.pubkey_ed25519_base64, node_ed);
+        assert_eq!(r.scrub_key_id, "A1", "admitted-by is the accord holder");
+        assert_ne!(
+            r.scrub_key_id, r.key_id,
+            "a scrub record is NOT self-signed"
+        );
+
+        let canonical = jcs::canonicalize(&r.registration_envelope).unwrap();
+        assert_eq!(
+            hex::encode(Sha256::digest(&canonical)),
+            r.original_content_hash
+        );
+
+        // Verifies against A1 (the scrubber) …
+        let scrubber = ThresholdMember {
+            member_id: "A1".to_string(),
+            ed25519_public_key_base64: b64().encode(a1.ed25519_public_key().await.unwrap()),
+            mldsa65_public_key_base64: Some(b64().encode(a1.mldsa65_public_key().await.unwrap())),
+            role: None,
+        };
+        let sig = ThresholdSignature {
+            member_id: "A1".to_string(),
+            ed25519_signature_base64: r.scrub_signature_classical.clone(),
+            mldsa65_signature_base64: r.scrub_signature_pqc.clone(),
+        };
+        assert_eq!(
+            verify_threshold_signatures(&canonical, &[scrubber], std::slice::from_ref(&sig), 1),
+            Ok(1),
+            "must hybrid-verify against the SCRUBBER's key (root_binding path)"
+        );
+        // … and NOT against the target's own key (it isn't self-signed).
+        let node_member = ThresholdMember {
+            member_id: "A1".to_string(),
+            ed25519_public_key_base64: node_ed,
+            mldsa65_public_key_base64: Some(node_mldsa),
+            role: None,
+        };
+        assert_ne!(
+            verify_threshold_signatures(&canonical, &[node_member], &[sig], 1),
+            Ok(1),
+            "the scrub signature is A1's, not the node's"
+        );
+    }
+
+    /// #162 no-drift guard: the scrubbed record's canonical registration envelope
+    /// is BYTE-IDENTICAL to what `produce_self_key_record` emits for the same
+    /// identity fields — so persist verifies both through one canonicalization and
+    /// a genesis record can never fail to root on a producer-vs-verifier drift.
+    #[tokio::test]
+    async fn scrubbed_envelope_is_byte_identical_to_the_self_envelope() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let node = HybridSigningIdentity::generate("canonical-server-1").unwrap();
+        let node_ed = b64().encode(node.ed25519_public_key().await.unwrap());
+        let node_mldsa = b64().encode(node.mldsa65_public_key().await.unwrap());
+
+        // Node signs itself as a "node" …
+        let self_rec = produce_self_key_record(&node, "node", "2026-07-02T00:00:00Z")
+            .await
+            .unwrap();
+        // … A1 scrub-signs the SAME node's registration.
+        let scrubbed = produce_scrubbed_key_record(
+            &a1,
+            ScrubTarget {
+                key_id: "canonical-server-1".to_string(),
+                pubkey_ed25519_base64: node_ed,
+                pubkey_ml_dsa_65_base64: node_mldsa,
+                identity_type: "node".to_string(),
+            },
+            "2026-07-02T00:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        let self_canon = jcs::canonicalize(&self_rec.record.registration_envelope).unwrap();
+        let scrub_canon = jcs::canonicalize(&scrubbed.record.registration_envelope).unwrap();
+        assert_eq!(
+            self_canon, scrub_canon,
+            "envelopes must canonicalize identically (no drift)"
+        );
+        assert_eq!(
+            self_rec.record.original_content_hash,
+            scrubbed.record.original_content_hash
+        );
+        // Only the scrub identity differs.
+        assert_eq!(self_rec.record.scrub_key_id, "canonical-server-1");
+        assert_eq!(scrubbed.record.scrub_key_id, "A1");
     }
 
     /// Cross-impl drift guard: verify emits the RFC-3339 timestamp fields as
