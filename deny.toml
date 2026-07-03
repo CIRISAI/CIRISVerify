@@ -47,6 +47,15 @@ ignore = [
     # attacker-controlled input. Fix path requires hickory-resolver 0.26
     # which has API breaking changes; tracked alongside 0098/0099/0104.
     "RUSTSEC-2026-0119",
+    # hickory-proto NSEC3 closest-encloser proof validation unbounded loop
+    # (DNSSEC DoS). Reachable ONLY via `DnssecDnsHandle` "when built with the
+    # dnssec-ring or dnssec-aws-lc-rs feature and configured to perform DNSSEC
+    # validation" (advisory text). We enable NEITHER — hickory-resolver 0.25 is
+    # built with features = ["https-ring", "tokio", "webpki-roots"] (DoH only, no
+    # DNSSEC), so the vulnerable code path is not compiled/reachable. No stable
+    # fix exists (patched = []; only 0.26.0-beta.1 is unaffected); revisit on the
+    # hickory 0.26 stable bump (CIRISVerify#165), same as 0119.
+    "RUSTSEC-2026-0118",
     # time 0.3 stack-exhaustion via the RFC 2822 *string* parser (fixed in
     # 0.3.47, which requires rustc 1.88 and would break our MSRV 1.86). `time`
     # is pulled only transitively by x509-parser (#91 accord custody attestation)

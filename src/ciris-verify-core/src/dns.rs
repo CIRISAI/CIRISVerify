@@ -30,15 +30,15 @@
 use std::collections::HashMap;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
 use std::net::IpAddr;
-#[cfg(not(any(target_os = "android", target_os = "ios")))]
-use std::sync::Arc;
 use std::time::Duration;
 
 use base64::Engine;
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use hickory_resolver::config::{NameServerConfigGroup, ResolverConfig, ResolverOpts};
+use hickory_resolver::config::{ResolveHosts, ResolverConfig, ResolverOpts};
 #[cfg(not(any(target_os = "android", target_os = "ios")))]
-use hickory_resolver::TokioAsyncResolver;
+use hickory_resolver::name_server::TokioConnectionProvider;
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+use hickory_resolver::{Resolver, TokioResolver};
 use tracing::{debug, error, info, instrument, warn};
 
 use crate::error::VerifyError;
@@ -73,10 +73,19 @@ pub enum DnsTransport {
 #[derive(Clone)]
 pub struct DnsValidator {
     /// Resolver for the US source.
-    resolver: TokioAsyncResolver,
+    resolver: TokioResolver,
     /// DNS timeout (stored for future retry logic).
     #[allow(dead_code)]
     timeout: Duration,
+}
+
+/// Build a Tokio resolver from a config + options (hickory 0.25 builder API;
+/// replaced the removed `TokioAsyncResolver::tokio(config, opts)` constructor).
+#[cfg(not(any(target_os = "android", target_os = "ios")))]
+fn build_tokio_resolver(config: ResolverConfig, opts: ResolverOpts) -> TokioResolver {
+    Resolver::builder_with_config(config, TokioConnectionProvider::default())
+        .with_options(opts)
+        .build()
 }
 
 /// Mobile stub for DnsValidator (only static methods used).
@@ -114,7 +123,7 @@ impl DnsValidator {
         let mut opts = ResolverOpts::default();
         opts.timeout = timeout;
         opts.attempts = 2; // Reduced for faster timeout
-        opts.use_hosts_file = false;
+        opts.use_hosts_file = ResolveHosts::Never;
 
         // On Android, ResolverConfig::default() fails because there's no /etc/resolv.conf.
         // Use Google's public DNS servers instead.
@@ -126,7 +135,7 @@ impl DnsValidator {
         #[cfg(not(target_os = "android"))]
         let config = ResolverConfig::default();
 
-        let resolver = TokioAsyncResolver::tokio(config, opts);
+        let resolver = build_tokio_resolver(config, opts);
 
         Ok(Self { resolver, timeout })
     }
@@ -142,7 +151,8 @@ impl DnsValidator {
     ///
     /// Returns error if resolver initialization fails.
     pub async fn with_server(dns_server: IpAddr, timeout: Duration) -> Result<Self, VerifyError> {
-        use hickory_resolver::config::{NameServerConfig, Protocol};
+        use hickory_resolver::config::NameServerConfig;
+        use hickory_resolver::proto::xfer::Protocol;
         use std::net::SocketAddr;
 
         let mut config = ResolverConfig::new();
@@ -154,9 +164,9 @@ impl DnsValidator {
         let mut opts = ResolverOpts::default();
         opts.timeout = timeout;
         opts.attempts = 2; // Reduced for faster timeout
-        opts.use_hosts_file = false;
+        opts.use_hosts_file = ResolveHosts::Never;
 
-        let resolver = TokioAsyncResolver::tokio(config, opts);
+        let resolver = build_tokio_resolver(config, opts);
 
         Ok(Self { resolver, timeout })
     }
@@ -179,11 +189,11 @@ impl DnsValidator {
         let mut opts = ResolverOpts::default();
         opts.timeout = timeout;
         opts.attempts = 2; // Fewer attempts for DoH (already reliable)
-        opts.use_hosts_file = false;
+        opts.use_hosts_file = ResolveHosts::Never;
 
         // Use default Cloudflare DoH config (uses native-certs when available)
         // This is the PRIMARY path - works on most systems
-        let resolver = TokioAsyncResolver::tokio(ResolverConfig::cloudflare_https(), opts);
+        let resolver = build_tokio_resolver(ResolverConfig::cloudflare_https(), opts);
 
         Ok(Self { resolver, timeout })
     }
@@ -197,29 +207,16 @@ impl DnsValidator {
         let mut opts = ResolverOpts::default();
         opts.timeout = timeout;
         opts.attempts = 2;
-        opts.use_hosts_file = false;
+        opts.use_hosts_file = ResolveHosts::Never;
 
-        // Build rustls ClientConfig with bundled Mozilla CA certs (webpki-roots)
-        let mut root_store = rustls::RootCertStore::empty();
-        root_store.add_trust_anchors(webpki_roots::TLS_SERVER_ROOTS.iter().map(|ta| {
-            rustls::OwnedTrustAnchor::from_subject_spki_name_constraints(
-                ta.subject.to_vec(),
-                ta.spki.to_vec(),
-                ta.name_constraints.map(|nc| nc.to_vec()),
-            )
-        }));
-
-        let tls_config = rustls::ClientConfig::builder()
-            .with_safe_defaults()
-            .with_root_certificates(root_store)
-            .with_no_client_auth();
-
-        // Use Cloudflare's DoH endpoint with explicit bundled TLS config
-        let name_servers =
-            NameServerConfigGroup::cloudflare_https().with_client_config(Arc::new(tls_config));
-        let config = ResolverConfig::from_parts(None, vec![], name_servers);
-
-        let resolver = TokioAsyncResolver::tokio(config, opts);
+        // With the `webpki-roots` feature (and no platform-verifier), hickory
+        // 0.25's default DoH client config is already pinned to the bundled
+        // Mozilla CA roots — so this "bundled" path is the same cloudflare_https()
+        // config as with_doh(). Kept as a distinct method so the parallel race in
+        // query_all_approaches_parallel still fires two independent DoH attempts,
+        // and the whole DNS layer is webpki-roots-consistent (matching the reqwest
+        // JSON-API path's rustls-tls-webpki-roots).
+        let resolver = build_tokio_resolver(ResolverConfig::cloudflare_https(), opts);
 
         Ok(Self { resolver, timeout })
     }

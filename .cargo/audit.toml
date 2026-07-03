@@ -24,6 +24,12 @@ ignore = [
     # hickory-resolver as an outbound client only; query names come
     # from a configured allowlist, never attacker-controlled.
     "RUSTSEC-2026-0119",
+    # hickory-proto NSEC3 unbounded-loop DNSSEC DoS. Reachable ONLY via
+    # DnssecDnsHandle when built with the dnssec-ring / dnssec-aws-lc-rs feature;
+    # we build hickory-resolver 0.25 DoH-only (https-ring/tokio/webpki-roots, NO
+    # dnssec), so the path is not compiled. No stable fix (only 0.26.0-beta.1);
+    # revisit on the hickory 0.26 bump (CIRISVerify#165). Mirrors deny.toml.
+    "RUSTSEC-2026-0118",
     # time 0.3 stack-exhaustion via the RFC 2822 *string* parser (fixed in
     # 0.3.47, which requires rustc 1.88 and would break MSRV 1.86). `time` is
     # pulled only transitively by x509-parser (#91 custody attestation) for

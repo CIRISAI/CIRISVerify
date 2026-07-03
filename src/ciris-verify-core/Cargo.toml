@@ -75,12 +75,12 @@ chrono.workspace = true
 # DNS resolution
 hickory-resolver.workspace = true
 
-# TLS (for DNS-over-HTTPS with bundled certs)
-# Note: hickory-resolver 0.24 pins rustls 0.21 internally.
-# We keep rustls 0.21 here for API compatibility.
-# RUSTSEC-2026-0098/0099 are ignored in deny.toml (low risk for our use case).
-rustls = { version = "0.21", default-features = false }
-webpki-roots = "0.25"
+# TLS (for the DNS-over-HTTPS bundled-certs fallback in dns.rs). hickory 0.25
+# uses rustls 0.23 internally; we match it so the DoH ClientConfig type lines up
+# and the old rustls-0.21 / webpki-roots-0.25 duplicates collapse (CIRISVerify#165).
+# ring backend to match the repo's force-ring policy.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+webpki-roots = "0.26"
 
 # HTTP client
 reqwest.workspace = true
@@ -143,12 +143,11 @@ x509-parser = { version = "0.16", features = ["verify"] }
 # the Android target table below.
 # Blocking HTTP client for Android/iOS (tokio async I/O broken on JNI/iOS threads)
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
-# ureq with rustls for blocking HTTPS (bypasses broken tokio async I/O)
+# ureq with rustls for blocking HTTPS (bypasses broken tokio async I/O).
+# rustls (0.23, ring) + webpki-roots (0.26) now come from the common [dependencies]
+# above — unified with the DoH path after the hickory 0.25 bump (CIRISVerify#165),
+# so no mobile-specific rustls/webpki-roots alias is needed anymore.
 ureq = { version = "2.9", default-features = false, features = ["tls", "json"] }
-# Bundled Mozilla CA certs (native-certs doesn't work on mobile)
-webpki-roots-mobile = { package = "webpki-roots", version = "0.26" }
-# Force ring backend for rustls (aws-lc-rs has mobile issues)
-rustls-mobile = { package = "rustls", version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
 
 [target.'cfg(target_os = "android")'.dependencies]
 # v4.3.0 (CIRISPersist#132): rusqlite `bundled` for Android. NDK
