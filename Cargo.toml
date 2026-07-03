@@ -28,12 +28,6 @@ futures = "0.3"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
-# Protobuf (Veilid-compatible)
-prost = "0.12"
-prost-types = "0.12"
-tonic = "0.10"
-tonic-build = "0.10"
-
 # Classical cryptography
 p256 = { version = "0.13", features = ["ecdsa", "pem"] }
 ed25519-dalek = { version = "2.1", features = ["rand_core"] }
