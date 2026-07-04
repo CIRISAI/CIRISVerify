@@ -53,6 +53,13 @@ pub const WW_EMPTY_SENTINEL: &[u8] = b"WW-v1-empty";
 /// §19.7.1 `AggregationMetaV1` domain separator — exactly 16 bytes
 /// (`"AGG-META-v1"` + five `\0`).
 pub const DOMAIN_AGG_META: &[u8] = b"AGG-META-v1\0\0\0\0\0";
+/// CC 6.1.5.2 §Q `StorageBudgetV1` domain separator (CIRISVerify#170) — exactly
+/// 16 bytes (`"CIRIS-STG-BUDGET"`, no padding). Byte-identical to the value
+/// CIRISEdge v8.5.0 first signed under, so existing shapes verify unchanged.
+pub const DOMAIN_STORAGE_BUDGET: &[u8] = b"CIRIS-STG-BUDGET";
+/// CC 6.1.5.2 §Q `CorpusWantV1` domain separator (CIRISVerify#170) — exactly 16
+/// bytes (`"CIRIS-WANT-HAVE"` + one trailing `\0`).
+pub const DOMAIN_CORPUS_WANT: &[u8] = b"CIRIS-WANT-HAVE\0";
 
 /// Length of an Ed25519 public key / the raw signature is 64; pubkey 32.
 const ED25519_PUBKEY_LEN: usize = 32;

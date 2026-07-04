@@ -42,14 +42,15 @@ pub mod av_chunk;
 pub mod bootstrap;
 pub mod fountain;
 pub mod preimage;
+pub mod storage_contention;
 pub mod wholeness_witness;
 
 // ---- the load-bearing surface, re-exported flat -----------------------
 
 pub use preimage::{
     verify_bound_hybrid, BoundHybridSig, HolonomicError, Preimage, DOMAIN_AGG_META,
-    DOMAIN_COMPRESS_REQUEST, DOMAIN_HOLDING_CLAIM, DOMAIN_RELAY_CAPACITY, DOMAIN_SIGNED_CLAIM,
-    DOMAIN_WITNESS_PREIMAGE, WW_EMPTY_SENTINEL,
+    DOMAIN_COMPRESS_REQUEST, DOMAIN_CORPUS_WANT, DOMAIN_HOLDING_CLAIM, DOMAIN_RELAY_CAPACITY,
+    DOMAIN_SIGNED_CLAIM, DOMAIN_STORAGE_BUDGET, DOMAIN_WITNESS_PREIMAGE, WW_EMPTY_SENTINEL,
 };
 
 pub use aggregation::{
@@ -71,6 +72,11 @@ pub use bootstrap::{
 pub use fountain::{
     holding_claim_counts_toward_rarity, retention_decision, verify_holding_claim, verify_symbol,
     ConsentState, FountainCompressRequest, FountainHoldingClaim, RetentionDecision,
+};
+
+pub use storage_contention::{
+    verify_corpus_want_v1, verify_storage_budget_v1, CorpusWantV1, ScopeBudget, StorageBudgetV1,
+    StorageContentionError, StorageContentionVerification, SHAPE_VERSION, SUPPRESSED_SCOPES,
 };
 
 pub use alm::{

@@ -1,0 +1,26 @@
+{
+  "description": "StorageBudgetV1 CC 6.1.5.2 §Q canonical signing preimage (16-byte CIRIS-STG-BUDGET domain, u32-lp, big-endian; NOT JCS). CIRISVerify#170.",
+  "domain_separator_hex": "43495249532d5354472d425544474554",
+  "epoch_id": "epoch-1",
+  "expected_canonical_bytes_hex": "43495249532d5354472d42554447455400000001000000066e6f64652d310000000765706f63682d310000000000000003000000020000000c616666696c696174696f6e7300000000000003e800000000000000c800000009636f6d6d756e69747900000000000007d00000000000000000000000020000000861765f6368756e6b000000057472616365",
+  "node_id": "node-1",
+  "pinned_class": [
+    "av_chunk",
+    "trace"
+  ],
+  "revision": 3,
+  "scopes": [
+    {
+      "budget_bytes": 1000,
+      "cohort_scope": "affiliations",
+      "pin_reserve_bytes": 200
+    },
+    {
+      "budget_bytes": 2000,
+      "cohort_scope": "community",
+      "pin_reserve_bytes": 0
+    }
+  ],
+  "vector_id": "storage_budget/canonical_bytes",
+  "version": 1
+}
