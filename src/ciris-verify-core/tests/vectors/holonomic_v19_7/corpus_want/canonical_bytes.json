@@ -1,0 +1,16 @@
+{
+  "cohort_scope": "community",
+  "description": "CorpusWantV1 CC 6.1.5.2 §Q canonical signing preimage (16-byte CIRIS-WANT-HAVE\\0 domain, u32-lp, big-endian; NOT JCS). CIRISVerify#170.",
+  "domain_separator_hex": "43495249532d57414e542d4841564500",
+  "epoch_id": "epoch-1",
+  "expected_canonical_bytes_hex": "43495249532d57414e542d484156450000000001000000066e6f64652d310000000765706f63682d3100000009636f6d6d756e6974790000000000001000000000000000070800000002000000056369642d61000000056369642d62",
+  "node_id": "node-1",
+  "remaining_budget_bytes": 1800,
+  "size_cap_bytes": 4096,
+  "vector_id": "corpus_want/canonical_bytes",
+  "version": 1,
+  "want": [
+    "cid-a",
+    "cid-b"
+  ]
+}

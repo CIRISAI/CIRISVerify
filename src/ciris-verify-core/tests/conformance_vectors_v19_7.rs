@@ -197,3 +197,89 @@ fn aggregation_meta_v2_canonical_bytes_with_n_eff() {
         }),
     );
 }
+
+// ---- CC 6.1.5.2 §Q storage-contention (CIRISVerify#170) -----------------
+
+#[test]
+fn storage_budget_v1_canonical_bytes() {
+    use ciris_verify_core::holonomic::storage_contention::{ScopeBudget, StorageBudgetV1};
+    use ciris_verify_core::holonomic::DOMAIN_STORAGE_BUDGET;
+    assert_eq!(
+        DOMAIN_STORAGE_BUDGET.len(),
+        16,
+        "§Q domain separator is 16 bytes"
+    );
+    let b = StorageBudgetV1 {
+        node_id: "node-1".into(),
+        epoch_id: "epoch-1".into(),
+        revision: 3,
+        scopes: vec![
+            ScopeBudget {
+                cohort_scope: "affiliations".into(),
+                budget_bytes: 1000,
+                pin_reserve_bytes: 200,
+            },
+            ScopeBudget {
+                cohort_scope: "community".into(),
+                budget_bytes: 2000,
+                pin_reserve_bytes: 0,
+            },
+        ],
+        pinned_class: vec!["av_chunk".into(), "trace".into()],
+    };
+    b.validate().expect("fixture is structurally valid");
+    emit_or_verify(
+        "storage_budget/canonical_bytes.json",
+        json!({
+            "vector_id": "storage_budget/canonical_bytes",
+            "description": "StorageBudgetV1 CC 6.1.5.2 §Q canonical signing preimage (16-byte CIRIS-STG-BUDGET domain, u32-lp, big-endian; NOT JCS). CIRISVerify#170.",
+            "domain_separator_hex": hex::encode(DOMAIN_STORAGE_BUDGET),
+            "version": 1,
+            "node_id": b.node_id,
+            "epoch_id": b.epoch_id,
+            "revision": b.revision,
+            "scopes": [
+                { "cohort_scope": "affiliations", "budget_bytes": 1000, "pin_reserve_bytes": 200 },
+                { "cohort_scope": "community", "budget_bytes": 2000, "pin_reserve_bytes": 0 },
+            ],
+            "pinned_class": ["av_chunk", "trace"],
+            "expected_canonical_bytes_hex": hex::encode(b.signing_preimage()),
+        }),
+    );
+}
+
+#[test]
+fn corpus_want_v1_canonical_bytes() {
+    use ciris_verify_core::holonomic::storage_contention::CorpusWantV1;
+    use ciris_verify_core::holonomic::DOMAIN_CORPUS_WANT;
+    assert_eq!(
+        DOMAIN_CORPUS_WANT.len(),
+        16,
+        "§Q domain separator is 16 bytes"
+    );
+    let w = CorpusWantV1 {
+        node_id: "node-1".into(),
+        epoch_id: "epoch-1".into(),
+        cohort_scope: "community".into(),
+        size_cap_bytes: 4096,
+        remaining_budget_bytes: 1800,
+        want: vec!["cid-a".into(), "cid-b".into()],
+    };
+    w.validate().expect("fixture is structurally valid");
+    emit_or_verify(
+        "corpus_want/canonical_bytes.json",
+        json!({
+            "vector_id": "corpus_want/canonical_bytes",
+            "description": "CorpusWantV1 CC 6.1.5.2 §Q canonical signing preimage (16-byte CIRIS-WANT-HAVE\\0 domain, u32-lp, big-endian; NOT JCS). CIRISVerify#170.",
+            "domain_separator_hex": hex::encode(DOMAIN_CORPUS_WANT),
+            "version": 1,
+            "node_id": w.node_id,
+            "epoch_id": w.epoch_id,
+            "cohort_scope": w.cohort_scope,
+            "size_cap_bytes": w.size_cap_bytes,
+            "remaining_budget_bytes": w.remaining_budget_bytes,
+            "want": ["cid-a", "cid-b"],
+            "expected_canonical_bytes_hex": hex::encode(w.signing_preimage()),
+        }),
+    );
+}
