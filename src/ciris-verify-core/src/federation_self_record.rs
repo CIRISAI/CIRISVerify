@@ -52,6 +52,64 @@ fn b64() -> base64::engine::general_purpose::GeneralPurpose {
     base64::engine::general_purpose::STANDARD
 }
 
+/// A node's transport reachability hint — **WHO** (the key record's identity) plus
+/// **HOW-TO-REACH** (this hint), both covered by the same accord scrub-signature so a
+/// baked/replicated canonical record is self-describing and unspoofable post-hoc
+/// (CIRISVerify#172 producer half; CIRISPersist#381 read contract).
+///
+/// `kind` is an **open vocabulary** (`ip` | `reticulum` | `https` | …); consumers
+/// dial by `kind` and ignore ones they don't understand. This is CIRISPersist's exact
+/// read shape — `registration_envelope["transport_hints"][*].{kind,destination}` — so
+/// its `serde_json` read + `KeyRecord::transport_hints()` see these verbatim.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TransportHint {
+    /// Transport family (`ip`, `reticulum`, `https`, …) — open vocabulary.
+    pub kind: String,
+    /// Where to reach the node on that transport (e.g. `108.61.242.236:4242`).
+    pub destination: String,
+}
+
+/// Build the genesis `registration_envelope` — the **single source of truth** shared by
+/// [`produce_self_key_record`] and [`produce_scrubbed_key_record`] so the two can never
+/// drift (a genesis record would fail to root on a producer-vs-verifier mismatch;
+/// CIRISPersist#345).
+///
+/// `transport_hints` is **materialize-when-present** (CEG §0.9 omit-vs-materialize): an
+/// empty list omits the key entirely, reproducing the pre-#172 envelope **byte-for-byte**
+/// so existing records / signatures / golden vectors stay valid. JCS
+/// ([`crate::jcs`]) sorts keys lexicographically, so the *insertion order here is
+/// irrelevant* to the canonical bytes / `original_content_hash`.
+fn build_registration_envelope(
+    key_id: &str,
+    identity_type: &str,
+    pubkey_ed25519_base64: &str,
+    pubkey_ml_dsa_65_base64: &str,
+    valid_from: &str,
+    transport_hints: &[TransportHint],
+) -> Value {
+    let mut envelope = json!({
+        "key_id": key_id,
+        "purpose": REGISTRATION_PURPOSE,
+        "algorithm": ALGORITHM_HYBRID,
+        "identity_type": identity_type,
+        "pubkey_ed25519_base64": pubkey_ed25519_base64,
+        "pubkey_ml_dsa_65_base64": pubkey_ml_dsa_65_base64,
+        "valid_from": valid_from,
+    });
+    // Only materialize `transport_hints` when there is at least one — absent hints
+    // MUST leave the envelope bytes identical to the pre-#172 shape (see doc above).
+    if !transport_hints.is_empty() {
+        envelope
+            .as_object_mut()
+            .expect("json! built an object")
+            .insert(
+                "transport_hints".to_string(),
+                serde_json::to_value(transport_hints).expect("TransportHint serializes"),
+            );
+    }
+    envelope
+}
+
 /// A self-signed federation key record. Serializes to CIRISPersist's
 /// `KeyRecord` wire shape — wrap it in [`SignedKeyRecord`] for submission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -97,6 +155,20 @@ pub struct KeyRecord {
     pub roles: Vec<String>,
 }
 
+impl KeyRecord {
+    /// Read the [`TransportHint`]s carried in the signed `registration_envelope`
+    /// (CIRISVerify#172). Mirrors CIRISPersist's `KeyRecord::transport_hints()`
+    /// read contract: a record with no hint (or a malformed/absent field) reads
+    /// as an empty list — never an error, never a default injected on write.
+    #[must_use]
+    pub fn transport_hints(&self) -> Vec<TransportHint> {
+        self.registration_envelope
+            .get("transport_hints")
+            .and_then(|v| serde_json::from_value::<Vec<TransportHint>>(v.clone()).ok())
+            .unwrap_or_default()
+    }
+}
+
 /// The submission wrapper CIRISPersist's `register_key` / CIRISServer peering
 /// accept (`peer_key_record`). `persist_row_hash` inside is ignored on write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +186,13 @@ pub struct SignedKeyRecord {
 /// token (a touch-required key blocks here until tapped); the ML-DSA-65 half
 /// signs in software over the bound input.
 ///
+/// `transport_hints` (CIRISVerify#172) are embedded **inside** the signed
+/// `registration_envelope` — so the reachability hint is covered by
+/// `original_content_hash` and the hybrid scrub-signature, accord-attested by
+/// construction. Pass `&[]` for an ordinary hintless record; an empty list
+/// reproduces the pre-#172 envelope bytes exactly (see
+/// `build_registration_envelope`).
+///
 /// # Errors
 ///
 /// [`VerifyError`] on a canonicalization or signer fault.
@@ -121,6 +200,7 @@ pub async fn produce_self_key_record(
     signer: &dyn SelfSigner,
     identity_type: &str,
     valid_from: &str,
+    transport_hints: &[TransportHint],
 ) -> Result<SignedKeyRecord, VerifyError> {
     let key_id = signer.key_id().to_string();
     let ed_pub = signer.ed25519_public_key().await?;
@@ -135,15 +215,15 @@ pub async fn produce_self_key_record(
     // and still verify (the signature would not cover them). `register_key`
     // recanonicalizes this exact object; a consumer SHOULD additionally assert
     // each row field equals its signed value here (flagged for Persist on #63).
-    let registration_envelope = json!({
-        "key_id": key_id,
-        "purpose": REGISTRATION_PURPOSE,
-        "algorithm": ALGORITHM_HYBRID,
-        "identity_type": identity_type,
-        "pubkey_ed25519_base64": pubkey_ed25519_base64,
-        "pubkey_ml_dsa_65_base64": pubkey_ml_dsa_65_base64,
-        "valid_from": valid_from,
-    });
+    // #172: `transport_hints` ride inside this same signed envelope.
+    let registration_envelope = build_registration_envelope(
+        &key_id,
+        identity_type,
+        &pubkey_ed25519_base64,
+        &pubkey_ml_dsa_65_base64,
+        valid_from,
+        transport_hints,
+    );
     let canonical = jcs::canonicalize(&registration_envelope)?;
     let original_content_hash = hex::encode(Sha256::digest(&canonical));
 
@@ -207,6 +287,13 @@ pub struct ScrubTarget {
 /// canonicalization (CIRISPersist#345) and every genesis record would fail to
 /// root.
 ///
+/// `transport_hints` (CIRISVerify#172) are embedded inside the signed envelope
+/// exactly as in [`produce_self_key_record`] — so the accord holder attests the
+/// admitted node's reachability along with its identity, in one scrub-signature.
+/// This is the canonical-node admission path the operator ceremony uses to bake
+/// a hint-carrying canonical record. Pass `&[]` to omit (byte-identical to the
+/// pre-#172 shape).
+///
 /// # Errors
 ///
 /// [`VerifyError`] if the scrubber's signer fails or the envelope can't be
@@ -215,19 +302,21 @@ pub async fn produce_scrubbed_key_record(
     scrubber: &dyn SelfSigner,
     target: ScrubTarget,
     valid_from: &str,
+    transport_hints: &[TransportHint],
 ) -> Result<SignedKeyRecord, VerifyError> {
     // Same rich envelope as `produce_self_key_record`, but over the TARGET's
     // fields — so persist recanonicalizes byte-identical bytes and the
     // scrub-signature (below) verifies against `scrub_key_id`'s pinned pubkey.
-    let registration_envelope = json!({
-        "key_id": target.key_id,
-        "purpose": REGISTRATION_PURPOSE,
-        "algorithm": ALGORITHM_HYBRID,
-        "identity_type": target.identity_type,
-        "pubkey_ed25519_base64": target.pubkey_ed25519_base64,
-        "pubkey_ml_dsa_65_base64": target.pubkey_ml_dsa_65_base64,
-        "valid_from": valid_from,
-    });
+    // #172: `transport_hints` ride inside the same signed envelope; the shared
+    // builder guarantees byte-identity with the self-record for the same fields.
+    let registration_envelope = build_registration_envelope(
+        &target.key_id,
+        &target.identity_type,
+        &target.pubkey_ed25519_base64,
+        &target.pubkey_ml_dsa_65_base64,
+        valid_from,
+        transport_hints,
+    );
     let canonical = jcs::canonicalize(&registration_envelope)?;
     let original_content_hash = hex::encode(Sha256::digest(&canonical));
 
@@ -273,9 +362,10 @@ mod tests {
         // hybrid-verify the scrub signatures over those bytes against the
         // pubkeys carried in the record (self-attested path).
         let identity = HybridSigningIdentity::generate("my-identity-key").unwrap();
-        let signed = produce_self_key_record(&identity, IDENTITY_TYPE_USER, "2026-06-18T00:00:00Z")
-            .await
-            .unwrap();
+        let signed =
+            produce_self_key_record(&identity, IDENTITY_TYPE_USER, "2026-06-18T00:00:00Z", &[])
+                .await
+                .unwrap();
         let r = &signed.record;
 
         assert_eq!(r.algorithm, ALGORITHM_HYBRID);
@@ -331,6 +421,7 @@ mod tests {
                 identity_type: "node".to_string(),
             },
             "2026-07-02T00:00:00Z",
+            &[],
         )
         .await
         .unwrap();
@@ -395,7 +486,7 @@ mod tests {
         let node_mldsa = b64().encode(node.mldsa65_public_key().await.unwrap());
 
         // Node signs itself as a "node" …
-        let self_rec = produce_self_key_record(&node, "node", "2026-07-02T00:00:00Z")
+        let self_rec = produce_self_key_record(&node, "node", "2026-07-02T00:00:00Z", &[])
             .await
             .unwrap();
         // … A1 scrub-signs the SAME node's registration.
@@ -408,6 +499,7 @@ mod tests {
                 identity_type: "node".to_string(),
             },
             "2026-07-02T00:00:00Z",
+            &[],
         )
         .await
         .unwrap();
@@ -467,9 +559,10 @@ mod tests {
         }
 
         let identity = HybridSigningIdentity::generate("my-identity-key").unwrap();
-        let signed = produce_self_key_record(&identity, IDENTITY_TYPE_USER, "2026-06-18T00:00:00Z")
-            .await
-            .unwrap();
+        let signed =
+            produce_self_key_record(&identity, IDENTITY_TYPE_USER, "2026-06-18T00:00:00Z", &[])
+                .await
+                .unwrap();
         let json = serde_json::to_value(&signed.record).unwrap();
 
         let parsed: PersistShapedKeyRecord = serde_json::from_value(json)
@@ -487,7 +580,7 @@ mod tests {
     async fn tampered_record_fails_the_hash_crosscheck() {
         let identity = HybridSigningIdentity::generate("k").unwrap();
         let mut signed =
-            produce_self_key_record(&identity, IDENTITY_TYPE_USER, "2026-06-18T00:00:00Z")
+            produce_self_key_record(&identity, IDENTITY_TYPE_USER, "2026-06-18T00:00:00Z", &[])
                 .await
                 .unwrap();
         // Mutate the envelope after signing → recomputed hash diverges.
@@ -498,5 +591,148 @@ mod tests {
             signed.record.original_content_hash,
             "register_key catches the envelope/hash divergence fail-secure"
         );
+    }
+
+    fn hints() -> Vec<TransportHint> {
+        vec![
+            TransportHint {
+                kind: "ip".to_string(),
+                destination: "108.61.242.236:4242".to_string(),
+            },
+            TransportHint {
+                kind: "reticulum".to_string(),
+                destination: "a1b2c3d4e5f6".to_string(),
+            },
+        ]
+    }
+
+    /// #172: an empty `transport_hints` list MUST leave the signed envelope
+    /// byte-identical to the pre-#172 shape — no `transport_hints` key at all —
+    /// so already-baked records / signatures / golden vectors stay valid.
+    #[tokio::test]
+    async fn absent_hints_omit_the_key_and_preserve_pre_172_bytes() {
+        let identity = HybridSigningIdentity::generate("k").unwrap();
+        let signed =
+            produce_self_key_record(&identity, IDENTITY_TYPE_USER, "2026-06-18T00:00:00Z", &[])
+                .await
+                .unwrap();
+        let env = &signed.record.registration_envelope;
+        assert!(
+            env.get("transport_hints").is_none(),
+            "an empty hint list must NOT materialize the key"
+        );
+        assert!(signed.record.transport_hints().is_empty());
+
+        // The canonical bytes equal a hand-built 7-field pre-#172 envelope for
+        // the same fields — the byte-identity that keeps old signatures valid.
+        let ed = signed.record.pubkey_ed25519_base64.clone();
+        let pqc = signed.record.pubkey_ml_dsa_65_base64.clone().unwrap();
+        let pre_172 = json!({
+            "key_id": "k",
+            "purpose": REGISTRATION_PURPOSE,
+            "algorithm": ALGORITHM_HYBRID,
+            "identity_type": IDENTITY_TYPE_USER,
+            "pubkey_ed25519_base64": ed,
+            "pubkey_ml_dsa_65_base64": pqc,
+            "valid_from": "2026-06-18T00:00:00Z",
+        });
+        assert_eq!(
+            jcs::canonicalize(env).unwrap(),
+            jcs::canonicalize(&pre_172).unwrap(),
+            "absent-hint envelope must canonicalize identically to the pre-#172 shape"
+        );
+    }
+
+    /// #172: hints ride INSIDE the signed envelope — they are covered by
+    /// `original_content_hash` and hybrid-verify, and read back via
+    /// `transport_hints()`.
+    #[tokio::test]
+    async fn hints_are_signed_and_read_back() {
+        let identity = HybridSigningIdentity::generate("node-1").unwrap();
+        let signed = produce_self_key_record(&identity, "node", "2026-07-02T00:00:00Z", &hints())
+            .await
+            .unwrap();
+        let r = &signed.record;
+
+        // Read contract (persist's `KeyRecord::transport_hints()` shape).
+        assert_eq!(r.transport_hints(), hints());
+        assert_eq!(
+            r.registration_envelope["transport_hints"][0]["destination"],
+            "108.61.242.236:4242"
+        );
+
+        // The hints are inside the hash + signature: recompute + Strict verify.
+        let canonical = jcs::canonicalize(&r.registration_envelope).unwrap();
+        assert_eq!(
+            hex::encode(Sha256::digest(&canonical)),
+            r.original_content_hash
+        );
+        let member = ThresholdMember {
+            member_id: r.key_id.clone(),
+            ed25519_public_key_base64: r.pubkey_ed25519_base64.clone(),
+            mldsa65_public_key_base64: r.pubkey_ml_dsa_65_base64.clone(),
+            role: None,
+        };
+        let sig = ThresholdSignature {
+            member_id: r.key_id.clone(),
+            ed25519_signature_base64: r.scrub_signature_classical.clone(),
+            mldsa65_signature_base64: r.scrub_signature_pqc.clone(),
+        };
+        assert_eq!(
+            verify_threshold_signatures(&canonical, &[member], &[sig], 1),
+            Ok(1),
+            "hint-carrying record must hybrid-verify (hints are inside the signature)"
+        );
+
+        // A hint tampered after signing breaks the hash cross-check fail-secure.
+        let mut tampered = r.registration_envelope.clone();
+        tampered["transport_hints"][0]["destination"] = json!("10.0.0.1:4242");
+        assert_ne!(
+            hex::encode(Sha256::digest(jcs::canonicalize(&tampered).unwrap())),
+            r.original_content_hash,
+            "mutating a hint after signing must diverge from original_content_hash"
+        );
+    }
+
+    /// #172 no-drift with hints present: the scrubbed record's canonical envelope
+    /// is byte-identical to the self-record's for the SAME identity fields AND
+    /// hints — so persist verifies both through one canonicalization even when a
+    /// canonical node is admitted-by-A1 with a reachability hint.
+    #[tokio::test]
+    async fn scrubbed_and_self_envelopes_match_with_hints() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let node = HybridSigningIdentity::generate("canonical-server-1").unwrap();
+        let node_ed = b64().encode(node.ed25519_public_key().await.unwrap());
+        let node_mldsa = b64().encode(node.mldsa65_public_key().await.unwrap());
+
+        let self_rec = produce_self_key_record(&node, "node", "2026-07-02T00:00:00Z", &hints())
+            .await
+            .unwrap();
+        let scrubbed = produce_scrubbed_key_record(
+            &a1,
+            ScrubTarget {
+                key_id: "canonical-server-1".to_string(),
+                pubkey_ed25519_base64: node_ed,
+                pubkey_ml_dsa_65_base64: node_mldsa,
+                identity_type: "node".to_string(),
+            },
+            "2026-07-02T00:00:00Z",
+            &hints(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            jcs::canonicalize(&self_rec.record.registration_envelope).unwrap(),
+            jcs::canonicalize(&scrubbed.record.registration_envelope).unwrap(),
+            "hint-carrying envelopes must canonicalize identically (no drift)"
+        );
+        assert_eq!(
+            self_rec.record.original_content_hash,
+            scrubbed.record.original_content_hash
+        );
+        assert_eq!(scrubbed.record.transport_hints(), hints());
+        // Admitted-by the accord holder, reachability attested in the same scrub.
+        assert_eq!(scrubbed.record.scrub_key_id, "A1");
     }
 }

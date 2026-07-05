@@ -101,7 +101,9 @@ pub async fn produce_accord_holder_record(
     holder: &dyn SelfSigner,
     valid_from: &str,
 ) -> Result<SignedKeyRecord, VerifyError> {
-    produce_self_key_record(holder, IDENTITY_TYPE_ACCORD_HOLDER, valid_from).await
+    // An accord holder is a custody principal, not a dialed-into network node —
+    // no transport hint (#172).
+    produce_self_key_record(holder, IDENTITY_TYPE_ACCORD_HOLDER, valid_from, &[]).await
 }
 
 /// Runbook §7 — the canonical entrenched-`family` envelope.

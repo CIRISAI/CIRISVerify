@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-build-tool"
-version = "8.7.0"
+version = "8.8.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "8.7.0"
+version = "8.8.0"
 dependencies = [
  "chacha20poly1305",
  "criterion",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "8.7.0"
+version = "8.8.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -761,7 +761,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "8.7.0"
+version = "8.8.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -778,7 +778,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-tpm-plugin"
-version = "8.7.0"
+version = "8.8.0"
 dependencies = [
  "sha2",
  "tracing",
@@ -787,7 +787,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "8.7.0"
+version = "8.8.0"
 dependencies = [
  "android_system_properties",
  "async-trait",
@@ -832,7 +832,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "8.7.0"
+version = "8.8.0"
 dependencies = [
  "aes-gcm",
  "android_logger",
