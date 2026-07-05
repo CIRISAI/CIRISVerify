@@ -110,6 +110,35 @@ fn build_registration_envelope(
     envelope
 }
 
+/// A single anchor-holder scrub signature over a canonical `registration_envelope`
+/// (CIRISVerify#174 multi-scrub — CIRISPersist#383's 2-of-3 canonical add).
+///
+/// The 2nd..Nth scrubs of a multi-scrub canonical record ride in
+/// [`KeyRecord::additional_scrubs`]; **scrub #1 stays in the base
+/// `scrub_key_id` / `scrub_signature_classical` / `scrub_signature_pqc` fields**, so
+/// a single-scrub record is byte-identical to the pre-#174 shape. Every scrub is
+/// over the **same** canonical bytes (byte-identical `registration_envelope` /
+/// `original_content_hash`) — the scrub *set* lives OUTSIDE the signed envelope, so a
+/// 1-scrub and a 2-scrub record of the same target canonicalize identically (§3 of
+/// CIRISPersist#383). `root_binding` roots via **any one** scrub; persist confers the
+/// `canonical` role only on **≥2 distinct** anchor scrubs.
+///
+/// This is persist's exact wire shape for an entry of the additive `additional_scrubs`
+/// set — pinned against `CIRISPersist/src/federation/types.rs::KeyRecord` field naming.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ScrubSig {
+    /// The anchor holder (A1/B1/C1) whose key produced this scrub — FKs to a
+    /// registered `federation_keys` row; the scrub verifies against its pubkey.
+    pub scrub_key_id: String,
+    /// Base64 `Ed25519.sign(JCS(registration_envelope))` — same canonical bytes
+    /// as every other scrub on the record.
+    pub scrub_signature_classical: String,
+    /// Base64 `ML-DSA-65.sign(JCS(registration_envelope) ‖ ed25519_sig)`. `None`
+    /// only for a hybrid-pending scrub (producers here always fill it).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scrub_signature_pqc: Option<String>,
+}
+
 /// A self-signed federation key record. Serializes to CIRISPersist's
 /// `KeyRecord` wire shape — wrap it in [`SignedKeyRecord`] for submission.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -153,6 +182,14 @@ pub struct KeyRecord {
     /// Per-row role tags (empty for a fresh identity).
     #[serde(default)]
     pub roles: Vec<String>,
+    /// CIRISVerify#174 — the **2nd..Nth** anchor scrub signatures over the SAME
+    /// canonical `registration_envelope` (scrub #1 is the base `scrub_*` fields
+    /// above). Empty for an ordinary / single-scrub record → serializes away
+    /// entirely, so the record stays **byte-identical** to the pre-#174 shape
+    /// (persist recomputes `persist_row_hash`; an absent field can't perturb it).
+    /// CIRISPersist admits the `canonical` role on **≥2 distinct** anchor scrubs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub additional_scrubs: Vec<ScrubSig>,
 }
 
 impl KeyRecord {
@@ -166,6 +203,37 @@ impl KeyRecord {
             .get("transport_hints")
             .and_then(|v| serde_json::from_value::<Vec<TransportHint>>(v.clone()).ok())
             .unwrap_or_default()
+    }
+
+    /// The **full ordered scrub set** (CIRISVerify#174): scrub #1 reconstructed
+    /// from the base `scrub_*` fields, followed by every [`Self::additional_scrubs`]
+    /// entry. Each is a signature over the *same* canonical `registration_envelope`
+    /// bytes. This is the set persist roots (any one) / admits `canonical` on (≥2
+    /// distinct).
+    #[must_use]
+    pub fn scrubs(&self) -> Vec<ScrubSig> {
+        let mut out = Vec::with_capacity(1 + self.additional_scrubs.len());
+        out.push(ScrubSig {
+            scrub_key_id: self.scrub_key_id.clone(),
+            scrub_signature_classical: self.scrub_signature_classical.clone(),
+            scrub_signature_pqc: self.scrub_signature_pqc.clone(),
+        });
+        out.extend(self.additional_scrubs.iter().cloned());
+        out
+    }
+
+    /// Count of **distinct** anchor `scrub_key_id`s across the whole scrub set
+    /// ([`Self::scrubs`]). CIRISPersist#383 confers the `canonical` role only at
+    /// `>= 2`; this is the producer-side pre-check that a ceremony reached quorum
+    /// before the bytes are handed to persist.
+    #[must_use]
+    pub fn distinct_scrub_count(&self) -> usize {
+        let mut ids = std::collections::BTreeSet::new();
+        ids.insert(self.scrub_key_id.as_str());
+        for s in &self.additional_scrubs {
+            ids.insert(s.scrub_key_id.as_str());
+        }
+        ids.len()
     }
 }
 
@@ -248,6 +316,7 @@ pub async fn produce_self_key_record(
         pqc_completed_at: Some(valid_from.to_string()),
         persist_row_hash: String::new(),
         roles: Vec::new(),
+        additional_scrubs: Vec::new(),
     };
     Ok(SignedKeyRecord { record })
 }
@@ -345,8 +414,108 @@ pub async fn produce_scrubbed_key_record(
         pqc_completed_at: Some(valid_from.to_string()),
         persist_row_hash: String::new(),
         roles: Vec::new(),
+        additional_scrubs: Vec::new(),
     };
     Ok(SignedKeyRecord { record })
+}
+
+/// Produce a **multi-scrub** canonical key record — N anchor holders (A1/B1/C1)
+/// each scrub-sign one node's registration, so the record roots at the accord
+/// anchor with **≥2 distinct** scrubs and persist can confer the `canonical` role
+/// (CIRISVerify#174 — CIRISPersist#383's 2-of-3 canonical add).
+///
+/// The envelope + canonical bytes are produced **once** (via
+/// [`produce_scrubbed_key_record`] for scrub #1), then each remaining anchor's scrub
+/// is [`append_scrub`]ed over those *same* bytes — so the record is byte-identical to
+/// a single-scrub record of the same target, differing only by the scrub *set*
+/// (§3 of #383). `scrubbers[0]` becomes scrub #1 (the base `scrub_*` fields); the
+/// rest populate [`KeyRecord::additional_scrubs`].
+///
+/// Distinct-anchor is enforced ([`append_scrub`] rejects a duplicate `scrub_key_id`),
+/// so a real 2-of-3 needs two *different* holders. Order of `scrubbers` only sets
+/// which holder is scrub #1; the resulting canonical bytes are order-independent.
+///
+/// # Errors
+///
+/// [`VerifyError`] if `scrubbers` is empty, a signer faults, the envelope can't be
+/// canonicalized, or two scrubbers share a `scrub_key_id`.
+pub async fn produce_multiscrub_key_record(
+    scrubbers: &[&dyn SelfSigner],
+    target: ScrubTarget,
+    valid_from: &str,
+    transport_hints: &[TransportHint],
+) -> Result<SignedKeyRecord, VerifyError> {
+    let (first, rest) = scrubbers
+        .split_first()
+        .ok_or_else(|| VerifyError::IntegrityError {
+            message: "produce_multiscrub_key_record requires at least one scrubber".to_string(),
+        })?;
+    // Scrub #1 mints the shared envelope + canonical bytes (base scrub_* fields).
+    let mut record =
+        produce_scrubbed_key_record(*first, target, valid_from, transport_hints).await?;
+    // Each remaining anchor appends a scrub over those SAME bytes.
+    for scrubber in rest {
+        record = append_scrub(record, *scrubber).await?;
+    }
+    Ok(record)
+}
+
+/// Append a second (or Nth) anchor scrub to a **partial** canonical record over its
+/// **byte-identical** canonical envelope (CIRISVerify#174) — the load-bearing
+/// cross-device ceremony op: A1 scrubs on device 1 → a 1-scrub partial → B1
+/// `append_scrub`s on device 2 → a ≥2-scrub record persist admits as `canonical`.
+///
+/// The appended scrub is over the record's **existing** `registration_envelope`,
+/// recanonicalized here and **hash-checked against `original_content_hash` first**
+/// (fail-secure: a partial whose envelope was tampered in transit can't get a fresh
+/// valid scrub laid over the bad bytes). Distinct-anchor is enforced — appending a
+/// `scrub_key_id` already in the scrub set is rejected (no double-count toward the
+/// ≥2 quorum). The envelope, `original_content_hash`, and scrub #1 are untouched, so
+/// the result canonicalizes identically to the input (only the scrub set grows).
+///
+/// # Errors
+///
+/// [`VerifyError`] if the envelope can't be canonicalized, its recomputed hash
+/// doesn't match `original_content_hash`, `scrubber`'s `scrub_key_id` is already
+/// present, or the signer faults.
+pub async fn append_scrub(
+    mut record: SignedKeyRecord,
+    scrubber: &dyn SelfSigner,
+) -> Result<SignedKeyRecord, VerifyError> {
+    // Recanonicalize the EXISTING envelope — the appended scrub is over the same
+    // canonical bytes as every scrub already on the record.
+    let canonical = jcs::canonicalize(&record.record.registration_envelope)?;
+    let recomputed = hex::encode(Sha256::digest(&canonical));
+    if recomputed != record.record.original_content_hash {
+        return Err(VerifyError::IntegrityError {
+            message: format!(
+                "append_scrub: recomputed envelope hash {recomputed} != original_content_hash {} \
+                 — refusing to scrub a tampered partial",
+                record.record.original_content_hash
+            ),
+        });
+    }
+
+    // Distinct-anchor guard: one holder cannot double-count toward the ≥2 quorum.
+    let new_id = scrubber.key_id().to_string();
+    if record
+        .record
+        .scrubs()
+        .iter()
+        .any(|s| s.scrub_key_id == new_id)
+    {
+        return Err(VerifyError::IntegrityError {
+            message: format!("append_scrub: anchor {new_id} has already scrubbed this record"),
+        });
+    }
+
+    let (ed_sig_b64, pqc_sig_b64) = scrubber.sign_bound(&canonical).await?;
+    record.record.additional_scrubs.push(ScrubSig {
+        scrub_key_id: new_id,
+        scrub_signature_classical: ed_sig_b64,
+        scrub_signature_pqc: Some(pqc_sig_b64),
+    });
+    Ok(record)
 }
 
 #[cfg(test)]
@@ -556,6 +725,18 @@ mod tests {
             persist_row_hash: String,
             #[serde(default)]
             roles: Vec<String>,
+            // #174: the additive multi-scrub set persist will read (serde-default
+            // empty on pre-#174 records) — same field name + entry shape.
+            #[serde(default)]
+            additional_scrubs: Vec<PersistShapedScrub>,
+        }
+        #[derive(serde::Deserialize)]
+        #[allow(dead_code)]
+        struct PersistShapedScrub {
+            scrub_key_id: String,
+            scrub_signature_classical: String,
+            #[serde(default)]
+            scrub_signature_pqc: Option<String>,
         }
 
         let identity = HybridSigningIdentity::generate("my-identity-key").unwrap();
@@ -569,11 +750,47 @@ mod tests {
             .expect("verify's KeyRecord JSON must deserialize into Persist's DateTime<Utc> shape");
         assert_eq!(parsed.key_id, "my-identity-key");
         assert_eq!(parsed.algorithm, ALGORITHM_HYBRID);
+        // A single-scrub record carries NO additional_scrubs (byte-compat).
+        assert!(parsed.additional_scrubs.is_empty());
         // valid_from parsed as a real timestamp (not a bare/offsetless string).
         assert_eq!(
             parsed.valid_from,
             "2026-06-18T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
         );
+
+        // #174: a 2-scrub canonical record round-trips too — the extra anchor
+        // shows up in `additional_scrubs` with persist's field names.
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let b1 = HybridSigningIdentity::generate("B1").unwrap();
+        let node = HybridSigningIdentity::generate("canonical-server-1").unwrap();
+        let node_ed = b64().encode(node.ed25519_public_key().await.unwrap());
+        let node_mldsa = b64().encode(node.mldsa65_public_key().await.unwrap());
+        let multi = produce_multiscrub_key_record(
+            &[&a1, &b1],
+            ScrubTarget {
+                key_id: "canonical-server-1".to_string(),
+                pubkey_ed25519_base64: node_ed,
+                pubkey_ml_dsa_65_base64: node_mldsa,
+                identity_type: "node".to_string(),
+            },
+            "2026-07-05T00:00:00Z",
+            &[],
+        )
+        .await
+        .unwrap();
+        let multi_parsed: PersistShapedKeyRecord =
+            serde_json::from_value(serde_json::to_value(&multi.record).unwrap())
+                .expect("multi-scrub record must deserialize into Persist's shape");
+        assert_eq!(multi_parsed.scrub_key_id, "A1", "scrub #1 in base fields");
+        assert_eq!(
+            multi_parsed.additional_scrubs.len(),
+            1,
+            "B1 is the 2nd scrub"
+        );
+        assert_eq!(multi_parsed.additional_scrubs[0].scrub_key_id, "B1");
+        assert!(multi_parsed.additional_scrubs[0]
+            .scrub_signature_pqc
+            .is_some());
     }
 
     #[tokio::test]
@@ -734,5 +951,175 @@ mod tests {
         assert_eq!(scrubbed.record.transport_hints(), hints());
         // Admitted-by the accord holder, reachability attested in the same scrub.
         assert_eq!(scrubbed.record.scrub_key_id, "A1");
+    }
+
+    // ---- #174 multi-scrub / append-a-scrub -------------------------------
+
+    /// Hybrid-verify one [`ScrubSig`] against its signer's pubkeys over the shared
+    /// canonical bytes — the `root_binding` check persist runs per scrub.
+    async fn scrub_hybrid_verifies(
+        canonical: &[u8],
+        signer: &dyn SelfSigner,
+        scrub: &ScrubSig,
+    ) -> bool {
+        let member = ThresholdMember {
+            member_id: scrub.scrub_key_id.clone(),
+            ed25519_public_key_base64: b64().encode(signer.ed25519_public_key().await.unwrap()),
+            mldsa65_public_key_base64: Some(
+                b64().encode(signer.mldsa65_public_key().await.unwrap()),
+            ),
+            role: None,
+        };
+        let sig = ThresholdSignature {
+            member_id: scrub.scrub_key_id.clone(),
+            ed25519_signature_base64: scrub.scrub_signature_classical.clone(),
+            mldsa65_signature_base64: scrub.scrub_signature_pqc.clone(),
+        };
+        verify_threshold_signatures(canonical, &[member], &[sig], 1) == Ok(1)
+    }
+
+    async fn node_target() -> (HybridSigningIdentity, ScrubTarget) {
+        let node = HybridSigningIdentity::generate("canonical-server-1").unwrap();
+        let target = ScrubTarget {
+            key_id: "canonical-server-1".to_string(),
+            pubkey_ed25519_base64: b64().encode(node.ed25519_public_key().await.unwrap()),
+            pubkey_ml_dsa_65_base64: b64().encode(node.mldsa65_public_key().await.unwrap()),
+            identity_type: "node".to_string(),
+        };
+        (node, target)
+    }
+
+    /// #174: a 2-scrub record canonicalizes IDENTICALLY to a 1-scrub record of the
+    /// same target (only the scrub set differs), reaches the 2-distinct quorum, and
+    /// each anchor's scrub hybrid-verifies against its own key over the shared bytes.
+    #[tokio::test]
+    async fn multiscrub_matches_single_scrub_bytes_and_both_anchors_verify() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let b1 = HybridSigningIdentity::generate("B1").unwrap();
+        let (_node, target) = node_target().await;
+
+        let single = produce_scrubbed_key_record(&a1, target.clone(), "2026-07-05T00:00:00Z", &[])
+            .await
+            .unwrap();
+        let multi = produce_multiscrub_key_record(&[&a1, &b1], target, "2026-07-05T00:00:00Z", &[])
+            .await
+            .unwrap();
+
+        // §3 of #383: same canonical envelope + hash — scrubs live OUTSIDE it.
+        assert_eq!(
+            jcs::canonicalize(&single.record.registration_envelope).unwrap(),
+            jcs::canonicalize(&multi.record.registration_envelope).unwrap(),
+        );
+        assert_eq!(
+            single.record.original_content_hash,
+            multi.record.original_content_hash
+        );
+
+        // Quorum: A1 (base fields) + B1 (additional_scrubs) = 2 distinct.
+        assert_eq!(multi.record.scrub_key_id, "A1", "scrub #1 in base fields");
+        assert_eq!(multi.record.additional_scrubs.len(), 1);
+        assert_eq!(multi.record.additional_scrubs[0].scrub_key_id, "B1");
+        assert_eq!(multi.record.distinct_scrub_count(), 2);
+
+        // Each scrub verifies over the SAME canonical bytes against its own key.
+        let canonical = jcs::canonicalize(&multi.record.registration_envelope).unwrap();
+        let scrubs = multi.record.scrubs();
+        assert!(scrub_hybrid_verifies(&canonical, &a1, &scrubs[0]).await);
+        assert!(scrub_hybrid_verifies(&canonical, &b1, &scrubs[1]).await);
+        // …and cross-checks fail (A1's scrub is not valid under B1's key).
+        assert!(!scrub_hybrid_verifies(&canonical, &b1, &scrubs[0]).await);
+    }
+
+    /// #174 cross-device ceremony: A1 scrubs on device 1 → a 1-scrub partial that
+    /// travels as JSON → B1 `append_scrub`s on device 2 → a ≥2 record persist
+    /// admits. The append is over byte-identical bytes; scrub #1 is untouched.
+    #[tokio::test]
+    async fn append_scrub_completes_the_2_of_3_over_identical_bytes() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let b1 = HybridSigningIdentity::generate("B1").unwrap();
+        let (_node, target) = node_target().await;
+
+        // Device 1: A1 mints the partial.
+        let partial = produce_scrubbed_key_record(&a1, target, "2026-07-05T00:00:00Z", &[])
+            .await
+            .unwrap();
+        // Serialize → deserialize to simulate the accord-gossip hop.
+        let wire = serde_json::to_value(&partial).unwrap();
+        let received: SignedKeyRecord = serde_json::from_value(wire).unwrap();
+        assert!(received.record.additional_scrubs.is_empty());
+
+        // Device 2: B1 appends. Envelope + hash + scrub #1 unchanged.
+        let completed = append_scrub(received, &b1).await.unwrap();
+        assert_eq!(
+            completed.record.original_content_hash,
+            partial.record.original_content_hash
+        );
+        assert_eq!(completed.record.scrub_key_id, "A1");
+        assert_eq!(
+            completed.record.scrub_signature_classical,
+            partial.record.scrub_signature_classical
+        );
+        assert_eq!(completed.record.distinct_scrub_count(), 2);
+
+        let canonical = jcs::canonicalize(&completed.record.registration_envelope).unwrap();
+        let scrubs = completed.record.scrubs();
+        assert!(scrub_hybrid_verifies(&canonical, &a1, &scrubs[0]).await);
+        assert!(scrub_hybrid_verifies(&canonical, &b1, &scrubs[1]).await);
+    }
+
+    /// #174: one holder cannot double-count toward the quorum — appending an anchor
+    /// already in the scrub set is rejected.
+    #[tokio::test]
+    async fn append_scrub_rejects_a_duplicate_anchor() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let (_node, target) = node_target().await;
+        let partial = produce_scrubbed_key_record(&a1, target, "2026-07-05T00:00:00Z", &[])
+            .await
+            .unwrap();
+        // A1 tries to append again → refused (still just 1 distinct anchor).
+        assert!(append_scrub(partial, &a1).await.is_err());
+    }
+
+    /// #174 fail-secure: a partial whose envelope was tampered in transit must not
+    /// receive a fresh valid scrub over the bad bytes — the hash cross-check refuses.
+    #[tokio::test]
+    async fn append_scrub_refuses_a_tampered_partial() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let b1 = HybridSigningIdentity::generate("B1").unwrap();
+        let (_node, target) = node_target().await;
+        let mut partial = produce_scrubbed_key_record(&a1, target, "2026-07-05T00:00:00Z", &[])
+            .await
+            .unwrap();
+        // Mutate the envelope after A1 signed → recomputed hash != original_content_hash.
+        partial.record.registration_envelope["identity_type"] = json!("agent");
+        assert!(append_scrub(partial, &b1).await.is_err());
+    }
+
+    /// #174 byte-identity / row-hash parity: a single-scrub record serializes with
+    /// NO `additional_scrubs` key, so it is wire-identical to a pre-#174 record.
+    #[tokio::test]
+    async fn single_scrub_record_omits_additional_scrubs_in_json() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let (_node, target) = node_target().await;
+        let single = produce_scrubbed_key_record(&a1, target, "2026-07-05T00:00:00Z", &[])
+            .await
+            .unwrap();
+        let json = serde_json::to_value(&single.record).unwrap();
+        assert!(
+            json.get("additional_scrubs").is_none(),
+            "an empty scrub set must not materialize the key (row-hash parity)"
+        );
+        assert_eq!(single.record.distinct_scrub_count(), 1);
+    }
+
+    /// #174: `produce_multiscrub_key_record` requires at least one scrubber.
+    #[tokio::test]
+    async fn multiscrub_empty_scrubbers_is_an_error() {
+        let (_node, target) = node_target().await;
+        assert!(
+            produce_multiscrub_key_record(&[], target, "2026-07-05T00:00:00Z", &[])
+                .await
+                .is_err()
+        );
     }
 }
