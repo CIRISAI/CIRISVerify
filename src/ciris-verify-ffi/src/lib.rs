@@ -1759,6 +1759,16 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
             .get("write_outbox")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true);
+        // #172: optional `transport_hints: [{kind, destination}]` embedded in the
+        // signed registration envelope. Absent → none (byte-identical to pre-#172).
+        let transport_hints: Vec<ciris_verify_core::federation_self_record::TransportHint> =
+            match cfg.get("transport_hints") {
+                Some(v) => match serde_json::from_value(v.clone()) {
+                    Ok(h) => h,
+                    Err(e) => return emit(err(format!("invalid config.transport_hints: {e}"))),
+                },
+                None => Vec::new(),
+            };
 
         let rt = match tokio::runtime::Builder::new_current_thread()
             .enable_all()
@@ -1778,6 +1788,7 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
                 label.as_deref(),
                 &valid_from,
                 seal_alias.as_deref(),
+                &transport_hints,
             )
             .await
             .map_err(|e| format!("create identity: {e}"))?;

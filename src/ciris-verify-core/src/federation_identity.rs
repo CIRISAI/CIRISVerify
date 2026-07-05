@@ -27,7 +27,7 @@ use ciris_keyring::{HardwareSigner, KeyringError};
 
 use crate::ceg_outbox::{keys_dir, SignedCegObject};
 use crate::error::VerifyError;
-use crate::federation_self_record::produce_self_key_record;
+use crate::federation_self_record::{produce_self_key_record, TransportHint};
 use crate::self_at_login::HardwareRootedIdentity;
 
 /// The CEG `kind` of a genesis federation key record.
@@ -74,6 +74,11 @@ pub struct CreatedIdentity {
 /// reproduces it. (CIRISServer's USER path: record under
 /// `derive_key_id("<alias>-user", ed_pub)`, seal under the stable `<alias>-user`.)
 ///
+/// `transport_hints` (CIRISVerify#172) are embedded inside the signed
+/// `registration_envelope` so a baked/replicated record is self-describing
+/// (WHO + HOW-TO-REACH). Pass `&[]` for an ordinary identity — the envelope is
+/// then byte-identical to the pre-#172 shape.
+///
 /// # Errors
 ///
 /// [`VerifyError`] if the signer is not Ed25519, the pubkey/seed cannot be
@@ -85,6 +90,7 @@ pub async fn create_federation_identity(
     label: Option<&str>,
     valid_from: &str,
     seal_alias: Option<&str>,
+    transport_hints: &[TransportHint],
 ) -> Result<CreatedIdentity, VerifyError> {
     let ed_pub = hw_signer.public_key().await.map_err(keyring_err)?;
     let key_id =
@@ -110,7 +116,8 @@ pub async fn create_federation_identity(
     );
 
     let identity = HardwareRootedIdentity::new(key_id.clone(), hw_signer, Arc::from(mldsa))?;
-    let record = produce_self_key_record(&identity, identity_type, valid_from).await?;
+    let record =
+        produce_self_key_record(&identity, identity_type, valid_from, transport_hints).await?;
     let body = serde_json::to_value(&record).map_err(|e| VerifyError::IntegrityError {
         message: format!("serialize key record: {e}"),
     })?;
@@ -174,6 +181,7 @@ mod tests {
             Some("Eric Moore"),
             "2026-06-18T00:00:00Z",
             None,
+            &[],
         )
         .await
         .unwrap();
@@ -227,6 +235,7 @@ mod tests {
             Some("Eric Moore"),
             "2026-06-18T00:00:00Z",
             Some(seal_alias),
+            &[],
         )
         .await
         .unwrap();
@@ -247,6 +256,46 @@ mod tests {
         let reopened_pub =
             base64::engine::general_purpose::STANDARD.encode(reopened.public_key().await.unwrap());
         assert_eq!(recorded_mldsa_pub, reopened_pub);
+
+        std::env::remove_var(crate::ceg_outbox::CIRIS_HOME_ENV);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    #[allow(clippy::await_holding_lock)]
+    async fn transport_hints_land_in_the_signed_ceg_object() {
+        // #172: a hint passed here rides inside the signed registration_envelope
+        // in the emitted CEG object body — self-describing WHO + HOW-TO-REACH.
+        let _g = crate::ceg_outbox::CIRIS_HOME_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let dir = tmp("hints");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::env::set_var(crate::ceg_outbox::CIRIS_HOME_ENV, &dir);
+
+        let hw: Arc<dyn HardwareSigner> =
+            Arc::new(ciris_keyring::Ed25519SoftwareSigner::from_bytes(&[7u8; 32], "fed").unwrap());
+        let created = create_federation_identity(
+            hw,
+            "node",
+            Some("canonical-server-1".to_string()),
+            None,
+            "2026-07-02T00:00:00Z",
+            None,
+            &[TransportHint {
+                kind: "ip".to_string(),
+                destination: "108.61.242.236:4242".to_string(),
+            }],
+        )
+        .await
+        .unwrap();
+
+        let env = &created.object.body["record"]["registration_envelope"];
+        assert_eq!(env["transport_hints"][0]["kind"], "ip");
+        assert_eq!(
+            env["transport_hints"][0]["destination"],
+            "108.61.242.236:4242"
+        );
 
         std::env::remove_var(crate::ceg_outbox::CIRIS_HOME_ENV);
         let _ = std::fs::remove_dir_all(&dir);

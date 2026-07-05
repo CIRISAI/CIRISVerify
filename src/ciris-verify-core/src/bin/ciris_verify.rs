@@ -562,6 +562,13 @@ enum IdentityAction {
             default_value = "010203040506070801020304050607080102030405060708"
         )]
         management_key: String,
+        /// Transport reachability hint(s) embedded in the SIGNED registration
+        /// envelope (CIRISVerify#172), as `kind=destination` — repeatable. E.g.
+        /// `--transport-hint ip=108.61.242.236:4242 --transport-hint reticulum=<addr>`.
+        /// `kind` is an open vocabulary (`ip` | `reticulum` | `https` | …). Omit
+        /// for an ordinary hintless identity.
+        #[arg(long = "transport-hint")]
+        transport_hint: Vec<String>,
     },
 }
 
@@ -2052,6 +2059,7 @@ struct IdentityCreateArgs {
     touch_policy: String,
     pin_policy: String,
     management_key: String,
+    transport_hint: Vec<String>,
 }
 
 async fn run_identity(action: IdentityAction, json_output: bool) {
@@ -2071,6 +2079,7 @@ async fn run_identity(action: IdentityAction, json_output: bool) {
             touch_policy,
             pin_policy,
             management_key,
+            transport_hint,
         } => {
             run_identity_create(
                 IdentityCreateArgs {
@@ -2087,6 +2096,7 @@ async fn run_identity(action: IdentityAction, json_output: bool) {
                     touch_policy,
                     pin_policy,
                     management_key,
+                    transport_hint,
                 },
                 json_output,
             )
@@ -2101,6 +2111,29 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
     use ciris_keyring::pkcs11::{open_pkcs11_signer, Pkcs11Config};
     use ciris_verify_core::ceg_outbox::SignedCegObject;
     use ciris_verify_core::federation_identity::create_federation_identity;
+    use ciris_verify_core::federation_self_record::TransportHint;
+
+    // Parse each `--transport-hint kind=destination` into a typed hint. Split on
+    // the FIRST '=' only — a destination may itself contain '=' (rare) but never
+    // the leading kind token. These end up inside the SIGNED envelope (#172).
+    let transport_hints: Vec<TransportHint> = {
+        let mut hints = Vec::with_capacity(args.transport_hint.len());
+        for raw in &args.transport_hint {
+            match raw.split_once('=') {
+                Some((kind, dest)) if !kind.is_empty() && !dest.is_empty() => {
+                    hints.push(TransportHint {
+                        kind: kind.to_string(),
+                        destination: dest.to_string(),
+                    });
+                },
+                _ => {
+                    eprintln!("❌ --transport-hint must be `kind=destination` (got {raw:?})");
+                    std::process::exit(2);
+                },
+            }
+        }
+        hints
+    };
 
     let key_id_bytes = match args.key_id.as_deref().map(parse_hex).transpose() {
         Ok(b) => b,
@@ -2166,6 +2199,7 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
         args.label.as_deref(),
         &now,
         None, // CLI: seal under key_id (back-compat); the Server USER path uses seal_alias
+        &transport_hints,
     )
     .await
     {
