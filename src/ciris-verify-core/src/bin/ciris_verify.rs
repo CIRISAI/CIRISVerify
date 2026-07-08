@@ -3546,7 +3546,10 @@ async fn run_manifest_sign(a: ManifestSignArgs) {
         },
     };
 
-    let path = match obj.write_to_outbox(&format!("manifest-{}", a.build_id)) {
+    // Include the target so a multi-target build (CI signs each target under one
+    // --build-id v<VERSION>) doesn't overwrite prior contributions — write_to_outbox
+    // is fs::write (overwrite). Matches the build-tool producer's {build_id}-{target}.
+    let path = match obj.write_to_outbox(&format!("manifest-{}-{}", a.build_id, a.target)) {
         Ok(p) => p,
         Err(e) => {
             eprintln!("❌ write CEG outbox: {e}");
