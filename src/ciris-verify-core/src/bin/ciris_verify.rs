@@ -267,6 +267,73 @@ enum Commands {
         #[command(subcommand)]
         action: AccordAction,
     },
+
+    /// Build-manifest provenance (CEG-native `build_manifest_contribution`).
+    /// Sign a build's binary/manifest hashes as the human's delegate so verify's
+    /// L1/L4 can root the build to a pinned authority — the one canonical
+    /// producer, so CI never hand-rolls the signed shape (CIRISVerify#176).
+    Manifest {
+        #[command(subcommand)]
+        action: ManifestAction,
+    },
+}
+
+/// `ciris-verify manifest` actions (CEG-native build-manifest provenance).
+#[derive(Subcommand)]
+enum ManifestAction {
+    /// Sign a build-manifest Contribution with the CI pipeline's hybrid `node`
+    /// key, on behalf of the human who delegated `infra:attest` to it. Emits the
+    /// canonical `SignedCegObject` (kind `build_manifest_contribution`, bound
+    /// hybrid over JCS) → outbox. This is the ONE producer both verify and the
+    /// registry/CI converge on — no hand-reproduced body, no schema drift.
+    Sign {
+        /// The CI pipeline `node` `key_id` that signs (its Ed25519 owner-binding
+        /// half + the sealed ML-DSA-65 half under `~/ciris/keys`).
+        #[arg(long)]
+        pipeline_key_id: String,
+        /// The human fed-id the pipeline attests on behalf of (the accord holder
+        /// who granted `infra:attest` — e.g. `A1`).
+        #[arg(long)]
+        on_behalf_of: String,
+        /// The `delegation_ref` of the granting `delegates_to` grant
+        /// (e.g. `delegation:A1:<pipeline_key_id>`, from `ciris-verify delegate`).
+        #[arg(long)]
+        delegation_ref: String,
+        /// Rust target triple (e.g. `x86_64-unknown-linux-gnu`).
+        #[arg(long)]
+        target: String,
+        /// SHA-256 of the built binary, hex.
+        #[arg(long)]
+        binary_hash: String,
+        /// The build identifier (the Contribution subject).
+        #[arg(long)]
+        build_id: String,
+        /// The binary's version string.
+        #[arg(long)]
+        binary_version: String,
+        /// SHA-256 of the canonical file manifest, hex (matches the served manifest).
+        #[arg(long)]
+        manifest_hash: String,
+        /// Where the sealed keys live (default `~/ciris/keys`).
+        #[arg(long)]
+        seed_dir: Option<String>,
+        /// PKCS#11 module for a **token-rooted** pipeline key (e.g. `libykcs11.so`).
+        /// When set, the Ed25519 half signs on the token; else platform-sealed.
+        #[arg(long)]
+        module: Option<String>,
+        /// `CKA_LABEL` of the pipeline Ed25519 key (with `--module`).
+        #[arg(long)]
+        key_label: Option<String>,
+        /// `CKA_ID` of the pipeline key as hex (alternative to `--key-label`).
+        #[arg(long)]
+        key_id: Option<String>,
+        /// Token slot index. Default 0.
+        #[arg(long, default_value = "0")]
+        slot: usize,
+        /// Prompt for the token user PIN (with `--module`).
+        #[arg(long)]
+        pin: bool,
+    },
 }
 
 /// `ciris-verify accord` actions (HUMANITY_ACCORD genesis ceremony).
@@ -3360,6 +3427,161 @@ async fn run_delegate(a: DelegateArgs) {
     }
 }
 
+#[allow(clippy::struct_excessive_bools)]
+struct ManifestSignArgs {
+    pipeline_key_id: String,
+    on_behalf_of: String,
+    delegation_ref: String,
+    target: String,
+    binary_hash: String,
+    build_id: String,
+    binary_version: String,
+    manifest_hash: String,
+    seed_dir: Option<String>,
+    module: Option<String>,
+    key_label: Option<String>,
+    key_id: Option<String>,
+    slot: usize,
+    pin: bool,
+    json_output: bool,
+}
+
+/// Sign a build-manifest Contribution as the pipeline's `node` identity (the
+/// CEG-native producer — CIRISVerify#176). Same signer-loading discipline as
+/// [`run_delegate`]: YubiKey PKCS#11 (`--module`) or platform-sealed Ed25519 +
+/// sealed ML-DSA-65. Emits the canonical `SignedCegObject` to the outbox.
+async fn run_manifest_sign(a: ManifestSignArgs) {
+    use std::sync::Arc;
+
+    use ciris_keyring::HardwareSigner;
+    use ciris_verify_core::ceg_outbox::keys_dir;
+    use ciris_verify_core::manifest_contribution::{
+        sign_build_manifest_contribution, BuildAttestation,
+    };
+    use ciris_verify_core::self_at_login::HardwareRootedIdentity;
+
+    let pipeline_key_id = a.pipeline_key_id.as_str();
+    let json_output = a.json_output;
+    let seed_dir = a
+        .seed_dir
+        .clone()
+        .unwrap_or_else(|| keys_dir().to_string_lossy().into_owned());
+
+    // Pipeline Ed25519 half: token when `--module` given, else platform-sealed.
+    let ed: Arc<dyn HardwareSigner> = if let Some(module) = a.module.as_deref() {
+        let key_id_bytes = match a.key_id.as_deref().map(parse_hex).transpose() {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("❌ --key-id is not valid hex: {e}");
+                std::process::exit(2);
+            },
+        };
+        let cfg = ciris_keyring::pkcs11::Pkcs11Config {
+            module_path: module.into(),
+            user_pin: prompt_pin(a.pin),
+            key_label: a.key_label.clone(),
+            key_id: key_id_bytes,
+            slot_index: a.slot,
+        };
+        match ciris_keyring::pkcs11::open_pkcs11_signer("manifest-pipeline", &cfg) {
+            Ok(s) => {
+                if !json_output {
+                    println!("🔏 signing the manifest on the token — tap if it blinks…\n");
+                }
+                Arc::from(s)
+            },
+            Err(e) => {
+                eprintln!("❌ open pipeline token (Ed25519): {e}");
+                std::process::exit(1);
+            },
+        }
+    } else {
+        match ciris_keyring::get_platform_ed25519_signer(pipeline_key_id, &seed_dir) {
+            Ok(s) => Arc::from(s),
+            Err(e) => {
+                eprintln!("❌ open pipeline Ed25519 identity: {e}");
+                std::process::exit(1);
+            },
+        }
+    };
+
+    let mldsa = match ciris_keyring::get_platform_sealed_mldsa65_signer(pipeline_key_id, &seed_dir)
+    {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("❌ open pipeline ML-DSA-65 identity: {e}");
+            std::process::exit(1);
+        },
+    };
+    let identity =
+        match HardwareRootedIdentity::new(pipeline_key_id.to_string(), ed, Arc::from(mldsa)) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("❌ {e}");
+                std::process::exit(1);
+            },
+        };
+
+    let build = BuildAttestation {
+        target: &a.target,
+        binary_hash: &a.binary_hash,
+        build_id: &a.build_id,
+        binary_version: &a.binary_version,
+        manifest_hash: &a.manifest_hash,
+    };
+    let now = chrono::Utc::now().to_rfc3339();
+    let obj = match sign_build_manifest_contribution(
+        &identity,
+        &build,
+        &a.on_behalf_of,
+        &a.delegation_ref,
+        &now,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("❌ sign build-manifest contribution: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    let path = match obj.write_to_outbox(&format!("manifest-{}", a.build_id)) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("❌ write CEG outbox: {e}");
+            std::process::exit(1);
+        },
+    };
+
+    if json_output {
+        println!(
+            "{}",
+            serde_json::json!({
+                "pipeline_key_id": pipeline_key_id,
+                "on_behalf_of": a.on_behalf_of,
+                "delegation_ref": a.delegation_ref,
+                "target": a.target,
+                "build_id": a.build_id,
+                "binary_hash": a.binary_hash,
+                "manifest_hash": a.manifest_hash,
+                "kind": obj.kind,
+                "outbox_path": path.display().to_string(),
+            })
+        );
+    } else {
+        println!("✅ build-manifest contribution signed (CEG-native)\n");
+        println!("  pipeline_key_id : {pipeline_key_id}");
+        println!("  on_behalf_of    : {}", a.on_behalf_of);
+        println!("  delegation_ref  : {}", a.delegation_ref);
+        println!("  target          : {}", a.target);
+        println!("  build_id        : {}", a.build_id);
+        println!("  binary_hash     : {}", a.binary_hash);
+        println!("  manifest_hash   : {}", a.manifest_hash);
+        println!("  CEG object      : {}", path.display());
+    }
+}
+
 #[tokio::main]
 async fn main() {
     enable_windows_ansi();
@@ -3533,6 +3755,42 @@ async fn main() {
                 print_banner();
             }
             run_accord(action, json_output).await;
+        },
+        Some(Commands::Manifest { action }) => {
+            let ManifestAction::Sign {
+                pipeline_key_id,
+                on_behalf_of,
+                delegation_ref,
+                target,
+                binary_hash,
+                build_id,
+                binary_version,
+                manifest_hash,
+                seed_dir,
+                module,
+                key_label,
+                key_id,
+                slot,
+                pin,
+            } = action;
+            run_manifest_sign(ManifestSignArgs {
+                pipeline_key_id,
+                on_behalf_of,
+                delegation_ref,
+                target,
+                binary_hash,
+                build_id,
+                binary_version,
+                manifest_hash,
+                seed_dir,
+                module,
+                key_label,
+                key_id,
+                slot,
+                pin,
+                json_output,
+            })
+            .await;
         },
         None => {
             // No command - show help
