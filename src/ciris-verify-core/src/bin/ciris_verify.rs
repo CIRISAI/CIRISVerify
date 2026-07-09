@@ -987,8 +987,8 @@ async fn run_self_check(registry_url: &str, project: &str, json: bool) {
         println!("Binary Information:");
         println!("  Target: {}", target);
         println!("  Version: {}", VERSION);
-        println!("  SHA-256: {}", &self_hash[..16].to_uppercase());
-        println!("           {}...", &self_hash[16..32].to_uppercase());
+        println!("  SHA-256: {}", self_hash[..16].to_uppercase());
+        println!("           {}...", self_hash[16..32].to_uppercase());
         println!();
     }
 

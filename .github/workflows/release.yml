@@ -101,7 +101,7 @@ jobs:
       - uses: actions/checkout@v4
 
       # Default (stable) toolchain — all targets EXCEPT the Win7 build-std lane.
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         if: ${{ matrix.toolchain != 'nightly' }}
         with:
           targets: ${{ matrix.target }}
@@ -266,7 +266,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           targets: aarch64-unknown-linux-musl
 
@@ -369,7 +369,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           targets: ${{ matrix.target }}
 
@@ -464,7 +464,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           targets: ${{ matrix.target }}
 
@@ -625,7 +625,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
 
       - uses: Swatinem/rust-cache@v2
         # CI hardening (v2.1.1+): cache restore failures degrade to
@@ -691,7 +691,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
 
       - uses: Swatinem/rust-cache@v2
         # CI hardening (v2.1.1+): cache restore failures degrade to
@@ -775,7 +775,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: dtolnay/rust-toolchain@1.97.0
         with:
           targets: ${{ matrix.target }}
 
