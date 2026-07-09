@@ -11,7 +11,13 @@
 # windows-latest stable 1.96→1.97 on 2026-07-07) → substrate MISS. Pinning the
 # EXACT version makes the `-rustc<VER>` key segment deterministic and matched
 # across the centipede. **All four repos must carry the same exact channel; bump
-# in lockstep.** The Win7 Tier-3 build-std lane still overrides to nightly + rust-src
+# in lockstep.** dtolnay/rust-toolchain does NOT read this file — it installs the
+# ref'd toolchain and adds cross-targets to IT — so the CI workflow steps pin the
+# SAME exact version (`dtolnay/rust-toolchain@1.97.0` in ci.yml/release.yml). If the
+# action ref and this channel diverge, cargo runs this channel while the target was
+# added to the action's → `E0463: can't find crate for core` on cross builds. Bump
+# BOTH (this file + every `@1.97.0` workflow ref) together.
+# The Win7 Tier-3 build-std lane still overrides to nightly + rust-src
 # per-job (CIRISVerify#67); MSRV (1.86) is enforced separately in CI.
 [toolchain]
 channel = "1.97.0"
