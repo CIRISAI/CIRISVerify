@@ -162,6 +162,27 @@ enum Cmd {
         output_dir: PathBuf,
     },
 
+    /// Derive + print the PUBLIC keys of an EXISTING seed pair (never
+    /// mutates, never emits secret material). Use this to surface the
+    /// pipeline node's pubkeys for blessing — an accord holder delegates
+    /// `infra:attest` to this key_id, and its pubkeys get pinned as the
+    /// `pipeline_member`. Prints a JSON object (stdout) the client's
+    /// "bless a CI keypair" card consumes, plus a human copy-block (stderr).
+    Pubkey {
+        /// Path to the existing raw 32-byte Ed25519 seed file.
+        #[arg(long)]
+        ed25519_seed: PathBuf,
+
+        /// Path to the existing raw 32-byte ML-DSA-65 secret seed file.
+        #[arg(long)]
+        mldsa_secret: PathBuf,
+
+        /// The pipeline node's federation `key_id` (e.g.
+        /// `ciris-verify-build-pipeline`) these pubkeys belong to.
+        #[arg(long)]
+        key_id: String,
+    },
+
     /// Run a quick crypto self-test (sign + verify on a fresh keypair).
     /// Exits 0 if the underlying primitives are working.
     SelfTest,
@@ -442,6 +463,59 @@ fn main() -> Result<()> {
             eprintln!("  ed25519.pub    ({}B)", 32);
             eprintln!("  mldsa65.secret ({}B, mode 0600)", mldsa_secret.len());
             eprintln!("  mldsa65.pub    ({}B)", mldsa_pub.len());
+        },
+
+        Cmd::Pubkey {
+            ed25519_seed,
+            mldsa_secret,
+            key_id,
+        } => {
+            use base64::{engine::general_purpose::STANDARD, Engine};
+            use ciris_crypto::{ClassicalSigner, Ed25519Signer, MlDsa65Signer, PqcSigner};
+            use sha2::{Digest, Sha256};
+
+            // Derive the PUBLIC halves from the existing seeds. Never writes,
+            // never prints a seed byte.
+            let ed_seed = read_key(&ed25519_seed)?;
+            let mldsa_seed = read_key(&mldsa_secret)?;
+            let ed_pub = Ed25519Signer::from_seed(&ed_seed)
+                .map_err(|e| anyhow::anyhow!("Ed25519 seed: {e}"))?
+                .public_key()
+                .map_err(|e| anyhow::anyhow!("Ed25519 pubkey: {e}"))?;
+            let mldsa_pub = MlDsa65Signer::from_seed(&mldsa_seed)
+                .map_err(|e| anyhow::anyhow!("ML-DSA-65 seed: {e}"))?
+                .public_key()
+                .map_err(|e| anyhow::anyhow!("ML-DSA-65 pubkey: {e}"))?;
+
+            let ed_b64 = STANDARD.encode(&ed_pub);
+            let mldsa_b64 = STANDARD.encode(&mldsa_pub);
+            // Short fingerprint over both pubkeys — for a human to eyeball
+            // that the blessed key matches the key CI actually signs with.
+            let mut h = Sha256::new();
+            h.update(&ed_pub);
+            h.update(&mldsa_pub);
+            let fingerprint = hex::encode(&h.finalize()[..16]);
+
+            // JSON (stdout) — the shape the client's "bless a CI keypair"
+            // card + the pipeline_member registration consume.
+            let out = serde_json::json!({
+                "key_id": key_id,
+                "identity_type": "node",
+                "delegation_scope": "infra:attest",
+                "ed25519_pubkey_b64": ed_b64,
+                "ml_dsa_65_pubkey_b64": mldsa_b64,
+                "algorithms": { "classical": "Ed25519", "pqc": "ML-DSA-65" },
+                "fingerprint_sha256": fingerprint,
+            });
+            println!("{}", serde_json::to_string_pretty(&out)?);
+
+            // Human copy-block (stderr) — matches the FederationIdCard format.
+            eprintln!("\n── bless this CI keypair ──");
+            eprintln!("key_id: {key_id}");
+            eprintln!("signing_ed25519: {ed_b64}");
+            eprintln!("signing_ml_dsa_65: {mldsa_b64}");
+            eprintln!("fingerprint: {fingerprint}");
+            eprintln!("scope: infra:attest");
         },
 
         Cmd::SelfTest => {
