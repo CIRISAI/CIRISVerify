@@ -31,7 +31,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
 
-__all__ = ["SelfEncKeys", "derive_self_enc"]
+__all__ = [
+    "SelfEncKeys",
+    "derive_self_enc",
+    "EncryptionPubkeys",
+    "self_enc_pubkeys",
+    "self_enc_respond",
+]
 
 _lib: Optional[ctypes.CDLL] = None
 _lib_lock = _threading.Lock()
@@ -97,6 +103,29 @@ def _load_lib() -> ctypes.CDLL:
                 ctypes.POINTER(ctypes.c_size_t),  # result_len_out
             ]
             fn.restype = ctypes.c_int
+            # By-alias custody surface (#183). Configure if present (older
+            # wheels won't have them — self_enc_pubkeys/respond then raise).
+            _out_args = [
+                ctypes.POINTER(ctypes.POINTER(ctypes.c_ubyte)),
+                ctypes.POINTER(ctypes.c_size_t),
+            ]
+            try:
+                lib.ciris_verify_self_enc_pubkeys.argtypes = [
+                    ctypes.c_char_p,
+                    ctypes.c_size_t,
+                    *_out_args,
+                ]
+                lib.ciris_verify_self_enc_pubkeys.restype = ctypes.c_int
+                lib.ciris_verify_self_enc_respond.argtypes = [
+                    ctypes.c_char_p,
+                    ctypes.c_size_t,
+                    ctypes.c_char_p,
+                    ctypes.c_size_t,
+                    *_out_args,
+                ]
+                lib.ciris_verify_self_enc_respond.restype = ctypes.c_int
+            except AttributeError:  # pragma: no cover - older wheel
+                pass
             lib.ciris_verify_free.argtypes = [ctypes.c_void_p]
             lib.ciris_verify_free.restype = None
             _lib = lib
@@ -149,3 +178,86 @@ def derive_self_enc(ed25519_seed: bytes) -> SelfEncKeys:
         ml_kem_768_dk_seed_base64=obj["ml_kem_768_dk_seed_base64"],
         ml_kem_768_ek_public_base64=obj["ml_kem_768_ek_public_base64"],
     )
+
+
+@dataclass(frozen=True)
+class EncryptionPubkeys:
+    """The PUBLIC content-encryption halves (base64) of a sealed identity.
+
+    Drops straight into an occurrence's ``encryption_pubkeys`` — the field
+    names match ``federation_identity_occurrences``.
+    """
+
+    x25519_base64: str
+    ml_kem_768_base64: str
+
+
+def _call_json(fn, *args) -> dict:
+    """Invoke an out-pointer FFI fn (…, out, out_len), free, return parsed JSON."""
+    out_ptr = ctypes.POINTER(ctypes.c_ubyte)()
+    out_len = ctypes.c_size_t(0)
+    rc = fn(*args, ctypes.byref(out_ptr), ctypes.byref(out_len))
+    if rc != _SUCCESS:
+        raise ValueError(f"{fn.__name__}: FFI code {rc}")
+    n = out_len.value
+    try:
+        raw = ctypes.string_at(out_ptr, n)
+    finally:
+        if n != 0:
+            _load_lib().ciris_verify_free(ctypes.cast(out_ptr, ctypes.c_void_p))
+    return _json.loads(raw.decode("utf-8"))
+
+
+def self_enc_pubkeys(alias: str, seed_dir: str) -> EncryptionPubkeys:
+    """Content-enc PUBLIC keys of a **sealed** identity, by alias (CIRISVerify#183).
+
+    Derives the public halves from inside custody over the sealed Ed25519 seed
+    at ``seed_dir`` under ``alias`` (the same seed the federation signer uses).
+    **No private key material crosses the boundary.** Use this — not
+    :func:`derive_self_enc` — for a node identity: a sealed seed has no
+    plaintext to hand the raw-seed derive.
+
+    Raises ``ValueError`` if no seed is sealed under the alias (FFI ``NoKey``).
+    """
+    lib = _load_lib()
+    if not hasattr(lib, "ciris_verify_self_enc_pubkeys"):
+        raise RuntimeError("self_enc_pubkeys not available — rebuild the wheel (>= v8.12.0)")
+    cfg = _json.dumps({"alias": alias, "seed_dir": seed_dir}).encode("utf-8")
+    obj = _call_json(lib.ciris_verify_self_enc_pubkeys, cfg, len(cfg))
+    return EncryptionPubkeys(
+        x25519_base64=obj["x25519_base64"],
+        ml_kem_768_base64=obj["ml_kem_768_base64"],
+    )
+
+
+def self_enc_respond(alias: str, seed_dir: str, handshake) -> bytes:
+    """Perform the KEX **respond** inside custody, by alias (CIRISVerify#183).
+
+    ``handshake`` is the initiator's wire handshake (a ``dict`` or JSON
+    ``bytes``/``str``); its ``algorithm`` selects hybrid vs classical. The
+    private halves are derived from the sealed seed in-process, the respond runs
+    inside keyring, and **only** the 32-byte session key is returned. No private
+    byte crosses the boundary.
+
+    Raises ``ValueError`` on a missing seal / malformed handshake / KEX fault.
+    """
+    lib = _load_lib()
+    if not hasattr(lib, "ciris_verify_self_enc_respond"):
+        raise RuntimeError("self_enc_respond not available — rebuild the wheel (>= v8.12.0)")
+    if isinstance(handshake, dict):
+        handshake_bytes = _json.dumps(handshake).encode("utf-8")
+    elif isinstance(handshake, str):
+        handshake_bytes = handshake.encode("utf-8")
+    else:
+        handshake_bytes = bytes(handshake)
+    cfg = _json.dumps({"alias": alias, "seed_dir": seed_dir}).encode("utf-8")
+    obj = _call_json(
+        lib.ciris_verify_self_enc_respond,
+        cfg,
+        len(cfg),
+        handshake_bytes,
+        len(handshake_bytes),
+    )
+    import base64 as _b64
+
+    return _b64.b64decode(obj["session_key_base64"])

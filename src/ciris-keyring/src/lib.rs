@@ -111,6 +111,13 @@ pub mod pkcs11;
 #[cfg(feature = "pqc-ml-dsa")]
 pub mod sealed_mldsa65;
 
+/// Self content-encryption as a **custody capability** (CIRISVerify#183):
+/// hand out enc pubkeys + perform the KEX respond from inside the seal, by
+/// alias, with no private key material crossing any API boundary. Opens over
+/// the same sealed Ed25519 seed the federation signer uses.
+#[cfg(feature = "pqc-ml-dsa")]
+pub mod self_enc_keys;
+
 /// Portable signature-wrapped ML-DSA-65 custody — the ML-DSA seed on a USB key,
 /// AEAD-wrapped under a YubiKey-Ed25519-signature-derived key (both keys + PIN +
 /// touch required; YubiKey stays signing-only). Accord/high-secure portable mode.

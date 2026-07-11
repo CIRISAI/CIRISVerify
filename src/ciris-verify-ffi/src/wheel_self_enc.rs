@@ -102,6 +102,14 @@ fn derive_envelope(seed: &[u8; 32]) -> Option<String> {
 
 /// Derive the self content-encryption keypairs (CIRISVerify#151).
 ///
+/// **Mint-time only (CIRISVerify#183).** This entry takes a raw seed and
+/// returns the raw **secret** halves — legitimate only where the seed already
+/// exists in hand (the portable-user mint path). It MUST NOT be the
+/// node-identity path: a sealed identity has no plaintext seed to pass, and a
+/// software one should not export its privs. Use the by-alias
+/// [`ciris_verify_self_enc_pubkeys`] / [`ciris_verify_self_enc_respond`]
+/// custody surface instead — no private byte crosses the boundary either way.
+///
 /// `input_json` is the UTF-8 bytes of `{"ed25519_seed":[u8;32]}`. On success
 /// `result_out` / `result_len_out` receive the UTF-8 bytes of the base64 JSON
 /// envelope (see module docs; caller frees via `ciris_verify_free`). Returns:
@@ -138,6 +146,118 @@ pub unsafe extern "C" fn ciris_verify_self_enc_derive(
             Some(json) => emit_bytes(json.as_bytes(), result_out, result_len_out),
             None => CirisVerifyError::InternalError as i32,
         }
+    })
+}
+
+/// By-alias content-enc config: the SAME `{alias, seed_dir}` shape the other
+/// by-alias FFI entries take. Resolves the sealed Ed25519 identity seed.
+#[derive(Deserialize)]
+struct SelfEncConfig {
+    alias: String,
+    seed_dir: String,
+}
+
+/// Open the content-enc custody capability over a sealed identity seed, mapping
+/// keyring errors to FFI codes: a missing seal is [`CirisVerifyError::NoKey`].
+fn open_self_enc(input: &[u8]) -> Result<ciris_keyring::self_enc_keys::SelfEncKeys, i32> {
+    let cfg: SelfEncConfig =
+        serde_json::from_slice(input).map_err(|_| CirisVerifyError::SerializationError as i32)?;
+    ciris_keyring::self_enc_keys::SelfEncKeys::open(cfg.alias, cfg.seed_dir).map_err(|e| match e {
+        ciris_keyring::KeyringError::KeyNotFound { .. } => CirisVerifyError::NoKey as i32,
+        _ => CirisVerifyError::InternalError as i32,
+    })
+}
+
+/// Content-enc PUBLIC keys by alias, from inside custody (CIRISVerify#183).
+///
+/// `config_json` is the UTF-8 bytes of `{"alias":"..","seed_dir":".."}` (the
+/// sealed Ed25519 identity seed). On success `result_out` / `result_len_out`
+/// receive the UTF-8 bytes of `{"x25519_base64":"..","ml_kem_768_base64":".."}`
+/// (persist `encryption_pubkeys` field names — drops straight into an
+/// occurrence). **No private key material crosses the boundary.** Caller frees
+/// via `ciris_verify_free`. Returns `Success`; `InvalidArgument` on a null
+/// pointer; `SerializationError` on bad config; `NoKey` if no seed is sealed
+/// under the alias; `InternalError` otherwise.
+///
+/// # Safety
+/// `config_json` must point to `config_len` valid bytes; the out-pointers must
+/// be valid.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_self_enc_pubkeys(
+    config_json: *const u8,
+    config_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_self_enc_pubkeys", {
+        if config_json.is_null() || result_out.is_null() || result_len_out.is_null() {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        let config = std::slice::from_raw_parts(config_json, config_len);
+        let keys = match open_self_enc(config) {
+            Ok(k) => k,
+            Err(code) => return code,
+        };
+        let pubs = match keys.enc_pubkeys() {
+            Ok(p) => p,
+            Err(_) => return CirisVerifyError::InternalError as i32,
+        };
+        let json = serde_json::json!({
+            "x25519_base64": pubs.x25519_base64,
+            "ml_kem_768_base64": pubs.ml_kem_768_base64,
+        })
+        .to_string();
+        emit_bytes(json.as_bytes(), result_out, result_len_out)
+    })
+}
+
+/// KEX **respond** by alias, from inside custody (CIRISVerify#183).
+///
+/// `config_json` = `{"alias":"..","seed_dir":".."}`; `handshake_json` = the
+/// initiator's wire handshake (its `algorithm` selects hybrid vs classical).
+/// The private halves are derived in-process from the sealed seed, the respond
+/// runs inside keyring, the privs are scrubbed, and **only** the 32-byte
+/// session key is returned: `{"session_key_base64":".."}`. Caller frees via
+/// `ciris_verify_free`. Returns `Success`; `InvalidArgument` on a null pointer;
+/// `SerializationError` on bad config/handshake; `NoKey` if unsealed;
+/// `InternalError` on a KEX fault.
+///
+/// # Safety
+/// `config_json`/`handshake_json` must point to `*_len` valid bytes; the
+/// out-pointers must be valid.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_self_enc_respond(
+    config_json: *const u8,
+    config_len: usize,
+    handshake_json: *const u8,
+    handshake_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_self_enc_respond", {
+        if config_json.is_null()
+            || handshake_json.is_null()
+            || result_out.is_null()
+            || result_len_out.is_null()
+        {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        let config = std::slice::from_raw_parts(config_json, config_len);
+        let handshake = std::slice::from_raw_parts(handshake_json, handshake_len);
+        let keys = match open_self_enc(config) {
+            Ok(k) => k,
+            Err(code) => return code,
+        };
+        let session_key = match keys.kex_respond(handshake) {
+            Ok(k) => k,
+            Err(ciris_keyring::KeyringError::InvalidKey { .. }) => {
+                return CirisVerifyError::SerializationError as i32
+            },
+            Err(_) => return CirisVerifyError::InternalError as i32,
+        };
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let json = serde_json::json!({ "session_key_base64": b64.encode(session_key) }).to_string();
+        emit_bytes(json.as_bytes(), result_out, result_len_out)
     })
 }
 
@@ -217,6 +337,114 @@ mod tests {
             unsafe { ffi_derive(&serde_json::json!({ "ed25519_seed": short }).to_string()) }
                 .unwrap_err(),
             CirisVerifyError::SerializationError as i32
+        );
+    }
+
+    // ---- by-alias custody surface (#183) --------------------------------
+
+    unsafe fn ffi_pubkeys(config: &str) -> Result<serde_json::Value, i32> {
+        let mut out: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc =
+            ciris_verify_self_enc_pubkeys(config.as_ptr(), config.len(), &mut out, &mut out_len);
+        if rc != CirisVerifyError::Success as i32 {
+            return Err(rc);
+        }
+        let bytes = std::slice::from_raw_parts(out, out_len).to_vec();
+        libc::free(out as *mut libc::c_void);
+        Ok(serde_json::from_slice(&bytes).unwrap())
+    }
+
+    unsafe fn ffi_respond(config: &str, handshake: &str) -> Result<serde_json::Value, i32> {
+        let mut out: *mut u8 = std::ptr::null_mut();
+        let mut out_len: usize = 0;
+        let rc = ciris_verify_self_enc_respond(
+            config.as_ptr(),
+            config.len(),
+            handshake.as_ptr(),
+            handshake.len(),
+            &mut out,
+            &mut out_len,
+        );
+        if rc != CirisVerifyError::Success as i32 {
+            return Err(rc);
+        }
+        let bytes = std::slice::from_raw_parts(out, out_len).to_vec();
+        libc::free(out as *mut libc::c_void);
+        Ok(serde_json::from_slice(&bytes).unwrap())
+    }
+
+    fn seal_and_config(seed: &[u8; 32]) -> (tempfile::TempDir, String) {
+        let dir = tempfile::tempdir().unwrap();
+        ciris_keyring::sealed_ed25519::SealedEd25519Signer::open_or_create(
+            "id",
+            dir.path().to_path_buf(),
+            Some(seed),
+        )
+        .unwrap();
+        let cfg = serde_json::json!({
+            "alias": "id",
+            "seed_dir": dir.path().to_string_lossy(),
+        })
+        .to_string();
+        (dir, cfg)
+    }
+
+    #[test]
+    fn by_alias_pubkeys_are_public_only_and_match_the_derivation() {
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let seed = [0x42u8; 32];
+        let (_dir, cfg) = seal_and_config(&seed);
+
+        let v = unsafe { ffi_pubkeys(&cfg) }.unwrap();
+        // ONLY public fields — no secret/dk_seed ever.
+        assert!(v.get("x25519_base64").is_some());
+        assert!(v.get("ml_kem_768_base64").is_some());
+        assert!(v.as_object().unwrap().len() == 2);
+        assert!(!v.to_string().contains("secret"));
+        assert!(!v.to_string().contains("dk_seed"));
+
+        let (_s, x_pub) = derive_self_enc_x25519(&seed);
+        let (_d, ek) = derive_self_enc_mlkem768(&seed).unwrap();
+        assert_eq!(v["x25519_base64"].as_str().unwrap(), b64.encode(x_pub));
+        assert_eq!(v["ml_kem_768_base64"].as_str().unwrap(), b64.encode(&ek));
+    }
+
+    #[test]
+    fn by_alias_hybrid_kex_roundtrips_without_exporting_privs() {
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let (_dir, cfg) = seal_and_config(&[0x7u8; 32]);
+
+        let pubs = unsafe { ffi_pubkeys(&cfg) }.unwrap();
+        let x_pub: [u8; 32] = b64
+            .decode(pubs["x25519_base64"].as_str().unwrap())
+            .unwrap()
+            .try_into()
+            .unwrap();
+        let ek = b64
+            .decode(pubs["ml_kem_768_base64"].as_str().unwrap())
+            .unwrap();
+
+        let (msg, initiator_key) = ciris_crypto::hybrid_kex::initiate_hybrid(&x_pub, &ek).unwrap();
+        let handshake = serde_json::to_string(&msg).unwrap();
+        let resp = unsafe { ffi_respond(&cfg, &handshake) }.unwrap();
+        let session = b64
+            .decode(resp["session_key_base64"].as_str().unwrap())
+            .unwrap();
+        assert_eq!(session, initiator_key.to_vec(), "session keys must agree");
+    }
+
+    #[test]
+    fn by_alias_missing_seed_is_no_key() {
+        let dir = tempfile::tempdir().unwrap();
+        let cfg = serde_json::json!({
+            "alias": "absent",
+            "seed_dir": dir.path().to_string_lossy(),
+        })
+        .to_string();
+        assert_eq!(
+            unsafe { ffi_pubkeys(&cfg) }.unwrap_err(),
+            CirisVerifyError::NoKey as i32
         );
     }
 }
