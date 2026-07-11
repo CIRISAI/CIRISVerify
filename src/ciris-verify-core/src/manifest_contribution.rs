@@ -38,9 +38,16 @@ use serde_json::{json, Value};
 
 use crate::ceg_outbox::SignedCegObject;
 use crate::error::VerifyError;
+use crate::federation_self_record::KeyRecord;
 use crate::operational_admit::verify_delegation_scope_split;
 use crate::self_at_login::{SelfSigner, SignedEnvelope};
 use crate::threshold::{verify_threshold_signatures, ThresholdMember, ThresholdSignature};
+
+/// Distinct accord co-scrubs a pipeline `KeyRecord` needs to be a blessed build
+/// signer (CIRISVerify#185) — the same **≥2 distinct anchor** quorum
+/// CIRISPersist confers the `canonical` role on (#174 / #383). One scrub is not
+/// a blessing; a single compromised holder cannot mint a manifest authority.
+pub const MIN_ACCORD_COSCRUBS: usize = 2;
 
 /// The `infra:*` scope a pipeline must hold (via `delegates_to`) to publish
 /// manifests on a human's behalf — the existing #77 "attest on my behalf" scope.
@@ -229,6 +236,28 @@ pub enum ManifestRejection {
         /// The human key_id that was not trusted.
         on_behalf_of: String,
     },
+    /// #185: the supplied pipeline `KeyRecord` is for a different key than the
+    /// one that signed the manifest (`attesting_key_id`).
+    PipelineRecordMismatch {
+        /// The `KeyRecord`'s `key_id`.
+        record: String,
+        /// The manifest's `attesting_key_id`.
+        pipeline: String,
+    },
+    /// #185: the pipeline `KeyRecord` does not carry `infra:attest` in its
+    /// scrub-attested envelope roles — it was never blessed for manifest signing.
+    NotBlessedForManifest {
+        /// The scope that had to be present.
+        scope: String,
+    },
+    /// #185: the pipeline `KeyRecord` is not co-scrubbed by enough **distinct**
+    /// accord anchors (a 1-scrub record does not root a build authority).
+    InsufficientAccordScrubs {
+        /// Distinct accord-anchor scrubs that verified.
+        found: usize,
+        /// The `≥` threshold ([`MIN_ACCORD_COSCRUBS`]).
+        needed: usize,
+    },
 }
 
 impl std::fmt::Display for ManifestRejection {
@@ -283,6 +312,24 @@ impl std::fmt::Display for ManifestRejection {
                     "authority not trusted: {on_behalf_of:?} is not a trusted build authority"
                 )
             },
+            Self::PipelineRecordMismatch { record, pipeline } => {
+                write!(
+                    f,
+                    "pipeline KeyRecord {record:?} is not for the signing key {pipeline:?}"
+                )
+            },
+            Self::NotBlessedForManifest { scope } => {
+                write!(
+                    f,
+                    "pipeline KeyRecord does not carry {scope:?} in its scrub-attested roles"
+                )
+            },
+            Self::InsufficientAccordScrubs { found, needed } => {
+                write!(
+                    f,
+                    "pipeline KeyRecord has {found} distinct accord scrub(s), needs >= {needed}"
+                )
+            },
         }
     }
 }
@@ -317,6 +364,13 @@ fn envelope_verifies(
 
 /// Verify a build-manifest Contribution end-to-end and return the trusted build
 /// facts — the **consumer** of [`sign_build_manifest_contribution`].
+///
+/// **Superseded by [`verify_build_manifest_via_coscrub`] (CIRISVerify#185).** The
+/// manifest trust root now folds onto the accord co-scrub (the pipeline key is an
+/// accord-co-scrubbed `KeyRecord` carrying `infra:attest`, exactly like a canonical
+/// server), retiring the `delegates_to(human → pipeline)` grant. This grant-based
+/// path is **retained one release** as a deprecated shim for any emitter still
+/// producing the grant shape; new callers MUST use the co-scrub verifier.
 ///
 /// The full chain (all fail-closed):
 ///
@@ -491,6 +545,160 @@ pub fn verify_build_manifest_contribution(
         binary_version: str_field(build, "binary_version")?.to_string(),
         manifest_hash: str_field(build, "manifest_hash")?.to_string(),
     })
+}
+
+/// Verify a build-manifest Contribution rooted via the **accord co-scrub** of the
+/// pipeline key (CIRISVerify#185) — the shape that **supersedes** the
+/// `delegates_to`-grant path ([`verify_build_manifest_contribution`], retained one
+/// release). "Same ceremony, different CEG object": the pipeline key is blessed by
+/// the same m-of-n accord co-scrub the Trust Root card uses for canonical servers,
+/// carrying `infra:attest` where a canonical server carries the `canonical` role.
+///
+/// Authority chain (all fail-closed):
+/// 1. `obj` is a `build_manifest_contribution`; envelope well-formed.
+/// 2. The pipeline bound-hybrid signature verifies at threshold 1 against
+///    `pipeline_member`, and the envelope's `attesting_key_id` is that member.
+/// 3. `delegation_scope == infra:attest` and `dimension` matches `build.target`.
+/// 4. `pipeline_record` is the accord-co-scrubbed `KeyRecord` for THIS pipeline
+///    key, carries `infra:attest` in its **scrub-attested** envelope roles
+///    ([`KeyRecord::roles_in_envelope`]), and is scrubbed by
+///    **≥ [`MIN_ACCORD_COSCRUBS`] distinct** accord anchors — each scrub
+///    hybrid-verifying over the record's canonical `registration_envelope`.
+///
+/// `accord_anchor_members` are the seated accord holders' pinned
+/// [`ThresholdMember`]s (both pubkey halves), resolved by the CALLER from its
+/// directory / the baked genesis — the same anchor the `canonical` role roots to.
+/// Only a scrub whose `scrub_key_id` is in this set (and cryptographically
+/// verifies) counts toward the quorum, so a non-anchor scrub can't inflate it.
+///
+/// No `delegates_to` grant, no `on_behalf_of` authority-walk: the co-scrub IS the
+/// authority chain.
+///
+/// # Errors
+/// A [`ManifestRejection`] naming the first failing step.
+pub fn verify_build_manifest_via_coscrub(
+    obj: &SignedCegObject,
+    pipeline_member: &ThresholdMember,
+    pipeline_record: &KeyRecord,
+    accord_anchor_members: &[ThresholdMember],
+) -> Result<VerifiedManifest, ManifestRejection> {
+    if obj.kind != BUILD_MANIFEST_CONTRIBUTION_KIND {
+        return Err(ManifestRejection::WrongKind {
+            kind: obj.kind.clone(),
+        });
+    }
+
+    // --- 1-2. Pipeline signature verifies + binds to the pinned member. ---
+    let env = obj
+        .body
+        .get("signed_envelope")
+        .ok_or(ManifestRejection::Malformed {
+            field: "signed_envelope",
+        })?;
+    let ed_sig = str_field(&obj.body, "ed25519_signature_base64")?;
+    let mldsa_sig = obj
+        .body
+        .get("mldsa65_signature_base64")
+        .and_then(Value::as_str);
+    let attesting_key_id = str_field(env, "attesting_key_id")?;
+    if attesting_key_id != pipeline_member.member_id {
+        return Err(ManifestRejection::PipelineKeyMismatch {
+            envelope: attesting_key_id.to_string(),
+            member: pipeline_member.member_id.clone(),
+        });
+    }
+    if !envelope_verifies(env, ed_sig, mldsa_sig, pipeline_member) {
+        return Err(ManifestRejection::PipelineSignatureInvalid);
+    }
+
+    // --- 3. Scope + dimension self-consistency. ---
+    let scope = str_field(env, "delegation_scope")?;
+    if scope != MANIFEST_PUBLISH_SCOPE {
+        return Err(ManifestRejection::WrongScope {
+            scope: scope.to_string(),
+        });
+    }
+    let build = env
+        .get("build")
+        .ok_or(ManifestRejection::Malformed { field: "build" })?;
+    let target = str_field(build, "target")?;
+    let dimension = str_field(env, "dimension")?;
+    let expected_dim = build_manifest_dimension(target);
+    if dimension != expected_dim {
+        return Err(ManifestRejection::DimensionMismatch {
+            expected: expected_dim,
+            found: dimension.to_string(),
+        });
+    }
+
+    // --- 4. The pipeline key is BLESSED: its accord-co-scrubbed KeyRecord carries
+    //        infra:attest AND reaches the ≥2 distinct-anchor quorum. ---
+    if pipeline_record.key_id != attesting_key_id {
+        return Err(ManifestRejection::PipelineRecordMismatch {
+            record: pipeline_record.key_id.clone(),
+            pipeline: attesting_key_id.to_string(),
+        });
+    }
+    if !pipeline_record
+        .roles_in_envelope()
+        .iter()
+        .any(|r| r == MANIFEST_PUBLISH_SCOPE)
+    {
+        return Err(ManifestRejection::NotBlessedForManifest {
+            scope: MANIFEST_PUBLISH_SCOPE.to_string(),
+        });
+    }
+    // A post-hoc role flip changes the envelope bytes → the anchor scrubs no
+    // longer verify over them → the count drops below quorum (fail-secure by
+    // construction; the roles are covered by the very signatures we count).
+    let distinct = count_verifying_anchor_scrubs(pipeline_record, accord_anchor_members);
+    if distinct < MIN_ACCORD_COSCRUBS {
+        return Err(ManifestRejection::InsufficientAccordScrubs {
+            found: distinct,
+            needed: MIN_ACCORD_COSCRUBS,
+        });
+    }
+
+    Ok(VerifiedManifest {
+        attested_by: attesting_key_id.to_string(),
+        // Authority is the accord anchor, not a single human — surface the anchor
+        // that scrubbed the pipeline record (scrub #1) as the rooted identity.
+        on_behalf_of: pipeline_record.scrub_key_id.clone(),
+        target: target.to_string(),
+        build_id: str_field(build, "build_id")?.to_string(),
+        binary_hash: str_field(build, "binary_hash")?.to_string(),
+        binary_version: str_field(build, "binary_version")?.to_string(),
+        manifest_hash: str_field(build, "manifest_hash")?.to_string(),
+    })
+}
+
+/// Count the **distinct** accord anchors whose scrub on `record` hybrid-verifies
+/// (Strict) over the record's canonical `registration_envelope`. Only anchors
+/// present in `anchor_members` (matched by `scrub_key_id`) count — a scrub by a
+/// non-anchor key is ignored, so it can't inflate the quorum.
+fn count_verifying_anchor_scrubs(record: &KeyRecord, anchor_members: &[ThresholdMember]) -> usize {
+    let Ok(canonical) = crate::jcs::canonicalize(&record.registration_envelope) else {
+        return 0;
+    };
+    let mut verified = std::collections::BTreeSet::new();
+    for scrub in record.scrubs() {
+        let Some(member) = anchor_members
+            .iter()
+            .find(|m| m.member_id == scrub.scrub_key_id)
+        else {
+            continue;
+        };
+        let sig = ThresholdSignature {
+            member_id: member.member_id.clone(),
+            ed25519_signature_base64: scrub.scrub_signature_classical.clone(),
+            mldsa65_signature_base64: scrub.scrub_signature_pqc.clone(),
+        };
+        if verify_threshold_signatures(&canonical, std::slice::from_ref(member), &[sig], 1) == Ok(1)
+        {
+            verified.insert(scrub.scrub_key_id.clone());
+        }
+    }
+    verified.len()
 }
 
 #[cfg(test)]
@@ -774,6 +982,159 @@ mod tests {
             err,
             ManifestRejection::WrongKind {
                 kind: "something_else".to_string()
+            }
+        );
+    }
+
+    // -- #185: manifest rooted via the accord co-scrub (retires delegates_to) --
+
+    use crate::federation_self_record::{append_scrub, produce_scrubbed_key_record, ScrubTarget};
+
+    /// A manifest Contribution signed by `pipeline` + that pipeline's
+    /// accord-co-scrubbed `KeyRecord`. `scrubbers` co-scrub the record (each an
+    /// accord anchor); `roles` is the scrub-attested role set; `anchors` is the
+    /// pinned accord-member set the verifier trusts.
+    async fn coscrub_setup(
+        roles: Vec<String>,
+        scrubbers: &[&HybridSigningIdentity],
+        anchors: &[&HybridSigningIdentity],
+    ) -> (
+        SignedCegObject,
+        ThresholdMember,
+        KeyRecord,
+        Vec<ThresholdMember>,
+    ) {
+        let pipeline = HybridSigningIdentity::generate(PIPELINE).unwrap();
+        let pm = pipeline.directory_member().unwrap();
+        let (bh, mh) = build_owned();
+        let b = BuildAttestation {
+            target: "x86_64-unknown-linux-gnu",
+            binary_hash: &bh,
+            build_id: "ciris-verify@8.13.0",
+            binary_version: "8.13.0",
+            manifest_hash: &mh,
+        };
+        // The manifest is signed by the pipeline key directly (on_behalf_of /
+        // delegation_ref are vestigial under the co-scrub model — ignored here).
+        let obj = sign_build_manifest_contribution(&pipeline, &b, HUMAN, "unused", TS)
+            .await
+            .unwrap();
+
+        let target = ScrubTarget {
+            key_id: PIPELINE.to_string(),
+            pubkey_ed25519_base64: pm.ed25519_public_key_base64.clone(),
+            pubkey_ml_dsa_65_base64: pm.mldsa65_public_key_base64.clone().unwrap(),
+            identity_type: "node".to_string(),
+            roles,
+        };
+        let mut rec = produce_scrubbed_key_record(scrubbers[0], target, TS, &[])
+            .await
+            .unwrap();
+        for s in &scrubbers[1..] {
+            rec = append_scrub(rec, *s).await.unwrap();
+        }
+        let anchor_members: Vec<ThresholdMember> = anchors
+            .iter()
+            .map(|a| a.directory_member().unwrap())
+            .collect();
+        (obj, pm, rec.record, anchor_members)
+    }
+
+    #[tokio::test]
+    async fn coscrubbed_pipeline_with_infra_attest_verifies() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let b1 = HybridSigningIdentity::generate("B1").unwrap();
+        let (obj, pm, rec, anchors) =
+            coscrub_setup(vec!["infra:attest".to_string()], &[&a1, &b1], &[&a1, &b1]).await;
+        let v = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors)
+            .expect("2-of-3 co-scrub carrying infra:attest must verify");
+        assert_eq!(v.attested_by, PIPELINE);
+        assert_eq!(v.target, "x86_64-unknown-linux-gnu");
+        assert_eq!(v.binary_version, "8.13.0");
+    }
+
+    #[tokio::test]
+    async fn single_scrub_is_not_a_blessing() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let (obj, pm, rec, anchors) =
+            coscrub_setup(vec!["infra:attest".to_string()], &[&a1], &[&a1]).await;
+        let err = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors).unwrap_err();
+        assert_eq!(
+            err,
+            ManifestRejection::InsufficientAccordScrubs {
+                found: 1,
+                needed: 2
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn role_absent_record_is_not_blessed() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let b1 = HybridSigningIdentity::generate("B1").unwrap();
+        // 2-of-3 scrubbed but WITHOUT infra:attest → not a manifest signer.
+        let (obj, pm, rec, anchors) = coscrub_setup(vec![], &[&a1, &b1], &[&a1, &b1]).await;
+        let err = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors).unwrap_err();
+        assert_eq!(
+            err,
+            ManifestRejection::NotBlessedForManifest {
+                scope: "infra:attest".to_string()
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn pipeline_record_for_a_different_key_is_rejected() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let b1 = HybridSigningIdentity::generate("B1").unwrap();
+        let (obj, pm, mut rec, anchors) =
+            coscrub_setup(vec!["infra:attest".to_string()], &[&a1, &b1], &[&a1, &b1]).await;
+        rec.key_id = "some-other-node".to_string();
+        let err = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors).unwrap_err();
+        assert_eq!(
+            err,
+            ManifestRejection::PipelineRecordMismatch {
+                record: "some-other-node".to_string(),
+                pipeline: PIPELINE.to_string(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn a_non_anchor_scrub_does_not_count_toward_quorum() {
+        // Scrubbed by A1 (anchor) + X1 (NOT in the trusted anchor set). Only A1
+        // counts → 1 < 2 → rejected. A non-anchor can't inflate the quorum.
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let x1 = HybridSigningIdentity::generate("X1").unwrap();
+        let (obj, pm, rec, _) =
+            coscrub_setup(vec!["infra:attest".to_string()], &[&a1, &x1], &[&a1, &x1]).await;
+        // Verifier trusts only A1 as an anchor.
+        let anchors = vec![a1.directory_member().unwrap()];
+        let err = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors).unwrap_err();
+        assert_eq!(
+            err,
+            ManifestRejection::InsufficientAccordScrubs {
+                found: 1,
+                needed: 2
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn tampering_the_record_envelope_drops_the_quorum() {
+        // Flip a byte in the scrub-signed envelope after the co-scrub → both
+        // anchor scrubs stop verifying over it → quorum collapses (fail-secure).
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let b1 = HybridSigningIdentity::generate("B1").unwrap();
+        let (obj, pm, mut rec, anchors) =
+            coscrub_setup(vec!["infra:attest".to_string()], &[&a1, &b1], &[&a1, &b1]).await;
+        rec.registration_envelope["pubkey_ed25519_base64"] = json!("00".repeat(32));
+        let err = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors).unwrap_err();
+        assert_eq!(
+            err,
+            ManifestRejection::InsufficientAccordScrubs {
+                found: 0,
+                needed: 2
             }
         );
     }
