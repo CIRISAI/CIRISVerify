@@ -83,7 +83,7 @@ keyring = { version = "3", optional = true }
 
 # CIRIS cryptographic primitives — gated behind pqc-ml-dsa so the existing
 # default ciris-keyring build doesn't pull in ml-dsa.
-ciris-crypto = { path = "../ciris-crypto", version = "8", optional = true, default-features = false, features = ["pqc-ml-dsa", "ed25519", "self-enc", "hybrid-kex"] }
+ciris-crypto = { path = "../ciris-crypto", version = "9", optional = true, default-features = false, features = ["pqc-ml-dsa", "ed25519", "self-enc", "hybrid-kex"] }
 
 # Platform-specific
 [target.'cfg(target_os = "android")'.dependencies]

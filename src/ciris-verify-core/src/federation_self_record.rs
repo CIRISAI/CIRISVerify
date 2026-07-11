@@ -86,6 +86,7 @@ fn build_registration_envelope(
     pubkey_ml_dsa_65_base64: &str,
     valid_from: &str,
     transport_hints: &[TransportHint],
+    roles: &[String],
 ) -> Value {
     let mut envelope = json!({
         "key_id": key_id,
@@ -96,16 +97,25 @@ fn build_registration_envelope(
         "pubkey_ml_dsa_65_base64": pubkey_ml_dsa_65_base64,
         "valid_from": valid_from,
     });
+    let obj = envelope.as_object_mut().expect("json! built an object");
     // Only materialize `transport_hints` when there is at least one — absent hints
     // MUST leave the envelope bytes identical to the pre-#172 shape (see doc above).
     if !transport_hints.is_empty() {
-        envelope
-            .as_object_mut()
-            .expect("json! built an object")
-            .insert(
-                "transport_hints".to_string(),
-                serde_json::to_value(transport_hints).expect("TransportHint serializes"),
-            );
+        obj.insert(
+            "transport_hints".to_string(),
+            serde_json::to_value(transport_hints).expect("TransportHint serializes"),
+        );
+    }
+    // CIRISVerify#185: `roles` ride INSIDE the signed envelope so the accord
+    // co-scrub attests them (e.g. `infra:attest` for a build-signing pipeline
+    // key — the same shape a canonical server's `identity_type` is scrub-attested
+    // by). Materialize-when-present: empty `roles` OMITS the key entirely, so a
+    // canonical/admit record's bytes are byte-identical to the pre-#185 shape.
+    if !roles.is_empty() {
+        obj.insert(
+            "roles".to_string(),
+            serde_json::to_value(roles).expect("Vec<String> serializes"),
+        );
     }
     envelope
 }
@@ -205,6 +215,21 @@ impl KeyRecord {
             .unwrap_or_default()
     }
 
+    /// Read the **scrub-attested** roles carried in the signed
+    /// `registration_envelope` (CIRISVerify#185). Unlike the top-level
+    /// [`Self::roles`] (persist's *conferred* row state), this is the role set the
+    /// accord co-scrub actually signed over — the attested request an m-of-n scrub
+    /// blesses (e.g. `["infra:attest"]`). A record with no `roles` member (or a
+    /// malformed/absent field) reads as an empty list — never an error, never a
+    /// default injected on write.
+    #[must_use]
+    pub fn roles_in_envelope(&self) -> Vec<String> {
+        self.registration_envelope
+            .get("roles")
+            .and_then(|v| serde_json::from_value::<Vec<String>>(v.clone()).ok())
+            .unwrap_or_default()
+    }
+
     /// The **full ordered scrub set** (CIRISVerify#174): scrub #1 reconstructed
     /// from the base `scrub_*` fields, followed by every [`Self::additional_scrubs`]
     /// entry. Each is a signature over the *same* canonical `registration_envelope`
@@ -291,6 +316,7 @@ pub async fn produce_self_key_record(
         &pubkey_ml_dsa_65_base64,
         valid_from,
         transport_hints,
+        &[], // self records carry no scrub-attested roles (persist confers)
     );
     let canonical = jcs::canonicalize(&registration_envelope)?;
     let original_content_hash = hex::encode(Sha256::digest(&canonical));
@@ -335,6 +361,13 @@ pub struct ScrubTarget {
     pub pubkey_ml_dsa_65_base64: String,
     /// The target's `identity_type` (e.g. `node`).
     pub identity_type: String,
+    /// Role tags the accord co-scrub confers by attesting them inside the signed
+    /// envelope (CIRISVerify#185) — e.g. `["infra:attest"]` for a build-signing
+    /// pipeline key. **Empty = today's behavior** (byte-identical to the pre-#185
+    /// canonical/admit path). Persist confers the row role gated on the m-of-n
+    /// accord scrub + these envelope roles (CIRISPersist#422), exactly as it
+    /// confers `canonical` on ≥2 distinct anchor scrubs.
+    pub roles: Vec<String>,
 }
 
 /// Produce an **accord-scrubbed** key record — the scrub twin of
@@ -385,6 +418,7 @@ pub async fn produce_scrubbed_key_record(
         &target.pubkey_ml_dsa_65_base64,
         valid_from,
         transport_hints,
+        &target.roles, // #185: e.g. ["infra:attest"] — attested by this scrub
     );
     let canonical = jcs::canonicalize(&registration_envelope)?;
     let original_content_hash = hex::encode(Sha256::digest(&canonical));
@@ -588,6 +622,7 @@ mod tests {
                 pubkey_ed25519_base64: node_ed.clone(),
                 pubkey_ml_dsa_65_base64: node_mldsa.clone(),
                 identity_type: "node".to_string(),
+                roles: Vec::new(),
             },
             "2026-07-02T00:00:00Z",
             &[],
@@ -666,6 +701,7 @@ mod tests {
                 pubkey_ed25519_base64: node_ed,
                 pubkey_ml_dsa_65_base64: node_mldsa,
                 identity_type: "node".to_string(),
+                roles: Vec::new(),
             },
             "2026-07-02T00:00:00Z",
             &[],
@@ -772,6 +808,7 @@ mod tests {
                 pubkey_ed25519_base64: node_ed,
                 pubkey_ml_dsa_65_base64: node_mldsa,
                 identity_type: "node".to_string(),
+                roles: Vec::new(),
             },
             "2026-07-05T00:00:00Z",
             &[],
@@ -932,6 +969,7 @@ mod tests {
                 pubkey_ed25519_base64: node_ed,
                 pubkey_ml_dsa_65_base64: node_mldsa,
                 identity_type: "node".to_string(),
+                roles: Vec::new(),
             },
             "2026-07-02T00:00:00Z",
             &hints(),
@@ -951,6 +989,110 @@ mod tests {
         assert_eq!(scrubbed.record.transport_hints(), hints());
         // Admitted-by the accord holder, reachability attested in the same scrub.
         assert_eq!(scrubbed.record.scrub_key_id, "A1");
+    }
+
+    // ---- #185 co-scrub carries infra:attest ------------------------------
+
+    /// #185: a scrub with `roles: ["infra:attest"]` binds them INSIDE the signed
+    /// envelope (the accord holder attests them), and `roles_in_envelope()` reads
+    /// them back. The top-level `roles` stays empty (persist confers). An empty
+    /// `roles` reproduces the pre-#185 bytes exactly (no `roles` member).
+    #[tokio::test]
+    async fn roles_ride_in_the_scrub_signed_envelope() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let node = HybridSigningIdentity::generate("ciris-verify-build-pipeline").unwrap();
+        let node_ed = b64().encode(node.ed25519_public_key().await.unwrap());
+        let node_mldsa = b64().encode(node.mldsa65_public_key().await.unwrap());
+        let target = |roles: Vec<String>| ScrubTarget {
+            key_id: "ciris-verify-build-pipeline".to_string(),
+            pubkey_ed25519_base64: node_ed.clone(),
+            pubkey_ml_dsa_65_base64: node_mldsa.clone(),
+            identity_type: "node".to_string(),
+            roles,
+        };
+
+        let blessed = produce_scrubbed_key_record(
+            &a1,
+            target(vec!["infra:attest".to_string()]),
+            "2026-07-10T00:00:00Z",
+            &[],
+        )
+        .await
+        .unwrap();
+        let plain = produce_scrubbed_key_record(&a1, target(vec![]), "2026-07-10T00:00:00Z", &[])
+            .await
+            .unwrap();
+
+        // Attested roles are readable from the signed envelope; the top-level
+        // field stays empty (persist confers the row role on the m-of-n).
+        assert_eq!(
+            blessed.record.roles_in_envelope(),
+            vec!["infra:attest".to_string()]
+        );
+        assert!(
+            blessed.record.roles.is_empty(),
+            "top-level roles is persist-conferred, emitted empty"
+        );
+        // Empty-roles record: NO `roles` member → byte-identical to pre-#185.
+        assert!(plain.record.roles_in_envelope().is_empty());
+        assert!(plain.record.registration_envelope.get("roles").is_none());
+        // Roles live INSIDE the signed bytes → the two records' hashes differ.
+        assert_ne!(
+            blessed.record.original_content_hash,
+            plain.record.original_content_hash
+        );
+
+        // The scrub still hybrid-verifies over the roles-bearing bytes: A1's
+        // signature covers `infra:attest`, so a post-hoc role flip breaks it.
+        let canonical = jcs::canonicalize(&blessed.record.registration_envelope).unwrap();
+        assert!(scrub_hybrid_verifies(&canonical, &a1, &blessed.record.scrubs()[0]).await);
+    }
+
+    /// #185: a 2-of-3 accord co-scrub of a pipeline key carrying `infra:attest`
+    /// preserves the roles byte-identically across the co-scrub, reaches quorum
+    /// (distinct-scrub ≥ 2), and every anchor verifies over the same roles-bearing
+    /// canonical bytes — the shape persist confers `infra:attest` on (#422).
+    #[tokio::test]
+    async fn co_scrub_of_a_pipeline_key_preserves_roles_and_reaches_quorum() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let b1 = HybridSigningIdentity::generate("B1").unwrap();
+        let node = HybridSigningIdentity::generate("ciris-verify-build-pipeline").unwrap();
+        let target = ScrubTarget {
+            key_id: "ciris-verify-build-pipeline".to_string(),
+            pubkey_ed25519_base64: b64().encode(node.ed25519_public_key().await.unwrap()),
+            pubkey_ml_dsa_65_base64: b64().encode(node.mldsa65_public_key().await.unwrap()),
+            identity_type: "node".to_string(),
+            roles: vec!["infra:attest".to_string()],
+        };
+
+        // A1 scrubs #1, B1 appends #2 — same envelope (roles included).
+        let one = produce_scrubbed_key_record(&a1, target, "2026-07-10T00:00:00Z", &[])
+            .await
+            .unwrap();
+        let two = append_scrub(one, &b1).await.unwrap();
+
+        assert_eq!(
+            two.record.distinct_scrub_count(),
+            2,
+            "2-of-N quorum reached"
+        );
+        assert_eq!(
+            two.record.roles_in_envelope(),
+            vec!["infra:attest".to_string()],
+            "roles preserved byte-identically across append_scrub"
+        );
+
+        // Both anchors verify over the SAME roles-bearing canonical bytes.
+        let canonical = jcs::canonicalize(&two.record.registration_envelope).unwrap();
+        let scrubs = two.record.scrubs();
+        assert!(
+            scrub_hybrid_verifies(&canonical, &a1, &scrubs[0]).await,
+            "A1"
+        );
+        assert!(
+            scrub_hybrid_verifies(&canonical, &b1, &scrubs[1]).await,
+            "B1"
+        );
     }
 
     // ---- #174 multi-scrub / append-a-scrub -------------------------------
@@ -985,6 +1127,7 @@ mod tests {
             pubkey_ed25519_base64: b64().encode(node.ed25519_public_key().await.unwrap()),
             pubkey_ml_dsa_65_base64: b64().encode(node.mldsa65_public_key().await.unwrap()),
             identity_type: "node".to_string(),
+            roles: Vec::new(),
         };
         (node, target)
     }
