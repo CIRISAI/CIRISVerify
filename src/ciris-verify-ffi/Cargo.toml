@@ -36,7 +36,9 @@ key-grant = ["ciris-crypto/key-grant"]
 
 [dependencies]
 ciris-verify-core.workspace = true
-ciris-keyring.workspace = true
+# pqc-ml-dsa enables the keyring's `self_enc_keys` custody capability
+# (SelfEncKeys), the by-alias content-enc surface for the wheel (#183).
+ciris-keyring = { workspace = true, features = ["pqc-ml-dsa"] }
 # scope-privacy (#82): the §2.2/§2.4/§3.4 derivation helpers are exposed on the
 # wheel (`wheel_scope_privacy`), so the wheel build always needs the feature.
 # Pure Rust (kdf + hmac), no platform/heavy deps — safe to enable unconditionally.
@@ -93,6 +95,8 @@ rustls = { version = "0.23", default-features = false, features = ["ring", "std"
 [dev-dependencies]
 # Mock YubiKey PIV attestation chains for the accord custody FFI tests (#91).
 rcgen = "0.13"
+# Seal a temp identity seed for the by-alias self-enc custody FFI tests (#183).
+tempfile = "3"
 
 [build-dependencies]
 cbindgen = "0.26"

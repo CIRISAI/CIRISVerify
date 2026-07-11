@@ -138,6 +138,42 @@ pub struct TransportBindingSignature {
     pub mldsa65_signature_base64: Option<String>,
 }
 
+/// Produce the detached hybrid signature over an `identity_occurrence`
+/// envelope — the **byte-exact producer** for what [`verify_transport_binding`]
+/// verifies. There was no producer before this: every occurrence envelope was
+/// hand-rolled, so producer/verifier coherence rested on each call site.
+///
+/// `occurrence_envelope` is the EXACT member set to sign (§0.9 presence,
+/// omit-vs-materialize), with **no signature container** — the same value the
+/// verifier will JCS-canonicalize. The signature is Ed25519 over
+/// `JCS(occurrence_envelope)`, then ML-DSA-65 over `JCS_bytes ‖ ed25519_sig`
+/// (the bound-sig discipline `verify_transport_binding` re-checks), produced
+/// via the identity's [`SelfSigner::sign_bound`](crate::self_at_login::SelfSigner::sign_bound) so any custody tier
+/// (hardware-sealed or software) drives it identically.
+///
+/// Returns the (unchanged) envelope alongside its [`TransportBindingSignature`],
+/// so a caller assembles a [`TransportBinding`] / occurrence record without
+/// re-canonicalizing. This is the producer CIRISPersist's signed-occurrence
+/// admission (arc 2/4) verifies and CIRISServer's boot self-publish (arc 4/4)
+/// calls (CIRISVerify#183).
+///
+/// # Errors
+/// [`VerifyError`] on a JCS canonicalization or signer fault.
+pub async fn produce_signed_identity_occurrence(
+    signer: &dyn crate::self_at_login::SelfSigner,
+    occurrence_envelope: Value,
+) -> Result<(Value, TransportBindingSignature), VerifyError> {
+    let bytes = jcs::canonicalize(&occurrence_envelope)?;
+    let (ed25519_signature_base64, mldsa65_signature_base64) = signer.sign_bound(&bytes).await?;
+    Ok((
+        occurrence_envelope,
+        TransportBindingSignature {
+            ed25519_signature_base64,
+            mldsa65_signature_base64: Some(mldsa65_signature_base64),
+        },
+    ))
+}
+
 /// A `transport_destination` binding to verify.
 ///
 /// `signed_envelope` is the **exact `identity_occurrence` member set the
@@ -662,6 +698,79 @@ mod tests {
         // The §5.6.8.8.1.1 hash recompute matches the derivation-consistent
         // fixture hash.
         assert_eq!(v.destination_hash_check, DestinationHashCheck::Match);
+    }
+
+    #[tokio::test]
+    async fn producer_output_verifies_through_the_real_verifier() {
+        use crate::self_at_login::HybridSigningIdentity;
+
+        // The producer signs with a SelfSigner (any custody tier). Build a
+        // software identity and pin ITS pubkeys in the directory.
+        let identity = HybridSigningIdentity::new(
+            "steward-us",
+            Ed25519Signer::random().unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        );
+        let dir = vec![identity.directory_member().unwrap()];
+
+        // A well-formed occurrence envelope (same shape make_binding signs),
+        // with a derivation-consistent §5.6.8.8.1.1 hash and distinct
+        // transport-x vs content-KEM-x (C4).
+        let (transport_ed, transport_x, content_x) =
+            (pubkey_bytes(0x01), pubkey_bytes(0x02), pubkey_bytes(0x03));
+        let app_name = "ciris.federation";
+        let aspects = ["announce", "v1"];
+        let dest_hash = rns_destination_hash(&transport_x, &transport_ed, app_name, &aspects);
+        let td = TransportDestination {
+            reticulum_x25519_pubkey_base64: b64().encode(&transport_x),
+            reticulum_ed25519_pubkey_base64: b64().encode(&transport_ed),
+            destination_hash_base64: b64().encode(&dest_hash),
+            app_name: app_name.to_string(),
+            aspects: aspects.iter().map(|s| (*s).to_string()).collect(),
+        };
+        let enc = EncryptionPubkeys {
+            x25519_base64: b64().encode(&content_x),
+            ml_kem_768_base64: b64().encode(vec![0x11u8; 1184]),
+        };
+        let envelope = json!({
+            "attestation_type": "scores",
+            "subject_kind": "identity_occurrence",
+            "attesting_key_id": "steward-us",
+            "identity_key_id": "steward-us",
+            "occurrence_key_id": "occ-key-1",
+            "device_class": "agent",
+            "transport_destination": {
+                "reticulum_x25519_pubkey": td.reticulum_x25519_pubkey_base64,
+                "reticulum_ed25519_pubkey": td.reticulum_ed25519_pubkey_base64,
+                "destination_hash": td.destination_hash_base64,
+                "app_name": td.app_name,
+                "aspects": td.aspects,
+            },
+            "encryption_pubkeys": {
+                "x25519_base64": enc.x25519_base64,
+                "ml_kem_768_base64": enc.ml_kem_768_base64,
+            },
+            "asserted_at": "2026-06-14T00:00:00.000Z",
+            "signed_at": "2026-06-14T00:00:00.000Z",
+        });
+
+        // Produce, then verify through the REAL verifier — no hand-rolled sig.
+        let (signed_envelope, signature) = produce_signed_identity_occurrence(&identity, envelope)
+            .await
+            .unwrap();
+        let binding = TransportBinding {
+            attesting_key_id: "steward-us".to_string(),
+            signed_envelope,
+            transport_destination: td,
+            encryption_pubkeys: Some(enc),
+            signature,
+        };
+        let v = verify_transport_binding(&binding, &dir).unwrap();
+        assert!(v.authentic, "producer output must verify: {:?}", v.reason);
+        assert_eq!(v.reason, TransportBindingReason::Verified);
+        assert_eq!(v.destination_hash_check, DestinationHashCheck::Match);
+        // The producer emits BOTH halves (hybrid, not classical-pending).
+        assert!(binding.signature.mldsa65_signature_base64.is_some());
     }
 
     #[test]
