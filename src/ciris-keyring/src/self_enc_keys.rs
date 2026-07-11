@@ -218,7 +218,6 @@ impl SelfEncKeys {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sealed_ed25519::SealedEd25519Signer;
 
     fn seed_dir() -> tempfile::TempDir {
         tempfile::tempdir().unwrap()
@@ -226,8 +225,14 @@ mod tests {
 
     /// Seal a known Ed25519 seed under `alias` so `SelfEncKeys::open` has a
     /// seed to derive from (mirrors a provisioned federation identity).
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     fn seal_seed(alias: &str, dir: &std::path::Path, seed: &[u8; 32]) {
-        SealedEd25519Signer::open_or_create(alias, dir.to_path_buf(), Some(seed)).unwrap();
+        crate::sealed_ed25519::SealedEd25519Signer::open_or_create(
+            alias,
+            dir.to_path_buf(),
+            Some(seed),
+        )
+        .unwrap();
     }
 
     #[test]
@@ -240,6 +245,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn enc_pubkeys_match_the_raw_self_enc_derivation() {
         let dir = seed_dir();
@@ -257,6 +263,7 @@ mod tests {
         assert_eq!(STANDARD.decode(&out.ml_kem_768_base64).unwrap().len(), 1184);
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn enc_pubkeys_are_restore_stable() {
         // Re-sealing the same seed under a fresh dir yields identical pubkeys
@@ -276,6 +283,7 @@ mod tests {
         assert_eq!(p1, p2);
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn hybrid_roundtrip_initiate_outside_respond_in_custody() {
         use ciris_crypto::hybrid_kex::initiate_hybrid;
@@ -305,6 +313,7 @@ mod tests {
         );
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn classical_roundtrip_in_custody() {
         use ciris_crypto::hybrid_kex::initiate_classical;
@@ -327,6 +336,7 @@ mod tests {
         assert_eq!(initiator_key, responder_key);
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn unknown_algorithm_is_rejected() {
         let dir = seed_dir();

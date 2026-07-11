@@ -355,6 +355,7 @@ mod tests {
         Ok(serde_json::from_slice(&bytes).unwrap())
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     unsafe fn ffi_respond(config: &str, handshake: &str) -> Result<serde_json::Value, i32> {
         let mut out: *mut u8 = std::ptr::null_mut();
         let mut out_len: usize = 0;
@@ -374,6 +375,7 @@ mod tests {
         Ok(serde_json::from_slice(&bytes).unwrap())
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     fn seal_and_config(seed: &[u8; 32]) -> (tempfile::TempDir, String) {
         let dir = tempfile::tempdir().unwrap();
         ciris_keyring::sealed_ed25519::SealedEd25519Signer::open_or_create(
@@ -390,6 +392,14 @@ mod tests {
         (dir, cfg)
     }
 
+    // Seal-based tests seal a seed via the platform storage tier. On macOS/iOS
+    // that is the Secure Enclave / keychain, which BLOCKS on a headless CI
+    // runner (no prompt responder) — see the SLOW/timeout on `Test (macos)`.
+    // The derivation + KEX + no-priv-export logic is platform-independent, so
+    // Linux/Windows coverage is authoritative; the SE/keychain seal path is the
+    // keyring's own concern (`sealed_ed25519`). The non-sealing tests
+    // (`by_alias_missing_seed_is_no_key`) stay on every platform.
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn by_alias_pubkeys_are_public_only_and_match_the_derivation() {
         let b64 = base64::engine::general_purpose::STANDARD;
@@ -410,6 +420,7 @@ mod tests {
         assert_eq!(v["ml_kem_768_base64"].as_str().unwrap(), b64.encode(&ek));
     }
 
+    #[cfg(not(any(target_os = "macos", target_os = "ios")))]
     #[test]
     fn by_alias_hybrid_kex_roundtrips_without_exporting_privs() {
         let b64 = base64::engine::general_purpose::STANDARD;
