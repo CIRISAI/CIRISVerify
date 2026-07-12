@@ -1029,19 +1029,27 @@ pub enum CirisVerifyError {
 /// The returned handle must be freed with `ciris_verify_destroy`.
 #[no_mangle]
 pub extern "C" fn ciris_verify_init() -> *mut CirisVerifyHandle {
-    // v4.7.1 (CIRISVerify#51): Lazy-trigger early function-integrity
-    // verification HERE rather than from a `.init_array` constructor.
-    // Pre-v4.7.1 on Linux/glibc this ran from DT_INIT inside dlopen
-    // while the loader lock was held; the Tokio runtime + reqwest
-    // worker we started there blocked on `__cxa_thread_atexit_impl`,
-    // which also needs the loader lock - permanent deadlock. By the
-    // time Python's ctypes calls into here, dlopen has returned and
-    // the loader lock is released. `Once::call_once` inside makes
-    // this single-shot across re-init calls.
+    // Lazy-trigger early function-integrity verification HERE — on EVERY
+    // platform (CIRISVerify#51 for Linux; **CIRISVerify#197** extended it to
+    // Windows + macOS/iOS).
     //
-    // macOS/iOS still run it from `#[ctor::ctor]` (dyld's loader
-    // semantics avoid the cycle); see `constructor.rs` for details.
-    #[cfg(any(target_os = "linux", target_os = "android"))]
+    // `early_verify()` builds a Tokio runtime and `block_on`s an HTTPS fetch.
+    // Doing that from ANY loader callback deadlocks: the loader lock is held
+    // while we wait on a worker thread that itself needs the loader lock (to
+    // register a TLS destructor / resolve symbols).
+    //   - Linux/glibc: DT_INIT inside `dlopen` → `__cxa_thread_atexit_impl`
+    //     wants `_rtld_global`. Fixed in v4.7.1 (#51).
+    //   - Windows: `DllMain(DLL_PROCESS_ATTACH)` runs under the loader lock;
+    //     `block_on` does NOT return before the worker exists — it *waits* on
+    //     it. The pre-#197 comment claimed otherwise; it was wrong, and
+    //     `import ciris_server` hung forever on Windows (#197). DllMain deleted.
+    //   - macOS/iOS: `#[ctor::ctor]` runs from dyld's loader. It hadn't
+    //     deadlocked in practice, but a **network round-trip from a library
+    //     constructor** is a hazard on its own merits (it makes `import` do
+    //     I/O). Removed too — the load path is now uniformly inert.
+    //
+    // By the time a caller reaches here, the loader lock is long released.
+    // `Once::call_once` inside `early_verify` keeps it single-shot.
     constructor::early_verify();
 
     // Initialize logging for the platform (exactly once)
