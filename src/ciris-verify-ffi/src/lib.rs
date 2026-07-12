@@ -75,6 +75,155 @@ mod android_sync;
 #[cfg(target_os = "ios")]
 mod ios_sync;
 
+/// Keep-alive anchor for downstream cdylib folds (CIRISVerify#189 / CIRISServer#232).
+///
+/// When `ciris-server` folds this crate as an `rlib` into `ciris_server._native.so`
+/// (#187), nothing in the server's Rust code calls the FFI's `#[no_mangle] extern
+/// "C"` fns — the agent reaches them at runtime via `ctypes`/`dlopen`. So the
+/// linker's `--gc-sections` would **dead-strip all ~84 `ciris_verify_*` symbols**
+/// out of the final `.so`, per-platform-silently. Referencing this ONE fn from the
+/// downstream crate (`#[used] static … = ciris_verify_ffi_link_anchor;`) transitively
+/// forces every object file below to be retained, so the whole surface survives.
+///
+/// The body takes the ADDRESS of every exported fn (`as usize`) and XOR-folds them;
+/// the compiler cannot resolve an address without keeping the symbol. The caller
+/// should pass the return value through `std::hint::black_box` so the call itself
+/// isn't optimized away. Each conditionally-compiled fn is referenced under the
+/// **same `#[cfg]`** it's defined with, so this compiles under every feature combo.
+///
+/// **Invariant:** this must list EVERY `#[no_mangle] pub extern "C" fn` in the
+/// crate. A CI symbol-presence check (`nm`/`dumpbin` across all 3 platforms) guards
+/// against a new export being added without an anchor entry.
+// The `fn as usize` casts are deliberate: taking each symbol's address is what
+// forces the linker to retain it. `too_many_lines` — the exhaustive list is the
+// point (one line per export).
+#[allow(function_casts_as_integer)] // rustc: taking the address IS the point
+#[allow(clippy::fn_to_numeric_cast_any, clippy::too_many_lines)]
+#[no_mangle]
+pub extern "C" fn ciris_verify_ffi_link_anchor() -> usize {
+    // AUTO-ENUMERATED: every #[no_mangle] pub extern "C" fn in this crate.
+    // Referencing each address forces the linker to retain its object file
+    // in a downstream cdylib fold (--gc-sections cannot drop a referenced sym).
+    let mut acc: usize = 0;
+    acc ^= wheel_accord_custody::ciris_verify_accord_custody_attestation as usize;
+    acc ^= ciris_verify_admit_attestation as usize;
+    acc ^= ciris_verify_app_attest as usize;
+    acc ^= ciris_verify_app_attest_assertion as usize;
+    acc ^= ciris_verify_attest_bundle_from_attestation as usize;
+    acc ^= ciris_verify_audit_trail as usize;
+    acc ^= ciris_verify_await_key_registration as usize;
+    acc ^= wheel_manifest_contribution::ciris_verify_build_manifest_contribution as usize;
+    acc ^= ciris_verify_check_agent_integrity as usize;
+    acc ^= ciris_verify_check_agent_integrity_available as usize;
+    acc ^= ciris_verify_check_capability as usize;
+    acc ^= ciris_verify_create_federation_identity as usize;
+    acc ^= ciris_verify_decrypt_with_named_key as usize;
+    acc ^= wheel_operational_admit::ciris_verify_delegation_scope_split as usize;
+    acc ^= ciris_verify_delete_key as usize;
+    acc ^= ciris_verify_delete_named_key as usize;
+    acc ^= ciris_verify_derive_symmetric_key as usize;
+    acc ^= ciris_verify_destroy as usize;
+    acc ^= ciris_verify_device_attestation_failed as usize;
+    acc ^= ciris_verify_encrypt_with_named_key as usize;
+    acc ^= ciris_verify_export_attestation as usize;
+    acc ^= ciris_verify_free as usize;
+    acc ^= ciris_verify_free_string as usize;
+    acc ^= ciris_verify_generate_key as usize;
+    acc ^= ciris_verify_get_app_attest_nonce as usize;
+    acc ^= ciris_verify_get_diagnostics as usize;
+    acc ^= ciris_verify_get_ed25519_public_key as usize;
+    acc ^= ciris_verify_get_hardware_info as usize;
+    acc ^= ciris_verify_get_hardware_info_android as usize;
+    acc ^= ciris_verify_get_integrity_nonce as usize;
+    acc ^= ciris_verify_get_named_key_public as usize;
+    acc ^= ciris_verify_get_public_key as usize;
+    acc ^= ciris_verify_get_status as usize;
+    acc ^= ciris_verify_has_key as usize;
+    acc ^= ciris_verify_has_named_key as usize;
+    acc ^= ciris_verify_import_key as usize;
+    acc ^= ciris_verify_init as usize;
+    acc ^= ciris_verify_invocation_canonical_bytes as usize;
+    acc ^= wheel_jcs::ciris_verify_jcs_canonicalize as usize;
+    acc ^= ciris_verify_list_named_keys as usize;
+    acc ^= ciris_verify_load_manifest_cache as usize;
+    acc ^= wheel_locale_merkle::ciris_verify_locale_inclusion_verify as usize;
+    acc ^= wheel_locale_merkle::ciris_verify_locale_merkle_root as usize;
+    acc ^= ciris_verify_manifest_cache_exists as usize;
+    acc ^= wheel_operational_admit::ciris_verify_partner_record_quorum as usize;
+    acc ^= wheel_reconsider_dos::ciris_verify_reconsider_admit_filing as usize;
+    acc ^= wheel_reconsider_dos::ciris_verify_reconsider_guard_free as usize;
+    acc ^= wheel_reconsider_dos::ciris_verify_reconsider_guard_new as usize;
+    acc ^= wheel_reconsider_dos::ciris_verify_reconsider_record_outcome as usize;
+    acc ^= wheel_operational_admit::ciris_verify_resolve_role_authority as usize;
+    acc ^= wheel_rns_dest_hash::ciris_verify_rns_destination_hash as usize;
+    acc ^= ciris_verify_run_attestation as usize;
+    acc ^= ciris_verify_run_conformance_tests as usize;
+    acc ^= ciris_verify_save_manifest_cache as usize;
+    acc ^= wheel_scope_privacy::ciris_verify_scope_privacy_derive as usize;
+    acc ^= wheel_self_enc::ciris_verify_self_enc_derive as usize;
+    acc ^= wheel_self_enc::ciris_verify_self_enc_pubkeys as usize;
+    acc ^= wheel_self_enc::ciris_verify_self_enc_respond as usize;
+    acc ^= ciris_verify_set_log_callback as usize;
+    acc ^= ciris_verify_sign as usize;
+    acc ^= ciris_verify_sign_ed25519 as usize;
+    acc ^= ciris_verify_sign_with_named_key as usize;
+    acc ^= ciris_verify_signer_storage_descriptor as usize;
+    acc ^= wheel_skill_import::ciris_verify_skill_import_manifest_verify as usize;
+    acc ^= ciris_verify_sth_cosignature_consistency_proof as usize;
+    acc ^= ciris_verify_store_named_key as usize;
+    acc ^= ciris_verify_tree as usize;
+    acc ^= ciris_verify_verify_integrity_token as usize;
+    acc ^= ciris_verify_version as usize;
+
+    #[cfg(feature = "secp256k1")]
+    {
+        acc ^= ciris_verify_derive_secp256k1_pubkey as usize;
+        acc ^= ciris_verify_get_evm_address as usize;
+        acc ^= ciris_verify_get_evm_address_checksummed as usize;
+        acc ^= ciris_verify_get_wallet_info as usize;
+        acc ^= ciris_verify_recover_evm_address as usize;
+        acc ^= ciris_verify_sign_evm_transaction as usize;
+        acc ^= ciris_verify_sign_secp256k1 as usize;
+        acc ^= ciris_verify_sign_typed_data as usize;
+    }
+
+    #[cfg(feature = "hybrid-kex")]
+    {
+        acc ^= wheel_hybrid_kex::ciris_verify_kex_initiate_classical as usize;
+        acc ^= wheel_hybrid_kex::ciris_verify_kex_initiate_hybrid as usize;
+        acc ^= wheel_hybrid_kex::ciris_verify_kex_respond_classical as usize;
+        acc ^= wheel_hybrid_kex::ciris_verify_kex_respond_hybrid_with_public as usize;
+    }
+
+    #[cfg(feature = "key-grant")]
+    {
+        acc ^= wheel_key_grant::ciris_verify_unwrap_dek as usize;
+        acc ^= wheel_key_grant::ciris_verify_wrap_dek_for_recipient as usize;
+    }
+
+    #[cfg(not(any(target_os = "android", target_os = "ios")))]
+    {
+        acc ^= ciris_verify_tpm_attestation as usize;
+    }
+    acc
+}
+
+#[cfg(test)]
+mod link_anchor_tests {
+    /// The keep-alive anchor compiles (references every #[no_mangle] fn under the
+    /// active feature combo) and folds to a stable non-zero value — proving every
+    /// referenced symbol has a real address. A new export added without an anchor
+    /// entry is caught by the CI symbol-surface check (ci.yml), which compares the
+    /// exported `ciris_verify_*` count against this fold's coverage.
+    #[test]
+    fn link_anchor_folds_to_nonzero() {
+        let a = super::ciris_verify_ffi_link_anchor();
+        let b = super::ciris_verify_ffi_link_anchor();
+        assert_eq!(a, b, "anchor fold is deterministic");
+        assert_ne!(a, 0, "anchor folds real fn addresses -> non-zero");
+    }
+}
+
 // Android logging: using tracing-log bridge to route tracing events -> log crate -> android_logger -> logcat
 
 use std::ffi::{c_char, c_void};
