@@ -72,6 +72,25 @@ pub struct AggregationMetaV1 {
     /// carries `n_eff == source_count` as a neutral, un-signed placeholder (it
     /// fails `passes_dominance_gate`, which requires a signed n_eff).
     pub n_eff: u32,
+    /// §19.7.1.3 (CIRISVerify#191 / CC 6.1.2.1.2 R9): the **content-similarity
+    /// multiplicity** — the size of the largest cluster of members whose pairwise
+    /// content similarity exceeds the `corpus_kind`-pinned threshold, computed by
+    /// the aggregator at fold time (edge, the only point with member payloads in
+    /// hand). Closes the R9 residual the mass-based [`Self::n_eff`] cannot see:
+    /// 900 near-duplicate contents folded as 900 *distinct members at equal mass*
+    /// honestly yield `n_eff == 1000` yet the composite blur IS the data subject
+    /// — [`passes_multiplicity_gate`] rejects that.
+    ///
+    /// **Signed only when `version >= 3`.** A v1/v2 tier lacks this surface and
+    /// **fails closed** at the multiplicity gate (flag-day cut, no window).
+    pub max_source_multiplicity: u32,
+    /// §19.7.1.3 (CIRISVerify#191): Merkle root over the per-member masses (the
+    /// §19.1 WholenessWitness construction, [`mass_commitment`]) — makes both
+    /// `n_eff` and the clustering **auditable**: an auditor holding the members +
+    /// their masses recomputes this root and can *prove* a lying `n_eff` /
+    /// multiplicity from held evidence, converting "slashable in principle" into
+    /// "mechanically provable". **Signed only when `version >= 3`.**
+    pub mass_commitment: [u8; 32],
 }
 
 impl AggregationMetaV1 {
@@ -97,8 +116,19 @@ impl AggregationMetaV1 {
             .u32_be(self.source_count)
             .fixed(&self.member_commitment)
             .lp(self.noise_floor_descriptor.as_bytes());
-        if self.version >= 2 {
-            p.u32_be(self.n_eff).finish()
+        // §19.7.1.2 (#167): v2 appends the signed n_eff. §19.7.1.3 (#191): v3
+        // additionally appends the content-similarity multiplicity + the mass
+        // commitment. Append-only — a v1/v2 tier's preimage is byte-identical to
+        // its original layout, so pre-#191 signatures/vectors still verify.
+        let p = if self.version >= 2 {
+            p.u32_be(self.n_eff)
+        } else {
+            p
+        };
+        if self.version >= 3 {
+            p.u32_be(self.max_source_multiplicity)
+                .fixed(&self.mass_commitment)
+                .finish()
         } else {
             p.finish()
         }
@@ -147,6 +177,76 @@ pub fn passes_dominance_gate(meta: &AggregationMetaV1, min_ratio: f64) -> bool {
         return false;
     }
     f64::from(meta.n_eff) >= min_ratio * f64::from(meta.source_count)
+}
+
+/// Fixed-point scale for committed masses (CIRISVerify#191). A member's content
+/// mass (a non-negative `f64`) is committed as `round(mass * MASS_FIXED_POINT_SCALE)`
+/// so two conformant implementations commit **byte-identically** — the CC 6.1.2
+/// `(R, ε)` falsifiability discipline forbids float non-determinism in the wire
+/// commitment.
+pub const MASS_FIXED_POINT_SCALE: f64 = 1_000_000.0;
+
+/// Encode a content mass as the pinned fixed-point `u64` (micro-units),
+/// saturating at `0` for non-positive mass. The producer commits these via
+/// [`mass_commitment`].
+#[must_use]
+pub fn mass_to_fixed(mass: f64) -> u64 {
+    if mass <= 0.0 {
+        0
+    } else {
+        (mass * MASS_FIXED_POINT_SCALE).round() as u64
+    }
+}
+
+/// §19.7.1.3 (CIRISVerify#191): Merkle root over the per-member masses — the
+/// §19.1 WholenessWitness construction ([`member_commitment`]) verbatim, with
+/// each leaf binding a member to its fixed-point mass:
+/// `leaf = utf8(member_id) ‖ u64_be(mass_fixed)`. Lexicographic order + odd-node
+/// duplication (order-independent). An auditor holding `{(member_id, mass)}`
+/// recomputes this root and can **prove** a lying `n_eff` / multiplicity from
+/// held evidence — converting "slashable in principle" into "mechanically
+/// provable".
+#[must_use]
+pub fn mass_commitment(members: &[(String, u64)]) -> [u8; 32] {
+    let leaves: Vec<Vec<u8>> = members
+        .iter()
+        .map(|(id, mass)| {
+            let mut leaf = id.as_bytes().to_vec();
+            leaf.extend_from_slice(&mass.to_be_bytes());
+            leaf
+        })
+        .collect();
+    super::compute_merkle_root(&leaves)
+}
+
+/// §19.7.1.3 audit check: does `members` (member id + fixed-point mass)
+/// re-derive the tier's committed [`AggregationMetaV1::mass_commitment`]?
+/// Order-independent (the Merkle sorts).
+#[must_use]
+pub fn verify_mass_commitment(meta: &AggregationMetaV1, members: &[(String, u64)]) -> bool {
+    mass_commitment(members) == meta.mass_commitment
+}
+
+/// §19.7.1.3 multiplicity gate (CIRISVerify#191 / CC 6.1.2.1.2 R9). A tier passes
+/// iff its **signed** largest content-similar cluster is at most `1/n_min` of its
+/// raw `source_count` — `max_source_multiplicity · n_min ≤ source_count`.
+/// Rejects the 900-near-duplicates-under-distinct-ids fold
+/// (`max_source_multiplicity = 900`, `source_count = 1000`, `n_min = 2`:
+/// `1800 > 1000` → reject) that the mass-based [`passes_dominance_gate`] honestly
+/// admits, because the composite blur IS the data subject.
+///
+/// `n_min` is the **`corpus_kind`-pinned** floor the caller supplies (two
+/// conformant impls MUST agree on it — CC 6.1.2 `(R, ε)`). Requires a
+/// **version-3** tier (a *signed* `max_source_multiplicity`); a v1/v2 tier lacks
+/// the surface and **fails closed** (the flag-day cut — no deprecation window).
+/// `n_min == 0` is rejected. Gate on this AFTER [`verify_aggregation_meta`], which
+/// authenticates the value this reads.
+#[must_use]
+pub fn passes_multiplicity_gate(meta: &AggregationMetaV1, n_min: u32) -> bool {
+    if meta.version < 3 || meta.source_count == 0 || n_min == 0 {
+        return false;
+    }
+    u64::from(meta.max_source_multiplicity) * u64::from(n_min) <= u64::from(meta.source_count)
 }
 
 /// §19.7.1.1: the `member_commitment` Merkle root over a tier's source member
@@ -301,6 +401,10 @@ mod tests {
             member_commitment: member_commitment(&members),
             noise_floor_descriptor: "mean+stddev".into(),
             n_eff: members.len() as u32,
+            // v1 base: the #191 surface is an un-signed placeholder (fails the
+            // multiplicity gate, which requires v3). Tests bump `version` + these.
+            max_source_multiplicity: 0,
+            mass_commitment: [0u8; 32],
         }
     }
 
@@ -504,6 +608,151 @@ mod tests {
         assert_eq!(
             ejection_verdict(ConsentState::Active, false),
             EjectionVerdict::Keep
+        );
+    }
+
+    // ---- §19.7.1.3 multiplicity + mass surface (#191, CC 6.1.2.1.2 R9) ----
+
+    /// The kill-shot: 900 near-duplicate contents folded as 900 DISTINCT members
+    /// at equal mass honestly compute n_eff == 1000 (passes the mass dominance
+    /// gate) — but the largest content-similar cluster is 900/1000, so the
+    /// multiplicity gate rejects the false erasure.
+    #[test]
+    fn multiplicity_gate_rejects_900_near_duplicates_the_mass_gate_admits() {
+        let mut m = meta();
+        m.version = 3;
+        m.source_count = 1000;
+        m.n_eff = 1000; // equal mass → honestly passes the mass dominance gate…
+        m.max_source_multiplicity = 900; // …but 900 are near-duplicate content.
+        assert!(
+            passes_dominance_gate(&m, 0.5),
+            "equal-mass fold passes the mass gate"
+        );
+        assert!(
+            !passes_multiplicity_gate(&m, 2),
+            "900-of-1000 similar cluster must be rejected (900*2 > 1000)"
+        );
+    }
+
+    #[test]
+    fn multiplicity_gate_accepts_a_diverse_fold_at_the_boundary() {
+        let mut m = meta();
+        m.version = 3;
+        m.source_count = 1000;
+        m.max_source_multiplicity = 1;
+        assert!(passes_multiplicity_gate(&m, 2));
+        m.max_source_multiplicity = 500;
+        assert!(
+            passes_multiplicity_gate(&m, 2),
+            "500*2 == 1000 (boundary passes)"
+        );
+        m.max_source_multiplicity = 501;
+        assert!(!passes_multiplicity_gate(&m, 2), "501*2 > 1000");
+    }
+
+    #[test]
+    fn multiplicity_gate_fails_closed_below_v3_and_on_zero_nmin() {
+        let mut m = meta();
+        m.source_count = 1000;
+        m.max_source_multiplicity = 1;
+        for v in [1u32, 2] {
+            m.version = v;
+            assert!(
+                !passes_multiplicity_gate(&m, 2),
+                "v{v} lacks the surface -> fail-closed"
+            );
+        }
+        m.version = 3;
+        assert!(!passes_multiplicity_gate(&m, 0), "n_min == 0 -> reject");
+    }
+
+    #[test]
+    fn v1_and_v2_preimages_are_byte_identical_regardless_of_v3_fields() {
+        let base = meta();
+        for v in [1u32, 2] {
+            let mut a = base.clone();
+            a.version = v;
+            a.max_source_multiplicity = 0;
+            a.mass_commitment = [0u8; 32];
+            let mut b = a.clone();
+            b.max_source_multiplicity = 42;
+            b.mass_commitment = [0xAB; 32];
+            assert_eq!(
+                a.signing_preimage(),
+                b.signing_preimage(),
+                "v{v} preimage must ignore the #191 fields (append-only)"
+            );
+        }
+    }
+
+    #[test]
+    fn v3_preimage_appends_multiplicity_and_mass_commitment() {
+        let mut v3 = meta();
+        v3.version = 3;
+        v3.max_source_multiplicity = 7;
+        v3.mass_commitment = [0x11; 32];
+        let mut v2 = v3.clone();
+        v2.version = 2;
+        assert_eq!(
+            v3.signing_preimage().len(),
+            v2.signing_preimage().len() + 4 + 32,
+            "v3 appends u32(max_source_multiplicity) + mass_commitment[32]"
+        );
+    }
+
+    #[test]
+    fn mass_commitment_binds_masses_and_is_order_independent() {
+        let a = mass_commitment(&[("m1".into(), 100), ("m2".into(), 200), ("m3".into(), 300)]);
+        let b = mass_commitment(&[("m3".into(), 300), ("m1".into(), 100), ("m2".into(), 200)]);
+        assert_eq!(a, b, "order-independent (Merkle sorts)");
+        let c = mass_commitment(&[("m1".into(), 100), ("m2".into(), 999), ("m3".into(), 300)]);
+        assert_ne!(a, c, "a flipped mass changes the root");
+        let mut m = meta();
+        m.mass_commitment = a;
+        assert!(verify_mass_commitment(
+            &m,
+            &[("m2".into(), 200), ("m1".into(), 100), ("m3".into(), 300)]
+        ));
+        assert!(!verify_mass_commitment(
+            &m,
+            &[("m1".into(), 100), ("m2".into(), 999), ("m3".into(), 300)]
+        ));
+    }
+
+    #[test]
+    fn mass_to_fixed_is_pinned_and_saturates() {
+        assert_eq!(mass_to_fixed(1.0), 1_000_000);
+        assert_eq!(mass_to_fixed(0.0), 0);
+        assert_eq!(mass_to_fixed(-3.0), 0, "non-positive saturates to 0");
+        assert_eq!(mass_to_fixed(0.000_001), 1);
+    }
+
+    #[test]
+    fn v3_bound_hybrid_signature_covers_the_new_surface() {
+        let ed = Ed25519Signer::random().unwrap();
+        let mldsa = MlDsa65Signer::new().unwrap();
+        let mut m = meta();
+        m.version = 3;
+        m.max_source_multiplicity = 3;
+        m.mass_commitment =
+            mass_commitment(&[("m1".into(), 100), ("m2".into(), 100), ("m3".into(), 100)]);
+        let pre = m.signing_preimage();
+        let ed_sig = ed.sign(&pre).unwrap();
+        let mut bound = pre.clone();
+        bound.extend_from_slice(&ed_sig);
+        let pqc_sig = mldsa.sign(&bound).unwrap();
+        let (edk, mldk) = (ed.public_key().unwrap(), mldsa.public_key().unwrap());
+        assert_eq!(
+            verify_aggregation_meta(&m, &ed_sig, &pqc_sig, &edk, &mldk),
+            AggregationMetaVerification::HybridVerified
+        );
+        // Flipping max_source_multiplicity after signing breaks the signature.
+        let mut forged = m.clone();
+        forged.max_source_multiplicity = 900;
+        assert_eq!(
+            verify_aggregation_meta(&forged, &ed_sig, &pqc_sig, &edk, &mldk),
+            AggregationMetaVerification::Failed,
+            "the signed preimage covers max_source_multiplicity"
         );
     }
 }
