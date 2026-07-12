@@ -207,6 +207,11 @@ jobs:
           cargo --version
           cargo build --help >/dev/null
       - run: cargo clippy --all-targets -- -D warnings
+      # CIRISVerify#189: every #[no_mangle] extern "C" fn must be referenced by
+      # ciris_verify_ffi_link_anchor() or it dead-strips out of ciris-server's
+      # cdylib fold. Source-level guard against a new export drifting past the anchor.
+      - name: FFI link-anchor covers every export (#189)
+        run: ./scripts/check-ffi-link-anchor.sh
 
   # ==========================================================================
   # Security Audit
