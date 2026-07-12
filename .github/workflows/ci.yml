@@ -212,6 +212,13 @@ jobs:
       # cdylib fold. Source-level guard against a new export drifting past the anchor.
       - name: FFI link-anchor covers every export (#189)
         run: ./scripts/check-ffi-link-anchor.sh
+      # CIRISVerify#197: early_verify() starts a Tokio runtime + blocks on HTTPS.
+      # From any loader callback (DllMain / .init_array / ctor) that DEADLOCKS the
+      # loader — it hung `import ciris_server` on Windows for 25 min. The old
+      # DllMain was release-only gated, so tests stayed green while the wheel hung.
+      # This guard is source-level precisely so it catches it in every config.
+      - name: FFI load path is passive — no loader callbacks (#197)
+        run: ./scripts/check-no-loader-callbacks.sh
 
   # ==========================================================================
   # Security Audit

@@ -1,14 +1,21 @@
-//! Early function integrity verification via platform constructors.
+//! Early function-integrity verification — **lazily triggered, never from a
+//! platform constructor**.
 //!
-//! This module runs before `main()` to verify that the FFI functions have not
-//! been tampered with since build time. The result is stored in a global
-//! `FunctionIntegrityStatus` that clients can query via `ciris_verify_get_status()`.
+//! Verifies that the FFI functions have not been tampered with since build time.
+//! The result is stored in a global `FunctionIntegrityStatus` that clients read
+//! via `ciris_verify_get_status()`.
 //!
-//! ## Platform Mechanisms
+//! ## When this runs
 //!
-//! - **Linux/Android**: `.init_array` section with priority 101
-//! - **macOS/iOS**: `#[ctor::ctor]` attribute
-//! - **Windows**: `DllMain` with `DLL_PROCESS_ATTACH`
+//! On the **first `ciris_verify_init()` call** — on every platform. There are no
+//! `.init_array` / `DllMain` / `#[ctor::ctor]` hooks: `early_verify()` starts a
+//! Tokio runtime and blocks on an HTTPS fetch, which **deadlocks the loader** if
+//! run from a loader callback (the callback holds the loader lock; the runtime's
+//! worker thread needs that same lock to come up). See the big comment below —
+//! this bit us on Linux (#51) and again on Windows (#197).
+//!
+//! **Loading this library is completely passive**: no threads, no sockets, no
+//! I/O. That is a load-bearing property, not an accident.
 //!
 //! ## Fail-Secure Degradation
 //!
@@ -272,70 +279,45 @@ pub fn get_function_integrity_status() -> FunctionIntegrityStatus {
 // Platform-Specific Constructors
 // =============================================================================
 
-// Linux/Android: DISABLED in v4.7.1 (CIRISVerify#51).
+// =============================================================================
+// THERE ARE NO PLATFORM CONSTRUCTORS. This is deliberate — do not add one.
+// (Guarded in CI by `scripts/check-no-loader-callbacks.sh`.)
+// =============================================================================
 //
-// Starting (and `block_on`-waiting on) a Tokio runtime from DT_INIT /
-// .init_array deadlocks against the glibc dynamic loader lock.
-// Sequence:
-//   1. `dlopen(libciris_verify_ffi.so)` acquires `_rtld_global`
-//      (the loader lock) and calls our constructors.
-//   2. Our ctor enters `early_verify()` → builds a Tokio current-
-//      thread runtime with `enable_io()` and calls `block_on` on a
-//      reqwest HTTPS fetch.
-//   3. Tokio's IO driver / reqwest's connection pool spawns a worker
-//      thread for DNS + TLS setup. That worker calls
-//      `__cxa_thread_atexit_impl` to register a TLS destructor,
-//      which itself needs `_rtld_global` to walk the loaded-DSO list.
-//   4. Main ctor thread parks waiting for the runtime to come up
-//      while holding the loader lock; worker parks waiting for the
-//      loader lock to register its TLS dtor. Permanent deadlock,
-//      `CIRISVerify()` never returns.
+// `early_verify()` builds a Tokio runtime and `block_on`s an HTTPS fetch.
+// Running that from ANY loader callback (`.init_array`/DT_INIT, `DllMain`,
+// `#[ctor::ctor]`/dyld) **deadlocks the loader**: the callback holds the loader
+// lock while `block_on` waits on a runtime worker thread, and that worker needs
+// the same loader lock (to register a TLS destructor / resolve a symbol) before
+// it can come up. Both sides park forever.
 //
-// Fix: defer early-verify to the first FFI call (`ciris_verify_init`
-// in `lib.rs`). By then `dlopen` has long since released the loader
-// lock and starting a runtime + worker threads is safe. The
-// `Once::call_once` inside `early_verify` keeps it single-shot.
+// The bug was found and fixed once per platform, the hard way:
 //
-// macOS/iOS still use `#[ctor::ctor]` below — dyld + Apple's TLS
-// model don't share glibc's `_rtld_global` cycle. Windows
-// `DllMain` is likewise left in place (its loader lock is held but
-// returns before any Tokio worker can register a TLS dtor).
-
-// macOS/iOS: ctor crate
-// Wrapped in catch_unwind because the constructor runs before main() and
-// before the iOS/macOS runtime is fully initialized. A panic here would
-// abort the entire process (SIGILL under panic=abort). Verification is
-// advisory, so a caught panic just results in Unavailable status.
-#[cfg(any(target_os = "macos", target_os = "ios"))]
-#[cfg(not(any(test, debug_assertions)))]
-#[ctor::ctor]
-fn early_verify_ctor() {
-    let _ = std::panic::catch_unwind(|| {
-        early_verify();
-    });
-}
-
-// Windows: DllMain
-#[cfg(target_os = "windows")]
-#[cfg(not(any(test, debug_assertions)))]
-mod ctor_impl {
-    use super::early_verify;
-    use std::ffi::c_void;
-
-    const DLL_PROCESS_ATTACH: u32 = 1;
-
-    #[no_mangle]
-    unsafe extern "system" fn DllMain(
-        _hinst: *mut c_void,
-        reason: u32,
-        _reserved: *mut c_void,
-    ) -> i32 {
-        if reason == DLL_PROCESS_ATTACH {
-            early_verify();
-        }
-        1 // TRUE - always succeed, status available via get_status()
-    }
-}
+//   * **Linux/glibc — v4.7.1 (CIRISVerify#51).** `dlopen` holds `_rtld_global`
+//     and calls DT_INIT → our ctor → Tokio worker → `__cxa_thread_atexit_impl`
+//     → wants `_rtld_global`. Permanent deadlock; the ctor was removed.
+//
+//   * **Windows — v10.1.1 (CIRISVerify#197).** `DllMain(DLL_PROCESS_ATTACH)`
+//     runs under the loader lock. The pre-#197 code kept a `DllMain` here on
+//     the assumption that it "returns before any Tokio worker can register a
+//     TLS dtor". **That assumption was wrong** — `block_on` does not return
+//     before the worker exists, it *waits* on it. Result: `import ciris_server`
+//     hung forever on Windows (25 min, killed in CI) once CIRISServer#232
+//     folded this crate's `DllMain` into `_native.pyd`. `DllMain` deleted.
+//     Note the old gate was `#[cfg(not(any(test, debug_assertions)))]` —
+//     release-only — so every CI test job stayed green while the shipped wheel
+//     hung: cargo-green, artifact-broken.
+//
+//   * **macOS/iOS — v10.1.1 (CIRISVerify#197).** The `#[ctor::ctor]` had not
+//     deadlocked in practice, but doing a **network round-trip from a library
+//     constructor** is a hazard on its own merits — it makes a mere `import`
+//     perform blocking I/O, and it is one dyld change away from the same trap.
+//     Removed, so the load path is uniformly inert on every platform.
+//
+// The library is now **completely passive at load time**: loading it starts no
+// threads, opens no sockets, and does no I/O. `early_verify()` runs lazily on
+// the first `ciris_verify_init()` call (see `lib.rs`), by which point the loader
+// lock is long released. `Once::call_once` inside keeps it single-shot.
 
 #[cfg(test)]
 mod tests {

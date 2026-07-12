@@ -72,7 +72,6 @@ aes-gcm = "0.10"
 hkdf = "0.12"
 
 # Constructor for early initialization (macOS/iOS)
-ctor = "0.2"
 
 # For mobile targets
 [target.'cfg(target_os = "android")'.dependencies]
