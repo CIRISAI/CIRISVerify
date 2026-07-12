@@ -54,6 +54,10 @@ mod ml_dsa;
 #[cfg(feature = "aes-gcm")]
 pub mod aes_gcm;
 
+/// CC 5.1 `CLM-epoch-keying` (CIRISVerify#193) — per-(stream_id, epoch) DEK +
+/// stream-nonce HKDF derivation. Unconditional: `hkdf` + `sha2` are non-optional.
+pub mod epoch_key;
+
 #[cfg(feature = "kdf")]
 pub mod kdf;
 

@@ -57,6 +57,7 @@ from .client import CIRISVerify, MockCIRISVerify, verify_tree, DEFAULT_REGISTRY_
 from ._jcs import jcs_canonicalize
 from ._rns_dest_hash import rns_destination_hash
 from . import _scope_privacy as scope_privacy
+from ._epoch_key import derive_epoch_key, derive_epoch_stream_nonce
 from ._self_enc import (
     EncryptionPubkeys,
     SelfEncKeys,
@@ -161,7 +162,7 @@ def get_library_version() -> str:
     return __version__
 
 
-__version__ = "10.0.0"
+__version__ = "10.1.0"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
@@ -171,6 +172,8 @@ __all__ = [
     "scope_privacy",
     "SelfEncKeys",
     "derive_self_enc",
+    "derive_epoch_key",
+    "derive_epoch_stream_nonce",
     "EncryptionPubkeys",
     "self_enc_pubkeys",
     "self_enc_respond",

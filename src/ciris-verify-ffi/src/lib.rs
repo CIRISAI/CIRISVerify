@@ -57,6 +57,7 @@ mod constructor;
 // `wheel_guard!` panic catch (sibling modules cannot see the
 // crate-root `ffi_guard!` macro without `#[macro_export]`).
 mod wheel_accord_custody;
+mod wheel_epoch_key;
 mod wheel_hybrid_kex;
 mod wheel_jcs;
 mod wheel_key_grant;
@@ -189,6 +190,7 @@ pub extern "C" fn ciris_verify_ffi_link_anchor() -> usize {
 
     #[cfg(feature = "hybrid-kex")]
     {
+        acc ^= wheel_epoch_key::ciris_verify_epoch_key_derive as usize;
         acc ^= wheel_hybrid_kex::ciris_verify_kex_initiate_classical as usize;
         acc ^= wheel_hybrid_kex::ciris_verify_kex_initiate_hybrid as usize;
         acc ^= wheel_hybrid_kex::ciris_verify_kex_respond_classical as usize;
