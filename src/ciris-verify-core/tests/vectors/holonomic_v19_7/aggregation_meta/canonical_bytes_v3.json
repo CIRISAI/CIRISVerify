@@ -1,0 +1,27 @@
+{
+  "aggregation_algorithm_id": "raptorq-pyramid-v1",
+  "content_id": "content-root-fixed",
+  "corpus_kind": "trace",
+  "description": "AggregationMetaV1 §19.7.1.3 v3 preimage — v2 layout + big-endian u32(max_source_multiplicity) + mass_commitment[32] (CIRISVerify#191 content-similarity R9 residual).",
+  "domain_separator_hex": "4147472d4d4554412d76310000000000",
+  "expected_canonical_bytes_hex": "4147472d4d4554412d763100000000000000000300000012636f6e74656e742d726f6f742d66697865640000000574726163650000000200000012726170746f72712d707972616d69642d763100000003a10bc0ec2399f1cd431be79a863385a4b895987dae604aaf2ec3532f3753bd9d0000000b6d65616e2b7374646465760000000300000001a00af73b1e112530ceb7c5af8f806b45af264978e448b3810cefb3f9f79cd3c5",
+  "mass_commitment_hex": "a00af73b1e112530ceb7c5af8f806b45af264978e448b3810cefb3f9f79cd3c5",
+  "max_source_multiplicity": 1,
+  "member_commitment_hex": "a10bc0ec2399f1cd431be79a863385a4b895987dae604aaf2ec3532f3753bd9d",
+  "member_masses_fixed": [
+    1000000,
+    500000,
+    250000
+  ],
+  "n_eff": 3,
+  "noise_floor_descriptor": "mean+stddev",
+  "source_count": 3,
+  "source_member_ids": [
+    "src-001",
+    "src-002",
+    "src-003"
+  ],
+  "tier": 2,
+  "vector_id": "aggregation_meta/canonical_bytes_v3",
+  "version": 3
+}

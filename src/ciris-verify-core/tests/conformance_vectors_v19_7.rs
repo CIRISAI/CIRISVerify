@@ -132,6 +132,9 @@ fn aggregation_meta_canonical_bytes() {
         // v1: n_eff is a neutral, un-signed placeholder — NOT in the v1 preimage,
         // so `expected_canonical_bytes_hex` is byte-identical to the pre-#167 golden.
         n_eff: members.len() as u32,
+        // #191 v3 surface — un-signed placeholders in a v1 tier (not in the preimage).
+        max_source_multiplicity: 0,
+        mass_commitment: [0u8; 32],
     };
     emit_or_verify(
         "aggregation_meta/canonical_bytes.json",
@@ -168,6 +171,9 @@ fn aggregation_meta_v2_canonical_bytes_with_n_eff() {
         noise_floor_descriptor: "mean+stddev".into(),
         // A v2 tier carries a signed effective-source-count in the preimage.
         n_eff: 3,
+        // #191 v3 surface — un-signed placeholders in a v2 tier (not in the preimage).
+        max_source_multiplicity: 0,
+        mass_commitment: [0u8; 32],
     };
     // The v2 preimage is the v1 layout + a trailing u32(n_eff): strictly longer.
     let mut v1 = m.clone();
@@ -193,6 +199,62 @@ fn aggregation_meta_v2_canonical_bytes_with_n_eff() {
             "member_commitment_hex": hex::encode(m.member_commitment),
             "noise_floor_descriptor": m.noise_floor_descriptor,
             "n_eff": m.n_eff,
+            "expected_canonical_bytes_hex": hex::encode(m.signing_preimage()),
+        }),
+    );
+}
+
+// ---- §19.7.1.3 AggregationMetaV1 v3 — multiplicity + mass commitment (#191) --
+#[test]
+fn aggregation_meta_v3_canonical_bytes_multiplicity_and_mass() {
+    use ciris_verify_core::holonomic::aggregation::mass_commitment;
+    let member_ids = ids(&["src-001", "src-002", "src-003"]);
+    // Per-member fixed-point masses (micro-units) the mass_commitment binds.
+    let masses: Vec<(String, u64)> = member_ids
+        .iter()
+        .cloned()
+        .zip([1_000_000u64, 500_000, 250_000])
+        .collect();
+    let m = AggregationMetaV1 {
+        version: 3,
+        content_id: "content-root-fixed".into(),
+        corpus_kind: "trace".into(),
+        tier: 2,
+        aggregation_algorithm_id: "raptorq-pyramid-v1".into(),
+        source_count: member_ids.len() as u32,
+        member_commitment: member_commitment(&member_ids),
+        noise_floor_descriptor: "mean+stddev".into(),
+        n_eff: 3,
+        max_source_multiplicity: 1,
+        mass_commitment: mass_commitment(&masses),
+    };
+    // v3 = v2 layout + u32(max_source_multiplicity) + mass_commitment[32] = +36 bytes.
+    let mut v2 = m.clone();
+    v2.version = 2;
+    assert_eq!(
+        m.signing_preimage().len(),
+        v2.signing_preimage().len() + 36,
+        "v3 appends exactly u32(max_source_multiplicity) + mass_commitment[32]"
+    );
+    emit_or_verify(
+        "aggregation_meta/canonical_bytes_v3.json",
+        json!({
+            "vector_id": "aggregation_meta/canonical_bytes_v3",
+            "description": "AggregationMetaV1 §19.7.1.3 v3 preimage — v2 layout + big-endian u32(max_source_multiplicity) + mass_commitment[32] (CIRISVerify#191 content-similarity R9 residual).",
+            "domain_separator_hex": hex::encode(DOMAIN_AGG_META),
+            "version": m.version,
+            "content_id": m.content_id,
+            "corpus_kind": m.corpus_kind,
+            "tier": m.tier,
+            "aggregation_algorithm_id": m.aggregation_algorithm_id,
+            "source_count": m.source_count,
+            "source_member_ids": ["src-001", "src-002", "src-003"],
+            "member_commitment_hex": hex::encode(m.member_commitment),
+            "noise_floor_descriptor": m.noise_floor_descriptor,
+            "n_eff": m.n_eff,
+            "max_source_multiplicity": m.max_source_multiplicity,
+            "member_masses_fixed": [1_000_000u64, 500_000, 250_000],
+            "mass_commitment_hex": hex::encode(m.mass_commitment),
             "expected_canonical_bytes_hex": hex::encode(m.signing_preimage()),
         }),
     );
