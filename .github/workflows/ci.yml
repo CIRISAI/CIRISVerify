@@ -219,6 +219,13 @@ jobs:
       # This guard is source-level precisely so it catches it in every config.
       - name: FFI load path is passive — no loader callbacks (#197)
         run: ./scripts/check-no-loader-callbacks.sh
+      # CIRISVerify#202: the TEST-ONLY test-anchor feature (software trust-root +
+      # software accord-holder, no FIPS) must never reach a production artifact.
+      # The prod container is zero-env by design, so the ABSENCE of this feature —
+      # not a runtime flag — is the real boundary. Guard: not in any `default`, not
+      # in the release/wheel lane.
+      - name: test-anchor bypass absent from the release lane (#202)
+        run: ./scripts/check-no-test-anchor-in-release.sh
 
   # ==========================================================================
   # Security Audit
@@ -378,6 +385,12 @@ jobs:
             --features ecdsa-p256,ed25519,secp256k1,random,aes-gcm,kdf,hmac,pqc-ml-dsa,x25519,ml-kem,hybrid-kex,key-grant,xchacha,hpke,scope-privacy
         env:
           PROPTEST_CASES: 64
+      # CIRISVerify#202: the test-anchor tests are feature-gated, so `nextest run
+      # --all` (default features) never compiles them. Exercise them here — the
+      # anti-prod tripwire, the env AND-gate, the anchor swap, and the SW-only
+      # holder path — so the bypass's guards are actually verified in CI.
+      - name: Test ciris-verify-core with test-anchor
+        run: cargo nextest run -p ciris-verify-core --profile ci --features test-anchor test_anchor accord_custody accord_genesis
 
   # ==========================================================================
   # Build Matrix - Native Platforms

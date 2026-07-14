@@ -172,6 +172,7 @@ pub extern "C" fn ciris_verify_ffi_link_anchor() -> usize {
     acc ^= wheel_skill_import::ciris_verify_skill_import_manifest_verify as usize;
     acc ^= ciris_verify_sth_cosignature_consistency_proof as usize;
     acc ^= ciris_verify_store_named_key as usize;
+    acc ^= ciris_verify_test_anchor_compiled_in as usize;
     acc ^= ciris_verify_tree as usize;
     acc ^= ciris_verify_verify_integrity_token as usize;
     acc ^= ciris_verify_version as usize;
@@ -3405,6 +3406,22 @@ pub unsafe extern "C" fn ciris_verify_get_ed25519_public_key(
 #[no_mangle]
 pub extern "C" fn ciris_verify_version() -> *const libc::c_char {
     concat!(env!("CARGO_PKG_VERSION"), "\0").as_ptr() as *const libc::c_char
+}
+
+/// Whether the TEST-ONLY `test-anchor` bypass was compiled into this artifact
+/// (CIRISVerify#202). Returns `1` iff the crate was built with `--features
+/// test-anchor` (the software trust-root / software-holder relaxation is
+/// present), else `0`.
+///
+/// This exists in **every** build — it is the deploy-time probe: call it on the
+/// shipped wheel/library and **require `0`** before a production deploy. A `1`
+/// on a production artifact is a release-process failure (the feature must never
+/// be in the PyPI/`release.yml` lane). Note this reports *compiled-in*, not
+/// *active* — the runtime gate ([`ciris_verify_core::test_anchor`]) is a second
+/// line of defense, but absence here is the real guarantee.
+#[no_mangle]
+pub extern "C" fn ciris_verify_test_anchor_compiled_in() -> libc::c_int {
+    libc::c_int::from(ciris_verify_core::test_anchor::test_anchor_compiled_in())
 }
 
 /// Project a `FullAttestationResult` JSON into the measurement-shaped

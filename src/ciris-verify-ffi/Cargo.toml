@@ -39,6 +39,11 @@ secp256k1 = ["ciris-crypto/secp256k1"]  # EVM wallet signing support
 # the wheel surface is unconditionally available; can be turned off
 # for size-constrained mobile builds that don't ship the media tier.
 key-grant = ["ciris-crypto/key-grant"]
+# CIRISVerify#202 — forward the TEST-ONLY trust-root / custody relaxation to core.
+# The harness/mesh-repro wheel enables this; the PRODUCTION wheel (release.yml /
+# PyPI) MUST NOT. Probe the shipped artifact with the always-present
+# `ciris_verify_test_anchor_compiled_in()` (must return 0 for prod). NEVER default.
+test-anchor = ["ciris-verify-core/test-anchor"]
 
 [dependencies]
 ciris-verify-core.workspace = true
