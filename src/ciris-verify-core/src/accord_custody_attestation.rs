@@ -69,6 +69,17 @@ pub const ACCORD_CUSTODY_ATTESTATION_KIND: &str = "accord_holder_custody_attesta
 /// The custody tier asserted by the portable USB-wrapped mode (#91 / v6.6.0).
 pub const CUSTODY_TIER_PORTABLE_2FA: &str = "portable_2fa";
 
+/// CIRISVerify#202 — TEST-ONLY custody tier: a **software-only** accord holder
+/// with **no** YubiKey PIV chain / FIPS / touch floor, for the local mesh
+/// harness. Admitted ONLY in a `test-anchor` build with the runtime AND-gate
+/// active ([`crate::test_anchor::test_anchor_active`]); a production verifier
+/// (feature absent) never recognizes it and rejects the tier fail-closed.
+pub const CUSTODY_TIER_SOFTWARE_TEST: &str = "software_test";
+
+/// The §9.4 `hardware_class` a software test holder resolves to — deliberately
+/// unmistakable so a tier-gating consumer can never confuse it with real hardware.
+pub const HARDWARE_CLASS_SOFTWARE_TEST: &str = "SoftwareOnly_TEST";
+
 // #113 — the attestation certs are signed by COMMITMENT, not inline. A YubiKey
 // `CKM_EDDSA` is single-part with a bounded input; the old inline multi-KB hex
 // chain overran it (`CKR_DATA_LEN_RANGE`). The signed envelope carries the
@@ -379,6 +390,31 @@ pub fn verify_accord_custody_attestation(
     // assert a stronger tier than the one verify recognizes (a consumer that
     // gates on tier would otherwise inherit an unbounded, unverified string).
     let custody_tier = str_field(env, "custody_tier")?.to_string();
+
+    // TEST-ONLY (CIRISVerify#202): a software-only accord holder. Reached only in
+    // a `test-anchor` build with the runtime AND-gate active; a prod verifier does
+    // not compile this and falls through to the allowlist, which rejects the tier.
+    // The holder's OWN hybrid signature + identity binding are already proven above
+    // (self-consistency is kept) — we drop ONLY the YubiKey PIV chain / FIPS / touch
+    // hardware floor. Placed before the allowlist check so `software_test` is
+    // admitted here rather than rejected there.
+    if custody_tier == CUSTODY_TIER_SOFTWARE_TEST && crate::test_anchor::test_anchor_active() {
+        tracing::warn!(
+            holder_key_id = %holder_member.member_id,
+            "CIRIS_TESTING_MODE: admitting a SOFTWARE-ONLY accord holder — NO YubiKey / \
+             FIPS / touch floor. hardware_class={HARDWARE_CLASS_SOFTWARE_TEST}. This MUST \
+             NOT appear in a production deployment."
+        );
+        return Ok(CustodyVerdict {
+            hardware_class: HARDWARE_CLASS_SOFTWARE_TEST.to_string(),
+            custody_tier,
+            firmware: String::new(),
+            serial: None,
+            fips_certified: false,
+            touch_always: false,
+        });
+    }
+
     if !ALLOWED_CUSTODY_TIERS.contains(&custody_tier.as_str()) {
         return Err(CustodyError::FloorNotMet {
             detail: format!("unrecognized custody_tier {custody_tier:?}"),
@@ -930,6 +966,84 @@ mod tests {
             verify_accord_custody_attestation(&obj2, &other_member, &root).unwrap_err(),
             CustodyError::AttestedKeyMismatch
         );
+    }
+
+    /// #202: a software-only accord holder (no YubiKey / FIPS / touch) is admitted
+    /// ONLY under the test-anchor runtime gate, and the SAME bundle is rejected
+    /// (unrecognized tier) with the gate off. The holder's own hybrid signature +
+    /// identity binding are still enforced — only the hardware floor is dropped.
+    #[tokio::test]
+    #[cfg(feature = "test-anchor")]
+    // Single-threaded test runtime: holding the env lock across the produce await
+    // is intentional (env must stay set through it), no deadlock risk.
+    #[allow(clippy::await_holding_lock)]
+    async fn software_only_holder_admitted_in_test_mode_only() {
+        use crate::self_at_login::HybridSigningIdentity;
+        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
+
+        let _g = crate::test_anchor::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let saved = std::env::var("CIRIS_TESTING_MODE").ok();
+        let saved_env = std::env::var("ENVIRONMENT").ok();
+        std::env::remove_var("ENVIRONMENT");
+
+        let holder = HybridSigningIdentity::new(
+            "accord-holder-sw",
+            Ed25519Signer::from_seed(&[3u8; 32]).unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        );
+        let member = holder.directory_member().unwrap();
+        // The SW-test verify path returns before touching the cert evidence, so
+        // placeholder cert bytes are fine — they're never chained to a root.
+        let dummy: Vec<u8> = vec![0x30, 0x00];
+        let obj = produce_accord_custody_attestation(
+            &holder,
+            &dummy,
+            &[dummy.as_slice()],
+            CUSTODY_TIER_SOFTWARE_TEST,
+            "2026-07-14T00:00:00Z",
+        )
+        .await
+        .unwrap();
+
+        // Gate ON ⇒ admitted as SoftwareOnly_TEST, no hardware claims.
+        std::env::set_var("CIRIS_TESTING_MODE", "true");
+        let v = verify_accord_custody_attestation(&obj, &member, &[])
+            .expect("test-mode admits a software-only holder");
+        assert_eq!(v.hardware_class, HARDWARE_CLASS_SOFTWARE_TEST);
+        assert_eq!(v.custody_tier, CUSTODY_TIER_SOFTWARE_TEST);
+        assert!(!v.fips_certified && !v.touch_always);
+
+        // Gate OFF ⇒ the SAME bundle is rejected: `software_test` is not in the
+        // production allowlist (fail-closed).
+        std::env::remove_var("CIRIS_TESTING_MODE");
+        assert!(matches!(
+            verify_accord_custody_attestation(&obj, &member, &[]),
+            Err(CustodyError::FloorNotMet { .. })
+        ));
+
+        // A tampered holder identity is still rejected even in test mode — the
+        // hybrid signature + binding are NOT relaxed, only the hardware floor is.
+        std::env::set_var("CIRIS_TESTING_MODE", "true");
+        let other = HybridSigningIdentity::new(
+            "accord-holder-sw",
+            Ed25519Signer::from_seed(&[4u8; 32]).unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        );
+        let other_member = other.directory_member().unwrap();
+        assert!(
+            verify_accord_custody_attestation(&obj, &other_member, &[]).is_err(),
+            "test mode drops the hardware floor, NOT the holder identity binding"
+        );
+
+        match saved {
+            Some(v) => std::env::set_var("CIRIS_TESTING_MODE", v),
+            None => std::env::remove_var("CIRIS_TESTING_MODE"),
+        }
+        if let Some(v) = saved_env {
+            std::env::set_var("ENVIRONMENT", v);
+        }
     }
 
     #[tokio::test]

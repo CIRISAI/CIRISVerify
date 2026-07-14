@@ -11,6 +11,15 @@ authors.workspace = true
 [features]
 default = ["pqc"]
 pqc = ["ciris-crypto/pqc-ml-dsa", "ciris-keyring/pqc-ml-dsa"]
+# CIRISVerify#202 — TEST-ONLY trust-root / custody relaxation for the local mesh
+# harness (a software single-key accord anchor + a software-only accord holder,
+# no operator YubiKeys). This is the REAL boundary, not a runtime flag: the prod
+# `ciris-server` container is zero-env by design, so "env unset" and "prod" are
+# indistinguishable at runtime — only the ABSENCE of this feature makes the
+# bypass physically absent from the artifact. The release.yml / PyPI wheel lane
+# MUST build WITHOUT this feature (probe with `ciris_verify_test_anchor_compiled_in`
+# before deploy). NEVER add it to `default`.
+test-anchor = []
 android = ["ciris-keyring/android"]
 ios = ["ciris-keyring/ios"]
 # Runtime-loaded TPM backend (CIRISVerify#141): the keyring's sole TPM backend —

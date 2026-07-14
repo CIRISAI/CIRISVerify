@@ -735,8 +735,22 @@ pub fn humanity_accord_genesis() -> Option<&'static SignedCegObject> {
 /// founder directory is malformed, the roster fails to resolve, or any holder key
 /// is not a valid 32-byte Ed25519 key — no anchor → nothing roots, never a
 /// partial/ambiguous anchor.
+///
+/// ## Test-mode override (CIRISVerify#202)
+///
+/// In a build carrying the `test-anchor` Cargo feature, with the runtime AND-gate
+/// active, a **software single-key** trust root from `CIRIS_TEST_TRUST_ROOT`
+/// *replaces* the baked roster (1-of-N rooting makes one key a valid anchor). The
+/// feature is absent from every production artifact, so for a prod node this call
+/// is byte-for-byte the baked path below. See [`crate::test_anchor`].
 #[must_use]
 pub fn accord_holder_bootstrap_anchor() -> Vec<[u8; 32]> {
+    // TEST-ONLY (compile-time-fenced + runtime-gated): a software test anchor for
+    // the local mesh harness. `None` in prod (feature absent) → baked path.
+    if let Some(test_root) = crate::test_anchor::test_trust_root_override() {
+        return test_root;
+    }
+
     let Some(genesis) = humanity_accord_genesis() else {
         return Vec::new();
     };
@@ -1517,6 +1531,12 @@ mod tests {
     /// stays in lockstep with the kill-switch roster (one source of truth).
     #[test]
     fn accord_holder_bootstrap_anchor_is_the_seated_holder_ed25519_keys() {
+        // Share the crate env lock: under `--features test-anchor` a sibling test
+        // may set CIRIS_TESTING_MODE, which would otherwise swap the baked roster
+        // out from under this assertion (#202).
+        let _g = crate::test_anchor::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
         let anchor = accord_holder_bootstrap_anchor();
         assert_eq!(
             anchor.len(),
@@ -1548,6 +1568,62 @@ mod tests {
             anchor.len(),
             "anchor tracks the seated roster"
         );
+    }
+
+    /// #202 acceptance: under `--features test-anchor` with the runtime AND-gate,
+    /// `accord_holder_bootstrap_anchor()` returns EXACTLY the software test root
+    /// from `CIRIS_TEST_TRUST_ROOT` (replacing the baked roster); with the env
+    /// unset it returns the baked 3-holder roster unchanged.
+    #[test]
+    #[cfg(feature = "test-anchor")]
+    fn test_anchor_env_swaps_the_bootstrap_anchor_else_baked() {
+        use base64::Engine as _;
+        let _g = crate::test_anchor::ENV_LOCK
+            .lock()
+            .unwrap_or_else(|p| p.into_inner());
+        let b64 = base64::engine::general_purpose::STANDARD;
+
+        // Snapshot + clear, restore on drop (no leak into siblings).
+        let saved: Vec<(&str, Option<String>)> = [
+            "CIRIS_TESTING_MODE",
+            "CIRIS_TEST_TRUST_ROOT",
+            "ENVIRONMENT",
+            "CIRIS_ENV",
+        ]
+        .iter()
+        .map(|v| (*v, std::env::var(v).ok()))
+        .collect();
+        for (k, _) in &saved {
+            std::env::remove_var(k);
+        }
+
+        // Env unset ⇒ baked roster (3 seated holders), unchanged.
+        assert_eq!(accord_holder_bootstrap_anchor().len(), 3);
+
+        // Env set ⇒ exactly the SW test key(s).
+        let sw = [0xABu8; 32];
+        std::env::set_var("CIRIS_TESTING_MODE", "true");
+        std::env::set_var("CIRIS_TEST_TRUST_ROOT", b64.encode(sw));
+        assert_eq!(accord_holder_bootstrap_anchor(), vec![sw]);
+
+        // Anti-prod tripwire: a prod signal alongside the flags ⇒ baked, not SW.
+        std::env::set_var("ENVIRONMENT", "production");
+        assert_eq!(
+            accord_holder_bootstrap_anchor().len(),
+            3,
+            "ENVIRONMENT=production must refuse the SW test root and fall back to baked"
+        );
+
+        for (k, v) in &saved {
+            match v {
+                Some(val) => std::env::set_var(k, val),
+                None => std::env::remove_var(k),
+            }
+        }
+        // The rooting half — a chain terminating at a 1-of-N anchor key roots — is
+        // proven independently by `provenance::tests::
+        // accord_holder_terminus_roots_under_one_of_n_anchor`. This test proves the
+        // anchor *becomes* the SW test key; composed, a SW-scrubbed canonical roots.
     }
 
     #[tokio::test]
