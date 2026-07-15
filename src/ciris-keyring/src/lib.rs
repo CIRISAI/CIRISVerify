@@ -50,6 +50,12 @@
 #![allow(clippy::must_use_candidate)] // Not all functions need must_use
 
 mod error;
+// Reentrancy-safe block_on bridge (CIRISVerify#204). Its only real callers are
+// the android hardware paths (the sole place `tokio` is a dependency), so it is
+// android-gated — plus `test` so its unit tests still compile+run under the host
+// CI job (where tokio is a dev-dependency).
+#[cfg(any(target_os = "android", test))]
+mod rt;
 mod signer;
 mod types;
 

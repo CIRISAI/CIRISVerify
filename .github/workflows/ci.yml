@@ -226,6 +226,12 @@ jobs:
       # in the release/wheel lane.
       - name: test-anchor bypass absent from the release lane (#202)
         run: ./scripts/check-no-test-anchor-in-release.sh
+      # CIRISVerify#204: a raw tokio Runtime::block_on in ciris-keyring panics
+      # ("Cannot start a runtime from within a runtime") under an ambient runtime
+      # — ALWAYS true on the mobile fold-boot topology — and was FATAL on android.
+      # Every sync→async bridge must go through crate::rt::keyring_block_on.
+      - name: keyring block_on is reentrancy-safe (#204)
+        run: ./scripts/check-keyring-block-on.sh
 
   # ==========================================================================
   # Security Audit
