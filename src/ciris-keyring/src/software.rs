@@ -1017,20 +1017,13 @@ impl MutableEd25519Signer {
                     "VERIFY Attempting to load hardware-backed Ed25519 key..."
                 );
 
-                // Create a simple runtime to run the async check
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| KeyringError::PlatformError {
-                        message: format!("Failed to create runtime: {}", e),
-                    })?;
-
-                let exists = rt.block_on(hw.key_exists())?;
+                // Reentrancy-safe block (CIRISVerify#204).
+                let exists = crate::rt::keyring_block_on(hw.key_exists())?;
 
                 if exists {
                     // Key exists in hardware-backed storage
                     // Load the public key to verify it works
-                    match rt.block_on(hw.public_key()) {
+                    match crate::rt::keyring_block_on(hw.public_key()) {
                         Ok(pubkey) => {
                             // Compute fingerprint (first 8 chars of hex pubkey)
                             let fingerprint =
@@ -1168,15 +1161,12 @@ impl MutableEd25519Signer {
                     "Migrating existing software key to hardware-backed storage (AES-256-GCM)..."
                 );
 
-                // Create a runtime to run async operations
-                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
+                // Reentrancy-safe blocks (CIRISVerify#204).
                 {
                     // Check if hardware key already exists (shouldn't, but be safe)
-                    let hw_exists = rt.block_on(hw.key_exists()).unwrap_or(false);
+                    let hw_exists = crate::rt::keyring_block_on(hw.key_exists()).unwrap_or(false);
                     if !hw_exists {
-                        match rt.block_on(hw.import_key(&key_bytes)) {
+                        match crate::rt::keyring_block_on(hw.import_key(&key_bytes)) {
                             Ok(()) => {
                                 tracing::info!(
                                     "✓ Software key migrated to hardware-backed storage successfully"
@@ -1391,21 +1381,15 @@ impl MutableEd25519Signer {
                 tracing::info!("Using hardware-backed import (AES-256-GCM via Android Keystore)");
 
                 // Create a runtime to run async operations
-                let rt = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
-                    .map_err(|e| KeyringError::PlatformError {
-                        message: format!("Failed to create runtime: {}", e),
-                    })?;
-
+                // Reentrancy-safe blocks (CIRISVerify#204).
                 // Delete existing key if any (ignore errors)
-                let _ = rt.block_on(hw.delete_key());
+                let _ = crate::rt::keyring_block_on(hw.delete_key());
 
                 // Import the key with hardware-backed encryption
-                match rt.block_on(hw.import_key(key_bytes)) {
+                match crate::rt::keyring_block_on(hw.import_key(key_bytes)) {
                     Ok(()) => {
                         // Get the public key to compute fingerprint
-                        let pubkey = rt.block_on(hw.public_key()).map_err(|e| {
+                        let pubkey = crate::rt::keyring_block_on(hw.public_key()).map_err(|e| {
                             KeyringError::PlatformError {
                                 message: format!("Failed to get public key after import: {}", e),
                             }
@@ -1556,12 +1540,9 @@ impl MutableEd25519Signer {
         #[cfg(target_os = "android")]
         {
             if let Some(ref hw) = self.hardware_wrapper {
-                // Create a runtime to run async check
-                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
+                // Reentrancy-safe blocks (CIRISVerify#204).
                 {
-                    match rt.block_on(hw.key_exists()) {
+                    match crate::rt::keyring_block_on(hw.key_exists()) {
                         Ok(exists) => {
                             tracing::info!(
                                 has_key = exists,
@@ -1675,13 +1656,11 @@ impl MutableEd25519Signer {
         #[cfg(target_os = "android")]
         {
             if let Some(ref hw) = self.hardware_wrapper {
-                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
+                // Reentrancy-safe blocks (CIRISVerify#204).
                 {
                     // Check if key exists before attempting to access it.
                     // This prevents unnecessary hardware access attempts when no key exists.
-                    let key_exists = match rt.block_on(hw.key_exists()) {
+                    let key_exists = match crate::rt::keyring_block_on(hw.key_exists()) {
                         Ok(exists) => exists,
                         Err(e) => {
                             tracing::debug!(error = %e, "key_exists check failed, assuming no key");
@@ -1699,7 +1678,7 @@ impl MutableEd25519Signer {
                         let mut backoff_ms = HW_ACCESS_INITIAL_BACKOFF_MS;
 
                         for attempt in 1..=HW_ACCESS_MAX_RETRIES {
-                            match rt.block_on(hw.public_key()) {
+                            match crate::rt::keyring_block_on(hw.public_key()) {
                                 Ok(pubkey) => {
                                     if attempt > 1 {
                                         tracing::info!(
@@ -1739,7 +1718,8 @@ impl MutableEd25519Signer {
                             if let Ok(inner) = self.inner.read() {
                                 if inner.is_hardware_marker_set() {
                                     // Verify the key is still accessible (not deleted/corrupted)
-                                    let key_accessible = rt.block_on(hw.key_accessible());
+                                    let key_accessible =
+                                        crate::rt::keyring_block_on(hw.key_accessible());
                                     if !key_accessible {
                                         // Key is gone (reinstall/wipe) — marker is orphaned.
                                         // Self-heal: clear marker and regenerate a new HW-bound key.
@@ -1756,7 +1736,10 @@ impl MutableEd25519Signer {
                                         match self.generate_key() {
                                             Ok(()) => {
                                                 tracing::info!("Self-healed: new Android HW-backed key generated after stale marker (get_public_key)");
-                                                return rt.block_on(hw.public_key()).ok();
+                                                return crate::rt::keyring_block_on(
+                                                    hw.public_key(),
+                                                )
+                                                .ok();
                                             },
                                             Err(regen_err) => {
                                                 tracing::error!(error = %regen_err, "Self-heal failed: could not regenerate key");
@@ -1877,13 +1860,11 @@ impl MutableEd25519Signer {
         #[cfg(target_os = "android")]
         {
             if let Some(ref hw) = self.hardware_wrapper {
-                if let Ok(rt) = tokio::runtime::Builder::new_current_thread()
-                    .enable_all()
-                    .build()
+                // Reentrancy-safe blocks (CIRISVerify#204).
                 {
                     // Check if key exists before attempting to sign.
                     // This prevents unnecessary hardware access attempts when no key exists.
-                    let key_exists = match rt.block_on(hw.key_exists()) {
+                    let key_exists = match crate::rt::keyring_block_on(hw.key_exists()) {
                         Ok(exists) => exists,
                         Err(e) => {
                             tracing::debug!(error = %e, "key_exists check failed for signing, assuming no key");
@@ -1901,7 +1882,7 @@ impl MutableEd25519Signer {
                         let mut backoff_ms = HW_ACCESS_INITIAL_BACKOFF_MS;
 
                         for attempt in 1..=HW_ACCESS_MAX_RETRIES {
-                            match rt.block_on(hw.sign(data)) {
+                            match crate::rt::keyring_block_on(hw.sign(data)) {
                                 Ok(sig) => {
                                     if attempt > 1 {
                                         tracing::info!(
@@ -1942,7 +1923,8 @@ impl MutableEd25519Signer {
                             if let Ok(inner) = self.inner.read() {
                                 if inner.is_hardware_marker_set() {
                                     // Verify the key is still accessible (not deleted/corrupted)
-                                    let key_accessible = rt.block_on(hw.key_accessible());
+                                    let key_accessible =
+                                        crate::rt::keyring_block_on(hw.key_accessible());
                                     if !key_accessible {
                                         // Key is gone (reinstall/wipe) — marker is orphaned.
                                         // Self-heal: clear marker and regenerate a new HW-bound key.
@@ -1959,7 +1941,7 @@ impl MutableEd25519Signer {
                                         match self.generate_key() {
                                             Ok(()) => {
                                                 tracing::info!("Self-healed: new Android HW-backed key generated after stale marker (sign)");
-                                                return rt.block_on(hw.sign(data)).map_err(|sign_err| KeyringError::HardwareError {
+                                                return crate::rt::keyring_block_on(hw.sign(data)).map_err(|sign_err| KeyringError::HardwareError {
                                                     reason: format!("Sign failed after key regeneration: {}", sign_err),
                                                 });
                                             },

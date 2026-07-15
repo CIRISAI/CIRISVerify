@@ -91,23 +91,18 @@ impl AndroidKeystoreSecureBlobStorage {
             use_strongbox,
         };
 
-        // Ensure wrapper key exists
+        // Ensure wrapper key exists. Reentrancy-safe block (CIRISVerify#204):
+        // this constructor runs synchronously from the node fold, which is inside
+        // an ambient runtime on mobile — a bare `block_on` here panicked FATALLY.
         #[cfg(target_os = "android")]
         {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| KeyringError::PlatformError {
-                    message: format!("Failed to create runtime: {}", e),
-                })?;
-
-            if !rt.block_on(storage.wrapper_key_exists())? {
+            if !crate::rt::keyring_block_on(storage.wrapper_key_exists())? {
                 info!(
                     wrapper_key_alias = %storage.wrapper_key_alias,
                     use_strongbox = storage.use_strongbox,
                     "Creating AES wrapper key for blob storage"
                 );
-                rt.block_on(storage.create_wrapper_key())?;
+                crate::rt::keyring_block_on(storage.create_wrapper_key())?;
             }
         }
 
@@ -818,14 +813,8 @@ impl SecureBlobStorage for AndroidKeystoreSecureBlobStorage {
 
         #[cfg(target_os = "android")]
         {
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| KeyringError::PlatformError {
-                    message: format!("Failed to create runtime: {}", e),
-                })?;
-
-            let encrypted = rt.block_on(self.encrypt(data))?;
+            // Reentrancy-safe block (CIRISVerify#204).
+            let encrypted = crate::rt::keyring_block_on(self.encrypt(data))?;
             let path = self.blob_path(key_id);
 
             std::fs::write(&path, &encrypted).map_err(|e| KeyringError::StorageFailed {
@@ -868,14 +857,8 @@ impl SecureBlobStorage for AndroidKeystoreSecureBlobStorage {
                 }
             })?;
 
-            let rt = tokio::runtime::Builder::new_current_thread()
-                .enable_all()
-                .build()
-                .map_err(|e| KeyringError::PlatformError {
-                    message: format!("Failed to create runtime: {}", e),
-                })?;
-
-            let decrypted = rt.block_on(self.decrypt(&encrypted))?;
+            // Reentrancy-safe block (CIRISVerify#204).
+            let decrypted = crate::rt::keyring_block_on(self.decrypt(&encrypted))?;
 
             debug!(
                 key_id = %key_id,
