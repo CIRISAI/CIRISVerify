@@ -1222,7 +1222,13 @@ pub fn verify_consistency(
 // ========================================================================
 
 /// Hash leaf bytes under the RFC 6962 §2.1 leaf prefix (`0x00`).
-pub(crate) fn hash_leaf(canonical: &[u8]) -> [u8; 32] {
+///
+/// Exported (crypto-DRY assessment) so downstream [`TransparencyStore`]
+/// implementors — CIRISPersist's `PgMerkleStore` / `SqliteMerkleStore`, which
+/// must fill a `leaf_hash` column — reuse this exact construction instead of
+/// re-deriving `sha256(0x00 ‖ canonical)` (they previously replicated it
+/// byte-for-byte and pinned parity with a CI test).
+pub fn hash_leaf(canonical: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update([0x00]);
     hasher.update(canonical);
@@ -1230,7 +1236,9 @@ pub(crate) fn hash_leaf(canonical: &[u8]) -> [u8; 32] {
 }
 
 /// Hash two node hashes under the RFC 6962 §2.1 internal-node prefix (`0x01`).
-pub(crate) fn hash_node(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
+///
+/// Exported alongside [`hash_leaf`] for the same reason.
+pub fn hash_node(left: &[u8; 32], right: &[u8; 32]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update([0x01]);
     hasher.update(left);
