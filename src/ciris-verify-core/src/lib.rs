@@ -167,7 +167,8 @@ pub use locale_merkle::{
     RFC6962_PARENT_PREFIX,
 };
 pub use provenance::{
-    verify_provenance_chain, verify_provenance_chain_with_policy, ProvenanceChain, ProvenanceError,
+    verify_provenance_chain, verify_provenance_chain_with_policy,
+    verify_provenance_chain_with_policy_and_terminus, ProvenanceChain, ProvenanceError,
     ProvenanceLink, MAX_PROVENANCE_DEPTH, STEWARD_IDENTITY_TYPE,
 };
 pub use reconsider_dos::{

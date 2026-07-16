@@ -29,7 +29,9 @@
 //!    `federation_self_record`'s producers sign** — verifying over the
 //!    hash digest instead (pre-fix) rejected every real record, which is
 //!    why CIRISPersist had to fork this walk (crypto-DRY assessment);
-//! 4. the terminus is self-signed with `identity_type == "steward"`;
+//! 4. the terminus is self-signed and carries one of the caller's accepted
+//!    terminus roles (default `{"steward"}`; CIRISPersist roots at
+//!    `accord_holder`/`canonical` — CIRISVerify#208);
 //! 5. the terminus's public key is one the caller pinned as a trusted
 //!    bootstrap anchor — trust is the pinned key, never a self-asserted
 //!    one (the steward-pubkey-pinning discipline).
@@ -245,7 +247,8 @@ impl std::fmt::Display for ProvenanceError {
             },
             Self::TerminusNotSteward { identity_type } => write!(
                 f,
-                "the terminal bootstrap is identity_type '{identity_type}', not 'steward'"
+                "the terminal bootstrap's identity_type '{identity_type}' carries no accepted \
+                 terminus role (default: 'steward')"
             ),
             Self::BadContentHash { key_id } => {
                 write!(
@@ -319,10 +322,51 @@ pub fn verify_provenance_chain(
 /// [`HybridPolicy::AllowClassicalPending`] tolerates a classical-only link and
 /// is for **local-tier** (§10.1.5.2) self-read ONLY — never a federation trust
 /// decision.
+///
+/// The accepted terminus role set defaults to `{"steward"}`. Callers whose real
+/// trust roots terminate at a different role (CIRISPersist's genesis roots are
+/// `accord_holder` / `canonical`, never `steward`) use
+/// [`verify_provenance_chain_with_policy_and_terminus`].
 pub fn verify_provenance_chain_with_policy(
     chain: &ProvenanceChain,
     trusted_bootstrap_ed25519: &[Vec<u8>],
     policy: HybridPolicy,
+) -> Result<(), ProvenanceError> {
+    verify_provenance_chain_with_policy_and_terminus(
+        chain,
+        trusted_bootstrap_ed25519,
+        policy,
+        &[STEWARD_IDENTITY_TYPE],
+    )
+}
+
+/// Verify a [`ProvenanceChain`] under an explicit [`HybridPolicy`] AND a
+/// caller-supplied set of `identity_type` roles that may **terminate** a chain
+/// (CIRISVerify#208).
+///
+/// The terminus is self-signed and anchor-pinned as before; this parameterizes
+/// only *which self-attested role* it may carry, so verify stays policy-neutral
+/// on the trust-root taxonomy. The terminus `identity_type` is a comma-joined
+/// SET (CEG 1.0-RC5 §7.0.1) and passes iff **any** of its roles is in
+/// `accepted_terminus_types`.
+///
+/// - [`verify_provenance_chain`] / [`verify_provenance_chain_with_policy`] pass
+///   `&["steward"]` — unchanged behaviour.
+/// - CIRISPersist passes e.g. `&["accord_holder", "canonical", "steward"]` so its
+///   baked genesis roots (`accord_holder` A1/B1/C1, `canonical,node`) root
+///   without re-labeling — the last blocker to deleting its forked chain-walk
+///   (crypto-DRY assessment; the v10.4.0 preimage fix removed the other one).
+///
+/// `accepted_terminus_types` is a caller-pinned allowlist; an empty set rejects
+/// every terminus (fail-closed).
+///
+/// # Errors
+/// [`ProvenanceError`] naming the first failing step (see the module docs).
+pub fn verify_provenance_chain_with_policy_and_terminus(
+    chain: &ProvenanceChain,
+    trusted_bootstrap_ed25519: &[Vec<u8>],
+    policy: HybridPolicy,
+    accepted_terminus_types: &[&str],
 ) -> Result<(), ProvenanceError> {
     let links = &chain.chain;
     if links.is_empty() {
@@ -347,13 +391,15 @@ pub fn verify_provenance_chain_with_policy(
                 return Err(ProvenanceError::TerminusNotSelfSigned);
             }
             // CEG 1.0-RC5 §7.0.1: `identity_type` is a comma-joined SET, read
-            // by set-membership — NOT scalar equality. A fabric-node steward
-            // legitimately carries multiple roles (e.g. "steward,witness"), so
-            // a scalar `!= "steward"` would wrongly reject a valid terminus.
+            // by set-membership — NOT scalar equality. A terminus legitimately
+            // carries multiple roles (e.g. "steward,witness" or
+            // "accord_holder,steward"), so a scalar comparison would wrongly
+            // reject a valid one. The accepted role set is caller-supplied
+            // (CIRISVerify#208) — `{"steward"}` by default.
             if !link
                 .identity_type
                 .split(',')
-                .any(|role| role == STEWARD_IDENTITY_TYPE)
+                .any(|role| accepted_terminus_types.contains(&role))
             {
                 return Err(ProvenanceError::TerminusNotSteward {
                     identity_type: link.identity_type.clone(),
@@ -787,6 +833,78 @@ mod tests {
         assert!(
             verify_provenance_chain(&chain, &[Keypair::new().ed_pub(), holder.ed_pub()]).is_ok()
         );
+    }
+
+    /// #208: persist's baked genesis roots carry ONLY `accord_holder` (A1/B1/C1)
+    /// or `canonical,node` — never `steward`. The steward-only default rejects
+    /// them (`TerminusNotSteward`), but the parameterized entry point roots them
+    /// when the caller supplies the accepted role set — the last blocker to
+    /// deleting persist's forked chain-walk.
+    #[test]
+    fn accord_holder_only_terminus_needs_parameterized_terminus_set() {
+        let holder = Keypair::new();
+        let node = Keypair::new();
+        let holder_link = make_link(
+            "A1",
+            "accord_holder", // persist's REAL genesis row — no steward role
+            &holder,
+            &holder,
+            "A1",
+            0x11,
+            true,
+        );
+        let node_link = make_link(
+            "canonical-node-1",
+            "canonical,node",
+            &node,
+            &holder,
+            "A1",
+            0x22,
+            true,
+        );
+        let chain = ProvenanceChain {
+            key_id: "canonical-node-1".to_string(),
+            chain: vec![node_link, holder_link],
+            terminates_at_steward_bootstrap: true,
+        };
+        let anchor = vec![holder.ed_pub()];
+
+        // Steward-only default: rejected (this is the #465 fork's raison d'être).
+        assert!(matches!(
+            verify_provenance_chain(&chain, &anchor),
+            Err(ProvenanceError::TerminusNotSteward { .. })
+        ));
+
+        // Parameterized with persist's accepted set: roots.
+        verify_provenance_chain_with_policy_and_terminus(
+            &chain,
+            &anchor,
+            HybridPolicy::RequireHybrid,
+            &["accord_holder", "canonical", "steward"],
+        )
+        .expect("an accord_holder terminus roots when the caller accepts that role");
+
+        // A set that does NOT include accord_holder still rejects it.
+        assert!(matches!(
+            verify_provenance_chain_with_policy_and_terminus(
+                &chain,
+                &anchor,
+                HybridPolicy::RequireHybrid,
+                &["steward", "canonical"],
+            ),
+            Err(ProvenanceError::TerminusNotSteward { .. })
+        ));
+
+        // Empty accepted set is fail-closed.
+        assert!(matches!(
+            verify_provenance_chain_with_policy_and_terminus(
+                &chain,
+                &anchor,
+                HybridPolicy::RequireHybrid,
+                &[],
+            ),
+            Err(ProvenanceError::TerminusNotSteward { .. })
+        ));
     }
 
     #[test]
