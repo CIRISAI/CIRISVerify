@@ -195,9 +195,10 @@ pub use threshold::{
     ThresholdError, ThresholdMember, ThresholdSignature,
 };
 pub use transparency::{
-    verify_consistency, verify_inclusion, ConsistencyProof, InMemoryTransparencyStore, MerkleProof,
-    ProofChain, SignedTreeHead, TransparencyEntry, TransparencyError, TransparencyLeaf,
-    TransparencyLog, TransparencyStore, TrustedWitness, WitnessConsistencyProof, WitnessSignature,
+    hash_leaf, hash_node, verify_consistency, verify_inclusion, ConsistencyProof,
+    InMemoryTransparencyStore, MerkleProof, ProofChain, SignedTreeHead, TransparencyEntry,
+    TransparencyError, TransparencyLeaf, TransparencyLog, TransparencyStore, TrustedWitness,
+    WitnessConsistencyProof, WitnessSignature,
 };
 pub use types::{
     AttestationProof, BinaryIntegrityStatus, CapabilityCheckRequest, CapabilityCheckResponse,

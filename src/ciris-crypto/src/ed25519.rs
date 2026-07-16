@@ -115,6 +115,62 @@ impl Default for Ed25519Verifier {
     }
 }
 
+/// Parse a 32-byte pubkey + 64-byte signature into dalek types (shared by the
+/// permissive and strict verify paths).
+fn parse_key_and_sig(
+    public_key: &[u8],
+    signature: &[u8],
+) -> Result<(VerifyingKey, Signature), CryptoError> {
+    if public_key.len() != 32 {
+        return Err(CryptoError::invalid_public_key(format!(
+            "Ed25519 public key must be 32 bytes, got {}",
+            public_key.len()
+        )));
+    }
+    let mut pk_bytes = [0u8; 32];
+    pk_bytes.copy_from_slice(public_key);
+    let vk = VerifyingKey::from_bytes(&pk_bytes)
+        .map_err(|e| CryptoError::invalid_public_key(e.to_string()))?;
+
+    if signature.len() != 64 {
+        return Err(CryptoError::invalid_signature(format!(
+            "Ed25519 signature must be 64 bytes, got {}",
+            signature.len()
+        )));
+    }
+    let mut sig_bytes = [0u8; 64];
+    sig_bytes.copy_from_slice(signature);
+    Ok((vk, Signature::from_bytes(&sig_bytes)))
+}
+
+impl Ed25519Verifier {
+    /// **Strict** RFC 8032 verification (ed25519-dalek `verify_strict`): in
+    /// addition to the permissive [`ClassicalVerifier::verify`] checks, it
+    /// rejects signatures whose `R`/`A` components have a small-order or
+    /// mixed-order torsion component — closing the signature-non-uniqueness
+    /// surface plain `verify` permits.
+    ///
+    /// Exposed for consumers whose acceptance rule must be strict — e.g.
+    /// CIRISPersist's trace-verify floor, which previously reached for
+    /// `ed25519-dalek` directly (a direct dep + a second Ed25519 acceptance
+    /// semantics inside one repo). Routing that path through here retires the
+    /// duplicate (crypto-DRY assessment). Both `verify` and `verify_strict`
+    /// already reject non-canonical `s`.
+    ///
+    /// # Errors
+    /// [`CryptoError`] if the public key or signature is malformed; `Ok(false)`
+    /// if well-formed but not a valid (strict) signature.
+    pub fn verify_strict(
+        &self,
+        public_key: &[u8],
+        data: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, CryptoError> {
+        let (vk, sig) = parse_key_and_sig(public_key, signature)?;
+        Ok(vk.verify_strict(data, &sig).is_ok())
+    }
+}
+
 impl ClassicalVerifier for Ed25519Verifier {
     fn verify(
         &self,
@@ -122,34 +178,8 @@ impl ClassicalVerifier for Ed25519Verifier {
         data: &[u8],
         signature: &[u8],
     ) -> Result<bool, CryptoError> {
-        // Parse public key
-        if public_key.len() != 32 {
-            return Err(CryptoError::invalid_public_key(format!(
-                "Ed25519 public key must be 32 bytes, got {}",
-                public_key.len()
-            )));
-        }
-
-        let mut pk_bytes = [0u8; 32];
-        pk_bytes.copy_from_slice(public_key);
-
-        let vk = VerifyingKey::from_bytes(&pk_bytes)
-            .map_err(|e| CryptoError::invalid_public_key(e.to_string()))?;
-
-        // Parse signature
-        if signature.len() != 64 {
-            return Err(CryptoError::invalid_signature(format!(
-                "Ed25519 signature must be 64 bytes, got {}",
-                signature.len()
-            )));
-        }
-
-        let mut sig_bytes = [0u8; 64];
-        sig_bytes.copy_from_slice(signature);
-
-        let sig = Signature::from_bytes(&sig_bytes);
-
-        // Verify
+        let (vk, sig) = parse_key_and_sig(public_key, signature)?;
+        // Permissive verify (see `verify_strict` for the strict counterpart).
         match vk.verify(data, &sig) {
             Ok(()) => Ok(true),
             Err(_) => Ok(false),
@@ -175,6 +205,27 @@ mod tests {
 
         let valid = verifier.verify(&public_key, data, &signature).unwrap();
         assert!(valid);
+    }
+
+    #[test]
+    fn test_ed25519_verify_strict_accepts_honest_signature() {
+        // An honestly-produced signature verifies under both the permissive and
+        // strict paths; a tampered one fails both. (Small/mixed-order forgeries
+        // that distinguish the two can't be produced from a normal signer.)
+        let signer = Ed25519Signer::random().unwrap();
+        let verifier = Ed25519Verifier::new();
+        let data = b"strict path message";
+        let sig = signer.sign(data).unwrap();
+        let pk = signer.public_key().unwrap();
+
+        assert!(verifier.verify_strict(&pk, data, &sig).unwrap());
+        assert!(verifier.verify(&pk, data, &sig).unwrap());
+
+        let mut bad = sig.clone();
+        bad[0] ^= 0x01;
+        assert!(!verifier.verify_strict(&pk, data, &bad).unwrap());
+        // Malformed inputs are Err on both paths.
+        assert!(verifier.verify_strict(&pk[..31], data, &sig).is_err());
     }
 
     #[test]

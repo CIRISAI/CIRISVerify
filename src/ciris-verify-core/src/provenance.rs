@@ -19,11 +19,16 @@
 //! For a chain `[leaf, …, steward_bootstrap]`:
 //! 1. non-empty, within depth, `chain[0]` is the queried key;
 //! 2. each non-terminal link names the next as its `scrub_key_id`;
-//! 3. each link's scrub-signature verifies — Ed25519 over the
-//!    hex-decoded `original_content_hash`, against the **parent** link's
-//!    public key (the self-signed terminus against its own). A link
-//!    that carries a PQC scrub-signature must also verify it, ML-DSA-65
-//!    over `hash ‖ classical_sig` (the bound-signature rule);
+//! 3. each link's scrub-signature verifies — Ed25519 over
+//!    `jcs::canonicalize(registration_envelope)`, against the **parent**
+//!    link's public key (the self-signed terminus against its own), with
+//!    `original_content_hash` cross-checked to equal
+//!    `hex(sha256(canonical))`. A link that carries a PQC scrub-signature
+//!    must also verify it, ML-DSA-65 over `canonical ‖ classical_sig` (the
+//!    bound-signature rule). **These are the exact bytes
+//!    `federation_self_record`'s producers sign** — verifying over the
+//!    hash digest instead (pre-fix) rejected every real record, which is
+//!    why CIRISPersist had to fork this walk (crypto-DRY assessment);
 //! 4. the terminus is self-signed with `identity_type == "steward"`;
 //! 5. the terminus's public key is one the caller pinned as a trusted
 //!    bootstrap anchor — trust is the pinned key, never a self-asserted
@@ -43,9 +48,11 @@
 
 use base64::Engine;
 use ciris_crypto::{ClassicalVerifier, Ed25519Verifier, MlDsa65Verifier, PqcVerifier};
+use sha2::{Digest, Sha256};
 
 use crate::threshold::HybridPolicy;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 /// `identity_type` a terminating bootstrap link must carry.
 pub const STEWARD_IDENTITY_TYPE: &str = "steward";
@@ -70,15 +77,27 @@ pub struct ProvenanceLink {
     pub identity_type: String,
     /// `identity_ref` of the row.
     pub identity_ref: String,
-    /// `sha256(canonical(registration_envelope))`, hex-encoded — the
-    /// bytes the scrub-signature covers.
+    /// The registration envelope whose JCS canonicalization is the exact
+    /// preimage the scrub-signature covers (CIRISVerify#204-followup / the
+    /// crypto-DRY provenance fix). This is the object
+    /// [`federation_self_record::produce_self_key_record`] /
+    /// `produce_scrubbed_key_record` build and sign; the verifier
+    /// recanonicalizes it and cross-checks it against [`Self::original_content_hash`].
+    ///
+    /// [`federation_self_record::produce_self_key_record`]: crate::federation_self_record::produce_self_key_record
+    pub registration_envelope: Value,
+    /// `hex(sha256(jcs::canonicalize(registration_envelope)))` — an integrity
+    /// binding on the envelope, NOT the signed preimage. The scrub-signatures
+    /// cover the canonical envelope *bytes* (see [`Self::registration_envelope`]);
+    /// this field is cross-checked to equal the recomputed digest so a tampered
+    /// hash can't decouple the row's `original_content_hash` column from what
+    /// was actually signed.
     pub original_content_hash: String,
-    /// Ed25519 scrub-signature over the (hex-decoded)
-    /// `original_content_hash`, base64 standard. Always present.
+    /// Ed25519 scrub-signature over `jcs::canonicalize(registration_envelope)`,
+    /// base64 standard. Always present.
     pub scrub_signature_classical: String,
-    /// ML-DSA-65 scrub-signature over `original_content_hash ‖
-    /// classical_sig` (bound), base64 standard. `None` while
-    /// hybrid-pending.
+    /// ML-DSA-65 scrub-signature over `jcs::canonicalize(registration_envelope)
+    /// ‖ classical_sig` (bound), base64 standard. `None` while hybrid-pending.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scrub_signature_pqc: Option<String>,
     /// `key_id` of the parent row that signed this row. Equal to
@@ -143,8 +162,17 @@ pub enum ProvenanceError {
         /// The terminus's actual `identity_type`.
         identity_type: String,
     },
-    /// A link's `original_content_hash` is not 32 hex-encoded bytes.
+    /// A link's `registration_envelope` could not be JCS-canonicalized (the
+    /// signed preimage is unrecoverable).
     BadContentHash {
+        /// The offending link.
+        key_id: String,
+    },
+    /// A link's `original_content_hash` does not equal
+    /// `hex(sha256(jcs::canonicalize(registration_envelope)))` — the persisted
+    /// hash column has been decoupled from the envelope the signature covers
+    /// (tamper / drift). Rejected before any signature check.
+    ContentHashMismatch {
         /// The offending link.
         key_id: String,
     },
@@ -222,9 +250,14 @@ impl std::fmt::Display for ProvenanceError {
             Self::BadContentHash { key_id } => {
                 write!(
                     f,
-                    "link {key_id}: original_content_hash is not 32 hex bytes"
+                    "link {key_id}: registration_envelope could not be JCS-canonicalized"
                 )
             },
+            Self::ContentHashMismatch { key_id } => write!(
+                f,
+                "link {key_id}: original_content_hash != sha256(jcs(registration_envelope)) \
+                 — hash column decoupled from the signed envelope"
+            ),
             Self::BadSignatureEncoding { key_id } => {
                 write!(f, "link {key_id}: scrub-signature base64 decode failed")
             },
@@ -344,13 +377,23 @@ pub fn verify_provenance_chain_with_policy(
         };
 
         // ---- crypto: scrub-signature(s) ---------------------------------
-        let hash = hex::decode(&link.original_content_hash).map_err(|_| {
+        // The signed preimage is the JCS canonicalization of the registration
+        // envelope — the exact bytes `federation_self_record`'s producers sign
+        // via `signer.sign_bound(&canonical)`. `original_content_hash` is an
+        // integrity binding on that envelope, NOT the preimage; verifying over
+        // the digest (pre-fix) could never match a real signature.
+        let canonical = crate::jcs::canonicalize(&link.registration_envelope).map_err(|_| {
             ProvenanceError::BadContentHash {
                 key_id: link.key_id.clone(),
             }
         })?;
-        if hash.len() != 32 {
-            return Err(ProvenanceError::BadContentHash {
+        // Cross-check: the row's advertised hash MUST equal the digest of the
+        // envelope we are about to verify against, so a tampered hash column
+        // can't decouple the persisted `original_content_hash` from the signed
+        // bytes. Constant-time-insensitive is fine — this is a public digest.
+        let computed_hash = hex::encode(Sha256::digest(&canonical));
+        if !computed_hash.eq_ignore_ascii_case(link.original_content_hash.trim()) {
+            return Err(ProvenanceError::ContentHashMismatch {
                 key_id: link.key_id.clone(),
             });
         }
@@ -365,7 +408,7 @@ pub fn verify_provenance_chain_with_policy(
             }
         })?;
 
-        if !matches!(ed.verify(&parent_ed, &hash, &classical_sig), Ok(true)) {
+        if !matches!(ed.verify(&parent_ed, &canonical, &classical_sig), Ok(true)) {
             return Err(ProvenanceError::ScrubSignatureInvalid {
                 key_id: link.key_id.clone(),
                 half: "classical",
@@ -400,8 +443,8 @@ pub fn verify_provenance_chain_with_policy(
                 .map_err(|_| ProvenanceError::BadKeyEncoding {
                     key_id: parent.key_id.clone(),
                 })?;
-        // Bound signature: PQC covers hash ‖ classical_sig.
-        let mut bound = hash.clone();
+        // Bound signature: PQC covers canonical ‖ classical_sig.
+        let mut bound = canonical.clone();
         bound.extend_from_slice(&classical_sig);
         if !matches!(mldsa.verify(&parent_mldsa, &bound, &pqc_sig), Ok(true)) {
             return Err(ProvenanceError::ScrubSignatureInvalid {
@@ -461,19 +504,34 @@ mod tests {
     /// `own` itself for a self-signed bootstrap). `with_pqc=false`
     /// produces a hybrid-pending link (classical only).
     #[allow(clippy::too_many_arguments)]
+    /// Build a link the way the REAL producers do: sign over
+    /// `jcs::canonicalize(registration_envelope)`, not the hash. `salt`
+    /// distinguishes envelopes so each link has distinct signed bytes.
+    /// (Pre-fix this signed `content_hash` directly, which masked the
+    /// producer/verifier preimage mismatch — the crypto-DRY assessment bug.)
     fn make_link(
         key_id: &str,
         identity_type: &str,
         own: &Keypair,
         scrub_by: &Keypair,
         scrub_key_id: &str,
-        content_hash: [u8; 32],
+        salt: u8,
         with_pqc: bool,
     ) -> ProvenanceLink {
         let b64 = base64::engine::general_purpose::STANDARD;
-        let classical_sig = scrub_by.ed.sign(&content_hash).unwrap();
+        // A representative registration envelope (shape is opaque to the
+        // verifier — it canonicalizes whatever object is here).
+        let registration_envelope = serde_json::json!({
+            "key_id": key_id,
+            "identity_type": identity_type,
+            "pubkey_ed25519": own.ed_pub_b64(),
+            "salt": salt,
+        });
+        let canonical = crate::jcs::canonicalize(&registration_envelope).unwrap();
+        let original_content_hash = hex::encode(Sha256::digest(&canonical));
+        let classical_sig = scrub_by.ed.sign(&canonical).unwrap();
         let scrub_signature_pqc = if with_pqc {
-            let mut bound = content_hash.to_vec();
+            let mut bound = canonical.clone();
             bound.extend_from_slice(&classical_sig);
             Some(b64.encode(scrub_by.mldsa.sign(&bound).unwrap()))
         } else {
@@ -485,7 +543,8 @@ mod tests {
             pubkey_ml_dsa_65_base64: Some(own.mldsa_pub_b64()),
             identity_type: identity_type.to_string(),
             identity_ref: format!("ref-{key_id}"),
-            original_content_hash: hex::encode(content_hash),
+            registration_envelope,
+            original_content_hash,
             scrub_signature_classical: b64.encode(&classical_sig),
             scrub_signature_pqc,
             scrub_key_id: scrub_key_id.to_string(),
@@ -505,7 +564,7 @@ mod tests {
             &steward,
             &steward,
             "steward-1",
-            [0xAAu8; 32],
+            0xAA,
             true,
         );
         let child_link = make_link(
@@ -514,7 +573,7 @@ mod tests {
             &child,
             &steward,
             "steward-1",
-            [0xBBu8; 32],
+            0xBB,
             true,
         );
         let chain = ProvenanceChain {
@@ -532,6 +591,68 @@ mod tests {
         assert!(verify_provenance_chain(&chain, &[anchor]).is_ok());
     }
 
+    /// THE regression test for the crypto-DRY provenance fix: a record emitted
+    /// by the REAL producer (`federation_self_record::produce_self_key_record`,
+    /// which signs `jcs::canonicalize(registration_envelope)` via `sign_bound`)
+    /// must verify through `verify_provenance_chain`. Before the fix the verifier
+    /// checked the signature against the 32-byte hash digest, so it rejected
+    /// every real record — and this coherence went untested (the `make_link`
+    /// fixture signed the hash too), which is why CIRISPersist had to fork the
+    /// walk. This test locks producer↔verifier coherence.
+    #[tokio::test]
+    async fn real_producer_record_roundtrips_through_verifier() {
+        use crate::federation_self_record::produce_self_key_record;
+        use crate::self_at_login::HybridSigningIdentity;
+
+        let steward = HybridSigningIdentity::generate("steward-root").unwrap();
+        let signed =
+            produce_self_key_record(&steward, STEWARD_IDENTITY_TYPE, "2026-07-15T00:00:00Z", &[])
+                .await
+                .unwrap();
+        let r = &signed.record;
+
+        // Map the producer's self-signed KeyRecord onto a provenance terminus.
+        let link = ProvenanceLink {
+            key_id: r.key_id.clone(),
+            pubkey_ed25519_base64: r.pubkey_ed25519_base64.clone(),
+            pubkey_ml_dsa_65_base64: r.pubkey_ml_dsa_65_base64.clone(),
+            identity_type: r.identity_type.clone(),
+            identity_ref: r.identity_ref.clone(),
+            registration_envelope: r.registration_envelope.clone(),
+            original_content_hash: r.original_content_hash.clone(),
+            scrub_signature_classical: r.scrub_signature_classical.clone(),
+            scrub_signature_pqc: r.scrub_signature_pqc.clone(),
+            scrub_key_id: r.scrub_key_id.clone(),
+            scrub_timestamp: r.scrub_timestamp.clone(),
+            is_self_signed: true,
+        };
+        let anchor = base64::engine::general_purpose::STANDARD
+            .decode(&r.pubkey_ed25519_base64)
+            .unwrap();
+        let chain = ProvenanceChain {
+            key_id: r.key_id.clone(),
+            chain: vec![link],
+            terminates_at_steward_bootstrap: true,
+        };
+
+        // Federation-tier (RequireHybrid) — the producer emits a hybrid record.
+        verify_provenance_chain(&chain, &[anchor])
+            .expect("a record from the real producer MUST verify through the verifier");
+    }
+
+    /// The integrity cross-check bites: a record whose `original_content_hash`
+    /// column has been decoupled from its signed envelope is rejected before any
+    /// signature check.
+    #[test]
+    fn tampered_content_hash_is_rejected() {
+        let (mut chain, anchor, ..) = valid_chain();
+        chain.chain[0].original_content_hash = "00".repeat(32);
+        assert!(matches!(
+            verify_provenance_chain(&chain, &[anchor]),
+            Err(ProvenanceError::ContentHashMismatch { .. })
+        ));
+    }
+
     #[test]
     fn single_self_signed_steward_verifies() {
         let steward = Keypair::new();
@@ -541,7 +662,7 @@ mod tests {
             &steward,
             &steward,
             "steward-1",
-            [0x11u8; 32],
+            0x11,
             true,
         );
         let chain = ProvenanceChain {
@@ -562,7 +683,7 @@ mod tests {
             &steward,
             &steward,
             "steward-1",
-            [0x22u8; 32],
+            0x22,
             true,
         );
         let child_link = make_link(
@@ -571,7 +692,7 @@ mod tests {
             &child,
             &steward,
             "steward-1",
-            [0x33u8; 32],
+            0x33,
             false, // no PQC scrub-signature
         );
         let chain = ProvenanceChain {
@@ -634,7 +755,7 @@ mod tests {
             &holder,
             &holder,
             "A1",
-            [0x11u8; 32],
+            0x11,
             true,
         );
         let node_link = make_link(
@@ -643,7 +764,7 @@ mod tests {
             &node,
             &holder, // scrubbed by A1 (1/3 during bootstrap)
             "A1",
-            [0x22u8; 32],
+            0x22,
             true,
         );
         let chain = ProvenanceChain {
