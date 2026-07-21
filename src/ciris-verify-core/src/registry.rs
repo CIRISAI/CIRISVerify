@@ -381,7 +381,7 @@ impl RegistryClient {
         );
         debug!("Fetching build from {} (mobile blocking)", url);
 
-        let build: BuildRecord = mobile_http::get_json(&self.agent, &url)?;
+        let build: BuildRecord = mobile_http::get_json_async(&self.agent, &url).await?;
 
         info!(
             build_id = %build.build_id,
@@ -398,14 +398,14 @@ impl RegistryClient {
     pub async fn get_build_by_hash(&self, build_hash: &str) -> Result<BuildRecord, VerifyError> {
         let url = format!("{}/v1/builds/hash/{}", self.base_url, build_hash);
         debug!("Fetching build by hash from {} (mobile blocking)", url);
-        mobile_http::get_json(&self.agent, &url)
+        mobile_http::get_json_async(&self.agent, &url).await
     }
 
     /// Check if the registry is reachable (mobile - blocking).
     #[cfg(any(target_os = "android", target_os = "ios"))]
     pub async fn health_check(&self) -> Result<bool, VerifyError> {
         let url = format!("{}/health", self.base_url);
-        mobile_http::check_status(&self.agent, &url)
+        mobile_http::check_status_async(&self.agent, &url).await
     }
 }
 
@@ -681,7 +681,7 @@ impl RegistryClient {
             self.base_url, version, target, project
         );
         debug!("Fetching signed function manifest from {} (mobile)", url);
-        mobile_http::get_json(&self.agent, &url)
+        mobile_http::get_json_async(&self.agent, &url).await
     }
 
     /// List available target triples for function manifests.
@@ -754,7 +754,7 @@ impl RegistryClient {
             self.base_url, version, project
         );
         info!("Fetching binary manifest from URL: {} (mobile)", url);
-        mobile_http::get_json(&self.agent, &url)
+        mobile_http::get_json_async(&self.agent, &url).await
     }
 
     /// Fetch the function-level integrity manifest (mobile - blocking).
@@ -772,7 +772,7 @@ impl RegistryClient {
             self.base_url, version, target, project
         );
         debug!("Fetching function manifest from {} (mobile)", url);
-        mobile_http::get_json(&self.agent, &url)
+        mobile_http::get_json_async(&self.agent, &url).await
     }
 
     /// List available target triples for function manifests (mobile - blocking).
@@ -789,7 +789,7 @@ impl RegistryClient {
             self.base_url, version, project
         );
         debug!("Listing function manifest targets from {} (mobile)", url);
-        mobile_http::get_json(&self.agent, &url)
+        mobile_http::get_json_async(&self.agent, &url).await
     }
 
     // =========================================================================
@@ -907,7 +907,7 @@ impl RegistryClient {
     ) -> Result<crate::play_integrity::IntegrityNonce, VerifyError> {
         let url = format!("{}/v1/integrity/nonce", self.base_url);
         debug!("Fetching Play Integrity nonce from {} (mobile)", url);
-        mobile_http::get_json(&self.agent, &url)
+        mobile_http::get_json_async(&self.agent, &url).await
     }
 
     /// Verify a Play Integrity token (mobile - blocking).
@@ -927,7 +927,7 @@ impl RegistryClient {
         };
 
         let (_, result): (u16, crate::play_integrity::IntegrityVerifyResponse) =
-            mobile_http::post_json(&self.agent, &url, &request)?;
+            mobile_http::post_json_async(&self.agent, &url, &request).await?;
 
         info!(
             verified = result.verified,
@@ -1099,7 +1099,7 @@ impl RegistryClient {
     ) -> Result<crate::app_attest::AppAttestNonce, VerifyError> {
         let url = format!("{}/v1/integrity/ios/nonce", self.base_url);
         debug!("Fetching App Attest nonce from {} (mobile)", url);
-        mobile_http::get_json(&self.agent, &url)
+        mobile_http::get_json_async(&self.agent, &url).await
     }
 
     /// Verify an App Attest attestation object (mobile - blocking).
@@ -1121,7 +1121,7 @@ impl RegistryClient {
         };
 
         let (_, result): (u16, crate::app_attest::AppAttestVerifyResponse) =
-            mobile_http::post_json(&self.agent, &url, &request)?;
+            mobile_http::post_json_async(&self.agent, &url, &request).await?;
 
         info!(
             verified = result.verified,
@@ -1153,7 +1153,7 @@ impl RegistryClient {
         };
 
         let (_, result): (u16, crate::app_attest::AppAttestAssertionResponse) =
-            mobile_http::post_json(&self.agent, &url, &request)?;
+            mobile_http::post_json_async(&self.agent, &url, &request).await?;
 
         Ok(result)
     }
@@ -1274,7 +1274,8 @@ impl RegistryClient {
         let url = format!("{}/v1/verify/key/{}", self.base_url, fingerprint);
         debug!("Verifying key by fingerprint at {} (mobile)", url);
 
-        let result: KeyVerificationResponse = mobile_http::get_json(&self.agent, &url)?;
+        let result: KeyVerificationResponse =
+            mobile_http::get_json_async(&self.agent, &url).await?;
 
         info!(
             found = result.found,
