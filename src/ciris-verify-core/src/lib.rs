@@ -70,6 +70,8 @@ pub mod attest_heartbeat;
 pub mod audit;
 pub mod binary_format;
 pub mod cache;
+/// CC 2.3.2.1 canonical-hash subject codec (#201) — tagged subjects, bare hex rejected.
+pub mod canonical_subject;
 pub mod ceg_error;
 pub mod ceg_outbox;
 pub mod config;
@@ -136,6 +138,11 @@ pub use attest_bundle::{
     AttestBundle, AttestationFact, HardwareCustody, ProvenanceBlock, TransparencyLogBlock,
 };
 pub use cache::{CachedLicense, LicenseCache};
+pub use canonical_subject::{
+    canonical_subject, canonical_subject_from_triple, classify_subject, parse_canonical_subject,
+    require_canonical_subject, SubjectError, SubjectKind, CANONICAL_SUBJECT_ALG,
+    CANONICAL_SUBJECT_PREFIX,
+};
 pub use ceg_error::{CegError, CegErrorCode};
 pub use config::{TrustModel, VerifyConfig};
 pub use engine::LicenseEngine;

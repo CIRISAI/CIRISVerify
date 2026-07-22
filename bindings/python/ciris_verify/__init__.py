@@ -69,6 +69,12 @@ from ._federation_identity import create_federation_identity
 from ._manifest_contribution import verify_build_manifest_contribution
 from ._accord_custody import verify_accord_custody_attestation
 from ._test_anchor import test_anchor_compiled_in
+from ._canonical_subject import (
+    CanonicalSubjectError,
+    canonical_subject,
+    canonical_subject_from_triple,
+    parse_canonical_subject,
+)
 from ._operational_admit import (
     resolve_role_authority,
     verify_delegation_scope_split,
@@ -163,7 +169,7 @@ def get_library_version() -> str:
     return __version__
 
 
-__version__ = "10.5.1"
+__version__ = "10.6.0"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
@@ -182,6 +188,10 @@ __all__ = [
     "verify_build_manifest_contribution",
     "verify_accord_custody_attestation",
     "test_anchor_compiled_in",
+    "canonical_subject",
+    "canonical_subject_from_triple",
+    "parse_canonical_subject",
+    "CanonicalSubjectError",
     "resolve_role_authority",
     "verify_partner_record_quorum",
     "verify_delegation_scope_split",
