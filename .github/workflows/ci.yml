@@ -271,13 +271,13 @@ jobs:
           cargo build --help >/dev/null
       # CI hardening (v2.1.1+): retry on transient timeout only.
       # Real install failures (404, auth, typo) still fail immediately.
-      - name: Install cargo-audit (retry on timeout)
+      - name: Install cargo-audit (retried)
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 10
-          max_attempts: 2
+          max_attempts: 3
           retry_wait_seconds: 30
-          retry_on: timeout
+          retry_on: any
           command: cargo install cargo-audit
       - name: Run security audit
         run: cargo audit
@@ -511,20 +511,26 @@ jobs:
           rustup default stable
           cargo --version
           cargo build --help >/dev/null
-      - name: Install cross (retry on timeout)
+      - name: Install cross (retried)
         if: matrix.cross
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 10
-          max_attempts: 2
+          max_attempts: 3
           retry_wait_seconds: 30
-          retry_on: timeout
+          retry_on: any
           command: cargo install cross --git https://github.com/cross-rs/cross
 
       # Build with cross for ARM64 Linux
       - name: Build (cross)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }} -p ciris-verify-ffi
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 45
+          max_attempts: 3
+          retry_wait_seconds: 30
+          retry_on: any
+          command: cross build --release --target ${{ matrix.target }} -p ciris-verify-ffi
 
       # Build native
       - name: Build (native)
@@ -640,13 +646,13 @@ jobs:
           echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
-      - name: Install cargo-ndk (retry on timeout)
+      - name: Install cargo-ndk (retried)
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 10
-          max_attempts: 2
+          max_attempts: 3
           retry_wait_seconds: 30
-          retry_on: timeout
+          retry_on: any
           command: cargo install cargo-ndk
 
       - name: Build for Android

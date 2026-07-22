@@ -159,26 +159,45 @@ jobs:
           cargo build --help >/dev/null
 
       # Install TPM development libraries (Linux native only, not cross-compile)
-      - name: Install TPM libs (Linux)
+      # Retried: apt mirrors flake (archive.ubuntu.com resets/503s) and a
+      # failed release then needs a human re-run. Idempotent, so safe to repeat.
+      - name: Install TPM libs (Linux) (retried)
         if: runner.os == 'Linux' && !matrix.cross
-        run: sudo apt-get update && sudo apt-get install -y libtss2-dev libsqlite3-dev
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 10
+          max_attempts: 3
+          retry_wait_seconds: 30
+          retry_on: any
+          command: sudo apt-get update && sudo apt-get install -y libtss2-dev libsqlite3-dev
 
       # Install cross for ARM64 cross-compilation
       # CI hardening (v2.1.1+): retry on transient timeout only.
-      - name: Install cross (retry on timeout)
+      - name: Install cross (retried)
         if: matrix.cross
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 10
-          max_attempts: 2
+          max_attempts: 3
           retry_wait_seconds: 30
-          retry_on: timeout
+          retry_on: any
           command: cargo install cross --git https://github.com/cross-rs/cross
 
       # Build with cross (ARM64 Linux)
-      - name: Build (cross)
+      # Retried: `cross` builds its Docker image on first invocation, and that
+      # image build runs apt — the failure mode that killed the v10.6.0 release
+      # (`Failed to fetch …linux-libc-dev…` from archive.ubuntu.com, exit 100).
+      # A cargo compile error would also retry, but release runs only on a tag
+      # whose CI already passed on main, so transient infra is the live risk.
+      - name: Build (cross) (retried)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }} -p ciris-verify-ffi
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 45
+          max_attempts: 3
+          retry_wait_seconds: 30
+          retry_on: any
+          command: cross build --release --target ${{ matrix.target }} -p ciris-verify-ffi
 
       # Build native
       - name: Build (native)
@@ -312,13 +331,13 @@ jobs:
         with:
           version: 0.13.0
 
-      - name: Install cargo-zigbuild (retry on timeout)
+      - name: Install cargo-zigbuild (retried)
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 10
-          max_attempts: 2
+          max_attempts: 3
           retry_wait_seconds: 30
-          retry_on: timeout
+          retry_on: any
           command: cargo install cargo-zigbuild
 
       - name: Build static library
@@ -422,13 +441,13 @@ jobs:
           echo "ANDROID_NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
           echo "NDK_HOME=${{ steps.setup-ndk.outputs.ndk-path }}" >> $GITHUB_ENV
 
-      - name: Install cargo-ndk (retry on timeout)
+      - name: Install cargo-ndk (retried)
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 10
-          max_attempts: 2
+          max_attempts: 3
           retry_wait_seconds: 30
-          retry_on: timeout
+          retry_on: any
           command: cargo install cargo-ndk
 
       - name: Build for Android
@@ -662,13 +681,13 @@ jobs:
           cargo --version
           cargo build --help >/dev/null
 
-      - name: Install cbindgen (retry on timeout)
+      - name: Install cbindgen (retried)
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 10
-          max_attempts: 2
+          max_attempts: 3
           retry_wait_seconds: 30
-          retry_on: timeout
+          retry_on: any
           command: cargo install cbindgen
 
       - name: Generate header
@@ -816,19 +835,27 @@ jobs:
           cargo --version
           cargo build --help >/dev/null
 
-      - name: Install cross (retry on timeout)
+      - name: Install cross (retried)
         if: matrix.cross
         uses: nick-fields/retry@v3
         with:
           timeout_minutes: 10
-          max_attempts: 2
+          max_attempts: 3
           retry_wait_seconds: 30
-          retry_on: timeout
+          retry_on: any
           command: cargo install cross --git https://github.com/cross-rs/cross
 
-      - name: Build build-tool (cross)
+      # Retried — this is the exact step that failed the v10.6.0 release on a
+      # transient apt fetch inside the `cross` Docker image build.
+      - name: Build build-tool (cross) (retried)
         if: matrix.cross
-        run: cross build --release --target ${{ matrix.target }} -p ciris-build-tool --features ciris-crypto/pqc-ml-dsa
+        uses: nick-fields/retry@v3
+        with:
+          timeout_minutes: 45
+          max_attempts: 3
+          retry_wait_seconds: 30
+          retry_on: any
+          command: cross build --release --target ${{ matrix.target }} -p ciris-build-tool --features ciris-crypto/pqc-ml-dsa
 
       - name: Build build-tool (native)
         if: ${{ !matrix.cross }}
