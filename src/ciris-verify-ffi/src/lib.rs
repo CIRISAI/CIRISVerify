@@ -57,6 +57,7 @@ mod constructor;
 // `wheel_guard!` panic catch (sibling modules cannot see the
 // crate-root `ffi_guard!` macro without `#[macro_export]`).
 mod wheel_accord_custody;
+mod wheel_canonical_subject;
 mod wheel_epoch_key;
 mod wheel_hybrid_kex;
 mod wheel_jcs;
@@ -172,6 +173,7 @@ pub extern "C" fn ciris_verify_ffi_link_anchor() -> usize {
     acc ^= wheel_skill_import::ciris_verify_skill_import_manifest_verify as usize;
     acc ^= ciris_verify_sth_cosignature_consistency_proof as usize;
     acc ^= ciris_verify_store_named_key as usize;
+    acc ^= wheel_canonical_subject::ciris_verify_canonical_subject as usize;
     acc ^= ciris_verify_test_anchor_compiled_in as usize;
     acc ^= ciris_verify_tree as usize;
     acc ^= ciris_verify_verify_integrity_token as usize;
