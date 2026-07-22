@@ -2,6 +2,26 @@
 //!
 //! On Android/iOS, tokio's async I/O is broken (JNI threads, iOS getaddrinfo hangs).
 //! This module provides blocking HTTP using ureq with rustls and bundled Mozilla CA certs.
+//!
+//! ## Blocking calls must not occupy the async runtime (CIRISVerify#212)
+//!
+//! These `ureq` calls are **synchronous**. Calling one directly from inside an
+//! `async fn` parks the runtime thread for the whole request, which on a
+//! current-thread runtime has two consequences that broke mobile startup
+//! attestation:
+//!
+//! 1. **Timers can't fire.** `ResilientRegistryClient`'s `RACE_BUDGET` (10s) and
+//!    `NOT_FOUND_GRACE` (1s) are `tokio::time` bounds — with the thread blocked,
+//!    they never elapse, so neither cap is enforceable.
+//! 2. **Endpoints serialize instead of racing.** `race_endpoints` drives a
+//!    `FuturesUnordered`; if polling future #1 blocks to completion, #2 only
+//!    starts afterwards. N endpoints × (connect + read) run back-to-back rather
+//!    than in parallel — ~11s each, so a 3-endpoint fetch against a registry with
+//!    no record stalled ~30s and blew the agent's 20s startup budget.
+//!
+//! Use the `*_async` wrappers below from async contexts: they hop the blocking
+//! call onto a blocking thread (or run it inline when no runtime is present), so
+//! the race budget and the not-found grace actually bound the operation.
 
 #![cfg(any(target_os = "android", target_os = "ios"))]
 
@@ -11,6 +31,80 @@ use std::time::Duration;
 use tracing::{info, warn};
 
 use crate::error::VerifyError;
+
+/// Run a blocking `ureq` operation without parking the async runtime thread.
+///
+/// If a tokio runtime is active, the closure is moved onto the blocking pool
+/// (`spawn_blocking`) so timers on the calling runtime keep firing. If no
+/// runtime is present the closure runs inline — there is nothing to starve, and
+/// this keeps the wrappers usable from a non-tokio executor.
+///
+/// **Cancellation semantics:** `spawn_blocking` tasks are not cancellable, so a
+/// losing endpoint whose future is dropped (race won elsewhere, or the race
+/// budget elapsed) keeps running on the blocking pool until its own `ureq`
+/// connect/read timeout fires. That is bounded (~11s worst case) and no longer
+/// delays the *caller* — which is the property this bridge exists to restore.
+async fn run_blocking<T, F>(f: F) -> Result<T, VerifyError>
+where
+    F: FnOnce() -> Result<T, VerifyError> + Send + 'static,
+    T: Send + 'static,
+{
+    if tokio::runtime::Handle::try_current().is_err() {
+        return f();
+    }
+    match tokio::task::spawn_blocking(f).await {
+        Ok(result) => result,
+        Err(e) => Err(VerifyError::HttpsError {
+            message: format!("mobile HTTP blocking task failed: {e}"),
+        }),
+    }
+}
+
+/// [`get_json`] for async callers — runs off the runtime thread (#212).
+///
+/// # Errors
+/// Propagates [`get_json`]'s errors (incl. [`VerifyError::NotFound`] on 404).
+pub async fn get_json_async<T>(agent: &ureq::Agent, url: &str) -> Result<T, VerifyError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+{
+    let agent = agent.clone();
+    let url = url.to_string();
+    run_blocking(move || get_json::<T>(&agent, &url)).await
+}
+
+/// [`post_json`] for async callers — runs off the runtime thread (#212).
+///
+/// The body is serialized before the hop so the caller keeps its borrow.
+///
+/// # Errors
+/// Propagates [`post_json`]'s errors, plus a serialization failure on `body`.
+pub async fn post_json_async<T, B>(
+    agent: &ureq::Agent,
+    url: &str,
+    body: &B,
+) -> Result<(u16, T), VerifyError>
+where
+    T: serde::de::DeserializeOwned + Send + 'static,
+    B: serde::Serialize,
+{
+    let agent = agent.clone();
+    let url = url.to_string();
+    let body = serde_json::to_value(body).map_err(|e| VerifyError::HttpsError {
+        message: format!("mobile HTTP POST body serialize failed: {e}"),
+    })?;
+    run_blocking(move || post_json::<T, serde_json::Value>(&agent, &url, &body)).await
+}
+
+/// [`check_status`] for async callers — runs off the runtime thread (#212).
+///
+/// # Errors
+/// Propagates [`check_status`]'s errors.
+pub async fn check_status_async(agent: &ureq::Agent, url: &str) -> Result<bool, VerifyError> {
+    let agent = agent.clone();
+    let url = url.to_string();
+    run_blocking(move || check_status(&agent, &url)).await
+}
 
 /// Create a TLS-enabled ureq agent with bundled Mozilla CA certificates.
 pub fn create_tls_agent(timeout: Duration) -> Result<ureq::Agent, VerifyError> {
