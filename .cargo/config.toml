@@ -9,6 +9,14 @@ xtask = "run --package xtask --"
 # Parallel compilation
 jobs = 8
 
+[net]
+# Retry transient crate-index / download failures at the FETCH layer rather than
+# wrapping whole builds in a retry (which would also re-run deterministic compile
+# errors at 3x the cost). The CI workflows also export CARGO_NET_RETRY=10; keeping
+# it here means a newly-added workflow — or a local build — inherits it without
+# having to remember the env var.
+retry = 10
+
 [target.aarch64-linux-android]
 linker = "aarch64-linux-android24-clang"
 # 16KB page alignment for Android 15+ compatibility (allows useLegacyPackaging=true)
