@@ -460,9 +460,18 @@ pub fn check_set_semantics_sorted(value: &Value, fields: &[&str]) -> Result<(), 
 /// The reserved `infra:*` delegation scopes — server-class powers a `node`-role
 /// (fabric/infrastructure) delegate MAY hold. A user-owned fabric node serves +
 /// holds membership *standing* under the user's authority with these.
+///
+/// **RC3 crystal-vocabulary (CIRISVerify#217).** The vague membership token
+/// `infra:join_communities` was retired in favour of two crystal ones —
+/// `infra:hold_community_membership` and `infra:hold_family_membership` — matching
+/// CIRISServer (`auth/ownership.rs`) and CIRISPersist (`federation/types.rs`).
+/// This is a **hard cut**: no alias, no back-compat (pre-fleet), so a delegation
+/// carrying the retired token now fail-closes as `UnknownScope`, exactly as
+/// server + persist already treat it.
 pub const INFRA_SCOPES: &[&str] = &[
     "infra:network_presence",
-    "infra:join_communities",
+    "infra:hold_community_membership",
+    "infra:hold_family_membership",
     "infra:serve",
     "infra:store",
     "infra:attest",
@@ -1036,13 +1045,28 @@ mod tests {
 
     #[test]
     fn node_only_with_all_infra_scopes_is_ok() {
-        // A pure fabric node may serve + hold membership standing.
+        // A pure fabric node may serve + hold membership standing. Every RC3
+        // infra token must admit (guards against an enumeration typo).
+        assert!(verify_delegation_scope_split("node", &scopes(INFRA_SCOPES)).is_ok());
         let scope = scopes(&[
             "infra:network_presence",
-            "infra:join_communities",
+            "infra:hold_community_membership",
+            "infra:hold_family_membership",
             "infra:serve",
         ]);
         assert!(verify_delegation_scope_split("node", &scope).is_ok());
+    }
+
+    #[test]
+    fn retired_join_communities_token_now_fail_closes() {
+        // RC3 (#217): the vague token is gone — a delegation still carrying it
+        // must be rejected, matching server + persist. No alias, no back-compat.
+        assert!(!INFRA_SCOPES.contains(&"infra:join_communities"));
+        let scope = scopes(&["infra:serve", "infra:join_communities"]);
+        assert!(matches!(
+            verify_delegation_scope_split("node", &scope),
+            Err(ScopeSplitError::UnknownScope { .. })
+        ));
     }
 
     #[test]
