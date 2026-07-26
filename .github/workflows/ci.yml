@@ -397,6 +397,12 @@ jobs:
       # holder path — so the bypass's guards are actually verified in CI.
       - name: Test ciris-verify-core with test-anchor
         run: cargo nextest run -p ciris-verify-core --profile ci --features test-anchor test_anchor accord_custody accord_genesis
+      # CIRISVerify#219: the `test_support` mock-custody machinery compiles under
+      # cfg(test) (so its tests already run in the main job), but a DOWNSTREAM
+      # builds it under `feature = "test-support"` WITHOUT `test`. Compile that
+      # config so a future edit that only works under cfg(test) is caught here.
+      - name: Build ciris-verify-core with test-support (downstream config)
+        run: cargo build -p ciris-verify-core --features test-support
 
   # ==========================================================================
   # Build Matrix - Native Platforms
