@@ -20,6 +20,15 @@ pqc = ["ciris-crypto/pqc-ml-dsa", "ciris-keyring/pqc-ml-dsa"]
 # MUST build WITHOUT this feature (probe with `ciris_verify_test_anchor_compiled_in`
 # before deploy). NEVER add it to `default`.
 test-anchor = []
+# CIRISVerify#219 — export the fabricated-YubiKey-PIV custody machinery
+# (`accord_custody_attestation::test_support`) so downstream FIPS-floor gates
+# (CIRISPersist canonical-admission anti-Sybil floor, #513) can positively test
+# with SYNTHETIC hardware-attested members. TEST-ONLY: the artifacts chain to a
+# MOCK root, so they are inert against the pinned real Yubico root — you cannot
+# forge a real-gate pass with them. Never in `default`; a downstream enables it
+# under its OWN `[dev-dependencies]`, so it does not leak into that crate's
+# normal build. Pulls `rcgen` only when enabled.
+test-support = ["dep:rcgen"]
 android = ["ciris-keyring/android"]
 ios = ["ciris-keyring/ios"]
 # Runtime-loaded TPM backend (CIRISVerify#141): the keyring's sole TPM backend —
@@ -40,6 +49,8 @@ name = "ciris-verify"
 path = "src/bin/ciris_verify.rs"
 
 [dependencies]
+# Optional: only linked with the `test-support` feature (CIRISVerify#219).
+rcgen = { version = "0.13", optional = true }
 # Internal crates
 ciris-keyring.workspace = true
 # `kdf` + `aes-gcm` enable password-protected software keys (PBKDF2 → AES-256-GCM).

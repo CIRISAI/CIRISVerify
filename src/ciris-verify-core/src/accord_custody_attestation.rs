@@ -697,6 +697,194 @@ pub fn verify_yubikey_piv_attestation(
     })
 }
 
+/// TEST-ONLY fabricated YubiKey PIV custody artifacts (CIRISVerify#219).
+///
+/// Behind the non-default `test-support` feature (also compiled for this crate's
+/// own `#[cfg(test)]` tests). Lets a downstream FIPS-floor gate — CIRISPersist's
+/// canonical-admission anti-Sybil floor (#513), CIRISServer's `accord.rs` — build
+/// a *synthetic* hardware-attested member and drive the full positive
+/// mint/rotation path through the strict gate, instead of only refusal paths.
+///
+/// ## Security posture — why exporting this is safe
+///
+/// Every artifact chains to a **mock** Yubico root that this module mints. A
+/// production gate pins the **real** Yubico Attestation Root, against which these
+/// artifacts are **inert** — [`verify_accord_custody_attestation`] rejects them
+/// unless the caller *also* injects [`test_support::MockYubicoCa::root_der`] as
+/// the pinned root, which is a test-only affordance. So you cannot forge a
+/// real-gate pass with this. It is still fenced behind an opt-in feature (never
+/// in `default`, never in the release lane) so the `rcgen` dependency and the
+/// fabrication code are physically absent from production artifacts.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_support {
+    use super::{
+        produce_accord_custody_attestation, CUSTODY_TIER_PORTABLE_2FA, TOUCH_POLICY_ALWAYS,
+    };
+    use crate::ceg_outbox::SignedCegObject;
+    use crate::self_at_login::HybridSigningIdentity;
+    use crate::threshold::ThresholdMember;
+    use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
+    use rcgen::{
+        Certificate, CertificateParams, CustomExtension, DistinguishedName, DnType, KeyPair,
+        PKCS_ED25519,
+    };
+
+    /// A mock Yubico PIV attestation CA. Mint several FIPS-attested members under
+    /// ONE root, then inject [`Self::root_der`] as the pinned root when driving a
+    /// strict custody gate — so a whole quorum verifies against one root, exactly
+    /// as the real ceremony's A1/B1/C1 do against the real Yubico root.
+    pub struct MockYubicoCa {
+        root_kp: KeyPair,
+        root: Certificate,
+        root_der: Vec<u8>,
+    }
+
+    /// A fabricated FIPS-attested member: the directory entry a gate resolves the
+    /// holder against, plus the custody `SignedCegObject`
+    /// [`verify_accord_custody_attestation`](super::verify_accord_custody_attestation)
+    /// admits (when the CA's root is the pinned one).
+    pub struct MockAttestedMember {
+        /// The holder's pinned pubkeys — pass as `holder_member` to the verifier.
+        pub member: ThresholdMember,
+        /// The custody attestation bundle to verify.
+        pub attestation: SignedCegObject,
+        /// The 32-byte Ed25519 seed backing the member (deterministic; the same
+        /// seed reproduces the same member, e.g. for rotation tests).
+        pub seed: [u8; 32],
+    }
+
+    fn params(cn: &str) -> CertificateParams {
+        let mut p = CertificateParams::default();
+        let mut dn = DistinguishedName::new();
+        dn.push(DnType::CommonName, cn);
+        p.distinguished_name = dn;
+        p
+    }
+
+    /// An rcgen `KeyPair` from a raw 32-byte Ed25519 seed (PKCS#8 v1 wrapper), so
+    /// the mock 9c leaf key equals the holder's `Ed25519Signer::from_seed(seed)`
+    /// key — the binding [`verify_accord_custody_attestation`](super::verify_accord_custody_attestation)
+    /// checks (attested key == holder Ed25519).
+    fn keypair_from_seed(seed: &[u8; 32]) -> KeyPair {
+        use base64::Engine as _;
+        let mut der = vec![
+            0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
+            0x04, 0x20,
+        ];
+        der.extend_from_slice(seed);
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&der);
+        let pem = format!("-----BEGIN PRIVATE KEY-----\n{b64}\n-----END PRIVATE KEY-----\n");
+        KeyPair::from_pkcs8_pem_and_sign_algo(&pem, &PKCS_ED25519).expect("valid Ed25519 PKCS#8")
+    }
+
+    impl Default for MockYubicoCa {
+        fn default() -> Self {
+            Self::new()
+        }
+    }
+
+    impl MockYubicoCa {
+        /// Mint a fresh mock Yubico attestation root.
+        #[must_use]
+        pub fn new() -> Self {
+            let root_kp = KeyPair::generate_for(&PKCS_ED25519).expect("keygen");
+            let root = params("Yubico PIV Attestation (MOCK root)")
+                .self_signed(&root_kp)
+                .expect("self-sign root");
+            let root_der = root.der().to_vec();
+            Self {
+                root_kp,
+                root,
+                root_der,
+            }
+        }
+
+        /// The mock root DER — inject this as the pinned `yubico_root_der` when
+        /// verifying members minted by this CA.
+        #[must_use]
+        pub fn root_der(&self) -> &[u8] {
+            &self.root_der
+        }
+
+        /// Mint an **admissible** member: FIPS-certified + touch-always, firmware
+        /// 5.7.4 — the shape the strict floor accepts. `seed` makes it
+        /// deterministic; distinct `seed`/`key_id` give distinct members for a
+        /// quorum.
+        pub async fn attest_member(
+            &self,
+            seed: [u8; 32],
+            key_id: &str,
+            signed_at: &str,
+        ) -> MockAttestedMember {
+            self.attest_member_with(seed, key_id, signed_at, true, TOUCH_POLICY_ALWAYS)
+                .await
+        }
+
+        /// Full control for refusal-path coverage: set `fips=false` or a `touch`
+        /// other than [`TOUCH_POLICY_ALWAYS`](super::) to build a member the floor
+        /// MUST reject even though the chain is otherwise valid.
+        pub async fn attest_member_with(
+            &self,
+            seed: [u8; 32],
+            key_id: &str,
+            signed_at: &str,
+            fips: bool,
+            touch: u8,
+        ) -> MockAttestedMember {
+            let leaf_kp = keypair_from_seed(&seed);
+
+            // f9 device cert (carries the FIPS `.10` extension when `fips`).
+            let f9_kp = KeyPair::generate_for(&PKCS_ED25519).expect("keygen");
+            let mut f9_params = params("YubiKey PIV Attestation (MOCK f9)");
+            if fips {
+                f9_params.custom_extensions = vec![CustomExtension::from_oid_content(
+                    &[1, 3, 6, 1, 4, 1, 41482, 3, 10],
+                    vec![],
+                )];
+            }
+            let f9 = f9_params
+                .signed_by(&f9_kp, &self.root, &self.root_kp)
+                .expect("sign f9");
+
+            // 9c leaf: firmware 5.7.4 (`.3`) + pin/touch (`.8`), both inner-OCTET.
+            let mut leaf = params("YubiKey PIV Attestation 9c (MOCK)");
+            leaf.custom_extensions = vec![
+                CustomExtension::from_oid_content(
+                    &[1, 3, 6, 1, 4, 1, 41482, 3, 3],
+                    vec![0x04, 0x03, 5, 7, 4],
+                ),
+                CustomExtension::from_oid_content(
+                    &[1, 3, 6, 1, 4, 1, 41482, 3, 8],
+                    vec![0x04, 0x02, 0x01, touch],
+                ),
+            ];
+            let cert_9c = leaf.signed_by(&leaf_kp, &f9, &f9_kp).expect("sign 9c");
+
+            // The holder whose Ed25519 == the 9c leaf key (same seed).
+            let ed = Ed25519Signer::from_seed(&seed).expect("ed from seed");
+            let mldsa = MlDsa65Signer::new().expect("mldsa");
+            let holder = HybridSigningIdentity::new(key_id, ed, mldsa);
+            let member = holder.directory_member().expect("directory member");
+
+            let attestation = produce_accord_custody_attestation(
+                &holder,
+                cert_9c.der().as_ref(),
+                &[f9.der().as_ref()],
+                CUSTODY_TIER_PORTABLE_2FA,
+                signed_at,
+            )
+            .await
+            .expect("produce custody attestation");
+
+            MockAttestedMember {
+                member,
+                attestation,
+                seed,
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -907,6 +1095,54 @@ mod tests {
         let pem = format!("-----BEGIN PRIVATE KEY-----\n{b64}\n-----END PRIVATE KEY-----\n");
         let kp = KeyPair::from_pkcs8_pem_and_sign_algo(&pem, &PKCS_ED25519).unwrap();
         (pem, kp)
+    }
+
+    /// #219: the exported `test_support` machinery must produce members the REAL
+    /// verifier admits under the CA's injected root — this is the affordance
+    /// CIRISPersist's FIPS floor drives. Also proves a whole quorum verifies
+    /// against ONE root, and that the refusal knob works.
+    #[tokio::test]
+    async fn test_support_mints_members_the_real_verifier_admits() {
+        use super::test_support::MockYubicoCa;
+
+        let ca = MockYubicoCa::new();
+        // Three distinct FIPS-attested members under one root (the A1/B1/C1 shape).
+        for (i, kid) in [(1u8, "A1"), (2, "B1"), (3, "C1")] {
+            let m = ca.attest_member([i; 32], kid, "2026-07-26T00:00:00Z").await;
+            let v = verify_accord_custody_attestation(&m.attestation, &m.member, ca.root_der())
+                .expect("mock FIPS member must verify against the CA's injected root");
+            assert_eq!(v.hardware_class, "YubiKey_5_FIPS");
+            assert!(v.fips_certified && v.touch_always);
+        }
+
+        // Refusal knob: a non-FIPS member is rejected by the floor even though
+        // its chain is otherwise valid — so downstream can cover the reject path.
+        let bad = ca
+            .attest_member_with(
+                [9; 32],
+                "X",
+                "2026-07-26T00:00:00Z",
+                false,
+                TOUCH_POLICY_ALWAYS,
+            )
+            .await;
+        assert!(matches!(
+            verify_accord_custody_attestation(&bad.attestation, &bad.member, ca.root_der()),
+            Err(CustodyError::FloorNotMet { .. })
+        ));
+
+        // Inertness: a member minted by one CA does NOT verify against a
+        // DIFFERENT (e.g. the real pinned) root — you can't forge a real-gate pass.
+        let other_root = MockYubicoCa::new();
+        let m = ca
+            .attest_member([1; 32], "A1", "2026-07-26T00:00:00Z")
+            .await;
+        assert!(verify_accord_custody_attestation(
+            &m.attestation,
+            &m.member,
+            other_root.root_der()
+        )
+        .is_err());
     }
 
     #[tokio::test]
