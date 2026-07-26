@@ -28,7 +28,7 @@ test-anchor = []
 # forge a real-gate pass with them. Never in `default`; a downstream enables it
 # under its OWN `[dev-dependencies]`, so it does not leak into that crate's
 # normal build. Pulls `rcgen` only when enabled.
-test-support = ["dep:rcgen"]
+test-support = ["dep:rcgen", "pqc"]
 android = ["ciris-keyring/android"]
 ios = ["ciris-keyring/ios"]
 # Runtime-loaded TPM backend (CIRISVerify#141): the keyring's sole TPM backend —
