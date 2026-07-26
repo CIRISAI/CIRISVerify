@@ -740,17 +740,35 @@ pub mod test_support {
     }
 
     /// A fabricated FIPS-attested member: the directory entry a gate resolves the
-    /// holder against, plus the custody `SignedCegObject`
+    /// holder against, the custody `SignedCegObject`
     /// [`verify_accord_custody_attestation`](super::verify_accord_custody_attestation)
-    /// admits (when the CA's root is the pinned one).
+    /// admits (when the CA's root is the pinned one), and the **full hybrid
+    /// signer** so a downstream can actually SIGN as the member — co-scrub a
+    /// canonical, cast a quorum vote — not just present pubkeys (CIRISVerify#221).
     pub struct MockAttestedMember {
         /// The holder's pinned pubkeys — pass as `holder_member` to the verifier.
         pub member: ThresholdMember,
         /// The custody attestation bundle to verify.
         pub attestation: SignedCegObject,
+        /// The member's hybrid signer (Ed25519 + ML-DSA-65), both halves
+        /// deterministically derived from `seed`. `holder.directory_member()`
+        /// equals [`Self::member`]. Use it to produce the hybrid-Strict
+        /// signatures a full mock quorum needs.
+        pub holder: HybridSigningIdentity,
         /// The 32-byte Ed25519 seed backing the member (deterministic; the same
-        /// seed reproduces the same member, e.g. for rotation tests).
+        /// seed reproduces the same member — pubkeys AND signer — for rotation
+        /// tests).
         pub seed: [u8; 32],
+    }
+
+    /// Deterministic ML-DSA-65 seed for a member, domain-separated from its
+    /// Ed25519 seed so the two halves are independent but both reproducible.
+    fn mldsa_seed_from(ed_seed: &[u8; 32]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(b"ciris-mock-mldsa-seed-v1");
+        h.update(ed_seed);
+        h.finalize().into()
     }
 
     fn params(cn: &str) -> CertificateParams {
@@ -860,9 +878,11 @@ pub mod test_support {
             ];
             let cert_9c = leaf.signed_by(&leaf_kp, &f9, &f9_kp).expect("sign 9c");
 
-            // The holder whose Ed25519 == the 9c leaf key (same seed).
+            // The holder whose Ed25519 == the 9c leaf key (same seed), with a
+            // deterministic ML-DSA-65 half (#221) so the returned signer is fully
+            // usable AND the member reproduces exactly from `seed`.
             let ed = Ed25519Signer::from_seed(&seed).expect("ed from seed");
-            let mldsa = MlDsa65Signer::new().expect("mldsa");
+            let mldsa = MlDsa65Signer::from_seed(&mldsa_seed_from(&seed)).expect("mldsa from seed");
             let holder = HybridSigningIdentity::new(key_id, ed, mldsa);
             let member = holder.directory_member().expect("directory member");
 
@@ -879,6 +899,7 @@ pub mod test_support {
             MockAttestedMember {
                 member,
                 attestation,
+                holder,
                 seed,
             }
         }
@@ -1143,6 +1164,39 @@ mod tests {
             other_root.root_der()
         )
         .is_err());
+
+        // #221: the returned holder is a USABLE hybrid signer, not just pubkeys —
+        // it can sign, and its bound-hybrid signature verifies against the
+        // member's pinned keys (so a downstream can co-scrub / cast a quorum vote
+        // as this member, completing the hardware-free mesh simulation).
+        let (ed_sig_b64, pqc_sig_b64) = m
+            .holder
+            .sign_bound(b"canonical quorum bytes")
+            .await
+            .unwrap();
+        let sig = ThresholdSignature {
+            member_id: m.member.member_id.clone(),
+            ed25519_signature_base64: ed_sig_b64,
+            mldsa65_signature_base64: Some(pqc_sig_b64),
+        };
+        assert_eq!(
+            verify_threshold_signatures(
+                b"canonical quorum bytes",
+                std::slice::from_ref(&m.member),
+                std::slice::from_ref(&sig),
+                1,
+            ),
+            Ok(1),
+            "the mock holder's hybrid signature must verify against its own member"
+        );
+
+        // Determinism: the same seed reproduces the SAME member — pubkeys and
+        // signer — so rotation/idempotency tests are stable (the ML-DSA half is
+        // seed-derived, not random).
+        let again = ca
+            .attest_member([1; 32], "A1", "2026-07-26T00:00:00Z")
+            .await;
+        assert_eq!(m.member, again.member);
     }
 
     #[tokio::test]
