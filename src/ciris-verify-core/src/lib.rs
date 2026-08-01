@@ -69,6 +69,9 @@ pub mod attest_bundle;
 pub mod attest_heartbeat;
 pub mod audit;
 pub mod binary_format;
+/// Peer-presentable build-attestation bundle (#181) — binds the presenting
+/// node's federation key to the pipeline-signed manifest it claims to run.
+pub mod build_attestation_bundle;
 pub mod cache;
 /// CC 2.3.2.1 canonical-hash subject codec (#201) — tagged subjects, bare hex rejected.
 pub mod canonical_subject;
