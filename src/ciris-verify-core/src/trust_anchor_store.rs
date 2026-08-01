@@ -329,6 +329,56 @@ pub mod baked {
     pub const YUBICO_ROOT_SHA256: &str =
         "62760c6a6ef91679f454c8902b80fd009825b3f25da90f1fbace2ec6586cd5a8";
 
+    /// **Google Hardware Attestation Root** (`serialNumber = f92009e853b6b045`,
+    /// valid 2022-03-20 → 2042-03-15).
+    ///
+    /// Provenance (fetched + verified 2026-08-01): served by Google's official
+    /// endpoint `https://android.googleapis.com/attestation/root`, and
+    /// **independently confirmed byte-identical** on the published
+    /// `developer.android.com/privacy-and-security/security-key-attestation`
+    /// page. Self-signature verified. Two independent Google sources agree.
+    const GOOGLE_HW_ROOT_PEM: &str = include_str!("roots/google-hardware-attestation-root.pem");
+
+    /// Pinned `sha256(DER)` of [`google_hardware_attestation_root`].
+    pub const GOOGLE_HW_ROOT_SHA256: &str =
+        "cedb1cb6dc896ae5ec797348bce9286753c2b38ee71ce0fbe34a9a1248800dfc";
+
+    /// **Google `Key Attestation CA1`** (`CN = Key Attestation CA1, O = Google
+    /// LLC`, valid 2025-07-17 → 2035-07-15).
+    ///
+    /// Google operates **more than one** attestation root, and this newer one
+    /// is served alongside the 2022 root by the same official endpoint — which
+    /// is precisely why anchors belong in a store that can hold a *set* and why
+    /// [`crate::device_attestation::verify_android_key_attestation_with_store`]
+    /// tries **every** admissible anchor rather than a single pinned root.
+    ///
+    /// Same provenance + independent confirmation as
+    /// [`GOOGLE_HW_ROOT_SHA256`].
+    const GOOGLE_KEY_ATTEST_CA1_PEM: &str = include_str!("roots/google-key-attestation-ca1.pem");
+
+    /// Pinned `sha256(DER)` of [`google_key_attestation_ca1`].
+    pub const GOOGLE_KEY_ATTEST_CA1_SHA256: &str =
+        "6d9db4ce6c5c0b293166d08986e05774a8776ceb525d9e4329520de12ba4bcc0";
+
+    /// **Apple App Attestation Root CA** (`CN = Apple App Attestation Root CA,
+    /// O = Apple Inc.`, valid 2020-03-18 → 2045-03-15).
+    ///
+    /// Provenance (fetched + verified 2026-08-01): Apple's official certificate
+    /// authority page,
+    /// `https://www.apple.com/certificateauthority/Apple_App_Attestation_Root_CA.pem`.
+    /// Self-signature verified.
+    ///
+    /// **Baked ahead of its validator.** The Apple App Attest *verifier* is
+    /// still an open leg of #199 (attestation objects are CBOR, not X.509), so
+    /// nothing consumes this anchor yet. It is pinned now so the trust decision
+    /// is reviewed independently of the parsing work — an anchor with no
+    /// validator is inert, never a weakening.
+    const APPLE_APP_ATTEST_ROOT_PEM: &str = include_str!("roots/apple-app-attestation-root-ca.pem");
+
+    /// Pinned `sha256(DER)` of [`apple_app_attestation_root`].
+    pub const APPLE_APP_ATTEST_ROOT_SHA256: &str =
+        "1cb9823ba28ba6ad2d33a006941de2ae4f513ef1d4e831b9f7e0fa7b6242c932";
+
     /// A baked anchor failed its integrity check. Fail-closed: callers get no
     /// anchor rather than an unverified one.
     #[derive(Debug, Clone, PartialEq, Eq)]
@@ -415,6 +465,42 @@ pub mod baked {
         )
     }
 
+    /// The Google Hardware Attestation Root (2022), DER — digest-checked.
+    ///
+    /// # Errors
+    /// [`BakedRootError`] on malformed PEM or fingerprint mismatch.
+    pub fn google_hardware_attestation_root() -> Result<Vec<u8>, BakedRootError> {
+        load(
+            "google-hardware-attestation-root",
+            GOOGLE_HW_ROOT_PEM,
+            GOOGLE_HW_ROOT_SHA256,
+        )
+    }
+
+    /// Google `Key Attestation CA1` (2025), DER — digest-checked.
+    ///
+    /// # Errors
+    /// [`BakedRootError`] on malformed PEM or fingerprint mismatch.
+    pub fn google_key_attestation_ca1() -> Result<Vec<u8>, BakedRootError> {
+        load(
+            "google-key-attestation-ca1",
+            GOOGLE_KEY_ATTEST_CA1_PEM,
+            GOOGLE_KEY_ATTEST_CA1_SHA256,
+        )
+    }
+
+    /// The Apple App Attestation Root CA, DER — digest-checked.
+    ///
+    /// # Errors
+    /// [`BakedRootError`] on malformed PEM or fingerprint mismatch.
+    pub fn apple_app_attestation_root() -> Result<Vec<u8>, BakedRootError> {
+        load(
+            "apple-app-attestation-root-ca",
+            APPLE_APP_ATTEST_ROOT_PEM,
+            APPLE_APP_ATTEST_ROOT_SHA256,
+        )
+    }
+
     /// The store verify ships with.
     ///
     /// Contains every anchor that is **baked and hardware-validated** today —
@@ -426,6 +512,7 @@ pub mod baked {
     #[must_use]
     pub fn default_store() -> TrustAnchorStore {
         let mut store = TrustAnchorStore::new();
+
         if let Ok(der) = yubico_attestation_root() {
             store = store.with_store(single(
                 environments::YUBIKEY_PIV,
@@ -433,6 +520,34 @@ pub mod baked {
                 vec![der],
             ));
         }
+
+        // Google runs MORE THAN ONE attestation root; both ride in one store
+        // for the Android environment and the validator tries each.
+        let google: Vec<Vec<u8>> = [
+            google_hardware_attestation_root(),
+            google_key_attestation_ca1(),
+        ]
+        .into_iter()
+        .flatten()
+        .collect();
+        if !google.is_empty() {
+            store = store.with_store(single(
+                environments::ANDROID_KEYSTORE,
+                Purpose::KeyAttestation,
+                google,
+            ));
+        }
+
+        // Baked ahead of its validator (the Apple leg of #199 is still open):
+        // an anchor with no consumer is inert, never a weakening.
+        if let Ok(der) = apple_app_attestation_root() {
+            store = store.with_store(single(
+                environments::APPLE_APP_ATTEST,
+                Purpose::KeyAttestation,
+                vec![der],
+            ));
+        }
+
         store
     }
 
@@ -811,9 +926,17 @@ mod tests {
                 .len(),
             1
         );
+        // Containment asserted by IDENTITY, not by emptiness: the Android slot
+        // legitimately holds Google's roots now, so the property under test is
+        // that the *Yubico* anchor specifically is not among them.
+        use sha2::{Digest, Sha256};
+        let android: Vec<String> = s
+            .resolve_x509(Purpose::KeyAttestation, environments::ANDROID_KEYSTORE)
+            .iter()
+            .map(|d| hex::encode(Sha256::digest(d)))
+            .collect();
         assert!(
-            s.resolve_x509(Purpose::KeyAttestation, environments::ANDROID_KEYSTORE)
-                .is_empty(),
+            !android.contains(&baked::YUBICO_ROOT_SHA256.to_string()),
             "the Yubico root must not be reachable as an Android anchor"
         );
         assert!(
@@ -823,15 +946,100 @@ mod tests {
         );
     }
 
-    /// Classes with no baked anchor yield no evidence — not an error.
+    /// Every baked anchor must match its pinned digest — the bake is validated,
+    /// not pasted, for all of them.
+    #[test]
+    fn every_baked_anchor_matches_its_pinned_fingerprint() {
+        use sha2::{Digest, Sha256};
+        for (name, loaded, pinned) in [
+            (
+                "yubico",
+                baked::yubico_attestation_root(),
+                baked::YUBICO_ROOT_SHA256,
+            ),
+            (
+                "google-hw-root",
+                baked::google_hardware_attestation_root(),
+                baked::GOOGLE_HW_ROOT_SHA256,
+            ),
+            (
+                "google-key-attestation-ca1",
+                baked::google_key_attestation_ca1(),
+                baked::GOOGLE_KEY_ATTEST_CA1_SHA256,
+            ),
+            (
+                "apple-app-attest",
+                baked::apple_app_attestation_root(),
+                baked::APPLE_APP_ATTEST_ROOT_SHA256,
+            ),
+        ] {
+            let der = loaded.unwrap_or_else(|e| panic!("{name} must load: {e}"));
+            assert!(!der.is_empty(), "{name} empty");
+            assert_eq!(
+                hex::encode(Sha256::digest(&der)),
+                pinned,
+                "{name}: embedded certificate is not the reviewed one"
+            );
+        }
+    }
+
+    /// Google operates MORE THAN ONE attestation root — both must be reachable
+    /// under the Android environment. This is the concrete case that a single
+    /// pinned root could not have expressed.
+    #[test]
+    fn android_environment_carries_both_google_roots() {
+        let s = baked::default_store();
+        let anchors = s.resolve_x509(Purpose::KeyAttestation, environments::ANDROID_KEYSTORE);
+        assert_eq!(anchors.len(), 2, "both Google roots must be admissible");
+
+        use sha2::{Digest, Sha256};
+        let digests: Vec<String> = anchors
+            .iter()
+            .map(|d| hex::encode(Sha256::digest(d)))
+            .collect();
+        assert!(digests.contains(&baked::GOOGLE_HW_ROOT_SHA256.to_string()));
+        assert!(digests.contains(&baked::GOOGLE_KEY_ATTEST_CA1_SHA256.to_string()));
+    }
+
+    /// Containment holds across the populated store: no baked anchor leaks into
+    /// another environment.
+    #[test]
+    fn baked_anchors_stay_in_their_own_environments() {
+        let s = baked::default_store();
+        assert_eq!(
+            s.resolve(Purpose::KeyAttestation, environments::YUBIKEY_PIV)
+                .len(),
+            1
+        );
+        assert_eq!(
+            s.resolve(Purpose::KeyAttestation, environments::ANDROID_KEYSTORE)
+                .len(),
+            2
+        );
+        assert_eq!(
+            s.resolve(Purpose::KeyAttestation, environments::APPLE_APP_ATTEST)
+                .len(),
+            1
+        );
+        // Nothing is reachable for a purpose it was not admitted for.
+        for env in [
+            environments::YUBIKEY_PIV,
+            environments::ANDROID_KEYSTORE,
+            environments::APPLE_APP_ATTEST,
+        ] {
+            assert!(
+                s.resolve(Purpose::Certificate, env).is_empty(),
+                "{env}: key-attestation anchors must not serve certificate validation"
+            );
+        }
+    }
+
+    /// Classes with no baked anchor yield no evidence — not an error. TPM is
+    /// still unsourced (a vendor SET, tracked on #199).
     #[test]
     fn unbaked_classes_are_absent_not_failing() {
         let s = baked::default_store();
-        for env in [
-            environments::ANDROID_KEYSTORE,
-            environments::APPLE_APP_ATTEST,
-            environments::TPM_EK,
-        ] {
+        for env in [environments::TPM_EK, environments::FIDO_MDS] {
             assert!(s.resolve(Purpose::KeyAttestation, env).is_empty());
         }
     }
