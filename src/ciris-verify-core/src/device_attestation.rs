@@ -343,6 +343,55 @@ pub fn verify_android_key_attestation(
     })
 }
 
+/// Verify an Android Key Attestation chain, resolving the root from a
+/// **constrained** [`TrustAnchorStore`](crate::trust_anchor_store::TrustAnchorStore)
+/// instead of taking a hand-pinned root (CIRISVerify#227).
+///
+/// Anchors are drawn from `(Purpose::KeyAttestation, environments::ANDROID_KEYSTORE)`
+/// only, so a root admitted for TLS or for a different device class can never
+/// satisfy this check — the containment a flat root list cannot express.
+///
+/// Succeeds if the chain roots at **any** admissible anchor (a vendor may
+/// operate several, and roots rotate). Returns `Ok(None)` when the store holds
+/// no anchor for this environment: that is **no hardware evidence**, not a
+/// failure — callers must not turn it into a refusal (see the module docs).
+///
+/// # Errors
+///
+/// An [`AndroidAttestationError`] when anchors *were* available but none
+/// validated the chain — the last failure is reported.
+pub fn verify_android_key_attestation_with_store(
+    store: &crate::trust_anchor_store::TrustAnchorStore,
+    leaf_der: &[u8],
+    intermediate_ders: &[&[u8]],
+    expected_pubkey: &[u8],
+    expected_challenge: &[u8],
+) -> Result<Option<AndroidAttestationVerdict>, AndroidAttestationError> {
+    use crate::trust_anchor_store::{environments, Purpose};
+
+    let anchors = store.resolve_x509(Purpose::KeyAttestation, environments::ANDROID_KEYSTORE);
+    if anchors.is_empty() {
+        return Ok(None);
+    }
+
+    let mut last_err = None;
+    for root in anchors {
+        match verify_android_key_attestation(
+            leaf_der,
+            intermediate_ders,
+            root,
+            expected_pubkey,
+            expected_challenge,
+        ) {
+            Ok(v) => return Ok(Some(v)),
+            Err(e) => last_err = Some(e),
+        }
+    }
+    Err(last_err.unwrap_or(AndroidAttestationError::ChainInvalid {
+        detail: "no admissible anchor validated the chain".to_string(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -631,6 +680,82 @@ mod tests {
         assert_eq!(verdict.hardware_class(), "Android_TEE");
         assert!(verdict.refutes("Android_StrongBox"));
         assert!(!verdict.refutes("Android_TEE"));
+    }
+
+    // --- store-resolved path (#227) ---
+
+    /// The store-resolved entry point verifies against an anchor drawn from
+    /// the correct (purpose, environment) slot.
+    #[test]
+    fn store_resolved_verification_succeeds() {
+        use crate::trust_anchor_store::{environments, single, Purpose, TrustAnchorStore};
+
+        let leaf_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (leaf, root) = mock_chain(&leaf_kp, 2, b"challenge-1");
+        let store = TrustAnchorStore::new().with_store(single(
+            environments::ANDROID_KEYSTORE,
+            Purpose::KeyAttestation,
+            vec![root],
+        ));
+
+        let verdict = verify_android_key_attestation_with_store(
+            &store,
+            &leaf,
+            &[],
+            &raw_ed(&leaf_kp),
+            b"challenge-1",
+        )
+        .unwrap()
+        .expect("anchor present");
+        assert_eq!(verdict.hardware_class(), "Android_StrongBox");
+    }
+
+    /// An empty store is "no hardware evidence" — `Ok(None)`, NOT an error.
+    /// Hardware is a signal, not a requirement.
+    #[test]
+    fn empty_store_is_no_evidence_not_a_failure() {
+        use crate::trust_anchor_store::TrustAnchorStore;
+
+        let leaf_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (leaf, _root) = mock_chain(&leaf_kp, 2, b"challenge-1");
+
+        let out = verify_android_key_attestation_with_store(
+            &TrustAnchorStore::new(),
+            &leaf,
+            &[],
+            &raw_ed(&leaf_kp),
+            b"challenge-1",
+        )
+        .unwrap();
+        assert!(out.is_none(), "a store miss must not be an error");
+    }
+
+    /// The containment property, end-to-end: the SAME root filed under a
+    /// different environment does not satisfy an Android lookup.
+    #[test]
+    fn anchor_filed_under_another_environment_does_not_apply() {
+        use crate::trust_anchor_store::{environments, single, Purpose, TrustAnchorStore};
+
+        let leaf_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (leaf, root) = mock_chain(&leaf_kp, 2, b"challenge-1");
+        let store = TrustAnchorStore::new().with_store(single(
+            environments::YUBIKEY_PIV, // right root, WRONG environment
+            Purpose::KeyAttestation,
+            vec![root],
+        ));
+
+        let out = verify_android_key_attestation_with_store(
+            &store,
+            &leaf,
+            &[],
+            &raw_ed(&leaf_kp),
+            b"challenge-1",
+        )
+        .unwrap();
+        assert!(
+            out.is_none(),
+            "an anchor scoped to another environment must not be reachable here"
+        );
     }
 
     /// A leaf with no KeyDescription is refused rather than silently treated as

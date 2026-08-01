@@ -130,6 +130,9 @@ pub mod tpm_attest;
 pub mod transparency;
 pub mod transport_binding;
 pub mod tree_verify;
+/// CoTS-shaped constrained trust-anchor store (#227) — anchors resolved by
+/// (purpose, environment) instead of hand-pinned per call site.
+pub mod trust_anchor_store;
 pub mod types;
 pub mod unified;
 pub mod validation;
