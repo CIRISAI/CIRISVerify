@@ -294,6 +294,82 @@ pub async fn produce_accord_custody_attestation(
     ))
 }
 
+/// Produce a custody attestation **and immediately verify it with the real
+/// verifier** before handing it back (CIRISVerify#227).
+///
+/// ## Why generation-time self-validation
+///
+/// Verify owns both halves — it mints attestations and it checks them — so
+/// producer↔verifier coherence is a property we can prove at mint time instead
+/// of discovering when a peer rejects us. This repo has the scar that motivates
+/// it: v10.4.0 found that `verify_provenance_chain` **rejected every record its
+/// own producers emitted**, and it went undetected because the test fixture
+/// signed the same wrong bytes. Running the *real* verifier here closes that
+/// whole cargo-green/artifact-broken class for this path — a ceremony fails
+/// loudly at the operator's terminal rather than producing an artifact that
+/// only fails later, in the field, on someone else's gate.
+///
+/// The holder member is reconstructed from the signer's **own** public keys, so
+/// this proves the object verifies against the identity that actually signed it.
+///
+/// Anchors come from `store` at
+/// `(Purpose::KeyAttestation, environments::YUBIKEY_PIV)`. If the store holds
+/// no PIV anchor, the attestation is returned **unvalidated with `None`** —
+/// absence of a pinned root is *no hardware evidence*, not a failure (hardware
+/// is a signal, not a requirement). Callers that require validation should
+/// treat `None` as "could not self-check" and decide their own policy.
+///
+/// # Errors
+///
+/// [`VerifyError`] on a signer/serialization fault, or — the point of this
+/// function — if the freshly-minted attestation does **not** verify.
+pub async fn produce_accord_custody_attestation_validated(
+    holder: &dyn SelfSigner,
+    attestation_9c_der: &[u8],
+    attestation_chain_ders: &[&[u8]],
+    custody_tier: &str,
+    signed_at: &str,
+    store: &crate::trust_anchor_store::TrustAnchorStore,
+) -> Result<(SignedCegObject, Option<CustodyVerdict>), VerifyError> {
+    use crate::trust_anchor_store::{environments, Purpose};
+
+    let obj = produce_accord_custody_attestation(
+        holder,
+        attestation_9c_der,
+        attestation_chain_ders,
+        custody_tier,
+        signed_at,
+    )
+    .await?;
+
+    let anchors = store.resolve_x509(Purpose::KeyAttestation, environments::YUBIKEY_PIV);
+    if anchors.is_empty() {
+        return Ok((obj, None));
+    }
+
+    let b64 = base64::engine::general_purpose::STANDARD;
+    let member = ThresholdMember {
+        member_id: holder.key_id().to_string(),
+        ed25519_public_key_base64: b64.encode(holder.ed25519_public_key().await?),
+        mldsa65_public_key_base64: Some(b64.encode(holder.mldsa65_public_key().await?)),
+        role: None,
+    };
+
+    let mut last = None;
+    for root in anchors {
+        match verify_accord_custody_attestation(&obj, &member, root) {
+            Ok(v) => return Ok((obj, Some(v))),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(VerifyError::IntegrityError {
+        message: format!(
+            "self-validation FAILED at generation — this attestation would be rejected by peers: {}",
+            last.map_or_else(|| "no anchor validated it".to_string(), |e| e.to_string())
+        ),
+    })
+}
+
 fn str_field<'a>(v: &'a Value, field: &str) -> Result<&'a str, CustodyError> {
     v.get(field)
         .and_then(Value::as_str)
@@ -1489,6 +1565,117 @@ mod tests {
             },
             other => panic!("expected ExternalSecureElement, got {other:?}"),
         }
+    }
+
+    // =======================================================================
+    // Generation-time self-validation (#227). Verify owns produce AND verify,
+    // so producer↔verifier coherence is provable at mint time — the systemic
+    // guard against the v10.4.0 class where a verifier rejected every record
+    // its own producers emitted.
+    // =======================================================================
+
+    /// Helper: a holder + its mock chain, plus a store carrying that mock root
+    /// under the PIV environment.
+    fn self_validation_fixture(
+        seed: [u8; 32],
+    ) -> (
+        crate::self_at_login::HybridSigningIdentity,
+        Vec<u8>,
+        Vec<u8>,
+        Vec<u8>,
+    ) {
+        use crate::self_at_login::HybridSigningIdentity;
+        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
+
+        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
+        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
+        let holder = HybridSigningIdentity::new(
+            "accord-holder-a1",
+            Ed25519Signer::from_seed(&seed).unwrap(),
+            MlDsa65Signer::new().unwrap(),
+        );
+        (holder, c9, f9, root)
+    }
+
+    /// A good mint self-validates and returns its own verdict.
+    #[tokio::test]
+    async fn generation_self_validates_against_the_store() {
+        use crate::trust_anchor_store::{baked, TrustAnchorStore};
+
+        let (holder, c9, f9, root) = self_validation_fixture([44u8; 32]);
+        let store = TrustAnchorStore::new().with_store(baked::anchor_for(
+            crate::trust_anchor_store::environments::YUBIKEY_PIV,
+            root,
+        ));
+
+        let (obj, verdict) = produce_accord_custody_attestation_validated(
+            &holder,
+            &c9,
+            &[f9.as_slice()],
+            CUSTODY_TIER_PORTABLE_2FA,
+            "2026-08-01T00:00:00Z",
+            &store,
+        )
+        .await
+        .expect("a well-formed mint must self-validate");
+
+        assert_eq!(obj.kind, ACCORD_CUSTODY_ATTESTATION_KIND);
+        let v = verdict.expect("anchor present → verdict present");
+        assert_eq!(v.hardware_class, "YubiKey_5_FIPS");
+        assert!(v.fips_certified && v.touch_always);
+    }
+
+    /// THE point: a mint whose chain does not root at the store's anchor FAILS
+    /// AT GENERATION, rather than producing an artifact that only fails later
+    /// on someone else's gate.
+    #[tokio::test]
+    async fn generation_fails_loudly_when_the_mint_would_not_verify() {
+        use crate::trust_anchor_store::{baked, environments, TrustAnchorStore};
+
+        let (holder, c9, f9, _root) = self_validation_fixture([45u8; 32]);
+        // A store holding a DIFFERENT root — the mint cannot root at it.
+        let (_h2, _c2, _f2, foreign_root) = self_validation_fixture([46u8; 32]);
+        let store = TrustAnchorStore::new()
+            .with_store(baked::anchor_for(environments::YUBIKEY_PIV, foreign_root));
+
+        let err = produce_accord_custody_attestation_validated(
+            &holder,
+            &c9,
+            &[f9.as_slice()],
+            CUSTODY_TIER_PORTABLE_2FA,
+            "2026-08-01T00:00:00Z",
+            &store,
+        )
+        .await
+        .expect_err("a mint that would be rejected by peers must fail at generation");
+
+        assert!(
+            err.to_string().contains("self-validation FAILED"),
+            "the error must name the failure plainly, got: {err}"
+        );
+    }
+
+    /// No pinned anchor is "could not self-check", NOT a failure — hardware is
+    /// a signal, not a requirement.
+    #[tokio::test]
+    async fn generation_without_an_anchor_is_unvalidated_not_failed() {
+        use crate::trust_anchor_store::TrustAnchorStore;
+
+        let (holder, c9, f9, _root) = self_validation_fixture([47u8; 32]);
+
+        let (obj, verdict) = produce_accord_custody_attestation_validated(
+            &holder,
+            &c9,
+            &[f9.as_slice()],
+            CUSTODY_TIER_PORTABLE_2FA,
+            "2026-08-01T00:00:00Z",
+            &TrustAnchorStore::new(),
+        )
+        .await
+        .expect("an empty store must not turn minting into an error");
+
+        assert_eq!(obj.kind, ACCORD_CUSTODY_ATTESTATION_KIND);
+        assert!(verdict.is_none(), "no anchor → no self-check verdict");
     }
 
     #[test]

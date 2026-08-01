@@ -32,6 +32,12 @@ Thumbs.db
 # Exception: the pinned PUBLIC Yubico Attestation Root 1 CA cert is a deliberate,
 # public trust-anchor fixture for the accord custody-chain audit test (no secret).
 !accord_ceremony_artifacts/yubico-attestation-root-1.pem
+# Exception: BAKED PUBLIC trust anchors (CIRISVerify#227). These are CA root
+# certificates `include_str!`'d into the binary and digest-pinned in code — public
+# by definition, and the build does not compile without them. Kept as readable PEM
+# so a reviewer can audit exactly what the fleet trusts. NEVER put a private key
+# here; the `*.pem` rule above stays the default for everything else.
+!src/ciris-verify-core/src/roots/*.pem
 *.der
 *.jks
 secrets/
