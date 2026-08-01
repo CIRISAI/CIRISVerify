@@ -78,6 +78,9 @@ pub mod canonical_subject;
 pub mod ceg_error;
 pub mod ceg_outbox;
 pub mod config;
+/// Device-attestation chain validation (#199) — Android Key Attestation to a
+/// pinned vendor root. Hardware is a trust signal, never a requirement.
+pub mod device_attestation;
 pub mod dns;
 pub mod doc_integrity;
 pub mod engine;
