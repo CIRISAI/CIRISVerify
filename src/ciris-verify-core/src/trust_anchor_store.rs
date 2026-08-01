@@ -301,6 +301,149 @@ impl TrustAnchorStore {
     }
 }
 
+/// **Baked** trust anchors — validated at load, not pasted.
+///
+/// Anchors ship as auditable PEM (`src/roots/*.pem`, `include_str!`'d) rather
+/// than opaque byte arrays, so a reviewer can read what is trusted. Every bake
+/// carries a **pinned SHA-256 of its DER**, checked on every load: swapping the
+/// PEM for a different certificate fails loudly instead of silently changing
+/// what the fleet trusts. Same discipline as the #107 accord genesis bake — the
+/// bake is *validated*, not pasted.
+pub mod baked {
+    use super::{environments, single, ConciseTaStore, Purpose, TrustAnchorStore};
+
+    /// **Yubico Attestation Root 1.**
+    ///
+    /// Provenance: `developers.yubico.com/PKI/yubico-ca-1.pem`, the durable
+    /// root of Yubico's 2024-12 PKI (the 4-level chain
+    /// `9c → f9 → Yubico PIV Attestation B 1 → Yubico Attestation Root 1`).
+    /// This exact certificate was exercised end-to-end against a physical
+    /// **YubiKey 5 FIPS fw 5.7.4** during the #91 validation and the #118
+    /// six-key HUMANITY_ACCORD ceremony — so it is hardware-confirmed, not
+    /// merely downloaded.
+    ///
+    /// Pin the **root**, never the rotating `B 1` intermediate.
+    const YUBICO_ROOT_PEM: &str = include_str!("roots/yubico-attestation-root-1.pem");
+
+    /// Pinned `sha256(DER)` of [`yubico_attestation_root`], lowercase hex.
+    pub const YUBICO_ROOT_SHA256: &str =
+        "62760c6a6ef91679f454c8902b80fd009825b3f25da90f1fbace2ec6586cd5a8";
+
+    /// A baked anchor failed its integrity check. Fail-closed: callers get no
+    /// anchor rather than an unverified one.
+    #[derive(Debug, Clone, PartialEq, Eq)]
+    pub enum BakedRootError {
+        /// The embedded PEM did not contain a parseable CERTIFICATE block.
+        MalformedPem {
+            /// Which root.
+            which: &'static str,
+        },
+        /// The DER digest did not match the pinned fingerprint — the embedded
+        /// certificate is not the one this build was reviewed against.
+        FingerprintMismatch {
+            /// Which root.
+            which: &'static str,
+            /// The pinned digest.
+            expected: &'static str,
+            /// What the embedded bytes actually hash to.
+            found: String,
+        },
+    }
+
+    impl std::fmt::Display for BakedRootError {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            match self {
+                Self::MalformedPem { which } => write!(f, "baked root {which}: malformed PEM"),
+                Self::FingerprintMismatch {
+                    which,
+                    expected,
+                    found,
+                } => write!(
+                    f,
+                    "baked root {which}: fingerprint mismatch (expected {expected}, found {found})"
+                ),
+            }
+        }
+    }
+
+    impl std::error::Error for BakedRootError {}
+
+    /// Decode the first `CERTIFICATE` block of a PEM document to DER.
+    ///
+    /// Deliberately strict and dependency-free: it takes only the base64
+    /// between the exact BEGIN/END markers.
+    fn pem_to_der(pem: &str) -> Option<Vec<u8>> {
+        use base64::Engine;
+        let body = pem
+            .split("-----BEGIN CERTIFICATE-----")
+            .nth(1)?
+            .split("-----END CERTIFICATE-----")
+            .next()?;
+        let b64: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+        base64::engine::general_purpose::STANDARD.decode(b64).ok()
+    }
+
+    /// Load a baked PEM and enforce its pinned digest.
+    fn load(
+        which: &'static str,
+        pem: &str,
+        pinned: &'static str,
+    ) -> Result<Vec<u8>, BakedRootError> {
+        use sha2::{Digest, Sha256};
+        let der = pem_to_der(pem).ok_or(BakedRootError::MalformedPem { which })?;
+        let found = hex::encode(Sha256::digest(&der));
+        if found != pinned {
+            return Err(BakedRootError::FingerprintMismatch {
+                which,
+                expected: pinned,
+                found,
+            });
+        }
+        Ok(der)
+    }
+
+    /// The Yubico Attestation Root 1, DER — digest-checked on every call.
+    ///
+    /// # Errors
+    /// [`BakedRootError`] if the embedded PEM is malformed or does not match
+    /// [`YUBICO_ROOT_SHA256`].
+    pub fn yubico_attestation_root() -> Result<Vec<u8>, BakedRootError> {
+        load(
+            "yubico-attestation-root-1",
+            YUBICO_ROOT_PEM,
+            YUBICO_ROOT_SHA256,
+        )
+    }
+
+    /// The store verify ships with.
+    ///
+    /// Contains every anchor that is **baked and hardware-validated** today —
+    /// currently the Yubico PIV root. Google / Apple / TPM-vendor anchors are
+    /// deliberately absent until their certificates are sourced and reviewed:
+    /// an absent anchor means *no hardware evidence for that class*, which is a
+    /// measurement, **not** a refusal (see the module docs). Callers add their
+    /// own anchors with [`TrustAnchorStore::with_store`].
+    #[must_use]
+    pub fn default_store() -> TrustAnchorStore {
+        let mut store = TrustAnchorStore::new();
+        if let Ok(der) = yubico_attestation_root() {
+            store = store.with_store(single(
+                environments::YUBIKEY_PIV,
+                Purpose::KeyAttestation,
+                vec![der],
+            ));
+        }
+        store
+    }
+
+    /// A single-anchor store for `environment`, for callers supplying their own
+    /// reviewed root (e.g. the Google Hardware Attestation Root).
+    #[must_use]
+    pub fn anchor_for(environment: &str, der: Vec<u8>) -> ConciseTaStore {
+        single(environment, Purpose::KeyAttestation, vec![der])
+    }
+}
+
 /// The environment labels verify's own trust shapes use.
 ///
 /// These are the **superset** of what we need today, named once so a store
@@ -360,6 +503,116 @@ pub fn single(environment: &str, purpose: Purpose, x509_ders: Vec<Vec<u8>>) -> C
             tas: x509_ders.into_iter().map(TrustAnchor::x509).collect(),
             cas: Vec::new(),
         },
+    }
+}
+
+/// Cache for the **expensive, stable** half of attestation verification.
+///
+/// ## What may and may not be cached
+///
+/// Caching a *verification decision* is caching a security decision, and it is
+/// how stale-accept bugs happen. This cache therefore holds only the part that
+/// is expensive **and** a pure function of its inputs — the X.509 chain path
+/// validation — and never the volatile policy checks:
+///
+/// | Check | Cached | Why |
+/// |---|---|---|
+/// | Chain path validation (signatures) | **yes** | expensive; deterministic in `(leaf, intermediates, root)` |
+/// | `attestationChallenge` match | **never** | it *is* the anti-replay check — caching defeats its only purpose |
+/// | Attested-key binding | never | cheap; no reason to risk it |
+/// | Purpose/environment resolution | never | cheap, and a policy change must take effect immediately |
+/// | Revocation status | never | the classic stale-accept hole |
+///
+/// So a rotated policy or an expired challenge takes effect instantly, while
+/// repeated validation of the same chain still can't burn CPU — the DoS
+/// property we actually wanted.
+///
+/// ## Keying and bounds
+///
+/// The key is `sha256` over the **exact bytes** that determine the outcome
+/// (`leaf ‖ each intermediate ‖ root`) — never a weaker handle like a key_id,
+/// which an attacker could reuse across different chains. Capacity is bounded
+/// (an unbounded map is a memory-DoS), evicting oldest-first.
+///
+/// **Negative results are not cached.** Caching failures would let a transient
+/// fault persist and would let an attacker poison entries for a legitimate
+/// peer; the CPU-DoS argument is already answered by caching the positive path.
+#[derive(Debug)]
+pub struct ChainValidationCache {
+    entries: std::sync::Mutex<Vec<([u8; 32], u64)>>,
+    capacity: usize,
+}
+
+impl ChainValidationCache {
+    /// A cache holding at most `capacity` validated chains.
+    #[must_use]
+    pub fn with_capacity(capacity: usize) -> Self {
+        Self {
+            entries: std::sync::Mutex::new(Vec::new()),
+            capacity: capacity.max(1),
+        }
+    }
+
+    /// The cache key for a chain — `sha256(leaf ‖ intermediates… ‖ root)`.
+    #[must_use]
+    pub fn key(leaf: &[u8], intermediates: &[&[u8]], root: &[u8]) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+        let mut h = Sha256::new();
+        h.update(leaf);
+        for i in intermediates {
+            h.update(i);
+        }
+        h.update(root);
+        let digest = h.finalize();
+        let mut out = [0u8; 32];
+        out.copy_from_slice(&digest);
+        out
+    }
+
+    /// Has this exact chain already validated, and not yet expired?
+    ///
+    /// `now_epoch_secs` is caller-supplied — this crate is clock-free so
+    /// behaviour stays reproducible in tests (the same discipline as
+    /// [`crate::reconsider_dos`]).
+    #[must_use]
+    pub fn is_valid(&self, key: &[u8; 32], now_epoch_secs: u64) -> bool {
+        self.entries
+            .lock()
+            .is_ok_and(|e| e.iter().any(|(k, exp)| k == key && *exp > now_epoch_secs))
+    }
+
+    /// Record that this chain validated, expiring at `expires_at_epoch_secs`.
+    ///
+    /// The caller MUST bound the expiry by the evidence's own validity —
+    /// `min(policy_ttl, leaf notAfter)` — so a cache entry can never outlive
+    /// the certificate that justified it.
+    pub fn record_valid(&self, key: [u8; 32], expires_at_epoch_secs: u64) {
+        if let Ok(mut e) = self.entries.lock() {
+            e.retain(|(k, _)| k != &key);
+            if e.len() >= self.capacity {
+                e.remove(0);
+            }
+            e.push((key, expires_at_epoch_secs));
+        }
+    }
+
+    /// Drop entries that expired at or before `now_epoch_secs`.
+    pub fn evict_expired(&self, now_epoch_secs: u64) {
+        if let Ok(mut e) = self.entries.lock() {
+            e.retain(|(_, exp)| *exp > now_epoch_secs);
+        }
+    }
+
+    /// Number of entries currently held (diagnostics).
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.entries.lock().map_or(0, |e| e.len())
+    }
+
+    /// Is the cache empty?
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.len() == 0
     }
 }
 
@@ -529,6 +782,99 @@ mod tests {
         assert_eq!(c.get(environments::YUBIKEY_PIV), Some(&1));
         assert_eq!(c.get(environments::TPM_EK), Some(&3));
         assert_eq!(c.get(environments::APPLE_APP_ATTEST), None);
+    }
+
+    // --- baked roots ---
+
+    /// The bake is VALIDATED, not pasted: the embedded PEM must hash to the
+    /// pinned digest, so swapping the file fails loudly.
+    #[test]
+    fn baked_yubico_root_matches_its_pinned_fingerprint() {
+        let der = baked::yubico_attestation_root().expect("baked root must load");
+        assert!(!der.is_empty());
+
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            hex::encode(Sha256::digest(&der)),
+            baked::YUBICO_ROOT_SHA256,
+            "embedded certificate is not the reviewed one"
+        );
+    }
+
+    /// The baked root is reachable through the store at its own environment —
+    /// and only there.
+    #[test]
+    fn default_store_carries_the_yubico_root_scoped_to_piv() {
+        let s = baked::default_store();
+        assert_eq!(
+            s.resolve_x509(Purpose::KeyAttestation, environments::YUBIKEY_PIV)
+                .len(),
+            1
+        );
+        assert!(
+            s.resolve_x509(Purpose::KeyAttestation, environments::ANDROID_KEYSTORE)
+                .is_empty(),
+            "the Yubico root must not be reachable as an Android anchor"
+        );
+        assert!(
+            s.resolve_x509(Purpose::Certificate, environments::YUBIKEY_PIV)
+                .is_empty(),
+            "a key-attestation anchor must not serve certificate validation"
+        );
+    }
+
+    /// Classes with no baked anchor yield no evidence — not an error.
+    #[test]
+    fn unbaked_classes_are_absent_not_failing() {
+        let s = baked::default_store();
+        for env in [
+            environments::ANDROID_KEYSTORE,
+            environments::APPLE_APP_ATTEST,
+            environments::TPM_EK,
+        ] {
+            assert!(s.resolve(Purpose::KeyAttestation, env).is_empty());
+        }
+    }
+
+    // --- chain validation cache ---
+
+    #[test]
+    fn cache_hits_only_the_exact_chain_and_respects_expiry() {
+        let c = ChainValidationCache::with_capacity(8);
+        let k = ChainValidationCache::key(b"leaf", &[b"mid"], b"root");
+        let other = ChainValidationCache::key(b"leaf", &[b"mid"], b"OTHER-root");
+
+        assert!(!c.is_valid(&k, 100), "cold cache must miss");
+        c.record_valid(k, 200);
+        assert!(c.is_valid(&k, 100), "within TTL");
+        assert!(
+            !c.is_valid(&k, 200),
+            "expiry is exclusive — no stale accept"
+        );
+        assert!(!c.is_valid(&k, 300), "past TTL");
+        assert!(
+            !c.is_valid(&other, 100),
+            "a different root must not hit the same entry"
+        );
+    }
+
+    /// Unbounded growth is a memory-DoS; capacity is enforced.
+    #[test]
+    fn cache_is_bounded() {
+        let c = ChainValidationCache::with_capacity(4);
+        for i in 0..32u8 {
+            c.record_valid(ChainValidationCache::key(&[i], &[], b"root"), 999);
+        }
+        assert!(c.len() <= 4, "cache must not grow without bound");
+    }
+
+    #[test]
+    fn cache_evicts_expired_entries() {
+        let c = ChainValidationCache::with_capacity(8);
+        c.record_valid(ChainValidationCache::key(b"a", &[], b"r"), 50);
+        c.record_valid(ChainValidationCache::key(b"b", &[], b"r"), 500);
+        c.evict_expired(100);
+        assert_eq!(c.len(), 1);
     }
 
     #[test]
