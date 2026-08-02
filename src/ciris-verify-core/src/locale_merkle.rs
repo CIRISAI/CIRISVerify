@@ -17,19 +17,27 @@
 //! Burmese leaf can verify its inclusion in the parent root signed
 //! by the per-primitive steward.
 //!
-//! ## Leaf hash (§3.2.1.2)
+//! ## Leaf hash — **v2, CC 3.1.2.1** (normative)
 //!
 //! ```text
 //! leaf_hash[lang_code] = sha256(
-//!     0x00 ||                                  // RFC 6962 leaf-domain prefix
-//!     "ciris.locale_manifest.v1\n" ||
-//!     "target=" || target_string || "\n" ||
-//!     "locale=" || lang_code || "\n" ||
-//!     "files_root=" || files_merkle_root_hex || "\n" ||
-//!     "build_id=" || build_id || "\n" ||
-//!     "signer_identity=" || signer_key_id
+//!     0x00 ||                          // RFC 6962 leaf-domain prefix (binary, OUTSIDE the JSON)
+//!     JCS({
+//!       "domain":           "ciris.locale_manifest.v2",
+//!       "target":           target_string,
+//!       "locale":           lang_code,
+//!       "files_root":       files_merkle_root_hex,
+//!       "build_id":         build_id,
+//!       "signer_identity":  signer_key_id
+//!     })
 //! )
 //! ```
+//!
+//! **v11.0.0 wire break.** v1 concatenated `key=value\n` pairs. Several members
+//! are free text (`target`, `build_id`, `signer_identity`) and nothing rejected
+//! embedded newlines, so a crafted value could forge a field boundary. CC
+//! 3.1.2.1 replaced it with the JCS form — structure lives in the encoding, not
+//! in delimiters — and states *"Producers MUST emit v2."*
 //!
 //! ## Parent hash (§3.2.1.2)
 //!
@@ -48,6 +56,17 @@ use sha2::{Digest, Sha256};
 
 use crate::error::VerifyError;
 
+/// **v2 domain literal** for the per-locale leaf (**CC 3.1.2.1**, normative).
+/// Carried as the `domain` member of the JCS-canonicalized leaf object.
+pub const LOCALE_LEAF_DOMAIN_V2: &str = "ciris.locale_manifest.v2";
+
+/// **RETIRED (v11.0.0).** The v1 line-oriented domain prefix — superseded by
+/// [`LOCALE_LEAF_DOMAIN_V2`] per CC 3.1.2.1. Nothing in this crate hashes with
+/// it; kept so the old literal is recognizable in historical artifacts.
+#[deprecated(
+    since = "11.0.0",
+    note = "v1 leaf bytes are delimiter-injection-capable; CC 3.1.2.1 mandates the v2 JCS form. Use LOCALE_LEAF_DOMAIN_V2."
+)]
 /// Domain prefix for the per-locale leaf canonical bytes (§3.2.1.2).
 /// Trailing newline is part of the prefix.
 pub const LOCALE_LEAF_DOMAIN_PREFIX: &str = "ciris.locale_manifest.v1\n";
@@ -76,29 +95,57 @@ pub struct LocaleLeaf {
 }
 
 impl LocaleLeaf {
-    /// Compute the per-leaf hash per §3.2.1.2. Output is a 32-byte
-    /// SHA-256 digest — the value that participates in the parent
-    /// Merkle tree.
-    #[must_use]
-    pub fn leaf_hash(&self) -> [u8; 32] {
+    /// The **v2** per-leaf hash per **CC 3.1.2.1** —
+    /// `sha256(0x00 || JCS({…}))`.
+    ///
+    /// The RFC 6962 leaf-domain prefix byte stays **binary, outside the JSON**
+    /// (CC is explicit about this), so the tree keeps standard RFC 6962 domain
+    /// separation while the leaf's *content* gets JCS's injection-immune
+    /// encoding.
+    ///
+    /// # Why v2 replaced v1 (a wire break)
+    ///
+    /// v1 concatenated `key=value\n` pairs over free-text fields (`target`,
+    /// `build_id`, `signer_identity`) with no newline rejection, so a crafted
+    /// value could forge field boundaries. CC 3.1.2.1 replaced it with the JCS
+    /// form and states *"Producers MUST emit v2."*
+    ///
+    /// # Errors
+    /// [`VerifyError`] if JCS canonicalization fails.
+    pub fn leaf_hash(&self) -> Result<[u8; 32], crate::error::VerifyError> {
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "domain".to_string(),
+            serde_json::Value::String(LOCALE_LEAF_DOMAIN_V2.to_string()),
+        );
+        obj.insert(
+            "target".to_string(),
+            serde_json::Value::String(self.target.clone()),
+        );
+        // CC names this member `locale`; the struct field stays `lang_code`.
+        obj.insert(
+            "locale".to_string(),
+            serde_json::Value::String(self.lang_code.clone()),
+        );
+        obj.insert(
+            "files_root".to_string(),
+            serde_json::Value::String(self.files_root.clone()),
+        );
+        obj.insert(
+            "build_id".to_string(),
+            serde_json::Value::String(self.build_id.clone()),
+        );
+        obj.insert(
+            "signer_identity".to_string(),
+            serde_json::Value::String(self.signer_identity.clone()),
+        );
+
+        let jcs_bytes = crate::jcs::canonicalize(&serde_json::Value::Object(obj))?;
+
         let mut hasher = Sha256::new();
         hasher.update([RFC6962_LEAF_PREFIX]);
-        hasher.update(LOCALE_LEAF_DOMAIN_PREFIX);
-        hasher.update(b"target=");
-        hasher.update(&self.target);
-        hasher.update(b"\n");
-        hasher.update(b"locale=");
-        hasher.update(&self.lang_code);
-        hasher.update(b"\n");
-        hasher.update(b"files_root=");
-        hasher.update(&self.files_root);
-        hasher.update(b"\n");
-        hasher.update(b"build_id=");
-        hasher.update(&self.build_id);
-        hasher.update(b"\n");
-        hasher.update(b"signer_identity=");
-        hasher.update(&self.signer_identity);
-        hasher.finalize().into()
+        hasher.update(&jcs_bytes);
+        Ok(hasher.finalize().into())
     }
 }
 
@@ -164,7 +211,7 @@ pub fn verify_locale_inclusion(
         });
     }
 
-    let computed_leaf = leaf.leaf_hash();
+    let computed_leaf = leaf.leaf_hash()?;
     let proof_leaf = decode_hex32(&proof.leaf_hash, "leaf_hash")?;
     if computed_leaf != proof_leaf {
         return Err(VerifyError::IntegrityError {
@@ -260,17 +307,20 @@ pub fn merkle_root(leaves: &[[u8; 32]]) -> Result<[u8; 32], VerifyError> {
 /// Emit the federation_provenance attestation entry for the verified
 /// locale leaf. Call only after [`verify_locale_inclusion`] returned
 /// `Ok` — the entry asserts inclusion in the steward-signed parent.
-#[must_use]
+///
+/// # Errors
+/// [`VerifyError`] if the leaf's JCS canonicalization fails.
 pub fn locale_leaf_to_attestation_entries(
     leaf: &LocaleLeaf,
     attester: &str,
-) -> Vec<crate::federation_provenance::AttestationEntry> {
+) -> Result<Vec<crate::federation_provenance::AttestationEntry>, VerifyError> {
     use crate::federation_provenance::{dim, AttestationEntry};
-    vec![AttestationEntry::pass(
+    let leaf_hash = leaf.leaf_hash()?;
+    Ok(vec![AttestationEntry::pass(
         dim::provenance_build_manifest_locale(&leaf.target, &leaf.lang_code),
         attester,
     )
-    .with_source_ref(format!("sha256:{}", hex_encode(&leaf.leaf_hash())))]
+    .with_source_ref(format!("sha256:{}", hex_encode(&leaf_hash)))])
 }
 
 fn decode_hex32(s: &str, field: &str) -> Result<[u8; 32], VerifyError> {
@@ -336,11 +386,13 @@ mod tests {
         }
     }
 
-    /// FSD-002 §3.2.1.2 byte-layout stability: a change to the leaf
-    /// hash formula breaks federation-wide inclusion-proof
-    /// verification. Lock the byte representation.
+    /// **CC 3.1.2.1 v2 golden vector.** A change to the leaf-hash formula
+    /// breaks federation-wide inclusion-proof verification, so the exact JCS
+    /// form is written out here as an unambiguous target for a second
+    /// implementation. Note the `0x00` RFC 6962 prefix stays **binary, outside
+    /// the JSON**, exactly as CC specifies.
     #[test]
-    fn leaf_hash_matches_fsd_byte_layout() {
+    fn leaf_hash_matches_cc_v2_jcs_form() {
         let leaf = LocaleLeaf {
             target: "ios-mobile-bundle".into(),
             lang_code: "my".into(),
@@ -348,16 +400,38 @@ mod tests {
             build_id: "build-1".into(),
             signer_identity: "verify-steward-2026".into(),
         };
+        // JCS sorts members lexicographically.
+        let expected_jcs = format!(
+            r#"{{"build_id":"build-1","domain":"ciris.locale_manifest.v2","files_root":"{a}","locale":"my","signer_identity":"verify-steward-2026","target":"ios-mobile-bundle"}}"#,
+            a = "a".repeat(64),
+        );
         let mut expected = Sha256::new();
         expected.update([RFC6962_LEAF_PREFIX]);
-        expected.update(LOCALE_LEAF_DOMAIN_PREFIX);
-        expected.update(b"target=ios-mobile-bundle\n");
-        expected.update(b"locale=my\n");
-        expected.update(format!("files_root={}\n", "a".repeat(64)).as_bytes());
-        expected.update(b"build_id=build-1\n");
-        expected.update(b"signer_identity=verify-steward-2026");
+        expected.update(expected_jcs.as_bytes());
         let expected: [u8; 32] = expected.finalize().into();
-        assert_eq!(leaf.leaf_hash(), expected);
+        assert_eq!(leaf.leaf_hash().unwrap(), expected);
+    }
+
+    /// The v2 reason-for-existing, at the leaf layer: v1 concatenated
+    /// `key=value\n` over free-text fields, so a `target` carrying a newline
+    /// could forge a field boundary. JCS makes that impossible.
+    #[test]
+    fn leaf_hash_resists_delimiter_injection() {
+        let honest = LocaleLeaf {
+            target: "ios-mobile-bundle".into(),
+            lang_code: "my".into(),
+            files_root: "a".repeat(64),
+            build_id: "build-1".into(),
+            signer_identity: "verify-steward-2026".into(),
+        };
+        let mut injected = honest.clone();
+        injected.target = "ios-mobile-bundle\nlocale=en".into();
+
+        assert_ne!(
+            honest.leaf_hash().unwrap(),
+            injected.leaf_hash().unwrap(),
+            "a newline-bearing target must not collide with an honest leaf"
+        );
     }
 
     #[test]
@@ -421,7 +495,7 @@ mod tests {
             .iter()
             .map(|l| leaf_for("ios-mobile-bundle", l))
             .collect();
-        let leaf_hashes: Vec<[u8; 32]> = leaves.iter().map(LocaleLeaf::leaf_hash).collect();
+        let leaf_hashes: Vec<[u8; 32]> = leaves.iter().map(|l| l.leaf_hash().unwrap()).collect();
         let root = merkle_root(&leaf_hashes).unwrap();
 
         // Build the proof for leaf index 1 (id): sibling at level 0
@@ -448,7 +522,7 @@ mod tests {
             .iter()
             .map(|l| leaf_for("ios-mobile-bundle", l))
             .collect();
-        let leaf_hashes: Vec<[u8; 32]> = leaves.iter().map(LocaleLeaf::leaf_hash).collect();
+        let leaf_hashes: Vec<[u8; 32]> = leaves.iter().map(|l| l.leaf_hash().unwrap()).collect();
         let root = merkle_root(&leaf_hashes).unwrap();
 
         // Padded tree: [en, id, my, my]
@@ -474,7 +548,7 @@ mod tests {
             .iter()
             .map(|l| leaf_for("ios-mobile-bundle", l))
             .collect();
-        let leaf_hashes: Vec<[u8; 32]> = leaves.iter().map(LocaleLeaf::leaf_hash).collect();
+        let leaf_hashes: Vec<[u8; 32]> = leaves.iter().map(|l| l.leaf_hash().unwrap()).collect();
         let root = merkle_root(&leaf_hashes).unwrap();
 
         let sibling_0 = leaf_hashes[0];
@@ -503,7 +577,7 @@ mod tests {
     fn inclusion_proof_rejects_non_power_of_2_tree_size() {
         let leaf = leaf_for("ios-mobile-bundle", "id");
         let proof = LocaleInclusionProof {
-            leaf_hash: hex_encode(&leaf.leaf_hash()),
+            leaf_hash: hex_encode(&leaf.leaf_hash().unwrap()),
             lang_code: "id".to_string(),
             sibling_hashes: vec![],
             leaf_index: 0,
@@ -518,7 +592,7 @@ mod tests {
     fn inclusion_proof_rejects_out_of_range_leaf_index() {
         let leaf = leaf_for("ios-mobile-bundle", "id");
         let proof = LocaleInclusionProof {
-            leaf_hash: hex_encode(&leaf.leaf_hash()),
+            leaf_hash: hex_encode(&leaf.leaf_hash().unwrap()),
             lang_code: "id".to_string(),
             sibling_hashes: vec![],
             leaf_index: 5,
@@ -533,7 +607,7 @@ mod tests {
     fn inclusion_proof_rejects_wrong_sibling_count() {
         let leaf = leaf_for("ios-mobile-bundle", "id");
         let proof = LocaleInclusionProof {
-            leaf_hash: hex_encode(&leaf.leaf_hash()),
+            leaf_hash: hex_encode(&leaf.leaf_hash().unwrap()),
             lang_code: "id".to_string(),
             sibling_hashes: vec![hex_encode(&[0u8; 32])], // 1 sibling but tree_size=4 needs 2
             leaf_index: 1,
@@ -547,7 +621,7 @@ mod tests {
     #[test]
     fn locale_leaf_to_attestation_entries_emits_per_locale_dimension() {
         let leaf = leaf_for("ios-mobile-bundle", "my");
-        let entries = locale_leaf_to_attestation_entries(&leaf, "verify-steward-2026");
+        let entries = locale_leaf_to_attestation_entries(&leaf, "verify-steward-2026").unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(
             entries[0].dimension,
@@ -578,13 +652,13 @@ mod tests {
     fn inclusion_proof_rejects_lang_code_mismatch() {
         let leaf = leaf_for("ios-mobile-bundle", "id");
         let proof = LocaleInclusionProof {
-            leaf_hash: hex_encode(&leaf.leaf_hash()),
+            leaf_hash: hex_encode(&leaf.leaf_hash().unwrap()),
             lang_code: "my".to_string(), // doesn't match leaf.lang_code
             sibling_hashes: vec![],
             leaf_index: 0,
             tree_size: 1,
         };
-        let result = verify_locale_inclusion(&leaf, &proof, &leaf.leaf_hash());
+        let result = verify_locale_inclusion(&leaf, &proof, &leaf.leaf_hash().unwrap());
         assert!(result.is_err());
         assert!(format!("{:?}", result.unwrap_err()).contains("lang_code"));
     }

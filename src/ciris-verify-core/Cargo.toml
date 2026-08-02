@@ -134,6 +134,21 @@ goblin.workspace = true
 # dynamically against the platform's libsqlite3.
 rusqlite.workspace = true
 x509-parser = { version = "0.16", features = ["verify"] }
+# CBOR — Apple App Attest attestation objects are CBOR, not X.509
+# (CIRISVerify#199). Deliberately NOT platform-gated: App Attest verification is
+# a RELYING-PARTY operation — the iOS device produces the attestation, and
+# whoever receives it verifies, typically a Linux server. Gating this to
+# apple targets would ship the verifier where it is not needed and omit it
+# where it is (same reason `device_attestation`'s Android validator is not
+# android-gated).
+#
+# Cost is near-zero: already present in Cargo.lock at 0.2.2 (dev-only via
+# criterion), pure Rust, no_std-capable, no build script, ~7k LOC across three
+# crates, and its only non-vendored dep (`serde`) is already core.
+#
+# Also forward-looking: CoRIM/CoTS is a CBOR encoding, so the deferred
+# `trust_anchor_store` wire format (CIRISVerify#227) lands on this same dep.
+ciborium = "0.2"
 
 # SQLite for audit trail verification.
 #

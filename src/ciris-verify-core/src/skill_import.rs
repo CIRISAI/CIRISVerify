@@ -58,8 +58,24 @@ use crate::security::function_integrity::{
     verify_hybrid_signature, ManifestSignature, StewardPublicKey,
 };
 
-/// Domain prefix for `SkillImportManifest` canonical bytes (FSD-002
-/// §3.2.1.1). Trailing newline is part of the prefix.
+/// **v2 domain literal** for `SkillImportManifest` canonical bytes
+/// (**CC 3.1.2.1**, normative). Pinned string, carried as the `domain` member
+/// of the JCS-canonicalized object — no trailing newline, because v2 is not a
+/// delimiter-based encoding.
+pub const SKILL_IMPORT_DOMAIN_V2: &str = "ciris.skill_import.v2";
+
+/// **RETIRED (v11.0.0).** The v1 line-oriented domain prefix.
+///
+/// v1 built its preimage by concatenating `key=value\n` pairs, which is
+/// delimiter-injection-capable wherever a field carries attacker-influenceable
+/// free text. CC 3.1.2.1 replaced it with `sha256(JCS({…}))` and states
+/// *"Producers MUST emit v2."* Retained only so a reader recognizes the old
+/// literal in historical artifacts; **nothing in this crate signs or verifies
+/// with it.**
+#[deprecated(
+    since = "11.0.0",
+    note = "v1 canonical bytes are delimiter-injection-capable; CC 3.1.2.1 mandates the v2 JCS form. Use SKILL_IMPORT_DOMAIN_V2."
+)]
 pub const SKILL_IMPORT_DOMAIN_PREFIX: &str = "ciris.skill_import.v1\n";
 
 /// One `SkillImportManifest`. All `String` fields carry the exact
@@ -136,21 +152,71 @@ impl SkillImportManifest {
         serde_json::to_string(&sorted).unwrap_or_else(|_| "[]".to_string())
     }
 
-    /// Compute the canonical-bytes input (the bytes that feed into
-    /// the outer SHA-256) per FSD-002 §3.2.1.1.
-    #[must_use]
-    pub fn canonical_bytes(&self) -> Vec<u8> {
-        let valid_until = self.valid_until.as_deref().unwrap_or("");
-        let body = format!(
-            "{prefix}source={source}\nskill_manifest_sha256={hash}\nsigner_identity={signer}\nimport_timestamp={ts}\ncapability_declaration={caps}\nvalid_until={valid_until}",
-            prefix = SKILL_IMPORT_DOMAIN_PREFIX,
-            source = self.source,
-            hash = self.skill_manifest_sha256,
-            signer = self.signer_identity,
-            ts = self.import_timestamp,
-            caps = self.canonical_capabilities_json(),
+    /// The **v2** canonical bytes per **CC 3.1.2.1** — `sha256(JCS({…}))`.
+    ///
+    /// # Why v2 replaced the v1 line-oriented preimage (a wire break)
+    ///
+    /// v1 concatenated `key=value\n` pairs. Several of those values carry
+    /// **attacker-influenceable free text** — most obviously `source` in its
+    /// `direct:{url}` form — and nothing rejected embedded newlines, so a
+    /// crafted value could forge field boundaries and make two logically
+    /// different manifests produce ambiguous canonical bytes. CC 3.1.2.1 names
+    /// exactly this: the JCS form closes an injection surface, and the
+    /// accord-invocation encoding is exempt only because it has *"no
+    /// attacker-controlled free text"*.
+    ///
+    /// JCS is immune by construction — structure lives in the encoding, not in
+    /// delimiters — so no escaping or newline rejection is needed here.
+    ///
+    /// Per CC the signature is over the **32-byte digest**, not the preimage,
+    /// which also keeps the hardware-token input small (the #113/#116 lesson).
+    ///
+    /// `valid_until` follows the CC 2.6.1.1 omit-vs-materialize rule: **absent
+    /// when unset**, never the v1 empty-string sentinel.
+    ///
+    /// # Errors
+    /// [`VerifyError`] if JCS canonicalization fails.
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, VerifyError> {
+        use sha2::{Digest, Sha256};
+
+        let mut obj = serde_json::Map::new();
+        obj.insert(
+            "domain".to_string(),
+            serde_json::Value::String(SKILL_IMPORT_DOMAIN_V2.to_string()),
         );
-        body.into_bytes()
+        obj.insert(
+            "source".to_string(),
+            serde_json::Value::String(self.source.clone()),
+        );
+        obj.insert(
+            "skill_manifest_sha256".to_string(),
+            serde_json::Value::String(self.skill_manifest_sha256.clone()),
+        );
+        obj.insert(
+            "signer_identity".to_string(),
+            serde_json::Value::String(self.signer_identity.clone()),
+        );
+        obj.insert(
+            "import_timestamp".to_string(),
+            serde_json::Value::String(self.import_timestamp.clone()),
+        );
+        // Sorted lexicographically — the array order is part of the value, and
+        // JCS canonicalizes the array in place (it does not reorder elements).
+        let mut caps = self.capability_declaration.clone();
+        caps.sort();
+        obj.insert(
+            "capability_declaration".to_string(),
+            serde_json::Value::Array(caps.into_iter().map(serde_json::Value::String).collect()),
+        );
+        if let Some(v) = &self.valid_until {
+            obj.insert(
+                "valid_until".to_string(),
+                serde_json::Value::String(v.clone()),
+            );
+        }
+
+        let jcs_bytes = crate::jcs::canonicalize(&serde_json::Value::Object(obj))?;
+        Ok(Sha256::digest(&jcs_bytes).to_vec())
     }
 
     /// Emit the federation_provenance attestation entry this
@@ -213,7 +279,7 @@ pub fn verify_skill_import_manifest(
         check_canonical_rfc3339(vu, "valid_until")?;
     }
 
-    let canonical = manifest.canonical_bytes();
+    let canonical = manifest.canonical_bytes()?;
     let sig_valid = verify_hybrid_signature(&canonical, &manifest.signature, trusted_pubkey)?;
     if !sig_valid {
         return Err(VerifyError::IntegrityError {
@@ -389,53 +455,68 @@ mod tests {
     }
 
     #[test]
-    fn canonical_bytes_starts_with_domain_prefix() {
+    fn v2_canonical_bytes_are_a_sha256_digest() {
+        // CC 3.1.2.1: canonical_bytes = sha256(JCS({…})) — the signature is
+        // over the 32-byte digest, not over a multi-KB preimage.
         let m = minimal_unsigned_manifest();
-        let bytes = m.canonical_bytes();
-        let s = std::str::from_utf8(&bytes).unwrap();
-        assert!(s.starts_with(SKILL_IMPORT_DOMAIN_PREFIX));
+        assert_eq!(m.canonical_bytes().unwrap().len(), 32);
     }
 
     #[test]
-    fn canonical_bytes_includes_all_fields_in_spec_order() {
-        let m = minimal_unsigned_manifest();
-        let s = String::from_utf8(m.canonical_bytes()).unwrap();
-        // Verify order: domain prefix, source, hash, signer, ts, caps, valid_until.
-        let prefix_end = s.find("source=").expect("source= field present");
-        let source_end = s
-            .find("skill_manifest_sha256=")
-            .expect("hash field present");
-        let hash_end = s.find("signer_identity=").expect("signer field present");
-        let signer_end = s.find("import_timestamp=").expect("ts field present");
-        let ts_end = s
-            .find("capability_declaration=")
-            .expect("caps field present");
-        let caps_end = s.find("valid_until=").expect("valid_until field present");
-        assert!(prefix_end < source_end);
-        assert!(source_end < hash_end);
-        assert!(hash_end < signer_end);
-        assert!(signer_end < ts_end);
-        assert!(ts_end < caps_end);
-    }
-
-    #[test]
-    fn canonical_bytes_handles_empty_valid_until() {
+    fn v2_canonical_bytes_sort_capabilities_regardless_of_input_order() {
         let mut m = minimal_unsigned_manifest();
-        m.valid_until = None;
-        let s = String::from_utf8(m.canonical_bytes()).unwrap();
-        // §3.2.1.1: "empty string if no valid_until" — no trailing
-        // newline after the empty string per the spec.
-        assert!(s.ends_with("valid_until="));
-    }
-
-    #[test]
-    fn canonical_bytes_sorts_capabilities_regardless_of_input_order() {
-        let mut m = minimal_unsigned_manifest();
-        let bytes_a = m.canonical_bytes();
-        // Reverse the input order — canonical bytes must be identical.
+        let a = m.canonical_bytes().unwrap();
         m.capability_declaration.reverse();
-        let bytes_b = m.canonical_bytes();
-        assert_eq!(bytes_a, bytes_b);
+        let b = m.canonical_bytes().unwrap();
+        assert_eq!(a, b, "capability order must not change the preimage");
+    }
+
+    /// CC 2.6.1.1 omit-vs-materialize: an unset `valid_until` is **absent**,
+    /// not the v1 empty-string sentinel. The two must not be the same object.
+    #[test]
+    fn v2_omits_valid_until_rather_than_emitting_an_empty_sentinel() {
+        let mut absent = minimal_unsigned_manifest();
+        absent.valid_until = None;
+
+        let mut empty = minimal_unsigned_manifest();
+        empty.valid_until = Some(String::new());
+
+        assert_ne!(
+            absent.canonical_bytes().unwrap(),
+            empty.canonical_bytes().unwrap(),
+            "omitted must differ from present-but-empty (CC 2.6.1.1)"
+        );
+    }
+
+    /// **The reason v2 exists.** v1 concatenated `key=value\n`, so a `source`
+    /// carrying a newline could forge field boundaries and make two logically
+    /// different manifests share a preimage. JCS puts the structure in the
+    /// encoding, so the same attempt now yields distinct digests.
+    #[test]
+    fn v2_resists_delimiter_injection_through_free_text_fields() {
+        let honest = minimal_unsigned_manifest();
+
+        // The v1 attack shape: smuggle a field boundary inside `source`.
+        let mut injected = minimal_unsigned_manifest();
+        injected.source = format!(
+            "registry:reg1\nskill_manifest_sha256={}\nsigner_identity=attacker",
+            "1".repeat(64)
+        );
+
+        assert_ne!(
+            honest.canonical_bytes().unwrap(),
+            injected.canonical_bytes().unwrap(),
+            "a newline-bearing source must not collide with an honest manifest"
+        );
+
+        // And the injected value round-trips as *data*, not structure: it is
+        // still exactly one `source` member.
+        let mut also_injected = minimal_unsigned_manifest();
+        also_injected.source = injected.source.clone();
+        assert_eq!(
+            injected.canonical_bytes().unwrap(),
+            also_injected.canonical_bytes().unwrap()
+        );
     }
 
     #[test]
@@ -525,11 +606,19 @@ mod tests {
                 key_id: String::new(),
             },
         };
-        let expected = format!(
-            "ciris.skill_import.v1\nsource=registry:reg1\nskill_manifest_sha256={zero}\nsigner_identity=signer1\nimport_timestamp=2026-05-28T17:30:00.000Z\ncapability_declaration=[\"c1\",\"c2\"]\nvalid_until=2026-08-28T17:30:00.000Z",
+        // CC 3.1.2.1 v2 golden vector — the JCS object this manifest
+        // canonicalizes to, written out so a second implementation has an
+        // unambiguous target (JCS sorts members lexicographically).
+        let expected_jcs = format!(
+            r#"{{"capability_declaration":["c1","c2"],"domain":"ciris.skill_import.v2","import_timestamp":"2026-05-28T17:30:00.000Z","signer_identity":"signer1","skill_manifest_sha256":"{zero}","source":"registry:reg1","valid_until":"2026-08-28T17:30:00.000Z"}}"#,
             zero = "0".repeat(64),
         );
-        assert_eq!(String::from_utf8(m.canonical_bytes()).unwrap(), expected);
+        use sha2::{Digest, Sha256};
+        assert_eq!(
+            m.canonical_bytes().unwrap(),
+            Sha256::digest(expected_jcs.as_bytes()).to_vec(),
+            "v2 canonical bytes must be sha256 over exactly this JCS form"
+        );
     }
 
     // ----- v4.0.0 CEG 0.2 §0.5 + §0.6 canonicalization tightening -----

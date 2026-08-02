@@ -300,7 +300,7 @@ mod tests {
             .iter()
             .map(|l| sample_leaf("ios-mobile-bundle", l))
             .collect();
-        let leaf_hashes: Vec<[u8; 32]> = leaves.iter().map(LocaleLeaf::leaf_hash).collect();
+        let leaf_hashes: Vec<[u8; 32]> = leaves.iter().map(|l| l.leaf_hash().unwrap()).collect();
         let root = core_merkle_root(&leaf_hashes).unwrap();
 
         // Build the proof for leaf index 1 (id).
@@ -343,7 +343,7 @@ mod tests {
             .iter()
             .map(|l| sample_leaf("ios-mobile-bundle", l))
             .collect();
-        let leaf_hashes: Vec<[u8; 32]> = leaves.iter().map(LocaleLeaf::leaf_hash).collect();
+        let leaf_hashes: Vec<[u8; 32]> = leaves.iter().map(|l| l.leaf_hash().unwrap()).collect();
         let root = core_merkle_root(&leaf_hashes).unwrap();
 
         let sibling_0 = leaf_hashes[0];
