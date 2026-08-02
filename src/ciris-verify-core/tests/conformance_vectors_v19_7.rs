@@ -207,7 +207,7 @@ fn aggregation_meta_v2_canonical_bytes_with_n_eff() {
 // ---- §19.7.1.3 AggregationMetaV1 v3 — multiplicity + mass commitment (#191) --
 #[test]
 fn aggregation_meta_v3_canonical_bytes_multiplicity_and_mass() {
-    use ciris_verify_core::holonomic::aggregation::mass_commitment;
+    use ciris_verify_core::holonomic::aggregation::{effective_source_count, mass_commitment};
     let member_ids = ids(&["src-001", "src-002", "src-003"]);
     // Per-member fixed-point masses (micro-units) the mass_commitment binds.
     let masses: Vec<(String, u64)> = member_ids
@@ -215,6 +215,19 @@ fn aggregation_meta_v3_canonical_bytes_multiplicity_and_mass() {
         .cloned()
         .zip([1_000_000u64, 500_000, 250_000])
         .collect();
+
+    // CIRISVerify#236 / CC 6.1.2.1.2 (rc3): `n_eff` is **derived from these
+    // masses**, never authored. The pre-#236 vector hardcoded `n_eff: 3` beside
+    // an independent mass literal, so the published fixture asserted a value its
+    // own masses do not produce — inverse-Simpson of (1.0, 0.5, 0.25) is 2.33,
+    // which rounds to 2. A conformance suite that recomputes `n_eff` from the
+    // published masses failed on the fixture rather than on any implementation.
+    //
+    // Deriving it here is the fix at the source: there is now ONE mass literal,
+    // and every mass-dependent field descends from it.
+    let mass_f64: Vec<f64> = masses.iter().map(|(_, v)| *v as f64).collect();
+    let derived_n_eff = effective_source_count(&mass_f64);
+
     let m = AggregationMetaV1 {
         version: 3,
         content_id: "content-root-fixed".into(),
@@ -224,7 +237,7 @@ fn aggregation_meta_v3_canonical_bytes_multiplicity_and_mass() {
         source_count: member_ids.len() as u32,
         member_commitment: member_commitment(&member_ids),
         noise_floor_descriptor: "mean+stddev".into(),
-        n_eff: 3,
+        n_eff: derived_n_eff,
         max_source_multiplicity: 1,
         mass_commitment: mass_commitment(&masses),
     };
@@ -253,10 +266,59 @@ fn aggregation_meta_v3_canonical_bytes_multiplicity_and_mass() {
             "noise_floor_descriptor": m.noise_floor_descriptor,
             "n_eff": m.n_eff,
             "max_source_multiplicity": m.max_source_multiplicity,
-            "member_masses_fixed": [1_000_000u64, 500_000, 250_000],
+            "member_masses_fixed": masses.iter().map(|(_, v)| *v).collect::<Vec<u64>>(),
             "mass_commitment_hex": hex::encode(m.mass_commitment),
             "expected_canonical_bytes_hex": hex::encode(m.signing_preimage()),
         }),
+    );
+}
+
+/// **CIRISVerify#236 regression guard.** The published v3 vector must be
+/// *internally reproducible*: a conformance suite that recomputes `n_eff` from
+/// the vector's own `member_masses_fixed` must get the vector's own `n_eff`.
+///
+/// The pre-#236 fixture failed this — it published `n_eff: 3` beside masses
+/// whose inverse-Simpson is 2.33 (→ 2), because the two were independent
+/// literals. That is a fixture asserting a value rather than deriving one, and
+/// it would have failed every conformant implementation instead of the fixture.
+#[test]
+fn aggregation_meta_v3_vector_is_internally_reproducible() {
+    use ciris_verify_core::holonomic::aggregation::{effective_source_count, mass_commitment};
+
+    let path = vectors_dir().join("aggregation_meta/canonical_bytes_v3.json");
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+
+    let published_masses: Vec<u64> = v["member_masses_fixed"]
+        .as_array()
+        .expect("member_masses_fixed present")
+        .iter()
+        .map(|x| x.as_u64().unwrap())
+        .collect();
+    let published_n_eff = v["n_eff"].as_u64().unwrap() as u32;
+
+    // 1. n_eff derives from the published masses.
+    let mass_f64: Vec<f64> = published_masses.iter().map(|m| *m as f64).collect();
+    assert_eq!(
+        effective_source_count(&mass_f64),
+        published_n_eff,
+        "n_eff must be DERIVED from the published masses, never authored          (CC 6.1.2.1.2 rc3 makes it derivable; #236)"
+    );
+
+    // 2. mass_commitment derives from the published (member_id, mass) pairs.
+    let member_ids: Vec<String> = v["source_member_ids"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|x| x.as_str().unwrap().to_string())
+        .collect();
+    let pairs: Vec<(String, u64)> = member_ids
+        .into_iter()
+        .zip(published_masses.iter().copied())
+        .collect();
+    assert_eq!(
+        hex::encode(mass_commitment(&pairs)),
+        v["mass_commitment_hex"].as_str().unwrap(),
+        "mass_commitment must derive from the published members + masses"
     );
 }
 

@@ -219,6 +219,12 @@ jobs:
       # This guard is source-level precisely so it catches it in every config.
       - name: FFI load path is passive — no loader callbacks (#197)
         run: ./scripts/check-no-loader-callbacks.sh
+      # CIRISVerify#233: verify is the most-cited repo in the CC evidence layer,
+      # so a rename here rots a constitutional citation in another repo. This
+      # resolves every symbol in evidence/cc_impl.tsv against the tree — a moved
+      # symbol fails the build instead of silently invalidating the spec-map.
+      - name: CC evidence citations resolve (#233)
+        run: python3 tools/check_evidence.py
       # CIRISVerify#202: the TEST-ONLY test-anchor feature (software trust-root +
       # software accord-holder, no FIPS) must never reach a production artifact.
       # The prod container is zero-env by design, so the ABSENCE of this feature —
