@@ -12,11 +12,36 @@
 //! score / attester triples — so each consumer applies its own policy
 //! per the eight epistemic axes (FSD-002 §1).
 //!
-//! ## The dimension namespace (FSD-002 §3.2)
+//! ## The dimension namespace — **CC part_3 is authoritative**
 //!
-//! CIRISVerify owns twelve canonical dimensions, named for what is
-//! measured (no L1/L2/L3/L4/L5 ladder numbering in the wire shape —
-//! the ladder is consumer policy, not verify-side framing; v3.7.0+).
+//! Dimensions are named for what is **measured** — no L1/L2/L3/L4/L5 ladder
+//! numbering in the wire shape, because the ladder is consumer policy, not
+//! verify-side framing (v3.7.0+). CC part_3 ratified that choice explicitly:
+//! *"L-numbers name a verdict-shape (ladder position), not a mechanism — the
+//! L1-L5 ladder lives as consumer-side composition."*
+//!
+//! ### How many dimensions? (the count, stated precisely)
+//!
+//! Prose here previously said "twelve", which matched nothing. The number
+//! depends on what is counted, so all three are given:
+//!
+//! | Count | What it counts |
+//! |---|---|
+//! | **15** | rows in CC part_3's table (it lists the `:locale:` sub-form as its own row) |
+//! | **14** | distinct prefix **families** — [`dim::ALL`], the registry below |
+//! | **13** | families verify actually **emits** (`transparency_log:cosigned:` is witness-emitted) |
+//!
+//! **Authority note (v11.0.0).** Where CC part_3 and CIRISRegistry FSD-002
+//! §3.2 disagree, **CC wins**. FSD-002 §3.2 still specifies the retired
+//! ladder-named prefixes (`attestation:l1:self_verify`, …); CC and this crate
+//! agree on the mechanism-named set. Tracked as CIRISRegistry#132.
+//!
+//! CC part_3 lists **15** dimensions in the verify namespace. The 15th,
+//! `transparency_log:cosigned:{tree_size}`, is **witness-emitted, not
+//! verify-emitted** (CC binds its emitter to a `federation_keys` row with
+//! `identity_type="witness"`), so it is exposed here as a *recognition*
+//! constant with no emitter — see [`dim::TRANSPARENCY_LOG_COSIGNED_PREFIX`].
+//!
 //! Addressable via the [`dim`] module:
 //!
 //! | Dimension                                  | Polarity         |
@@ -29,9 +54,10 @@
 //! | `provenance:slsa:{level}`                  | boolean-via-score |
 //! | `provenance:build_manifest:{target}`       | boolean-via-score |
 //! | `provenance:build_manifest:{target}:locale:{lang_code}` | boolean-via-score (v3.8.0+, #37) |
-//! | `provenance:skill_import:{source}`         | boolean-via-score (v3.8.0+, #37) |
+//! | `provenance:skill_import:{source}`         | **signed** (per CC part_3; v3.8.0+, #37) |
 //! | `transparency_log:inclusion`               | boolean-via-score |
 //! | `transparency_log:consistency`             | boolean-via-score |
+//! | `transparency_log:cosigned:{tree_size}`    | **signed** — *recognized, never emitted by verify* (witness-emitted per CC part_3) |
 //! | `rollback_detected:{revision_field}`       | **-1 only** (no positive direction) |
 //! | `cert_validity:{authority}`                | boolean-via-score |
 //! | `hardware_custody:{platform}`              | boolean-via-score |
@@ -88,6 +114,27 @@ pub mod dim {
     /// RFC 6962 consistency proof between two STHs.
     pub const TRANSPARENCY_LOG_CONSISTENCY: &str = "transparency_log:consistency";
 
+    /// Prefix of CC part_3's 15th verify-namespace dimension,
+    /// `transparency_log:cosigned:{tree_size}`.
+    ///
+    /// **Recognition only — verify never emits this.** CC binds the emitter to
+    /// an `attesting_key_id` whose `federation_keys` row has
+    /// `identity_type="witness"`, so a witness produces it and verify (which
+    /// holds the machinery in [`crate::transparency`]: `WitnessSignature`,
+    /// `count_valid_witnesses`, `witness_quorum_met`) consumes it. Exposed so a
+    /// consumer can match the family without hand-writing the string.
+    pub const TRANSPARENCY_LOG_COSIGNED_PREFIX: &str = "transparency_log:cosigned:";
+
+    /// Build the `transparency_log:cosigned:{tree_size}` dimension.
+    ///
+    /// Provided for **consumers matching or reconstructing** the dimension —
+    /// verify itself is not an emitter (see
+    /// [`TRANSPARENCY_LOG_COSIGNED_PREFIX`]).
+    #[must_use]
+    pub fn transparency_log_cosigned(tree_size: u64) -> String {
+        format!("{TRANSPARENCY_LOG_COSIGNED_PREFIX}{tree_size}")
+    }
+
     /// SLSA build provenance at `level` (1-3). FSD-002 §3.2.
     #[must_use]
     pub fn provenance_slsa(level: u8) -> String {
@@ -141,6 +188,159 @@ pub mod dim {
     #[must_use]
     pub fn hardware_custody(platform: &str) -> String {
         format!("hardware_custody:{platform}")
+    }
+
+    /// How a dimension family relates to **consent** (CC#46 / CIRISPersist#569).
+    ///
+    /// CIRISPersist#569 found that its consent gate matches only `capacity:*`,
+    /// so every verify family lands ungated — a subject can decline `analyze`
+    /// and still accumulate third-party trust signals. The correct rule is
+    /// *not* "gate all scoring": an abuser never consents to `detection:*` /
+    /// `moderation:*` / `slashing:*`, and gating those would delete the
+    /// abuse-response plane.
+    ///
+    /// Verify knows what each dimension **is**, so verify declares the
+    /// classification; the substrate decides policy. This is the same division
+    /// as everywhere else here — verify measures, consumers gate.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub enum ConsentClass {
+        /// A consensual **reputation** signal about a subject. Belongs behind
+        /// the subject's `analyze` consent.
+        ConsensualReputation,
+        /// A **self-attestation** about the emitting node's own artifact or
+        /// custody. There is no third-party subject to consent, so consent is
+        /// not the applicable gate.
+        SelfAttestation,
+    }
+
+    /// One entry in the authoritative registry of verify-namespace dimensions.
+    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+    pub struct DimensionSpec {
+        /// The exact dimension string, or its `{param}`-terminated prefix.
+        pub prefix: &'static str,
+        /// `true` when `prefix` is a prefix requiring a parameter suffix.
+        pub parameterized: bool,
+        /// Does verify itself emit this dimension?
+        pub verify_emits: bool,
+        /// Consent classification (CC#46 / CIRISPersist#569).
+        pub consent_class: ConsentClass,
+    }
+
+    /// **The authoritative, exhaustive registry** of the verify-owned dimension
+    /// namespace — CC part_3's 15 families.
+    ///
+    /// CIRISPersist#569 ask 3 asked for the set to be *"exhaustive-match or
+    /// manifest-pinned, so a 15th dimension added upstream is a compile failure
+    /// or a gate failure rather than a silent ungated family."* This is that
+    /// pin: a consumer iterates `ALL` instead of hand-listing strings, so a
+    /// family added here shows up downstream rather than slipping past a gate.
+    ///
+    /// 14 are verify-emitted; `transparency_log:cosigned:` is
+    /// recognition-only (witness-emitted per CC part_3).
+    pub const ALL: &[DimensionSpec] = &[
+        DimensionSpec {
+            prefix: SELF_VERIFY,
+            parameterized: false,
+            verify_emits: true,
+            consent_class: ConsentClass::SelfAttestation,
+        },
+        DimensionSpec {
+            prefix: HARDWARE,
+            parameterized: false,
+            verify_emits: true,
+            consent_class: ConsentClass::SelfAttestation,
+        },
+        DimensionSpec {
+            prefix: REGISTRY_CONSENSUS,
+            parameterized: false,
+            verify_emits: true,
+            consent_class: ConsentClass::ConsensualReputation,
+        },
+        DimensionSpec {
+            prefix: LICENSE_VALIDITY,
+            parameterized: false,
+            verify_emits: true,
+            consent_class: ConsentClass::ConsensualReputation,
+        },
+        DimensionSpec {
+            prefix: AGENT_INTEGRITY,
+            parameterized: false,
+            verify_emits: true,
+            consent_class: ConsentClass::SelfAttestation,
+        },
+        DimensionSpec {
+            prefix: TRANSPARENCY_LOG_INCLUSION,
+            parameterized: false,
+            verify_emits: true,
+            consent_class: ConsentClass::SelfAttestation,
+        },
+        DimensionSpec {
+            prefix: TRANSPARENCY_LOG_CONSISTENCY,
+            parameterized: false,
+            verify_emits: true,
+            consent_class: ConsentClass::SelfAttestation,
+        },
+        DimensionSpec {
+            prefix: TRANSPARENCY_LOG_COSIGNED_PREFIX,
+            parameterized: true,
+            verify_emits: false,
+            consent_class: ConsentClass::SelfAttestation,
+        },
+        DimensionSpec {
+            prefix: "provenance:slsa:",
+            parameterized: true,
+            verify_emits: true,
+            consent_class: ConsentClass::SelfAttestation,
+        },
+        DimensionSpec {
+            prefix: "provenance:build_manifest:",
+            parameterized: true,
+            verify_emits: true,
+            consent_class: ConsentClass::SelfAttestation,
+        },
+        DimensionSpec {
+            prefix: "provenance:skill_import:",
+            parameterized: true,
+            verify_emits: true,
+            consent_class: ConsentClass::SelfAttestation,
+        },
+        DimensionSpec {
+            prefix: "rollback_detected:",
+            parameterized: true,
+            verify_emits: true,
+            consent_class: ConsentClass::ConsensualReputation,
+        },
+        DimensionSpec {
+            prefix: "cert_validity:",
+            parameterized: true,
+            verify_emits: true,
+            consent_class: ConsentClass::ConsensualReputation,
+        },
+        DimensionSpec {
+            prefix: "hardware_custody:",
+            parameterized: true,
+            verify_emits: true,
+            consent_class: ConsentClass::SelfAttestation,
+        },
+    ];
+
+    /// Resolve a dimension string to its registry entry, or `None` if it is not
+    /// in the verify namespace.
+    ///
+    /// Longest-prefix match, so `provenance:build_manifest:{t}:locale:{l}`
+    /// resolves to the `provenance:build_manifest:` family (its locale variant
+    /// is a sub-form, not a separate family).
+    #[must_use]
+    pub fn lookup(dimension: &str) -> Option<&'static DimensionSpec> {
+        ALL.iter()
+            .filter(|d| {
+                if d.parameterized {
+                    dimension.starts_with(d.prefix) && dimension.len() > d.prefix.len()
+                } else {
+                    dimension == d.prefix
+                }
+            })
+            .max_by_key(|d| d.prefix.len())
     }
 }
 
@@ -603,5 +803,112 @@ mod tests {
         let json = serde_json::to_string(&fp).unwrap();
         let back: FederationProvenance = serde_json::from_str(&json).unwrap();
         assert_eq!(fp, back);
+    }
+}
+
+#[cfg(test)]
+mod registry_tests {
+    use super::dim::{self, ConsentClass};
+
+    /// **The count question, answered precisely** (CIRISServer#340 asked which
+    /// of "twelve" vs 14 is authoritative; the honest answer is that it depends
+    /// on what you count):
+    ///
+    /// - **15** — rows in CC part_3's table. It lists
+    ///   `provenance:build_manifest:{target}:locale:{lang_code}` as its own row
+    ///   even though it is a *sub-form* of the build-manifest family.
+    /// - **14** — distinct prefix families (this registry). The locale sub-form
+    ///   resolves into `provenance:build_manifest:` by longest-prefix match.
+    /// - **13** — families verify actually **emits**;
+    ///   `transparency_log:cosigned:` is witness-emitted, recognized only.
+    ///
+    /// The old module prose said "twelve", which matched none of these.
+    #[test]
+    fn registry_cardinality_is_stated_precisely() {
+        assert_eq!(dim::ALL.len(), 14, "distinct prefix families");
+        assert_eq!(
+            dim::ALL.iter().filter(|d| d.verify_emits).count(),
+            13,
+            "verify-emitted families; cosigned is witness-emitted"
+        );
+        assert_eq!(
+            dim::ALL.iter().filter(|d| !d.verify_emits).count(),
+            1,
+            "exactly one recognition-only family"
+        );
+    }
+
+    /// Every emitted dimension the code can actually produce must resolve.
+    #[test]
+    fn every_emitted_dimension_resolves() {
+        for d in [
+            dim::SELF_VERIFY.to_string(),
+            dim::HARDWARE.to_string(),
+            dim::REGISTRY_CONSENSUS.to_string(),
+            dim::LICENSE_VALIDITY.to_string(),
+            dim::AGENT_INTEGRITY.to_string(),
+            dim::TRANSPARENCY_LOG_INCLUSION.to_string(),
+            dim::TRANSPARENCY_LOG_CONSISTENCY.to_string(),
+            dim::provenance_slsa(3),
+            dim::provenance_build_manifest("x86_64-unknown-linux-gnu"),
+            dim::provenance_build_manifest_locale("ios-mobile-bundle", "my"),
+            dim::provenance_skill_import("registry:reg1"),
+            dim::rollback_detected("revocation_revision"),
+            dim::cert_validity("registry-us"),
+            dim::hardware_custody("android"),
+            dim::transparency_log_cosigned(32),
+        ] {
+            assert!(dim::lookup(&d).is_some(), "unregistered dimension: {d}");
+        }
+    }
+
+    /// The locale sub-form belongs to the build_manifest family (longest-prefix
+    /// match), not to a family of its own.
+    #[test]
+    fn locale_subform_resolves_to_the_build_manifest_family() {
+        let d = dim::provenance_build_manifest_locale("ios-mobile-bundle", "my");
+        assert_eq!(
+            dim::lookup(&d).unwrap().prefix,
+            "provenance:build_manifest:"
+        );
+    }
+
+    /// A dimension outside the verify namespace must NOT resolve — the gate a
+    /// consumer builds on this must not silently claim foreign families.
+    #[test]
+    fn foreign_dimensions_do_not_resolve() {
+        for d in [
+            "capacity:relay",
+            "detection:cross_agent_divergence",
+            "system:disk_pressure",
+            "provenance:slsa:", // bare prefix, no parameter
+        ] {
+            assert!(dim::lookup(d).is_none(), "should not resolve: {d}");
+        }
+    }
+
+    /// CIRISPersist#569: the consent classification must be total, and must
+    /// keep the abuse-response carve-out intact by never marking a
+    /// self-attestation as consensual reputation.
+    #[test]
+    fn consent_classification_is_total_and_sane() {
+        assert!(dim::ALL
+            .iter()
+            .any(|d| d.consent_class == ConsentClass::ConsensualReputation));
+        assert!(dim::ALL
+            .iter()
+            .any(|d| d.consent_class == ConsentClass::SelfAttestation));
+        // A node's statement about its own build/custody has no third-party
+        // subject, so it is never consent-gated.
+        assert_eq!(
+            dim::lookup(dim::SELF_VERIFY).unwrap().consent_class,
+            ConsentClass::SelfAttestation
+        );
+        assert_eq!(
+            dim::lookup(&dim::hardware_custody("android"))
+                .unwrap()
+                .consent_class,
+            ConsentClass::SelfAttestation
+        );
     }
 }
