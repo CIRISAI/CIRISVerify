@@ -109,15 +109,54 @@ pub const KEY_GRANT_V2_INFO: &[u8] = b"cewp-key-grant/v2";
 /// X25519 + ML-KEM-768 DEK wrap mandated by CEG 0.15 §10.5.3 for the
 /// streaming epoch-DEK cascade.
 ///
-/// Follows the v1 naming convention (primitives in derivation order):
-/// X25519 KEX-half · ML-KEM-768 KEM-half · AES-256-GCM AEAD ·
-/// HKDF-SHA256 KDF. CEG §10.5.3 pins the *construction* (v2 =
-/// x25519+ml-kem-768) but not yet a literal wire string; this is the
-/// natural extension of [`KEY_GRANT_ALGORITHM_V1`]. Cross-confirm with
-/// CIRISRegistry (CEG) + CIRISPersist before any consumer hard-codes
-/// it as a closed-set enum value.
+/// Primitives in derivation order: X25519 KEX-half · ML-KEM-768 KEM-half ·
+/// AES-256-GCM AEAD · HKDF-SHA256 KDF.
+///
+/// # CC 5.1 ratified this as **snake_case** (CIRISVerify#234)
+///
+/// CIRISConstitution rc3 (CC 5.1, class rule at CC 3.3.2) ratifies
+/// `x25519_mlkem768_aes256_gcm_hkdf_sha256` as *the single wire identifier* for
+/// this construction, resolving CIRISConstitution#37. The previously-shipped
+/// hyphenated form is a **non-conformant alias**: it MUST be rejected, and MUST
+/// NOT be normalized before comparison — normalizing would re-admit the very
+/// ambiguity the single-identifier rule exists to remove.
+///
+/// Verify emits **only** this identifier. See
+/// [`KEY_GRANT_ALGORITHM_V2_LEGACY_HYPHENATED`] for the migration path.
 #[cfg(feature = "ml-kem")]
-pub const KEY_GRANT_ALGORITHM_V2: &str = "x25519-mlkem768-aes256-gcm-hkdf-sha256";
+pub const KEY_GRANT_ALGORITHM_V2: &str = "x25519_mlkem768_aes256_gcm_hkdf_sha256";
+
+/// The **retired, non-conformant** hyphenated alias for
+/// [`KEY_GRANT_ALGORITHM_V2`].
+///
+/// CC 5.1 supplies the migration path and this crate follows it exactly:
+/// **accept-only behind a default-off flag, never emitted, removed at the next
+/// MINOR.** Nothing in this crate produces this string; it exists so a consumer
+/// draining a queue written by a pre-v11.0.1 producer can recognize the value
+/// and migrate it deliberately, rather than silently treating it as equal.
+///
+/// [`key_grant_algorithm_v2_accepts`] is the only sanctioned comparison, and it
+/// admits this alias **only** when the caller opts in.
+#[cfg(feature = "ml-kem")]
+pub const KEY_GRANT_ALGORITHM_V2_LEGACY_HYPHENATED: &str = "x25519-mlkem768-aes256-gcm-hkdf-sha256";
+
+/// Does `candidate` name the v2 construction?
+///
+/// Exact-match against [`KEY_GRANT_ALGORITHM_V2`]. **No normalization** — CC
+/// 5.1 forbids folding the hyphenated form before comparison, because that
+/// would make two distinct wire identifiers compare equal and defeat the
+/// single-identifier rule.
+///
+/// `accept_legacy_hyphenated` is the CC-sanctioned migration escape hatch and
+/// defaults to off at every call site in this crate. Pass `true` only while
+/// draining artifacts from a pre-v11.0.1 producer, and only where the
+/// acceptance is recorded.
+#[cfg(feature = "ml-kem")]
+#[must_use]
+pub fn key_grant_algorithm_v2_accepts(candidate: &str, accept_legacy_hyphenated: bool) -> bool {
+    candidate == KEY_GRANT_ALGORITHM_V2
+        || (accept_legacy_hyphenated && candidate == KEY_GRANT_ALGORITHM_V2_LEGACY_HYPHENATED)
+}
 
 /// One wrap output: the public material a recipient needs to
 /// unwrap, plus the AEAD ciphertext.
@@ -821,10 +860,58 @@ mod tests {
             assert_ne!(KEY_GRANT_ALGORITHM_V1, KEY_GRANT_ALGORITHM_V2);
             assert_ne!(KEY_GRANT_V1_INFO, KEY_GRANT_V2_INFO);
             assert_eq!(
-                KEY_GRANT_ALGORITHM_V2,
-                "x25519-mlkem768-aes256-gcm-hkdf-sha256"
+                KEY_GRANT_ALGORITHM_V2, "x25519_mlkem768_aes256_gcm_hkdf_sha256",
+                "CC 5.1 ratified the snake_case identifier (CIRISVerify#234)"
             );
             assert_eq!(KEY_GRANT_V2_INFO, b"cewp-key-grant/v2");
+        }
+
+        /// CC 5.1 / CIRISVerify#234: the hyphenated form is a **non-conformant
+        /// alias** that MUST be rejected and MUST NOT be normalized before
+        /// comparison. Normalizing would make two distinct wire identifiers
+        /// compare equal, defeating the single-identifier rule outright.
+        #[test]
+        fn hyphenated_alias_is_rejected_unless_explicitly_accepted() {
+            assert_ne!(
+                KEY_GRANT_ALGORITHM_V2, KEY_GRANT_ALGORITHM_V2_LEGACY_HYPHENATED,
+                "the alias must remain a DISTINCT string, not a normalization"
+            );
+
+            // Default (no migration flag): the alias is refused.
+            assert!(key_grant_algorithm_v2_accepts(
+                KEY_GRANT_ALGORITHM_V2,
+                false
+            ));
+            assert!(
+                !key_grant_algorithm_v2_accepts(KEY_GRANT_ALGORITHM_V2_LEGACY_HYPHENATED, false),
+                "hyphenated alias must NOT be admitted by default"
+            );
+
+            // Migration escape hatch: opt-in only, and never for junk.
+            assert!(key_grant_algorithm_v2_accepts(
+                KEY_GRANT_ALGORITHM_V2_LEGACY_HYPHENATED,
+                true
+            ));
+            assert!(!key_grant_algorithm_v2_accepts(
+                "x25519-something-else",
+                true
+            ));
+            assert!(!key_grant_algorithm_v2_accepts(
+                "X25519_MLKEM768_AES256_GCM_HKDF_SHA256",
+                true
+            ));
+        }
+
+        /// The ratified identifier carries no hyphens, and the two forms differ
+        /// only by separator — the exact shape a normalizing comparison would
+        /// erase.
+        #[test]
+        fn ratified_identifier_is_snake_case() {
+            assert!(!KEY_GRANT_ALGORITHM_V2.contains('-'));
+            assert_eq!(
+                KEY_GRANT_ALGORITHM_V2.replace('_', "-"),
+                KEY_GRANT_ALGORITHM_V2_LEGACY_HYPHENATED
+            );
         }
 
         /// JSON round-trip of the v2 wrap struct (envelope carriage +

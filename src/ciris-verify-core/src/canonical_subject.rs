@@ -134,29 +134,93 @@ fn is_bare_sha256_hex(s: &str) -> bool {
     s.len() == SHA256_HEX_LEN && s.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
+/// CC 2.3.2.1 production for `{platform}` / `{entity_kind}`:
+/// `[a-z0-9][a-z0-9._-]*`. Reject-not-repair — no case folding, no trimming.
+fn check_component(name: &'static str, v: &str) -> Result<(), SubjectError> {
+    let mut chars = v.chars();
+    let Some(first) = chars.next() else {
+        return Err(SubjectError::MalformedTriple {
+            detail: format!("{name} must be non-empty"),
+        });
+    };
+    if !first.is_ascii_lowercase() && !first.is_ascii_digit() {
+        return Err(SubjectError::MalformedTriple {
+            detail: format!("{name} must start with [a-z0-9] (CC 2.3.2.1)"),
+        });
+    }
+    for c in v.chars() {
+        let ok = c.is_ascii_lowercase() || c.is_ascii_digit() || matches!(c, '.' | '_' | '-');
+        if !ok {
+            return Err(SubjectError::MalformedTriple {
+                detail: format!("{name} must match [a-z0-9][a-z0-9._-]* (CC 2.3.2.1)"),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// CC 2.3.2.1 production for `{id}`: non-empty, no C0/C1 controls, no U+FEFF,
+/// no leading/trailing `White_Space`. `id` MAY contain `:`.
+fn check_id(id: &str) -> Result<(), SubjectError> {
+    if id.is_empty() {
+        return Err(SubjectError::MalformedTriple {
+            detail: "id must be non-empty (CC 2.3.2.1)".to_string(),
+        });
+    }
+    if id.starts_with(char::is_whitespace) || id.ends_with(char::is_whitespace) {
+        return Err(SubjectError::MalformedTriple {
+            detail: "id must not have leading/trailing whitespace — reject, never trim \
+                     (CC 2.3.2.1)"
+                .to_string(),
+        });
+    }
+    for c in id.chars() {
+        // C0 (U+0000..U+001F, U+007F) and C1 (U+0080..U+009F).
+        if c.is_control() {
+            return Err(SubjectError::MalformedTriple {
+                detail: "id must not contain C0/C1 control characters (CC 2.3.2.1)".to_string(),
+            });
+        }
+        if c == '\u{FEFF}' {
+            return Err(SubjectError::MalformedTriple {
+                detail: "id must not contain U+FEFF (CC 2.3.2.1)".to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
 /// Build the canonical-hash subject for `{platform}:{entity_kind}:{id}`.
 ///
-/// See the module docs for the pinned preimage. `platform` and `entity_kind`
-/// must not contain `:`.
+/// See the module docs for the pinned preimage.
+///
+/// # CC 2.3.2.1 productions — **reject, never repair** (CIRISVerify#235)
+///
+/// - `platform` / `entity_kind` MUST match `[a-z0-9][a-z0-9._-]*` (which also
+///   excludes `:`, keeping the triple splittable).
+/// - `id` MUST be non-empty, contain **no C0/C1 control characters**, no
+///   `U+FEFF`, and **no leading or trailing `White_Space`**.
+///
+/// Normalizing instead of rejecting would fork the digest between producers —
+/// `("Discord", "user", "1234 ")` and `("discord", "user", "1234")` must not
+/// silently become the same subject, so both are refused rather than repaired.
+///
+/// Rust `&str` is already guaranteed to hold Unicode scalar values, so the CC
+/// "no surrogates" clause is enforced by the type system here. It is a real
+/// clause for other implementations — a Python producer using `surrogatepass`
+/// would fork the digest — so it is checked at the parse boundary where bytes
+/// enter.
 ///
 /// # Errors
-/// [`SubjectError::MalformedTriple`] if `platform` or `entity_kind` contains a
-/// colon (which would make the triple un-splittable).
+/// [`SubjectError::MalformedTriple`] naming the first production violated.
 pub fn canonical_subject(
     platform: &str,
     entity_kind: &str,
     id: &str,
 ) -> Result<String, SubjectError> {
-    if platform.contains(':') {
-        return Err(SubjectError::MalformedTriple {
-            detail: "platform must not contain ':'".to_string(),
-        });
-    }
-    if entity_kind.contains(':') {
-        return Err(SubjectError::MalformedTriple {
-            detail: "entity_kind must not contain ':'".to_string(),
-        });
-    }
+    check_component("platform", platform)?;
+    check_component("entity_kind", entity_kind)?;
+    check_id(id)?;
     let preimage = format!("{platform}:{entity_kind}:{id}");
     Ok(format!(
         "{CANONICAL_SUBJECT_PREFIX}{}",
@@ -368,5 +432,80 @@ mod tests {
         assert!(b.is_err());
         let c = canonical_subject("p", "k", "a:b").unwrap();
         assert_ne!(a, c);
+    }
+}
+
+#[cfg(test)]
+mod cc_2_3_2_1_reject_vectors {
+    use super::*;
+
+    /// CC 2.3.2.1 reject vectors (CIRISVerify#235). Before this, only the colon
+    /// ban was enforced — `canonical_subject("Discord", "user", "1234 ")`
+    /// succeeded, against two published reject vectors.
+    ///
+    /// **Reject, never repair.** Normalizing would fork the digest between
+    /// implementations: a producer that trims or case-folds and one that does
+    /// not would emit different subjects for the same logical entity.
+    #[test]
+    fn cc_reject_vectors_are_refused() {
+        let cases: &[(&str, &str, &str, &str)] = &[
+            // (platform, entity_kind, id, why)
+            ("Discord", "user", "1234", "uppercase platform"),
+            ("discord", "User", "1234", "uppercase entity_kind"),
+            ("discord", "user", "1234 ", "trailing whitespace in id"),
+            ("discord", "user", " 1234", "leading whitespace in id"),
+            ("discord", "user", "", "empty id"),
+            ("", "user", "1234", "empty platform"),
+            ("discord", "", "1234", "empty entity_kind"),
+            ("_discord", "user", "1234", "platform must start [a-z0-9]"),
+            ("-discord", "user", "1234", "platform must start [a-z0-9]"),
+            ("dis:cord", "user", "1234", "colon in platform"),
+            ("dis cord", "user", "1234", "space in platform"),
+            ("discord", "user", "12\u{0}34", "C0 control in id"),
+            ("discord", "user", "12\u{9}34", "C0 tab in id"),
+            ("discord", "user", "12\u{85}34", "C1 control in id"),
+            ("discord", "user", "\u{FEFF}1234", "U+FEFF in id"),
+        ];
+        for (p, e, i, why) in cases {
+            assert!(
+                canonical_subject(p, e, i).is_err(),
+                "must reject ({p:?}, {e:?}, {i:?}) — {why}"
+            );
+        }
+    }
+
+    /// The productions must not reject legitimate subjects — the accept side of
+    /// the same rule.
+    #[test]
+    fn cc_accept_vectors_still_admit() {
+        let cases: &[(&str, &str, &str)] = &[
+            ("discord", "user", "1234"),
+            ("ciris.ai", "agent", "datum"),
+            ("matrix-org", "room", "!abc:example.org"), // `id` MAY contain colons
+            ("x", "y", "z"),
+            ("p0", "e_1", "id.with-dots_and-dashes"),
+            ("discord", "user", "naïve-ünïcode-id"), // non-ASCII id is fine
+        ];
+        for (p, e, i) in cases {
+            let s = canonical_subject(p, e, i)
+                .unwrap_or_else(|err| panic!("must admit ({p:?}, {e:?}, {i:?}): {err}"));
+            assert!(s.starts_with(CANONICAL_SUBJECT_PREFIX));
+        }
+    }
+
+    /// The productions are a *gate*, not a transform: an admitted subject's
+    /// digest is unchanged by this work (all pre-#235 golden vectors reproduce).
+    #[test]
+    fn admitted_digests_are_unchanged_by_the_productions() {
+        // The pinned example from the module docs.
+        let s = canonical_subject("discord", "user", "1234").unwrap();
+        let expected = {
+            use sha2::{Digest, Sha256};
+            format!(
+                "{CANONICAL_SUBJECT_PREFIX}{}",
+                hex::encode(Sha256::digest(b"discord:user:1234"))
+            )
+        };
+        assert_eq!(s, expected, "productions must not alter the preimage");
     }
 }
