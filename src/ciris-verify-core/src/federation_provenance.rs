@@ -236,6 +236,17 @@ pub mod dim {
         AbuseResponse,
     }
 
+    impl crate::classification::Classification for ConsentDisposition {
+        /// **NORMATIVE.** Tracks CC 3.4.5's ratified per-family disposition, so
+        /// a consumer may gate on it. (v11.0.0 shipped this as an unlabelled
+        /// *proposal*; that is what CIRISPersist#569 read as a ruling.)
+        fn gating() -> crate::classification::Gating {
+            crate::classification::Gating::Normative {
+                authority: "CC 3.4.5",
+            }
+        }
+    }
+
     impl ConsentDisposition {
         /// Is a family with this disposition gated on the subject's `analyze`
         /// consent? **Always `false`** — CC 3.4.5 places every verify-owned

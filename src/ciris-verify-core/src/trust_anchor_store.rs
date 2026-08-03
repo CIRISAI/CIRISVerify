@@ -103,6 +103,17 @@ pub enum Purpose {
     Dloa,
 }
 
+impl crate::classification::Classification for Purpose {
+    /// **NORMATIVE.** The `$$tas-list-purpose` vocabulary is the draft's, and
+    /// constrained resolution gates on it by design — that containment is the
+    /// module's entire security property.
+    fn gating() -> crate::classification::Gating {
+        crate::classification::Gating::Normative {
+            authority: "draft-ietf-rats-concise-ta-stores-02",
+        }
+    }
+}
+
 impl Purpose {
     /// The draft's string label for this purpose.
     #[must_use]
