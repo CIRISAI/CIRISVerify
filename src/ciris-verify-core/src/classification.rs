@@ -236,6 +236,96 @@ mod shipped_classifications {
         }
     }
 
+    /// **Every shipped classification has its disposition asserted here.**
+    ///
+    /// Implementing [`Classification`] already forces a type to *declare* a
+    /// gating — it cannot ship without an answer. This test covers the other
+    /// half, which CIRISConstitution#83 makes explicit: a category change must
+    /// be a **visible act**, not a silent edit. Without a per-type assertion, a
+    /// classification could be flipped from `Measurement` to `Normative` — the
+    /// direction that hands consumers a gate — and nothing would fail.
+    ///
+    /// The list is deliberately exhaustive and hand-maintained: adding a
+    /// classification means adding a row, which is the visible act.
+    #[test]
+    fn every_shipped_classification_asserts_its_disposition() {
+        use crate::presentation::IdentifierScope;
+        use crate::redactable::MemberState;
+        use crate::trust_anchor_store::AnchorProvenance;
+
+        let all: [(&str, Gating); 7] = [
+            (
+                "ConsentDisposition",
+                Gating::Normative {
+                    authority: "CC 3.4.5",
+                },
+            ),
+            (
+                "Purpose",
+                Gating::Normative {
+                    authority: "draft-ietf-rats-concise-ta-stores-02",
+                },
+            ),
+            ("AndroidSecurityLevel", Gating::Measurement),
+            ("AppAttestEnvironment", Gating::Measurement),
+            // How an anchor reached us. Whether a tier is acceptable is
+            // consumer policy — gating on it here would make the sourcing
+            // story into an admission rule verify has no standing to impose.
+            ("AnchorProvenance", Gating::Measurement),
+            // An identifier's correlation reach. What reach is acceptable is
+            // CC/consumer policy.
+            ("IdentifierScope", Gating::Measurement),
+            // Whether a member was disclosed or redacted — an observation
+            // about an artifact, not a ruling about it.
+            ("MemberState", Gating::Measurement),
+        ];
+
+        let actual: [(&str, Gating); 7] = [
+            ("ConsentDisposition", ConsentDisposition::gating()),
+            ("Purpose", Purpose::gating()),
+            ("AndroidSecurityLevel", AndroidSecurityLevel::gating()),
+            ("AppAttestEnvironment", AppAttestEnvironment::gating()),
+            ("AnchorProvenance", AnchorProvenance::gating()),
+            ("IdentifierScope", IdentifierScope::gating()),
+            ("MemberState", MemberState::gating()),
+        ];
+
+        for ((name, expected), (name2, got)) in all.into_iter().zip(actual) {
+            assert_eq!(name, name2);
+            assert_eq!(
+                expected, got,
+                "{name} changed disposition — a category change is a visible act \
+                 by a named authority (CIRISConstitution#83), not a silent edit"
+            );
+        }
+    }
+
+    /// No classification ships as an unresolved [`Gating::Proposal`]. A
+    /// proposal is a promise to get it ratified or withdraw it — not a place to
+    /// park an opinion. `ConsentDisposition` spent one release as an unlabelled
+    /// proposal, contradicted a ruling, and was caught by a downstream.
+    #[test]
+    fn nothing_ships_as_an_unresolved_proposal() {
+        use crate::presentation::IdentifierScope;
+        use crate::redactable::MemberState;
+        use crate::trust_anchor_store::AnchorProvenance;
+
+        for (what, g) in [
+            ("ConsentDisposition", ConsentDisposition::gating()),
+            ("Purpose", Purpose::gating()),
+            ("AndroidSecurityLevel", AndroidSecurityLevel::gating()),
+            ("AppAttestEnvironment", AppAttestEnvironment::gating()),
+            ("AnchorProvenance", AnchorProvenance::gating()),
+            ("IdentifierScope", IdentifierScope::gating()),
+            ("MemberState", MemberState::gating()),
+        ] {
+            assert!(
+                !matches!(g, Gating::Proposal { .. }),
+                "{what} still ships as a Proposal — ratify it or withdraw it"
+            );
+        }
+    }
+
     /// CC 3.4.5 specifically — the case that motivated the pattern.
     #[test]
     fn consent_disposition_tracks_cc_3_4_5() {
