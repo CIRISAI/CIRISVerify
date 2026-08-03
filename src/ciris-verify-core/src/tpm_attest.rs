@@ -1,4 +1,20 @@
-//! TPM attestation client for desktop hardware attestation.
+//! TPM attestation **client types** for the registry-delegated desktop path.
+//!
+//! # ⚠ This module verifies nothing (CIRISPersist#519)
+//!
+//! These are the request/response shapes for
+//! [`crate::registry::RegistryClient::verify_tpm_attestation`], which **POSTs
+//! to the registry** and returns its verdict. Nothing here walks a chain.
+//!
+//! For **local** TPM verification — no network, pinned vendor root — use
+//! [`crate::device_attestation::verify_tpm_ek_certificate`] (v12.2.0). That is
+//! the entry point an admission gate should cite; this one makes an online
+//! third party load-bearing.
+//!
+//! The two have confusingly similar names and genuinely different substance.
+//! Note also that the local validator covers **device identity** (EK cert →
+//! vendor root), not **boot state** (PCR quote) — there is no local
+//! quote verifier.
 //!
 //! This provides hardware-rooted device attestation for Linux/Windows
 //! systems with TPM 2.0 (firmware or discrete), equivalent to:
