@@ -1696,15 +1696,34 @@ mod tests {
 
     /// Containment across the populated store: the Yubico anchor must not be
     /// reachable as a TPM vendor root.
+    ///
+    /// Asserted by **fingerprint identity, not emptiness**. The earlier form
+    /// checked that the TPM slot was empty, which was only true while TPM was
+    /// unpopulated — the exact shape of a test that silently stops testing
+    /// anything. Now that 40 vendor roots are baked there, the question is
+    /// whether *this specific anchor* leaked into that set.
     #[test]
     fn baked_store_does_not_expose_yubico_as_a_tpm_anchor() {
         use crate::trust_anchor_store::{baked, environments, Purpose};
+        use sha2::{Digest, Sha256};
+
         let s = baked::default_store();
+        let tpm = s.resolve_x509(Purpose::KeyAttestation, environments::TPM_EK);
         assert!(
-            s.resolve(Purpose::KeyAttestation, environments::TPM_EK)
-                .is_empty(),
-            "TPM vendor roots are not baked yet — and nothing else may fill that slot"
+            !tpm.is_empty(),
+            "TPM anchors are baked; this test needs them"
         );
+
+        let yubico = hex::encode(Sha256::digest(
+            baked::yubico_attestation_root().expect("baked root must load"),
+        ));
+        for der in tpm {
+            assert_ne!(
+                hex::encode(Sha256::digest(der)),
+                yubico,
+                "the Yubico PIV root is reachable as a TPM vendor anchor"
+            );
+        }
     }
 
     /// A leaf with no KeyDescription is refused rather than silently treated as
