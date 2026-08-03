@@ -1162,10 +1162,38 @@ impl RegistryClient {
     // TPM Attestation - Desktop (Linux/Windows)
     // =========================================================================
 
-    /// Verify TPM attestation (PCR quote + EK certificate).
+    /// **Delegates** TPM attestation verification to the registry over the
+    /// network — it does **not** verify anything locally.
     ///
-    /// This is the desktop equivalent of Play Integrity (Android) / App Attest (iOS).
-    /// Sends the TPM quote and EK certificate to the registry for verification.
+    /// # ⚠ Do NOT use this for admission decisions (CIRISPersist#519)
+    ///
+    /// This POSTs the quote + EK certificate to `/v1/integrity/tpm/verify` and
+    /// returns the registry's verdict. Adopting it as an admission gate makes
+    /// an **online third party load-bearing** for that decision — a materially
+    /// different trust story from every other hardware-custody path here, all
+    /// of which are local chain walks to a pinned root.
+    ///
+    /// The name is a hazard and is worth reading twice: *"same name, different
+    /// substance"*. For **local** TPM verification use
+    /// [`crate::device_attestation::verify_tpm_ek_certificate`] (v12.2.0) —
+    /// pure, no network, walks EK → intermediates → a pinned vendor root.
+    ///
+    /// ## What each one actually covers
+    ///
+    /// | | this (remote) | `verify_tpm_ek_certificate` (local) |
+    /// |---|---|---|
+    /// | EK cert chain → vendor root | registry does it | **local** |
+    /// | PCR quote / boot state | registry does it | **not covered** |
+    /// | Quote freshness (nonce) | registry does it | **not covered** — an EK cert is a long-lived credential |
+    /// | Network required | **yes** | no |
+    ///
+    /// So the local validator answers *"is this a genuine TPM, and does it hold
+    /// this key"* — which is what accord-holder admission needs — but **not**
+    /// *"what did this machine boot"*. There is no local PCR-quote verifier;
+    /// that half still has no offline path.
+    ///
+    /// This remains the desktop analogue of Play Integrity / App Attest, and
+    /// like those it is an **advisory** signal, not an admission gate.
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[instrument(skip(self, request))]
     pub async fn verify_tpm_attestation(
