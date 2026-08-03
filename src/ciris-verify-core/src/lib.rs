@@ -117,6 +117,9 @@ pub mod mobile_http;
 pub mod operational_admit;
 pub mod parallel_race;
 pub mod play_integrity;
+/// Presentation-surface identifier scope (CIRISConstitution#80) — keeps the
+/// reserved unlinkable-presentation slot reachable.
+pub mod presentation;
 pub mod provenance;
 pub mod reconsider_dos;
 /// Redactable commitments (#241) — distinguishing 'redacted by authority'
