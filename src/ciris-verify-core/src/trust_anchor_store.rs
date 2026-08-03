@@ -609,14 +609,337 @@ pub mod baked {
         )
     }
 
+    /// One baked TPM vendor root CA.
+    #[derive(Debug, Clone, Copy)]
+    pub struct BakedTpmRoot {
+        /// The vendor directory this root was filed under upstream.
+        pub vendor: &'static str,
+        /// Stable identifier, also the PEM filename stem.
+        pub name: &'static str,
+        /// The auditable PEM.
+        pub pem: &'static str,
+        /// Pinned `sha256(DER)`.
+        pub sha256: &'static str,
+    }
+
+    /// **The baked TPM EK vendor roots.**
+    ///
+    /// # Provenance — read this before trusting the tier
+    ///
+    /// These are [`AnchorProvenance::CommunityAggregated`](super::AnchorProvenance::CommunityAggregated), **not**
+    /// [`AnchorProvenance::VendorOfficial`](super::AnchorProvenance::VendorOfficial), and the distinction is real:
+    /// they were obtained from Microsoft's `TrustedTPM.cab` distribution, so
+    /// Microsoft — a third party to Infineon, Nuvoton, ST, and the rest — is
+    /// the party attesting that these are those vendors' roots. A caller who
+    /// requires first-party sourcing excludes them with
+    /// [`TrustAnchorStore::resolve_x509_min_provenance`](super::TrustAnchorStore::resolve_x509_min_provenance).
+    ///
+    /// Four sourcing routes were attempted before settling here; the full
+    /// record, including what failed and why, is in
+    /// `docs/TPM_ANCHOR_PROVENANCE.md`. In short: no TPM vendor publishes its
+    /// root CAs at a stable, machine-fetchable endpoint the way Google and
+    /// Apple do, and the one community aggregation that claims to
+    /// (`1id-com/tpm-manufacturer-cas`) contains **zero certificates** — it is
+    /// a scaffold, not a trust store.
+    ///
+    /// # What was and was not baked
+    ///
+    /// From 2,567 certificates across nine vendor directories, only
+    /// **self-signed roots** are here — 40 of them. Excluded: every
+    /// intermediate (pinning an intermediate as an anchor is the mistake the
+    /// Yubico bake explicitly avoided — pin the durable root, never the
+    /// rotating issuer), the 2,184 Microsoft-issued certificates, and one
+    /// Infineon root that **expired in 2018**. Every remaining root had its
+    /// self-signature cryptographically verified, not merely name-matched.
+    ///
+    /// Note that a few entries are third-party CAs filed under a vendor
+    /// (VeriSign under Infineon, GlobalSign under ST, a Microsoft TPM root
+    /// under Qualcomm). That is not an error: those vendors genuinely chain
+    /// their EK certificates under those CAs.
+    ///
+    /// # Why a table and not one constant per root
+    ///
+    /// **Nuvoton alone ships 17 roots.** A `pinned_root` parameter could not
+    /// have expressed this vendor at all — which is the same lesson the two
+    /// Google roots taught, only louder, and the reason the store resolves a
+    /// *set* per environment and the validator tries every admissible anchor.
+    pub const TPM_VENDOR_ROOTS: &[BakedTpmRoot] = &[
+        BakedTpmRoot {
+            vendor: "AMD",
+            name: "amd-amd-root-ca-r4",
+            pem: include_str!("roots/tpm/amd-amd-root-ca-r4.pem"),
+            sha256: "853d5c5abe1fe97bddb62db0aecb4888a52c83353645cf70b12289d62257e78d",
+        },
+        BakedTpmRoot {
+            vendor: "AMD",
+            name: "amd-microsoft-pluton-root-ca-2021",
+            pem: include_str!("roots/tpm/amd-microsoft-pluton-root-ca-2021.pem"),
+            sha256: "32ab5fe7cb4396659fcb621ca14c6fb8fc2420f64050637d77e45a86c5d3916e",
+        },
+        BakedTpmRoot {
+            vendor: "Atmel",
+            name: "atmel-atmel-tpm-root-signing-module",
+            pem: include_str!("roots/tpm/atmel-atmel-tpm-root-signing-module.pem"),
+            sha256: "3784884ec83a8d7edbfb928ac878dc75c11451381c6a0cb27aaffb3171e0d33f",
+        },
+        BakedTpmRoot {
+            vendor: "Infineon",
+            name: "infineon-infineon-optiga-tm-ecc-root-ca",
+            pem: include_str!("roots/tpm/infineon-infineon-optiga-tm-ecc-root-ca.pem"),
+            sha256: "cfeb02fecd55ad7a73c6e1d11985d4c47dee248ab63dcb66091a2489660443c3",
+        },
+        BakedTpmRoot {
+            vendor: "Infineon",
+            name: "infineon-infineon-optiga-tm-ecc-root-ca-2",
+            pem: include_str!("roots/tpm/infineon-infineon-optiga-tm-ecc-root-ca-2.pem"),
+            sha256: "ee0c827555c4e9012037df4257bb8aaa26084a17b13ede41cd7895c8d6c11190",
+        },
+        BakedTpmRoot {
+            vendor: "Infineon",
+            name: "infineon-infineon-optiga-tm-ecc-root-ca-3",
+            pem: include_str!("roots/tpm/infineon-infineon-optiga-tm-ecc-root-ca-3.pem"),
+            sha256: "5a84cc3476221cce5be81af8d755d175fea03d208b3412a231710c56774542fd",
+        },
+        BakedTpmRoot {
+            vendor: "Infineon",
+            name: "infineon-infineon-optiga-tm-rsa-root-ca",
+            pem: include_str!("roots/tpm/infineon-infineon-optiga-tm-rsa-root-ca.pem"),
+            sha256: "899e35474c9807eb4c7f2f7a12da0028fb250cd02154d0009fca7d9c66574f3b",
+        },
+        BakedTpmRoot {
+            vendor: "Infineon",
+            name: "infineon-infineon-optiga-tm-rsa-root-ca-2",
+            pem: include_str!("roots/tpm/infineon-infineon-optiga-tm-rsa-root-ca-2.pem"),
+            sha256: "b413c71580af3ec5efe83fad31db2d4af4612355e3b01e50903b10763d738894",
+        },
+        BakedTpmRoot {
+            vendor: "Infineon",
+            name: "infineon-infineon-optiga-tm-rsa-root-ca-3",
+            pem: include_str!("roots/tpm/infineon-infineon-optiga-tm-rsa-root-ca-3.pem"),
+            sha256: "976b0579c016741b0003bf8055e920ab08f72abc819547b3480b0c141e956b70",
+        },
+        BakedTpmRoot {
+            vendor: "Infineon",
+            name: "infineon-verisign-trusted-platform-module-root-ca",
+            pem: include_str!("roots/tpm/infineon-verisign-trusted-platform-module-root-ca.pem"),
+            sha256: "967bb3d4544ea2740fce338077e1f5a9ea3085667246e6b968294aa045a57549",
+        },
+        BakedTpmRoot {
+            vendor: "Intel",
+            name: "intel-www-intel-com-2e1b3ba7",
+            pem: include_str!("roots/tpm/intel-www-intel-com-2e1b3ba7.pem"),
+            sha256: "2e1b3ba79af56d758be51697621bc4b9e8cee0983db3e749c55eb9b37c6d2ae0",
+        },
+        BakedTpmRoot {
+            vendor: "Intel",
+            name: "intel-www-intel-com-beb40bb7",
+            pem: include_str!("roots/tpm/intel-www-intel-com-beb40bb7.pem"),
+            sha256: "beb40bb7507b33967226aa80e084749fbb6593893c642e818d682e9a8d07fc24",
+        },
+        BakedTpmRoot {
+            vendor: "NationZ",
+            name: "nationz-nations-tpm-ecc-root-ca-001",
+            pem: include_str!("roots/tpm/nationz-nations-tpm-ecc-root-ca-001.pem"),
+            sha256: "31e7a6de95991cfcca3e7c1680be3ba96de8b2c4bca72da1072ee699da23b2d2",
+        },
+        BakedTpmRoot {
+            vendor: "NationZ",
+            name: "nationz-nations-tpm-rsa-root-ca-001",
+            pem: include_str!("roots/tpm/nationz-nations-tpm-rsa-root-ca-001.pem"),
+            sha256: "00608b414f9c522c5d30366c4b751681c3fd10b7ea0027e0f3877742c477c5a7",
+        },
+        BakedTpmRoot {
+            vendor: "NationZ",
+            name: "nationz-nationz-tpm-root-ca",
+            pem: include_str!("roots/tpm/nationz-nationz-tpm-root-ca.pem"),
+            sha256: "1293d71d6f61c86b98102fd3d4085ff12538f108e925489c0d545059e5f89c36",
+        },
+        BakedTpmRoot {
+            vendor: "NationZ",
+            name: "nationz-nsing-tpm-ecc-root-ca-001",
+            pem: include_str!("roots/tpm/nationz-nsing-tpm-ecc-root-ca-001.pem"),
+            sha256: "6ccf8a8a803d07a002a15d4889ffa0b125e4a82a1fe4211db3c6e8592919f9dc",
+        },
+        BakedTpmRoot {
+            vendor: "NationZ",
+            name: "nationz-nsing-tpm-rsa-root-ca-001",
+            pem: include_str!("roots/tpm/nationz-nsing-tpm-rsa-root-ca-001.pem"),
+            sha256: "72ca00612395af027cd84c5514219f110e964dfa0bfc1efbb3ac147e3b173971",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-npctxxx-ecc521-rootca",
+            pem: include_str!("roots/tpm/nuvoton-npctxxx-ecc521-rootca.pem"),
+            sha256: "083e7bd13e8fe0bb9b0c64db9e0c8356681df65714d2d5c4925eb98ae1369d40",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-ntc-tpm-ek-root-ca-01",
+            pem: include_str!("roots/tpm/nuvoton-ntc-tpm-ek-root-ca-01.pem"),
+            sha256: "56b67007f448bd5c5746299fcdea9323971bbdaaefd8e3b9b84773abc888c90e",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-ntc-tpm-ek-root-ca-02",
+            pem: include_str!("roots/tpm/nuvoton-ntc-tpm-ek-root-ca-02.pem"),
+            sha256: "8fac94b462b37acb84431bdc71395585caf518c17f656051ff9c4347a4726ed9",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-ntc-tpm-ek-root-ca-arsuf-01",
+            pem: include_str!("roots/tpm/nuvoton-ntc-tpm-ek-root-ca-arsuf-01.pem"),
+            sha256: "9e0434093fd0d4f8b927af1f4f6cffbd75f0584af4ade939bbd6851227fa4263",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvoton-tpm-root-ca-1013",
+            pem: include_str!("roots/tpm/nuvoton-nuvoton-tpm-root-ca-1013.pem"),
+            sha256: "38f8c5012d1b1321e833376611612b5b1cde466574cabc67fd2262e3b8da2f6d",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvoton-tpm-root-ca-1014",
+            pem: include_str!("roots/tpm/nuvoton-nuvoton-tpm-root-ca-1014.pem"),
+            sha256: "ad392726a92f62e5b7b112460c4e89f9fcbd523d08f39dcb928210ce8d4f676f",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvoton-tpm-root-ca-1110",
+            pem: include_str!("roots/tpm/nuvoton-nuvoton-tpm-root-ca-1110.pem"),
+            sha256: "2782e51a95e86d9557fe4204316cf805bd6f5898f81f9732e944d742bcdc5f54",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvoton-tpm-root-ca-1111",
+            pem: include_str!("roots/tpm/nuvoton-nuvoton-tpm-root-ca-1111.pem"),
+            sha256: "e38c280f7c0e0b49f31efc7531032bb6a86c3fba4eb89beb1d510eaa4510ae4a",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvoton-tpm-root-ca-2010",
+            pem: include_str!("roots/tpm/nuvoton-nuvoton-tpm-root-ca-2010.pem"),
+            sha256: "970b1cb098896f0d31be45dd299ed31f1640689f7c1618d7370cd71b6eb97560",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvoton-tpm-root-ca-2011",
+            pem: include_str!("roots/tpm/nuvoton-nuvoton-tpm-root-ca-2011.pem"),
+            sha256: "ab6005053c48534c46f54d2afbbd300a99f7b0e3ab1786034cb0785ca081a7ba",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvoton-tpm-root-ca-2012",
+            pem: include_str!("roots/tpm/nuvoton-nuvoton-tpm-root-ca-2012.pem"),
+            sha256: "dc79aaba3d09f42a9da4ecd91db0289214e56c16e4201be6ae67433ad273c6dc",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvoton-tpm-root-ca-2110",
+            pem: include_str!("roots/tpm/nuvoton-nuvoton-tpm-root-ca-2110.pem"),
+            sha256: "4aebe77a51ed29959a7f9f5e07a24a558dee8167f3985d724995a541c258dfda",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvoton-tpm-root-ca-2111",
+            pem: include_str!("roots/tpm/nuvoton-nuvoton-tpm-root-ca-2111.pem"),
+            sha256: "cd8185ff8995ed09811970090a8c36fafab34ef87f47fa51fdb9ecf95c9c2e04",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvoton-tpm-root-ca-2112",
+            pem: include_str!("roots/tpm/nuvoton-nuvoton-tpm-root-ca-2112.pem"),
+            sha256: "66e3a1013d4f697700f731e7d68c69b58351f90ec9580d85862d020ab4abf1af",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvotontpmrootca1210",
+            pem: include_str!("roots/tpm/nuvoton-nuvotontpmrootca1210.pem"),
+            sha256: "ba70a6ea7b77c7fee8947a07b1e70e0b26d39ce5e6307f63d5e4b9507f19a157",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvotontpmrootca2210",
+            pem: include_str!("roots/tpm/nuvoton-nuvotontpmrootca2210.pem"),
+            sha256: "fc61abbc18100f460205ebe09d8c3e6995ac2be2234344a7facb62e15f9a7584",
+        },
+        BakedTpmRoot {
+            vendor: "Nuvoton",
+            name: "nuvoton-nuvotontpmrootca2211",
+            pem: include_str!("roots/tpm/nuvoton-nuvotontpmrootca2211.pem"),
+            sha256: "2bbc5db224b8f28a6d2cf336d4da7ab21c8c490e3d60ef497801dc0b6ac00227",
+        },
+        BakedTpmRoot {
+            vendor: "QC",
+            name: "qc-microsoft-tpm-root-certificate-authority-2014",
+            pem: include_str!("roots/tpm/qc-microsoft-tpm-root-certificate-authority-2014.pem"),
+            sha256: "870c7a35ceab3d59979f2c6a524042d404cb71518004350925fb2ced79a999da",
+        },
+        BakedTpmRoot {
+            vendor: "QC",
+            name: "qc-qualcomm-wes-secure-provisioning-root-v2",
+            pem: include_str!("roots/tpm/qc-qualcomm-wes-secure-provisioning-root-v2.pem"),
+            sha256: "87c849b6ca87a58a0af4031531e49216d149e62a52ebea5df1805819cf44250e",
+        },
+        BakedTpmRoot {
+            vendor: "STMicro",
+            name: "stmicro-globalsign-trusted-platform-module-ecc-root-ca",
+            pem: include_str!(
+                "roots/tpm/stmicro-globalsign-trusted-platform-module-ecc-root-ca.pem"
+            ),
+            sha256: "5a8c7b5eb888cfce9322068e80e82b28b554ffeb7fdc9638dcb3763077401d26",
+        },
+        BakedTpmRoot {
+            vendor: "STMicro",
+            name: "stmicro-globalsign-trusted-platform-module-root-ca",
+            pem: include_str!("roots/tpm/stmicro-globalsign-trusted-platform-module-root-ca.pem"),
+            sha256: "f27bf02c6e00c73d915eeb6a6a2f5fbf0c31ae0393149e6b5c31e41b113841c3",
+        },
+        BakedTpmRoot {
+            vendor: "STMicro",
+            name: "stmicro-stsafe-ecc-root-ca-02",
+            pem: include_str!("roots/tpm/stmicro-stsafe-ecc-root-ca-02.pem"),
+            sha256: "fd1e7b68accd825636b27b3177c67402d463a7f04c97b6c47ab705fcdc1a04f6",
+        },
+        BakedTpmRoot {
+            vendor: "STMicro",
+            name: "stmicro-stsafe-rsa-root-ca-02",
+            pem: include_str!("roots/tpm/stmicro-stsafe-rsa-root-ca-02.pem"),
+            sha256: "c8f179943356e13d9d84b100201cefabbf408880241e5329e60d950ce1dea623",
+        },
+    ];
+
+    /// Every baked TPM vendor root as DER, each digest-checked on load.
+    ///
+    /// A root whose embedded PEM does not match its pinned digest is **omitted**
+    /// rather than returned unverified — the fail-closed direction, since a
+    /// missing anchor means *no hardware evidence*, never a refusal. A test
+    /// asserts all [`TPM_VENDOR_ROOTS`] load, so a mismatch fails the build
+    /// rather than silently shrinking the fleet's trust set.
+    #[must_use]
+    pub fn tpm_vendor_roots() -> Vec<Vec<u8>> {
+        TPM_VENDOR_ROOTS
+            .iter()
+            .filter_map(|r| load(r.name, r.pem, r.sha256).ok())
+            .collect()
+    }
+
     /// The store verify ships with.
     ///
-    /// Contains every anchor that is **baked and hardware-validated** today —
-    /// currently the Yubico PIV root. Google / Apple / TPM-vendor anchors are
-    /// deliberately absent until their certificates are sourced and reviewed:
-    /// an absent anchor means *no hardware evidence for that class*, which is a
-    /// measurement, **not** a refusal (see the module docs). Callers add their
-    /// own anchors with [`TrustAnchorStore::with_store`].
+    /// Carries the Yubico PIV root ([`AnchorProvenance::HardwareValidated`](super::AnchorProvenance::HardwareValidated)),
+    /// both Google Android roots and the Apple App Attest root
+    /// ([`AnchorProvenance::VendorOfficial`](super::AnchorProvenance::VendorOfficial)), and the 40 TPM vendor roots
+    /// ([`AnchorProvenance::CommunityAggregated`](super::AnchorProvenance::CommunityAggregated) — see [`TPM_VENDOR_ROOTS`]
+    /// for why that tier and not a higher one).
+    ///
+    /// Anchors sit at **different provenance tiers on purpose**. A caller that
+    /// will not accept third-party-aggregated sourcing filters with
+    /// [`TrustAnchorStore::resolve_x509_min_provenance`](super::TrustAnchorStore::resolve_x509_min_provenance) rather than being
+    /// silently handed a weaker anchor than it asked for.
+    ///
+    /// `FIDO_MDS` remains unbaked. An absent anchor means *no hardware evidence
+    /// for that class*, which is a measurement, **not** a refusal (see the
+    /// module docs). Callers add their own anchors with
+    /// [`TrustAnchorStore::with_store`](super::TrustAnchorStore::with_store).
     #[must_use]
     pub fn default_store() -> TrustAnchorStore {
         use super::{AnchorProvenance, CasAndTas, EnvironmentGroup, TrustAnchor};
@@ -677,6 +1000,19 @@ pub mod baked {
                 environments::APPLE_APP_ATTEST,
                 vec![der],
                 AnchorProvenance::VendorOfficial,
+            ));
+        }
+
+        // TPM is a vendor *set*, not a vendor root — 40 roots across 8 vendors,
+        // 17 from Nuvoton alone. Aggregated by Microsoft rather than published
+        // first-party, hence the lower tier; `docs/TPM_ANCHOR_PROVENANCE.md`
+        // records what was tried to do better.
+        let tpm = tpm_vendor_roots();
+        if !tpm.is_empty() {
+            store = store.with_store(tiered(
+                environments::TPM_EK,
+                tpm,
+                AnchorProvenance::CommunityAggregated,
             ));
         }
 
@@ -1167,14 +1503,13 @@ mod tests {
         }
     }
 
-    /// Classes with no baked anchor yield no evidence — not an error. TPM is
-    /// still unsourced (a vendor SET, tracked on #199).
+    /// Classes with no baked anchor yield no evidence — not an error.
     #[test]
     fn unbaked_classes_are_absent_not_failing() {
         let s = baked::default_store();
-        for env in [environments::TPM_EK, environments::FIDO_MDS] {
-            assert!(s.resolve(Purpose::KeyAttestation, env).is_empty());
-        }
+        assert!(s
+            .resolve(Purpose::KeyAttestation, environments::FIDO_MDS)
+            .is_empty());
     }
 
     // --- chain validation cache ---
@@ -1309,12 +1644,102 @@ mod provenance_tier {
         assert_eq!(strict[0], b"vendor");
     }
 
-    /// TPM stays empty: per CIRISPersist, zero anchors we can defend beats six
-    /// we cannot. `Ok(None)` is the honest state.
+    /// Every baked TPM root loads and matches its pinned digest. A silent
+    /// omission would shrink the fleet's trust set without telling anyone, so
+    /// the count is asserted rather than the mere non-emptiness.
     #[test]
-    fn tpm_slot_remains_unbaked() {
-        assert!(baked::default_store()
-            .resolve(Purpose::KeyAttestation, environments::TPM_EK)
+    fn every_baked_tpm_root_loads_and_matches_its_pin() {
+        assert_eq!(
+            baked::tpm_vendor_roots().len(),
+            baked::TPM_VENDOR_ROOTS.len(),
+            "a baked TPM root failed its digest check"
+        );
+        assert_eq!(baked::TPM_VENDOR_ROOTS.len(), 40);
+    }
+
+    /// **A TPM vendor is a SET, not a root.** Nuvoton ships 17 — a single
+    /// `pinned_root` parameter could not express this vendor at all, which is
+    /// the whole reason the store resolves a set per environment.
+    #[test]
+    fn tpm_vendors_ship_multiple_roots_each() {
+        let nuvoton = baked::TPM_VENDOR_ROOTS
+            .iter()
+            .filter(|r| r.vendor == "Nuvoton")
+            .count();
+        assert!(
+            nuvoton > 1,
+            "a vendor with one root would not exercise the set design"
+        );
+        assert_eq!(nuvoton, 17);
+
+        let vendors: std::collections::BTreeSet<_> =
+            baked::TPM_VENDOR_ROOTS.iter().map(|r| r.vendor).collect();
+        assert_eq!(vendors.len(), 8, "8 vendors represented");
+    }
+
+    /// The TPM anchors resolve, and resolve at the tier they were actually
+    /// sourced at. Baking them at `VendorOfficial` would overstate what
+    /// Microsoft's aggregation proves.
+    #[test]
+    fn tpm_anchors_resolve_as_community_aggregated_not_vendor_official() {
+        let s = baked::default_store();
+        assert_eq!(
+            s.resolve(Purpose::KeyAttestation, environments::TPM_EK)
+                .len(),
+            40
+        );
+
+        // A caller demanding first-party sourcing must NOT be handed these.
+        assert!(
+            s.resolve_x509_min_provenance(
+                Purpose::KeyAttestation,
+                environments::TPM_EK,
+                AnchorProvenance::VendorOfficial,
+            )
+            .is_empty(),
+            "aggregated anchors must not satisfy a vendor-official requirement"
+        );
+        assert_eq!(
+            s.resolve_x509_min_provenance(
+                Purpose::KeyAttestation,
+                environments::TPM_EK,
+                AnchorProvenance::CommunityAggregated,
+            )
+            .len(),
+            40
+        );
+    }
+
+    /// Containment, by fingerprint identity rather than by emptiness: the TPM
+    /// roots must be unreachable as Android or PIV anchors. Asserting "the
+    /// other slot is empty" would stop testing anything the moment that slot
+    /// is populated — which is exactly what happened to the old Android test.
+    #[test]
+    fn tpm_roots_are_unreachable_from_other_environments() {
+        use sha2::{Digest, Sha256};
+        let s = baked::default_store();
+        let tpm: std::collections::BTreeSet<String> = baked::tpm_vendor_roots()
+            .iter()
+            .map(|d| hex::encode(Sha256::digest(d)))
+            .collect();
+        assert_eq!(tpm.len(), 40, "no duplicate roots baked");
+
+        for env in [
+            environments::ANDROID_KEYSTORE,
+            environments::YUBIKEY_PIV,
+            environments::APPLE_APP_ATTEST,
+        ] {
+            for der in s.resolve_x509(Purpose::KeyAttestation, env) {
+                assert!(
+                    !tpm.contains(&hex::encode(Sha256::digest(der))),
+                    "a TPM vendor root is reachable as a {env} anchor"
+                );
+            }
+        }
+
+        // ...and a TPM anchor cannot validate a TLS certificate.
+        assert!(s
+            .resolve(Purpose::Certificate, environments::TPM_EK)
             .is_empty());
     }
 }

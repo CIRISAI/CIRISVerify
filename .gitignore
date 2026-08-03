@@ -38,6 +38,7 @@ Thumbs.db
 # so a reviewer can audit exactly what the fleet trusts. NEVER put a private key
 # here; the `*.pem` rule above stays the default for everything else.
 !src/ciris-verify-core/src/roots/*.pem
+!src/ciris-verify-core/src/roots/tpm/*.pem
 *.der
 *.jks
 secrets/
