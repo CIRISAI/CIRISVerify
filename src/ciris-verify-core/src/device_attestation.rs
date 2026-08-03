@@ -85,6 +85,25 @@ pub enum AndroidSecurityLevel {
     StrongBox,
 }
 
+impl crate::classification::Classification for AndroidSecurityLevel {
+    /// **MEASUREMENT.** Where the chain says the key lives — an input to
+    /// policy, not policy. Absence of an attestation is not a failure, and a
+    /// `Software` level is a valid measurement; a consumer composes its own
+    /// admission rule over this (and see `refutes` for the direction that
+    /// actually carries hard information).
+    fn gating() -> crate::classification::Gating {
+        crate::classification::Gating::Measurement
+    }
+}
+
+impl crate::classification::Classification for AppAttestEnvironment {
+    /// **MEASUREMENT.** Production vs development, as measured from the
+    /// `aaguid` — reported, never enforced.
+    fn gating() -> crate::classification::Gating {
+        crate::classification::Gating::Measurement
+    }
+}
+
 impl AndroidSecurityLevel {
     fn from_der_value(v: u32) -> Option<Self> {
         match v {

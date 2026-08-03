@@ -77,6 +77,9 @@ pub mod cache;
 pub mod canonical_subject;
 pub mod ceg_error;
 pub mod ceg_outbox;
+/// Does a shipped classification carry policy force? (#238 follow-up) —
+/// every classification states, in the type, whether a consumer may gate on it.
+pub mod classification;
 pub mod config;
 /// Device-attestation chain validation (#199) — Android Key Attestation to a
 /// pinned vendor root. Hardware is a trust signal, never a requirement.
