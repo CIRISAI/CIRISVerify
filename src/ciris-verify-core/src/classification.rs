@@ -67,6 +67,72 @@ impl Gating {
         matches!(self, Self::Normative { .. })
     }
 
+    /// **Propagate through derivation — weakest input wins** (CIRISVerify#244).
+    ///
+    /// CC's composition-context rule is explicit that the constraint
+    /// *inherits*: *"a value derived from a self-subject `capacity:*` row
+    /// inherits the constraint, and the trace audit MUST verify label
+    /// propagation through derivation, not merely the absence of a direct read
+    /// in the loop."* The named failure is **laundering** — a constrained value
+    /// passing through a transformation and coming out unconstrained (Meta's
+    /// Policy Zones precedent).
+    ///
+    /// Ordering is `Proposal` < `Measurement` < `Normative`, so a derivation is
+    /// **never more gate-able than its weakest input**. Mixing a measurement
+    /// into a normative computation yields a measurement, which is the point:
+    /// you cannot launder a measurement into policy by aggregating it.
+    ///
+    /// ## Two normative inputs with *different* authorities
+    ///
+    /// Returns [`Gating::Measurement`], deliberately. A derived value governed
+    /// by two rulings cannot cite *a* ratifying authority, and emitting one of
+    /// the two would be precisely the over-claim this module exists to prevent.
+    /// A consumer that genuinely needs to gate on such a composite must name
+    /// the authority for the *composite*, which is a ruling someone has to
+    /// make — not something verify may infer.
+    ///
+    /// ## Where this is applied
+    ///
+    /// Verify itself composes no verdict — traced: `AttestBundle` regroups
+    /// `AttestationEntry` items and `holonomic::aggregation` folds over `f64`
+    /// masses, so **no classification travels through verify's own composition
+    /// paths** and there is no laundering path inside this crate. This is the
+    /// algebra for **consumers** deriving over verify's outputs, which is where
+    /// the risk actually lives.
+    #[must_use]
+    pub fn combine(self, other: Self) -> Self {
+        match (self, other) {
+            // Any proposal poisons the derivation — it has no standing at all.
+            (Self::Proposal { tracking }, _) | (_, Self::Proposal { tracking }) => {
+                Self::Proposal { tracking }
+            },
+            // A measurement anywhere makes the result a measurement.
+            (Self::Measurement, _) | (_, Self::Measurement) => Self::Measurement,
+            (Self::Normative { authority: a }, Self::Normative { authority: b }) => {
+                if a == b {
+                    Self::Normative { authority: a }
+                } else {
+                    // Cannot cite a single authority for the composite.
+                    Self::Measurement
+                }
+            },
+        }
+    }
+
+    /// Fold [`combine`](Self::combine) over a derivation's inputs.
+    ///
+    /// An **empty** input set yields [`Gating::Measurement`], not a normative
+    /// identity: a value derived from nothing carries no ratified authority,
+    /// and returning `Normative` for the empty case would let a consumer
+    /// manufacture policy standing out of an empty fold.
+    #[must_use]
+    pub fn propagate(inputs: impl IntoIterator<Item = Self>) -> Self {
+        inputs
+            .into_iter()
+            .reduce(Self::combine)
+            .unwrap_or(Self::Measurement)
+    }
+
     /// One-line rendering for logs and operator diagnostics.
     #[must_use]
     pub fn describe(self) -> String {
@@ -179,5 +245,91 @@ mod shipped_classifications {
                 authority: "CC 3.4.5"
             }
         );
+    }
+}
+
+#[cfg(test)]
+mod propagation {
+    use super::*;
+
+    const CC: Gating = Gating::Normative {
+        authority: "CC 3.4.5",
+    };
+    const RATS: Gating = Gating::Normative {
+        authority: "draft-ietf-rats-concise-ta-stores-02",
+    };
+    const PROP: Gating = Gating::Proposal {
+        tracking: "CIRISVerify#244",
+    };
+
+    /// A derivation is never more gate-able than its weakest input — the
+    /// anti-laundering property.
+    #[test]
+    fn measurement_poisons_a_normative_derivation() {
+        assert_eq!(CC.combine(Gating::Measurement), Gating::Measurement);
+        assert_eq!(Gating::Measurement.combine(CC), Gating::Measurement);
+        assert!(!CC.combine(Gating::Measurement).may_gate());
+    }
+
+    /// A proposal has no standing, so it poisons anything it touches.
+    #[test]
+    fn a_proposal_poisons_everything() {
+        assert!(matches!(CC.combine(PROP), Gating::Proposal { .. }));
+        assert!(matches!(
+            Gating::Measurement.combine(PROP),
+            Gating::Proposal { .. }
+        ));
+        assert!(!CC.combine(PROP).may_gate());
+    }
+
+    /// Same authority survives; the derived value is still gate-able.
+    #[test]
+    fn one_authority_survives_derivation() {
+        assert_eq!(CC.combine(CC), CC);
+        assert!(CC.combine(CC).may_gate());
+    }
+
+    /// Two rulings cannot be collapsed into one citation — emitting either
+    /// would be the over-claim this module exists to prevent.
+    #[test]
+    fn differing_authorities_degrade_rather_than_pick_one() {
+        assert_eq!(CC.combine(RATS), Gating::Measurement);
+        assert_eq!(RATS.combine(CC), Gating::Measurement);
+        assert!(!CC.combine(RATS).may_gate());
+    }
+
+    /// An empty fold must not manufacture policy standing.
+    #[test]
+    fn empty_derivation_is_not_normative() {
+        assert_eq!(Gating::propagate([]), Gating::Measurement);
+        assert!(!Gating::propagate([]).may_gate());
+    }
+
+    #[test]
+    fn propagate_folds_to_the_weakest() {
+        assert_eq!(Gating::propagate([CC, CC, CC]), CC);
+        assert_eq!(
+            Gating::propagate([CC, Gating::Measurement, CC]),
+            Gating::Measurement
+        );
+        assert!(matches!(
+            Gating::propagate([CC, Gating::Measurement, PROP]),
+            Gating::Proposal { .. }
+        ));
+    }
+
+    /// Order must not change the outcome — a fold that depends on input order
+    /// would give two nodes with the same evidence different answers.
+    #[test]
+    fn combine_is_commutative_and_associative_enough_to_fold() {
+        let all = [CC, RATS, Gating::Measurement, PROP];
+        for a in all {
+            for b in all {
+                assert_eq!(a.combine(b), b.combine(a), "combine must commute");
+            }
+        }
+        let fwd = Gating::propagate([CC, Gating::Measurement, RATS]);
+        let rev = Gating::propagate([RATS, Gating::Measurement, CC]);
+        assert_eq!(fwd, rev, "fold must be order-independent");
     }
 }
