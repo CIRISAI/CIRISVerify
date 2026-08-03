@@ -119,6 +119,9 @@ pub mod parallel_race;
 pub mod play_integrity;
 pub mod provenance;
 pub mod reconsider_dos;
+/// Redactable commitments (#241) — distinguishing 'redacted by authority'
+/// from 'tampered', cryptographically rather than by assertion.
+pub mod redactable;
 pub mod registry;
 pub mod revocation;
 pub mod security;
