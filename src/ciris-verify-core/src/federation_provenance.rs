@@ -190,27 +190,64 @@ pub mod dim {
         format!("hardware_custody:{platform}")
     }
 
-    /// How a dimension family relates to **consent** (CC#46 / CIRISPersist#569).
+    /// CC 3.4.5's **ratified** per-family consent disposition.
     ///
-    /// CIRISPersist#569 found that its consent gate matches only `capacity:*`,
-    /// so every verify family lands ungated — a subject can decline `analyze`
-    /// and still accumulate third-party trust signals. The correct rule is
-    /// *not* "gate all scoring": an abuser never consents to `detection:*` /
-    /// `moderation:*` / `slashing:*`, and gating those would delete the
-    /// abuse-response plane.
+    /// # This tracks CC; it is not verify's opinion
     ///
-    /// Verify knows what each dimension **is**, so verify declares the
-    /// classification; the substrate decides policy. This is the same division
-    /// as everywhere else here — verify measures, consumers gate.
+    /// An earlier version of this type (v11.0.0–v11.1.0) shipped a verify-side
+    /// *proposal* that placed four families on the consensual-reputation side.
+    /// **CIRISConstitution rc3 ratified CC 3.4.5, which disposes of all
+    /// fourteen families individually and places every one OUTSIDE the consent
+    /// gate.** The proposal contradicted the ruling, so the proposal is gone —
+    /// this enum now records CC's disposition and nothing else.
+    ///
+    /// CIRISPersist#569 derived its admission gate from this registry rather
+    /// than transcribing a list (the right instinct — it avoids two lists that
+    /// disagree), which made the classification load-bearing in another repo.
+    /// CIRISVerify#238 caught the contradiction before it shipped there.
+    ///
+    /// # Why the old classification failed in a security-relevant direction
+    ///
+    /// - **`rollback_detected:*` is −1-only.** Gating it on subject consent
+    ///   would let an **adversary opt out of rollback detection** by declining
+    ///   `analyze`.
+    /// - **Artifact-integrity families verify a subject's artifacts.** Gating
+    ///   them would let a subject block verification of their own build,
+    ///   license or certificate — CC's stated reason for the carve-out is
+    ///   exactly that *"a forger never consents to verification."*
+    ///
+    /// Consent-before-scoring binds the family that judges **agents**
+    /// (`capacity:*`, which verify does not own) — never the families that
+    /// verify **artifacts**.
     #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    pub enum ConsentClass {
-        /// A consensual **reputation** signal about a subject. Belongs behind
-        /// the subject's `analyze` consent.
-        ConsensualReputation,
-        /// A **self-attestation** about the emitting node's own artifact or
-        /// custody. There is no third-party subject to consent, so consent is
-        /// not the applicable gate.
-        SelfAttestation,
+    pub enum ConsentDisposition {
+        /// CC 3.4.5 **self-reports** — a pro-self statement about the emitter
+        /// itself, so there is no third-party data subject to consent.
+        SelfReport,
+        /// CC 3.4.5 **artifact-integrity verification** — scores builds,
+        /// manifests, licenses and certificates, not a subject's conduct or
+        /// capacity. *"A forger never consents to verification."*
+        ArtifactVerification,
+        /// CC 3.4.5 **log infrastructure** — proves properties of a public log.
+        /// The cosigned form is separately role-gated to witnesses (CC 3.4.9).
+        LogInfrastructure,
+        /// CC 3.4.5 **abuse response** — an adversarial detector, on the
+        /// abuse-response side of the line by construction.
+        AbuseResponse,
+    }
+
+    impl ConsentDisposition {
+        /// Is a family with this disposition gated on the subject's `analyze`
+        /// consent? **Always `false`** — CC 3.4.5 places every verify-owned
+        /// family outside the consent gate.
+        ///
+        /// Returned as a method rather than left implicit so a consumer cannot
+        /// re-derive a gate from the variant names and reach a different answer
+        /// than the Constitution.
+        #[must_use]
+        pub const fn is_consent_gated(self) -> bool {
+            false
+        }
     }
 
     /// One entry in the authoritative registry of verify-namespace dimensions.
@@ -222,8 +259,8 @@ pub mod dim {
         pub parameterized: bool,
         /// Does verify itself emit this dimension?
         pub verify_emits: bool,
-        /// Consent classification (CC#46 / CIRISPersist#569).
-        pub consent_class: ConsentClass,
+        /// CC 3.4.5 ratified consent disposition.
+        pub consent_disposition: ConsentDisposition,
     }
 
     /// **The authoritative, exhaustive registry** of the verify-owned dimension
@@ -242,85 +279,85 @@ pub mod dim {
             prefix: SELF_VERIFY,
             parameterized: false,
             verify_emits: true,
-            consent_class: ConsentClass::SelfAttestation,
+            consent_disposition: ConsentDisposition::SelfReport,
         },
         DimensionSpec {
             prefix: HARDWARE,
             parameterized: false,
             verify_emits: true,
-            consent_class: ConsentClass::SelfAttestation,
+            consent_disposition: ConsentDisposition::ArtifactVerification,
         },
         DimensionSpec {
             prefix: REGISTRY_CONSENSUS,
             parameterized: false,
             verify_emits: true,
-            consent_class: ConsentClass::ConsensualReputation,
+            consent_disposition: ConsentDisposition::ArtifactVerification,
         },
         DimensionSpec {
             prefix: LICENSE_VALIDITY,
             parameterized: false,
             verify_emits: true,
-            consent_class: ConsentClass::ConsensualReputation,
+            consent_disposition: ConsentDisposition::ArtifactVerification,
         },
         DimensionSpec {
             prefix: AGENT_INTEGRITY,
             parameterized: false,
             verify_emits: true,
-            consent_class: ConsentClass::SelfAttestation,
+            consent_disposition: ConsentDisposition::ArtifactVerification,
         },
         DimensionSpec {
             prefix: TRANSPARENCY_LOG_INCLUSION,
             parameterized: false,
             verify_emits: true,
-            consent_class: ConsentClass::SelfAttestation,
+            consent_disposition: ConsentDisposition::LogInfrastructure,
         },
         DimensionSpec {
             prefix: TRANSPARENCY_LOG_CONSISTENCY,
             parameterized: false,
             verify_emits: true,
-            consent_class: ConsentClass::SelfAttestation,
+            consent_disposition: ConsentDisposition::LogInfrastructure,
         },
         DimensionSpec {
             prefix: TRANSPARENCY_LOG_COSIGNED_PREFIX,
             parameterized: true,
             verify_emits: false,
-            consent_class: ConsentClass::SelfAttestation,
+            consent_disposition: ConsentDisposition::LogInfrastructure,
         },
         DimensionSpec {
             prefix: "provenance:slsa:",
             parameterized: true,
             verify_emits: true,
-            consent_class: ConsentClass::SelfAttestation,
+            consent_disposition: ConsentDisposition::ArtifactVerification,
         },
         DimensionSpec {
             prefix: "provenance:build_manifest:",
             parameterized: true,
             verify_emits: true,
-            consent_class: ConsentClass::SelfAttestation,
+            consent_disposition: ConsentDisposition::ArtifactVerification,
         },
         DimensionSpec {
             prefix: "provenance:skill_import:",
             parameterized: true,
             verify_emits: true,
-            consent_class: ConsentClass::SelfAttestation,
+            consent_disposition: ConsentDisposition::ArtifactVerification,
         },
         DimensionSpec {
             prefix: "rollback_detected:",
             parameterized: true,
             verify_emits: true,
-            consent_class: ConsentClass::ConsensualReputation,
+            consent_disposition: ConsentDisposition::AbuseResponse,
         },
         DimensionSpec {
             prefix: "cert_validity:",
             parameterized: true,
             verify_emits: true,
-            consent_class: ConsentClass::ConsensualReputation,
+            consent_disposition: ConsentDisposition::ArtifactVerification,
         },
         DimensionSpec {
             prefix: "hardware_custody:",
             parameterized: true,
             verify_emits: true,
-            consent_class: ConsentClass::SelfAttestation,
+            consent_disposition: ConsentDisposition::SelfReport,
         },
     ];
 
@@ -808,7 +845,7 @@ mod tests {
 
 #[cfg(test)]
 mod registry_tests {
-    use super::dim::{self, ConsentClass};
+    use super::dim::{self, ConsentDisposition};
 
     /// **The count question, answered precisely** (CIRISServer#340 asked which
     /// of "twelve" vs 14 is authoritative; the honest answer is that it depends
@@ -887,28 +924,93 @@ mod registry_tests {
         }
     }
 
-    /// CIRISPersist#569: the consent classification must be total, and must
-    /// keep the abuse-response carve-out intact by never marking a
-    /// self-attestation as consensual reputation.
+    /// **CC 3.4.5 (ratified) — no verify-owned family is consent-gated.**
+    ///
+    /// The Constitution disposes of all fourteen families individually and puts
+    /// every one outside the gate. This asserts the ruling directly, so a future
+    /// edit that reintroduces a consent-gated family fails here rather than in a
+    /// downstream admission path (CIRISVerify#238 / CIRISPersist#569).
     #[test]
-    fn consent_classification_is_total_and_sane() {
-        assert!(dim::ALL
-            .iter()
-            .any(|d| d.consent_class == ConsentClass::ConsensualReputation));
-        assert!(dim::ALL
-            .iter()
-            .any(|d| d.consent_class == ConsentClass::SelfAttestation));
-        // A node's statement about its own build/custody has no third-party
-        // subject, so it is never consent-gated.
+    fn cc_3_4_5_no_verify_family_is_consent_gated() {
+        assert_eq!(dim::ALL.len(), 14, "CC 3.4.5 disposes of fourteen families");
+        for d in dim::ALL {
+            assert!(
+                !d.consent_disposition.is_consent_gated(),
+                "{} must not be consent-gated (CC 3.4.5)",
+                d.prefix
+            );
+        }
+    }
+
+    /// The security case CIRISVerify#238 named: `rollback_detected` is a −1-only
+    /// adversarial detector. Gating it on subject consent would let an
+    /// **adversary opt out of rollback detection** by declining `analyze`.
+    #[test]
+    fn rollback_detection_can_never_be_opted_out_of() {
+        let d = dim::lookup(&dim::rollback_detected("revocation_revision")).unwrap();
+        assert_eq!(d.consent_disposition, ConsentDisposition::AbuseResponse);
+        assert!(!d.consent_disposition.is_consent_gated());
+    }
+
+    /// Artifact-integrity families verify a subject's *artifacts*, so gating
+    /// them would let a subject block verification of their own build, license
+    /// or certificate — CC: *"a forger never consents to verification."*
+    #[test]
+    fn artifact_verification_families_track_cc_3_4_5() {
+        for d in [
+            dim::HARDWARE,
+            dim::REGISTRY_CONSENSUS,
+            dim::LICENSE_VALIDITY,
+            dim::AGENT_INTEGRITY,
+        ] {
+            assert_eq!(
+                dim::lookup(d).unwrap().consent_disposition,
+                ConsentDisposition::ArtifactVerification,
+                "{d} is artifact-integrity verification per CC 3.4.5"
+            );
+        }
+        for d in [
+            dim::provenance_slsa(3),
+            dim::provenance_build_manifest("x86_64-unknown-linux-gnu"),
+            dim::provenance_skill_import("registry:r"),
+            dim::cert_validity("registry-us"),
+        ] {
+            assert_eq!(
+                dim::lookup(&d).unwrap().consent_disposition,
+                ConsentDisposition::ArtifactVerification
+            );
+        }
+    }
+
+    /// CC 3.4.5 separates *self-reports* from artifact verification: a pro-self
+    /// statement has no third-party subject. Note `hardware_custody:*` is a
+    /// self-report while `attestation:hardware_rooted` is artifact-integrity —
+    /// an easy pair to conflate, so it is pinned.
+    #[test]
+    fn self_reports_and_log_infrastructure_track_cc_3_4_5() {
         assert_eq!(
-            dim::lookup(dim::SELF_VERIFY).unwrap().consent_class,
-            ConsentClass::SelfAttestation
+            dim::lookup(dim::SELF_VERIFY).unwrap().consent_disposition,
+            ConsentDisposition::SelfReport
         );
         assert_eq!(
             dim::lookup(&dim::hardware_custody("android"))
                 .unwrap()
-                .consent_class,
-            ConsentClass::SelfAttestation
+                .consent_disposition,
+            ConsentDisposition::SelfReport
         );
+        assert_ne!(
+            dim::lookup(dim::HARDWARE).unwrap().consent_disposition,
+            ConsentDisposition::SelfReport,
+            "attestation:hardware_rooted is artifact-integrity, NOT a self-report"
+        );
+        for d in [
+            dim::TRANSPARENCY_LOG_INCLUSION,
+            dim::TRANSPARENCY_LOG_CONSISTENCY,
+        ] {
+            assert_eq!(
+                dim::lookup(d).unwrap().consent_disposition,
+                ConsentDisposition::LogInfrastructure
+            );
+        }
     }
 }
