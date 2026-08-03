@@ -14,9 +14,14 @@
 //! [`crate::accord_custody_attestation::verify_yubikey_piv_attestation`]. This
 //! module is the sibling for platform devices: **Android Key Attestation**
 //! (X.509 + the `KeyDescription` extension) and **Apple App Attest** (a CBOR
-//! attestation object, WebAuthn-shaped). **TPM EK remains the open leg of
-//! #199** — its anchor is a vendor *set*, so it wants the trust-anchor store's
-//! multi-anchor resolution rather than a pinned root.
+//! attestation object, WebAuthn-shaped) and **TPM 2.0 EK** (X.509 to a vendor
+//! *set*, resolved through the trust-anchor store rather than a pinned root).
+//!
+//! All three device legs of #199 are implemented. What remains for TPM is
+//! **sourcing** the vendor roots — the validator is here and the store slot
+//! (`environments::TPM_EK`) is defined, but no vendor anchor is baked, so a TPM
+//! chain currently resolves to `Ok(None)`: *no hardware evidence*, never a
+//! refusal.
 //!
 //! Neither validator is platform-gated, and that is deliberate: verifying a
 //! device attestation is a **relying-party** operation. The phone produces the
@@ -781,6 +786,255 @@ pub fn verify_apple_app_attest_with_store(
     }))
 }
 
+// ===========================================================================
+// TPM 2.0 Endorsement Key (CIRISVerify#199, the third and last device leg).
+//
+// The case the trust-anchor store was built for: the anchor is a vendor SET
+// (Infineon / STMicroelectronics / Nuvoton / AMD / Intel / Qualcomm), not a
+// single root, so `_with_store` tries every admissible anchor rather than
+// threading six pinned-root parameters through a call site.
+//
+// An EK certificate is unlike the other two legs in one way worth stating: the
+// EK is a *storage* key, not a signing key, and TPM identity lives in the
+// SubjectAltName rather than the Subject (an EK cert commonly has an EMPTY
+// subject). So the manufacturer/model/version are read from the TCG OIDs, and
+// an implementation that keys off the CN finds nothing.
+// ===========================================================================
+
+/// TCG `tpmManufacturer` attribute OID, carried in the EK cert's SAN.
+pub const OID_TCG_TPM_MANUFACTURER: &str = "2.23.133.2.1";
+/// TCG `tpmModel` attribute OID.
+pub const OID_TCG_TPM_MODEL: &str = "2.23.133.2.2";
+/// TCG `tpmVersion` attribute OID.
+pub const OID_TCG_TPM_VERSION: &str = "2.23.133.2.3";
+
+/// What a TPM EK certificate measured.
+///
+/// **Measurements, not levels.** The fields say what the vendor asserts about
+/// the part; whether that part is acceptable is consumer policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TpmEkVerdict {
+    /// TCG `tpmManufacturer` (e.g. `id:49465800` = Infineon), when present.
+    pub manufacturer: Option<String>,
+    /// TCG `tpmModel`, when present.
+    pub model: Option<String>,
+    /// TCG `tpmVersion`, when present.
+    pub firmware_version: Option<String>,
+}
+
+impl TpmEkVerdict {
+    /// The measured hardware class.
+    ///
+    /// Deliberately **not** split into discrete-vs-firmware TPM: an EK
+    /// certificate does not reliably carry that distinction, and inferring it
+    /// from the manufacturer string would be a guess presented as a
+    /// measurement. A consumer that needs `TpmDiscrete` vs `TpmFirmware` must
+    /// get it from a source that actually states it.
+    #[must_use]
+    pub const fn hardware_class(&self) -> &'static str {
+        "TPM_2_0"
+    }
+
+    /// Project into [`AttestationEntry`] measurements — the scoring signal.
+    #[must_use]
+    pub fn to_attestation_entries(&self, attester: &str) -> Vec<AttestationEntry> {
+        vec![
+            AttestationEntry::pass(dim::hardware_custody("tpm"), attester).with_source_ref(
+                self.manufacturer
+                    .clone()
+                    .unwrap_or_else(|| self.hardware_class().to_string()),
+            ),
+        ]
+    }
+}
+
+/// Why a TPM EK certificate was **not** accepted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TpmEkError {
+    /// A certificate did not parse.
+    CertParse {
+        /// Which certificate.
+        which: &'static str,
+    },
+    /// The chain does not link EK → intermediates → a pinned vendor root.
+    ChainInvalid {
+        /// Which link, and why.
+        detail: String,
+    },
+    /// The certified public key is not the EK the caller pinned — the
+    /// anti-lift check.
+    EkKeyMismatch,
+}
+
+impl std::fmt::Display for TpmEkError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::CertParse { which } => write!(f, "certificate did not parse: {which}"),
+            Self::ChainInvalid { detail } => write!(f, "EK chain invalid: {detail}"),
+            Self::EkKeyMismatch => write!(f, "certified key is not the pinned endorsement key"),
+        }
+    }
+}
+
+impl std::error::Error for TpmEkError {}
+
+/// Read the TCG manufacturer/model/version attributes out of an EK cert.
+///
+/// Byte-scan over the extension payloads rather than a full SAN
+/// `directoryName` parse: the values are printable strings adjacent to their
+/// OIDs, and this stays honest about being a best-effort *extraction*. These
+/// fields are **descriptive only** — no admission decision keys off them, so a
+/// miss degrades to `None` rather than to a wrong verdict.
+fn tpm_identity_fields(cert: &X509Certificate) -> (Option<String>, Option<String>, Option<String>) {
+    let mut out = (None, None, None);
+    for ext in cert.extensions() {
+        let raw = ext.value;
+        for (oid, slot) in [
+            (OID_TCG_TPM_MANUFACTURER, 0usize),
+            (OID_TCG_TPM_MODEL, 1),
+            (OID_TCG_TPM_VERSION, 2),
+        ] {
+            // The OID's DER encoding appears immediately before its value.
+            let needle: Vec<u8> = oid
+                .split('.')
+                .map(|s| s.parse::<u8>().unwrap_or(0))
+                .collect();
+            if needle.len() < 3 {
+                continue;
+            }
+            if let Some(pos) = raw.windows(3).position(|w| {
+                w == [
+                    needle[needle.len() - 3],
+                    needle[needle.len() - 2],
+                    needle[needle.len() - 1],
+                ]
+            }) {
+                let tail = &raw[pos + 3..];
+                if let Some(v) = printable_after(tail) {
+                    match slot {
+                        0 => out.0 = out.0.take().or(Some(v)),
+                        1 => out.1 = out.1.take().or(Some(v)),
+                        _ => out.2 = out.2.take().or(Some(v)),
+                    }
+                }
+            }
+        }
+    }
+    out
+}
+
+/// First printable-ASCII run of length ≥ 2 in `b`, as a `String`.
+fn printable_after(b: &[u8]) -> Option<String> {
+    let start = b.iter().position(|c| c.is_ascii_graphic())?;
+    let end = b[start..]
+        .iter()
+        .position(|c| !c.is_ascii_graphic())
+        .map_or(b.len(), |e| start + e);
+    let s: String = String::from_utf8_lossy(&b[start..end]).into_owned();
+    (s.len() >= 2).then_some(s)
+}
+
+/// Verify a TPM 2.0 EK certificate against a pinned vendor root.
+///
+/// 1. `ek_cert_der` is signed by `intermediate_ders[0]`, each intermediate by
+///    the next, and the last by `pinned_vendor_root_der`.
+/// 2. **The certified key IS `expected_ek_pubkey`** — anti-lift. Without it a
+///    genuine vendor-issued EK certificate can be presented by a party that
+///    does not hold that TPM (#199 ask 3).
+///
+/// There is no challenge/nonce here, and that is not an omission: an EK
+/// certificate is a **long-lived vendor credential**, not a fresh attestation.
+/// Freshness comes from a *quote* signed by an AK that the caller has bound to
+/// this EK — a separate step, deliberately not conflated with certificate
+/// validation.
+///
+/// # Errors
+///
+/// A [`TpmEkError`] naming the first failing step.
+pub fn verify_tpm_ek_certificate(
+    ek_cert_der: &[u8],
+    intermediate_ders: &[&[u8]],
+    pinned_vendor_root_der: &[u8],
+    expected_ek_pubkey: &[u8],
+) -> Result<TpmEkVerdict, TpmEkError> {
+    let (_, ek) = X509Certificate::from_der(ek_cert_der)
+        .map_err(|_| TpmEkError::CertParse { which: "ek" })?;
+    let chain: Vec<X509Certificate> = intermediate_ders
+        .iter()
+        .map(|d| {
+            X509Certificate::from_der(d)
+                .map(|(_, c)| c)
+                .map_err(|_| TpmEkError::CertParse {
+                    which: "intermediate",
+                })
+        })
+        .collect::<Result<_, _>>()?;
+    let (_, root) = X509Certificate::from_der(pinned_vendor_root_der)
+        .map_err(|_| TpmEkError::CertParse { which: "root" })?;
+
+    let first_parent = chain.first().map_or_else(|| &root, |c| c);
+    ek.verify_signature(Some(first_parent.public_key()))
+        .map_err(|e| TpmEkError::ChainInvalid {
+            detail: format!("EK cert not signed by its parent: {e:?}"),
+        })?;
+    for i in 0..chain.len() {
+        let parent = chain.get(i + 1).map_or_else(|| &root, |c| c);
+        chain[i]
+            .verify_signature(Some(parent.public_key()))
+            .map_err(|e| TpmEkError::ChainInvalid {
+                detail: format!("chain link {i} broken: {e:?}"),
+            })?;
+    }
+
+    if ek.public_key().subject_public_key.data.as_ref() != expected_ek_pubkey {
+        return Err(TpmEkError::EkKeyMismatch);
+    }
+
+    let (manufacturer, model, firmware_version) = tpm_identity_fields(&ek);
+    Ok(TpmEkVerdict {
+        manufacturer,
+        model,
+        firmware_version,
+    })
+}
+
+/// Verify a TPM EK certificate against the **vendor set** held in a
+/// [`TrustAnchorStore`](crate::trust_anchor_store::TrustAnchorStore).
+///
+/// This is the case the store exists for: anchors resolve from
+/// `(Purpose::KeyAttestation, environments::TPM_EK)` and **every** admissible
+/// vendor anchor is tried, so adding a vendor is a store entry rather than a
+/// code change.
+///
+/// Returns `Ok(None)` on a store miss — **no hardware evidence, not a
+/// failure**.
+///
+/// # Errors
+/// A [`TpmEkError`] when anchors were available but none validated the chain.
+pub fn verify_tpm_ek_certificate_with_store(
+    store: &crate::trust_anchor_store::TrustAnchorStore,
+    ek_cert_der: &[u8],
+    intermediate_ders: &[&[u8]],
+    expected_ek_pubkey: &[u8],
+) -> Result<Option<TpmEkVerdict>, TpmEkError> {
+    use crate::trust_anchor_store::{environments, Purpose};
+
+    let anchors = store.resolve_x509(Purpose::KeyAttestation, environments::TPM_EK);
+    if anchors.is_empty() {
+        return Ok(None);
+    }
+    let mut last = None;
+    for root in anchors {
+        match verify_tpm_ek_certificate(ek_cert_der, intermediate_ders, root, expected_ek_pubkey) {
+            Ok(v) => return Ok(Some(v)),
+            Err(e) => last = Some(e),
+        }
+    }
+    Err(last.unwrap_or(TpmEkError::ChainInvalid {
+        detail: "no admissible vendor anchor validated the chain".to_string(),
+    }))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1327,6 +1581,130 @@ mod tests {
         )
         .unwrap();
         assert!(out.is_none());
+    }
+
+    // =======================================================================
+    // TPM 2.0 EK — the vendor-SET case.
+    // =======================================================================
+
+    /// `(ek_der, root_der)` for an EK cert issued under a mock vendor root.
+    fn mock_ek(vendor: &str, ek_kp: &KeyPair) -> (Vec<u8>, Vec<u8>) {
+        let root_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let root = params(&format!("mock {vendor} TPM Root CA"))
+            .self_signed(&root_kp)
+            .unwrap();
+        // EK certs commonly carry an EMPTY subject; identity lives in the SAN.
+        let ek = params("").signed_by(ek_kp, &root, &root_kp).unwrap();
+        (ek.der().to_vec(), root.der().to_vec())
+    }
+
+    #[test]
+    fn tpm_ek_chain_verifies_against_its_vendor_root() {
+        let ek_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (ek, root) = mock_ek("Infineon", &ek_kp);
+        let v = verify_tpm_ek_certificate(&ek, &[], &root, &raw_ed(&ek_kp)).unwrap();
+        assert_eq!(v.hardware_class(), "TPM_2_0");
+        assert_eq!(
+            v.to_attestation_entries("ciris-verify")[0].dimension,
+            "hardware_custody:tpm"
+        );
+    }
+
+    /// Anti-LIFT: a genuine vendor-issued EK cert presented by a party that
+    /// does not hold that TPM.
+    #[test]
+    fn tpm_ek_lifted_certificate_is_refused() {
+        let ek_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (ek, root) = mock_ek("STMicro", &ek_kp);
+        let other = raw_ed(&KeyPair::generate_for(&PKCS_ED25519).unwrap());
+        assert_eq!(
+            verify_tpm_ek_certificate(&ek, &[], &root, &other).unwrap_err(),
+            TpmEkError::EkKeyMismatch
+        );
+    }
+
+    #[test]
+    fn tpm_ek_foreign_root_is_refused() {
+        let ek_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (ek, _root) = mock_ek("Nuvoton", &ek_kp);
+        let (_other_ek, other_root) =
+            mock_ek("Attacker", &KeyPair::generate_for(&PKCS_ED25519).unwrap());
+        assert!(matches!(
+            verify_tpm_ek_certificate(&ek, &[], &other_root, &raw_ed(&ek_kp)).unwrap_err(),
+            TpmEkError::ChainInvalid { .. }
+        ));
+    }
+
+    /// **The reason the store exists.** Six vendor roots ride one environment,
+    /// and an EK from any of them validates without the caller knowing which
+    /// vendor made the part — a single pinned-root parameter cannot express
+    /// this.
+    #[test]
+    fn tpm_ek_resolves_against_a_six_vendor_set() {
+        use crate::trust_anchor_store::{environments, single, Purpose, TrustAnchorStore};
+
+        let vendors = ["Infineon", "STMicro", "Nuvoton", "AMD", "Intel", "Qualcomm"];
+        let mut roots = Vec::new();
+        let mut eks = Vec::new();
+        for v in vendors {
+            let kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+            let (ek, root) = mock_ek(v, &kp);
+            roots.push(root);
+            eks.push((ek, kp));
+        }
+        let store = TrustAnchorStore::new().with_store(single(
+            environments::TPM_EK,
+            Purpose::KeyAttestation,
+            roots,
+        ));
+
+        // Every vendor's EK validates against the same store.
+        for (ek, kp) in &eks {
+            let v = verify_tpm_ek_certificate_with_store(&store, ek, &[], &raw_ed(kp))
+                .unwrap()
+                .expect("a vendor anchor must be admissible");
+            assert_eq!(v.hardware_class(), "TPM_2_0");
+        }
+
+        // An EK from a vendor NOT in the set is refused.
+        let stranger_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (stranger_ek, _) = mock_ek("Unlisted", &stranger_kp);
+        assert!(verify_tpm_ek_certificate_with_store(
+            &store,
+            &stranger_ek,
+            &[],
+            &raw_ed(&stranger_kp)
+        )
+        .is_err());
+    }
+
+    /// An empty TPM slot is "no hardware evidence", not a failure.
+    #[test]
+    fn tpm_ek_empty_store_is_no_evidence() {
+        use crate::trust_anchor_store::TrustAnchorStore;
+        let kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (ek, _root) = mock_ek("Infineon", &kp);
+        assert!(verify_tpm_ek_certificate_with_store(
+            &TrustAnchorStore::new(),
+            &ek,
+            &[],
+            &raw_ed(&kp)
+        )
+        .unwrap()
+        .is_none());
+    }
+
+    /// Containment across the populated store: the Yubico anchor must not be
+    /// reachable as a TPM vendor root.
+    #[test]
+    fn baked_store_does_not_expose_yubico_as_a_tpm_anchor() {
+        use crate::trust_anchor_store::{baked, environments, Purpose};
+        let s = baked::default_store();
+        assert!(
+            s.resolve(Purpose::KeyAttestation, environments::TPM_EK)
+                .is_empty(),
+            "TPM vendor roots are not baked yet — and nothing else may fill that slot"
+        );
     }
 
     /// A leaf with no KeyDescription is refused rather than silently treated as
