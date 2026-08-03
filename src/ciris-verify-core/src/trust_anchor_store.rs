@@ -130,6 +130,61 @@ impl Purpose {
     }
 }
 
+/// **How an anchor was sourced** — machine-readable provenance (CIRISPersist,
+/// on CIRISVerify#241).
+///
+/// Baking an aggregation at the same tier as a vendor-official root makes the
+/// *declared* depth stronger than the *actual* provenance. That is the defect
+/// the CIRISPersist#545/#554 arc cost a live ceremony to learn: **never let
+/// evidence be synthesized to satisfy your own gate.** Recording the tier makes
+/// weaker provenance a value a consumer can read and gate on, rather than a
+/// footnote in a commit message.
+///
+/// This is **[`Gating::Measurement`](crate::classification::Gating::Measurement)**:
+/// it states how an anchor reached us. Whether a given tier is acceptable is
+/// the consumer's policy — a mesh may reasonably accept `CommunityAggregated`
+/// TPM roots while a high-assurance deployment refuses them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// **Variant order is weakest-to-strongest, and that is load-bearing:** the
+/// derived `Ord` is what makes `provenance >= min` mean *"at least this well
+/// sourced"* in
+/// [`resolve_x509_min_provenance`](TrustAnchorStore::resolve_x509_min_provenance).
+/// Reordering these variants silently changes which anchors a strict consumer
+/// admits, so the ordering is asserted by test.
+pub enum AnchorProvenance {
+    /// Supplied by the caller at runtime — provenance is whatever the caller
+    /// knows, and this store makes no claim about it. **Weakest.**
+    CallerSupplied,
+    /// From a **community-curated aggregation** (e.g. `1id-com/tpm-manufacturer-cas`)
+    /// or a vendor-adjacent bundle (Microsoft `TrustedTPM.cab`) rather than the
+    /// vendor's own endpoint. Weaker provenance; a consumer may refuse it.
+    CommunityAggregated,
+    /// Fetched from the **vendor's own endpoint**, self-signature verified, and
+    /// (where a second official source exists) cross-checked byte-identical.
+    /// The Google / Apple bakes.
+    VendorOfficial,
+    /// Additionally **exercised end-to-end against physical hardware** — the
+    /// **strongest** tier. Currently only the Yubico root (#91 validation + the
+    /// #118 six-key ceremony).
+    HardwareValidated,
+}
+
+impl AnchorProvenance {
+    /// Was this anchor obtained from the vendor itself (either official tier)?
+    #[must_use]
+    pub const fn is_vendor_sourced(self) -> bool {
+        matches!(self, Self::VendorOfficial | Self::HardwareValidated)
+    }
+}
+
+impl crate::classification::Classification for AnchorProvenance {
+    /// **MEASUREMENT.** States how an anchor was sourced; whether a tier is
+    /// acceptable is consumer policy.
+    fn gating() -> crate::classification::Gating {
+        crate::classification::Gating::Measurement
+    }
+}
+
 /// A trust anchor — `trust-anchor = [ format => $pkix-ta-type, data => bstr ]`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrustAnchor {
@@ -137,6 +192,10 @@ pub struct TrustAnchor {
     pub format: TaFormat,
     /// The anchor bytes.
     pub data: Vec<u8>,
+    /// How this anchor was sourced. Defaults to
+    /// [`AnchorProvenance::CallerSupplied`] via [`TrustAnchor::x509`] — a store
+    /// never silently upgrades a caller's anchor to a vendor tier.
+    pub provenance: AnchorProvenance,
 }
 
 impl TrustAnchor {
@@ -146,6 +205,17 @@ impl TrustAnchor {
         Self {
             format: TaFormat::X509Cert,
             data: der.into(),
+            provenance: AnchorProvenance::CallerSupplied,
+        }
+    }
+
+    /// A DER X.509 anchor with a stated provenance tier.
+    #[must_use]
+    pub fn x509_with_provenance(der: impl Into<Vec<u8>>, provenance: AnchorProvenance) -> Self {
+        Self {
+            format: TaFormat::X509Cert,
+            data: der.into(),
+            provenance,
         }
     }
 }
@@ -270,6 +340,33 @@ impl TrustAnchorStore {
         self.resolve(purpose, environment)
             .into_iter()
             .filter(|ta| ta.format == TaFormat::X509Cert)
+            .map(|ta| ta.data.as_slice())
+            .collect()
+    }
+
+    /// Anchors admissible for `purpose` in `environment` whose provenance is at
+    /// least `min` — the consumer-policy half of the tier
+    /// (CIRISPersist, on CIRISVerify#241).
+    ///
+    /// A deployment that refuses community-aggregated roots calls this with
+    /// [`AnchorProvenance::VendorOfficial`]; one that accepts them calls
+    /// [`resolve_x509`](Self::resolve_x509). Weaker provenance is thereby a
+    /// value a consumer gates on, not a footnote it has to know about.
+    ///
+    /// Ordering: [`AnchorProvenance`] is ordered weakest-to-strongest
+    /// (`CallerSupplied < CommunityAggregated < VendorOfficial <
+    /// HardwareValidated`), so `min = VendorOfficial` admits both vendor tiers
+    /// and excludes aggregation- and caller-sourced anchors.
+    #[must_use]
+    pub fn resolve_x509_min_provenance(
+        &self,
+        purpose: Purpose,
+        environment: &str,
+        min: AnchorProvenance,
+    ) -> Vec<&[u8]> {
+        self.resolve(purpose, environment)
+            .into_iter()
+            .filter(|ta| ta.format == TaFormat::X509Cert && ta.provenance >= min)
             .map(|ta| ta.data.as_slice())
             .collect()
     }
@@ -522,13 +619,37 @@ pub mod baked {
     /// own anchors with [`TrustAnchorStore::with_store`].
     #[must_use]
     pub fn default_store() -> TrustAnchorStore {
+        use super::{AnchorProvenance, CasAndTas, EnvironmentGroup, TrustAnchor};
+
+        /// One store carrying anchors at a stated provenance tier.
+        fn tiered(
+            environment: &str,
+            ders: Vec<Vec<u8>>,
+            provenance: AnchorProvenance,
+        ) -> ConciseTaStore {
+            ConciseTaStore {
+                store_identity: Some(format!("{environment}/key-attestation")),
+                environments: vec![EnvironmentGroup::named(environment)],
+                purposes: vec![Purpose::KeyAttestation],
+                keys: CasAndTas {
+                    tas: ders
+                        .into_iter()
+                        .map(|d| TrustAnchor::x509_with_provenance(d, provenance))
+                        .collect(),
+                    cas: Vec::new(),
+                },
+            }
+        }
+
         let mut store = TrustAnchorStore::new();
 
         if let Ok(der) = yubico_attestation_root() {
-            store = store.with_store(single(
+            // The only anchor exercised end-to-end against physical hardware
+            // (#91 validation + the #118 six-key ceremony).
+            store = store.with_store(tiered(
                 environments::YUBIKEY_PIV,
-                Purpose::KeyAttestation,
                 vec![der],
+                AnchorProvenance::HardwareValidated,
             ));
         }
 
@@ -542,20 +663,20 @@ pub mod baked {
         .flatten()
         .collect();
         if !google.is_empty() {
-            store = store.with_store(single(
+            store = store.with_store(tiered(
                 environments::ANDROID_KEYSTORE,
-                Purpose::KeyAttestation,
                 google,
+                AnchorProvenance::VendorOfficial,
             ));
         }
 
         // Baked ahead of its validator (the Apple leg of #199 is still open):
         // an anchor with no consumer is inert, never a weakening.
         if let Ok(der) = apple_app_attestation_root() {
-            store = store.with_store(single(
+            store = store.with_store(tiered(
                 environments::APPLE_APP_ATTEST,
-                Purpose::KeyAttestation,
                 vec![der],
+                AnchorProvenance::VendorOfficial,
             ));
         }
 
@@ -883,6 +1004,7 @@ mod tests {
             TrustAnchor {
                 format: TaFormat::SubjectPublicKeyInfo,
                 data: vec![7, 7],
+                provenance: AnchorProvenance::CallerSupplied,
             },
         ];
         let s = TrustAnchorStore::new().with_store(st);
@@ -1104,5 +1226,117 @@ mod tests {
         assert_eq!(Purpose::KeyAttestation.label(), "key-attestation");
         assert_eq!(Purpose::Certificate.label(), "certificate");
         assert_eq!(Purpose::Dloa.label(), "dloa");
+    }
+}
+
+#[cfg(test)]
+mod provenance_tier {
+    use super::*;
+
+    /// Each baked anchor carries the tier its sourcing actually earned — the
+    /// Yubico root is the only one exercised against physical hardware.
+    #[test]
+    fn baked_anchors_carry_their_real_tier() {
+        let s = baked::default_store();
+        for (env, expected) in [
+            (
+                environments::YUBIKEY_PIV,
+                AnchorProvenance::HardwareValidated,
+            ),
+            (
+                environments::ANDROID_KEYSTORE,
+                AnchorProvenance::VendorOfficial,
+            ),
+            (
+                environments::APPLE_APP_ATTEST,
+                AnchorProvenance::VendorOfficial,
+            ),
+        ] {
+            let anchors = s.resolve(Purpose::KeyAttestation, env);
+            assert!(!anchors.is_empty(), "{env} should be baked");
+            for a in anchors {
+                assert_eq!(a.provenance, expected, "{env} tier");
+                assert!(a.provenance.is_vendor_sourced(), "{env} is vendor-sourced");
+            }
+        }
+    }
+
+    /// A caller's own anchor is NEVER silently promoted to a vendor tier.
+    #[test]
+    fn caller_supplied_anchors_are_not_promoted() {
+        let a = TrustAnchor::x509(vec![1, 2, 3]);
+        assert_eq!(a.provenance, AnchorProvenance::CallerSupplied);
+        assert!(!a.provenance.is_vendor_sourced());
+    }
+
+    /// The consumer-policy half: a high-assurance deployment can require a
+    /// vendor tier and thereby exclude aggregation-sourced roots.
+    #[test]
+    fn min_provenance_excludes_weaker_tiers() {
+        let store = TrustAnchorStore::new().with_store(ConciseTaStore {
+            store_identity: None,
+            environments: vec![EnvironmentGroup::named(environments::TPM_EK)],
+            purposes: vec![Purpose::KeyAttestation],
+            keys: CasAndTas {
+                tas: vec![
+                    TrustAnchor::x509_with_provenance(
+                        b"vendor".to_vec(),
+                        AnchorProvenance::VendorOfficial,
+                    ),
+                    TrustAnchor::x509_with_provenance(
+                        b"aggregated".to_vec(),
+                        AnchorProvenance::CommunityAggregated,
+                    ),
+                ],
+                cas: vec![],
+            },
+        });
+
+        // Default resolution admits both — a mesh may accept aggregations.
+        assert_eq!(
+            store
+                .resolve_x509(Purpose::KeyAttestation, environments::TPM_EK)
+                .len(),
+            2
+        );
+        // Requiring a vendor tier excludes the aggregation.
+        let strict = store.resolve_x509_min_provenance(
+            Purpose::KeyAttestation,
+            environments::TPM_EK,
+            AnchorProvenance::VendorOfficial,
+        );
+        assert_eq!(strict.len(), 1);
+        assert_eq!(strict[0], b"vendor");
+    }
+
+    /// TPM stays empty: per CIRISPersist, zero anchors we can defend beats six
+    /// we cannot. `Ok(None)` is the honest state.
+    #[test]
+    fn tpm_slot_remains_unbaked() {
+        assert!(baked::default_store()
+            .resolve(Purpose::KeyAttestation, environments::TPM_EK)
+            .is_empty());
+    }
+}
+
+#[cfg(test)]
+mod provenance_ordering {
+    use super::AnchorProvenance::{
+        CallerSupplied, CommunityAggregated, HardwareValidated, VendorOfficial,
+    };
+
+    /// The derived `Ord` IS the semantics of `resolve_x509_min_provenance`.
+    /// An earlier revision declared these strongest-first, which made
+    /// `>= VendorOfficial` admit every tier including caller-supplied — a
+    /// strict consumer would have silently got the permissive set.
+    #[test]
+    fn ordering_is_weakest_to_strongest() {
+        assert!(CallerSupplied < CommunityAggregated);
+        assert!(CommunityAggregated < VendorOfficial);
+        assert!(VendorOfficial < HardwareValidated);
+        // The property the resolver relies on.
+        assert!(HardwareValidated >= VendorOfficial);
+        assert!(!(CommunityAggregated >= VendorOfficial));
+        assert!(!(CallerSupplied >= VendorOfficial));
     }
 }
