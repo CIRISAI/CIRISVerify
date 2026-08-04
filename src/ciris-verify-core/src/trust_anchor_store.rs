@@ -104,12 +104,19 @@ pub enum Purpose {
 }
 
 impl crate::classification::Classification for Purpose {
-    /// **NORMATIVE.** The `$$tas-list-purpose` vocabulary is the draft's, and
-    /// constrained resolution gates on it by design — that containment is the
+    /// **STRUCTURAL**, not merely normative (CIRISOntology#3 disposition
+    /// split). The `$$tas-list-purpose` values are **wire values** with pinned
+    /// CDDL indices: deviating does not defy the draft's authors, it breaks
+    /// CBOR dispatch against every other CoTS implementation. No body can
+    /// waive that, which is exactly what distinguishes this from a ruling —
+    /// a consumer who disagrees files a bug, it does not petition the IETF.
+    ///
+    /// Constrained resolution gates on this by design; that containment is the
     /// module's entire security property.
     fn gating() -> crate::classification::Gating {
-        crate::classification::Gating::Normative {
-            authority: "draft-ietf-rats-concise-ta-stores-02",
+        crate::classification::Gating::Structural {
+            breaks:
+                "CBOR wire interop with other draft-ietf-rats-concise-ta-stores implementations",
         }
     }
 }

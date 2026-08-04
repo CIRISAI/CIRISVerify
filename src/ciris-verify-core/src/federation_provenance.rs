@@ -86,6 +86,8 @@ use serde::{Deserialize, Serialize};
 /// Parameterized dimensions use the helper functions; unparameterized
 /// ones are `&'static str` constants.
 pub mod dim {
+    use crate::classification::{Arity, Frame, UndeclaredFrame};
+
     /// Self-verification — the running CIRISVerify binary attests
     /// itself against its function manifest ("who watches the
     /// watchmen"). The recursive golden rule.
@@ -248,6 +250,58 @@ pub mod dim {
     }
 
     impl ConsentDisposition {
+        /// **The arity of this disposition's discriminator** (CIRISOntology#3
+        /// ask 3 — the testimonial re-audit).
+        ///
+        /// A `testimonial` wrong corrupts the only record; an `epistemic` one
+        /// misreports a world still available to re-read. The discriminator is
+        /// therefore *re-derivability*, which `repairability_not_intrinsic`
+        /// proves is **not a property of the artifact** — it turns on what else
+        /// survives. So three of these four categories cannot be assigned
+        /// without a declared frame:
+        ///
+        /// - [`ArtifactVerification`](Self::ArtifactVerification) is
+        ///   **frame-invariant**: the artifact *is* the evidence and is
+        ///   re-readable by construction. Re-run the verification and you have
+        ///   your answer, whatever else was retained. This is the same property
+        ///   that grounds CC's carve-out — *"a forger never consents to
+        ///   verification"* works precisely because the artifact does not need
+        ///   the forger's cooperation to be re-read.
+        /// - [`SelfReport`](Self::SelfReport) is **frame-relative**: whether a
+        ///   false self-report is repairable depends entirely on whether an
+        ///   independent record (a hardware chain, a peer attestation) was
+        ///   retained. With one, epistemic; without, testimonial.
+        /// - [`LogInfrastructure`](Self::LogInfrastructure) is
+        ///   **frame-relative**: a log claim is re-derivable exactly when some
+        ///   witness retained the entries. That is a fact about the mesh, not
+        ///   about the claim.
+        /// - [`AbuseResponse`](Self::AbuseResponse) is **frame-relative**: a
+        ///   rollback is provable only where prior revisions survive.
+        ///
+        /// **Verify does not supply a default frame, and must not.** Verify is
+        /// a library; what is retained is a property of the deployment, so the
+        /// frame belongs to the *harness* and is the caller's to declare. A
+        /// baked-in default here would be exactly the unstated assumption the
+        /// ruling forbids.
+        ///
+        /// # Errors
+        /// [`UndeclaredFrame`] when this disposition is frame-relative and no
+        /// frame was declared — **refused, never defaulted**.
+        pub const fn arity(self, frame: Option<Frame>) -> Result<Arity, UndeclaredFrame> {
+            match self {
+                Self::ArtifactVerification => Ok(Arity::ArtifactOnly),
+                Self::SelfReport => Arity::testimonial("attestation:self_report", frame),
+                Self::LogInfrastructure => Arity::testimonial("transparency_log:*", frame),
+                Self::AbuseResponse => Arity::testimonial("rollback_detected:*", frame),
+            }
+        }
+
+        /// Does assigning this disposition require a declared frame?
+        #[must_use]
+        pub const fn is_frame_relative(self) -> bool {
+            !matches!(self, Self::ArtifactVerification)
+        }
+
         /// Is a family with this disposition gated on the subject's `analyze`
         /// consent? **Always `false`** — CC 3.4.5 places every verify-owned
         /// family outside the consent gate.
