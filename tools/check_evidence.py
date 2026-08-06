@@ -30,6 +30,9 @@ import re
 import sys
 from pathlib import Path
 
+#: The required first non-comment line of the manifest (CIRISVerify#250).
+HEADER = "decimal_id\tclaim_id\trepo\tpath#symbol\tcrate@version"
+
 REPO = Path(__file__).resolve().parent.parent
 MANIFEST = REPO / "evidence" / "cc_impl.tsv"
 
@@ -70,10 +73,25 @@ def main() -> int:
     unassigned = 0
     failures: list[str] = []
 
+    seen_header = False
     for lineno, raw in enumerate(MANIFEST.read_text().splitlines(), 1):
         line = raw.strip()
         if not line or line.startswith("#"):
             continue
+
+        # The first non-comment line is the column header (CIRISVerify#250).
+        # It is VALIDATED rather than skipped: a reordered or renamed column
+        # would otherwise pass silently while every downstream consumer that
+        # reads by position started reading the wrong field.
+        if not seen_header:
+            seen_header = True
+            if raw != HEADER:
+                failures.append(
+                    f"{MANIFEST.name}:{lineno}: first non-comment line must be the "
+                    f"column header\n    expected: {HEADER!r}\n    found:    {raw!r}"
+                )
+            continue
+
         fields = raw.split("\t")
         if len(fields) < 4:
             failures.append(f"{MANIFEST.name}:{lineno}: expected >=4 tab-separated fields")
@@ -95,6 +113,9 @@ def main() -> int:
             unassigned += 1
         if args.list:
             print(f"  ok  CC {decimal:<12} {clm:<44} {ref}")
+
+    if not seen_header:
+        failures.append(f"{MANIFEST.name}: no column header row found")
 
     print(
         f"evidence: {resolved} citation(s) resolved, {len(failures)} unresolved"
