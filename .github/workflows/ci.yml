@@ -225,6 +225,12 @@ jobs:
       # symbol fails the build instead of silently invalidating the spec-map.
       - name: CC evidence citations resolve (#233)
         run: python3 tools/check_evidence.py
+      # CIRISVerify#250: prove the guard still rejects what it claims to —
+      # a reordered header, a missing header, a moved symbol. A validator
+      # nobody tests is one that can silently stop validating, which is the
+      # exact failure class this manifest exists to prevent.
+      - name: CC evidence guard self-test (#250)
+        run: python3 tools/check_evidence.py --self-test
       # CIRISVerify#202: the TEST-ONLY test-anchor feature (software trust-root +
       # software accord-holder, no FIPS) must never reach a production artifact.
       # The prod container is zero-env by design, so the ABSENCE of this feature —

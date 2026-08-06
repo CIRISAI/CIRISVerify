@@ -85,6 +85,17 @@ pub struct LocaleLeaf {
     pub target: String,
     /// ISO 639-1 lowercase code, or the literal `polyglot` for the
     /// unified-locale case.
+    ///
+    /// **Wire name is `locale`** (CC 3.1.2.1), which is what
+    /// [`leaf_hash`](Self::leaf_hash) already commits to. The Rust field keeps
+    /// its original name so no caller's Rust code breaks; `lang_code` stays
+    /// accepted as a deserialization alias so pre-v2 JSON still parses.
+    ///
+    /// Without this, `{"locale": "en"}` failed with *missing field
+    /// `lang_code`* even though the signed preimage said `locale` — the
+    /// preimage was CC-conformant while the API taking the input was not
+    /// (CIRISVerify#200).
+    #[serde(rename = "locale", alias = "lang_code")]
     pub lang_code: String,
     /// SHA-256 hex of the locale's file-tree Merkle root.
     pub files_root: String,
@@ -661,5 +672,58 @@ mod tests {
         let result = verify_locale_inclusion(&leaf, &proof, &leaf.leaf_hash().unwrap());
         assert!(result.is_err());
         assert!(format!("{:?}", result.unwrap_err()).contains("lang_code"));
+    }
+}
+
+#[cfg(test)]
+mod cc_wire_name {
+    use super::*;
+
+    /// **CIRISVerify#200.** The signed preimage said `locale` while the type
+    /// accepting the input still demanded `lang_code`, so a CC-conformant
+    /// producer got *missing field `lang_code`*. Both names must parse, and
+    /// serialization must emit the CC name.
+    #[test]
+    fn locale_is_the_wire_name_and_lang_code_still_parses() {
+        let cc =
+            r#"{"target":"t","locale":"en","files_root":"r","build_id":"b","signer_identity":"s"}"#;
+        let legacy = r#"{"target":"t","lang_code":"en","files_root":"r","build_id":"b","signer_identity":"s"}"#;
+
+        let a: LocaleLeaf = serde_json::from_str(cc).expect("CC name `locale` must parse");
+        let b: LocaleLeaf = serde_json::from_str(legacy).expect("legacy `lang_code` must parse");
+        assert_eq!(a, b);
+        assert_eq!(a.lang_code, "en");
+
+        // Serialization emits the CC name.
+        let out = serde_json::to_string(&a).unwrap();
+        assert!(out.contains("\"locale\""), "must emit CC's member name");
+        assert!(!out.contains("lang_code"), "must not emit the legacy name");
+    }
+
+    /// The field rename must not disturb the signed bytes — `leaf_hash` builds
+    /// its JSON by hand, so this pins that the two paths agree.
+    #[test]
+    fn renaming_the_field_does_not_move_the_leaf_hash() {
+        let leaf = LocaleLeaf {
+            target: "ios-mobile-bundle".into(),
+            lang_code: "my".into(),
+            files_root: "a".repeat(64),
+            build_id: "build-1".into(),
+            signer_identity: "verify-steward-2026".into(),
+        };
+        // Recompute the documented v2 preimage independently.
+        let expect = {
+            let json = format!(
+                r#"{{"build_id":"build-1","domain":"{}","files_root":"{}","locale":"my","signer_identity":"verify-steward-2026","target":"ios-mobile-bundle"}}"#,
+                LOCALE_LEAF_DOMAIN_V2,
+                "a".repeat(64)
+            );
+            let mut h = Sha256::new();
+            h.update([RFC6962_LEAF_PREFIX]);
+            h.update(json.as_bytes());
+            let d: [u8; 32] = h.finalize().into();
+            d
+        };
+        assert_eq!(leaf.leaf_hash().unwrap(), expect);
     }
 }
