@@ -63,8 +63,19 @@ def declares(text: str, symbol: str) -> bool:
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true", help="print each resolved row")
+    ap.add_argument(
+        "--self-test",
+        action="store_true",
+        help="prove the guards actually reject bad manifests, then exit",
+    )
     args = ap.parse_args()
+    if args.self_test:
+        return self_test()
+    return _check(list_rows=args.list)
 
+
+def _check(list_rows: bool) -> int:
+    """Validate the manifest at :data:`MANIFEST`. Returns a process exit code."""
     if not MANIFEST.exists():
         print(f"ERROR: {MANIFEST} not found", file=sys.stderr)
         return 1
@@ -111,7 +122,7 @@ def main() -> int:
         resolved += 1
         if decimal == "UNASSIGNED":
             unassigned += 1
-        if args.list:
+        if list_rows:
             print(f"  ok  CC {decimal:<12} {clm:<44} {ref}")
 
     if not seen_header:
@@ -141,6 +152,58 @@ def main() -> int:
         )
         return 1
     return 0
+
+
+def self_test() -> int:
+    """Prove the guards reject what they claim to reject.
+
+    A validator nobody tests is a validator that silently stops validating —
+    which is the exact failure class this manifest exists to prevent, so it
+    would be poor form for the checker itself to carry it (CIRISVerify#250).
+    """
+    import tempfile
+
+    global MANIFEST
+
+    real = MANIFEST.read_text()
+    data_rows = [
+        l for l in real.splitlines() if l.strip() and not l.startswith("#") and l != HEADER
+    ]
+    cases: list[tuple[str, str, bool]] = [
+        (
+            "reordered header",
+            "\n".join(["claim_id\tdecimal_id\trepo\tpath#symbol\tcrate@version", *data_rows]),
+            True,
+        ),
+        ("missing header", "\n".join(data_rows), True),
+        (
+            "moved symbol",
+            "\n".join(
+                [HEADER, "9.9.9\tCLM-nope\tCIRISVerify\tsrc/ciris-verify-core/src/jcs.rs#no_such_fn_xyz\tx@v1"]
+            ),
+            True,
+        ),
+        ("the real manifest", real, False),
+    ]
+
+    original = MANIFEST
+    failed = 0
+    try:
+        for name, body, must_fail in cases:
+            with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as fh:
+                fh.write(body)
+                MANIFEST = Path(fh.name)
+            rc = _check(list_rows=False)
+            ok = (rc != 0) if must_fail else (rc == 0)
+            print(f"  {'ok  ' if ok else 'FAIL'} {name}: rc={rc} (expected {'nonzero' if must_fail else '0'})")
+            if not ok:
+                failed += 1
+            MANIFEST.unlink(missing_ok=True)
+    finally:
+        MANIFEST = original
+
+    print(f"self-test: {len(cases) - failed}/{len(cases)} passed")
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":
