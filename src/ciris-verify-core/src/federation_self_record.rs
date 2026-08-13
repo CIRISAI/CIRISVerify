@@ -215,6 +215,36 @@ impl KeyRecord {
             .unwrap_or_default()
     }
 
+    /// **Bind this record's declared identity to its SIGNED envelope**
+    /// (CIRISVerify#252).
+    ///
+    /// `key_id`, `identity_type` and the pubkeys are sibling fields living
+    /// OUTSIDE `registration_envelope`, while the authority evidence — the
+    /// roles in [`Self::roles_in_envelope`] and the anchor scrub-signatures —
+    /// is verified *against the envelope*. Without this check the two halves
+    /// can describe different keys: a record whose sibling `key_id` names the
+    /// key you pinned, wrapped around a genuinely accord-co-scrubbed envelope
+    /// for some OTHER key that carries `infra:attest`, passes an identity
+    /// comparison, a role read, and a real ≥2-anchor quorum — and blesses a
+    /// key that was never blessed.
+    ///
+    /// Call this **before** trusting anything read out of the envelope.
+    ///
+    /// # Errors
+    /// [`SubjectBindingError`](crate::subject_binding::SubjectBindingError) if
+    /// the envelope is about a different subject, or carries no binding.
+    pub fn check_subject_binding(&self) -> Result<(), crate::subject_binding::SubjectBindingError> {
+        crate::subject_binding::SubjectBinding::new()
+            .require("key_id", self.key_id.clone())
+            .require("identity_type", self.identity_type.clone())
+            .require("pubkey_ed25519_base64", self.pubkey_ed25519_base64.clone())
+            .require_optional(
+                "pubkey_ml_dsa_65_base64",
+                self.pubkey_ml_dsa_65_base64.as_deref(),
+            )
+            .check("key record", &self.registration_envelope)
+    }
+
     /// Read the **scrub-attested** roles carried in the signed
     /// `registration_envelope` (CIRISVerify#185). Unlike the top-level
     /// [`Self::roles`] (persist's *conferred* row state), this is the role set the

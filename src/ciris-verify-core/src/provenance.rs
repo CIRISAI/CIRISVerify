@@ -134,6 +134,18 @@ pub struct ProvenanceChain {
 /// exactly one of these — no third state.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProvenanceError {
+    /// **The signed envelope is about a DIFFERENT subject than the link
+    /// claims** (CIRISVerify#252), or carries no binding at all.
+    ///
+    /// The signature may be perfectly valid — that is precisely the point. A
+    /// valid signature over someone else's registration says nothing about
+    /// this link.
+    SubjectBindingFailed {
+        /// The `key_id` the link claimed.
+        key_id: String,
+        /// Which member disagreed, and how.
+        source: crate::subject_binding::SubjectBindingError,
+    },
     /// The chain has no links.
     EmptyChain,
     /// The chain is longer than [`MAX_PROVENANCE_DEPTH`].
@@ -220,6 +232,9 @@ pub enum ProvenanceError {
 impl std::fmt::Display for ProvenanceError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::SubjectBindingFailed { key_id, source } => {
+                write!(f, "link {key_id}: {source}")
+            },
             Self::EmptyChain => write!(f, "provenance chain is empty"),
             Self::OverDepth { depth } => {
                 write!(
@@ -385,6 +400,37 @@ pub fn verify_provenance_chain_with_policy_and_terminus(
     let last = links.len() - 1;
 
     for (i, link) in links.iter().enumerate() {
+        // ---- SUBJECT BINDING: "who is this ABOUT?" (#252) ----------------
+        // Checked FIRST, before the hash, the signatures, and any anchor or
+        // terminus resolution, so the refusal is deterministic regardless of
+        // that state (rule 4).
+        //
+        // Without this, the link's identity fields live OUTSIDE the signed
+        // bytes: an attacker wraps a victim's genuine, validly-signed envelope
+        // in a link declaring their own key_id and pubkeys. The content hash
+        // matches (it really is the victim's envelope), the signatures verify
+        // (really signed by the real parent), the linkage passes — and the
+        // chain roots the ATTACKER's key. The binding was in the signed bytes
+        // the whole time; nothing read it.
+        //
+        // Both key legs are bound, not just `key_id` (rule 1): binding the
+        // name alone loses to a node that has not yet replicated the victim's
+        // row, where an attacker registers the victim's `key_id` under their
+        // own pubkeys.
+        crate::subject_binding::SubjectBinding::new()
+            .require("key_id", link.key_id.clone())
+            .require("identity_type", link.identity_type.clone())
+            .require("pubkey_ed25519_base64", link.pubkey_ed25519_base64.clone())
+            .require_optional(
+                "pubkey_ml_dsa_65_base64",
+                link.pubkey_ml_dsa_65_base64.as_deref(),
+            )
+            .check("provenance link", &link.registration_envelope)
+            .map_err(|source| ProvenanceError::SubjectBindingFailed {
+                key_id: link.key_id.clone(),
+                source,
+            })?;
+
         // ---- structural: linkage + terminus shape -----------------------
         let parent: &ProvenanceLink = if i == last {
             if !link.is_self_signed || link.scrub_key_id != link.key_id {
@@ -565,12 +611,18 @@ mod tests {
         with_pqc: bool,
     ) -> ProvenanceLink {
         let b64 = base64::engine::general_purpose::STANDARD;
-        // A representative registration envelope (shape is opaque to the
-        // verifier — it canonicalizes whatever object is here).
+        // The registration envelope in the shape the REAL producers emit
+        // (`federation_self_record::build_registration_envelope`). The shape is
+        // NOT opaque to the verifier any more: since #252 it carries the
+        // subject binding the verifier checks, so a fixture that invents its
+        // own member names would pass the crypto and skip the binding — which
+        // is exactly how the v10.4.0 preimage bug hid (cargo-green,
+        // artifact-broken). `salt` distinguishes links' signed bytes.
         let registration_envelope = serde_json::json!({
             "key_id": key_id,
             "identity_type": identity_type,
-            "pubkey_ed25519": own.ed_pub_b64(),
+            "pubkey_ed25519_base64": own.ed_pub_b64(),
+            "pubkey_ml_dsa_65_base64": own.mldsa_pub_b64(),
             "salt": salt,
         });
         let canonical = crate::jcs::canonicalize(&registration_envelope).unwrap();
@@ -601,6 +653,46 @@ mod tests {
 
     /// A valid 2-link chain: child ← steward(self-signed). Returns the
     /// chain and the steward's pinned Ed25519 anchor key.
+    /// Rebuild the terminus with a different `identity_type`, keeping the
+    /// SIGNED ENVELOPE consistent with the link's declared fields.
+    ///
+    /// Since #252, mutating `link.identity_type` alone is a subject-binding
+    /// violation — correctly, because `identity_type` is authority-bearing: it
+    /// decides whether the terminus is an acceptable root. A test that wants
+    /// to exercise the *terminus* rule must therefore hand the verifier a
+    /// coherent object, or it is only re-testing the binding.
+    fn chain_with_terminus_type(identity_type: &str) -> (ProvenanceChain, Vec<u8>) {
+        let steward = Keypair::new();
+        let child = Keypair::new();
+        let steward_link = make_link(
+            "steward-1",
+            identity_type,
+            &steward,
+            &steward,
+            "steward-1",
+            0xAA,
+            true,
+        );
+        let child_link = make_link(
+            "agent-1",
+            "agent",
+            &child,
+            &steward,
+            "steward-1",
+            0xBB,
+            true,
+        );
+        let anchor = steward.ed_pub();
+        (
+            ProvenanceChain {
+                key_id: "agent-1".to_string(),
+                chain: vec![child_link, steward_link],
+                terminates_at_steward_bootstrap: true,
+            },
+            anchor,
+        )
+    }
+
     fn valid_chain() -> (ProvenanceChain, Vec<u8>, Keypair, Keypair) {
         let steward = Keypair::new();
         let child = Keypair::new();
@@ -950,10 +1042,111 @@ mod tests {
         );
     }
 
+    /// **CIRISVerify#252 — the attack, refused.**
+    ///
+    /// Mallory takes a victim's genuine, validly-signed registration envelope
+    /// (public data) and wraps it in a link declaring HER OWN key_id and
+    /// pubkeys. Everything the pre-#252 verifier checked still passes:
+    ///
+    /// * `original_content_hash` matches — it really is the victim's envelope
+    /// * both scrub-signatures verify — really signed by the real parent
+    /// * the linkage names the real parent
+    ///
+    /// Pre-fix the chain rooted and the caller read Mallory's key_id off the
+    /// link. The binding is what refuses it.
+    #[test]
+    fn lifted_envelope_under_an_attacker_identity_is_refused() {
+        let (chain, anchor, _child, steward) = valid_chain();
+        let victim = chain.chain[0].clone();
+        let mallory = Keypair::new();
+
+        let mut lifted = victim.clone();
+        lifted.key_id = "mallory".to_string();
+        lifted.pubkey_ed25519_base64 = mallory.ed_pub_b64();
+        lifted.pubkey_ml_dsa_65_base64 = Some(mallory.mldsa_pub_b64());
+        // Envelope, hash and signatures are the victim's, untouched and valid.
+
+        let attack = ProvenanceChain {
+            key_id: "mallory".to_string(),
+            chain: vec![lifted, chain.chain[1].clone()],
+            terminates_at_steward_bootstrap: true,
+        };
+
+        // Everything the old verifier checked is still intact …
+        let canonical = crate::jcs::canonicalize(&attack.chain[0].registration_envelope).unwrap();
+        assert_eq!(
+            hex::encode(Sha256::digest(&canonical)),
+            attack.chain[0].original_content_hash,
+            "content hash still matches — the envelope is genuine"
+        );
+        let sig = base64::engine::general_purpose::STANDARD
+            .decode(&attack.chain[0].scrub_signature_classical)
+            .unwrap();
+        assert!(
+            Ed25519Verifier::new()
+                .verify(&steward.ed_pub(), &canonical, &sig)
+                .is_ok(),
+            "signature still verifies — it really was signed by the real parent"
+        );
+
+        // … and the chain is refused anyway, on the subject.
+        match verify_provenance_chain(&attack, std::slice::from_ref(&anchor)) {
+            Err(ProvenanceError::SubjectBindingFailed { key_id, source }) => {
+                assert_eq!(key_id, "mallory");
+                assert!(matches!(
+                    source,
+                    crate::subject_binding::SubjectBindingError::Mismatch { .. }
+                ));
+            },
+            other => panic!("lifted envelope MUST be refused on the subject, got {other:?}"),
+        }
+    }
+
+    /// Swapping only the PQC leg must be refused too — binding the name alone
+    /// (or only the classical key) loses to an attacker substituting a PQC key
+    /// the signature never covered (#252 rule 1).
+    #[test]
+    fn substituting_only_the_pqc_key_is_refused() {
+        let (mut chain, anchor, ..) = valid_chain();
+        chain.chain[0].pubkey_ml_dsa_65_base64 = Some(Keypair::new().mldsa_pub_b64());
+        assert!(matches!(
+            verify_provenance_chain(&chain, std::slice::from_ref(&anchor)),
+            Err(ProvenanceError::SubjectBindingFailed { .. })
+        ));
+    }
+
+    /// An envelope that simply omits the binding is REFUSED, never tolerated —
+    /// an optional check is skippable by omission, which is the whole attack
+    /// (#252 rule 3).
+    #[test]
+    fn envelope_without_the_binding_is_refused_not_tolerated() {
+        let (mut chain, anchor, _child, steward) = valid_chain();
+        let stripped = serde_json::json!({ "salt": 1 });
+        let canonical = crate::jcs::canonicalize(&stripped).unwrap();
+        // Re-sign it properly, so ONLY the binding is missing.
+        let sig = steward.ed.sign(&canonical).unwrap();
+        let mut bound = canonical.clone();
+        bound.extend_from_slice(&sig);
+        let b64 = base64::engine::general_purpose::STANDARD;
+        chain.chain[0].registration_envelope = stripped;
+        chain.chain[0].original_content_hash = hex::encode(Sha256::digest(&canonical));
+        chain.chain[0].scrub_signature_classical = b64.encode(&sig);
+        chain.chain[0].scrub_signature_pqc = Some(b64.encode(steward.mldsa.sign(&bound).unwrap()));
+
+        assert!(matches!(
+            verify_provenance_chain(&chain, std::slice::from_ref(&anchor)),
+            Err(ProvenanceError::SubjectBindingFailed {
+                source: crate::subject_binding::SubjectBindingError::Missing { .. },
+                ..
+            })
+        ));
+    }
+
     #[test]
     fn terminus_not_steward_is_rejected() {
-        let (mut chain, anchor, ..) = valid_chain();
-        chain.chain[1].identity_type = "agent".to_string();
+        // Coherent object: the envelope agrees that this terminus is an
+        // `agent`. Post-hoc mutation would only re-test the #252 binding.
+        let (chain, anchor) = chain_with_terminus_type("agent");
         assert!(matches!(
             verify_provenance_chain(&chain, &[anchor]),
             Err(ProvenanceError::TerminusNotSteward { .. })
@@ -966,15 +1159,15 @@ mod tests {
     /// the pre-RC5 scalar `!= "steward"` check would have wrongly rejected it.
     #[test]
     fn multi_role_fabric_node_steward_terminus_verifies() {
-        let (mut chain, anchor, ..) = valid_chain();
-        chain.chain[1].identity_type = "steward,witness".to_string();
+        let (chain, anchor) = chain_with_terminus_type("steward,witness");
         assert!(verify_provenance_chain(&chain, std::slice::from_ref(&anchor)).is_ok());
 
         // …and a set that does NOT contain "steward" is still rejected
-        // (membership, not substring — "stewardship" must not match).
-        chain.chain[1].identity_type = "witness,stewardship".to_string();
+        // (membership, not substring — "stewardship" must not match). Built
+        // coherently so this exercises the terminus rule, not the binding.
+        let (bad, bad_anchor) = chain_with_terminus_type("witness,stewardship");
         assert!(matches!(
-            verify_provenance_chain(&chain, &[anchor]),
+            verify_provenance_chain(&bad, &[bad_anchor]),
             Err(ProvenanceError::TerminusNotSteward { .. })
         ));
     }
