@@ -211,6 +211,12 @@ pub enum TransportBindingReason {
     /// recomputes per §5.6.8.8.1.1 (carries
     /// [`DestinationHashCheck::Match`]).
     Verified,
+    /// **The signed envelope is about a different subject than the carrier
+    /// claims** (CIRISVerify#252) — a lifted occurrence envelope re-presented
+    /// with a substituted `attesting_key_id`, transport destination, or
+    /// encryption pubkeys. The signature may be entirely valid; it is simply
+    /// not about this binding.
+    SubjectMismatch,
     /// The claimed `attesting_key_id` is not present in the caller's
     /// `key_directory`, or its pinned pubkeys are malformed.
     UnknownSigner,
@@ -327,6 +333,53 @@ pub fn verify_transport_binding(
     binding: &TransportBinding,
     key_directory: &[ThresholdMember],
 ) -> Result<TransportBindingVerdict, VerifyError> {
+    // ---- (0) SUBJECT BINDING: "who is this ABOUT?" (#252) --------------
+    // Checked FIRST, before key lookup, key separation, and the dest-hash
+    // recompute, so the refusal is deterministic (rule 4).
+    //
+    // `attesting_key_id`, `transport_destination` and `encryption_pubkeys`
+    // are struct fields living OUTSIDE the signed bytes, while the producer
+    // (`self_at_login::sign_transport_binding`) signs all three INSIDE the
+    // occurrence envelope. Nothing compared them, so an attacker could keep a
+    // victim's `attesting_key_id` — making the signature verify — while
+    // substituting their OWN transport destination. Every downstream check
+    // then ran against the substituted address, and the verdict reported the
+    // victim's identity as bound to the attacker's address: a traffic-redirect
+    // primitive built out of a perfectly valid signature. Substituting
+    // `encryption_pubkeys` is the same trick aimed at content encryption.
+    {
+        use crate::subject_binding::SubjectBinding;
+        let td = &binding.transport_destination;
+        let mut sb = SubjectBinding::new()
+            .require("attesting_key_id", binding.attesting_key_id.clone())
+            .require(
+                "transport_destination",
+                serde_json::json!({
+                    "reticulum_x25519_pubkey": td.reticulum_x25519_pubkey_base64,
+                    "reticulum_ed25519_pubkey": td.reticulum_ed25519_pubkey_base64,
+                    "destination_hash": td.destination_hash_base64,
+                    "app_name": td.app_name,
+                    "aspects": td.aspects,
+                }),
+            );
+        // Materialize-when-present on the producer side, so absence here must
+        // mean absence there — asserted as JSON null (rule 1), never skipped.
+        sb = match &binding.encryption_pubkeys {
+            Some(enc) => sb.require(
+                "encryption_pubkeys",
+                serde_json::json!({
+                    "x25519_base64": enc.x25519_base64,
+                    "ml_kem_768_base64": enc.ml_kem_768_base64,
+                }),
+            ),
+            None => sb.require_optional("encryption_pubkeys", None),
+        };
+        if let Err(e) = sb.check("transport binding", &binding.signed_envelope) {
+            tracing::warn!(error = %e, "transport binding refused on subject binding");
+            return Ok(reject(TransportBindingReason::SubjectMismatch));
+        }
+    }
+
     // ---- (2a) structural decode of every byte field, fail-closed -------
     let Some(transport_ed) = binding.transport_destination.ed25519_pubkey() else {
         return Ok(reject(TransportBindingReason::Malformed));
@@ -614,6 +667,24 @@ mod tests {
     /// Build the signed occurrence envelope + the typed transport_dest,
     /// hybrid-sign it, and assemble a [`TransportBinding`]. `transport_ed`
     /// lets a test force the AV-17 collision (transport ed == signing ed).
+    /// Set a `transport_destination` member in BOTH the struct and the signed
+    /// envelope, then re-sign.
+    ///
+    /// Since #252 the two must agree, which is the point: mutating only the
+    /// struct is now the *lifted-envelope attack*, not a malformed field. A
+    /// test that wants to exercise structural decoding has to produce a
+    /// coherent object, or it is only re-testing the subject binding.
+    fn set_td_member(
+        binding: &mut TransportBinding,
+        member: &str,
+        value: serde_json::Value,
+        signer: &Signer,
+    ) {
+        binding.signed_envelope["transport_destination"][member] = value;
+        let bytes = jcs::canonicalize(&binding.signed_envelope).unwrap();
+        binding.signature = signer.sign(&bytes);
+    }
+
     fn make_binding(
         signer: &Signer,
         key_id: &str,
@@ -902,15 +973,114 @@ mod tests {
             None,
         );
 
-        // Truncated transport ed pubkey (16 bytes, not 32) → Malformed,
-        // caught before any signature work.
+        // Truncated transport ed pubkey (16 bytes, not 32) → Malformed.
+        // Applied coherently so this tests structural decoding, not the
+        // #252 subject binding.
+        let bad = b64().encode(vec![0u8; 16]);
         binding
             .transport_destination
-            .reticulum_ed25519_pubkey_base64 = b64().encode(vec![0u8; 16]);
+            .reticulum_ed25519_pubkey_base64 = bad.clone();
+        set_td_member(
+            &mut binding,
+            "reticulum_ed25519_pubkey",
+            bad.into(),
+            &signer,
+        );
 
         let v = verify_transport_binding(&binding, &dir).unwrap();
         assert!(!v.authentic);
         assert_eq!(v.reason, TransportBindingReason::Malformed);
+    }
+
+    /// **CIRISVerify#252 on the transport surface — the redirect, refused.**
+    ///
+    /// Mallory takes a victim's genuine, validly-signed occurrence envelope
+    /// and re-presents it with HER OWN transport destination. She keeps
+    /// `attesting_key_id` as the victim's, so the signature still verifies
+    /// against the victim's pinned key — the whole point.
+    ///
+    /// Pre-#252 every downstream check (key separation, destination-hash
+    /// recompute) ran against HER substituted destination and agreed, because
+    /// they read the struct field. The verdict then reported the victim's
+    /// identity as reachable at Mallory's address: a traffic-redirect built
+    /// out of a perfectly valid signature.
+    #[test]
+    fn substituted_transport_destination_is_refused() {
+        let signer = Signer::random();
+        let dir = vec![signer.directory_member("steward-us")];
+        let mut binding = make_binding(
+            &signer,
+            "steward-us",
+            &pubkey_bytes(0x01),
+            &pubkey_bytes(0x02),
+            None,
+        );
+        // Sanity: it verifies before tampering.
+        assert!(verify_transport_binding(&binding, &dir).unwrap().authentic);
+
+        // Mallory's address, self-consistent so the hash recompute agrees.
+        let (m_ed, m_x) = (pubkey_bytes(0xAA), pubkey_bytes(0xBB));
+        let app_name = "ciris.federation";
+        let aspects = ["announce", "v1"];
+        let m_hash = rns_destination_hash(&m_x, &m_ed, app_name, &aspects);
+        binding.transport_destination = TransportDestination {
+            reticulum_x25519_pubkey_base64: b64().encode(&m_x),
+            reticulum_ed25519_pubkey_base64: b64().encode(&m_ed),
+            destination_hash_base64: b64().encode(&m_hash),
+            app_name: app_name.to_string(),
+            aspects: aspects.iter().map(|s| (*s).to_string()).collect(),
+        };
+        // Envelope and signature untouched — still the victim's, still valid.
+
+        let v = verify_transport_binding(&binding, &dir).unwrap();
+        assert!(!v.authentic, "a substituted destination MUST NOT verify");
+        assert_eq!(v.reason, TransportBindingReason::SubjectMismatch);
+    }
+
+    /// The same trick aimed at content encryption: swap `encryption_pubkeys`
+    /// so material is encrypted to Mallory's KEM key.
+    #[test]
+    fn substituted_encryption_pubkeys_are_refused() {
+        let signer = Signer::random();
+        let dir = vec![signer.directory_member("steward-us")];
+        let mut binding = make_binding(
+            &signer,
+            "steward-us",
+            &pubkey_bytes(0x01),
+            &pubkey_bytes(0x02),
+            Some(&pubkey_bytes(0x03)),
+        );
+        assert!(verify_transport_binding(&binding, &dir).unwrap().authentic);
+
+        binding.encryption_pubkeys = Some(EncryptionPubkeys {
+            x25519_base64: b64().encode(pubkey_bytes(0xCC)),
+            ml_kem_768_base64: b64().encode(vec![0x22u8; 1184]),
+        });
+
+        let v = verify_transport_binding(&binding, &dir).unwrap();
+        assert!(!v.authentic);
+        assert_eq!(v.reason, TransportBindingReason::SubjectMismatch);
+    }
+
+    /// Dropping `encryption_pubkeys` from the carrier while the signed
+    /// envelope still declares them must also be refused — absence is
+    /// asserted, not skipped (#252 rule 1/3).
+    #[test]
+    fn dropping_declared_encryption_pubkeys_is_refused() {
+        let signer = Signer::random();
+        let dir = vec![signer.directory_member("steward-us")];
+        let mut binding = make_binding(
+            &signer,
+            "steward-us",
+            &pubkey_bytes(0x01),
+            &pubkey_bytes(0x02),
+            Some(&pubkey_bytes(0x03)),
+        );
+        binding.encryption_pubkeys = None;
+
+        let v = verify_transport_binding(&binding, &dir).unwrap();
+        assert!(!v.authentic);
+        assert_eq!(v.reason, TransportBindingReason::SubjectMismatch);
     }
 
     #[test]
@@ -925,8 +1095,12 @@ mod tests {
             None,
         );
 
-        // destination_hash wrong length (32, not 16) → Malformed.
-        binding.transport_destination.destination_hash_base64 = b64().encode(vec![0u8; 32]);
+        // destination_hash wrong length (32, not 16) → Malformed. Applied
+        // coherently (struct + envelope + re-sign) so this exercises the
+        // structural check rather than the #252 binding.
+        let bad = b64().encode(vec![0u8; 32]);
+        binding.transport_destination.destination_hash_base64 = bad.clone();
+        set_td_member(&mut binding, "destination_hash", bad.into(), &signer);
 
         let v = verify_transport_binding(&binding, &dir).unwrap();
         assert!(!v.authentic);
@@ -947,6 +1121,12 @@ mod tests {
 
         binding.transport_destination.reticulum_x25519_pubkey_base64 =
             "!!! not base64 !!!".to_string();
+        set_td_member(
+            &mut binding,
+            "reticulum_x25519_pubkey",
+            "!!! not base64 !!!".into(),
+            &signer,
+        );
 
         let v = verify_transport_binding(&binding, &dir).unwrap();
         assert!(!v.authentic);

@@ -131,6 +131,7 @@ pub mod security;
 pub mod self_at_login;
 pub mod skill_import;
 pub mod steward_key;
+pub mod subject_binding;
 /// CIRISVerify#202 — compile-time-fenced test-only trust-root / custody
 /// relaxation for the local mesh harness (never in a prod artifact).
 pub mod test_anchor;

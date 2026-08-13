@@ -162,6 +162,13 @@ pub struct VerifiedManifest {
 /// hard reject — there is no partial-trust path (fail-closed).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ManifestRejection {
+    /// **The pipeline `KeyRecord`'s signed envelope is about a different key
+    /// than the record declares** (CIRISVerify#252). The scrubs may be
+    /// entirely valid — they are simply not about this key.
+    PipelineRecordSubjectMismatch {
+        /// Which member disagreed, and how.
+        source: crate::subject_binding::SubjectBindingError,
+    },
     /// The outbox object is not a `build_manifest_contribution`.
     WrongKind {
         /// The kind actually found.
@@ -263,6 +270,9 @@ pub enum ManifestRejection {
 impl std::fmt::Display for ManifestRejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            Self::PipelineRecordSubjectMismatch { source } => {
+                write!(f, "pipeline key record: {source}")
+            },
             Self::WrongKind { kind } => {
                 write!(f, "not a build-manifest contribution: kind {kind:?}")
             },
@@ -633,6 +643,17 @@ pub fn verify_build_manifest_via_coscrub(
 
     // --- 4. The pipeline key is BLESSED: its accord-co-scrubbed KeyRecord carries
     //        infra:attest AND reaches the ≥2 distinct-anchor quorum. ---
+    //
+    // #252: bind the record's DECLARED identity to its SIGNED envelope FIRST.
+    // The identity comparison below reads the sibling `key_id`, while the
+    // authority evidence (roles, anchor scrubs) is verified against the
+    // envelope. Unbound, a record whose sibling names the pinned pipeline but
+    // whose envelope is a genuinely co-scrubbed record for a DIFFERENT key
+    // carrying `infra:attest` satisfies all three — blessing a key that was
+    // never blessed, out of entirely valid signatures.
+    pipeline_record
+        .check_subject_binding()
+        .map_err(|source| ManifestRejection::PipelineRecordSubjectMismatch { source })?;
     if pipeline_record.key_id != attesting_key_id {
         return Err(ManifestRejection::PipelineRecordMismatch {
             record: pipeline_record.key_id.clone(),
@@ -1083,13 +1104,56 @@ mod tests {
         );
     }
 
+    /// **CIRISVerify#252 on the blessing surface — privilege transfer, refused.**
+    ///
+    /// Mallory's key was never blessed. She takes a **genuinely**
+    /// accord-co-scrubbed record for a key that WAS blessed with
+    /// `infra:attest` — real envelope, real ≥2-anchor scrubs — and relabels
+    /// only the sibling `key_id` to the pipeline the verifier pins.
+    ///
+    /// Pre-#252 that satisfied all three gates: the identity comparison read
+    /// the sibling, `roles_in_envelope()` read the (genuine) envelope, and the
+    /// quorum verified the (genuine) scrubs. A key that was never blessed came
+    /// out blessed, from entirely valid signatures.
+    #[tokio::test]
+    async fn relabelled_record_over_a_genuine_blessed_envelope_is_refused() {
+        let a1 = HybridSigningIdentity::generate("A1").unwrap();
+        let b1 = HybridSigningIdentity::generate("B1").unwrap();
+        let (obj, pm, blessed, anchors) =
+            coscrub_setup(vec!["infra:attest".to_string()], &[&a1, &b1], &[&a1, &b1]).await;
+
+        // The genuine record, relabelled on the OUTSIDE only. Envelope,
+        // content hash and both anchor scrubs are untouched and valid.
+        let mut lifted = blessed.clone();
+        lifted.key_id = PIPELINE.to_string();
+        lifted.registration_envelope["key_id"] = json!("victim-key-that-was-blessed");
+
+        // The authority evidence is still genuine …
+        assert!(lifted
+            .roles_in_envelope()
+            .iter()
+            .any(|r| r == MANIFEST_PUBLISH_SCOPE));
+
+        // … and it is refused anyway, on the subject.
+        let err = verify_build_manifest_via_coscrub(&obj, &pm, &lifted, &anchors).unwrap_err();
+        assert!(
+            matches!(err, ManifestRejection::PipelineRecordSubjectMismatch { .. }),
+            "a relabelled record MUST be refused on the subject, got {err:?}"
+        );
+    }
+
     #[tokio::test]
     async fn pipeline_record_for_a_different_key_is_rejected() {
         let a1 = HybridSigningIdentity::generate("A1").unwrap();
         let b1 = HybridSigningIdentity::generate("B1").unwrap();
         let (obj, pm, mut rec, anchors) =
             coscrub_setup(vec!["infra:attest".to_string()], &[&a1, &b1], &[&a1, &b1]).await;
+        // Move BOTH halves, so the record is internally coherent and this
+        // exercises the key_id rule rather than the #252 binding. (Its scrubs
+        // no longer verify over the changed envelope, which is why the binding
+        // is checked first — see the companion test below.)
         rec.key_id = "some-other-node".to_string();
+        rec.registration_envelope["key_id"] = json!("some-other-node");
         let err = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors).unwrap_err();
         assert_eq!(
             err,
@@ -1128,7 +1192,10 @@ mod tests {
         let b1 = HybridSigningIdentity::generate("B1").unwrap();
         let (obj, pm, mut rec, anchors) =
             coscrub_setup(vec!["infra:attest".to_string()], &[&a1, &b1], &[&a1, &b1]).await;
-        rec.registration_envelope["pubkey_ed25519_base64"] = json!("00".repeat(32));
+        // Tamper a member that is NOT part of the subject binding, so the
+        // binding still holds and the *quorum* is what collapses — otherwise
+        // this would only re-test #252.
+        rec.registration_envelope["valid_from"] = json!("1999-01-01T00:00:00Z");
         let err = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors).unwrap_err();
         assert_eq!(
             err,
