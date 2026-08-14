@@ -203,6 +203,45 @@ pub struct TransportBinding {
     pub signature: TransportBindingSignature,
 }
 
+impl TransportBinding {
+    /// **The subject projection for this binding, as data** (CIRISVerify#254).
+    ///
+    /// [`verify_transport_binding`] checks exactly this, so the two cannot
+    /// drift. Exposed so a consumer can assert its own projection against
+    /// verify's in a test — and, together with the verdict's
+    /// [`subject_binding_error`](TransportBindingVerdict::subject_binding_error),
+    /// makes this plane probeable at all.
+    #[must_use]
+    pub fn subject_binding(&self) -> crate::subject_binding::SubjectBinding {
+        use crate::subject_binding::SubjectBinding;
+        let td = &self.transport_destination;
+        let sb = SubjectBinding::new()
+            .require("attesting_key_id", self.attesting_key_id.clone())
+            .require(
+                "transport_destination",
+                serde_json::json!({
+                    "reticulum_x25519_pubkey": td.reticulum_x25519_pubkey_base64,
+                    "reticulum_ed25519_pubkey": td.reticulum_ed25519_pubkey_base64,
+                    "destination_hash": td.destination_hash_base64,
+                    "app_name": td.app_name,
+                    "aspects": td.aspects,
+                }),
+            );
+        // Materialize-when-present on the producer side, so absence here must
+        // mean absence there — asserted as JSON null (rule 1), never skipped.
+        match &self.encryption_pubkeys {
+            Some(enc) => sb.require(
+                "encryption_pubkeys",
+                serde_json::json!({
+                    "x25519_base64": enc.x25519_base64,
+                    "ml_kem_768_base64": enc.ml_kem_768_base64,
+                }),
+            ),
+            None => sb.require_optional("encryption_pubkeys", None),
+        }
+    }
+}
+
 /// Why a [`TransportBinding`] was accepted or rejected. Coarse by design.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -254,6 +293,17 @@ pub struct TransportBindingVerdict {
     /// [`DestinationHashCheck::Unsupported`] when the binding was rejected
     /// before the recompute was reached.
     pub destination_hash_check: DestinationHashCheck,
+    /// **Which member of the subject binding failed, and how** — present iff
+    /// [`Self::reason`] is [`TransportBindingReason::SubjectMismatch`]
+    /// (CIRISVerify#254).
+    ///
+    /// [`TransportBindingReason`] is deliberately coarse and `Copy`, so the
+    /// diagnosis lives here instead of in the variant. Without it this plane
+    /// could not be **probed**: a consumer asserting that its own subject
+    /// projection agrees with verify's needs the member *name*, and
+    /// previously the error was logged and discarded inside the verifier.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_binding_error: Option<crate::subject_binding::SubjectBindingError>,
 }
 
 /// Outcome of the `destination_hash == RNS_hash(...)` recompute
@@ -348,35 +398,14 @@ pub fn verify_transport_binding(
     // primitive built out of a perfectly valid signature. Substituting
     // `encryption_pubkeys` is the same trick aimed at content encryption.
     {
-        use crate::subject_binding::SubjectBinding;
-        let td = &binding.transport_destination;
-        let mut sb = SubjectBinding::new()
-            .require("attesting_key_id", binding.attesting_key_id.clone())
-            .require(
-                "transport_destination",
-                serde_json::json!({
-                    "reticulum_x25519_pubkey": td.reticulum_x25519_pubkey_base64,
-                    "reticulum_ed25519_pubkey": td.reticulum_ed25519_pubkey_base64,
-                    "destination_hash": td.destination_hash_base64,
-                    "app_name": td.app_name,
-                    "aspects": td.aspects,
-                }),
-            );
-        // Materialize-when-present on the producer side, so absence here must
-        // mean absence there — asserted as JSON null (rule 1), never skipped.
-        sb = match &binding.encryption_pubkeys {
-            Some(enc) => sb.require(
-                "encryption_pubkeys",
-                serde_json::json!({
-                    "x25519_base64": enc.x25519_base64,
-                    "ml_kem_768_base64": enc.ml_kem_768_base64,
-                }),
-            ),
-            None => sb.require_optional("encryption_pubkeys", None),
-        };
-        if let Err(e) = sb.check("transport binding", &binding.signed_envelope) {
+        if let Err(e) = binding
+            .subject_binding()
+            .check("transport binding", &binding.signed_envelope)
+        {
             tracing::warn!(error = %e, "transport binding refused on subject binding");
-            return Ok(reject(TransportBindingReason::SubjectMismatch));
+            // Carry the diagnosis out rather than logging and discarding it —
+            // a logged string is not something a consumer can assert against.
+            return Ok(reject_subject(e));
         }
     }
 
@@ -450,6 +479,7 @@ pub fn verify_transport_binding(
             authentic: false,
             reason: TransportBindingReason::DestinationHashMismatch,
             destination_hash_check: DestinationHashCheck::Mismatch,
+            subject_binding_error: None,
         });
     }
 
@@ -457,6 +487,7 @@ pub fn verify_transport_binding(
         authentic: true,
         reason: TransportBindingReason::Verified,
         destination_hash_check,
+        subject_binding_error: None,
     })
 }
 
@@ -573,6 +604,17 @@ fn reject(reason: TransportBindingReason) -> TransportBindingVerdict {
         authentic: false,
         reason,
         destination_hash_check: DestinationHashCheck::Unsupported,
+        subject_binding_error: None,
+    }
+}
+
+/// Reject on the subject binding, **carrying the diagnosis out** (#254).
+fn reject_subject(source: crate::subject_binding::SubjectBindingError) -> TransportBindingVerdict {
+    TransportBindingVerdict {
+        authentic: false,
+        reason: TransportBindingReason::SubjectMismatch,
+        destination_hash_check: DestinationHashCheck::Unsupported,
+        subject_binding_error: Some(source),
     }
 }
 
@@ -990,6 +1032,53 @@ mod tests {
         let v = verify_transport_binding(&binding, &dir).unwrap();
         assert!(!v.authentic);
         assert_eq!(v.reason, TransportBindingReason::Malformed);
+    }
+
+    /// **CIRISVerify#254 — the transport plane is probeable.**
+    ///
+    /// The verifier used to log the `SubjectBindingError` and discard it, so a
+    /// consumer could tell THAT the subject failed but not WHICH member — and
+    /// could not assert its own projection against verify's. The diagnosis now
+    /// rides out on the verdict.
+    #[test]
+    fn a_subject_mismatch_names_the_member_that_failed() {
+        let signer = Signer::random();
+        let dir = vec![signer.directory_member("steward-us")];
+        let mut binding = make_binding(
+            &signer,
+            "steward-us",
+            &pubkey_bytes(0x01),
+            &pubkey_bytes(0x02),
+            None,
+        );
+        binding.attesting_key_id = "mallory".to_string();
+
+        let v = verify_transport_binding(&binding, &dir).unwrap();
+        assert_eq!(v.reason, TransportBindingReason::SubjectMismatch);
+        let err = v
+            .subject_binding_error
+            .expect("the diagnosis must escape the verifier");
+        assert_eq!(err.member(), Some("attesting_key_id"));
+        assert_eq!(err.claimed(), Some("\"mallory\""));
+    }
+
+    /// The exported projection is the one the verifier enforces — otherwise
+    /// asserting against it proves nothing.
+    #[test]
+    fn the_exported_transport_projection_is_the_one_enforced() {
+        let signer = Signer::random();
+        let binding = make_binding(
+            &signer,
+            "steward-us",
+            &pubkey_bytes(0x01),
+            &pubkey_bytes(0x02),
+            Some(&pubkey_bytes(0x03)),
+        );
+        let proj = binding.subject_binding();
+        assert!(proj.members().contains_key("attesting_key_id"));
+        assert!(proj.members().contains_key("transport_destination"));
+        assert!(proj.members().contains_key("encryption_pubkeys"));
+        assert!(proj.check("t", &binding.signed_envelope).is_ok());
     }
 
     /// **CIRISVerify#252 on the transport surface — the redirect, refused.**

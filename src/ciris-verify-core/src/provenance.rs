@@ -111,6 +111,26 @@ pub struct ProvenanceLink {
     pub is_self_signed: bool,
 }
 
+impl ProvenanceLink {
+    /// **The subject projection for this link, as data** (CIRISVerify#254).
+    ///
+    /// [`verify_provenance_chain`] checks exactly this, so the two cannot
+    /// drift. Exposed so a consumer maintaining its own implementation can
+    /// assert member-for-member agreement in a test rather than by reading
+    /// two files side by side.
+    #[must_use]
+    pub fn subject_binding(&self) -> crate::subject_binding::SubjectBinding {
+        crate::subject_binding::SubjectBinding::new()
+            .require("key_id", self.key_id.clone())
+            .require("identity_type", self.identity_type.clone())
+            .require("pubkey_ed25519_base64", self.pubkey_ed25519_base64.clone())
+            .require_optional(
+                "pubkey_ml_dsa_65_base64",
+                self.pubkey_ml_dsa_65_base64.as_deref(),
+            )
+    }
+}
+
 /// A `federation_keys` row plus its full recursive-provenance chain.
 /// Mirrors CIRISPersist's `rooting::ProvenanceChain` (Persist#94).
 ///
@@ -417,14 +437,7 @@ pub fn verify_provenance_chain_with_policy_and_terminus(
         // name alone loses to a node that has not yet replicated the victim's
         // row, where an attacker registers the victim's `key_id` under their
         // own pubkeys.
-        crate::subject_binding::SubjectBinding::new()
-            .require("key_id", link.key_id.clone())
-            .require("identity_type", link.identity_type.clone())
-            .require("pubkey_ed25519_base64", link.pubkey_ed25519_base64.clone())
-            .require_optional(
-                "pubkey_ml_dsa_65_base64",
-                link.pubkey_ml_dsa_65_base64.as_deref(),
-            )
+        link.subject_binding()
             .check("provenance link", &link.registration_envelope)
             .map_err(|source| ProvenanceError::SubjectBindingFailed {
                 key_id: link.key_id.clone(),
