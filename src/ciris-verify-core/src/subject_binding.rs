@@ -42,18 +42,19 @@
 use serde_json::{Map, Value};
 
 /// A subject binding did not hold. Every variant is a refusal.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SubjectBindingError {
     /// The signed object is not a JSON object, so it carries no binding at all.
     NotAnObject {
         /// What was being checked, for the diagnostic.
-        context: &'static str,
+        context: String,
     },
     /// A projected member is **absent** from the signed bytes — refused, never
     /// tolerated (rule 3).
     Missing {
         /// What was being checked.
-        context: &'static str,
+        context: String,
         /// The member the projection requires.
         member: String,
     },
@@ -61,7 +62,7 @@ pub enum SubjectBindingError {
     /// attack this module exists to refuse.
     Mismatch {
         /// What was being checked.
-        context: &'static str,
+        context: String,
         /// The member that disagreed.
         member: String,
         /// What the signed bytes actually say.
@@ -69,6 +70,31 @@ pub enum SubjectBindingError {
         /// What the carrier claimed.
         claimed: String,
     },
+}
+
+impl SubjectBindingError {
+    /// The projected member that failed, as data.
+    ///
+    /// A consumer asserting its own projection against verify's needs the
+    /// member **name**, not a rendered message (CIRISVerify#254). `None` only
+    /// for [`NotAnObject`](Self::NotAnObject), where no single member is at
+    /// fault.
+    #[must_use]
+    pub fn member(&self) -> Option<&str> {
+        match self {
+            Self::NotAnObject { .. } => None,
+            Self::Missing { member, .. } | Self::Mismatch { member, .. } => Some(member),
+        }
+    }
+
+    /// What the carrier claimed for the failing member, as data.
+    #[must_use]
+    pub fn claimed(&self) -> Option<&str> {
+        match self {
+            Self::Mismatch { claimed, .. } => Some(claimed),
+            _ => None,
+        }
+    }
 }
 
 impl std::fmt::Display for SubjectBindingError {
@@ -152,7 +178,9 @@ impl SubjectBinding {
     pub fn check(&self, context: &'static str, signed: &Value) -> Result<(), SubjectBindingError> {
         let obj = signed
             .as_object()
-            .ok_or(SubjectBindingError::NotAnObject { context })?;
+            .ok_or_else(|| SubjectBindingError::NotAnObject {
+                context: context.to_string(),
+            })?;
 
         for (member, expected) in &self.members {
             // Absent is REFUSED, not tolerated — except that an expected
@@ -164,14 +192,14 @@ impl SubjectBinding {
                 None if expected.is_null() => continue,
                 None => {
                     return Err(SubjectBindingError::Missing {
-                        context,
+                        context: context.to_string(),
                         member: member.clone(),
                     })
                 },
             };
             if actual != expected {
                 return Err(SubjectBindingError::Mismatch {
-                    context,
+                    context: context.to_string(),
                     member: member.clone(),
                     signed: actual.to_string(),
                     claimed: expected.to_string(),
@@ -287,5 +315,125 @@ mod tests {
                 .check("t", &json!("a string")),
             Err(SubjectBindingError::NotAnObject { .. })
         ));
+    }
+}
+
+/// **Cross-plane agreement** — verify's own planes must not drift apart
+/// (CIRISVerify#254).
+///
+/// The projections live in separate `.require(…)` chains on three types.
+/// Nothing forced them to agree, and a consumer produces ONE envelope that has
+/// to satisfy whichever plane it reaches. CIRISPersist's conformance probe was
+/// asserting this on verify's behalf; verify should hold its own invariant.
+#[cfg(test)]
+mod cross_plane {
+    use crate::federation_self_record::KeyRecord;
+    use crate::provenance::ProvenanceLink;
+    use serde_json::json;
+
+    fn envelope(key_id: &str) -> serde_json::Value {
+        json!({
+            "key_id": key_id,
+            "identity_type": "steward",
+            "pubkey_ed25519_base64": "ED",
+            "pubkey_ml_dsa_65_base64": "PQ",
+        })
+    }
+
+    fn link() -> ProvenanceLink {
+        ProvenanceLink {
+            key_id: "k1".into(),
+            pubkey_ed25519_base64: "ED".into(),
+            pubkey_ml_dsa_65_base64: Some("PQ".into()),
+            identity_type: "steward".into(),
+            identity_ref: "ref".into(),
+            registration_envelope: envelope("k1"),
+            original_content_hash: String::new(),
+            scrub_signature_classical: String::new(),
+            scrub_signature_pqc: None,
+            scrub_key_id: "k1".into(),
+            scrub_timestamp: String::new(),
+            is_self_signed: true,
+        }
+    }
+
+    /// The registration-envelope planes bind the SAME member set. A member
+    /// added to one and not the other means one envelope satisfies the
+    /// provenance walk and fails `KeyRecord`, or the reverse.
+    #[test]
+    fn provenance_and_key_record_bind_the_same_members() {
+        let rec: KeyRecord = serde_json::from_value(json!({
+            "key_id": "k1",
+            "algorithm": "hybrid",
+            "identity_type": "steward",
+            "identity_ref": "ref",
+            "pubkey_ed25519_base64": "ED",
+            "pubkey_ml_dsa_65_base64": "PQ",
+            "valid_from": "2026-01-01T00:00:00Z",
+            "registration_envelope": envelope("k1"),
+            "original_content_hash": "",
+            "scrub_signature_classical": "",
+            "scrub_key_id": "k1",
+            "scrub_timestamp": "",
+            "persist_row_hash": "",
+        }))
+        .expect("KeyRecord fixture must deserialize");
+
+        let (lb, rb) = (link().subject_binding(), rec.subject_binding());
+        let a: Vec<&String> = lb.members().keys().collect();
+        let b: Vec<&String> = rb.members().keys().collect();
+        assert_eq!(
+            a, b,
+            "provenance and key-record planes must bind the same members; \
+             a member added to one only means the same envelope passes one \
+             plane and fails the other"
+        );
+    }
+
+    /// …and on the same VALUES for the same underlying row, not merely the
+    /// same names. Equal key sets with divergent values is the subtler drift.
+    #[test]
+    fn the_two_planes_agree_on_values_too() {
+        let l = link();
+        let rec: KeyRecord = serde_json::from_value(json!({
+            "key_id": "k1",
+            "algorithm": "hybrid",
+            "identity_type": "steward",
+            "identity_ref": "ref",
+            "pubkey_ed25519_base64": "ED",
+            "pubkey_ml_dsa_65_base64": "PQ",
+            "valid_from": "2026-01-01T00:00:00Z",
+            "registration_envelope": envelope("k1"),
+            "original_content_hash": "",
+            "scrub_signature_classical": "",
+            "scrub_key_id": "k1",
+            "scrub_timestamp": "",
+            "persist_row_hash": "",
+        }))
+        .unwrap();
+        let (lb, rb) = (l.subject_binding(), rec.subject_binding());
+        assert_eq!(lb.members(), rb.members());
+    }
+
+    /// The projection a plane exposes is the one it CHECKS — otherwise the
+    /// exported list is a documentation comment with extra steps.
+    #[test]
+    fn the_exposed_projection_is_the_one_enforced() {
+        let l = link();
+        // Satisfied by the coherent envelope …
+        assert!(l
+            .subject_binding()
+            .check("t", &l.registration_envelope)
+            .is_ok());
+        // … and every exposed member is actually enforced: flip each in turn.
+        let proj = l.subject_binding();
+        for member in proj.members().keys() {
+            let mut tampered = l.registration_envelope.clone();
+            tampered[member] = json!("TAMPERED");
+            assert!(
+                l.subject_binding().check("t", &tampered).is_err(),
+                "exposed member `{member}` is not enforced — the projection would be advisory"
+            );
+        }
     }
 }

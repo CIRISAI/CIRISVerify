@@ -234,6 +234,26 @@ impl KeyRecord {
     /// [`SubjectBindingError`](crate::subject_binding::SubjectBindingError) if
     /// the envelope is about a different subject, or carries no binding.
     pub fn check_subject_binding(&self) -> Result<(), crate::subject_binding::SubjectBindingError> {
+        self.subject_binding()
+            .check("key record", &self.registration_envelope)
+    }
+
+    /// **The subject projection itself, as data** (CIRISVerify#254).
+    ///
+    /// [`check_subject_binding`](Self::check_subject_binding) is built on this,
+    /// so the two cannot drift: there is one projection, and the checker
+    /// consumes it.
+    ///
+    /// Exposed because a consumer maintaining its own implementation of this
+    /// check — which CIRISPersist must, since its `KeyRecord` is a distinct
+    /// type carrying a declaration-order contract — needs to assert
+    /// member-for-member agreement **in a test**, not by a human reading two
+    /// files. That reading is what caught verify binding four members while
+    /// persist bound three (it omitted `identity_type`, which persist reads to
+    /// decide canonical standing): same process, same release, different
+    /// answers, and both suites green.
+    #[must_use]
+    pub fn subject_binding(&self) -> crate::subject_binding::SubjectBinding {
         crate::subject_binding::SubjectBinding::new()
             .require("key_id", self.key_id.clone())
             .require("identity_type", self.identity_type.clone())
@@ -242,7 +262,6 @@ impl KeyRecord {
                 "pubkey_ml_dsa_65_base64",
                 self.pubkey_ml_dsa_65_base64.as_deref(),
             )
-            .check("key record", &self.registration_envelope)
     }
 
     /// Read the **scrub-attested** roles carried in the signed
