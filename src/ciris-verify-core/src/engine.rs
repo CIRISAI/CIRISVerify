@@ -412,19 +412,34 @@ impl LicenseEngine {
             .check_revocation(&request.deployment_id)
             .await;
         if revocation.revoked {
-            warn!(
-                reason = ?revocation.reason,
-                "License has been revoked"
-            );
+            // Report WHAT WE KNOW. An authoritative revocation and a check we
+            // could not complete are different facts, and a human debugging
+            // "revoked" must not be sent looking for a revocation that never
+            // happened.
+            if revocation.is_authoritative() {
+                warn!(reason = ?revocation.reason, "License has been revoked by the authority");
+            } else {
+                warn!(
+                    reason = ?revocation.reason,
+                    determination = ?revocation.determination,
+                    "Revocation check could not be completed — failing closed. \
+                     This is NOT an authority revocation."
+                );
+            }
             return Ok(self
                 .build_error_response(
                     LicenseStatus::ErrorLicenseRevoked,
-                    &format!(
-                        "License has been revoked: {}",
-                        revocation
+                    &{
+                        let detail = revocation
                             .reason
-                            .unwrap_or_else(|| "No reason provided".to_string())
-                    ),
+                            .clone()
+                            .unwrap_or_else(|| "No reason provided".to_string());
+                        if revocation.is_authoritative() {
+                            format!("License has been revoked: {detail}")
+                        } else {
+                            format!("Could not verify revocation status (failing closed): {detail}")
+                        }
+                    },
                     &request,
                 )
                 .await);

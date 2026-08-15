@@ -78,6 +78,24 @@ pub enum VerifyError {
         url: String,
     },
 
+    /// **The server answered, and we could not understand it.**
+    ///
+    /// Deliberately NOT [`HttpsError`](Self::HttpsError): a schema mismatch and
+    /// a connectivity failure need different responses from whoever is paged.
+    /// Reporting a decode failure as "HTTPS unreachable" sent operators to
+    /// check firewalls, DNS and TLS while the server was answering `200` and
+    /// the real fault was a struct field.
+    #[error("Unparseable response from {url} (HTTP {status}): {detail}")]
+    ResponseSchemaMismatch {
+        /// The URL that answered.
+        url: String,
+        /// The status it answered with — `200` here means the endpoint is
+        /// healthy and the contract has drifted.
+        status: u16,
+        /// The decoder's complaint, e.g. `missing field \`classical\``.
+        detail: String,
+    },
+
     /// Registry rate-limited the request (HTTP 429).
     ///
     /// `retry_after_secs` is the parsed `Retry-After` header per RFC 7231
@@ -85,6 +103,12 @@ pub enum VerifyError {
     /// before issuing fallback probes and writes it into a shared cooldown
     /// gate so concurrent probes in the same flow also back off.
     /// Introduced v2.2.0 for issue #21.
+    ///
+    /// **Also load-bearing on the revocation path.** `check_revocation` must
+    /// return this rather than a generic [`HttpsError`](Self::HttpsError), so
+    /// a rate limit is never read as a revocation — the authority answering
+    /// "slow down" is the opposite evidence from the authority being
+    /// unreachable. Never reconstruct it by matching on an error string.
     #[error("Registry rate-limited at {url} (retry after {retry_after_secs:?}s)")]
     RateLimited {
         /// URL that returned 429.
