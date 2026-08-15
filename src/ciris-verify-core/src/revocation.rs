@@ -147,21 +147,31 @@ impl RevocationStatus {
     ///   licensed agent in the fleet.
     #[must_use]
     pub fn indeterminate(license_id: String, cause: Indeterminate, ttl: Duration) -> Self {
-        let (revoked, reason, retry_ttl) = match &cause {
+        // The two causes need OPPOSITE cache semantics, so each computes its own
+        // TTL rather than sharing one clamp:
+        //
+        // * Unreachable  → retry SOON (cap the TTL). We are failing closed on a
+        //   license that may be fine, so the sooner we can stop doing that the
+        //   better.
+        // * RateLimited  → retry LATE (floor the TTL at Retry-After). The
+        //   authority told us when to come back; retrying sooner is what
+        //   provoked the limit. Clamping this DOWN would make our own polling
+        //   the cause of the outage we are fixing.
+        let (revoked, reason, effective_ttl) = match &cause {
             Indeterminate::RateLimited { retry_after_secs } => (
                 false,
                 "Revocation authority rate-limited this check (HTTP 429). The authority is \
                  reachable and answering; this is NOT a revocation."
                     .to_string(),
-                // Honor Retry-After when supplied, so we stop provoking it.
-                retry_after_secs.map_or(Duration::from_secs(60), Duration::from_secs),
+                // Retry-After is a FLOOR, never a ceiling.
+                retry_after_secs.map_or(ttl, |secs| ttl.max(Duration::from_secs(secs))),
             ),
             Indeterminate::Unreachable => (
                 true,
                 "Revocation check could not obtain an answer - failing closed. This is a \
                  CHECK FAILURE, not an authority revocation."
                     .to_string(),
-                Duration::from_secs(60),
+                ttl.min(Duration::from_secs(60)),
             ),
         };
         Self {
@@ -171,7 +181,7 @@ impl RevocationStatus {
             revoked_at: None,
             reason: Some(reason),
             checked_at: Instant::now(),
-            ttl: ttl.min(retry_ttl),
+            ttl: effective_ttl,
         }
     }
 
@@ -534,9 +544,30 @@ mod tests {
         assert!(!status.is_revoked(), "429 MUST NOT read as revoked");
         assert!(!status.is_authoritatively_revoked());
         assert!(!status.is_authoritative());
-        // Retry-After is honored, so we stop provoking the limit.
-        assert!(status.ttl <= Duration::from_secs(30));
+        // Retry-After is a FLOOR, never a ceiling: we must not come back
+        // sooner than the authority asked. Clamping it DOWN would make our own
+        // polling the cause of the outage this fix exists to prevent.
+        assert!(
+            status.ttl >= Duration::from_secs(30),
+            "Retry-After must not be shortened"
+        );
         assert!(status.reason.unwrap().contains("NOT a revocation"));
+    }
+
+    /// **The regression this replaces.** A server asking for an hour, with a
+    /// short default TTL, must still get an hour. Taking `min` here retried in
+    /// minutes against an explicit 3600s back-off — turning our own polling
+    /// into the cause of the rate limit.
+    #[test]
+    fn a_long_retry_after_survives_a_short_default_ttl() {
+        let status = RevocationStatus::indeterminate(
+            "l".into(),
+            Indeterminate::RateLimited {
+                retry_after_secs: Some(3600),
+            },
+            Duration::from_secs(60), // short default
+        );
+        assert_eq!(status.ttl, Duration::from_secs(3600));
     }
 
     /// An authority that actually answers is the only source of a revocation.

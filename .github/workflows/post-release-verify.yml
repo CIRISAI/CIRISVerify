@@ -293,6 +293,25 @@ jobs:
               # Accept either shape so this gate works across the wire-format
               # transition without flapping on whichever wheel is published.
               err_low = r.registry_error.lower()
+              # A 429 means WE COULD NOT RUN THIS GATE — not that it failed.
+              # The invariant under test is "surface the registry error rather
+              # than crash", and a rate-limited response satisfies it: the
+              # walk completed and the error came back in registry_error.
+              #
+              # Do NOT fold this into the accept-list below. That would make
+              # the gate pass while the registry is broken, i.e. a test that
+              # silently stops testing. Skip loudly instead, so the run is
+              # visibly inconclusive rather than falsely green — the same
+              # could-not-answer vs answered distinction v13.3.0 drew for
+              # revocation.
+              if "rate-limited" in err_low or "429" in r.registry_error:
+                  print(
+                      "::warning title=Post-release gate inconclusive::"
+                      f"registry rate-limited the runner, so the 404 path could "
+                      f"not be exercised: {r.registry_error}"
+                  )
+                  print("SKIP (a): registry rate-limited; gate inconclusive, not passed")
+                  sys.exit(0)
               assert (
                   "not_yet_registered" in r.registry_error
                   or "404" in r.registry_error
