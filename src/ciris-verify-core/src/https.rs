@@ -240,9 +240,17 @@ impl HttpsClient {
         }
 
         let body = response.json::<StewardKeyResponse>().await.map_err(|e| {
-            warn!(url = %url, error = %e, "HTTPS: Failed to parse JSON response");
-            VerifyError::HttpsError {
-                message: format!("Failed to parse response from {}: {}", url, e),
+            // The server ANSWERED. Do not report this as unreachable — see
+            // VerifyError::ResponseSchemaMismatch.
+            warn!(
+                url = %url, status = %status.as_u16(), error = %e,
+                "HTTPS: server answered but the response did not match the expected \
+                 schema — this is a CONTRACT DRIFT, not a connectivity failure"
+            );
+            VerifyError::ResponseSchemaMismatch {
+                url: url.clone(),
+                status: status.as_u16(),
+                detail: e.to_string(),
             }
         })?;
 
@@ -309,6 +317,21 @@ impl HttpsClient {
                 message: format!("Request failed: {}", e),
             })?;
 
+        // A 429 is NOT a transport failure — the authority is alive and asking
+        // us to slow down. Surfacing it structurally is what lets the caller
+        // avoid reading a rate limit as a revocation.
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after_secs = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok());
+            warn!(url = %url, retry_after_secs = ?retry_after_secs, "HTTPS: rate limited (429)");
+            return Err(VerifyError::RateLimited {
+                url: url.clone(),
+                retry_after_secs,
+            });
+        }
         if !response.status().is_success() {
             return Err(VerifyError::HttpsError {
                 message: format!("HTTP error: {}", response.status()),
@@ -368,6 +391,21 @@ impl HttpsClient {
                 message: format!("Request failed: {}", e),
             })?;
 
+        // A 429 is NOT a transport failure — the authority is alive and asking
+        // us to slow down. Surfacing it structurally is what lets the caller
+        // avoid reading a rate limit as a revocation.
+        if response.status() == reqwest::StatusCode::TOO_MANY_REQUESTS {
+            let retry_after_secs = response
+                .headers()
+                .get(reqwest::header::RETRY_AFTER)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|v| v.trim().parse::<u64>().ok());
+            warn!(url = %url, retry_after_secs = ?retry_after_secs, "HTTPS: rate limited (429)");
+            return Err(VerifyError::RateLimited {
+                url: url.clone(),
+                retry_after_secs,
+            });
+        }
         if !response.status().is_success() {
             return Err(VerifyError::HttpsError {
                 message: format!("HTTP error: {}", response.status()),

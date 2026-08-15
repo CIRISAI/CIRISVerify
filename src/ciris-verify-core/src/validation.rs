@@ -585,8 +585,19 @@ impl ConsensusValidator {
                 }
             }
         } else {
-            // Case 2: No HTTPS reachable — fall back to DNS consensus (degraded)
-            warn!("HTTPS unreachable — falling back to DNS-only consensus (degraded)");
+            // Case 2: No usable HTTPS answer — fall back to DNS (degraded).
+            //
+            // "No usable answer" is NOT the same as "unreachable": a server
+            // that answers 200 with a drifted schema lands here too, and
+            // calling that unreachable sends an operator to check firewalls
+            // and TLS while the endpoint is healthy. The per-source error
+            // (see VerifyError::ResponseSchemaMismatch) carries the real
+            // cause; this message must not overwrite it with a guess.
+            warn!(
+                "No usable HTTPS answer — falling back to DNS-only consensus (degraded). \
+                 Check the per-source error above for the cause: unreachable and \
+                 schema-mismatch are different faults."
+            );
 
             let dns_list: Vec<Option<SourceData>> = vec![dns_us.clone(), dns_eu.clone()];
             let available: Vec<&SourceData> = dns_list.iter().filter_map(|s| s.as_ref()).collect();

@@ -22,7 +22,49 @@ use std::time::{Duration, Instant};
 
 use tracing::{debug, error, instrument, warn};
 
+use crate::error::VerifyError;
 use crate::https::{HttpsClient, RevocationResponse};
+
+/// **Why we believe what we believe** — did the authority answer, or did we
+/// fail to obtain an answer? (CIRISVerify: the 429-becomes-revoked defect.)
+///
+/// Collapsing these two into one boolean manufactures a *verdict* out of the
+/// *absence* of one, which `MISSION.md` §1.4 forbids: verify carries
+/// measurements, never verdicts. "The authority says this license is revoked"
+/// is a verdict. "I could not reach the authority" is a measurement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Determination {
+    /// The revocation authority answered. [`RevocationStatus::revoked`] is its
+    /// answer, and is authoritative.
+    Authoritative,
+    /// No answer was obtained. [`RevocationStatus::revoked`] carries the
+    /// caller's configured posture, **not** the authority's word.
+    Indeterminate(Indeterminate),
+}
+
+/// Why an answer could not be obtained. The distinction is load-bearing: a
+/// suppressed check and a cooperative "slow down" are opposite evidence.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Indeterminate {
+    /// **HTTP 429.** The authority is alive and answering — it is asking us to
+    /// come back later, and typically because of *our own* polling cadence.
+    ///
+    /// This is the case that must never read as revoked: it would convert our
+    /// own request rate into a fleet-wide outage for correctly-licensed
+    /// agents, all at once.
+    RateLimited {
+        /// `Retry-After` in seconds, when the authority supplied one.
+        retry_after_secs: Option<u64>,
+    },
+    /// The authority could not be reached, or failed to answer usefully
+    /// (connection failure, timeout, 5xx, undecodable body).
+    ///
+    /// Unlike [`RateLimited`](Self::RateLimited) this is consistent with
+    /// **suppression** — an attacker who blocks the revocation endpoint to
+    /// keep using a revoked license — so the fail-closed posture is defensible
+    /// here in a way it is not for a 429.
+    Unreachable,
+}
 
 /// Revocation status for a license.
 #[derive(Debug, Clone)]
@@ -30,7 +72,12 @@ pub struct RevocationStatus {
     /// License ID that was checked.
     pub license_id: String,
     /// Whether the license is revoked.
+    ///
+    /// Read this together with [`Self::determination`]: it is the authority's
+    /// answer only when that is [`Determination::Authoritative`].
     pub revoked: bool,
+    /// Whether this reflects an answer or the absence of one.
+    pub determination: Determination,
     /// Timestamp when revoked (if applicable).
     pub revoked_at: Option<i64>,
     /// Reason for revocation (if applicable).
@@ -57,6 +104,7 @@ impl RevocationStatus {
         Self {
             license_id,
             revoked: false,
+            determination: Determination::Authoritative,
             revoked_at: None,
             reason: None,
             checked_at: Instant::now(),
@@ -74,6 +122,7 @@ impl RevocationStatus {
         Self {
             license_id,
             revoked: true,
+            determination: Determination::Authoritative,
             revoked_at,
             reason,
             checked_at: Instant::now(),
@@ -81,20 +130,66 @@ impl RevocationStatus {
         }
     }
 
-    /// Create an "unknown" status (check failed).
-    pub fn unknown(license_id: String, ttl: Duration) -> Self {
-        // Fail-secure: treat unknown status as potentially revoked.
-        // This ensures that a failed revocation check does not allow
-        // a revoked license to operate as if it were valid.
-        // Short TTL ensures we retry soon.
+    /// No answer was obtained — record **why**, and do not manufacture a
+    /// verdict from it.
+    ///
+    /// `revoked` reflects the posture appropriate to the cause, not the
+    /// authority's word; [`Self::determination`] says so, and
+    /// [`Self::is_authoritatively_revoked`] is the honest predicate.
+    ///
+    /// - [`Indeterminate::Unreachable`] → `revoked = true` (fail closed). A
+    ///   suppressed check is indistinguishable from an attacker blocking the
+    ///   endpoint to keep using a revoked license.
+    /// - [`Indeterminate::RateLimited`] → `revoked = false`. A 429 proves the
+    ///   authority is **alive and answering**; it is a cooperative signal,
+    ///   usually provoked by our own polling. Reading it as revoked converts
+    ///   our request rate into a simultaneous outage for every correctly
+    ///   licensed agent in the fleet.
+    #[must_use]
+    pub fn indeterminate(license_id: String, cause: Indeterminate, ttl: Duration) -> Self {
+        let (revoked, reason, retry_ttl) = match &cause {
+            Indeterminate::RateLimited { retry_after_secs } => (
+                false,
+                "Revocation authority rate-limited this check (HTTP 429). The authority is \
+                 reachable and answering; this is NOT a revocation."
+                    .to_string(),
+                // Honor Retry-After when supplied, so we stop provoking it.
+                retry_after_secs.map_or(Duration::from_secs(60), Duration::from_secs),
+            ),
+            Indeterminate::Unreachable => (
+                true,
+                "Revocation check could not obtain an answer - failing closed. This is a \
+                 CHECK FAILURE, not an authority revocation."
+                    .to_string(),
+                Duration::from_secs(60),
+            ),
+        };
         Self {
             license_id,
-            revoked: true,
+            revoked,
+            determination: Determination::Indeterminate(cause),
             revoked_at: None,
-            reason: Some("Revocation check failed - treating as revoked (fail-secure)".into()),
+            reason: Some(reason),
             checked_at: Instant::now(),
-            ttl: ttl.min(Duration::from_secs(60)), // Max 1 minute for unknown
+            ttl: ttl.min(retry_ttl),
         }
+    }
+
+    /// **The authority said so.** True only for an authoritative revocation —
+    /// never for a failed check.
+    ///
+    /// Prefer this wherever the answer is reported to a human or drives an
+    /// irreversible action; [`Self::is_revoked`] folds in the fail-closed
+    /// posture and cannot tell the two apart.
+    #[must_use]
+    pub fn is_authoritatively_revoked(&self) -> bool {
+        self.revoked && self.determination == Determination::Authoritative
+    }
+
+    /// Did this status come from an actual answer?
+    #[must_use]
+    pub fn is_authoritative(&self) -> bool {
+        self.determination == Determination::Authoritative
     }
 }
 
@@ -170,14 +265,39 @@ impl RevocationChecker {
                 self.update_cache(license_id, &status);
                 status
             },
+            // A 429 means the authority is ALIVE and asking us to slow down —
+            // the opposite evidence from an unreachable authority, and usually
+            // provoked by our own polling. Reading it as a revocation takes
+            // every correctly-licensed agent in the fleet offline at once.
+            Err(VerifyError::RateLimited {
+                url,
+                retry_after_secs,
+            }) => {
+                warn!(
+                    license_id = %license_id,
+                    url = %url,
+                    retry_after_secs = ?retry_after_secs,
+                    "Revocation check rate-limited (429) — NOT a revocation; backing off"
+                );
+                let status = RevocationStatus::indeterminate(
+                    license_id.to_string(),
+                    Indeterminate::RateLimited { retry_after_secs },
+                    self.default_ttl,
+                );
+                self.update_cache(license_id, &status);
+                status
+            },
             Err(e) => {
                 warn!(
                     license_id = %license_id,
                     error = %e,
-                    "Revocation check failed"
+                    "Revocation check could not obtain an answer — failing closed"
                 );
-                // Return unknown status with short TTL
-                let status = RevocationStatus::unknown(license_id.to_string(), self.default_ttl);
+                let status = RevocationStatus::indeterminate(
+                    license_id.to_string(),
+                    Indeterminate::Unreachable,
+                    self.default_ttl,
+                );
                 self.update_cache(license_id, &status);
                 status
             },
@@ -377,16 +497,61 @@ mod tests {
     }
 
     #[test]
-    fn test_unknown_status_short_ttl() {
-        let status = RevocationStatus::unknown(
+    fn unreachable_authority_fails_closed_but_is_not_authoritative() {
+        let status = RevocationStatus::indeterminate(
             "test-license".into(),
+            Indeterminate::Unreachable,
             Duration::from_secs(3600), // Requested 1 hour
         );
 
-        // Unknown status should have max 1 minute TTL
-        assert!(status.ttl <= Duration::from_secs(60));
-        // Fail-secure: unknown status should be treated as revoked
+        assert!(status.ttl <= Duration::from_secs(60), "retry soon");
+        // Fail-secure posture is preserved: an unreachable authority is
+        // consistent with SUPPRESSION (an attacker blocking the endpoint to
+        // keep using a revoked license), so we still fail closed …
         assert!(status.is_revoked());
+        // … but we do NOT claim the authority said so.
+        assert!(!status.is_authoritative());
+        assert!(
+            !status.is_authoritatively_revoked(),
+            "a failed check is not a revocation"
+        );
+    }
+
+    /// **The defect this replaces.** A 429 means the authority is alive and
+    /// asking us to slow down — usually because of our own polling. Treating
+    /// it as a revocation takes every correctly-licensed agent in the fleet
+    /// offline simultaneously.
+    #[test]
+    fn rate_limited_is_never_a_revocation() {
+        let status = RevocationStatus::indeterminate(
+            "test-license".into(),
+            Indeterminate::RateLimited {
+                retry_after_secs: Some(30),
+            },
+            Duration::from_secs(3600),
+        );
+
+        assert!(!status.is_revoked(), "429 MUST NOT read as revoked");
+        assert!(!status.is_authoritatively_revoked());
+        assert!(!status.is_authoritative());
+        // Retry-After is honored, so we stop provoking the limit.
+        assert!(status.ttl <= Duration::from_secs(30));
+        assert!(status.reason.unwrap().contains("NOT a revocation"));
+    }
+
+    /// An authority that actually answers is the only source of a revocation.
+    #[test]
+    fn only_an_answer_is_authoritative() {
+        let revoked = RevocationStatus::revoked(
+            "l".into(),
+            Some(1),
+            Some("compromised".into()),
+            Duration::from_secs(60),
+        );
+        assert!(revoked.is_authoritative() && revoked.is_authoritatively_revoked());
+
+        let ok = RevocationStatus::not_revoked("l".into(), Duration::from_secs(60));
+        assert!(ok.is_authoritative() && !ok.is_authoritatively_revoked());
     }
 
     #[test]
