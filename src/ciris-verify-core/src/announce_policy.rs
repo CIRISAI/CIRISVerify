@@ -56,6 +56,16 @@
 //! emission, no outsider-retained path state, no epoch-correlated wave.** Any
 //! future proposal is measured against those three.
 //!
+//! CC 5.4.6's Position record (informative) goes further and names the nearest
+//! admissible relaxation — the **blinded-retained-state family (Tor v3 / I2P
+//! b33)** — with the field's rotation rule attached: **rotation clocks must be
+//! global, never group-event-driven.** That is a live constraint rather than
+//! trivia, because today's derivation rotates on the **MLS epoch**, which
+//! advances on Add/Remove and is therefore group-event-driven. It is correct
+//! now *because nothing is emitted*; under any multi-hop relaxation the
+//! trigger would have to move to a global clock. See
+//! `ciris_crypto::scope_privacy::derive_destination`.
+//!
 //! In-group MLS distribution of addressing material was never prohibited —
 //! that is the cached-directory discipline itself.
 
