@@ -391,12 +391,41 @@ pub fn derive_symbol_key(k_symbol: &[u8; 32], record_id: &[u8; 32], symbol_index
 /// future field is appended — and appending without noticing is precisely how
 /// concatenation ambiguity gets introduced.
 ///
+/// ## The output IS the address (ratified, CIRISConstitution#91)
+///
+/// CIRISEdge asked whether this should instead seed a **per-group RNS
+/// identity**, letting RNS compute the address natively so a scoped
+/// destination becomes announceable and therefore multi-hop
+/// (CIRISVerify#262). That would have demoted this function from *address* to
+/// *name*.
+///
+/// **Ruled against: CC 5.4.6's announce prohibition binds the emission, not
+/// the addressing mode**, so a targeted announce iterated over a roster
+/// inherits it rather than escaping it. The derived value therefore remains
+/// the destination hash. See `ciris_verify_core::announce_policy` for the
+/// ruling's three legs.
+///
+/// The practical consequence for callers: a scoped destination is **one hop by
+/// construction** — unprobeable and unannounceable, and reachable only over a
+/// direct link or a relay-blinded path. That is a deliberate posture, not a
+/// gap. Multi-hop scoped reach stays open on the amendment plane with a stated
+/// bar: no outsider-observable emission, no outsider-retained path state, no
+/// epoch-correlated wave.
+///
 /// ## Rotation
 ///
 /// The hash is bound to the group secret, so it moves when the MLS epoch
 /// moves. Callers derive once per `(group, epoch)` at membership/epoch change
 /// — **never per packet** — and rotate with an install-next → activate → seal
 /// pattern, so an epoch bump cannot silently deafen a group.
+///
+/// **Epoch rotation is free precisely because nothing is announced.** Members
+/// re-derive from the directory and the new epoch secret, and a removed member
+/// loses addressing at the next epoch — the rebind discipline holds on the
+/// addressing plane with no emission. Under the rejected announceable reading
+/// the same epoch-binding would have forced a synchronized roster-wide
+/// re-announce **wave** on every Add/Remove, leaking cardinality, timing and
+/// membership churn. The property is a feature here and a defect there.
 #[must_use]
 pub fn derive_destination(
     k_destination: &[u8; 32],
