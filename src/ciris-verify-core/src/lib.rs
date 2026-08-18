@@ -64,6 +64,7 @@ pub mod accord_genesis;
 /// family + window in the signed bytes). The tally / fire / membership-change
 /// surfaces are step 2.
 pub mod accord_live_quorum;
+pub mod announce_policy;
 pub mod app_attest;
 pub mod attest_bundle;
 pub mod attest_heartbeat;
