@@ -26,11 +26,62 @@
 //!
 //! — bare HKDF-Expand, **no Extract**, **no MLS KDF-label framing** (no
 //! `RFC9420 ` prefix, no length/label header). ciris-crypto owns this step
-//! ([`k_record_id`] / [`k_symbol`]); the caller (CIRISEdge) supplies the
-//! group's raw MLS `exporter_secret` and **MUST reproduce THIS construction**
-//! — it MUST **NOT** call openmls's `export_secret` for these labels, and MUST
-//! NOT substitute `ExpandWithLabel`, or the two impls diverge silently.
+//! ([`k_record_id`] / [`k_symbol`] / [`k_destination`]) and MUST NOT be
+//! substituted with `ExpandWithLabel`, or the two impls diverge silently.
 //! Pending **CEWP / CEG §11 ratification** before the wire value is frozen.
+//!
+//! ## Where the 32-byte input comes from — **also a wire fact** (#259)
+//!
+//! Until v13.5.0 this module said the caller supplies "the group's **raw**
+//! MLS `exporter_secret`" and MUST NOT call `export_secret`. That was
+//! **underspecified to the point of being unimplementable**, and CIRISEdge
+//! caught it while building against the spec:
+//!
+//! RFC 9420 §8.5's exporter is a **labelled** KDF —
+//! `MlsGroup::export_secret(crypto, label, context, len)` — and openmls
+//! exposes no accessor for the bare key-schedule secret. So "the exporter
+//! secret" is only well-defined once `(label, context, length)` is fixed, and
+//! **two members agree only if they export under the same label**. That makes
+//! the label as wire-affecting as the derivation itself.
+//!
+//! Pinned here, as the first conformant impl:
+//!
+//! ```text
+//! S_record  = MLS-Exporter(RECORD_EXPORTER_LABEL,      "", 32)   // → k_record_id, k_symbol
+//! S_dest    = MLS-Exporter(DESTINATION_EXPORTER_LABEL, "", 32)   // → k_destination
+//! ```
+//!
+//! **The derivations themselves are unchanged** — every golden vector
+//! published for v13.4.0 still holds byte-for-byte. What v13.5.0 pins is
+//! *where the caller's 32 bytes must come from*.
+//!
+//! ### Why the destination gets its OWN exporter label
+//!
+//! The two secrets go to **different subsystems**: `S_record` reaches the
+//! record/storage layer (persisted, passed around, potentially logged);
+//! `S_dest` reaches the transport layer. Sharing one PRK would mean that any
+//! compromise yielding `S_record` **retroactively deanonymizes all routing** —
+//! an adversary recomputes and links every address the node ever presented,
+//! collapsing exactly the unlinkability the destination work exists to buy.
+//!
+//! Independent per-label secrets are what §8.5 is *for*, and the cost is one
+//! extra `export_secret` per epoch boundary — a cold path (epoch advance, not
+//! per packet). So the separation is taken.
+//!
+//! This composes with, and does not contradict, the second-stage label reuse
+//! documented on [`derive_destination`]: the **PRKs** are separated here, and
+//! *within* each PRK the two KDF stages reuse one family label, matching
+//! [`derive_symbol_key`].
+//!
+//! ### Explicitly refused: a DEK-seed label
+//!
+//! CIRISEdge's existing exporter call is
+//! `"ciris-realtime-av-epoch-dek-seed-v1"`, and feeding its output here is
+//! **wrong** — on the record, so it is refused rather than rediscovered. It is
+//! a **DEK seed**: deriving a routing identifier that appears in the clear on
+//! the wire from the material that seeds the content key converts two
+//! independent secrets into one, and the DEK protects payload confidentiality
+//! rather than metadata. No label defined here may be an encryption-key seed.
 //!
 //! ## §2.4 per-record / per-symbol diversification
 //!
@@ -58,6 +109,44 @@ pub const LABEL_RECORD_ID: &str = "ciris-edge/scope-privacy/record-id/v1";
 
 /// §2.2 domain-separation label for the symbol subkey.
 pub const LABEL_SYMBOL: &str = "ciris-edge/scope-privacy/symbol/v1";
+
+/// **MLS-Exporter label producing the input to [`k_record_id`] / [`k_symbol`]**
+/// (CIRISVerify#259).
+///
+/// ```text
+/// S_record = MlsGroup::export_secret(crypto, RECORD_EXPORTER_LABEL, EXPORTER_CONTEXT, 32)
+/// ```
+///
+/// **Wire-affecting.** Two members compute the same `record_id` only if they
+/// export under this exact label — RFC 9420 §8.5's exporter is a *labelled*
+/// KDF, so "the group's exporter secret" is not a single value.
+pub const RECORD_EXPORTER_LABEL: &str = "ciris-scope-record-v1";
+
+/// **MLS-Exporter label producing the input to [`k_destination`]**
+/// (CIRISVerify#259).
+///
+/// ```text
+/// S_dest = MlsGroup::export_secret(crypto, DESTINATION_EXPORTER_LABEL, EXPORTER_CONTEXT, 32)
+/// ```
+///
+/// **Deliberately distinct from [`RECORD_EXPORTER_LABEL`]** — see the
+/// module-level rationale. In one line: a compromise that yields the record
+/// layer's secret must not retroactively deanonymize routing.
+///
+/// **MUST NOT** be an encryption-key seed. Edge's
+/// `"ciris-realtime-av-epoch-dek-seed-v1"` is explicitly refused for this
+/// input.
+pub const DESTINATION_EXPORTER_LABEL: &str = "ciris-scope-destination-v1";
+
+/// The MLS-Exporter `context` for every label defined here: **empty**.
+///
+/// The group and epoch binding already comes from the exporter itself, so the
+/// context adds nothing and an empty value is one less thing to diverge on.
+pub const EXPORTER_CONTEXT: &[u8] = b"";
+
+/// The MLS-Exporter output length for every label defined here: 32 bytes —
+/// the PRK width the `expander_subkey` stage requires.
+pub const EXPORTER_LENGTH: usize = 32;
 
 /// §2.x domain-separation label for the **destination** subkey
 /// (CIRISVerify#259 / CIRISEdge#499).
@@ -134,20 +223,32 @@ fn expander_subkey(exporter_secret: &[u8; 32], label: &str) -> [u8; 32] {
     out
 }
 
-/// §2.2 — derive `K_record_id` from the group's MLS `exporter_secret`.
+/// §2.2 — derive `K_record_id` from `S_record`.
+///
+/// `exporter_secret` MUST be
+/// `MLS-Exporter(`[`RECORD_EXPORTER_LABEL`]`, `[`EXPORTER_CONTEXT`]`, 32)` —
+/// the label is wire-affecting (#259).
 #[must_use]
 pub fn k_record_id(exporter_secret: &[u8; 32]) -> [u8; 32] {
     expander_subkey(exporter_secret, LABEL_RECORD_ID)
 }
 
-/// §2.2 — derive `K_symbol` from the group's MLS `exporter_secret`.
+/// §2.2 — derive `K_symbol` from `S_record`.
+///
+/// Same input as [`k_record_id`]: `MLS-Exporter(`[`RECORD_EXPORTER_LABEL`]`,
+/// `[`EXPORTER_CONTEXT`]`, 32)`.
 #[must_use]
 pub fn k_symbol(exporter_secret: &[u8; 32]) -> [u8; 32] {
     expander_subkey(exporter_secret, LABEL_SYMBOL)
 }
 
-/// §2.x — derive `K_destination` from the group's MLS `exporter_secret`
-/// (CIRISVerify#259).
+/// §2.x — derive `K_destination` from `S_dest` (CIRISVerify#259).
+///
+/// `exporter_secret` MUST be
+/// `MLS-Exporter(`[`DESTINATION_EXPORTER_LABEL`]`, `[`EXPORTER_CONTEXT`]`, 32)`
+/// — **a different exporter label from the record layer**, so a compromise of
+/// the record secret cannot retroactively deanonymize routing. Never a
+/// DEK-seed export.
 ///
 /// Same labeled-expand stage as [`k_record_id`] / [`k_symbol`], under a
 /// distinct label — so the same cross-impl warning applies verbatim: this is
@@ -605,5 +706,61 @@ mod destination {
             "944a30ea6ea5c07fbfd0ece7a0779a29",
             "destination for member `ciris-node-1`"
         );
+    }
+}
+
+/// The MLS-Exporter provenance of the 32-byte inputs (CIRISVerify#259).
+///
+/// These constants are **wire facts**: two members agree only if they export
+/// under the same label, so a change here is a wire break exactly like a
+/// change to a derivation.
+#[cfg(test)]
+mod exporter_provenance {
+    use super::*;
+
+    /// Pinned strings, so a rename cannot pass CI silently.
+    #[test]
+    fn exporter_labels_are_pinned() {
+        assert_eq!(RECORD_EXPORTER_LABEL, "ciris-scope-record-v1");
+        assert_eq!(DESTINATION_EXPORTER_LABEL, "ciris-scope-destination-v1");
+        assert_eq!(EXPORTER_CONTEXT, b"");
+        assert_eq!(EXPORTER_LENGTH, 32);
+    }
+
+    /// **The separation that matters.** The record layer and the transport
+    /// layer must not export the same secret: a compromise yielding the
+    /// record secret would otherwise let an adversary recompute and link
+    /// every routing address the node ever presented.
+    #[test]
+    fn destination_exports_under_a_different_label_than_the_record_layer() {
+        assert_ne!(RECORD_EXPORTER_LABEL, DESTINATION_EXPORTER_LABEL);
+    }
+
+    /// **Refused on the record (#259).** No label here may be an
+    /// encryption-key seed — deriving a cleartext routing id from the material
+    /// that seeds the content key collapses two secrets the exporter exists to
+    /// keep apart. Edge's DEK-seed label is named explicitly so a future
+    /// "obvious" rewiring to it fails here.
+    #[test]
+    fn no_exporter_label_is_a_dek_seed() {
+        const EDGE_DEK_SEED: &str = "ciris-realtime-av-epoch-dek-seed-v1";
+        for label in [RECORD_EXPORTER_LABEL, DESTINATION_EXPORTER_LABEL] {
+            assert_ne!(label, EDGE_DEK_SEED);
+            assert!(
+                !label.contains("dek") && !label.contains("secret-seed"),
+                "{label} looks like key-seed material; scope-privacy inputs must not be"
+            );
+        }
+    }
+
+    /// Distinct exporter labels yield distinct PRKs, so the subkeys derived
+    /// from them cannot collide even though both stages reuse a family label.
+    #[test]
+    fn the_two_exporter_secrets_yield_disjoint_subkeys() {
+        // Stand-ins for two different MLS-Exporter outputs.
+        let s_record = [0x11u8; 32];
+        let s_dest = [0x22u8; 32];
+        assert_ne!(k_record_id(&s_record), k_destination(&s_dest));
+        assert_ne!(k_symbol(&s_record), k_destination(&s_dest));
     }
 }

@@ -1154,7 +1154,7 @@ fn show_system_info() {
     println!("Registry Endpoints:");
     println!("  API: https://api.registry.ciris-services-1.ai");
     println!("  DNS US: us.registry.ciris-services-1.ai");
-    println!("  DNS EU: eu.registry.ciris-services-eu-1.com");
+    println!("  DNS EU: eu.registry.ciris-services-1.ai");
     println!();
 
     // Features
