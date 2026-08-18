@@ -67,3 +67,4 @@ decimal_id	claim_id	repo	path#symbol	crate@version
 5.1	CLM-presentation-identifier-scope	CIRISVerify	src/ciris-verify-core/src/presentation.rs#IdentifierScope	ciris-verify-core@v13.0.0
 UNASSIGNED	CLM-subject-binding	CIRISVerify	src/ciris-verify-core/src/subject_binding.rs#SubjectBinding	ciris-verify-core@v13.1.0
 UNASSIGNED	CLM-subject-binding-keyrecord	CIRISVerify	src/ciris-verify-core/src/federation_self_record.rs#check_subject_binding	ciris-verify-core@v13.1.0
+UNASSIGNED	CLM-scope-destination	CIRISVerify	src/ciris-crypto/src/scope_privacy.rs#derive_destination	ciris-crypto@v13.4.0

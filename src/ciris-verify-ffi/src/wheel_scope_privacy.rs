@@ -16,6 +16,9 @@
 //!
 //! - `{"op":"k_record_id","exporter_secret":[u8;32]}`
 //! - `{"op":"k_symbol","exporter_secret":[u8;32]}`
+//! - `{"op":"k_destination","exporter_secret":[u8;32]}`
+//! - `{"op":"destination","k_destination":[u8;32],"member_key_id":"..."}`
+//!   → **16 bytes** (Reticulum TRUNCATED_HASHLENGTH), not 32
 //! - `{"op":"record_id","k_record_id":[u8;32],"internal_id":[u8],
 //!    "record_type":"self|family|community|federation","mls_group_epoch":u64}`
 //! - `{"op":"symbol_key","k_symbol":[u8;32],"record_id":[u8;32],"symbol_index":u16}`
@@ -28,7 +31,8 @@
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
 use ciris_crypto::scope_privacy::{
-    derive_record_id, derive_symbol_key, k_record_id, k_symbol, witness_cover_leaf, RecordType,
+    derive_destination, derive_record_id, derive_symbol_key, k_destination, k_record_id, k_symbol,
+    witness_cover_leaf, RecordType,
 };
 use serde::Deserialize;
 
@@ -91,6 +95,13 @@ enum DeriveRequest {
         record_id: Vec<u8>,
         symbol_index: u16,
     },
+    #[serde(rename = "k_destination")]
+    KDestination { exporter_secret: Vec<u8> },
+    #[serde(rename = "destination")]
+    Destination {
+        k_destination: Vec<u8>,
+        member_key_id: String,
+    },
     #[serde(rename = "witness_cover_leaf")]
     WitnessCoverLeaf {
         witness_signing_key: Vec<u8>,
@@ -114,12 +125,26 @@ fn record_type_of(s: &str) -> Option<RecordType> {
     }
 }
 
-/// Compute the requested 32-byte derivation, or `None` on a malformed field
+/// Compute the requested derivation, or `None` on a malformed field
 /// (wrong-length key / unknown record_type) — fail-closed.
-fn dispatch(req: &DeriveRequest) -> Option<[u8; 32]> {
+///
+/// Returns a `Vec` rather than `[u8; 32]` because the §2.x destination hash is
+/// **16 bytes** (Reticulum `TRUNCATED_HASHLENGTH`) while every other op is 32.
+/// `emit_bytes` reports the actual length, so callers read the width off the
+/// response rather than assuming it.
+fn dispatch(req: &DeriveRequest) -> Option<Vec<u8>> {
     Some(match req {
-        DeriveRequest::KRecordId { exporter_secret } => k_record_id(&arr32(exporter_secret)?),
-        DeriveRequest::KSymbol { exporter_secret } => k_symbol(&arr32(exporter_secret)?),
+        DeriveRequest::KDestination { exporter_secret } => {
+            k_destination(&arr32(exporter_secret)?).to_vec()
+        },
+        DeriveRequest::Destination {
+            k_destination: kd,
+            member_key_id,
+        } => derive_destination(&arr32(kd)?, member_key_id).to_vec(),
+        DeriveRequest::KRecordId { exporter_secret } => {
+            k_record_id(&arr32(exporter_secret)?).to_vec()
+        },
+        DeriveRequest::KSymbol { exporter_secret } => k_symbol(&arr32(exporter_secret)?).to_vec(),
         DeriveRequest::RecordId {
             k_record_id: krid,
             internal_id,
@@ -130,17 +155,18 @@ fn dispatch(req: &DeriveRequest) -> Option<[u8; 32]> {
             internal_id,
             record_type_of(record_type)?,
             *mls_group_epoch,
-        ),
+        )
+        .to_vec(),
         DeriveRequest::SymbolKey {
             k_symbol: ks,
             record_id,
             symbol_index,
-        } => derive_symbol_key(&arr32(ks)?, &arr32(record_id)?, *symbol_index),
+        } => derive_symbol_key(&arr32(ks)?, &arr32(record_id)?, *symbol_index).to_vec(),
         DeriveRequest::WitnessCoverLeaf {
             witness_signing_key,
             leaf_position,
             federation_epoch_id,
-        } => witness_cover_leaf(witness_signing_key, *leaf_position, *federation_epoch_id),
+        } => witness_cover_leaf(witness_signing_key, *leaf_position, *federation_epoch_id).to_vec(),
     })
 }
 
