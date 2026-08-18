@@ -426,6 +426,24 @@ pub fn derive_symbol_key(k_symbol: &[u8; 32], record_id: &[u8; 32], symbol_index
 /// the same epoch-binding would have forced a synchronized roster-wide
 /// re-announce **wave** on every Add/Remove, leaking cardinality, timing and
 /// membership churn. The property is a feature here and a defect there.
+///
+/// ### That makes the epoch-binding CONTINGENT, not settled
+///
+/// Read the paragraph above precisely: epoch-binding is correct **because
+/// there is no emission**, not because it is the right rotation trigger in
+/// general. CC 5.4.6's Position record (informative, CIRISConstitution#91)
+/// names the nearest admissible multi-hop relaxation — the
+/// blinded-retained-state family, Tor v3 / I2P b33 — and states the field's
+/// rotation rule with it:
+///
+/// > rotation clocks must be **global, never group-event-driven**.
+///
+/// An MLS epoch advances on Add/Remove, so it *is* group-event-driven. So if
+/// the amendment plane ever admits multi-hop scoped reach, this function's
+/// rotation trigger has to move off the epoch and onto a global clock — the
+/// derivation would survive, its schedule would not. Recorded here because
+/// this is where an implementer of that amendment will look, and "epoch-bound
+/// is a feature" is exactly the sentence that would mislead them.
 #[must_use]
 pub fn derive_destination(
     k_destination: &[u8; 32],
