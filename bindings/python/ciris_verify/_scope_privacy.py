@@ -27,7 +27,9 @@ from typing import Optional
 __all__ = [
     "k_record_id",
     "k_symbol",
+    "k_destination",
     "derive_record_id",
+    "derive_destination",
     "derive_symbol_key",
     "witness_cover_leaf",
 ]
@@ -130,6 +132,39 @@ def k_record_id(exporter_secret: bytes) -> bytes:
 def k_symbol(exporter_secret: bytes) -> bytes:
     """§2.2 — derive ``K_symbol`` from the group's 32-byte MLS exporter secret."""
     return _derive({"op": "k_symbol", "exporter_secret": list(exporter_secret)})
+
+
+def k_destination(exporter_secret: bytes) -> bytes:
+    """Derive ``K_destination`` from the group's MLS ``exporter_secret`` (32 bytes).
+
+    Domain-separated from ``k_record_id`` / ``k_symbol``: a destination hash is
+    the one derived value that appears in the clear on the wire, so it must not
+    be reachable from the record layer or vice versa (CIRISVerify#259).
+    """
+    return _derive({"op": "k_destination", "exporter_secret": list(exporter_secret)})
+
+
+def derive_destination(k_destination: bytes, member_key_id: str) -> bytes:
+    """The scoped RNS destination hash for ONE member of one group.
+
+    Returns **16 bytes** (Reticulum ``TRUNCATED_HASHLENGTH``), not 32.
+
+    Per-member by construction, never a shared group hash: a single shared
+    address would put N nodes under one RNS routing entry (unicast-ambiguous),
+    and per-member is what buys unlinkability — the same node presents an
+    unrelated address in every group, and nothing correlates them without the
+    group secret.
+
+    Derive once per ``(group, epoch)`` at membership/epoch change, never per
+    packet.
+    """
+    return _derive(
+        {
+            "op": "destination",
+            "k_destination": list(k_destination),
+            "member_key_id": member_key_id,
+        }
+    )
 
 
 def derive_record_id(

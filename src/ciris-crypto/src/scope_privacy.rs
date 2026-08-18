@@ -59,6 +59,21 @@ pub const LABEL_RECORD_ID: &str = "ciris-edge/scope-privacy/record-id/v1";
 /// §2.2 domain-separation label for the symbol subkey.
 pub const LABEL_SYMBOL: &str = "ciris-edge/scope-privacy/symbol/v1";
 
+/// §2.x domain-separation label for the **destination** subkey
+/// (CIRISVerify#259 / CIRISEdge#499).
+///
+/// Distinct from [`LABEL_RECORD_ID`] and [`LABEL_SYMBOL`], so `K_destination`
+/// is not reachable from either and vice versa. That separation is
+/// load-bearing in a way the other two are not: a destination hash is the one
+/// derived value that appears **in the clear on the wire**, so it is the
+/// natural pivot for a cross-context attack on the record layer.
+pub const LABEL_DESTINATION: &str = "ciris-edge/scope-privacy/destination/v1";
+
+/// Reticulum `TRUNCATED_HASHLENGTH` in bytes — the width of a destination
+/// hash. Pinned here because it is a **wire** width, not a choice: RNS
+/// addresses are 16 bytes and a different length is simply not routable.
+pub const DESTINATION_HASH_LEN: usize = 16;
+
 /// The kind of record committed (the CBOR `"typ"` field of `record_id_input`).
 ///
 /// **Cross-impl flag:** the FSD does not enumerate these; the integer
@@ -129,6 +144,18 @@ pub fn k_record_id(exporter_secret: &[u8; 32]) -> [u8; 32] {
 #[must_use]
 pub fn k_symbol(exporter_secret: &[u8; 32]) -> [u8; 32] {
     expander_subkey(exporter_secret, LABEL_SYMBOL)
+}
+
+/// §2.x — derive `K_destination` from the group's MLS `exporter_secret`
+/// (CIRISVerify#259).
+///
+/// Same labeled-expand stage as [`k_record_id`] / [`k_symbol`], under a
+/// distinct label — so the same cross-impl warning applies verbatim: this is
+/// bare `HKDF-SHA256-Expand`, **not** RFC 9420 `ExpandWithLabel` and **not**
+/// openmls `export_secret`.
+#[must_use]
+pub fn k_destination(exporter_secret: &[u8; 32]) -> [u8; 32] {
+    expander_subkey(exporter_secret, LABEL_DESTINATION)
 }
 
 /// Append the minimal-length CBOR header for `major`/`value` (RFC 8949 §3).
@@ -214,6 +241,77 @@ pub fn derive_symbol_key(k_symbol: &[u8; 32], record_id: &[u8; 32], symbol_index
     let mut key = [0u8; 32];
     key.copy_from_slice(&out);
     key
+}
+
+/// §2.x — the scoped RNS destination hash for **one member** of one group
+/// (CIRISVerify#259 / CIRISEdge#499 / CC 5.4).
+///
+/// ```text
+/// destination = HKDF-SHA3-256(
+///     ikm  = K_destination,
+///     salt = "",                                    // K_destination is already a PRK
+///     info = LABEL_DESTINATION || u32_be(len(member_key_id)) || utf8(member_key_id),
+///     L    = 16)                                    // Reticulum TRUNCATED_HASHLENGTH
+/// ```
+///
+/// ## Per-member, never a shared group hash
+///
+/// Each member gets its **own** address in each group. A single shared hash
+/// would put N nodes under one RNS routing entry, which is unicast-ambiguous
+/// — leviculum v0.19 added a `register_destination` warning for exactly that
+/// displacement, so it is a known hazard, not a theoretical one.
+///
+/// Per-member is also what buys the unlinkability that motivates the feature:
+/// one node presents an unrelated address in every group, and nothing
+/// correlates them without the group secret. A non-member cannot derive any of
+/// them, and (since leviculum v0.19 makes never-announce structural for
+/// caller-supplied hashes) cannot learn them from the air either.
+///
+/// ## The label is deliberately reused at this second stage
+///
+/// [`LABEL_DESTINATION`] is both the §2.2 subkey label and the info-prefix
+/// here — **the same deliberate reuse as [`derive_symbol_key`]**, and safe for
+/// the same reason: the two uses sit at distinct KDF stages over distinct PRKs
+/// (stage 1 PRK = `exporter_secret`; stage 2 PRK = `k_destination`).
+///
+/// The alternative — a second, destination-only label — was considered and
+/// rejected. It buys nothing cryptographically (PRK separation already
+/// domain-separates the stages) and costs the thing that actually goes wrong
+/// cross-impl: **one convention per derived-value family**. Symbol reuses its
+/// label; if destination did not, an implementor reproducing this module would
+/// have to remember which family follows which rule. That is the kind of
+/// asymmetry that produces a silent divergence.
+///
+/// ## Why `member_key_id` is length-prefixed
+///
+/// `u32_be(len)` before the id, matching `epoch_key`'s treatment of
+/// `stream_id`. With the id last a bare concatenation happens to be
+/// unambiguous today, but the prefix is what keeps it unambiguous when a
+/// future field is appended — and appending without noticing is precisely how
+/// concatenation ambiguity gets introduced.
+///
+/// ## Rotation
+///
+/// The hash is bound to the group secret, so it moves when the MLS epoch
+/// moves. Callers derive once per `(group, epoch)` at membership/epoch change
+/// — **never per packet** — and rotate with an install-next → activate → seal
+/// pattern, so an epoch bump cannot silently deafen a group.
+#[must_use]
+pub fn derive_destination(
+    k_destination: &[u8; 32],
+    member_key_id: &str,
+) -> [u8; DESTINATION_HASH_LEN] {
+    let id = member_key_id.as_bytes();
+    let mut info = Vec::with_capacity(LABEL_DESTINATION.len() + 4 + id.len());
+    info.extend_from_slice(LABEL_DESTINATION.as_bytes());
+    // u32-length-prefix the member id — see the doc note above.
+    info.extend_from_slice(&(id.len() as u32).to_be_bytes());
+    info.extend_from_slice(id);
+    let out = hkdf_sha3_256(k_destination, &[], &info, DESTINATION_HASH_LEN)
+        .expect("16-byte HKDF-SHA3-256 expand is within the RFC 5869 cap");
+    let mut hash = [0u8; DESTINATION_HASH_LEN];
+    hash.copy_from_slice(&out);
+    hash
 }
 
 /// §3.4 — witness cover-leaf `HMAC-SHA3-256(key, u32_be(pos) || u64_be(epoch))`.
@@ -404,5 +502,108 @@ mod tests {
         msg.extend_from_slice(&0x0506_0708_0900_0000u64.to_be_bytes());
         assert_eq!(msg.len(), 12);
         assert_eq!(got, hmac::sha3_256(key, &msg));
+    }
+}
+
+/// Scoped-destination derivation (CIRISVerify#259 / CIRISEdge#499).
+///
+/// These pin the two properties the ask required be decided in the spec
+/// rather than by an implementor, plus the cross-impl golden vector.
+#[cfg(test)]
+mod destination {
+    use super::*;
+
+    const EXPORTER: [u8; 32] = [0x42u8; 32];
+
+    /// **Domain separation.** `K_destination` must not be reachable from
+    /// `K_record_id` / `K_symbol` or vice versa — the destination hash is the
+    /// one derived value that appears in the clear on the wire.
+    #[test]
+    fn destination_subkey_is_separated_from_the_record_layer() {
+        let kd = k_destination(&EXPORTER);
+        assert_ne!(kd, k_record_id(&EXPORTER));
+        assert_ne!(kd, k_symbol(&EXPORTER));
+    }
+
+    /// **Per-member, never shared.** Two members of the SAME group at the same
+    /// epoch get different addresses — otherwise N nodes collide onto one RNS
+    /// routing entry (unicast-ambiguous), and the unlinkability the feature
+    /// exists for is gone.
+    #[test]
+    fn each_member_gets_its_own_address_in_a_group() {
+        let kd = k_destination(&EXPORTER);
+        let a = derive_destination(&kd, "node-a");
+        let b = derive_destination(&kd, "node-b");
+        assert_ne!(a, b, "a shared group hash is unicast-ambiguous in RNS");
+    }
+
+    /// **Unlinkability across groups.** The same member in two different
+    /// groups presents unrelated addresses; nothing correlates them without
+    /// the group secret.
+    #[test]
+    fn the_same_member_is_unlinkable_across_groups() {
+        let g1 = k_destination(&EXPORTER);
+        let g2 = k_destination(&[0x43u8; 32]);
+        assert_ne!(
+            derive_destination(&g1, "node-a"),
+            derive_destination(&g2, "node-a")
+        );
+    }
+
+    /// A non-member cannot derive the address: it is a function of the group
+    /// secret, so a wrong secret yields an unrelated hash rather than a near
+    /// miss.
+    #[test]
+    fn the_address_is_unprobeable_without_the_group_secret() {
+        let real = derive_destination(&k_destination(&EXPORTER), "node-a");
+        let guess = derive_destination(&k_destination(&[0u8; 32]), "node-a");
+        assert_ne!(real, guess);
+    }
+
+    /// The width is a wire fact, not a preference — RNS addresses are 16 bytes.
+    #[test]
+    fn the_hash_is_reticulum_truncated_hashlength() {
+        assert_eq!(DESTINATION_HASH_LEN, 16);
+        assert_eq!(derive_destination(&k_destination(&EXPORTER), "n").len(), 16);
+    }
+
+    /// Deterministic — a member re-derives its own address every epoch without
+    /// storing it.
+    #[test]
+    fn derivation_is_deterministic() {
+        let kd = k_destination(&EXPORTER);
+        assert_eq!(
+            derive_destination(&kd, "node-a"),
+            derive_destination(&kd, "node-a")
+        );
+    }
+
+    /// The length prefix closes concatenation ambiguity. Without it a future
+    /// appended field could let one (id, field) pair impersonate another; this
+    /// pins that ids differing only by a boundary do not collide.
+    #[test]
+    fn the_member_id_is_length_prefixed() {
+        let kd = k_destination(&EXPORTER);
+        assert_ne!(derive_destination(&kd, "ab"), derive_destination(&kd, "a"));
+        // An empty id is still a distinct, well-defined input.
+        assert_ne!(derive_destination(&kd, ""), derive_destination(&kd, "a"));
+    }
+
+    /// **Cross-impl golden vector.** CIRISEdge reproduces this byte-for-byte
+    /// (FSD §9). A change here is a wire break: two members of one group would
+    /// simply never find each other.
+    #[test]
+    fn cross_impl_golden_vector() {
+        let kd = k_destination(&EXPORTER);
+        assert_eq!(
+            hex::encode(kd),
+            "3d854734e268842395e65c84d13a5ce74ddac1e5c51e70f2e0a5455e7293c2fb",
+            "K_destination for exporter_secret = [0x42; 32]"
+        );
+        assert_eq!(
+            hex::encode(derive_destination(&kd, "ciris-node-1")),
+            "944a30ea6ea5c07fbfd0ece7a0779a29",
+            "destination for member `ciris-node-1`"
+        );
     }
 }
