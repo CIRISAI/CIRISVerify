@@ -47,9 +47,17 @@ for f in sorted(pathlib.Path("src").rglob("*.rs")):
         args = src[m.end():i-1]
         for line in args.split("\n"):
             code = line.split("//")[0]
-            if SECRET.search(code) and not ALLOW.search(code):
+            # Apply the allowlist to the MATCHED VALUE, not the whole line
+            # (#268 P2). Line-scoped allowlisting meant
+            # `info!(seed = %seed, key_id = %key_id)` was suppressed entirely,
+            # because the benign `key_id` on the same line vouched for the
+            # secret next to it.
+            for hit in SECRET.finditer(code):
+                if ALLOW.search(hit.group(0)):
+                    continue
                 ln = src[:m.start()].count("\n") + 1
                 bad.append(f"  {f}:{ln}: {code.strip()[:90]}")
+                break
 
 if bad:
     print("ERROR: a tracing event interpolates secret material:", file=sys.stderr)

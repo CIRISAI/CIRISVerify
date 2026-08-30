@@ -2190,7 +2190,7 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
 
     use ciris_keyring::pkcs11::{open_pkcs11_signer, Pkcs11Config};
     use ciris_verify_core::ceg_outbox::SignedCegObject;
-    use ciris_verify_core::federation_identity::create_federation_identity;
+    use ciris_verify_core::federation_identity::{create_federation_identity, Validity};
     use ciris_verify_core::federation_self_record::TransportHint;
 
     // Parse each `--transport-hint kind=destination` into a typed hint. Split on
@@ -2277,8 +2277,10 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
         &args.identity_type,
         args.fed_key_id.clone(),
         args.label.as_deref(),
-        &now,
-        args.valid_until.as_deref(),
+        Validity {
+            from: &now,
+            until: args.valid_until.as_deref(),
+        },
         None, // CLI: seal under key_id (back-compat); the Server USER path uses seal_alias
         &transport_hints,
     )

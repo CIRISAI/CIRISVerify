@@ -50,6 +50,46 @@ pub struct CreatedIdentity {
     /// config to claim ownership (FSD-003 §5).
     pub code: String,
 }
+/// A key's validity window (CIRISVerify#268).
+///
+/// This exists to make a specific mis-call **impossible rather than
+/// discouraged**. `valid_until` and `seal_alias` are both `Option<&str>` and
+/// were adjacent, so a caller migrating from the pre-14.0 signature who added
+/// the new argument in the wrong slot would compile cleanly and **sign their
+/// seal alias as the key's expiry**, while the alias silently became `None`.
+///
+/// A previous revision of this file asserted the opposite — that "every pair
+/// is type-distinguished, so a mis-ordered call does not compile" — and used
+/// that claim to silence `clippy::too_many_arguments`. The claim was false for
+/// exactly the pair that mattered, and the lint was pointing at the real
+/// problem. Bundling the window into one type makes the assertion true and
+/// drops the argument count honestly, so the allow is gone.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Validity<'a> {
+    /// RFC-3339 instant the key becomes valid.
+    pub from: &'a str,
+    /// RFC-3339 instant the key stops being valid. `None` = no self-asserted
+    /// expiry, which omits the member from the signed envelope entirely and
+    /// so reproduces the pre-14.0 canonical bytes.
+    pub until: Option<&'a str>,
+}
+
+impl<'a> Validity<'a> {
+    /// A window with no self-asserted expiry.
+    #[must_use]
+    pub const fn starting(from: &'a str) -> Self {
+        Self { from, until: None }
+    }
+
+    /// A window that expires.
+    #[must_use]
+    pub const fn new(from: &'a str, until: &'a str) -> Self {
+        Self {
+            from,
+            until: Some(until),
+        }
+    }
+}
 
 /// Create a self-signed genesis federation identity from an already-opened
 /// hardware Ed25519 signer.
@@ -83,18 +123,12 @@ pub struct CreatedIdentity {
 ///
 /// [`VerifyError`] if the signer is not Ed25519, the pubkey/seed cannot be
 /// read, or signing fails.
-// The ceremony genuinely takes this many distinct inputs (signer, identity
-// kind, two optional identifiers, a validity window, a seal alias, transport
-// hints). Every pair is type-distinguished, so a mis-ordered call does not
-// compile; a wrapper struct would add API surface without adding safety.
-#[allow(clippy::too_many_arguments)]
 pub async fn create_federation_identity(
     hw_signer: Arc<dyn HardwareSigner>,
     identity_type: &str,
     fed_key_id: Option<String>,
     label: Option<&str>,
-    valid_from: &str,
-    valid_until: Option<&str>,
+    validity: Validity<'_>,
     seal_alias: Option<&str>,
     transport_hints: &[TransportHint],
 ) -> Result<CreatedIdentity, VerifyError> {
@@ -125,8 +159,8 @@ pub async fn create_federation_identity(
     let record = produce_self_key_record(
         &identity,
         identity_type,
-        valid_from,
-        valid_until,
+        validity.from,
+        validity.until,
         transport_hints,
     )
     .await?;
@@ -134,7 +168,7 @@ pub async fn create_federation_identity(
         message: format!("serialize key record: {e}"),
     })?;
 
-    let object = SignedCegObject::new(FEDERATION_KEY_RECORD_KIND, &key_id, valid_from, body);
+    let object = SignedCegObject::new(FEDERATION_KEY_RECORD_KIND, &key_id, validity.from, body);
 
     // The shareable fedcode for this entity (FSD-003).
     let kind = match identity_type {
@@ -191,8 +225,7 @@ mod tests {
             "user",
             None,
             Some("Eric Moore"),
-            "2026-06-18T00:00:00Z",
-            None,
+            Validity::starting("2026-06-18T00:00:00Z"),
             None,
             &[],
         )
@@ -246,8 +279,7 @@ mod tests {
             "user",
             Some(recorded.clone()),
             Some("Eric Moore"),
-            "2026-06-18T00:00:00Z",
-            None,
+            Validity::starting("2026-06-18T00:00:00Z"),
             Some(seal_alias),
             &[],
         )
@@ -294,8 +326,7 @@ mod tests {
             "node",
             Some("canonical-server-1".to_string()),
             None,
-            "2026-07-02T00:00:00Z",
-            None,
+            Validity::starting("2026-07-02T00:00:00Z"),
             None,
             &[TransportHint {
                 kind: "ip".to_string(),
