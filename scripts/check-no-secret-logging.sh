@@ -16,9 +16,19 @@ cd "$(dirname "$0")/.."
 exec python3 - "$@" <<'PY'
 import re, sys, pathlib
 
+NAMES = (r'seed|secret|private_key|privkey|priv_key|password|passphrase'
+         r'|pin|dek|master_key|wrap_key')
+# Three ways a secret reaches a tracing event, all of which must be caught
+# (#268 P2 — the first version only caught the explicit-field form, so
+# `?seed` and `"seed: {:?}", seed` both slipped through):
+#   1. explicit field   seed = %x        / seed = x
+#   2. shorthand field  %seed  ?seed  seed,        (tracing's own sugar)
+#   3. positional arg   info!("seed: {:?}", seed)
 SECRET = re.compile(
-    r'(?<![a-z_])(seed|secret|private_key|privkey|priv_key|password|passphrase'
-    r'|pin|dek|master_key|wrap_key)\s*=\s*[%?]?\s*[A-Za-z_&*(]', re.I)
+    r'(?<![a-z_])(?:' + NAMES + r')\s*=\s*[%?]?\s*[A-Za-z_&*(]'     # 1
+    r'|[%?](?:' + NAMES + r')(?![a-z_])'                             # 2 sigil
+    r'|(?<![a-z_.])(?:' + NAMES + r')\s*(?:,|\)|$)',                 # 2 bare / 3
+    re.I)
 # public by construction, or a non-secret that merely contains the substring
 ALLOW = re.compile(r'key_id|pubkey|public_key|_pub\b|seed_dir|seed_file|seed_path'
                    r'|pin_policy|pin_required|has_pin|pin\s*=\s*(true|false)', re.I)

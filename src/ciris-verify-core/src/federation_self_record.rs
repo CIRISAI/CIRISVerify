@@ -296,6 +296,21 @@ impl KeyRecord {
                 "pubkey_ml_dsa_65_base64",
                 self.pubkey_ml_dsa_65_base64.as_deref(),
             )
+            // #267/#268: the expiry is decision-driving and lives on BOTH the
+            // top-level field and inside the signed envelope. Binding it here
+            // is what stops the two disagreeing: a serialized record crossing
+            // an untrusted transport could otherwise have its top-level
+            // `valid_until` removed or extended while the envelope, its hash
+            // and both signatures stay intact — and a consumer reading the
+            // public field (the natural thing to do) gets the attacker's
+            // value.
+            //
+            // Documenting "read valid_until_in_envelope() instead" was not
+            // enough: an optional check is skippable by omission, which is the
+            // whole attack (#252 rule 3). Rule 2 does the work here — the
+            // checker ITERATES this projection, so adding the member is the
+            // entire fix, with no second edit at any call site.
+            .require_optional("valid_until", self.valid_until.as_deref())
     }
 
     /// Read the **scrub-attested** roles carried in the signed
@@ -1422,6 +1437,42 @@ mod expiry {
             hex::encode(Sha256::digest(&canonical)),
             r.original_content_hash
         );
+    }
+
+    /// **The attack the binding refuses (#268 P1).** A serialized record
+    /// crosses an untrusted transport; the attacker rewrites the top-level
+    /// `valid_until` and leaves the envelope, its hash and both signatures
+    /// untouched. Everything a signature check looks at still passes — and a
+    /// consumer reading the public field gets the attacker's expiry.
+    #[tokio::test]
+    async fn rewriting_the_top_level_expiry_is_refused() {
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        let signed = produce_self_key_record(&id, "node", FROM, Some(UNTIL), &[])
+            .await
+            .unwrap();
+        assert!(signed.record.check_subject_binding().is_ok());
+
+        for forged in [
+            Some("2099-01-01T00:00:00Z".to_string()), // extended
+            None,                                     // stripped entirely
+        ] {
+            let mut tampered = signed.record.clone();
+            tampered.valid_until = forged.clone();
+
+            // The signed bytes are untouched and still self-consistent …
+            let canonical = jcs::canonicalize(&tampered.registration_envelope).unwrap();
+            assert_eq!(
+                hex::encode(Sha256::digest(&canonical)),
+                tampered.original_content_hash,
+                "the envelope is genuine — that is the point"
+            );
+            // … and the record is refused anyway, on the binding.
+            assert!(
+                tampered.check_subject_binding().is_err(),
+                "top-level valid_until = {forged:?} disagrees with the signed \
+                 copy and MUST be refused"
+            );
+        }
     }
 
     /// **No expiry reproduces the pre-14.0 bytes exactly.** Materialize-when-

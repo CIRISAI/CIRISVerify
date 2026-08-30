@@ -328,6 +328,10 @@ mod tests {
 /// asserting this on verify's behalf; verify should hold its own invariant.
 #[cfg(test)]
 mod cross_plane {
+    /// Members `KeyRecord` binds that `ProvenanceLink` has no field for. The
+    /// list is deliberately explicit: widening it is a declared act.
+    const VALIDITY: &[&str] = &["valid_until"];
+
     use crate::federation_self_record::KeyRecord;
     use crate::provenance::ProvenanceLink;
     use serde_json::json;
@@ -383,11 +387,32 @@ mod cross_plane {
         let (lb, rb) = (link().subject_binding(), rec.subject_binding());
         let a: Vec<&String> = lb.members().keys().collect();
         let b: Vec<&String> = rb.members().keys().collect();
+
+        // The IDENTITY core must be identical across planes: a member added to
+        // one only would mean the same envelope passes one plane and fails the
+        // other.
         assert_eq!(
-            a, b,
-            "provenance and key-record planes must bind the same members; \
-             a member added to one only means the same envelope passes one \
-             plane and fails the other"
+            a,
+            b.iter()
+                .filter(|k| !VALIDITY.contains(&k.as_str()))
+                .copied()
+                .collect::<Vec<_>>(),
+            "the identity core must match across planes"
+        );
+
+        // KeyRecord legitimately binds MORE: `valid_until` is a decision-driving
+        // sibling that `ProvenanceLink` has no field for (#267/#268). Asserted
+        // rather than tolerated, so a future divergence still has to be
+        // declared here instead of silently widening.
+        let extra: Vec<&String> = b
+            .iter()
+            .filter(|k| VALIDITY.contains(&k.as_str()))
+            .copied()
+            .collect();
+        assert_eq!(
+            extra,
+            vec![&"valid_until".to_string()],
+            "the only sanctioned cross-plane difference is the validity window"
         );
     }
 
@@ -413,7 +438,16 @@ mod cross_plane {
         }))
         .unwrap();
         let (lb, rb) = (l.subject_binding(), rec.subject_binding());
-        assert_eq!(lb.members(), rb.members());
+        // Compare the shared identity core value-for-value; equal key sets with
+        // divergent VALUES is the subtler drift, and the reason this test
+        // exists alongside the key-set one.
+        for (k, v) in lb.members() {
+            assert_eq!(
+                rb.members().get(k),
+                Some(v),
+                "planes disagree on the value of `{k}`"
+            );
+        }
     }
 
     /// The projection a plane exposes is the one it CHECKS — otherwise the
