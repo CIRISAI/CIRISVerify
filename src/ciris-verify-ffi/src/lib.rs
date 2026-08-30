@@ -984,15 +984,6 @@ fn validate_ptr<T>(ptr: *const T, name: &str) -> Option<String> {
     }
 }
 
-/// Is `s` a parseable RFC-3339 instant?
-///
-/// Used to refuse a malformed `valid_until` at the FFI boundary rather than
-/// silently dropping it (CIRISVerify#268). An expiry no one can compare
-/// against is not a constraint, so an unparseable one is an error.
-fn is_rfc3339(s: &str) -> bool {
-    chrono::DateTime::parse_from_rfc3339(s).is_ok()
-}
-
 /// Error codes returned by FFI functions.
 #[repr(C)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1940,7 +1931,12 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
         // constraint.
         let valid_until = match cfg.get("valid_until") {
             None | Some(serde_json::Value::Null) => None,
-            Some(serde_json::Value::String(v)) if is_rfc3339(v) => Some(v.clone()),
+            Some(serde_json::Value::String(v)) => Some(v.clone()),
+            // A non-string type (a numeric epoch is the obvious thing a caller
+            // reaches for) is refused HERE rather than silently dropped — that
+            // is the JSON-shape half, which only this boundary can see. The
+            // instant itself is validated by `Validity::checked` below, so
+            // there is one rule for what a valid window is, not two that drift.
             Some(other) => {
                 return emit(err(format!(
                     "valid_until must be an RFC-3339 string, got {other}"
@@ -1978,10 +1974,11 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
                 &identity_type,
                 fed_key_id,
                 label.as_deref(),
-                ciris_verify_core::federation_identity::Validity {
-                    from: &valid_from,
-                    until: valid_until.as_deref(),
-                },
+                ciris_verify_core::federation_identity::Validity::checked(
+                    &valid_from,
+                    valid_until.as_deref(),
+                )
+                .map_err(|e| format!("{e}"))?,
                 seal_alias.as_deref(),
                 &transport_hints,
             )
@@ -10426,14 +10423,18 @@ mod expiry_input {
     /// bound the key's life and got an unbounded key with no error to notice.
     #[test]
     fn only_a_parseable_rfc3339_string_is_accepted() {
-        assert!(super::is_rfc3339("2027-08-19T00:00:00Z"));
-        assert!(super::is_rfc3339("2027-08-19T00:00:00+02:00"));
-        // A numeric epoch is not a string at all — refused at the match arm.
-        assert!(!super::is_rfc3339("1755561600"));
-        // An arbitrary string is not an instant; an expiry nothing can compare
-        // against is not a constraint.
-        assert!(!super::is_rfc3339("soon"));
-        assert!(!super::is_rfc3339("2027-13-45"));
-        assert!(!super::is_rfc3339(""));
+        use ciris_verify_core::federation_identity::Validity;
+        const FROM: &str = "2026-08-19T00:00:00Z";
+        assert!(Validity::checked(FROM, Some("2027-08-19T00:00:00Z")).is_ok());
+        assert!(Validity::checked(FROM, Some("2027-08-19T00:00:00+02:00")).is_ok());
+        assert!(Validity::checked(FROM, None).is_ok());
+        // A numeric epoch never reaches here — it is refused as a JSON shape.
+        assert!(Validity::checked(FROM, Some("1755561600")).is_err());
+        // An expiry nothing can compare against is not a constraint.
+        assert!(Validity::checked(FROM, Some("soon")).is_err());
+        assert!(Validity::checked(FROM, Some("2027-13-45")).is_err());
+        assert!(Validity::checked(FROM, Some("")).is_err());
+        // A window that closes before it opens is not an expiry either.
+        assert!(Validity::checked(FROM, Some("2020-01-01T00:00:00Z")).is_err());
     }
 }

@@ -40,9 +40,36 @@ for f in sorted(pathlib.Path("src").rglob("*.rs")):
         continue
     src = f.read_text(errors="ignore")
     for m in MACRO.finditer(src):
+        # Count parens OUTSIDE string and char literals (#268 P2). A naive
+        # counter is fooled by a format string containing an unmatched paren —
+        # `info!("seed bytes): {:?}", seed)` ends the scan at the `)` inside
+        # the literal, so the real argument is never inspected. That is a
+        # bypass, not a false negative on an edge case.
         i, depth = m.end(), 1
+        in_str = in_chr = False
         while i < len(src) and depth:
-            depth += (src[i] == "(") - (src[i] == ")")
+            c = src[i]
+            if c == "\\" and (in_str or in_chr):
+                i += 2                      # skip the escaped char whole
+                continue
+            if in_str:
+                if c == '"':
+                    in_str = False
+            elif in_chr:
+                if c == "'":
+                    in_chr = False
+            elif c == '"':
+                in_str = True
+            elif c == "'":
+                # a lifetime (`'a`) is not a char literal
+                if i + 1 < len(src) and src[i + 1].isalpha() and (
+                    i + 2 >= len(src) or src[i + 2] != "'"
+                ):
+                    pass
+                else:
+                    in_chr = True
+            else:
+                depth += (c == "(") - (c == ")")
             i += 1
         args = src[m.end():i-1]
         for line in args.split("\n"):

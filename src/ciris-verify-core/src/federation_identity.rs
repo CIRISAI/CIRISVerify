@@ -89,6 +89,42 @@ impl<'a> Validity<'a> {
             until: Some(until),
         }
     }
+
+    /// Build a window, **refusing an instant nothing can compare against**
+    /// (CIRISVerify#268).
+    ///
+    /// This is the single validation rule for both entry points — the CLI's
+    /// `--valid-until` and the FFI's `valid_until`. They previously disagreed:
+    /// the FFI refused `soon` while the CLI accepted it, opened or minted the
+    /// sealed PQC key, and emitted a **signed** record carrying an expiry no
+    /// consumer could evaluate. Two checks for one rule is how they drift, so
+    /// there is one.
+    ///
+    /// Validate **before** any custody work: a refusal after the seal is
+    /// opened has already done the expensive, side-effecting half.
+    ///
+    /// # Errors
+    /// [`VerifyError::IntegrityError`] if either instant is not RFC-3339, or
+    /// if the window ends before it starts.
+    pub fn checked(from: &'a str, until: Option<&'a str>) -> Result<Self, VerifyError> {
+        let bad = |what: &str, v: &str| VerifyError::IntegrityError {
+            message: format!("{what} must be an RFC-3339 instant, got {v:?}"),
+        };
+        let start =
+            chrono::DateTime::parse_from_rfc3339(from).map_err(|_| bad("valid_from", from))?;
+        if let Some(u) = until {
+            let end = chrono::DateTime::parse_from_rfc3339(u).map_err(|_| bad("valid_until", u))?;
+            if end <= start {
+                return Err(VerifyError::IntegrityError {
+                    message: format!(
+                        "valid_until ({u}) must be after valid_from ({from}) — a window \
+                         that closes before it opens is not an expiry"
+                    ),
+                });
+            }
+        }
+        Ok(Self { from, until })
+    }
 }
 
 /// Create a self-signed genesis federation identity from an already-opened

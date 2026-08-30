@@ -2272,15 +2272,24 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
         );
     }
     let now = chrono::Utc::now().to_rfc3339();
+    // Validate the window BEFORE opening or minting the sealed PQC key —
+    // a refusal afterwards has already done the expensive, side-effecting
+    // half, and would emit a signed record carrying an expiry no consumer can
+    // evaluate (#268).
+    let validity = match Validity::checked(&now, args.valid_until.as_deref()) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("❌ {e}");
+            std::process::exit(1);
+        },
+    };
+
     let created = match create_federation_identity(
         Arc::from(hw_signer),
         &args.identity_type,
         args.fed_key_id.clone(),
         args.label.as_deref(),
-        Validity {
-            from: &now,
-            until: args.valid_until.as_deref(),
-        },
+        validity,
         None, // CLI: seal under key_id (back-compat); the Server USER path uses seal_alias
         &transport_hints,
     )
