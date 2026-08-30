@@ -1467,6 +1467,31 @@ mod expiry {
         );
     }
 
+    /// **#268 — equivalent instants sign as ONE canonical text.**
+    ///
+    /// `+02:00` and its UTC equivalent are the same instant and different
+    /// bytes. The subject binding compares text, and a consumer that
+    /// round-trips through a typed timestamp column re-serializes it — so
+    /// without a pinned form the two disagree about an untampered record.
+    #[tokio::test]
+    async fn equivalent_instants_canonicalize_to_one_form() {
+        use crate::federation_identity::Validity;
+        let a = Validity::checked(FROM, Some("2027-08-19T00:00:00+02:00")).unwrap();
+        let b = Validity::checked(FROM, Some("2027-08-18T22:00:00Z")).unwrap();
+        assert_eq!(a.until(), b.until(), "same instant must sign identically");
+        assert_eq!(a.until(), Some("2027-08-18T22:00:00Z"));
+
+        // And the pinned form is what reaches the signed envelope.
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        let signed = produce_self_key_record(&id, "node", FROM, a.until(), &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            signed.record.valid_until_in_envelope().as_deref(),
+            Some("2027-08-18T22:00:00Z")
+        );
+    }
+
     /// **#268 — the low-level producers validate too.** Sealing `Validity`
     /// protected the higher-level ceremony and left this door open; these are
     /// public and are the direct minting path, so a bad window reaching them

@@ -64,10 +64,12 @@ pub struct CreatedIdentity {
 /// exactly the pair that mattered, and the lint was pointing at the real
 /// problem. Bundling the window into one type makes the assertion true and
 /// drops the argument count honestly, so the allow is gone.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Validity<'a> {
     from: &'a str,
-    until: Option<&'a str>,
+    /// Owned because it is CANONICALIZED at construction, not borrowed from
+    /// the caller's text — see [`Validity::checked`].
+    until: Option<String>,
 }
 
 impl<'a> Validity<'a> {
@@ -107,8 +109,32 @@ impl<'a> Validity<'a> {
                     ),
                 });
             }
+            // ONE canonical text form for the signed member (#268).
+            //
+            // `2027-08-19T00:00:00+02:00` and `2027-08-18T22:00:00Z` are the
+            // same instant and different bytes. The subject binding compares
+            // the top-level field against the signed envelope copy as TEXT,
+            // and a consumer that round-trips the record through a typed
+            // timestamp column — which CIRISPersist has — re-serializes the
+            // column while the envelope stays opaque. The two then disagree
+            // about a record nobody tampered with.
+            //
+            // A caller may pass any RFC-3339 form; what is PINNED is what gets
+            // signed: UTC, `Z`, second precision.
+            //
+            // Deliberately NOT applied to `valid_from`: it is an existing
+            // signed member, so rewriting it would change the canonical bytes
+            // of every record already produced. That asymmetry is a
+            // compatibility fact rather than a preference.
+            return Ok(Self {
+                from,
+                until: Some(
+                    end.with_timezone(&chrono::Utc)
+                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                ),
+            });
         }
-        Ok(Self { from, until })
+        Ok(Self { from, until: None })
     }
 
     /// The instant the key becomes valid (RFC-3339, validated).
@@ -121,8 +147,8 @@ impl<'a> Validity<'a> {
     /// validated). `None` omits the member from the signed envelope entirely,
     /// reproducing the pre-14.0 canonical bytes.
     #[must_use]
-    pub const fn until(&self) -> Option<&'a str> {
-        self.until
+    pub fn until(&self) -> Option<&str> {
+        self.until.as_deref()
     }
 }
 

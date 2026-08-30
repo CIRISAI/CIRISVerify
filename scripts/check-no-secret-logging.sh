@@ -41,7 +41,14 @@ SECRET = re.compile(
 # public by construction, or a non-secret that merely contains the substring
 ALLOW = re.compile(r'key_id|pubkey|public_key|_pub\b|seed_dir|seed_file|seed_path'
                    r'|pin_policy|pin_required|has_pin|pin\s*=\s*(true|false)', re.I)
-MACRO = re.compile(r'\b(?:tracing::)?(warn|info|error|debug|trace)!\(')
+# `event!` and `span!` (and the level-specific span macros) are ordinary
+# tracing APIs that carry fields exactly like `info!` — omitting them left
+# `event!(Level::INFO, password = %password)` invisible to this guard (#268).
+MACRO = re.compile(
+    r'\b(?:tracing::)?(?:warn|info|error|debug|trace)!\('
+    r'|\b(?:tracing::)?event!\('
+    r'|\b(?:tracing::)?(?:warn|info|error|debug|trace)_span!\('
+    r'|\b(?:tracing::)?span!\(')
 
 bad = []
 
@@ -131,8 +138,21 @@ def instrumented_params(src, m):
     macros misses it entirely (#268). The attribute IS the log statement.
     """
     attr = m.group(1)
+    # `fields(...)` is recorded EXPLICITLY, so it survives skip_all — an early
+    # return here treated `#[instrument(skip_all, fields(password = %password))]`
+    # as safe (#268).
+    out_fields = []
+    fm = re.search(r'fields\(', attr)
+    if fm:
+        i, depth = fm.end(), 1
+        while i < len(attr) and depth:
+            depth += (attr[i] == "(") - (attr[i] == ")")
+            i += 1
+        for hit in SECRET.finditer(attr[fm.end():i-1]):
+            if not ALLOW.search(hit.group(0)):
+                out_fields.append(hit.group(0).strip())
     if "skip_all" in attr:
-        return []
+        return out_fields
     skipped = set(re.findall(r'[\w]+', attr[attr.index("skip"):]) if "skip" in attr else [])
     # balanced param list
     i, depth = m.end(), 1
@@ -159,7 +179,7 @@ def instrumented_params(src, m):
         if re.fullmatch(r'(?:u|i)(?:8|16|32|64|128|size)', ty):
             continue
         out.append(name)
-    return out
+    return out_fields + out
 
 
 for f in sorted(pathlib.Path(SCAN_ROOT).rglob("*.rs")):

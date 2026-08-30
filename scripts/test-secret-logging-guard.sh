@@ -49,10 +49,17 @@ check 'instrument skip_all'      '#[instrument(skip_all)]\n    fn g(seed: &[u8])
 # is legitimate to log, and is exempted BY TYPE rather than by name.
 check 'instrument u64 seed'      '#[instrument]\n    fn g(seed: u64) {}'                pass
 
+# event! / span! carry fields exactly like info! (#268 round 8)
+check 'event! macro'          'tracing::event!(tracing::Level::INFO, password = %p);'   catch
+check 'span! macro'           'tracing::span!(tracing::Level::INFO, "s", seed = %seed);' catch
+check 'info_span! macro'      'tracing::info_span!("s", dek = %d);'                      catch
+# fields(...) is recorded explicitly, so it SURVIVES skip_all
+check 'skip_all + fields'     '#[instrument(skip_all, fields(password = %p))]\n    fn g() {}' catch
+
 # MUST NOT FIRE — legitimate code, so the guard stays usable
 check 'trailing comment'      'tracing::info!(alias = %a, "x"); // seed = thing'     pass
 check 'public key_id'         'tracing::info!(key_id = %kid, "x");'                  pass
 check 'seed_dir path'         'tracing::info!(seed_dir = %d, "x");'                  pass
 
-[ "$fail" -eq 0 ] && echo "secret-logging guard self-test: 17/17 ✓"
+[ "$fail" -eq 0 ] && echo "secret-logging guard self-test: 21/21 ✓"
 exit "$fail"
