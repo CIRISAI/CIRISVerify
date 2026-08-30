@@ -25,6 +25,7 @@ pub struct FunctionInfo {
 /// Error during binary parsing.
 #[derive(Debug, Error)]
 #[allow(dead_code)]
+#[non_exhaustive]
 pub enum ParseError {
     #[error("Failed to read file: {0}")]
     IoError(#[from] std::io::Error),

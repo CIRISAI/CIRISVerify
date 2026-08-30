@@ -573,6 +573,7 @@ mod tests {
                 roles: vec!["infra:attest".to_string()],
             },
             TS,
+            None,
             &[],
         )
         .await

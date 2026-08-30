@@ -194,6 +194,7 @@ impl AndroidAttestationVerdict {
 /// the evidence is unusable — distinct from "no evidence was offered", which is
 /// not an error at all (see the module docs).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AndroidAttestationError {
     /// A certificate did not parse.
     CertParse {
@@ -514,6 +515,7 @@ impl AppAttestVerdict {
 /// Why an App Attest object was **not** accepted. As with Android, this is
 /// distinct from "no attestation was offered", which is not an error.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AppAttestError {
     /// The attestation object is not valid CBOR, or not the expected shape.
     MalformedObject {
@@ -850,6 +852,7 @@ impl TpmEkVerdict {
 
 /// Why a TPM EK certificate was **not** accepted.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum TpmEkError {
     /// A certificate did not parse.
     CertParse {

@@ -112,6 +112,7 @@ pub struct ClassicalHandshakeMsg {
 
 /// KEX-specific errors.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum KexError {
     /// Underlying crypto primitive failed.
     Crypto(CryptoError),

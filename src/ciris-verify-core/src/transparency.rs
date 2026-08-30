@@ -64,6 +64,7 @@ use crate::types::ValidationStatus;
 
 /// Errors from transparency-log operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum TransparencyError {
     /// Storage layer failure (lock poisoned, file I/O, db connection, etc.).
     #[error("transparency storage error: {0}")]

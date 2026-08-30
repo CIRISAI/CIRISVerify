@@ -132,6 +132,7 @@ pub struct ThresholdSignature {
 
 /// Why a threshold-signature verification was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ThresholdError {
     /// A `threshold` of 0 is rejected — it would be trivially satisfied
     /// by any submission (or none), which is never the intended policy.

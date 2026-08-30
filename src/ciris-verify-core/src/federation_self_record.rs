@@ -79,12 +79,19 @@ pub struct TransportHint {
 /// so existing records / signatures / golden vectors stay valid. JCS
 /// ([`crate::jcs`]) sorts keys lexicographically, so the *insertion order here is
 /// irrelevant* to the canonical bytes / `original_content_hash`.
+// Eight inputs, all genuinely distinct members of the signed envelope; the
+// envelope IS the parameter list. Bundling them into a struct would add public
+// API surface for no safety gain, since every pair is type-distinguished (the
+// two validity instants are `&str` vs `Option<&str>`, so transposing them does
+// not compile).
+#[allow(clippy::too_many_arguments)]
 fn build_registration_envelope(
     key_id: &str,
     identity_type: &str,
     pubkey_ed25519_base64: &str,
     pubkey_ml_dsa_65_base64: &str,
     valid_from: &str,
+    valid_until: Option<&str>,
     transport_hints: &[TransportHint],
     roles: &[String],
 ) -> Value {
@@ -98,6 +105,19 @@ fn build_registration_envelope(
         "valid_from": valid_from,
     });
     let obj = envelope.as_object_mut().expect("json! built an object");
+    // CIRISVerify#267: `valid_until` rides INSIDE the signed envelope, never
+    // as a bare sibling. An expiry outside the signed bytes is strippable —
+    // anyone could drop it and the record still verifies, which is the
+    // subject-blindness class #252 closed on three other surfaces. Being in
+    // here means extending or removing a key's life breaks the scrub
+    // signature.
+    //
+    // Materialize-when-present (CEG §0.9): `None` OMITS the key entirely, so
+    // a no-expiry record reproduces the pre-#267 bytes EXACTLY and every
+    // existing record, signature and golden vector stays valid.
+    if let Some(until) = valid_until {
+        obj.insert("valid_until".to_string(), Value::String(until.to_string()));
+    }
     // Only materialize `transport_hints` when there is at least one — absent hints
     // MUST leave the envelope bytes identical to the pre-#172 shape (see doc above).
     if !transport_hints.is_empty() {
@@ -215,6 +235,20 @@ impl KeyRecord {
             .unwrap_or_default()
     }
 
+    /// The `valid_until` carried **inside the signed envelope** (#267).
+    ///
+    /// Read this, not the top-level [`Self::valid_until`] field, when the
+    /// answer drives a decision: the envelope copy is covered by the
+    /// scrub-signature, the sibling is not. The producers keep them equal;
+    /// this accessor is what lets a consumer *prove* it rather than trust it.
+    #[must_use]
+    pub fn valid_until_in_envelope(&self) -> Option<String> {
+        self.registration_envelope
+            .get("valid_until")
+            .and_then(|v| v.as_str())
+            .map(str::to_string)
+    }
+
     /// **Bind this record's declared identity to its SIGNED envelope**
     /// (CIRISVerify#252).
     ///
@@ -262,6 +296,21 @@ impl KeyRecord {
                 "pubkey_ml_dsa_65_base64",
                 self.pubkey_ml_dsa_65_base64.as_deref(),
             )
+            // #267/#268: the expiry is decision-driving and lives on BOTH the
+            // top-level field and inside the signed envelope. Binding it here
+            // is what stops the two disagreeing: a serialized record crossing
+            // an untrusted transport could otherwise have its top-level
+            // `valid_until` removed or extended while the envelope, its hash
+            // and both signatures stay intact — and a consumer reading the
+            // public field (the natural thing to do) gets the attacker's
+            // value.
+            //
+            // Documenting "read valid_until_in_envelope() instead" was not
+            // enough: an optional check is skippable by omission, which is the
+            // whole attack (#252 rule 3). Rule 2 does the work here — the
+            // checker ITERATES this projection, so adding the member is the
+            // entire fix, with no second edit at any call site.
+            .require_optional("valid_until", self.valid_until.as_deref())
     }
 
     /// Read the **scrub-attested** roles carried in the signed
@@ -342,8 +391,29 @@ pub async fn produce_self_key_record(
     signer: &dyn SelfSigner,
     identity_type: &str,
     valid_from: &str,
+    valid_until: Option<&str>,
     transport_hints: &[TransportHint],
 ) -> Result<SignedKeyRecord, VerifyError> {
+    // #268: validate the window HERE, not only at the higher-level ceremony.
+    // These producers are public and are the direct minting path, so a caller
+    // reaching them with `Some("soon")` — or an expiry before `valid_from` —
+    // would otherwise get it copied into the envelope and SIGNED. Sealing
+    // `Validity` protected `create_federation_identity` and left this door
+    // open, which is the same optional-check lesson (#252 rule 3) this pull
+    // request has now had to learn four times.
+    //
+    // Routed through `Validity::checked` rather than re-implemented, so there
+    // is one rule for what a valid window is. The parameter shape stays
+    // `&str` + `Option<&str>` because these are the low-level producers; what
+    // matters is that no unvalidated window can reach a signed envelope.
+    // Bind the result — an earlier revision wrote `let _ =` here, so the
+    // canonicalization was computed and thrown away and the caller's ORIGINAL
+    // spelling was signed (#268 round 9). Validating without using the
+    // validated value is the same shape as documenting a check instead of
+    // performing one.
+    let validity = crate::federation_identity::Validity::checked(valid_from, valid_until)?;
+    let valid_until = validity.until();
+
     let key_id = signer.key_id().to_string();
     let ed_pub = signer.ed25519_public_key().await?;
     let mldsa_pub = signer.mldsa65_public_key().await?;
@@ -364,6 +434,7 @@ pub async fn produce_self_key_record(
         &pubkey_ed25519_base64,
         &pubkey_ml_dsa_65_base64,
         valid_from,
+        valid_until,
         transport_hints,
         &[], // self records carry no scrub-attested roles (persist confers)
     );
@@ -381,7 +452,7 @@ pub async fn produce_self_key_record(
         identity_type: identity_type.to_string(),
         identity_ref: key_id.clone(),
         valid_from: valid_from.to_string(),
-        valid_until: None,
+        valid_until: valid_until.map(str::to_string),
         registration_envelope,
         original_content_hash,
         scrub_signature_classical: ed_sig_b64,
@@ -453,8 +524,29 @@ pub async fn produce_scrubbed_key_record(
     scrubber: &dyn SelfSigner,
     target: ScrubTarget,
     valid_from: &str,
+    valid_until: Option<&str>,
     transport_hints: &[TransportHint],
 ) -> Result<SignedKeyRecord, VerifyError> {
+    // #268: validate the window HERE, not only at the higher-level ceremony.
+    // These producers are public and are the direct minting path, so a caller
+    // reaching them with `Some("soon")` — or an expiry before `valid_from` —
+    // would otherwise get it copied into the envelope and SIGNED. Sealing
+    // `Validity` protected `create_federation_identity` and left this door
+    // open, which is the same optional-check lesson (#252 rule 3) this pull
+    // request has now had to learn four times.
+    //
+    // Routed through `Validity::checked` rather than re-implemented, so there
+    // is one rule for what a valid window is. The parameter shape stays
+    // `&str` + `Option<&str>` because these are the low-level producers; what
+    // matters is that no unvalidated window can reach a signed envelope.
+    // Bind the result — an earlier revision wrote `let _ =` here, so the
+    // canonicalization was computed and thrown away and the caller's ORIGINAL
+    // spelling was signed (#268 round 9). Validating without using the
+    // validated value is the same shape as documenting a check instead of
+    // performing one.
+    let validity = crate::federation_identity::Validity::checked(valid_from, valid_until)?;
+    let valid_until = validity.until();
+
     // Same rich envelope as `produce_self_key_record`, but over the TARGET's
     // fields — so persist recanonicalizes byte-identical bytes and the
     // scrub-signature (below) verifies against `scrub_key_id`'s pinned pubkey.
@@ -466,6 +558,7 @@ pub async fn produce_scrubbed_key_record(
         &target.pubkey_ed25519_base64,
         &target.pubkey_ml_dsa_65_base64,
         valid_from,
+        valid_until,
         transport_hints,
         &target.roles, // #185: e.g. ["infra:attest"] — attested by this scrub
     );
@@ -485,7 +578,7 @@ pub async fn produce_scrubbed_key_record(
         identity_type: target.identity_type,
         identity_ref: target.key_id.clone(),
         valid_from: valid_from.to_string(),
-        valid_until: None,
+        valid_until: valid_until.map(str::to_string),
         registration_envelope,
         original_content_hash,
         // … the signature + scrub_key_id are the SCRUBBER's (the whole point:
@@ -526,6 +619,7 @@ pub async fn produce_multiscrub_key_record(
     scrubbers: &[&dyn SelfSigner],
     target: ScrubTarget,
     valid_from: &str,
+    valid_until: Option<&str>,
     transport_hints: &[TransportHint],
 ) -> Result<SignedKeyRecord, VerifyError> {
     let (first, rest) = scrubbers
@@ -535,7 +629,8 @@ pub async fn produce_multiscrub_key_record(
         })?;
     // Scrub #1 mints the shared envelope + canonical bytes (base scrub_* fields).
     let mut record =
-        produce_scrubbed_key_record(*first, target, valid_from, transport_hints).await?;
+        produce_scrubbed_key_record(*first, target, valid_from, valid_until, transport_hints)
+            .await?;
     // Each remaining anchor appends a scrub over those SAME bytes.
     for scrubber in rest {
         record = append_scrub(record, *scrubber).await?;
@@ -614,10 +709,15 @@ mod tests {
         // hybrid-verify the scrub signatures over those bytes against the
         // pubkeys carried in the record (self-attested path).
         let identity = HybridSigningIdentity::generate("my-identity-key").unwrap();
-        let signed =
-            produce_self_key_record(&identity, IDENTITY_TYPE_USER, "2026-06-18T00:00:00Z", &[])
-                .await
-                .unwrap();
+        let signed = produce_self_key_record(
+            &identity,
+            IDENTITY_TYPE_USER,
+            "2026-06-18T00:00:00Z",
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
         let r = &signed.record;
 
         assert_eq!(r.algorithm, ALGORITHM_HYBRID);
@@ -674,6 +774,7 @@ mod tests {
                 roles: Vec::new(),
             },
             "2026-07-02T00:00:00Z",
+            None,
             &[],
         )
         .await
@@ -739,7 +840,7 @@ mod tests {
         let node_mldsa = b64().encode(node.mldsa65_public_key().await.unwrap());
 
         // Node signs itself as a "node" …
-        let self_rec = produce_self_key_record(&node, "node", "2026-07-02T00:00:00Z", &[])
+        let self_rec = produce_self_key_record(&node, "node", "2026-07-02T00:00:00Z", None, &[])
             .await
             .unwrap();
         // … A1 scrub-signs the SAME node's registration.
@@ -753,6 +854,7 @@ mod tests {
                 roles: Vec::new(),
             },
             "2026-07-02T00:00:00Z",
+            None,
             &[],
         )
         .await
@@ -825,10 +927,15 @@ mod tests {
         }
 
         let identity = HybridSigningIdentity::generate("my-identity-key").unwrap();
-        let signed =
-            produce_self_key_record(&identity, IDENTITY_TYPE_USER, "2026-06-18T00:00:00Z", &[])
-                .await
-                .unwrap();
+        let signed = produce_self_key_record(
+            &identity,
+            IDENTITY_TYPE_USER,
+            "2026-06-18T00:00:00Z",
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
         let json = serde_json::to_value(&signed.record).unwrap();
 
         let parsed: PersistShapedKeyRecord = serde_json::from_value(json)
@@ -860,6 +967,7 @@ mod tests {
                 roles: Vec::new(),
             },
             "2026-07-05T00:00:00Z",
+            None,
             &[],
         )
         .await
@@ -882,10 +990,15 @@ mod tests {
     #[tokio::test]
     async fn tampered_record_fails_the_hash_crosscheck() {
         let identity = HybridSigningIdentity::generate("k").unwrap();
-        let mut signed =
-            produce_self_key_record(&identity, IDENTITY_TYPE_USER, "2026-06-18T00:00:00Z", &[])
-                .await
-                .unwrap();
+        let mut signed = produce_self_key_record(
+            &identity,
+            IDENTITY_TYPE_USER,
+            "2026-06-18T00:00:00Z",
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
         // Mutate the envelope after signing → recomputed hash diverges.
         signed.record.registration_envelope = json!({"key_id": "k", "purpose": "TAMPERED"});
         let canonical = jcs::canonicalize(&signed.record.registration_envelope).unwrap();
@@ -915,10 +1028,15 @@ mod tests {
     #[tokio::test]
     async fn absent_hints_omit_the_key_and_preserve_pre_172_bytes() {
         let identity = HybridSigningIdentity::generate("k").unwrap();
-        let signed =
-            produce_self_key_record(&identity, IDENTITY_TYPE_USER, "2026-06-18T00:00:00Z", &[])
-                .await
-                .unwrap();
+        let signed = produce_self_key_record(
+            &identity,
+            IDENTITY_TYPE_USER,
+            "2026-06-18T00:00:00Z",
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
         let env = &signed.record.registration_envelope;
         assert!(
             env.get("transport_hints").is_none(),
@@ -952,9 +1070,10 @@ mod tests {
     #[tokio::test]
     async fn hints_are_signed_and_read_back() {
         let identity = HybridSigningIdentity::generate("node-1").unwrap();
-        let signed = produce_self_key_record(&identity, "node", "2026-07-02T00:00:00Z", &hints())
-            .await
-            .unwrap();
+        let signed =
+            produce_self_key_record(&identity, "node", "2026-07-02T00:00:00Z", None, &hints())
+                .await
+                .unwrap();
         let r = &signed.record;
 
         // Read contract (persist's `KeyRecord::transport_hints()` shape).
@@ -1008,9 +1127,10 @@ mod tests {
         let node_ed = b64().encode(node.ed25519_public_key().await.unwrap());
         let node_mldsa = b64().encode(node.mldsa65_public_key().await.unwrap());
 
-        let self_rec = produce_self_key_record(&node, "node", "2026-07-02T00:00:00Z", &hints())
-            .await
-            .unwrap();
+        let self_rec =
+            produce_self_key_record(&node, "node", "2026-07-02T00:00:00Z", None, &hints())
+                .await
+                .unwrap();
         let scrubbed = produce_scrubbed_key_record(
             &a1,
             ScrubTarget {
@@ -1021,6 +1141,7 @@ mod tests {
                 roles: Vec::new(),
             },
             "2026-07-02T00:00:00Z",
+            None,
             &hints(),
         )
         .await
@@ -1064,13 +1185,15 @@ mod tests {
             &a1,
             target(vec!["infra:attest".to_string()]),
             "2026-07-10T00:00:00Z",
+            None,
             &[],
         )
         .await
         .unwrap();
-        let plain = produce_scrubbed_key_record(&a1, target(vec![]), "2026-07-10T00:00:00Z", &[])
-            .await
-            .unwrap();
+        let plain =
+            produce_scrubbed_key_record(&a1, target(vec![]), "2026-07-10T00:00:00Z", None, &[])
+                .await
+                .unwrap();
 
         // Attested roles are readable from the signed envelope; the top-level
         // field stays empty (persist confers the row role on the m-of-n).
@@ -1115,7 +1238,7 @@ mod tests {
         };
 
         // A1 scrubs #1, B1 appends #2 — same envelope (roles included).
-        let one = produce_scrubbed_key_record(&a1, target, "2026-07-10T00:00:00Z", &[])
+        let one = produce_scrubbed_key_record(&a1, target, "2026-07-10T00:00:00Z", None, &[])
             .await
             .unwrap();
         let two = append_scrub(one, &b1).await.unwrap();
@@ -1190,12 +1313,14 @@ mod tests {
         let b1 = HybridSigningIdentity::generate("B1").unwrap();
         let (_node, target) = node_target().await;
 
-        let single = produce_scrubbed_key_record(&a1, target.clone(), "2026-07-05T00:00:00Z", &[])
-            .await
-            .unwrap();
-        let multi = produce_multiscrub_key_record(&[&a1, &b1], target, "2026-07-05T00:00:00Z", &[])
-            .await
-            .unwrap();
+        let single =
+            produce_scrubbed_key_record(&a1, target.clone(), "2026-07-05T00:00:00Z", None, &[])
+                .await
+                .unwrap();
+        let multi =
+            produce_multiscrub_key_record(&[&a1, &b1], target, "2026-07-05T00:00:00Z", None, &[])
+                .await
+                .unwrap();
 
         // §3 of #383: same canonical envelope + hash — scrubs live OUTSIDE it.
         assert_eq!(
@@ -1232,7 +1357,7 @@ mod tests {
         let (_node, target) = node_target().await;
 
         // Device 1: A1 mints the partial.
-        let partial = produce_scrubbed_key_record(&a1, target, "2026-07-05T00:00:00Z", &[])
+        let partial = produce_scrubbed_key_record(&a1, target, "2026-07-05T00:00:00Z", None, &[])
             .await
             .unwrap();
         // Serialize → deserialize to simulate the accord-gossip hop.
@@ -1265,7 +1390,7 @@ mod tests {
     async fn append_scrub_rejects_a_duplicate_anchor() {
         let a1 = HybridSigningIdentity::generate("A1").unwrap();
         let (_node, target) = node_target().await;
-        let partial = produce_scrubbed_key_record(&a1, target, "2026-07-05T00:00:00Z", &[])
+        let partial = produce_scrubbed_key_record(&a1, target, "2026-07-05T00:00:00Z", None, &[])
             .await
             .unwrap();
         // A1 tries to append again → refused (still just 1 distinct anchor).
@@ -1279,9 +1404,10 @@ mod tests {
         let a1 = HybridSigningIdentity::generate("A1").unwrap();
         let b1 = HybridSigningIdentity::generate("B1").unwrap();
         let (_node, target) = node_target().await;
-        let mut partial = produce_scrubbed_key_record(&a1, target, "2026-07-05T00:00:00Z", &[])
-            .await
-            .unwrap();
+        let mut partial =
+            produce_scrubbed_key_record(&a1, target, "2026-07-05T00:00:00Z", None, &[])
+                .await
+                .unwrap();
         // Mutate the envelope after A1 signed → recomputed hash != original_content_hash.
         partial.record.registration_envelope["identity_type"] = json!("agent");
         assert!(append_scrub(partial, &b1).await.is_err());
@@ -1293,7 +1419,7 @@ mod tests {
     async fn single_scrub_record_omits_additional_scrubs_in_json() {
         let a1 = HybridSigningIdentity::generate("A1").unwrap();
         let (_node, target) = node_target().await;
-        let single = produce_scrubbed_key_record(&a1, target, "2026-07-05T00:00:00Z", &[])
+        let single = produce_scrubbed_key_record(&a1, target, "2026-07-05T00:00:00Z", None, &[])
             .await
             .unwrap();
         let json = serde_json::to_value(&single.record).unwrap();
@@ -1309,9 +1435,249 @@ mod tests {
     async fn multiscrub_empty_scrubbers_is_an_error() {
         let (_node, target) = node_target().await;
         assert!(
-            produce_multiscrub_key_record(&[], target, "2026-07-05T00:00:00Z", &[])
+            produce_multiscrub_key_record(&[], target, "2026-07-05T00:00:00Z", None, &[])
                 .await
                 .is_err()
+        );
+    }
+}
+
+/// Key expiry (CIRISVerify#267) — the producer can express it, and it cannot
+/// be stripped.
+#[cfg(test)]
+mod expiry {
+    use super::*;
+    use crate::self_at_login::HybridSigningIdentity;
+
+    const FROM: &str = "2026-08-19T00:00:00Z";
+    const UNTIL: &str = "2027-08-19T00:00:00Z";
+
+    /// **The security property.** An expiry outside the signed bytes is
+    /// strippable — anyone could drop it and the record would still verify.
+    /// So it rides inside the envelope, and the top-level field agrees.
+    #[tokio::test]
+    async fn expiry_is_inside_the_signed_envelope() {
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        let signed = produce_self_key_record(&id, "node", FROM, Some(UNTIL), &[])
+            .await
+            .unwrap();
+        let r = &signed.record;
+
+        assert_eq!(r.valid_until_in_envelope().as_deref(), Some(UNTIL));
+        assert_eq!(r.valid_until.as_deref(), Some(UNTIL));
+        assert_eq!(
+            r.valid_until,
+            r.valid_until_in_envelope(),
+            "sibling and signed copy must agree — a consumer reads one and \
+             verifies the other"
+        );
+        // And it is genuinely covered: the advertised hash is over these bytes.
+        let canonical = jcs::canonicalize(&r.registration_envelope).unwrap();
+        assert_eq!(
+            hex::encode(Sha256::digest(&canonical)),
+            r.original_content_hash
+        );
+    }
+
+    /// **#268 — equivalent instants sign as ONE canonical text.**
+    ///
+    /// `+02:00` and its UTC equivalent are the same instant and different
+    /// bytes. The subject binding compares text, and a consumer that
+    /// round-trips through a typed timestamp column re-serializes it — so
+    /// without a pinned form the two disagree about an untampered record.
+    #[tokio::test]
+    async fn equivalent_instants_canonicalize_to_one_form() {
+        use crate::federation_identity::Validity;
+        let a = Validity::checked(FROM, Some("2027-08-19T00:00:00+02:00")).unwrap();
+        let b = Validity::checked(FROM, Some("2027-08-18T22:00:00Z")).unwrap();
+        assert_eq!(a.until(), b.until(), "same instant must sign identically");
+        assert_eq!(a.until(), Some("2027-08-18T22:00:00Z"));
+
+        // And the pinned form is what reaches the signed envelope.
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        let signed = produce_self_key_record(&id, "node", FROM, a.until(), &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            signed.record.valid_until_in_envelope().as_deref(),
+            Some("2027-08-18T22:00:00Z")
+        );
+    }
+
+    /// **#268 round 9 — the producers must SIGN the canonical form.**
+    ///
+    /// Round 8 canonicalized inside `Validity` and the producers then wrote
+    /// `let _ = …`, discarding it, so the caller's original spelling reached
+    /// the envelope. Validating without using the validated value is the same
+    /// shape as documenting a check instead of performing one.
+    #[tokio::test]
+    async fn the_producer_signs_the_canonical_expiry() {
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        let signed =
+            produce_self_key_record(&id, "node", FROM, Some("2027-08-19T00:00:00+02:00"), &[])
+                .await
+                .unwrap();
+        assert_eq!(
+            signed.record.valid_until_in_envelope().as_deref(),
+            Some("2027-08-18T22:00:00Z"),
+            "the canonical form must reach the SIGNED envelope, not the caller's spelling"
+        );
+        assert_eq!(
+            signed.record.valid_until.as_deref(),
+            Some("2027-08-18T22:00:00Z")
+        );
+        // …and the record still satisfies its own binding.
+        assert!(signed.record.check_subject_binding().is_ok());
+    }
+
+    /// **#268 round 9 — normalizing the representation must not move the
+    /// instant.** Truncating to whole seconds could rewrite an expiry to
+    /// EARLIER than `valid_from`, signing an inverted window this very
+    /// validator would reject.
+    #[tokio::test]
+    async fn sub_second_precision_survives_canonicalization() {
+        use crate::federation_identity::Validity;
+        let from = "2026-08-19T00:00:00.100Z";
+        let v = Validity::checked(from, Some("2026-08-19T00:00:00.900Z")).unwrap();
+        let until = v.until().unwrap();
+
+        let f = chrono::DateTime::parse_from_rfc3339(from).unwrap();
+        let u = chrono::DateTime::parse_from_rfc3339(until).unwrap();
+        assert!(
+            u > f,
+            "canonicalization must not invert the window: {until} vs {from}"
+        );
+
+        // And the canonical form round-trips through the producer intact.
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        let signed = produce_self_key_record(&id, "node", from, Some(until), &[])
+            .await
+            .unwrap();
+        let signed_until = signed.record.valid_until_in_envelope().unwrap();
+        assert!(chrono::DateTime::parse_from_rfc3339(&signed_until).unwrap() > f);
+    }
+
+    /// **#268 — the low-level producers validate too.** Sealing `Validity`
+    /// protected the higher-level ceremony and left this door open; these are
+    /// public and are the direct minting path, so a bad window reaching them
+    /// would be copied into the envelope and SIGNED.
+    #[tokio::test]
+    async fn the_producer_refuses_an_invalid_window() {
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        for bad in [
+            Some("soon"),                 // not an instant
+            Some("2020-01-01T00:00:00Z"), // closes before it opens
+            Some(""),                     // empty
+        ] {
+            assert!(
+                produce_self_key_record(&id, "node", FROM, bad, &[])
+                    .await
+                    .is_err(),
+                "valid_until = {bad:?} must not reach a signed envelope"
+            );
+        }
+        // …and a good window still mints.
+        assert!(produce_self_key_record(&id, "node", FROM, Some(UNTIL), &[])
+            .await
+            .is_ok());
+    }
+
+    /// **The attack the binding refuses (#268 P1).** A serialized record
+    /// crosses an untrusted transport; the attacker rewrites the top-level
+    /// `valid_until` and leaves the envelope, its hash and both signatures
+    /// untouched. Everything a signature check looks at still passes — and a
+    /// consumer reading the public field gets the attacker's expiry.
+    #[tokio::test]
+    async fn rewriting_the_top_level_expiry_is_refused() {
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        let signed = produce_self_key_record(&id, "node", FROM, Some(UNTIL), &[])
+            .await
+            .unwrap();
+        assert!(signed.record.check_subject_binding().is_ok());
+
+        for forged in [
+            Some("2099-01-01T00:00:00Z".to_string()), // extended
+            None,                                     // stripped entirely
+        ] {
+            let mut tampered = signed.record.clone();
+            tampered.valid_until = forged.clone();
+
+            // The signed bytes are untouched and still self-consistent …
+            let canonical = jcs::canonicalize(&tampered.registration_envelope).unwrap();
+            assert_eq!(
+                hex::encode(Sha256::digest(&canonical)),
+                tampered.original_content_hash,
+                "the envelope is genuine — that is the point"
+            );
+            // … and the record is refused anyway, on the binding.
+            assert!(
+                tampered.check_subject_binding().is_err(),
+                "top-level valid_until = {forged:?} disagrees with the signed \
+                 copy and MUST be refused"
+            );
+        }
+    }
+
+    /// **No expiry reproduces the pre-14.0 bytes exactly.** Materialize-when-
+    /// present (CEG §0.9): `None` omits the member, so every existing record,
+    /// signature and golden vector stays valid.
+    #[tokio::test]
+    async fn no_expiry_omits_the_member_entirely() {
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        let signed = produce_self_key_record(&id, "node", FROM, None, &[])
+            .await
+            .unwrap();
+        let env = &signed.record.registration_envelope;
+        assert!(
+            env.get("valid_until").is_none(),
+            "absent expiry must OMIT the key, never materialize a null — \
+             otherwise the canonical bytes move for every existing record"
+        );
+        assert!(signed.record.valid_until.is_none());
+    }
+
+    /// Stripping the expiry from the envelope breaks the content hash, so a
+    /// tampered record cannot silently outlive its stated life.
+    #[tokio::test]
+    async fn stripping_the_expiry_breaks_the_binding() {
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        let mut signed = produce_self_key_record(&id, "node", FROM, Some(UNTIL), &[])
+            .await
+            .unwrap();
+        signed
+            .record
+            .registration_envelope
+            .as_object_mut()
+            .unwrap()
+            .remove("valid_until");
+        let canonical = jcs::canonicalize(&signed.record.registration_envelope).unwrap();
+        assert_ne!(
+            hex::encode(Sha256::digest(&canonical)),
+            signed.record.original_content_hash,
+            "an expiry that can be removed without breaking the hash is not a \
+             constraint at all"
+        );
+    }
+
+    /// The scrubbed twin carries it too — a scrubber can bound the life of a
+    /// key it admits.
+    #[tokio::test]
+    async fn the_scrubbed_producer_also_carries_expiry() {
+        let scrubber = HybridSigningIdentity::generate("A1").unwrap();
+        let t = HybridSigningIdentity::generate("node-2").unwrap();
+        let target = ScrubTarget {
+            key_id: "node-2".into(),
+            pubkey_ed25519_base64: b64().encode(t.ed25519_public_key().await.unwrap()),
+            pubkey_ml_dsa_65_base64: b64().encode(t.mldsa65_public_key().await.unwrap()),
+            identity_type: "node".into(),
+            roles: vec![],
+        };
+        let signed = produce_scrubbed_key_record(&scrubber, target, FROM, Some(UNTIL), &[])
+            .await
+            .unwrap();
+        assert_eq!(
+            signed.record.valid_until_in_envelope().as_deref(),
+            Some(UNTIL)
         );
     }
 }

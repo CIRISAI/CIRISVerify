@@ -50,6 +50,115 @@ pub struct CreatedIdentity {
     /// config to claim ownership (FSD-003 §5).
     pub code: String,
 }
+/// A key's validity window (CIRISVerify#268).
+///
+/// This exists to make a specific mis-call **impossible rather than
+/// discouraged**. `valid_until` and `seal_alias` are both `Option<&str>` and
+/// were adjacent, so a caller migrating from the pre-14.0 signature who added
+/// the new argument in the wrong slot would compile cleanly and **sign their
+/// seal alias as the key's expiry**, while the alias silently became `None`.
+///
+/// A previous revision of this file asserted the opposite — that "every pair
+/// is type-distinguished, so a mis-ordered call does not compile" — and used
+/// that claim to silence `clippy::too_many_arguments`. The claim was false for
+/// exactly the pair that mattered, and the lint was pointing at the real
+/// problem. Bundling the window into one type makes the assertion true and
+/// drops the argument count honestly, so the allow is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Validity<'a> {
+    from: &'a str,
+    /// Owned because it is CANONICALIZED at construction, not borrowed from
+    /// the caller's text — see [`Validity::checked`].
+    until: Option<String>,
+}
+
+impl<'a> Validity<'a> {
+    /// Build a window, **refusing an instant nothing can compare against**
+    /// (CIRISVerify#268).
+    ///
+    /// This is the **only** way to construct a `Validity`. The fields are
+    /// private and there is no unchecked constructor, because a previous
+    /// revision offered `new`/`starting` alongside this and a caller doing the
+    /// natural thing got no validation at all — an optional check is skippable
+    /// by omission, which is the same lesson #252 rule 3 records and the third
+    /// time this pull request has had to learn it.
+    ///
+    /// It is also the single validation rule for every entry point — the CLI's
+    /// `--valid-until`, the FFI's `valid_until`, and any Rust caller. They
+    /// previously disagreed: the FFI refused `soon` while the CLI accepted it,
+    /// opened or minted the sealed PQC key, and emitted a **signed** record
+    /// carrying an expiry no consumer could evaluate. Two checks for one rule
+    /// is how they drift, so there is one.
+    ///
+    /// # Errors
+    /// [`VerifyError::IntegrityError`] if either instant is not RFC-3339, or
+    /// if the window ends before it starts.
+    pub fn checked(from: &'a str, until: Option<&'a str>) -> Result<Self, VerifyError> {
+        let bad = |what: &str, v: &str| VerifyError::IntegrityError {
+            message: format!("{what} must be an RFC-3339 instant, got {v:?}"),
+        };
+        let start =
+            chrono::DateTime::parse_from_rfc3339(from).map_err(|_| bad("valid_from", from))?;
+        if let Some(u) = until {
+            let end = chrono::DateTime::parse_from_rfc3339(u).map_err(|_| bad("valid_until", u))?;
+            if end <= start {
+                return Err(VerifyError::IntegrityError {
+                    message: format!(
+                        "valid_until ({u}) must be after valid_from ({from}) — a window \
+                         that closes before it opens is not an expiry"
+                    ),
+                });
+            }
+            // ONE canonical text form for the signed member (#268).
+            //
+            // `2027-08-19T00:00:00+02:00` and `2027-08-18T22:00:00Z` are the
+            // same instant and different bytes. The subject binding compares
+            // the top-level field against the signed envelope copy as TEXT,
+            // and a consumer that round-trips the record through a typed
+            // timestamp column — which CIRISPersist has — re-serializes the
+            // column while the envelope stays opaque. The two then disagree
+            // about a record nobody tampered with.
+            //
+            // A caller may pass any RFC-3339 form; what is PINNED is what gets
+            // signed: UTC, `Z`, second precision.
+            //
+            // Deliberately NOT applied to `valid_from`: it is an existing
+            // signed member, so rewriting it would change the canonical bytes
+            // of every record already produced. That asymmetry is a
+            // compatibility fact rather than a preference.
+            return Ok(Self {
+                from,
+                until: Some(
+                    // `AutoSi`, NOT `Secs`. Truncating to whole seconds could
+                    // move the expiry EARLIER than `valid_from` — for
+                    // `from = ...00.100Z` and `until = ...00.900Z` the
+                    // ordering check above passes on the parsed instants and
+                    // then truncation rewrites `until` to `...00Z`, signing an
+                    // inverted window that this very validator would reject
+                    // (#268 round 9). Normalizing the REPRESENTATION must not
+                    // change the INSTANT.
+                    end.with_timezone(&chrono::Utc)
+                        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+                ),
+            });
+        }
+        Ok(Self { from, until: None })
+    }
+
+    /// The instant the key becomes valid (RFC-3339, validated).
+    #[must_use]
+    pub const fn from(&self) -> &'a str {
+        self.from
+    }
+
+    /// The instant the key stops being valid, if it expires (RFC-3339,
+    /// validated). `None` omits the member from the signed envelope entirely,
+    /// reproducing the pre-14.0 canonical bytes.
+    #[must_use]
+    pub fn until(&self) -> Option<&str> {
+        self.until.as_deref()
+    }
+}
 
 /// Create a self-signed genesis federation identity from an already-opened
 /// hardware Ed25519 signer.
@@ -88,7 +197,7 @@ pub async fn create_federation_identity(
     identity_type: &str,
     fed_key_id: Option<String>,
     label: Option<&str>,
-    valid_from: &str,
+    validity: Validity<'_>,
     seal_alias: Option<&str>,
     transport_hints: &[TransportHint],
 ) -> Result<CreatedIdentity, VerifyError> {
@@ -116,13 +225,19 @@ pub async fn create_federation_identity(
     );
 
     let identity = HardwareRootedIdentity::new(key_id.clone(), hw_signer, Arc::from(mldsa))?;
-    let record =
-        produce_self_key_record(&identity, identity_type, valid_from, transport_hints).await?;
+    let record = produce_self_key_record(
+        &identity,
+        identity_type,
+        validity.from(),
+        validity.until(),
+        transport_hints,
+    )
+    .await?;
     let body = serde_json::to_value(&record).map_err(|e| VerifyError::IntegrityError {
         message: format!("serialize key record: {e}"),
     })?;
 
-    let object = SignedCegObject::new(FEDERATION_KEY_RECORD_KIND, &key_id, valid_from, body);
+    let object = SignedCegObject::new(FEDERATION_KEY_RECORD_KIND, &key_id, validity.from(), body);
 
     // The shareable fedcode for this entity (FSD-003).
     let kind = match identity_type {
@@ -179,7 +294,7 @@ mod tests {
             "user",
             None,
             Some("Eric Moore"),
-            "2026-06-18T00:00:00Z",
+            Validity::checked("2026-06-18T00:00:00Z", None).unwrap(),
             None,
             &[],
         )
@@ -233,7 +348,7 @@ mod tests {
             "user",
             Some(recorded.clone()),
             Some("Eric Moore"),
-            "2026-06-18T00:00:00Z",
+            Validity::checked("2026-06-18T00:00:00Z", None).unwrap(),
             Some(seal_alias),
             &[],
         )
@@ -280,7 +395,7 @@ mod tests {
             "node",
             Some("canonical-server-1".to_string()),
             None,
-            "2026-07-02T00:00:00Z",
+            Validity::checked("2026-07-02T00:00:00Z", None).unwrap(),
             None,
             &[TransportHint {
                 kind: "ip".to_string(),

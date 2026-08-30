@@ -48,6 +48,7 @@ pub const SUPPRESSED_SCOPES: [&str; 2] = ["self", "family"];
 /// Why a §Q shape failed structural validation (pre-signature). A verifier MUST
 /// reject on any of these before consulting the bound-hybrid signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum StorageContentionError {
     /// `pin_reserve_bytes > budget_bytes` for some scope (B3: floor ≤ ceiling).
     ReserveExceedsBudget {

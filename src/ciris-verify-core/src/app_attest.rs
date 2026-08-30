@@ -223,6 +223,7 @@ pub type Result<T> = std::result::Result<T, AppAttestError>;
 
 /// App Attest errors.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum AppAttestError {
     /// Registry not reachable.
     NetworkError(String),

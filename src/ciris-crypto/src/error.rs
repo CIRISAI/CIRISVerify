@@ -6,6 +6,7 @@ use crate::types::{ClassicalAlgorithm, PqcAlgorithm};
 
 /// Errors that can occur during cryptographic operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum CryptoError {
     /// Invalid signature format or length.
     #[error("Invalid signature: {reason}")]

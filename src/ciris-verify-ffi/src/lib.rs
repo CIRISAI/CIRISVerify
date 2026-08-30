@@ -1834,6 +1834,7 @@ unsafe fn check_capability_inner(
 ///   "identity_type": "user",               // "user" | "agent"
 ///   "fed_key_id": null,                     // optional; default sha256(ed_pubkey) hex
 ///   "valid_from": "2026-06-18T00:00:00Z",  // optional RFC-3339; default host-now
+///   "valid_until": "2027-06-18T00:00:00Z", // optional RFC-3339; default no expiry (#267)
 ///   "write_outbox": true                    // also drop it in <ciris>/ceg/outbox
 /// }
 /// ```
@@ -1917,6 +1918,31 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        // #267: optional expiry. ABSENT means no self-asserted expiry, which
+        // reproduces the pre-14.0 envelope bytes exactly.
+        //
+        // But PRESENT-AND-MALFORMED is an error, not an absence (#268 P2).
+        // `.and_then(|v| v.as_str())` turned a numeric epoch — the obvious
+        // thing a caller reaches for — into `None`, silently minting a key
+        // with NO expiry. That is fail-OPEN on a security control: the caller
+        // asked to bound the key's life and got an unbounded key, with no
+        // error to notice. An unparseable instant is likewise refused rather
+        // than accepted, since an expiry nothing can compare against is not a
+        // constraint.
+        let valid_until = match cfg.get("valid_until") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(v)) => Some(v.clone()),
+            // A non-string type (a numeric epoch is the obvious thing a caller
+            // reaches for) is refused HERE rather than silently dropped — that
+            // is the JSON-shape half, which only this boundary can see. The
+            // instant itself is validated by `Validity::checked` below, so
+            // there is one rule for what a valid window is, not two that drift.
+            Some(other) => {
+                return emit(err(format!(
+                    "valid_until must be an RFC-3339 string, got {other}"
+                )))
+            },
+        };
         let write_outbox = cfg
             .get("write_outbox")
             .and_then(serde_json::Value::as_bool)
@@ -1948,7 +1974,11 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
                 &identity_type,
                 fed_key_id,
                 label.as_deref(),
-                &valid_from,
+                ciris_verify_core::federation_identity::Validity::checked(
+                    &valid_from,
+                    valid_until.as_deref(),
+                )
+                .map_err(|e| format!("{e}"))?,
                 seal_alias.as_deref(),
                 &transport_hints,
             )
@@ -10380,5 +10410,31 @@ mod tests {
             );
             assert_eq!(ret, CirisVerifyError::SerializationError as i32);
         }
+    }
+}
+
+#[cfg(test)]
+mod expiry_input {
+    /// **#268 P2 — a malformed expiry must be refused, not dropped.**
+    ///
+    /// `.and_then(|v| v.as_str())` turned a numeric epoch — the obvious thing
+    /// a caller reaches for — into `None`, silently minting a key with NO
+    /// expiry. That is fail-OPEN on a security control: the caller asked to
+    /// bound the key's life and got an unbounded key with no error to notice.
+    #[test]
+    fn only_a_parseable_rfc3339_string_is_accepted() {
+        use ciris_verify_core::federation_identity::Validity;
+        const FROM: &str = "2026-08-19T00:00:00Z";
+        assert!(Validity::checked(FROM, Some("2027-08-19T00:00:00Z")).is_ok());
+        assert!(Validity::checked(FROM, Some("2027-08-19T00:00:00+02:00")).is_ok());
+        assert!(Validity::checked(FROM, None).is_ok());
+        // A numeric epoch never reaches here — it is refused as a JSON shape.
+        assert!(Validity::checked(FROM, Some("1755561600")).is_err());
+        // An expiry nothing can compare against is not a constraint.
+        assert!(Validity::checked(FROM, Some("soon")).is_err());
+        assert!(Validity::checked(FROM, Some("2027-13-45")).is_err());
+        assert!(Validity::checked(FROM, Some("")).is_err());
+        // A window that closes before it opens is not an expiry either.
+        assert!(Validity::checked(FROM, Some("2020-01-01T00:00:00Z")).is_err());
     }
 }

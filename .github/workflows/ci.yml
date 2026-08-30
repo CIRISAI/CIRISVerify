@@ -230,6 +230,16 @@ jobs:
       # call, silently, because a dead source degrades rather than errors.
       - name: No retired registry hostnames (#11)
         run: bash scripts/check-no-retired-hostnames.sh
+      # CIRIS Logging Standard §5 (CIRISVerify#265): no tracing event may
+      # interpolate seed / private-key / PIN / DEK material. The standard asks
+      # for redaction "with a test"; this is the test.
+      - name: No secret material in tracing events (#265)
+        run: bash scripts/check-no-secret-logging.sh
+      # Six review rounds each found one more way past that guard. This is the
+      # matrix, so a future narrowing fails here rather than silently
+      # un-catching a case someone already paid to find (#268).
+      - name: Secret-logging guard self-test (#268)
+        run: bash scripts/test-secret-logging-guard.sh
       - name: CC evidence citations resolve (#233)
         run: python3 tools/check_evidence.py
       # CIRISVerify#250: prove the guard still rejects what it claims to —

@@ -257,6 +257,7 @@ impl AccordParticipation {
 
 /// Why a live-quorum object failed verification — fail-closed.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LiveQuorumError {
     /// The participation's `proposal_digest` does not match the proposal it was
     /// verified against (C1/C3 — cross-proposal replay / vote for a different

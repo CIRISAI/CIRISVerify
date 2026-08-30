@@ -58,54 +58,93 @@ impl ConformanceReport {
     }
 
     /// Log the full report to platform logging
+    /// Truncate to at most `max` BYTES without splitting a character.
+    ///
+    /// `String::truncate` panics unless the index is a char boundary; this
+    /// walks back to the nearest one (#268 P2).
+    fn bound_utf8(s: &str, max: usize) -> String {
+        if s.len() <= max {
+            return s.to_string();
+        }
+        let mut end = max;
+        while end > 0 && !s.is_char_boundary(end) {
+            end -= 1;
+        }
+        s[..end].to_string()
+    }
+
+    /// Emit the report through `tracing`, per the CIRIS Logging Standard
+    /// (CIRISVerify#265).
+    ///
+    /// This was a box-drawing ASCII table at one `tracing` event per line —
+    /// roughly fifteen events for one report, with individual table rows on
+    /// the WARN channel. Two rules it broke:
+    ///
+    /// * **§2, one event one line.** A report is one event. Fields belong in
+    ///   `tracing`'s structured model, not in padded columns, so counting and
+    ///   filtering do not require a regex over box-drawing characters.
+    /// * **§1.1, no routine progress on the failure channels.** A passing
+    ///   test's row is not a warning. An operator's first move is
+    ///   `grep -E 'WARN|ERROR'`, and table borders on those channels destroy
+    ///   it.
+    ///
+    /// Levels now: the summary is one `INFO` (a state a person would
+    /// narrate); per-test detail is `DEBUG` (proportional to test count, so by
+    /// §1 it is per-loop detail); a failing test is one `WARN` naming what
+    /// failed; an overall failure is one `ERROR`.
     pub fn log_report(&self) {
-        tracing::info!("╔══════════════════════════════════════════════════════════════╗");
-        tracing::info!("║        CIRISVERIFY PLATFORM CONFORMANCE TEST REPORT          ║");
-        tracing::info!("╠══════════════════════════════════════════════════════════════╣");
-        tracing::info!("║ Version:  {:<50} ║", self.library_version);
-        tracing::info!("║ Platform: {:<50} ║", self.platform);
-        tracing::info!("║ Backend:  {:<50} ║", self.hardware_backend);
-        tracing::info!("╠══════════════════════════════════════════════════════════════╣");
+        let (passed, failed, total) = (self.passed(), self.failed(), self.total());
 
+        // Per-test detail is proportional to test count — DEBUG, not INFO.
         for test in &self.tests {
-            let status = if test.passed { "✓ PASS" } else { "✗ FAIL" };
-            let name_truncated = if test.name.len() > 35 {
-                &test.name[..35]
-            } else {
-                test.name
-            };
-            tracing::info!(
-                "║ {} {:35} {:>6}ms ║",
-                status,
-                name_truncated,
-                test.duration_ms
+            tracing::debug!(
+                test = %test.name,
+                passed = test.passed,
+                duration_ms = test.duration_ms,
+                "conformance test complete"
             );
-            if !test.passed {
-                // Log failure message on next line
-                let msg_truncated = if test.message.len() > 56 {
-                    format!("{}...", &test.message[..53])
-                } else {
-                    test.message.clone()
-                };
-                tracing::warn!("║   └─ {:<56} ║", msg_truncated);
-            }
         }
 
-        tracing::info!("╠══════════════════════════════════════════════════════════════╣");
-        tracing::info!(
-            "║ TOTAL: {} passed, {} failed, {} total{:<21}║",
-            self.passed(),
-            self.failed(),
-            self.total(),
-            ""
-        );
+        // A failing test is a real WARN: one line, naming what failed and what
+        // the failing check said. Bounded at the emitting site (§2.1).
+        for test in self.tests.iter().filter(|t| !t.passed) {
+            // `String::truncate` PANICS on a non-char-boundary index, and a
+            // platform or localized hardware error can easily put a multibyte
+            // character across byte 200 (#268 P2). A logging fix that panics
+            // is worse than the noise it replaced, so bound on a character
+            // boundary.
+            let detail = Self::bound_utf8(&test.message, 200);
+            tracing::warn!(
+                test = %test.name,
+                duration_ms = test.duration_ms,
+                // NOT `message`: that field name is reserved — the format
+                // string below becomes `message`, and this crate's own
+                // tracing visitors special-case it by REPLACING the
+                // accumulated output (`lib.rs`, the FFI-callback and
+                // Android/iOS paths). Supplying both would make one clobber
+                // the other depending on visit order (#268 P2).
+                detail = %detail,
+                "conformance test FAILED"
+            );
+        }
 
-        if self.failed() == 0 {
-            tracing::info!("║                    ✓ ALL TESTS PASSED                        ║");
+        if failed == 0 {
+            tracing::info!(
+                version = %self.library_version,
+                platform = %self.platform,
+                backend = %self.hardware_backend,
+                passed, total,
+                "platform conformance: all tests passed"
+            );
         } else {
-            tracing::error!("║                    ✗ SOME TESTS FAILED                       ║");
+            tracing::error!(
+                version = %self.library_version,
+                platform = %self.platform,
+                backend = %self.hardware_backend,
+                passed, failed, total,
+                "platform conformance: {failed} of {total} tests FAILED"
+            );
         }
-        tracing::info!("╚══════════════════════════════════════════════════════════════╝");
     }
 }
 
@@ -490,5 +529,40 @@ mod tests {
         let platform = detect_platform();
         assert!(!platform.is_empty());
         println!("Detected platform: {}", platform);
+    }
+}
+
+#[cfg(test)]
+mod bounding {
+    use super::*;
+
+    /// **#268 P2.** `String::truncate` panics unless the index is a char
+    /// boundary. A localized hardware error can put a multibyte character
+    /// across the limit, so the old code could crash the caller from inside a
+    /// logging path — worse than the noise it replaced.
+    #[test]
+    fn bounding_never_splits_a_character() {
+        // 'é' spans bytes 199..201, so a naive truncate(200) panics here.
+        let s = format!("{}é{}", "x".repeat(199), "tail");
+        assert!(s.len() > 200);
+        let out = ConformanceReport::bound_utf8(&s, 200);
+        assert!(out.len() <= 200);
+        assert!(std::str::from_utf8(out.as_bytes()).is_ok());
+        // Walked back off the boundary rather than splitting it.
+        assert_eq!(out.len(), 199);
+    }
+
+    #[test]
+    fn short_input_is_returned_whole() {
+        assert_eq!(ConformanceReport::bound_utf8("hello", 200), "hello");
+        assert_eq!(ConformanceReport::bound_utf8("", 200), "");
+    }
+
+    /// Multibyte throughout, so every candidate index is mid-character.
+    #[test]
+    fn an_all_multibyte_string_still_bounds() {
+        let s = "é".repeat(300); // 600 bytes
+        let out = ConformanceReport::bound_utf8(&s, 201);
+        assert!(out.len() <= 201 && out.len() % 2 == 0);
     }
 }

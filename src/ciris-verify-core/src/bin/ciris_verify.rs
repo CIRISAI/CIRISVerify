@@ -636,6 +636,14 @@ enum IdentityAction {
         /// for an ordinary hintless identity.
         #[arg(long = "transport-hint")]
         transport_hint: Vec<String>,
+        /// RFC-3339 `valid_until` — when this key STOPS being valid
+        /// (CIRISVerify#267). Omit for no self-asserted expiry, which is the
+        /// right default for a long-lived identity key.
+        ///
+        /// When set it rides INSIDE the scrub-signed registration envelope, so
+        /// it cannot be stripped or extended without breaking the signature.
+        #[arg(long = "valid-until")]
+        valid_until: Option<String>,
     },
 }
 
@@ -2127,6 +2135,9 @@ struct IdentityCreateArgs {
     pin_policy: String,
     management_key: String,
     transport_hint: Vec<String>,
+    /// RFC-3339 `valid_until` — when this key STOPS being valid (#267).
+    /// `None` = no self-asserted expiry.
+    valid_until: Option<String>,
 }
 
 async fn run_identity(action: IdentityAction, json_output: bool) {
@@ -2147,6 +2158,7 @@ async fn run_identity(action: IdentityAction, json_output: bool) {
             pin_policy,
             management_key,
             transport_hint,
+            valid_until,
         } => {
             run_identity_create(
                 IdentityCreateArgs {
@@ -2164,6 +2176,7 @@ async fn run_identity(action: IdentityAction, json_output: bool) {
                     pin_policy,
                     management_key,
                     transport_hint,
+                    valid_until,
                 },
                 json_output,
             )
@@ -2177,8 +2190,28 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
 
     use ciris_keyring::pkcs11::{open_pkcs11_signer, Pkcs11Config};
     use ciris_verify_core::ceg_outbox::SignedCegObject;
-    use ciris_verify_core::federation_identity::create_federation_identity;
+    use ciris_verify_core::federation_identity::{create_federation_identity, Validity};
     use ciris_verify_core::federation_self_record::TransportHint;
+
+    // Validate the request BEFORE touching hardware (#268).
+    //
+    // `--provision` runs `provision_piv_via_ykman` and `open_pkcs11_signer`
+    // below, which PERMANENTLY generates a key in the selected PIV slot. A
+    // check placed after that — as an earlier revision of this fix had it —
+    // still refuses the bad window, but only once an irreversible side effect
+    // on the operator's token has already happened.
+    //
+    // "Validate before custody work" was the stated rule two rounds ago; it
+    // was applied to the seal and not to the provisioning above it. Cheap,
+    // reversible checks go first, always.
+    let now = chrono::Utc::now().to_rfc3339();
+    let validity = match Validity::checked(&now, args.valid_until.as_deref()) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("❌ {e}");
+            std::process::exit(1);
+        },
+    };
 
     // Parse each `--transport-hint kind=destination` into a typed hint. Split on
     // the FIRST '=' only — a destination may itself contain '=' (rare) but never
@@ -2258,13 +2291,12 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
             "🔏 signing the genesis key record on the token — tap the YubiKey if it blinks…\n"
         );
     }
-    let now = chrono::Utc::now().to_rfc3339();
     let created = match create_federation_identity(
         Arc::from(hw_signer),
         &args.identity_type,
         args.fed_key_id.clone(),
         args.label.as_deref(),
-        &now,
+        validity,
         None, // CLI: seal under key_id (back-compat); the Server USER path uses seal_alias
         &transport_hints,
     )

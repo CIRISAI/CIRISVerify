@@ -211,6 +211,7 @@ impl Invocation {
 
 /// Verification errors for [`verify_invocation`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum InvocationError {
     /// Fewer than 2 of the 3 holder signatures verified — the §9.2.1
     /// 2-of-3 threshold was not met.
