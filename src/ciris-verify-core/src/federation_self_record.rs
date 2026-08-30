@@ -406,7 +406,13 @@ pub async fn produce_self_key_record(
     // is one rule for what a valid window is. The parameter shape stays
     // `&str` + `Option<&str>` because these are the low-level producers; what
     // matters is that no unvalidated window can reach a signed envelope.
-    let _ = crate::federation_identity::Validity::checked(valid_from, valid_until)?;
+    // Bind the result — an earlier revision wrote `let _ =` here, so the
+    // canonicalization was computed and thrown away and the caller's ORIGINAL
+    // spelling was signed (#268 round 9). Validating without using the
+    // validated value is the same shape as documenting a check instead of
+    // performing one.
+    let validity = crate::federation_identity::Validity::checked(valid_from, valid_until)?;
+    let valid_until = validity.until();
 
     let key_id = signer.key_id().to_string();
     let ed_pub = signer.ed25519_public_key().await?;
@@ -533,7 +539,13 @@ pub async fn produce_scrubbed_key_record(
     // is one rule for what a valid window is. The parameter shape stays
     // `&str` + `Option<&str>` because these are the low-level producers; what
     // matters is that no unvalidated window can reach a signed envelope.
-    let _ = crate::federation_identity::Validity::checked(valid_from, valid_until)?;
+    // Bind the result — an earlier revision wrote `let _ =` here, so the
+    // canonicalization was computed and thrown away and the caller's ORIGINAL
+    // spelling was signed (#268 round 9). Validating without using the
+    // validated value is the same shape as documenting a check instead of
+    // performing one.
+    let validity = crate::federation_identity::Validity::checked(valid_from, valid_until)?;
+    let valid_until = validity.until();
 
     // Same rich envelope as `produce_self_key_record`, but over the TARGET's
     // fields — so persist recanonicalizes byte-identical bytes and the
@@ -1490,6 +1502,59 @@ mod expiry {
             signed.record.valid_until_in_envelope().as_deref(),
             Some("2027-08-18T22:00:00Z")
         );
+    }
+
+    /// **#268 round 9 — the producers must SIGN the canonical form.**
+    ///
+    /// Round 8 canonicalized inside `Validity` and the producers then wrote
+    /// `let _ = …`, discarding it, so the caller's original spelling reached
+    /// the envelope. Validating without using the validated value is the same
+    /// shape as documenting a check instead of performing one.
+    #[tokio::test]
+    async fn the_producer_signs_the_canonical_expiry() {
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        let signed =
+            produce_self_key_record(&id, "node", FROM, Some("2027-08-19T00:00:00+02:00"), &[])
+                .await
+                .unwrap();
+        assert_eq!(
+            signed.record.valid_until_in_envelope().as_deref(),
+            Some("2027-08-18T22:00:00Z"),
+            "the canonical form must reach the SIGNED envelope, not the caller's spelling"
+        );
+        assert_eq!(
+            signed.record.valid_until.as_deref(),
+            Some("2027-08-18T22:00:00Z")
+        );
+        // …and the record still satisfies its own binding.
+        assert!(signed.record.check_subject_binding().is_ok());
+    }
+
+    /// **#268 round 9 — normalizing the representation must not move the
+    /// instant.** Truncating to whole seconds could rewrite an expiry to
+    /// EARLIER than `valid_from`, signing an inverted window this very
+    /// validator would reject.
+    #[tokio::test]
+    async fn sub_second_precision_survives_canonicalization() {
+        use crate::federation_identity::Validity;
+        let from = "2026-08-19T00:00:00.100Z";
+        let v = Validity::checked(from, Some("2026-08-19T00:00:00.900Z")).unwrap();
+        let until = v.until().unwrap();
+
+        let f = chrono::DateTime::parse_from_rfc3339(from).unwrap();
+        let u = chrono::DateTime::parse_from_rfc3339(until).unwrap();
+        assert!(
+            u > f,
+            "canonicalization must not invert the window: {until} vs {from}"
+        );
+
+        // And the canonical form round-trips through the producer intact.
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        let signed = produce_self_key_record(&id, "node", from, Some(until), &[])
+            .await
+            .unwrap();
+        let signed_until = signed.record.valid_until_in_envelope().unwrap();
+        assert!(chrono::DateTime::parse_from_rfc3339(&signed_until).unwrap() > f);
     }
 
     /// **#268 — the low-level producers validate too.** Sealing `Validity`

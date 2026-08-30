@@ -48,6 +48,8 @@ check 'instrument skip_all'      '#[instrument(skip_all)]\n    fn g(seed: &[u8])
 # A u64 cannot carry a 32-byte key — audit::verify_spot_check's sampling seed
 # is legitimate to log, and is exempted BY TYPE rather than by name.
 check 'instrument u64 seed'      '#[instrument]\n    fn g(seed: u64) {}'                pass
+check 'qualified instrument'     '#[tracing::instrument]\n    fn g(password: &str) {}'     catch
+check 'qualified + pub(crate)'   '#[tracing::instrument]\n    pub(crate) fn g(dek: &[u8]) {}' catch
 
 # event! / span! carry fields exactly like info! (#268 round 8)
 check 'event! macro'          'tracing::event!(tracing::Level::INFO, password = %p);'   catch
@@ -61,5 +63,5 @@ check 'trailing comment'      'tracing::info!(alias = %a, "x"); // seed = thing'
 check 'public key_id'         'tracing::info!(key_id = %kid, "x");'                  pass
 check 'seed_dir path'         'tracing::info!(seed_dir = %d, "x");'                  pass
 
-[ "$fail" -eq 0 ] && echo "secret-logging guard self-test: 21/21 ✓"
+[ "$fail" -eq 0 ] && echo "secret-logging guard self-test: 23/23 ✓"
 exit "$fail"

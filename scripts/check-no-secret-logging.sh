@@ -128,7 +128,11 @@ def scan_macro_args(src, open_at):
 
 
 SCAN_ROOT = sys.argv[1] if len(sys.argv) > 1 else "src"
-INSTRUMENT = re.compile(r'#\[instrument([^\]]*)\]\s*(?:pub\s+)?(?:async\s+)?fn\s+\w+\s*\(', re.S)
+# `#[tracing::instrument]` is the normal fully-qualified spelling and was
+# invisible to a bare `#\[instrument` match (#268 round 9).
+INSTRUMENT = re.compile(
+    r'#\[(?:tracing::)?instrument([^\]]*)\]\s*(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?fn\s+\w+\s*\(',
+    re.S)
 
 def instrumented_params(src, m):
     """Secret-shaped params an `#[instrument]` fn records but does not skip.

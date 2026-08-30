@@ -129,8 +129,16 @@ impl<'a> Validity<'a> {
             return Ok(Self {
                 from,
                 until: Some(
+                    // `AutoSi`, NOT `Secs`. Truncating to whole seconds could
+                    // move the expiry EARLIER than `valid_from` — for
+                    // `from = ...00.100Z` and `until = ...00.900Z` the
+                    // ordering check above passes on the parsed instants and
+                    // then truncation rewrites `until` to `...00Z`, signing an
+                    // inverted window that this very validator would reject
+                    // (#268 round 9). Normalizing the REPRESENTATION must not
+                    // change the INSTANT.
                     end.with_timezone(&chrono::Utc)
-                        .to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
                 ),
             });
         }
