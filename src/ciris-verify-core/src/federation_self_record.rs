@@ -394,6 +394,20 @@ pub async fn produce_self_key_record(
     valid_until: Option<&str>,
     transport_hints: &[TransportHint],
 ) -> Result<SignedKeyRecord, VerifyError> {
+    // #268: validate the window HERE, not only at the higher-level ceremony.
+    // These producers are public and are the direct minting path, so a caller
+    // reaching them with `Some("soon")` — or an expiry before `valid_from` —
+    // would otherwise get it copied into the envelope and SIGNED. Sealing
+    // `Validity` protected `create_federation_identity` and left this door
+    // open, which is the same optional-check lesson (#252 rule 3) this pull
+    // request has now had to learn four times.
+    //
+    // Routed through `Validity::checked` rather than re-implemented, so there
+    // is one rule for what a valid window is. The parameter shape stays
+    // `&str` + `Option<&str>` because these are the low-level producers; what
+    // matters is that no unvalidated window can reach a signed envelope.
+    let _ = crate::federation_identity::Validity::checked(valid_from, valid_until)?;
+
     let key_id = signer.key_id().to_string();
     let ed_pub = signer.ed25519_public_key().await?;
     let mldsa_pub = signer.mldsa65_public_key().await?;
@@ -507,6 +521,20 @@ pub async fn produce_scrubbed_key_record(
     valid_until: Option<&str>,
     transport_hints: &[TransportHint],
 ) -> Result<SignedKeyRecord, VerifyError> {
+    // #268: validate the window HERE, not only at the higher-level ceremony.
+    // These producers are public and are the direct minting path, so a caller
+    // reaching them with `Some("soon")` — or an expiry before `valid_from` —
+    // would otherwise get it copied into the envelope and SIGNED. Sealing
+    // `Validity` protected `create_federation_identity` and left this door
+    // open, which is the same optional-check lesson (#252 rule 3) this pull
+    // request has now had to learn four times.
+    //
+    // Routed through `Validity::checked` rather than re-implemented, so there
+    // is one rule for what a valid window is. The parameter shape stays
+    // `&str` + `Option<&str>` because these are the low-level producers; what
+    // matters is that no unvalidated window can reach a signed envelope.
+    let _ = crate::federation_identity::Validity::checked(valid_from, valid_until)?;
+
     // Same rich envelope as `produce_self_key_record`, but over the TARGET's
     // fields — so persist recanonicalizes byte-identical bytes and the
     // scrub-signature (below) verifies against `scrub_key_id`'s pinned pubkey.
@@ -1437,6 +1465,31 @@ mod expiry {
             hex::encode(Sha256::digest(&canonical)),
             r.original_content_hash
         );
+    }
+
+    /// **#268 — the low-level producers validate too.** Sealing `Validity`
+    /// protected the higher-level ceremony and left this door open; these are
+    /// public and are the direct minting path, so a bad window reaching them
+    /// would be copied into the envelope and SIGNED.
+    #[tokio::test]
+    async fn the_producer_refuses_an_invalid_window() {
+        let id = HybridSigningIdentity::generate("node-1").unwrap();
+        for bad in [
+            Some("soon"),                 // not an instant
+            Some("2020-01-01T00:00:00Z"), // closes before it opens
+            Some(""),                     // empty
+        ] {
+            assert!(
+                produce_self_key_record(&id, "node", FROM, bad, &[])
+                    .await
+                    .is_err(),
+                "valid_until = {bad:?} must not reach a signed envelope"
+            );
+        }
+        // …and a good window still mints.
+        assert!(produce_self_key_record(&id, "node", FROM, Some(UNTIL), &[])
+            .await
+            .is_ok());
     }
 
     /// **The attack the binding refuses (#268 P1).** A serialized record

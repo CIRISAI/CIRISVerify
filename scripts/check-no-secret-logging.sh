@@ -80,7 +80,24 @@ for f in sorted(pathlib.Path("src").rglob("*.rs")):
             i += 1
         args = src[m.end():i-1]
         for line in args.split("\n"):
-            code = line.split("//")[0]
+            # Strip trailing comments WITHOUT cutting at a `//` inside a string
+            # literal (#268). A naive `split("//")[0]` discarded the rest of
+            # `info!("https://example.invalid seed={:?}", seed)` — the URL ate
+            # the secret argument. The paren scan above already respects
+            # literals; this has to as well, or the two disagree about where
+            # the code ends.
+            code, in_s, k = line, False, 0
+            while k < len(line) - 1:
+                c = line[k]
+                if c == "\\" and in_s:
+                    k += 2
+                    continue
+                if c == '"':
+                    in_s = not in_s
+                elif not in_s and c == "/" and line[k + 1] == "/":
+                    code = line[:k]
+                    break
+                k += 1
             # Apply the allowlist to the MATCHED VALUE, not the whole line
             # (#268 P2). Line-scoped allowlisting meant
             # `info!(seed = %seed, key_id = %key_id)` was suppressed entirely,
