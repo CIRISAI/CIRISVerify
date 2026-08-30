@@ -40,10 +40,19 @@ check 'url with // inside'    'tracing::info!("https://x.invalid seed={:?}", see
 check 'paren in block comment' 'tracing::info!(/* note) */ seed = %s, "x");'          catch
 check 'paren in line comment' 'tracing::info!(\n        // note)\n        seed = %s, "x");' catch
 
+# #[instrument] records every arg unless skipped — the attribute IS the log
+# statement, with no macro anywhere (#268 round 7)
+check 'instrument records seed'  '#[instrument]\n    fn g(seed: &[u8]) {}'              catch
+check 'instrument skip(seed)'    '#[instrument(skip(seed))]\n    fn g(seed: &[u8]) {}'  pass
+check 'instrument skip_all'      '#[instrument(skip_all)]\n    fn g(seed: &[u8]) {}'    pass
+# A u64 cannot carry a 32-byte key — audit::verify_spot_check's sampling seed
+# is legitimate to log, and is exempted BY TYPE rather than by name.
+check 'instrument u64 seed'      '#[instrument]\n    fn g(seed: u64) {}'                pass
+
 # MUST NOT FIRE — legitimate code, so the guard stays usable
 check 'trailing comment'      'tracing::info!(alias = %a, "x"); // seed = thing'     pass
 check 'public key_id'         'tracing::info!(key_id = %kid, "x");'                  pass
 check 'seed_dir path'         'tracing::info!(seed_dir = %d, "x");'                  pass
 
-[ "$fail" -eq 0 ] && echo "secret-logging guard self-test: 13/13 ✓"
+[ "$fail" -eq 0 ] && echo "secret-logging guard self-test: 17/17 ✓"
 exit "$fail"

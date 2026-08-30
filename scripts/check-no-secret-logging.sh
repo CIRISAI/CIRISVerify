@@ -121,10 +121,57 @@ def scan_macro_args(src, open_at):
 
 
 SCAN_ROOT = sys.argv[1] if len(sys.argv) > 1 else "src"
+INSTRUMENT = re.compile(r'#\[instrument([^\]]*)\]\s*(?:pub\s+)?(?:async\s+)?fn\s+\w+\s*\(', re.S)
+
+def instrumented_params(src, m):
+    """Secret-shaped params an `#[instrument]` fn records but does not skip.
+
+    `#[instrument]` records EVERY argument as a span field unless listed in
+    `skip`/`skip_all`, with no logging macro anywhere — so scanning only the
+    macros misses it entirely (#268). The attribute IS the log statement.
+    """
+    attr = m.group(1)
+    if "skip_all" in attr:
+        return []
+    skipped = set(re.findall(r'[\w]+', attr[attr.index("skip"):]) if "skip" in attr else [])
+    # balanced param list
+    i, depth = m.end(), 1
+    while i < len(src) and depth:
+        depth += (src[i] == "(") - (src[i] == ")")
+        i += 1
+    params = src[m.end():i-1]
+    out = []
+    for part in params.split(","):
+        if ":" not in part:
+            continue
+        name, ty = part.split(":", 1)
+        name = name.strip().lstrip("&").replace("mut ", "").strip()
+        ty = ty.strip()
+        if not name or name == "self" or name in skipped:
+            continue
+        if not re.fullmatch(r'(?:%s)' % NAMES, name, re.I) or ALLOW.search(name):
+            continue
+        # A primitive integer cannot CARRY key material — a 32-byte key does
+        # not fit in a u64. `audit::verify_spot_check(seed: u64)` is a sampling
+        # seed for reproducible spot checks, and logging it is useful rather
+        # than dangerous. Byte- and string-typed params are still caught, which
+        # is where real key material lives.
+        if re.fullmatch(r'(?:u|i)(?:8|16|32|64|128|size)', ty):
+            continue
+        out.append(name)
+    return out
+
+
 for f in sorted(pathlib.Path(SCAN_ROOT).rglob("*.rs")):
     if "/tests/" in str(f):
         continue
     src = f.read_text(errors="ignore")
+    for m in INSTRUMENT.finditer(src):
+        for name in instrumented_params(src, m):
+            ln = src[:m.start()].count("\n") + 1
+            bad.append(
+                f"  {f}:{ln}: #[instrument] records `{name}` (add it to skip(...))"
+            )
     for m in MACRO.finditer(src):
         args = scan_macro_args(src, m.end())
         for hit in SECRET.finditer(args):

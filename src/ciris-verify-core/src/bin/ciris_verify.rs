@@ -2193,6 +2193,26 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
     use ciris_verify_core::federation_identity::{create_federation_identity, Validity};
     use ciris_verify_core::federation_self_record::TransportHint;
 
+    // Validate the request BEFORE touching hardware (#268).
+    //
+    // `--provision` runs `provision_piv_via_ykman` and `open_pkcs11_signer`
+    // below, which PERMANENTLY generates a key in the selected PIV slot. A
+    // check placed after that — as an earlier revision of this fix had it —
+    // still refuses the bad window, but only once an irreversible side effect
+    // on the operator's token has already happened.
+    //
+    // "Validate before custody work" was the stated rule two rounds ago; it
+    // was applied to the seal and not to the provisioning above it. Cheap,
+    // reversible checks go first, always.
+    let now = chrono::Utc::now().to_rfc3339();
+    let validity = match Validity::checked(&now, args.valid_until.as_deref()) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("❌ {e}");
+            std::process::exit(1);
+        },
+    };
+
     // Parse each `--transport-hint kind=destination` into a typed hint. Split on
     // the FIRST '=' only — a destination may itself contain '=' (rare) but never
     // the leading kind token. These end up inside the SIGNED envelope (#172).
@@ -2271,19 +2291,6 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
             "🔏 signing the genesis key record on the token — tap the YubiKey if it blinks…\n"
         );
     }
-    let now = chrono::Utc::now().to_rfc3339();
-    // Validate the window BEFORE opening or minting the sealed PQC key —
-    // a refusal afterwards has already done the expensive, side-effecting
-    // half, and would emit a signed record carrying an expiry no consumer can
-    // evaluate (#268).
-    let validity = match Validity::checked(&now, args.valid_until.as_deref()) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("❌ {e}");
-            std::process::exit(1);
-        },
-    };
-
     let created = match create_federation_identity(
         Arc::from(hw_signer),
         &args.identity_type,
