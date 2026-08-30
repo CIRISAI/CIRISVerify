@@ -136,6 +136,7 @@ pub struct CustodyVerdict {
 
 /// Why a custody attestation was rejected (fail-closed — admit only on `Ok`).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum CustodyError {
     /// Object is not an [`ACCORD_CUSTODY_ATTESTATION_KIND`].
     WrongKind {

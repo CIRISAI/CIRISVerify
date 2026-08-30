@@ -636,6 +636,14 @@ enum IdentityAction {
         /// for an ordinary hintless identity.
         #[arg(long = "transport-hint")]
         transport_hint: Vec<String>,
+        /// RFC-3339 `valid_until` — when this key STOPS being valid
+        /// (CIRISVerify#267). Omit for no self-asserted expiry, which is the
+        /// right default for a long-lived identity key.
+        ///
+        /// When set it rides INSIDE the scrub-signed registration envelope, so
+        /// it cannot be stripped or extended without breaking the signature.
+        #[arg(long = "valid-until")]
+        valid_until: Option<String>,
     },
 }
 
@@ -2127,6 +2135,9 @@ struct IdentityCreateArgs {
     pin_policy: String,
     management_key: String,
     transport_hint: Vec<String>,
+    /// RFC-3339 `valid_until` — when this key STOPS being valid (#267).
+    /// `None` = no self-asserted expiry.
+    valid_until: Option<String>,
 }
 
 async fn run_identity(action: IdentityAction, json_output: bool) {
@@ -2147,6 +2158,7 @@ async fn run_identity(action: IdentityAction, json_output: bool) {
             pin_policy,
             management_key,
             transport_hint,
+            valid_until,
         } => {
             run_identity_create(
                 IdentityCreateArgs {
@@ -2164,6 +2176,7 @@ async fn run_identity(action: IdentityAction, json_output: bool) {
                     pin_policy,
                     management_key,
                     transport_hint,
+                    valid_until,
                 },
                 json_output,
             )
@@ -2265,6 +2278,7 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
         args.fed_key_id.clone(),
         args.label.as_deref(),
         &now,
+        args.valid_until.as_deref(),
         None, // CLI: seal under key_id (back-compat); the Server USER path uses seal_alias
         &transport_hints,
     )

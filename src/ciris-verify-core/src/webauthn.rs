@@ -41,6 +41,7 @@ pub enum WebauthnAlg {
 
 /// Why a passkey assertion failed verification. Coarse by design.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum WebauthnError {
     /// `clientDataJSON` was not valid JSON / missing fields.
     ClientDataParse,

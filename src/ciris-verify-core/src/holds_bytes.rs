@@ -37,6 +37,7 @@ use crate::security::constant_time_eq;
 /// Typed failure modes for [`verify_holds_bytes`]. All map cleanly
 /// into the §10.0.1 wire envelope via [`From`].
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum HoldsBytesError {
     /// Expected hex string doesn't pass §0.6 canonicalization
     /// (wrong length, uppercase, `0x` prefix, non-hex char).

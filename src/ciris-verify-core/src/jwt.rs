@@ -448,6 +448,7 @@ fn verify_classical_only(
 
 /// JWT parsing errors.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum JwtError {
     /// Invalid JWT format.
     #[error("Invalid JWT format: {0}")]

@@ -58,54 +58,68 @@ impl ConformanceReport {
     }
 
     /// Log the full report to platform logging
+    /// Emit the report through `tracing`, per the CIRIS Logging Standard
+    /// (CIRISVerify#265).
+    ///
+    /// This was a box-drawing ASCII table at one `tracing` event per line —
+    /// roughly fifteen events for one report, with individual table rows on
+    /// the WARN channel. Two rules it broke:
+    ///
+    /// * **§2, one event one line.** A report is one event. Fields belong in
+    ///   `tracing`'s structured model, not in padded columns, so counting and
+    ///   filtering do not require a regex over box-drawing characters.
+    /// * **§1.1, no routine progress on the failure channels.** A passing
+    ///   test's row is not a warning. An operator's first move is
+    ///   `grep -E 'WARN|ERROR'`, and table borders on those channels destroy
+    ///   it.
+    ///
+    /// Levels now: the summary is one `INFO` (a state a person would
+    /// narrate); per-test detail is `DEBUG` (proportional to test count, so by
+    /// §1 it is per-loop detail); a failing test is one `WARN` naming what
+    /// failed; an overall failure is one `ERROR`.
     pub fn log_report(&self) {
-        tracing::info!("╔══════════════════════════════════════════════════════════════╗");
-        tracing::info!("║        CIRISVERIFY PLATFORM CONFORMANCE TEST REPORT          ║");
-        tracing::info!("╠══════════════════════════════════════════════════════════════╣");
-        tracing::info!("║ Version:  {:<50} ║", self.library_version);
-        tracing::info!("║ Platform: {:<50} ║", self.platform);
-        tracing::info!("║ Backend:  {:<50} ║", self.hardware_backend);
-        tracing::info!("╠══════════════════════════════════════════════════════════════╣");
+        let (passed, failed, total) = (self.passed(), self.failed(), self.total());
 
+        // Per-test detail is proportional to test count — DEBUG, not INFO.
         for test in &self.tests {
-            let status = if test.passed { "✓ PASS" } else { "✗ FAIL" };
-            let name_truncated = if test.name.len() > 35 {
-                &test.name[..35]
-            } else {
-                test.name
-            };
-            tracing::info!(
-                "║ {} {:35} {:>6}ms ║",
-                status,
-                name_truncated,
-                test.duration_ms
+            tracing::debug!(
+                test = %test.name,
+                passed = test.passed,
+                duration_ms = test.duration_ms,
+                "conformance test complete"
             );
-            if !test.passed {
-                // Log failure message on next line
-                let msg_truncated = if test.message.len() > 56 {
-                    format!("{}...", &test.message[..53])
-                } else {
-                    test.message.clone()
-                };
-                tracing::warn!("║   └─ {:<56} ║", msg_truncated);
-            }
         }
 
-        tracing::info!("╠══════════════════════════════════════════════════════════════╣");
-        tracing::info!(
-            "║ TOTAL: {} passed, {} failed, {} total{:<21}║",
-            self.passed(),
-            self.failed(),
-            self.total(),
-            ""
-        );
+        // A failing test is a real WARN: one line, naming what failed and what
+        // the failing check said. Bounded at the emitting site (§2.1).
+        for test in self.tests.iter().filter(|t| !t.passed) {
+            let mut message = test.message.clone();
+            message.truncate(200);
+            tracing::warn!(
+                test = %test.name,
+                duration_ms = test.duration_ms,
+                message = %message,
+                "conformance test FAILED"
+            );
+        }
 
-        if self.failed() == 0 {
-            tracing::info!("║                    ✓ ALL TESTS PASSED                        ║");
+        if failed == 0 {
+            tracing::info!(
+                version = %self.library_version,
+                platform = %self.platform,
+                backend = %self.hardware_backend,
+                passed, total,
+                "platform conformance: all tests passed"
+            );
         } else {
-            tracing::error!("║                    ✗ SOME TESTS FAILED                       ║");
+            tracing::error!(
+                version = %self.library_version,
+                platform = %self.platform,
+                backend = %self.hardware_backend,
+                passed, failed, total,
+                "platform conformance: {failed} of {total} tests FAILED"
+            );
         }
-        tracing::info!("╚══════════════════════════════════════════════════════════════╝");
     }
 }
 

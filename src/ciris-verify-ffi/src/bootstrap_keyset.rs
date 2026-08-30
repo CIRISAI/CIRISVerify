@@ -125,6 +125,7 @@ pub struct LoadedSteward {
 /// Errors from loading or decoding a keyset (embedded or runtime).
 #[allow(dead_code)] // SignatureRequired/RootKeyMismatch/SignatureInvalid: see load_signed_keyset (WS-2)
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum KeysetError {
     /// JSON parse error.
     ParseError(String),

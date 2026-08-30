@@ -4,6 +4,7 @@ use thiserror::Error;
 
 /// Errors that can occur during verification.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum VerifyError {
     /// Binary integrity check failed - possible tampering.
     #[error("Binary integrity check failed")]

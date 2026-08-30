@@ -203,6 +203,7 @@ pub struct KeyGrantWrapV2 {
 /// failure modes report `WrapUnverified` via an opaque AEAD tag
 /// mismatch, matching the AEAD opaque-failure discipline.
 #[derive(Debug)]
+#[non_exhaustive]
 pub enum KeyGrantError {
     /// CSPRNG / ECDH / KDF / AEAD operation failed.
     Crypto(CryptoError),

@@ -60,10 +60,15 @@ impl WindowsTpmSigner {
     pub fn new(alias: impl Into<String>) -> Result<Self, KeyringError> {
         let alias = alias.into();
 
-        // Log experimental warning
-        tracing::warn!("=== EXPERIMENTAL FEATURE: Windows TPM via Platform Crypto Provider ===");
-        tracing::warn!("This feature is experimental and may not work correctly on all systems.");
-        tracing::warn!("Please report issues at https://github.com/CIRISAI/CIRISVerify/issues");
+        // One event, one line (CIRIS Logging Standard §2; CIRISVerify#265).
+        // This was three consecutive WARN lines forming a banner — and verify's
+        // default filter is `warn`, so it was on for every user, three lines
+        // deep, every time a signer was constructed. A banner is not a failure.
+        tracing::warn!(
+            issues = "https://github.com/CIRISAI/CIRISVerify/issues",
+            "experimental: Windows TPM via Platform Crypto Provider — may not \
+             work on all systems"
+        );
 
         #[cfg(all(feature = "tpm-windows", target_os = "windows"))]
         {

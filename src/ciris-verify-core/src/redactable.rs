@@ -131,6 +131,7 @@ pub struct RedactableCommitment {
 
 /// Why a redactable commitment did not verify.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RedactionError {
     /// A disclosure names a slot outside the committed member set — including
     /// the "redact by omission" attempt of appending a member after signing.

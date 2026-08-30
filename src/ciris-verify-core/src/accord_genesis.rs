@@ -103,7 +103,13 @@ pub async fn produce_accord_holder_record(
 ) -> Result<SignedKeyRecord, VerifyError> {
     // An accord holder is a custody principal, not a dialed-into network node —
     // no transport hint (#172).
-    produce_self_key_record(holder, IDENTITY_TYPE_ACCORD_HOLDER, valid_from, &[]).await
+    //
+    // `valid_until: None` deliberately (#267): an accord holder key is the
+    // constitutional kill-switch custody root, and a self-asserted expiry on
+    // it would create a date after which the accord silently has fewer
+    // holders than its quorum needs. Rotation is the m-of-n membership-change
+    // ceremony (`build_accord_membership_change`), never a timeout.
+    produce_self_key_record(holder, IDENTITY_TYPE_ACCORD_HOLDER, valid_from, None, &[]).await
 }
 
 /// Runbook §7 — the canonical entrenched-`family` envelope.
@@ -185,6 +191,7 @@ pub async fn founder_member(signer: &dyn SelfSigner) -> Result<ThresholdMember, 
 /// Why an accord-family genesis assembly was rejected. Every variant is a hard
 /// fail-closed reject.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum AccordGenesisError {
     /// The envelope is malformed (missing/!array `members`, or a member with no
     /// `key_id`).

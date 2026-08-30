@@ -530,6 +530,7 @@ fn classify_scope(scope: &str) -> ScopeClass {
 
 /// Why a `delegates_to` scope set was rejected.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ScopeSplitError {
     /// The delegate's `identity_type` is `node`-only (no `agent`/brain) but the
     /// delegation carries an agency-class scope — §1.3 violation.

@@ -104,6 +104,11 @@ fn kex_error_envelope(e: &KexError) -> serde_json::Value {
         KexError::AlgorithmMismatch { .. } => "ALGORITHM_MISMATCH",
         KexError::MlKemOnlyRejected => "MLKEM_ONLY_REJECTED",
         KexError::Crypto(_) => "CRYPTO_ERROR",
+        // KexError is #[non_exhaustive] (CIRISVerify#257) so a new upstream
+        // variant cannot break this build. It surfaces as a generic code with
+        // the real message preserved below, rather than a compile failure in
+        // every consumer.
+        _ => "KEX_ERROR",
     };
     serde_json::json!({
         "error": {

@@ -1048,7 +1048,7 @@ mod tests {
             identity_type: "node".to_string(),
             roles,
         };
-        let mut rec = produce_scrubbed_key_record(scrubbers[0], target, TS, &[])
+        let mut rec = produce_scrubbed_key_record(scrubbers[0], target, TS, None, &[])
             .await
             .unwrap();
         for s in &scrubbers[1..] {

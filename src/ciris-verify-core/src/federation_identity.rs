@@ -83,12 +83,18 @@ pub struct CreatedIdentity {
 ///
 /// [`VerifyError`] if the signer is not Ed25519, the pubkey/seed cannot be
 /// read, or signing fails.
+// The ceremony genuinely takes this many distinct inputs (signer, identity
+// kind, two optional identifiers, a validity window, a seal alias, transport
+// hints). Every pair is type-distinguished, so a mis-ordered call does not
+// compile; a wrapper struct would add API surface without adding safety.
+#[allow(clippy::too_many_arguments)]
 pub async fn create_federation_identity(
     hw_signer: Arc<dyn HardwareSigner>,
     identity_type: &str,
     fed_key_id: Option<String>,
     label: Option<&str>,
     valid_from: &str,
+    valid_until: Option<&str>,
     seal_alias: Option<&str>,
     transport_hints: &[TransportHint],
 ) -> Result<CreatedIdentity, VerifyError> {
@@ -116,8 +122,14 @@ pub async fn create_federation_identity(
     );
 
     let identity = HardwareRootedIdentity::new(key_id.clone(), hw_signer, Arc::from(mldsa))?;
-    let record =
-        produce_self_key_record(&identity, identity_type, valid_from, transport_hints).await?;
+    let record = produce_self_key_record(
+        &identity,
+        identity_type,
+        valid_from,
+        valid_until,
+        transport_hints,
+    )
+    .await?;
     let body = serde_json::to_value(&record).map_err(|e| VerifyError::IntegrityError {
         message: format!("serialize key record: {e}"),
     })?;
@@ -181,6 +193,7 @@ mod tests {
             Some("Eric Moore"),
             "2026-06-18T00:00:00Z",
             None,
+            None,
             &[],
         )
         .await
@@ -234,6 +247,7 @@ mod tests {
             Some(recorded.clone()),
             Some("Eric Moore"),
             "2026-06-18T00:00:00Z",
+            None,
             Some(seal_alias),
             &[],
         )
@@ -281,6 +295,7 @@ mod tests {
             Some("canonical-server-1".to_string()),
             None,
             "2026-07-02T00:00:00Z",
+            None,
             None,
             &[TransportHint {
                 kind: "ip".to_string(),

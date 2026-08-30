@@ -153,6 +153,7 @@ pub struct ProvenanceChain {
 /// Why a provenance chain was rejected. Verifying produces `Ok(())` or
 /// exactly one of these — no third state.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ProvenanceError {
     /// **The signed envelope is about a DIFFERENT subject than the link
     /// claims** (CIRISVerify#252), or carries no binding at all.
@@ -756,10 +757,15 @@ mod tests {
         use crate::self_at_login::HybridSigningIdentity;
 
         let steward = HybridSigningIdentity::generate("steward-root").unwrap();
-        let signed =
-            produce_self_key_record(&steward, STEWARD_IDENTITY_TYPE, "2026-07-15T00:00:00Z", &[])
-                .await
-                .unwrap();
+        let signed = produce_self_key_record(
+            &steward,
+            STEWARD_IDENTITY_TYPE,
+            "2026-07-15T00:00:00Z",
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
         let r = &signed.record;
 
         // Map the producer's self-signed KeyRecord onto a provenance terminus.

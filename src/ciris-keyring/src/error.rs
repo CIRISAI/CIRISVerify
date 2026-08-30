@@ -4,6 +4,7 @@ use thiserror::Error;
 
 /// Errors that can occur during keyring operations.
 #[derive(Debug, Error)]
+#[non_exhaustive]
 pub enum KeyringError {
     /// No hardware security module available on this platform.
     #[error("No hardware security module available on this platform")]

@@ -44,6 +44,7 @@ use serde_json::{Map, Value};
 /// A subject binding did not hold. Every variant is a refusal.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum SubjectBindingError {
     /// The signed object is not a JSON object, so it carries no binding at all.
     NotAnObject {

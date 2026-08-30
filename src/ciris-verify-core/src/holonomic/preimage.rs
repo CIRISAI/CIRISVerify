@@ -67,6 +67,7 @@ const ED25519_PUBKEY_LEN: usize = 32;
 /// Why a §19 holonomic verification failed. Coarse by design (enough for audit,
 /// never granular enough to aid forgery — the opaque-failure discipline).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum HolonomicError {
     /// The Ed25519 (classical) half did not verify against the pinned pubkey.
     ClassicalSignatureInvalid,

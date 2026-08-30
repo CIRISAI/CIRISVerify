@@ -224,6 +224,16 @@ pub unsafe extern "C" fn ciris_verify_unwrap_dek(
                     "message": "key_grant unwrap: underlying crypto operation failed"
                 }
             }),
+            // KeyGrantError is #[non_exhaustive] (CIRISVerify#257): a new
+            // upstream variant surfaces here with its own message rather than
+            // breaking every consumer's build. Fail-closed either way — the
+            // DEK is not returned.
+            Err(other) => serde_json::json!({
+                "error": {
+                    "code": "KEY_GRANT_ERROR",
+                    "message": other.to_string()
+                }
+            }),
         };
 
         let json = match serde_json::to_vec(&env) {

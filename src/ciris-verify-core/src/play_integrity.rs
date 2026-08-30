@@ -177,6 +177,7 @@ pub type Result<T> = std::result::Result<T, PlayIntegrityError>;
 
 /// Play Integrity errors.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum PlayIntegrityError {
     /// Registry not reachable.
     NetworkError(String),

@@ -17,6 +17,7 @@ pub use ciris_verify_core::security::function_integrity::{
 
 /// Error during manifest generation.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum ManifestError {
     #[error("Binary parsing error: {0}")]
     ParseError(#[from] ParseError),

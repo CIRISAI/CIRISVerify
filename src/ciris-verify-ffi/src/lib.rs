@@ -1834,6 +1834,7 @@ unsafe fn check_capability_inner(
 ///   "identity_type": "user",               // "user" | "agent"
 ///   "fed_key_id": null,                     // optional; default sha256(ed_pubkey) hex
 ///   "valid_from": "2026-06-18T00:00:00Z",  // optional RFC-3339; default host-now
+///   "valid_until": "2027-06-18T00:00:00Z", // optional RFC-3339; default no expiry (#267)
 ///   "write_outbox": true                    // also drop it in <ciris>/ceg/outbox
 /// }
 /// ```
@@ -1917,6 +1918,12 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
             .and_then(|v| v.as_str())
             .map(str::to_string)
             .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        // #267: optional expiry. Absent means no self-asserted expiry, which
+        // reproduces the pre-14.0 envelope bytes exactly.
+        let valid_until = cfg
+            .get("valid_until")
+            .and_then(|v| v.as_str())
+            .map(str::to_string);
         let write_outbox = cfg
             .get("write_outbox")
             .and_then(serde_json::Value::as_bool)
@@ -1949,6 +1956,7 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
                 fed_key_id,
                 label.as_deref(),
                 &valid_from,
+                valid_until.as_deref(),
                 seal_alias.as_deref(),
                 &transport_hints,
             )

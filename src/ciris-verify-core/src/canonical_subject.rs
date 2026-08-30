@@ -70,6 +70,7 @@ pub enum SubjectKind {
 
 /// Why a subject failed to parse as a canonical-hash subject.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum SubjectError {
     /// No `canonical:sha256:` prefix. Carries the classification so a caller
     /// can distinguish the security-relevant bare-hex case from a plain
