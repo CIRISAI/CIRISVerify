@@ -11,9 +11,11 @@
 # window of trailing lines, which would flag ordinary code that merely follows
 # a log call. It matches an interpolated secret-shaped binding (`seed = %x`),
 # not the mention of the word, so `warn!("no identity key loaded")` stays legal.
+# Optional argv[1]: directory to scan (default `src`). Used by
+# scripts/test-secret-logging-guard.sh to run the matrix against fixtures.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-exec python3 - "$@" <<'PY'
+exec python3 - "${1:-src}" <<'PY'
 import re, sys, pathlib
 
 NAMES = (r'seed|secret|private_key|privkey|priv_key|password|passphrase'
@@ -42,73 +44,95 @@ ALLOW = re.compile(r'key_id|pubkey|public_key|_pub\b|seed_dir|seed_file|seed_pat
 MACRO = re.compile(r'\b(?:tracing::)?(warn|info|error|debug|trace)!\(')
 
 bad = []
-for f in sorted(pathlib.Path("src").rglob("*.rs")):
+
+def scan_macro_args(src, open_at):
+    """Return the macro's argument text, comments removed, literals kept.
+
+    ONE pass that understands strings, chars, line comments and (nesting)
+    block comments — rather than a paren counter and a comment stripper that
+    each know about half the syntax and disagree about where the code ends.
+
+    That disagreement was not hypothetical: review found the counter fooled by
+    a `)` inside a string, then the stripper cutting at a `//` inside a URL,
+    then the counter fooled by a `)` inside a comment — three instances of one
+    class, fixed one at a time. This function is the class.
+
+    String CONTENTS are preserved, because a secret can legitimately appear
+    inside a format string (`"seed={seed:?}"` is Rust 2021 implicit capture).
+    Comment contents are dropped, because a comment cannot log anything.
+    """
+    out = []
+    i, depth = open_at, 1
+    n = len(src)
+    while i < n and depth:
+        c = src[i]
+        # line comment
+        if c == "/" and i + 1 < n and src[i + 1] == "/":
+            while i < n and src[i] != "\n":
+                i += 1
+            continue
+        # block comment (Rust's nest)
+        if c == "/" and i + 1 < n and src[i + 1] == "*":
+            nest, i = 1, i + 2
+            while i < n and nest:
+                if src.startswith("/*", i):
+                    nest, i = nest + 1, i + 2
+                elif src.startswith("*/", i):
+                    nest, i = nest - 1, i + 2
+                else:
+                    i += 1
+            continue
+        # string literal — copied out, parens inside do not count
+        if c == '"':
+            out.append(c)
+            i += 1
+            while i < n:
+                if src[i] == "\\":
+                    out.append(src[i:i + 2])
+                    i += 2
+                    continue
+                out.append(src[i])
+                if src[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        # char literal, but not a lifetime (`'a`)
+        if c == "'" and not (i + 1 < n and src[i + 1].isalpha()
+                             and (i + 2 >= n or src[i + 2] != "'")):
+            out.append(c)
+            i += 1
+            while i < n:
+                if src[i] == "\\":
+                    out.append(src[i:i + 2])
+                    i += 2
+                    continue
+                out.append(src[i])
+                if src[i] == "'":
+                    i += 1
+                    break
+                i += 1
+            continue
+        depth += (c == "(") - (c == ")")
+        if depth:
+            out.append(c)
+        i += 1
+    return "".join(out)
+
+
+SCAN_ROOT = sys.argv[1] if len(sys.argv) > 1 else "src"
+for f in sorted(pathlib.Path(SCAN_ROOT).rglob("*.rs")):
     if "/tests/" in str(f):
         continue
     src = f.read_text(errors="ignore")
     for m in MACRO.finditer(src):
-        # Count parens OUTSIDE string and char literals (#268 P2). A naive
-        # counter is fooled by a format string containing an unmatched paren —
-        # `info!("seed bytes): {:?}", seed)` ends the scan at the `)` inside
-        # the literal, so the real argument is never inspected. That is a
-        # bypass, not a false negative on an edge case.
-        i, depth = m.end(), 1
-        in_str = in_chr = False
-        while i < len(src) and depth:
-            c = src[i]
-            if c == "\\" and (in_str or in_chr):
-                i += 2                      # skip the escaped char whole
+        args = scan_macro_args(src, m.end())
+        for hit in SECRET.finditer(args):
+            if ALLOW.search(hit.group(0)):
                 continue
-            if in_str:
-                if c == '"':
-                    in_str = False
-            elif in_chr:
-                if c == "'":
-                    in_chr = False
-            elif c == '"':
-                in_str = True
-            elif c == "'":
-                # a lifetime (`'a`) is not a char literal
-                if i + 1 < len(src) and src[i + 1].isalpha() and (
-                    i + 2 >= len(src) or src[i + 2] != "'"
-                ):
-                    pass
-                else:
-                    in_chr = True
-            else:
-                depth += (c == "(") - (c == ")")
-            i += 1
-        args = src[m.end():i-1]
-        for line in args.split("\n"):
-            # Strip trailing comments WITHOUT cutting at a `//` inside a string
-            # literal (#268). A naive `split("//")[0]` discarded the rest of
-            # `info!("https://example.invalid seed={:?}", seed)` — the URL ate
-            # the secret argument. The paren scan above already respects
-            # literals; this has to as well, or the two disagree about where
-            # the code ends.
-            code, in_s, k = line, False, 0
-            while k < len(line) - 1:
-                c = line[k]
-                if c == "\\" and in_s:
-                    k += 2
-                    continue
-                if c == '"':
-                    in_s = not in_s
-                elif not in_s and c == "/" and line[k + 1] == "/":
-                    code = line[:k]
-                    break
-                k += 1
-            # Apply the allowlist to the MATCHED VALUE, not the whole line
-            # (#268 P2). Line-scoped allowlisting meant
-            # `info!(seed = %seed, key_id = %key_id)` was suppressed entirely,
-            # because the benign `key_id` on the same line vouched for the
-            # secret next to it.
-            for hit in SECRET.finditer(code):
-                if ALLOW.search(hit.group(0)):
-                    continue
-                ln = src[:m.start()].count("\n") + 1
-                bad.append(f"  {f}:{ln}: {code.strip()[:90]}")
-                break
+            ln = src[:m.start()].count("\n") + 1
+            bad.append(f"  {f}:{ln}: {hit.group(0).strip()[:90]}")
+            break
 
 if bad:
     print("ERROR: a tracing event interpolates secret material:", file=sys.stderr)
