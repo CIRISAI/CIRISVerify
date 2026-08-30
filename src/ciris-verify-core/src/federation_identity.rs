@@ -66,42 +66,27 @@ pub struct CreatedIdentity {
 /// drops the argument count honestly, so the allow is gone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Validity<'a> {
-    /// RFC-3339 instant the key becomes valid.
-    pub from: &'a str,
-    /// RFC-3339 instant the key stops being valid. `None` = no self-asserted
-    /// expiry, which omits the member from the signed envelope entirely and
-    /// so reproduces the pre-14.0 canonical bytes.
-    pub until: Option<&'a str>,
+    from: &'a str,
+    until: Option<&'a str>,
 }
 
 impl<'a> Validity<'a> {
-    /// A window with no self-asserted expiry.
-    #[must_use]
-    pub const fn starting(from: &'a str) -> Self {
-        Self { from, until: None }
-    }
-
-    /// A window that expires.
-    #[must_use]
-    pub const fn new(from: &'a str, until: &'a str) -> Self {
-        Self {
-            from,
-            until: Some(until),
-        }
-    }
-
     /// Build a window, **refusing an instant nothing can compare against**
     /// (CIRISVerify#268).
     ///
-    /// This is the single validation rule for both entry points — the CLI's
-    /// `--valid-until` and the FFI's `valid_until`. They previously disagreed:
-    /// the FFI refused `soon` while the CLI accepted it, opened or minted the
-    /// sealed PQC key, and emitted a **signed** record carrying an expiry no
-    /// consumer could evaluate. Two checks for one rule is how they drift, so
-    /// there is one.
+    /// This is the **only** way to construct a `Validity`. The fields are
+    /// private and there is no unchecked constructor, because a previous
+    /// revision offered `new`/`starting` alongside this and a caller doing the
+    /// natural thing got no validation at all — an optional check is skippable
+    /// by omission, which is the same lesson #252 rule 3 records and the third
+    /// time this pull request has had to learn it.
     ///
-    /// Validate **before** any custody work: a refusal after the seal is
-    /// opened has already done the expensive, side-effecting half.
+    /// It is also the single validation rule for every entry point — the CLI's
+    /// `--valid-until`, the FFI's `valid_until`, and any Rust caller. They
+    /// previously disagreed: the FFI refused `soon` while the CLI accepted it,
+    /// opened or minted the sealed PQC key, and emitted a **signed** record
+    /// carrying an expiry no consumer could evaluate. Two checks for one rule
+    /// is how they drift, so there is one.
     ///
     /// # Errors
     /// [`VerifyError::IntegrityError`] if either instant is not RFC-3339, or
@@ -124,6 +109,20 @@ impl<'a> Validity<'a> {
             }
         }
         Ok(Self { from, until })
+    }
+
+    /// The instant the key becomes valid (RFC-3339, validated).
+    #[must_use]
+    pub const fn from(&self) -> &'a str {
+        self.from
+    }
+
+    /// The instant the key stops being valid, if it expires (RFC-3339,
+    /// validated). `None` omits the member from the signed envelope entirely,
+    /// reproducing the pre-14.0 canonical bytes.
+    #[must_use]
+    pub const fn until(&self) -> Option<&'a str> {
+        self.until
     }
 }
 
@@ -195,8 +194,8 @@ pub async fn create_federation_identity(
     let record = produce_self_key_record(
         &identity,
         identity_type,
-        validity.from,
-        validity.until,
+        validity.from(),
+        validity.until(),
         transport_hints,
     )
     .await?;
@@ -204,7 +203,7 @@ pub async fn create_federation_identity(
         message: format!("serialize key record: {e}"),
     })?;
 
-    let object = SignedCegObject::new(FEDERATION_KEY_RECORD_KIND, &key_id, validity.from, body);
+    let object = SignedCegObject::new(FEDERATION_KEY_RECORD_KIND, &key_id, validity.from(), body);
 
     // The shareable fedcode for this entity (FSD-003).
     let kind = match identity_type {
@@ -261,7 +260,7 @@ mod tests {
             "user",
             None,
             Some("Eric Moore"),
-            Validity::starting("2026-06-18T00:00:00Z"),
+            Validity::checked("2026-06-18T00:00:00Z", None).unwrap(),
             None,
             &[],
         )
@@ -315,7 +314,7 @@ mod tests {
             "user",
             Some(recorded.clone()),
             Some("Eric Moore"),
-            Validity::starting("2026-06-18T00:00:00Z"),
+            Validity::checked("2026-06-18T00:00:00Z", None).unwrap(),
             Some(seal_alias),
             &[],
         )
@@ -362,7 +361,7 @@ mod tests {
             "node",
             Some("canonical-server-1".to_string()),
             None,
-            Validity::starting("2026-07-02T00:00:00Z"),
+            Validity::checked("2026-07-02T00:00:00Z", None).unwrap(),
             None,
             &[TransportHint {
                 kind: "ip".to_string(),

@@ -21,13 +21,20 @@ NAMES = (r'seed|secret|private_key|privkey|priv_key|password|passphrase'
 # Three ways a secret reaches a tracing event, all of which must be caught
 # (#268 P2 — the first version only caught the explicit-field form, so
 # `?seed` and `"seed: {:?}", seed` both slipped through):
-#   1. explicit field   seed = %x        / seed = x
-#   2. shorthand field  %seed  ?seed  seed,        (tracing's own sugar)
-#   3. positional arg   info!("seed: {:?}", seed)
+#   1. explicit field    seed = %x        / seed = x
+#   2. shorthand field   %seed  ?seed  seed,       (tracing's own sugar)
+#   3. inline capture    info!("seed={seed:?}")    (Rust 2021 implicit capture)
+#   4. positional / member
+#                        info!("s: {:?}", seed) / info!("{:?}", cfg.pin)
+#
+# 3 and 4 were added after review (#268): the first version required a
+# following `=`, and the fourth case additionally required the name NOT be
+# preceded by a dot — which silently exempted every `self.seed` / `cfg.pin`.
 SECRET = re.compile(
-    r'(?<![a-z_])(?:' + NAMES + r')\s*=\s*[%?]?\s*[A-Za-z_&*(]'     # 1
-    r'|[%?](?:' + NAMES + r')(?![a-z_])'                             # 2 sigil
-    r'|(?<![a-z_.])(?:' + NAMES + r')\s*(?:,|\)|$)',                 # 2 bare / 3
+    r'(?<![a-z_])(?:' + NAMES + r')\s*=\s*[%?]?\s*[A-Za-z_&*(]'     # 1 explicit field
+    r'|[%?](?:' + NAMES + r')(?![a-z_])'                             # 2 sigil shorthand
+    r'|\{[a-z_.]*(?:' + NAMES + r')[a-z_.]*[:}]'                     # 3 inline capture
+    r'|(?<![a-z_])(?:[a-z_]+\.)*(?:' + NAMES + r')\s*(?:,|\)|$)',    # 4 positional / member
     re.I)
 # public by construction, or a non-secret that merely contains the substring
 ALLOW = re.compile(r'key_id|pubkey|public_key|_pub\b|seed_dir|seed_file|seed_path'
