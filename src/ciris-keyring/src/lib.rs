@@ -146,6 +146,36 @@ pub mod keyring_storage;
 
 pub use error::KeyringError;
 
+/// Run the SP 800-90B startup health check if nothing has yet
+/// (CIRISVerify#207 item 6).
+///
+/// `ciris_crypto::random::fill` only READS the latch, and an uninitialized
+/// latch reads as healthy. The only production caller of
+/// `run_startup_health_check` is `ciris-verify-ffi` — so a direct
+/// `ciris-keyring` consumer (the documented standalone API, or a downstream
+/// service that links the keyring without the FFI) could reach a mint having
+/// never run the check, and the routing added for #207 would buy nothing.
+///
+/// `run_startup_health_check` latches through a `OnceLock`, so calling it here
+/// is idempotent and costs one atomic load after the first mint.
+///
+/// # Errors
+/// [`KeyringError::KeyGenerationFailed`] if the startup test fails — refusing
+/// to mint is the fail-secure answer, and the whole point of #74.
+pub(crate) fn ensure_rng_health_checked() -> Result<(), KeyringError> {
+    match ciris_crypto::rng_health::run_startup_health_check() {
+        ciris_crypto::rng_health::RngHealth::Healthy => Ok(()),
+        ciris_crypto::rng_health::RngHealth::Failed { test, detail } => {
+            Err(KeyringError::KeyGenerationFailed {
+                reason: format!(
+                    "SP 800-90B startup health check FAILED ({test}: {detail}); \
+                     refusing to mint key material"
+                ),
+            })
+        },
+    }
+}
+
 /// Mint a P-256 signing key from **latch-checked** randomness
 /// (CIRISVerify#207 item 6 / #74).
 ///
@@ -165,6 +195,7 @@ pub use error::KeyringError;
 /// Refusing is the fail-secure answer in both cases: a retry loop around a
 /// possibly-broken RNG is not an improvement.
 pub fn mint_p256_signing_key() -> Result<p256::ecdsa::SigningKey, KeyringError> {
+    ensure_rng_health_checked()?;
     let mut bytes = [0u8; 32];
     ciris_crypto::random::fill(&mut bytes).map_err(|e| KeyringError::KeyGenerationFailed {
         reason: format!("RNG health check failed; refusing to mint a P-256 key: {e}"),
@@ -276,8 +307,19 @@ mod rng_latch {
     fn minting_refuses_on_a_tripped_rng_latch() {
         use ciris_crypto::rng_health::{__force_health_for_test, RngHealth};
 
-        // Restore on the way out even if the assert panics, so a failure here
-        // cannot leave the latch tripped for another test on this thread.
+        // `ciris-crypto`'s thread-local override is `#[cfg(test)]`, which is
+        // NOT active when it is compiled as this crate's dependency — so
+        // `__force_health_for_test` writes the PROCESS-GLOBAL latch here, and
+        // any parallel keyring test that mints a key would fail spuriously
+        // (CIRISVerify#268 review). A `Restore` guard bounds the duration but
+        // does not remove the race.
+        //
+        // So this test serializes against every other test that could mint,
+        // via a module-local mutex. The lock is the mechanism; the guard below
+        // still restores the latch if the assert panics.
+        static LATCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let _serialize = LATCH.lock().unwrap_or_else(|e| e.into_inner());
+
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {

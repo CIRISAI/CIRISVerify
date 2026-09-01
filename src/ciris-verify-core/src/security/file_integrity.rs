@@ -93,7 +93,7 @@ pub enum ManifestHashCheck {
 /// Deserialization default for [`FileIntegrityResult::manifest_hash_check`]
 /// on payloads produced before CIRISVerify#224 — those carry no such field,
 /// and "we do not know" is the honest value for them.
-fn manifest_hash_check_default() -> ManifestHashCheck {
+pub(crate) fn manifest_hash_check_default() -> ManifestHashCheck {
     ManifestHashCheck::Unrecognized
 }
 
@@ -243,6 +243,20 @@ fn verify_manifest_integrity(manifest: &FileManifest) -> Option<ManifestHashChec
         .strip_prefix("sha256:")
         .unwrap_or(&manifest.manifest_hash);
 
+    // Validate the DIGEST, not just the raw field. `"sha256:"` alone is
+    // non-empty and passed the check above, then compared as an empty string
+    // and fell through to `Unrecognized` — so a malformed hash was treated as
+    // an unknown construction rather than the hard failure it is. Same for a
+    // wrong-length or non-hex value: those are not a third algorithm, they are
+    // a broken document.
+    if stored.len() != 64 || !stored.bytes().all(|b| b.is_ascii_hexdigit()) {
+        tracing::error!(
+            stored_len = stored.len(),
+            "manifest integrity: manifest_hash is not a 64-char hex digest"
+        );
+        return None;
+    }
+
     // (1) concatenated per-file hash strings, sorted (BTreeMap order).
     let mut hasher = Sha256::new();
     for hash in manifest.files.values() {
@@ -252,11 +266,16 @@ fn verify_manifest_integrity(manifest: &FileManifest) -> Option<ManifestHashChec
         return Some(ManifestHashCheck::VerifiedConcatenated);
     }
 
-    // (2) SHA-256 over the serde-JSON bytes of the file map — the shape
-    // `ciris-build-tool` emits. Checking it is the difference between
-    // "verified under the other construction" and the old code's
-    // self-diagnosed guess.
-    if let Ok(json) = serde_json::to_vec(&manifest.files) {
+    // (2) SHA-256 over the serde-JSON bytes of the `{"files": {...}}` WRAPPER
+    // — the exact shape `ciris-build-tool` hashes (`register.rs:601-605`) and
+    // the registry returns in `file_manifest_json`.
+    //
+    // The wrapper is load-bearing: an earlier revision of this fix hashed the
+    // bare map, so this branch could never fire on a real manifest and #224
+    // would have stayed broken while appearing fixed. The test passed because
+    // it hashed the same wrong shape — a fixture agreeing with the code
+    // instead of with the producer.
+    if let Ok(json) = serde_json::to_vec(&serde_json::json!({ "files": &manifest.files })) {
         if super::constant_time_eq(
             hex::encode(Sha256::digest(&json)).as_bytes(),
             stored.as_bytes(),
@@ -902,7 +921,9 @@ mod tests {
 
         // Restate the hash the way `ciris-build-tool` does: sha256 over the
         // serde-JSON bytes, rather than over concatenated file hashes.
-        let json = serde_json::to_vec(&manifest.files).unwrap();
+        // Build it exactly as `ciris-build-tool` does — a wrapper, not the
+        // bare map. Reproducing the producer is the whole point of the test.
+        let json = serde_json::to_vec(&serde_json::json!({ "files": &manifest.files })).unwrap();
         manifest.manifest_hash = format!("sha256:{}", hex::encode(Sha256::digest(&json)));
 
         assert_eq!(

@@ -159,8 +159,21 @@ pub fn get_json<T: serde::de::DeserializeOwned>(
         },
     };
 
-    response.into_json().map_err(|e| VerifyError::HttpsError {
-        message: format!("JSON parse error: {}", e),
+    // Read as text, then decode — so a schema drift is reported as
+    // ResponseSchemaMismatch with the same diagnosis the desktop path gives.
+    // Previously mobile flattened this into a generic HttpsError("JSON parse
+    // error: ..."), so an Android/iOS operator hitting the SAME registry
+    // payload got neither the structured error nor the explanation (#268
+    // review). The endpoint is identical; the diagnosis should be too.
+    let text = response
+        .into_string()
+        .map_err(|e| VerifyError::HttpsError {
+            message: format!("Read body from {url} failed: {e}"),
+        })?;
+    serde_json::from_str::<T>(&text).map_err(|e| VerifyError::ResponseSchemaMismatch {
+        url: url.to_string(),
+        status: 200,
+        detail: crate::https::diagnose_steward_key_drift(&e.to_string(), &text),
     })
 }
 

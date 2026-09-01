@@ -2618,6 +2618,14 @@ fn emit_fedcode(
                 "transport_hint": fc.transport_hint,
                 "alias_hint": fc.alias_hint,
                 "group_key_id": fc.group_key_id,
+                // #269: the embedded nodes ARE the payload of a v3 code — a
+                // consumer that cannot read them gets the opaque code echoed
+                // back and none of the directory-free resolution the format
+                // exists to provide.
+                "owned_nodes": fc.owned_nodes.iter().map(|n| serde_json::json!({
+                    "key_id": n.key_id,
+                    "transport_pubkey_ed25519_base64": n.transport_pubkey_ed25519_base64,
+                })).collect::<Vec<_>>(),
                 "code": code,
             })
         );
@@ -2626,6 +2634,20 @@ fn emit_fedcode(
         println!("  key_id : {key_id}");
         if let Some(g) = &fc.group_key_id {
             println!("  group  : {g}");
+        }
+        if !fc.owned_nodes.is_empty() {
+            println!(
+                "  nodes  : {} embedded (directory-free resolution)",
+                fc.owned_nodes.len()
+            );
+            for n in &fc.owned_nodes {
+                println!(
+                    "    - {} (transport {}…)",
+                    n.key_id,
+                    &n.transport_pubkey_ed25519_base64
+                        [..n.transport_pubkey_ed25519_base64.len().min(12)]
+                );
+            }
         }
         println!("  code   : {code}\n");
         if !no_qr {

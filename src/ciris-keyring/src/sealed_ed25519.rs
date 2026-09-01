@@ -88,6 +88,7 @@ impl SealedEd25519Signer {
                         // latch. A raw `OsRng` draw here bypassed it, so "no weak key is ever
                         // produced" held for ciris-crypto keys and NOT for the keyring-sealed
                         // federation keys — the ones that actually matter.
+                        crate::ensure_rng_health_checked()?;
                         ciris_crypto::random::fill(&mut s).map_err(|e| {
                             KeyringError::KeyGenerationFailed {
                                 reason: format!(

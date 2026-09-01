@@ -98,6 +98,65 @@ hint(alias_hint)     # 0x00 absent, else LP   (display name only — NOT signed 
 hint(group_key_id)   # 0x00 absent, else LP   (family/community only)
 ```
 
+## 3A. `fedcode` wire format (v3 — embedded owned nodes)
+
+**Status:** normative, CIRISVerify#269. A strict **superset of v2**: everything
+above, unchanged, plus a trailing node list under a bumped `CIRIS-V3-` prefix.
+
+**Note the version number.** The proposal was titled "fedcode v2"; the wire
+format has been at v2 since the kind-tagged code shipped, so the node-carrying
+format is **v3**. Minting it as v2 would have collided with a live encoding.
+
+### 3A.1 Why it exists
+
+CC 5.4.6 names the population v2 cannot serve: *"phone-class peers that cannot
+hold the full directory."* First contact, a QR across a table, an air-gapped
+hand-off, a fresh install — none can derive anything from a `key_id` alone. A
+v3 code carries what the directory would have supplied.
+
+### 3A.2 Binary payload
+
+```text
+version(1) = 0x03
+... all v2 fields, byte-identical, through hint(group_key_id) ...
+node_count(1)        # 1..=16
+repeated node_count times:
+  LP(node_key_id)    # 1-byte length prefix + UTF-8 bytes, 1..=255
+  transport_ed25519(32)  # raw — the NODE's TRANSPORT key (see 3A.3)
+```
+
+### 3A.3 Constraints (all normative; a conforming impl MUST enforce each)
+
+1. **The embedded key is the node's TRANSPORT Ed25519 — never the owner's
+   federation key, never the node's federation key.** Deriving a destination
+   from a federation key yields `sha256(fed)[..16]`, an explicit-hash
+   destination that categorically **cannot be announced**, so no peer can
+   self-learn a route to it. CIRISServer#335 is the production record of that
+   mistake: nodes primed the canonical at `1fc232535a…` while it served on
+   `81cabcf78a…`, every node reported `knows_peer=true`, and zero traces
+   arrived — after which the false rooting *prevented* recovery.
+   **Enforced at BOTH encoder and decoder**, because a code minted by another
+   implementation is exactly the case an encoder cannot police. A code whose
+   embedded transport key equals the owner's pubkey MUST be rejected.
+2. **Only `kind = user` may embed nodes.** "The owner's nodes" is meaningless
+   for a node, and a group's destinations are group-scoped material a code MUST
+   NOT carry at all (CC 5.4.6, ruled in CIRISConstitution#91). Enforced at
+   encoder and decoder.
+3. **`node_count` ≤ 16**, and the **total payload ≤ 1024 bytes** before base32.
+   The count alone does not bound the code — 16 × 255-byte ids exceeds what a
+   QR can render, defeating the hand-off the format exists for.
+4. **Empty is valid and is the default.** A code with no nodes MUST encode as
+   **v2, byte-identically**, so nothing already issued moves. Only a non-empty
+   list emits `CIRIS-V3-`.
+5. **Scope:** v3 carries lightnet facts only — federation-scope identity that
+   already announces publicly and carries no anonymity claim.
+
+### 3A.4 Compatibility
+
+v1 and v2 codes decode unchanged. A v3 decoder accepts all three prefixes; a
+v2-only decoder rejects `CIRIS-V3-` outright rather than mis-parsing it, since
+the prefix differs before any payload byte is read.
+
 Then **CRC-16-CCITT** (poly `0x1021`, init `0xFFFF`) over the payload, appended
 as 2 bytes **big-endian**. Then **RFC-4648 base32, no padding** (alphabet
 `A–Z2–7`). Display form: prefix `CIRIS-V2-` + the base32 grouped into **4-char**
