@@ -2804,6 +2804,8 @@ mod tests {
     #[test]
     fn test_file_check_summary() {
         let integrity = FileIntegrityResult {
+            manifest_hash_check:
+                crate::security::file_integrity::ManifestHashCheck::VerifiedConcatenated,
             integrity_valid: true,
             total_files: 100,
             files_checked: 100,
@@ -2828,6 +2830,8 @@ mod tests {
     #[test]
     fn test_file_check_summary_partial() {
         let integrity = FileIntegrityResult {
+            manifest_hash_check:
+                crate::security::file_integrity::ManifestHashCheck::VerifiedConcatenated,
             integrity_valid: true,
             total_files: 100,
             files_checked: 50,

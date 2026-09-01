@@ -45,9 +45,27 @@ pub const FEDCODE_VERSION_V2: u8 = 0x02;
 pub const FEDCODE_VERSION_V1: u8 = 0x01;
 
 const PREFIX_V2: &str = "CIRIS-V2-";
+
+/// Binary-format version for a code that MAY embed the owner's nodes
+/// (CIRISVerify#269).
+///
+/// **Note the number.** The issue proposing this called it "fedcode v2", but
+/// the wire format has been at v2 since the kind-tagged code shipped — so the
+/// node-carrying format is **v3**. Minting it as "v2" would have collided with
+/// a live encoding.
+pub const FEDCODE_VERSION_V3: u8 = 0x03;
+
+const PREFIX_V3: &str = "CIRIS-V3-";
 const PREFIX_V1: &str = "CIRIS-V1-";
 const GROUP_SIZE: usize = 4;
 const MAX_FIELD_BYTES: usize = 255;
+
+/// Cap on embedded nodes in a v3 code (CIRISVerify#269).
+///
+/// A fedcode is meant to be scannable as a QR and readable aloud; an unbounded
+/// list makes it neither. 16 is well past any realistic owner's node count and
+/// keeps the code inside a comfortable QR density.
+const MAX_OWNED_NODES: usize = 16;
 const PUBKEY_RAW_LEN: usize = 32;
 const KEY_ID_HASH_LEN: usize = 32;
 const CRC_POLY: u16 = 0x1021;
@@ -119,6 +137,37 @@ impl FedKind {
     }
 }
 
+/// One node a user owns, as embedded in a v3 code (CIRISVerify#269).
+///
+/// ## The field name is the safety property
+///
+/// This carries the node's **transport** Ed25519 — never the owner's
+/// federation key, and never the node's federation key.
+///
+/// CIRISServer#335 is what the confusion cost in production: nodes primed the
+/// canonical at `1fc232535a…` while it served on `81cabcf78a…`. Every node
+/// reported `knows_peer=true, provenance=Rooted, primed=1, refused=0`, and
+/// **zero traces arrived** — and the false rooting then *prevented* recovery,
+/// because a node that believes it knows a peer never learns the real address.
+///
+/// What made it survive review is that transport and federation share the
+/// Ed25519 half, so the derivation looks sound. Sharing a key does not make a
+/// base hash and a named hash the same address: deriving from the federation
+/// key yields `sha256(fed)[..16]`, an explicit-hash destination that
+/// categorically **cannot be announced**, so no peer can ever self-learn a
+/// route to it.
+///
+/// [`encode`] refuses a code whose embedded transport key equals the owner's
+/// own pubkey, so the specific mistake that caused #335 cannot be encoded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OwnedNode {
+    /// The node's federation `key_id` — an identifier, not an address.
+    pub key_id: String,
+    /// The node's **transport** Ed25519 public key, base64 standard (raw 32
+    /// bytes). This is what a destination is derived from; see the type docs.
+    pub transport_pubkey_ed25519_base64: String,
+}
+
 /// A decoded / to-be-encoded fedcode.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FedCode {
@@ -134,6 +183,20 @@ pub struct FedCode {
     pub alias_hint: Option<String>,
     /// For `family` / `community`: the group's `*_key_id`. Absent otherwise.
     pub group_key_id: Option<String>,
+    /// **MAY** carry the owner's nodes, so a contact resolves with no
+    /// directory (CIRISVerify#269) — first contact, a QR across a table, an
+    /// air-gapped hand-off, a fresh install.
+    ///
+    /// Empty is valid and is the default: a code with no nodes degrades to the
+    /// v1/v2 directory path, and **encodes byte-identically to a v2 code**, so
+    /// nothing already issued changes. Only a non-empty list emits v3.
+    ///
+    /// Scope boundary: these are **lightnet** facts — federation-scope
+    /// identity that already announces publicly and carries no anonymity
+    /// claim. A code MUST NOT carry group-scoped material, whose destinations
+    /// are derived from `cached directory + per-group HKDF` and may not be
+    /// emitted at all (CC 5.4.6, ruled in CIRISConstitution#91).
+    pub owned_nodes: Vec<OwnedNode>,
 }
 
 /// fedcode encode/decode failures.
@@ -211,7 +274,20 @@ fn sanitize_label(label: &str) -> String {
 /// [`FedCodeError::Malformed`] if a field is over-long or the pubkey is not 32
 /// raw bytes of valid base64.
 pub fn encode(fc: &FedCode) -> Result<String, FedCodeError> {
-    Ok(format!("{PREFIX_V2}{}", group(&encode_body(fc)?)))
+    Ok(format!("{}{}", prefix_for(fc), group(&encode_body(fc)?)))
+}
+
+/// The display prefix a code needs, chosen by CONTENT.
+///
+/// A code with no embedded nodes stays `CIRIS-V2-` and encodes byte-identically
+/// to before, so nothing already issued changes (CIRISVerify#269). Only a
+/// non-empty node list emits `CIRIS-V3-`.
+fn prefix_for(fc: &FedCode) -> &'static str {
+    if fc.owned_nodes.is_empty() {
+        PREFIX_V2
+    } else {
+        PREFIX_V3
+    }
 }
 
 /// Encode to the ungrouped QR form (`CIRIS-V2-XXXXXXXX…`).
@@ -219,7 +295,7 @@ pub fn encode(fc: &FedCode) -> Result<String, FedCodeError> {
 /// # Errors
 /// As [`encode`].
 pub fn encode_qr(fc: &FedCode) -> Result<String, FedCodeError> {
-    Ok(format!("{PREFIX_V2}{}", encode_body(fc)?))
+    Ok(format!("{}{}", prefix_for(fc), encode_body(fc)?))
 }
 
 fn encode_body(fc: &FedCode) -> Result<String, FedCodeError> {
@@ -249,8 +325,22 @@ fn build_payload(fc: &FedCode) -> Result<Vec<u8>, FedCodeError> {
         )));
     }
 
+    // Only a user code may carry nodes: "the owner's nodes" is meaningless for
+    // a node, and a group's destinations are group-scoped material a code MUST
+    // NOT carry at all (CC 5.4.6). Narrow now; widening later is additive.
+    if !fc.owned_nodes.is_empty() && fc.kind != FedKind::User {
+        return Err(FedCodeError::Malformed(format!(
+            "only a `user` code may embed owned nodes, got `{}`",
+            fc.kind.as_str()
+        )));
+    }
+
     let mut out = Vec::new();
-    out.push(FEDCODE_VERSION_V2);
+    out.push(if fc.owned_nodes.is_empty() {
+        FEDCODE_VERSION_V2
+    } else {
+        FEDCODE_VERSION_V3
+    });
     out.push(fc.kind.as_u8());
     out.extend_from_slice(&Sha256::digest(key_id_bytes));
     out.extend_from_slice(&pubkey_raw);
@@ -259,6 +349,59 @@ fn build_payload(fc: &FedCode) -> Result<Vec<u8>, FedCodeError> {
     out.extend_from_slice(&encode_hint(fc.transport_hint.as_deref())?);
     out.extend_from_slice(&encode_hint(fc.alias_hint.as_deref())?);
     out.extend_from_slice(&encode_hint(fc.group_key_id.as_deref())?);
+
+    // v3 tail: the owner's nodes. Absent entirely on v2, so the bytes above
+    // are unchanged for every code issued so far.
+    if !fc.owned_nodes.is_empty() {
+        if fc.owned_nodes.len() > MAX_OWNED_NODES {
+            return Err(FedCodeError::Malformed(format!(
+                "at most {MAX_OWNED_NODES} owned nodes, got {}",
+                fc.owned_nodes.len()
+            )));
+        }
+        out.push(fc.owned_nodes.len() as u8);
+        for node in &fc.owned_nodes {
+            let id = node.key_id.as_bytes();
+            if id.is_empty() || id.len() > MAX_FIELD_BYTES {
+                return Err(FedCodeError::Malformed(format!(
+                    "node key_id must be 1..={MAX_FIELD_BYTES} bytes, got {}",
+                    id.len()
+                )));
+            }
+            let tp = b64()
+                .decode(node.transport_pubkey_ed25519_base64.as_bytes())
+                .map_err(|e| {
+                    FedCodeError::Malformed(format!(
+                        "node `{}` transport pubkey is not valid base64: {e}",
+                        node.key_id
+                    ))
+                })?;
+            if tp.len() != PUBKEY_RAW_LEN {
+                return Err(FedCodeError::Malformed(format!(
+                    "node `{}` transport pubkey must be {PUBKEY_RAW_LEN} raw bytes, got {}",
+                    node.key_id,
+                    tp.len()
+                )));
+            }
+            // THE constraint (#269 / CIRISServer#335). Embedding the owner's
+            // federation key as a node's transport key yields
+            // `sha256(fed)[..16]` — an explicit-hash destination that can
+            // never be announced, so no peer can self-learn a route to it, and
+            // a node that believes it knows the peer never recovers. Refuse it
+            // at the encoder, where it is still cheap.
+            if tp == pubkey_raw {
+                return Err(FedCodeError::Malformed(format!(
+                    "node `{}` transport pubkey equals the OWNER's federation key — \
+                     a destination derived from it is unannounceable and unreachable \
+                     (CIRISServer#335); embed the node's TRANSPORT key",
+                    node.key_id
+                )));
+            }
+            out.push(id.len() as u8);
+            out.extend_from_slice(id);
+            out.extend_from_slice(&tp);
+        }
+    }
     Ok(out)
 }
 
@@ -294,7 +437,7 @@ pub fn decode(code: &str) -> Result<FedCode, FedCodeError> {
     let version = payload[0];
     let mut offset = 1;
     let kind = match version {
-        FEDCODE_VERSION_V2 => {
+        FEDCODE_VERSION_V2 | FEDCODE_VERSION_V3 => {
             let k = FedKind::from_u8(*payload.get(offset).ok_or_else(trunc)?)?;
             offset += 1;
             k
@@ -303,7 +446,7 @@ pub fn decode(code: &str) -> Result<FedCode, FedCodeError> {
         FEDCODE_VERSION_V1 => FedKind::Node,
         other => {
             return Err(FedCodeError::InvalidVersion(format!(
-                "binary version 0x{other:02x}; supported: 0x01 (node), 0x02"
+                "binary version 0x{other:02x}; supported: 0x01 (node), 0x02, 0x03"
             )))
         },
     };
@@ -321,11 +464,51 @@ pub fn decode(code: &str) -> Result<FedCode, FedCodeError> {
     offset = off;
     let (alias_hint, off) = read_hint(payload, offset)?;
     offset = off;
-    // group_key_id only exists in v2; tolerate its absence (v1).
-    let group_key_id = if version == FEDCODE_VERSION_V2 && offset < payload.len() {
-        read_hint(payload, offset)?.0
+    // group_key_id exists from v2 onward; tolerate its absence (v1).
+    let group_key_id = if version >= FEDCODE_VERSION_V2 && offset < payload.len() {
+        let (g, off) = read_hint(payload, offset)?;
+        offset = off;
+        g
     } else {
         None
+    };
+
+    // v3 tail: the owner's nodes (CIRISVerify#269). Absent on v1/v2.
+    let owned_nodes = if version == FEDCODE_VERSION_V3 {
+        let count = usize::from(*payload.get(offset).ok_or_else(trunc)?);
+        offset += 1;
+        if count > MAX_OWNED_NODES {
+            return Err(FedCodeError::Malformed(format!(
+                "at most {MAX_OWNED_NODES} owned nodes, got {count}"
+            )));
+        }
+        let mut nodes = Vec::with_capacity(count);
+        for _ in 0..count {
+            let (key_id, off) = read_length_prefixed(payload, offset)?;
+            offset = off;
+            if payload.len() < offset + PUBKEY_RAW_LEN {
+                return Err(trunc());
+            }
+            let tp = &payload[offset..offset + PUBKEY_RAW_LEN];
+            offset += PUBKEY_RAW_LEN;
+            // Refuse on DECODE as well as encode: a code minted by another
+            // implementation is exactly the case the encoder cannot police,
+            // and this is the mistake that cost CIRISServer#335.
+            if tp == pubkey_raw {
+                return Err(FedCodeError::Malformed(format!(
+                    "node `{key_id}` transport pubkey equals the owner's federation \
+                     key — a destination derived from it is unannounceable and \
+                     unreachable (CIRISServer#335)"
+                )));
+            }
+            nodes.push(OwnedNode {
+                key_id,
+                transport_pubkey_ed25519_base64: b64().encode(tp),
+            });
+        }
+        nodes
+    } else {
+        Vec::new()
     };
 
     Ok(FedCode {
@@ -335,6 +518,7 @@ pub fn decode(code: &str) -> Result<FedCode, FedCodeError> {
         transport_hint,
         alias_hint,
         group_key_id,
+        owned_nodes,
     })
 }
 
@@ -343,7 +527,7 @@ fn trunc() -> FedCodeError {
 }
 
 fn strip_prefix(cleaned: &str) -> Result<String, FedCodeError> {
-    for p in [PREFIX_V2, PREFIX_V1] {
+    for p in [PREFIX_V3, PREFIX_V2, PREFIX_V1] {
         if let Some(rest) = cleaned.strip_prefix(p) {
             return Ok(rest.to_string());
         }
@@ -354,7 +538,7 @@ fn strip_prefix(cleaned: &str) -> Result<String, FedCodeError> {
         }
     }
     Err(FedCodeError::Malformed(format!(
-        "not a CIRIS fedcode (expected {PREFIX_V2:?} or {PREFIX_V1:?})"
+        "not a CIRIS fedcode (expected {PREFIX_V3:?}, {PREFIX_V2:?} or {PREFIX_V1:?})"
     )))
 }
 
@@ -482,6 +666,7 @@ mod tests {
 
     fn sample(kind: FedKind) -> FedCode {
         FedCode {
+            owned_nodes: Vec::new(),
             kind,
             key_id: "eric-moore-k7f3qd2pza".into(),
             pubkey_ed25519_base64: pk(9),
@@ -565,5 +750,130 @@ mod tests {
             decode("CIRIS-V9-AAAA"),
             Err(FedCodeError::Malformed(_))
         ));
+    }
+}
+
+/// v3 — a user code that MAY embed its owned nodes (CIRISVerify#269).
+#[cfg(test)]
+mod owned_nodes {
+    use super::*;
+
+    fn pk(b: u8) -> String {
+        b64().encode([b; PUBKEY_RAW_LEN])
+    }
+
+    fn user(nodes: Vec<OwnedNode>) -> FedCode {
+        FedCode {
+            kind: FedKind::User,
+            key_id: "eric-moore-a1b2c3".into(),
+            pubkey_ed25519_base64: pk(0x11),
+            transport_hint: None,
+            alias_hint: Some("Eric".into()),
+            group_key_id: None,
+            owned_nodes: nodes,
+        }
+    }
+
+    fn node(id: &str, b: u8) -> OwnedNode {
+        OwnedNode {
+            key_id: id.into(),
+            transport_pubkey_ed25519_base64: pk(b),
+        }
+    }
+
+    /// **An empty node list changes nothing.** A code with no nodes still
+    /// encodes as v2, byte-identically to before, so nothing already issued
+    /// moves — the `MAY` in the ask is free.
+    #[test]
+    fn no_nodes_still_encodes_as_v2() {
+        let code = encode(&user(vec![])).unwrap();
+        assert!(code.starts_with("CIRIS-V2-"), "{code}");
+        let back = decode(&code).unwrap();
+        assert!(back.owned_nodes.is_empty());
+        assert_eq!(back, user(vec![]));
+    }
+
+    /// A non-empty list emits v3 and round-trips.
+    #[test]
+    fn nodes_round_trip_under_v3() {
+        let fc = user(vec![node("laptop-aaaa", 0x22), node("phone-bbbb", 0x33)]);
+        let code = encode(&fc).unwrap();
+        assert!(code.starts_with("CIRIS-V3-"), "{code}");
+        assert_eq!(decode(&code).unwrap(), fc);
+    }
+
+    /// **The constraint, refused at the ENCODER** — CIRISServer#335.
+    ///
+    /// Embedding the owner's federation key as a node's transport key derives
+    /// `sha256(fed)[..16]`, an explicit-hash destination that can never be
+    /// announced, so no peer self-learns a route and the false rooting then
+    /// prevents recovery.
+    #[test]
+    fn embedding_the_owners_own_key_as_a_transport_key_is_refused() {
+        let mut fc = user(vec![node("laptop-aaaa", 0x22)]);
+        fc.owned_nodes[0].transport_pubkey_ed25519_base64 = fc.pubkey_ed25519_base64.clone();
+        let err = encode(&fc).unwrap_err();
+        assert!(format!("{err}").contains("OWNER's federation key"), "{err}");
+    }
+
+    /// …and refused at the DECODER too, because a code minted by another
+    /// implementation is exactly the case an encoder cannot police.
+    #[test]
+    fn a_foreign_code_with_the_owners_key_is_refused_on_decode() {
+        // Mint it by hand, bypassing our own encoder's refusal.
+        let mut payload = Vec::new();
+        payload.push(FEDCODE_VERSION_V3);
+        payload.push(FedKind::User.as_u8());
+        let key_id = b"eric-moore-a1b2c3";
+        payload.extend_from_slice(&Sha256::digest(key_id));
+        payload.extend_from_slice(&[0x11; PUBKEY_RAW_LEN]); // owner pubkey
+        payload.push(key_id.len() as u8);
+        payload.extend_from_slice(key_id);
+        payload.extend_from_slice(&[0x00, 0x00, 0x00]); // three absent hints
+        payload.push(1); // one node
+        payload.push(4);
+        payload.extend_from_slice(b"nodeX");
+        payload.truncate(payload.len() - 1); // key_id was 4 bytes: "node"
+        payload.extend_from_slice(&[0x11; PUBKEY_RAW_LEN]); // == owner's key
+
+        let crc = crc16_ccitt(&payload);
+        payload.push((crc >> 8) as u8);
+        payload.push((crc & 0xFF) as u8);
+        let code = format!("{PREFIX_V3}{}", b32_no_pad_encode(&payload));
+
+        let err = decode(&code).unwrap_err();
+        assert!(format!("{err}").contains("owner's federation"), "{err}");
+    }
+
+    /// Only a user code may carry nodes. A group's destinations are
+    /// group-scoped material a code must not carry at all (CC 5.4.6).
+    #[test]
+    fn only_a_user_code_may_embed_nodes() {
+        for kind in [
+            FedKind::Node,
+            FedKind::Agent,
+            FedKind::Family,
+            FedKind::Community,
+        ] {
+            let mut fc = user(vec![node("laptop-aaaa", 0x22)]);
+            fc.kind = kind;
+            assert!(encode(&fc).is_err(), "{kind:?} must not carry nodes");
+        }
+    }
+
+    /// The list is bounded — a fedcode has to stay scannable.
+    #[test]
+    fn the_node_list_is_bounded() {
+        let many: Vec<_> = (0..=MAX_OWNED_NODES)
+            .map(|i| node(&format!("n{i}-aaaa"), 0x22 + i as u8))
+            .collect();
+        assert!(encode(&user(many)).is_err());
+    }
+
+    /// v1 and v2 codes still decode unchanged.
+    #[test]
+    fn older_versions_still_decode() {
+        let v2 = encode(&user(vec![])).unwrap();
+        assert_eq!(decode(&v2).unwrap().owned_nodes.len(), 0);
     }
 }

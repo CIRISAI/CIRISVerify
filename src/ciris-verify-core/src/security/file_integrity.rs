@@ -55,9 +55,57 @@ impl std::fmt::Display for FileCheckStatus {
     }
 }
 
+/// Which construction, if any, reproduces a manifest's stored `manifest_hash`
+/// (CIRISVerify#224).
+///
+/// This repository contains **three** different `manifest_hash` constructions
+/// — concatenated per-file hashes (here), concatenated per-*function* hashes
+/// (`ciris-manifest-tool`), and SHA-256 over serde-JSON bytes
+/// (`ciris-build-tool`). A manifest produced by one and checked by another can
+/// never match, by construction.
+///
+/// The old code recomputed exactly one of them, **self-diagnosed the benign
+/// cause in its own warning**, and still reported the result as a tampering-
+/// shaped failure. Worse, `check_full` then returned early with
+/// `files_checked: 0`, so the per-file hashes — the actual integrity control —
+/// were never checked at all. A false alarm that also disables the real alarm.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+#[non_exhaustive]
+pub enum ManifestHashCheck {
+    /// Reproduced by concatenating the per-file hash strings in sorted order.
+    VerifiedConcatenated,
+    /// Reproduced as SHA-256 over the serde-JSON bytes of the file map.
+    VerifiedJson,
+    /// **Not reproduced by any construction this build knows.**
+    ///
+    /// Deliberately not called "mismatch": with only `files` and
+    /// `manifest_hash` in hand, a fourth unknown construction is
+    /// *indistinguishable* from tampering, so asserting either would be
+    /// manufacturing a verdict from a measurement we cannot make
+    /// (`MISSION.md` §1.4 — the same distinction v13.3.0 drew for revocation).
+    ///
+    /// The per-file hashes are the control that can actually answer the
+    /// question, and they are now checked regardless.
+    Unrecognized,
+}
+
+/// Deserialization default for [`FileIntegrityResult::manifest_hash_check`]
+/// on payloads produced before CIRISVerify#224 — those carry no such field,
+/// and "we do not know" is the honest value for them.
+fn manifest_hash_check_default() -> ManifestHashCheck {
+    ManifestHashCheck::Unrecognized
+}
+
 /// Result of a file integrity check.
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct FileIntegrityResult {
+    /// Which construction reproduced the stored `manifest_hash`, if any
+    /// (CIRISVerify#224). [`ManifestHashCheck::Unrecognized`] is a
+    /// measurement, not a tampering verdict — read `per_file_results` for
+    /// that.
+    #[serde(default = "manifest_hash_check_default")]
+    pub manifest_hash_check: ManifestHashCheck,
     /// Whether all checked files passed integrity verification.
     pub integrity_valid: bool,
     /// Total files in manifest.
@@ -171,69 +219,62 @@ fn hash_file(path: &Path) -> std::io::Result<String> {
 }
 
 /// Verify the manifest's own integrity (manifest_hash field).
-fn verify_manifest_integrity(manifest: &FileManifest) -> bool {
-    tracing::info!(
-        "verify_manifest_integrity: starting with {} files, stored_hash='{}'",
-        manifest.files.len(),
-        &manifest.manifest_hash
-    );
-
-    // Check for empty manifest
+/// Which construction reproduces the manifest's stored `manifest_hash`.
+///
+/// Tries every construction this repository actually produces, rather than
+/// one of them — see [`ManifestHashCheck`] for why that matters.
+///
+/// # Errors
+/// A structurally malformed manifest (no files, or an empty hash) returns
+/// `None`. That IS a hard failure: it is not a disagreement about algorithms,
+/// it is a document that cannot be checked at all.
+fn verify_manifest_integrity(manifest: &FileManifest) -> Option<ManifestHashCheck> {
     if manifest.files.is_empty() {
-        tracing::error!("verify_manifest_integrity: FAILED - manifest has 0 files!");
-        return false;
+        tracing::error!("manifest integrity: manifest has 0 files");
+        return None;
     }
-
-    // Check for empty/missing manifest hash
     if manifest.manifest_hash.is_empty() {
-        tracing::error!("verify_manifest_integrity: FAILED - manifest_hash is empty!");
-        return false;
+        tracing::error!("manifest integrity: manifest_hash is empty");
+        return None;
     }
 
-    let mut hasher = Sha256::new();
-    // Hash all file hashes in sorted order (BTreeMap is already sorted)
-    let mut hash_count = 0;
-    for (path, hash) in manifest.files.iter() {
-        hasher.update(hash.as_bytes());
-        hash_count += 1;
-        // Log first 3 entries for debugging
-        if hash_count <= 3 {
-            tracing::debug!(
-                "verify_manifest_integrity: hashing file #{}: path='{}', hash='{}'",
-                hash_count,
-                path,
-                &hash[..std::cmp::min(16, hash.len())]
-            );
-        }
-    }
-    let computed = hex::encode(hasher.finalize());
-
-    // Strip "sha256:" prefix from stored hash if present
-    let stored_clean = manifest
+    let stored = manifest
         .manifest_hash
         .strip_prefix("sha256:")
         .unwrap_or(&manifest.manifest_hash);
 
-    let matches = super::constant_time_eq(computed.as_bytes(), stored_clean.as_bytes());
-
-    tracing::info!(
-        "verify_manifest_integrity: hashed {} files, computed='{}', stored='{}', matches={}",
-        hash_count,
-        &computed[..std::cmp::min(16, computed.len())],
-        &stored_clean[..std::cmp::min(16, stored_clean.len())],
-        matches
-    );
-
-    if !matches {
-        tracing::warn!(
-            "verify_manifest_integrity: HASH MISMATCH! This could mean:\n\
-             1. Registry uses different hash algorithm (JSON hash vs concatenated values)\n\
-             2. File ordering differs between registry and local\n\
-             3. Manifest was modified in transit"
-        );
+    // (1) concatenated per-file hash strings, sorted (BTreeMap order).
+    let mut hasher = Sha256::new();
+    for hash in manifest.files.values() {
+        hasher.update(hash.as_bytes());
+    }
+    if super::constant_time_eq(hex::encode(hasher.finalize()).as_bytes(), stored.as_bytes()) {
+        return Some(ManifestHashCheck::VerifiedConcatenated);
     }
 
-    matches
+    // (2) SHA-256 over the serde-JSON bytes of the file map — the shape
+    // `ciris-build-tool` emits. Checking it is the difference between
+    // "verified under the other construction" and the old code's
+    // self-diagnosed guess.
+    if let Ok(json) = serde_json::to_vec(&manifest.files) {
+        if super::constant_time_eq(
+            hex::encode(Sha256::digest(&json)).as_bytes(),
+            stored.as_bytes(),
+        ) {
+            return Some(ManifestHashCheck::VerifiedJson);
+        }
+    }
+
+    // Neither. NOT reported as tampering: a fourth construction is
+    // indistinguishable from tampering with the data in hand, and the per-file
+    // hashes are what can actually answer the question.
+    tracing::warn!(
+        stored = %&stored[..std::cmp::min(16, stored.len())],
+        files = manifest.files.len(),
+        "manifest_hash not reproduced by any known construction — proceeding to \
+         the per-file check, which is the control that can detect tampering"
+    );
+    Some(ManifestHashCheck::Unrecognized)
 }
 
 /// Load a manifest from a JSON file.
@@ -263,9 +304,14 @@ pub fn check_full(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityRe
     );
 
     // First, verify the manifest itself
-    if !verify_manifest_integrity(manifest) {
-        tracing::error!("check_full: manifest integrity verification FAILED");
+    // Only a STRUCTURALLY malformed manifest short-circuits now. An
+    // unrecognized manifest_hash construction does not: it is not evidence of
+    // tampering, and returning early here skipped the per-file check entirely
+    // — a false alarm that also disabled the real alarm (CIRISVerify#224).
+    let Some(manifest_hash_check) = verify_manifest_integrity(manifest) else {
+        tracing::error!("check_full: manifest is malformed (no files, or empty manifest_hash)");
         return FileIntegrityResult {
+            manifest_hash_check: ManifestHashCheck::Unrecognized,
             integrity_valid: false,
             total_files: manifest.files.len(),
             files_checked: 0,
@@ -279,7 +325,7 @@ pub fn check_full(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityRe
             per_file_results: BTreeMap::new(),
             unexpected_files: Vec::new(),
         };
-    }
+    };
     tracing::info!("check_full: manifest integrity OK");
 
     let mut files_checked = 0usize;
@@ -332,6 +378,7 @@ pub fn check_full(manifest: &FileManifest, agent_root: &Path) -> FileIntegrityRe
     };
 
     FileIntegrityResult {
+        manifest_hash_check,
         integrity_valid,
         total_files: manifest.files.len(),
         files_checked,
@@ -355,8 +402,9 @@ pub fn check_spot(manifest: &FileManifest, agent_root: &Path, count: usize) -> F
     use rand::seq::SliceRandom;
 
     // Verify manifest integrity first
-    if !verify_manifest_integrity(manifest) {
+    let Some(manifest_hash_check) = verify_manifest_integrity(manifest) else {
         return FileIntegrityResult {
+            manifest_hash_check: ManifestHashCheck::Unrecognized,
             integrity_valid: false,
             total_files: manifest.files.len(),
             files_checked: 0,
@@ -370,7 +418,7 @@ pub fn check_spot(manifest: &FileManifest, agent_root: &Path, count: usize) -> F
             per_file_results: BTreeMap::new(),
             unexpected_files: Vec::new(),
         };
-    }
+    };
 
     let file_list: Vec<(&String, &String)> = manifest.files.iter().collect();
     let check_count = count.min(file_list.len());
@@ -419,6 +467,7 @@ pub fn check_spot(manifest: &FileManifest, agent_root: &Path, count: usize) -> F
     };
 
     FileIntegrityResult {
+        manifest_hash_check,
         integrity_valid,
         total_files: manifest.files.len(),
         files_checked: check_count,
@@ -482,13 +531,13 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
 
     // First, verify the manifest itself
     tracing::info!("check_available: verifying manifest integrity...");
-    if !verify_manifest_integrity(manifest) {
+    let Some(manifest_hash_check) = verify_manifest_integrity(manifest) else {
         tracing::error!(
-            "check_available: MANIFEST INTEGRITY FAILED - returning files_checked=0\n  \
-             This means the hash of concatenated file hashes doesn't match manifest_hash.\n  \
-             Check if registry stores a different hash format."
+            "check_available: manifest is malformed (no files, or empty manifest_hash) — \
+             returning files_checked=0"
         );
         return FileIntegrityResult {
+            manifest_hash_check: ManifestHashCheck::Unrecognized,
             integrity_valid: false,
             total_files: manifest.files.len(),
             files_checked: 0,
@@ -502,7 +551,7 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
             per_file_results: BTreeMap::new(),
             unexpected_files: Vec::new(),
         };
-    }
+    };
     tracing::info!("check_available: manifest integrity PASSED, now checking files...");
 
     let mut files_checked = 0usize;
@@ -587,6 +636,7 @@ pub fn check_available(manifest: &FileManifest, agent_root: &Path) -> FileIntegr
     );
 
     FileIntegrityResult {
+        manifest_hash_check,
         integrity_valid,
         total_files: manifest.files.len(),
         files_checked,
@@ -842,18 +892,99 @@ mod tests {
         assert_eq!(result.files_failed, 0);
     }
 
+    /// **The #224 scenario itself.** A manifest whose `manifest_hash` was
+    /// produced by the OTHER construction now verifies, instead of logging a
+    /// tampering-shaped ERROR 14 times in four hours.
     #[test]
-    fn test_manifest_tamper_detection() {
+    fn the_json_construction_verifies_instead_of_alarming() {
         let dir = create_test_dir();
         let mut manifest = generate_manifest(dir.path(), "2.0.0").unwrap();
 
-        // Tamper with the manifest hash
-        manifest.manifest_hash =
-            "0000000000000000000000000000000000000000000000000000000000000000".to_string();
+        // Restate the hash the way `ciris-build-tool` does: sha256 over the
+        // serde-JSON bytes, rather than over concatenated file hashes.
+        let json = serde_json::to_vec(&manifest.files).unwrap();
+        manifest.manifest_hash = format!("sha256:{}", hex::encode(Sha256::digest(&json)));
 
+        assert_eq!(
+            verify_manifest_integrity(&manifest),
+            Some(ManifestHashCheck::VerifiedJson),
+            "the other construction must VERIFY, not read as tampering"
+        );
+        let result = check_full(&manifest, dir.path());
+        assert!(result.integrity_valid);
+        assert!(result.files_checked > 0);
+    }
+
+    /// **CIRISVerify#224 — a corrupt `manifest_hash` is SURFACED, not conflated
+    /// with tampering, and no longer disables the real check.**
+    ///
+    /// This test asserted the old contract: any unmatched `manifest_hash`
+    /// meant `integrity_valid: false` with `files_checked: 0`. That contract
+    /// is wrong in both directions.
+    ///
+    /// It is too strict: three different `manifest_hash` constructions exist
+    /// in this repository, so a manifest produced by one and checked by
+    /// another never matched — 14 tampering-shaped ERRORs in a 4h window on
+    /// `datum`, all benign.
+    ///
+    /// And it is too weak, which matters more: returning early meant the
+    /// PER-FILE hashes were never checked, so the actual integrity control was
+    /// silently skipped on every such manifest (the same symptom #176 reports
+    /// as "L4 file integrity will be skipped"). A false alarm that also
+    /// disabled the real alarm.
+    ///
+    /// Note what altering `manifest_hash` alone actually achieves: nothing.
+    /// The per-file hashes are untouched, so the files are still checked
+    /// against the real values — and an attacker who altered those would
+    /// simply recompute `manifest_hash` to match, which this check never
+    /// caught either. It is a self-consistency checksum, not an
+    /// authentication; the manifest's trustworthiness comes from its
+    /// signature.
+    #[test]
+    fn corrupt_manifest_hash_is_reported_without_skipping_the_file_check() {
+        let dir = create_test_dir();
+        let mut manifest = generate_manifest(dir.path(), "2.0.0").unwrap();
+        manifest.manifest_hash = "0".repeat(64);
+
+        let result = check_full(&manifest, dir.path());
+
+        // The corruption is SURFACED …
+        assert_eq!(result.manifest_hash_check, ManifestHashCheck::Unrecognized);
+        // … and the control that can actually detect tampering RAN.
+        assert!(
+            result.files_checked > 0,
+            "the per-file check must not be skipped — that is the real control"
+        );
+        assert_eq!(result.files_failed, 0);
+    }
+
+    /// The control that matters still fails closed: alter a FILE and the
+    /// per-file check catches it, which is the thing `manifest_hash` never
+    /// could.
+    #[test]
+    fn a_tampered_file_is_still_caught() {
+        let dir = create_test_dir();
+        let manifest = generate_manifest(dir.path(), "2.0.0").unwrap();
+        let victim = manifest.files.keys().next().unwrap().clone();
+        std::fs::write(dir.path().join(&victim), "# tampered\n").unwrap();
+
+        let result = check_full(&manifest, dir.path());
+        assert!(!result.integrity_valid, "a tampered file MUST fail");
+        assert!(result.files_failed > 0);
+    }
+
+    /// A structurally malformed manifest is still a hard failure — that is not
+    /// a disagreement about algorithms, it is a document that cannot be
+    /// checked at all.
+    #[test]
+    fn a_malformed_manifest_still_fails_closed() {
+        let dir = create_test_dir();
+        let mut manifest = generate_manifest(dir.path(), "2.0.0").unwrap();
+        manifest.manifest_hash = String::new();
         let result = check_full(&manifest, dir.path());
         assert!(!result.integrity_valid);
         assert_eq!(result.failure_reason, "manifest");
+        assert_eq!(result.files_checked, 0);
     }
 
     #[test]
@@ -874,7 +1005,10 @@ mod tests {
     fn test_verify_manifest_integrity() {
         let dir = create_test_dir();
         let manifest = generate_manifest(dir.path(), "2.0.0").unwrap();
-        assert!(verify_manifest_integrity(&manifest));
+        assert_eq!(
+            verify_manifest_integrity(&manifest),
+            Some(ManifestHashCheck::VerifiedConcatenated)
+        );
     }
 
     #[test]
