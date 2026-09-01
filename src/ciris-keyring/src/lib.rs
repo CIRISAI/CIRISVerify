@@ -163,6 +163,18 @@ pub use error::KeyringError;
 /// [`KeyringError::KeyGenerationFailed`] if the startup test fails — refusing
 /// to mint is the fail-secure answer, and the whole point of #74.
 pub(crate) fn ensure_rng_health_checked() -> Result<(), KeyringError> {
+    // An ALREADY-FAILED latch is decisive — do not re-run.
+    //
+    // `run_startup_health_check` is `get_or_init` + `store_state`, so calling
+    // it when the latch is already `Failed` re-runs the test and OVERWRITES
+    // the verdict. That would let a mint proceed off a fresh pass after the
+    // process had already latched a failure, which is exactly the latch's
+    // reason for existing: the verdict is sticky by design.
+    if ciris_crypto::rng_health::is_rng_failed() {
+        return Err(KeyringError::KeyGenerationFailed {
+            reason: "RNG health latch is FAILED; refusing to mint key material".to_string(),
+        });
+    }
     match ciris_crypto::rng_health::run_startup_health_check() {
         ciris_crypto::rng_health::RngHealth::Healthy => Ok(()),
         ciris_crypto::rng_health::RngHealth::Failed { test, detail } => {
@@ -309,17 +321,14 @@ mod rng_latch {
 
         // `ciris-crypto`'s thread-local override is `#[cfg(test)]`, which is
         // NOT active when it is compiled as this crate's dependency — so
-        // `__force_health_for_test` writes the PROCESS-GLOBAL latch here, and
-        // any parallel keyring test that mints a key would fail spuriously
-        // (CIRISVerify#268 review). A `Restore` guard bounds the duration but
-        // does not remove the race.
+        // `__force_health_for_test` writes the PROCESS-GLOBAL latch.
         //
-        // So this test serializes against every other test that could mint,
-        // via a module-local mutex. The lock is the mechanism; the guard below
-        // still restores the latch if the assert panics.
-        static LATCH: std::sync::Mutex<()> = std::sync::Mutex::new(());
-        let _serialize = LATCH.lock().unwrap_or_else(|e| e.into_inner());
-
+        // CI runs `cargo nextest`, which gives every test its own PROCESS, so
+        // the global is not shared and there is no race to serialize. An
+        // earlier revision added a module-local mutex for this; it protected
+        // nothing under nextest and implied a guarantee it did not provide, so
+        // it is gone. The `Restore` guard stays: under a plain `cargo test`
+        // this thread must not leave the latch tripped.
         struct Restore;
         impl Drop for Restore {
             fn drop(&mut self) {
