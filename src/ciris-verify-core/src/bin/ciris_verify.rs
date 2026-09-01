@@ -2538,6 +2538,7 @@ fn run_fedcode_new(a: FedcodeNew) {
 
     let key_id = fedcode::derive_key_id(&a.label, &ed_pub);
     let fc = FedCode {
+        owned_nodes: Vec::new(),
         kind,
         key_id: key_id.clone(),
         pubkey_ed25519_base64: base64::engine::general_purpose::STANDARD.encode(&ed_pub),
