@@ -145,6 +145,38 @@ pub mod platform;
 pub mod keyring_storage;
 
 pub use error::KeyringError;
+
+/// Mint a P-256 signing key from **latch-checked** randomness
+/// (CIRISVerify#207 item 6 / #74).
+///
+/// `SigningKey::random(&mut OsRng)` draws straight from the OS RNG, bypassing
+/// the SP 800-90B startup health latch that #74 added so *"no weak key is ever
+/// produced"*. That invariant therefore held for `ciris-crypto`-constructed
+/// keys and **not** for keyring-minted ones — which are the federation
+/// identity keys, i.e. the ones that matter.
+///
+/// The bytes themselves go through [`ciris_crypto::random::fill`], rather than
+/// merely probing the latch and then drawing unchecked, so the key material is
+/// literally what the checked path produced.
+///
+/// # Errors
+/// [`KeyringError::KeyGenerationFailed`] if the RNG health latch has tripped,
+/// or (with probability under 2⁻³²) if the draw is not a valid P-256 scalar.
+/// Refusing is the fail-secure answer in both cases: a retry loop around a
+/// possibly-broken RNG is not an improvement.
+pub fn mint_p256_signing_key() -> Result<p256::ecdsa::SigningKey, KeyringError> {
+    let mut bytes = [0u8; 32];
+    ciris_crypto::random::fill(&mut bytes).map_err(|e| KeyringError::KeyGenerationFailed {
+        reason: format!("RNG health check failed; refusing to mint a P-256 key: {e}"),
+    })?;
+    let key = p256::ecdsa::SigningKey::from_slice(&bytes).map_err(|e| {
+        KeyringError::KeyGenerationFailed {
+            reason: format!("random draw was not a valid P-256 scalar: {e}"),
+        }
+    })?;
+    Ok(key)
+}
+
 pub use hw_token::{
     get_token_signer, hardware_class_table, resolve_hardware_class, HardwareClassRule, ProbedToken,
     TokenInterface, GENERIC_EXTERNAL_TOKEN_CLASS,
@@ -230,4 +262,43 @@ pub fn get_platform_signer(alias: &str) -> Result<Box<dyn HardwareSigner>, Keyri
 /// Check if hardware-backed signing is available on this platform.
 pub fn is_hardware_available() -> bool {
     detect_hardware_type().has_hardware
+}
+
+#[cfg(test)]
+mod rng_latch {
+    /// **CIRISVerify#207 item 6 / #74.** The keyring mints the federation
+    /// identity keys, and its mints drew raw `OsRng` — so "no weak key is
+    /// ever produced" held for `ciris-crypto` keys and not for these.
+    ///
+    /// #74 proved that invariant with a per-primitive fail-secure test. This
+    /// is the one the keyring was missing.
+    #[test]
+    fn minting_refuses_on_a_tripped_rng_latch() {
+        use ciris_crypto::rng_health::{__force_health_for_test, RngHealth};
+
+        // Restore on the way out even if the assert panics, so a failure here
+        // cannot leave the latch tripped for another test on this thread.
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                __force_health_for_test(RngHealth::Healthy);
+            }
+        }
+        let _restore = Restore;
+
+        __force_health_for_test(RngHealth::Failed {
+            test: ciris_crypto::rng_health::TEST_REPETITION_COUNT,
+            detail: "forced for the keyring fail-secure test".to_string(),
+        });
+        assert!(
+            matches!(
+                super::mint_p256_signing_key(),
+                Err(crate::KeyringError::KeyGenerationFailed { .. })
+            ),
+            "a keyring mint MUST refuse when the RNG health latch has tripped"
+        );
+
+        __force_health_for_test(RngHealth::Healthy);
+        assert!(super::mint_p256_signing_key().is_ok());
+    }
 }

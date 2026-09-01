@@ -156,7 +156,13 @@ impl UsbWrappedMlDsa65Signer {
         let mut seed = [0u8; SEED_LEN];
         match adopt_seed {
             Some(s) => seed.copy_from_slice(s),
-            None => OsRng.fill_bytes(&mut seed),
+            // #207 item 6 / #74: a PQC seed is key material, so it goes
+            // through the SP 800-90B health latch rather than raw OsRng.
+            None => ciris_crypto::random::fill(&mut seed).map_err(|e| {
+                KeyringError::KeyGenerationFailed {
+                    reason: format!("RNG health check failed; refusing to mint a seed: {e}"),
+                }
+            })?,
         }
 
         // The wrap key is derived from a deterministic Ed25519 signature. Prove
