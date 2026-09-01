@@ -18,7 +18,6 @@ use ed25519_dalek::{
     Signature as Ed25519Signature, Signer as Ed25519SignerTrait, SigningKey as Ed25519SigningKey,
 };
 use p256::ecdsa::{Signature, SigningKey};
-use p256::elliptic_curve::rand_core::OsRng;
 
 use crate::error::KeyringError;
 use crate::signer::{HardwareSigner, KeyGenConfig};
@@ -142,7 +141,7 @@ impl SoftwareSigner {
                     alias = %alias,
                     "SoftwareSigner: generating new ECDSA P-256 key"
                 );
-                let key = SigningKey::random(&mut OsRng);
+                let key = crate::mint_p256_signing_key()?;
 
                 // Persist to disk
                 let key_bytes = key.to_bytes();
@@ -201,7 +200,7 @@ impl SoftwareSigner {
 
     /// Generate a new random key and persist it.
     pub fn generate_random_key(&mut self) -> Result<(), KeyringError> {
-        let key = SigningKey::random(&mut OsRng);
+        let key = crate::mint_p256_signing_key()?;
 
         // Persist to disk
         let key_bytes = key.to_bytes();
@@ -1520,9 +1519,16 @@ impl MutableEd25519Signer {
         );
 
         // Generate random 32-byte seed
-        use rand_core::{OsRng, RngCore};
         let mut key_bytes = [0u8; 32];
-        OsRng.fill_bytes(&mut key_bytes);
+        // #207 item 6 / #74: key material goes through the SP 800-90B health
+        // latch. A raw `OsRng` draw bypassed it, so "no weak key is ever
+        // produced" held for ciris-crypto keys and NOT for keyring-minted ones.
+        crate::ensure_rng_health_checked()?;
+        ciris_crypto::random::fill(&mut key_bytes).map_err(|e| {
+            KeyringError::KeyGenerationFailed {
+                reason: format!("RNG health check failed; refusing to mint: {e}"),
+            }
+        })?;
 
         // Use import_key which handles hardware wrapping
         self.import_key(&key_bytes)?;
@@ -2389,7 +2395,7 @@ mod tests {
     async fn test_software_signer_sign_and_verify() {
         use p256::ecdsa::signature::Verifier;
 
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = SigningKey::random(&mut rand_core::OsRng);
         let verifying_key = *signing_key.verifying_key();
 
         let key_path = test_key_dir().join("test_sign.p256.key");

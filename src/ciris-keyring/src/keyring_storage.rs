@@ -107,10 +107,7 @@ impl KeyringStorageSigner {
 
     /// Generate a new key and store it in the keyring.
     pub fn generate_and_store(&mut self) -> Result<(), KeyringError> {
-        use p256::ecdsa::SigningKey;
-        use rand_core::OsRng;
-
-        let signing_key = SigningKey::random(&mut OsRng);
+        let signing_key = crate::mint_p256_signing_key()?;
         let key_bytes = signing_key.to_bytes();
 
         self.store_key(&key_bytes)?;

@@ -239,7 +239,17 @@ impl HttpsClient {
             });
         }
 
-        let body = response.json::<StewardKeyResponse>().await.map_err(|e| {
+        // Read the body as TEXT first, so a decode failure can be diagnosed
+        // against what was actually received rather than against the serde
+        // message alone (#268 review: naming the known drift without evidence
+        // of the multi-steward shape would misdirect on an unrelated fault).
+        let text = response.text().await.map_err(|e| {
+            warn!(url = %url, error = %e, "HTTPS: could not read response body");
+            VerifyError::HttpsError {
+                message: format!("Read body from {url} failed: {e}"),
+            }
+        })?;
+        let body = serde_json::from_str::<StewardKeyResponse>(&text).map_err(|e| {
             // The server ANSWERED. Do not report this as unreachable — see
             // VerifyError::ResponseSchemaMismatch.
             warn!(
@@ -250,7 +260,7 @@ impl HttpsClient {
             VerifyError::ResponseSchemaMismatch {
                 url: url.clone(),
                 status: status.as_u16(),
-                detail: e.to_string(),
+                detail: diagnose_steward_key_drift(&e.to_string(), &text),
             }
         })?;
 
@@ -523,6 +533,46 @@ impl HttpsClient {
         Ok(response.revision)
     }
 }
+/// Turn serde's `missing field \`classical\`` into something actionable
+/// (CIRISVerify#176).
+///
+/// That message has sent people looking for a build-record bug for two months
+/// — the issue is even titled that way. The record that fails to parse is the
+/// **steward-key** response: `validation::query_https_source` →
+/// `get_steward_key` → [`StewardKeyResponse`], which requires `classical`.
+///
+/// The registry now sends the multi-steward shape (`stewards[]` +
+/// `verification_policy`, FSD-002 §10.2). Verify carries a parser for that in
+/// `steward_key.rs` — but it **requires** a `response_signature` the registry
+/// does not send, so switching to it would not fix this, and relaxing that
+/// requirement would mean silently accepting **unsigned trust-root material**.
+/// That is a cross-repo contract decision (CIRISRegistry#133), not a
+/// verify-side edit, which is why this names the situation rather than
+/// papering over it.
+pub(crate) fn diagnose_steward_key_drift(detail: &str, body: &str) -> String {
+    // Require EVIDENCE of the multi-steward shape, not just a missing field.
+    // A malformed single-steward response that happens to omit `pqc` would
+    // otherwise be labelled as this specific drift and point an operator at
+    // CIRISRegistry#133 and a DNS-only degradation — the wrong incident. The
+    // whole point of this function is to stop misdirecting people, so it must
+    // not introduce a new misdirection of its own.
+    let looks_multi_steward =
+        body.contains("\"stewards\"") || body.contains("\"verification_policy\"");
+    if looks_multi_steward
+        && (detail.contains("missing field `classical`") || detail.contains("missing field `pqc`"))
+    {
+        format!(
+            "{detail} — this is the known /v1/steward-key contract drift \
+             (CIRISVerify#176, CIRISRegistry#133): the registry sends the \
+             multi-steward shape (`stewards[]` + `verification_policy`) while \
+             this path parses the single-steward shape. NOT a build-record \
+             problem and NOT a network problem; HTTPS consensus degrades to \
+             DNS-only until the contract is settled"
+        )
+    } else {
+        detail.to_string()
+    }
+}
 
 /// Query the HTTPS endpoint and return data for consensus validation.
 ///
@@ -592,5 +642,52 @@ mod tests {
         .unwrap();
 
         assert_eq!(client.base_url, "https://verify.ciris.ai");
+    }
+}
+
+#[cfg(test)]
+mod steward_key_drift {
+    /// **CIRISVerify#176.** `missing field \`classical\`` sent people looking
+    /// for a build-record bug for two months — the issue is titled that way.
+    /// The failing decode is the STEWARD-KEY response.
+    ///
+    /// The parse itself cannot be fixed here: the registry sends a shape whose
+    /// modern parser requires a `response_signature` the registry does not
+    /// send, and relaxing that would mean accepting unsigned trust-root
+    /// material (CIRISRegistry#133). So the honest fix is to stop
+    /// misdirecting whoever reads the log.
+    #[test]
+    fn the_known_drift_is_named_rather_than_left_opaque() {
+        let out = super::diagnose_steward_key_drift(
+            "missing field `classical` at line 1 column 3963",
+            r#"{"stewards":[],"verification_policy":{}}"#,
+        );
+        assert!(out.contains("/v1/steward-key"), "{out}");
+        assert!(out.contains("CIRISRegistry#133"), "{out}");
+        assert!(
+            out.contains("NOT a build-record problem"),
+            "the misdirection is the thing being fixed: {out}"
+        );
+    }
+
+    /// A missing field WITHOUT evidence of the multi-steward shape is passed
+    /// through untouched. A malformed single-steward response that omits `pqc`
+    /// must not be blamed on CIRISRegistry#133 — that would send an operator
+    /// to the wrong incident, which is the failure this whole function exists
+    /// to fix.
+    #[test]
+    fn a_missing_field_without_the_multi_steward_shape_is_not_the_known_drift() {
+        let raw = "missing field `pqc` at line 1 column 40";
+        let out =
+            super::diagnose_steward_key_drift(raw, r#"{"classical":{"algorithm":"Ed25519"}}"#);
+        assert_eq!(out, raw, "no evidence of the drift → no claim about it");
+    }
+
+    /// An unrelated decode failure is passed through untouched — the guard
+    /// must not relabel every schema error as this one.
+    #[test]
+    fn an_unrelated_parse_error_is_left_alone() {
+        let raw = "invalid type: string, expected u64 at line 2 column 7";
+        assert_eq!(super::diagnose_steward_key_drift(raw, "{}"), raw);
     }
 }

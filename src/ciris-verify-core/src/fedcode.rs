@@ -63,9 +63,20 @@ const MAX_FIELD_BYTES: usize = 255;
 /// Cap on embedded nodes in a v3 code (CIRISVerify#269).
 ///
 /// A fedcode is meant to be scannable as a QR and readable aloud; an unbounded
-/// list makes it neither. 16 is well past any realistic owner's node count and
-/// keeps the code inside a comfortable QR density.
+/// list makes it neither. 16 is well past any realistic owner's node count.
 const MAX_OWNED_NODES: usize = 16;
+
+/// Cap on the encoded payload, in bytes, before base32 (CIRISVerify#269).
+///
+/// The node COUNT alone does not bound the code: 16 nodes each carrying a
+/// 255-byte key_id plus a 32-byte key is >4.6 KB of payload and >7 KB encoded,
+/// which `QrCode::new` refuses — so `encode` would happily mint a code the
+/// advertised QR hand-off cannot render. Bounding the count without bounding
+/// the size is bounding the wrong thing.
+///
+/// 1024 bytes leaves ample headroom for realistic ids at a QR density that
+/// still scans from a phone across a table.
+const MAX_PAYLOAD_BYTES: usize = 1024;
 const PUBKEY_RAW_LEN: usize = 32;
 const KEY_ID_HASH_LEN: usize = 32;
 const CRC_POLY: u16 = 0x1021;
@@ -402,6 +413,13 @@ fn build_payload(fc: &FedCode) -> Result<Vec<u8>, FedCodeError> {
             out.extend_from_slice(&tp);
         }
     }
+    if out.len() > MAX_PAYLOAD_BYTES {
+        return Err(FedCodeError::Malformed(format!(
+            "encoded payload is {} bytes, over the {MAX_PAYLOAD_BYTES}-byte budget — \
+             the code would not render as a scannable QR",
+            out.len()
+        )));
+    }
     Ok(out)
 }
 
@@ -475,6 +493,19 @@ pub fn decode(code: &str) -> Result<FedCode, FedCodeError> {
 
     // v3 tail: the owner's nodes (CIRISVerify#269). Absent on v1/v2.
     let owned_nodes = if version == FEDCODE_VERSION_V3 {
+        // A scanned code is untrusted input, and a foreign implementation can
+        // mint a CRC-valid v3 payload with any kind byte. The encoder forbids
+        // non-user codes carrying nodes; the DECODER has to enforce the same
+        // invariant, or a consumer receives attacker-supplied "owned nodes"
+        // attributed to a group. Same reasoning as the transport-key refusal
+        // below: the encoder cannot police codes it did not mint.
+        if kind != FedKind::User {
+            return Err(FedCodeError::Malformed(format!(
+                "v3 code carries owned nodes but kind is `{}`; only a `user` \
+                 code may embed nodes",
+                kind.as_str()
+            )));
+        }
         let count = usize::from(*payload.get(offset).ok_or_else(trunc)?);
         offset += 1;
         if count > MAX_OWNED_NODES {

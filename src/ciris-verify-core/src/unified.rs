@@ -436,6 +436,16 @@ pub struct FileCheckSummary {
     pub files_missing: usize,
     /// Unexpected files found.
     pub files_unexpected: usize,
+    /// Which construction reproduced the manifest's aggregate `manifest_hash`
+    /// (CIRISVerify#224).
+    ///
+    /// Carried through because an `Unrecognized` hash no longer flips
+    /// `valid` — so without this field a consumer sees an ordinary pass and
+    /// has no way to know the aggregate checksum was not recognized, which
+    /// would make the new contract a silent downgrade rather than a
+    /// clarification.
+    #[serde(default = "crate::security::file_integrity::manifest_hash_check_default")]
+    pub manifest_hash_check: crate::security::file_integrity::ManifestHashCheck,
     /// Failure reason (if any).
     pub failure_reason: String,
     /// Files found on disk (for partial checks, indicates coverage).
@@ -467,6 +477,7 @@ impl From<FileIntegrityResult> for FileCheckSummary {
             files_failed: r.files_failed,
             files_missing: r.files_missing,
             files_unexpected: r.files_unexpected,
+            manifest_hash_check: r.manifest_hash_check,
             failure_reason: r.failure_reason,
             files_found: r.files_found,
             partial_check: r.partial_check,

@@ -32,7 +32,7 @@ keyring-storage = ["dep:keyring"]
 # Post-quantum cryptography: enables ML-DSA-65 software signer + PqcSigner trait.
 # Used by CIRISPersist's cold-path PQC fill-in flow (federation_keys etc.) so
 # downstream consumers don't reach into the ml-dsa crate directly.
-pqc-ml-dsa = ["dep:ciris-crypto"]
+pqc-ml-dsa = ["ciris-crypto/pqc-ml-dsa", "ciris-crypto/ed25519", "ciris-crypto/self-enc", "ciris-crypto/hybrid-kex"]
 
 [dependencies]
 async-trait.workspace = true
@@ -83,7 +83,16 @@ keyring = { version = "3", optional = true }
 
 # CIRIS cryptographic primitives — gated behind pqc-ml-dsa so the existing
 # default ciris-keyring build doesn't pull in ml-dsa.
-ciris-crypto = { path = "../ciris-crypto", version = "14", optional = true, default-features = false, features = ["pqc-ml-dsa", "ed25519", "self-enc", "hybrid-kex"] }
+# NON-optional, deliberately (CIRISVerify#207 item 6). The keyring mints key
+# SEEDS, and #74's "no weak key is ever produced" invariant lives in
+# `ciris_crypto::random::fill` — the SP 800-90B health latch. Gating that
+# behind an optional feature meant the default keyring build drew raw `OsRng`
+# and the invariant simply did not hold for sealed federation keys.
+#
+# The base dependency is the `random` feature only, which is `[]` plus the
+# `rand_core` this crate already pulls — so the light default stays light. The
+# heavier PQC surface is still feature-gated below.
+ciris-crypto = { path = "../ciris-crypto", version = "14", default-features = false, features = ["random"] }
 
 # Platform-specific
 [target.'cfg(target_os = "android")'.dependencies]

@@ -122,8 +122,15 @@ impl SealedMlDsa65Signer {
                 match adopt_seed {
                     Some(existing) => s.copy_from_slice(existing),
                     None => {
-                        use rand_core::{OsRng, RngCore};
-                        OsRng.fill_bytes(&mut s);
+                        // #207 item 6 / #74: key material goes through the SP 800-90B health
+                        // latch. A raw `OsRng` draw bypassed it, so "no weak key is ever
+                        // produced" held for ciris-crypto keys and NOT for keyring-minted ones.
+                        crate::ensure_rng_health_checked()?;
+                        ciris_crypto::random::fill(&mut s).map_err(|e| {
+                            KeyringError::KeyGenerationFailed {
+                                reason: format!("RNG health check failed; refusing to mint: {e}"),
+                            }
+                        })?;
                     },
                 }
                 storage.store(SEED_KEY_ID, &s)?;

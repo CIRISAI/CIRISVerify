@@ -145,6 +145,81 @@ pub mod platform;
 pub mod keyring_storage;
 
 pub use error::KeyringError;
+
+/// Run the SP 800-90B startup health check if nothing has yet
+/// (CIRISVerify#207 item 6).
+///
+/// `ciris_crypto::random::fill` only READS the latch, and an uninitialized
+/// latch reads as healthy. The only production caller of
+/// `run_startup_health_check` is `ciris-verify-ffi` — so a direct
+/// `ciris-keyring` consumer (the documented standalone API, or a downstream
+/// service that links the keyring without the FFI) could reach a mint having
+/// never run the check, and the routing added for #207 would buy nothing.
+///
+/// `run_startup_health_check` latches through a `OnceLock`, so calling it here
+/// is idempotent and costs one atomic load after the first mint.
+///
+/// # Errors
+/// [`KeyringError::KeyGenerationFailed`] if the startup test fails — refusing
+/// to mint is the fail-secure answer, and the whole point of #74.
+pub(crate) fn ensure_rng_health_checked() -> Result<(), KeyringError> {
+    // An ALREADY-FAILED latch is decisive — do not re-run.
+    //
+    // `run_startup_health_check` is `get_or_init` + `store_state`, so calling
+    // it when the latch is already `Failed` re-runs the test and OVERWRITES
+    // the verdict. That would let a mint proceed off a fresh pass after the
+    // process had already latched a failure, which is exactly the latch's
+    // reason for existing: the verdict is sticky by design.
+    if ciris_crypto::rng_health::is_rng_failed() {
+        return Err(KeyringError::KeyGenerationFailed {
+            reason: "RNG health latch is FAILED; refusing to mint key material".to_string(),
+        });
+    }
+    match ciris_crypto::rng_health::run_startup_health_check() {
+        ciris_crypto::rng_health::RngHealth::Healthy => Ok(()),
+        ciris_crypto::rng_health::RngHealth::Failed { test, detail } => {
+            Err(KeyringError::KeyGenerationFailed {
+                reason: format!(
+                    "SP 800-90B startup health check FAILED ({test}: {detail}); \
+                     refusing to mint key material"
+                ),
+            })
+        },
+    }
+}
+
+/// Mint a P-256 signing key from **latch-checked** randomness
+/// (CIRISVerify#207 item 6 / #74).
+///
+/// `SigningKey::random(&mut OsRng)` draws straight from the OS RNG, bypassing
+/// the SP 800-90B startup health latch that #74 added so *"no weak key is ever
+/// produced"*. That invariant therefore held for `ciris-crypto`-constructed
+/// keys and **not** for keyring-minted ones — which are the federation
+/// identity keys, i.e. the ones that matter.
+///
+/// The bytes themselves go through [`ciris_crypto::random::fill`], rather than
+/// merely probing the latch and then drawing unchecked, so the key material is
+/// literally what the checked path produced.
+///
+/// # Errors
+/// [`KeyringError::KeyGenerationFailed`] if the RNG health latch has tripped,
+/// or (with probability under 2⁻³²) if the draw is not a valid P-256 scalar.
+/// Refusing is the fail-secure answer in both cases: a retry loop around a
+/// possibly-broken RNG is not an improvement.
+pub fn mint_p256_signing_key() -> Result<p256::ecdsa::SigningKey, KeyringError> {
+    ensure_rng_health_checked()?;
+    let mut bytes = [0u8; 32];
+    ciris_crypto::random::fill(&mut bytes).map_err(|e| KeyringError::KeyGenerationFailed {
+        reason: format!("RNG health check failed; refusing to mint a P-256 key: {e}"),
+    })?;
+    let key = p256::ecdsa::SigningKey::from_slice(&bytes).map_err(|e| {
+        KeyringError::KeyGenerationFailed {
+            reason: format!("random draw was not a valid P-256 scalar: {e}"),
+        }
+    })?;
+    Ok(key)
+}
+
 pub use hw_token::{
     get_token_signer, hardware_class_table, resolve_hardware_class, HardwareClassRule, ProbedToken,
     TokenInterface, GENERIC_EXTERNAL_TOKEN_CLASS,
@@ -230,4 +305,51 @@ pub fn get_platform_signer(alias: &str) -> Result<Box<dyn HardwareSigner>, Keyri
 /// Check if hardware-backed signing is available on this platform.
 pub fn is_hardware_available() -> bool {
     detect_hardware_type().has_hardware
+}
+
+#[cfg(test)]
+mod rng_latch {
+    /// **CIRISVerify#207 item 6 / #74.** The keyring mints the federation
+    /// identity keys, and its mints drew raw `OsRng` — so "no weak key is
+    /// ever produced" held for `ciris-crypto` keys and not for these.
+    ///
+    /// #74 proved that invariant with a per-primitive fail-secure test. This
+    /// is the one the keyring was missing.
+    #[test]
+    fn minting_refuses_on_a_tripped_rng_latch() {
+        use ciris_crypto::rng_health::{__force_health_for_test, RngHealth};
+
+        // `ciris-crypto`'s thread-local override is `#[cfg(test)]`, which is
+        // NOT active when it is compiled as this crate's dependency — so
+        // `__force_health_for_test` writes the PROCESS-GLOBAL latch.
+        //
+        // CI runs `cargo nextest`, which gives every test its own PROCESS, so
+        // the global is not shared and there is no race to serialize. An
+        // earlier revision added a module-local mutex for this; it protected
+        // nothing under nextest and implied a guarantee it did not provide, so
+        // it is gone. The `Restore` guard stays: under a plain `cargo test`
+        // this thread must not leave the latch tripped.
+        struct Restore;
+        impl Drop for Restore {
+            fn drop(&mut self) {
+                __force_health_for_test(RngHealth::Healthy);
+            }
+        }
+        let _restore = Restore;
+
+        __force_health_for_test(RngHealth::Failed {
+            test: ciris_crypto::rng_health::TEST_REPETITION_COUNT,
+            detail: "forced for the keyring fail-secure test".to_string(),
+        });
+        assert!(
+            matches!(
+                super::mint_p256_signing_key(),
+                Err(crate::KeyringError::KeyGenerationFailed { .. })
+            ),
+            "a keyring mint MUST refuse when the RNG health latch has tripped"
+        );
+
+        __force_health_for_test(RngHealth::Healthy);
+        assert!(super::mint_p256_signing_key().is_ok());
+    }
 }

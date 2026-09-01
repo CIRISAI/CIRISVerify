@@ -153,10 +153,14 @@ impl TransportIdentityKeystore for BlobTransportKeystore {
     }
 
     fn generate_and_store(&self, key_id: &str) -> Result<(), KeyringError> {
-        use rand_core::{OsRng, RngCore};
-
         let mut bytes = [0u8; TRANSPORT_IDENTITY_LEN];
-        OsRng.fill_bytes(&mut bytes);
+        // #207 item 6 / #74: key material goes through the SP 800-90B health
+        // latch. A raw `OsRng` draw bypassed it, so "no weak key is ever
+        // produced" held for ciris-crypto keys and NOT for keyring-minted ones.
+        crate::ensure_rng_health_checked()?;
+        ciris_crypto::random::fill(&mut bytes).map_err(|e| KeyringError::KeyGenerationFailed {
+            reason: format!("RNG health check failed; refusing to mint: {e}"),
+        })?;
         let result = self.storage.store(key_id, &bytes[..]);
         // Best-effort scrub of the transient buffer. The threat model this
         // closes is at-rest exfil (the AV-17 carve-out concedes transient
