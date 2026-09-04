@@ -123,7 +123,11 @@ node_count(1)        # 1..=16
 repeated node_count times:
   LP(node_key_id)    # 1-byte length prefix + UTF-8 bytes, 1..=255
   transport_ed25519(32)  # raw — the NODE's TRANSPORT key (see 3A.3)
+pqc_commitment       # 0x00 absent; 0x01 followed by 32 raw bytes (see 3A.5)
 ```
+
+**`node_count` MAY be 0.** A code carrying only a PQC commitment is a valid v3
+code — see 3A.5 for why that shape has to exist.
 
 ### 3A.3 Constraints (all normative; a conforming impl MUST enforce each)
 
@@ -150,6 +154,47 @@ repeated node_count times:
    list emits `CIRIS-V3-`.
 5. **Scope:** v3 carries lightnet facts only — federation-scope identity that
    already announces publicly and carries no anonymity claim.
+
+### 3A.5 PQC commitment (CIRISVerify#272)
+
+**Status:** normative. A code names an Ed25519 key and nothing else, but
+CIRISPersist accepts `federation_keys` writes only at `algorithm: "hybrid"`
+(Ed25519 + ML-DSA-65). A code-admitted key therefore had **no PQC half to
+register**, the write could never be conformant, and
+`ContactResolution::ReadyFromCode` was unreachable — leaving first contact with
+no working path at all.
+
+The ML-DSA-65 public key is **1952 bytes**, which would take a code past 3 KB
+and end its life as something a person can type or read aloud. So the code
+carries a **32-byte commitment**:
+
+```text
+ml_dsa_65_pubkey_sha256 = sha256(raw ML-DSA-65 public key)
+```
+
+1. **The admission flow.** The host admits the classical half plus this
+   commitment, fetches the ML-DSA body through the existing Key Pull, and
+   verifies it against the commitment **before** writing a hybrid record.
+   Nothing is registered until both halves are present and bound, so the
+   hybrid-only rule stays absolute — preserved, not weakened.
+2. **It applies to ANY kind of code, not only node-carrying ones.** The
+   admission gap affects every code, and a plain `user` code with no nodes is
+   the shape most likely to be handed over at first contact. Such a code emits
+   v3 with `node_count = 0`.
+3. **Presence-tagged and LAST**, so a v3 code minted before #272 — which ends
+   after the node list — still decodes, with the commitment absent.
+4. **Rejected, never repaired:** the API form is exactly 64 **lowercase** hex
+   characters. Normalizing case would let two spellings of one identity produce
+   two different codes.
+5. **Trust level.** A fedcode is **unsigned**. This commitment inherits exactly
+   the trust of the code carrying it and adds no authority of its own; what it
+   buys is that a Key Pull cannot be substituted after the fact. A conforming
+   implementation MUST NOT treat a commitment match as authentication of the
+   identity.
+
+Verify exposes `fedcode::verify_pulled_ml_dsa_65_pubkey(&code, pulled)` as the
+one blessed check. A code with **no** commitment fails closed there: there is
+nothing to bind the pulled key to.
 
 ### 3A.4 Compatibility
 

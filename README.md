@@ -3,7 +3,7 @@
 **Decide whether evidence about a machine, a build, or a key is worth
 believing — and say exactly how much.**
 
-v13.0.0 · Rust + Python · AGPL-3.0 · Post-quantum from day one
+v14.2.0 · Rust + Python · AGPL-3.0 · Post-quantum from day one
 
 CIRISVerify is an embeddable Rust library (with C FFI and a Python wheel) for
 **hardware attestation verification, trust-anchor management, and artifact

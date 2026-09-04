@@ -253,6 +253,7 @@ pub async fn create_federation_identity(
         alias_hint: label.map(str::to_string),
         group_key_id: None,
         owned_nodes: Vec::new(),
+        ml_dsa_65_pubkey_sha256: None,
     })
     .map_err(|e| VerifyError::IntegrityError {
         message: format!("encode fedcode: {e}"),
