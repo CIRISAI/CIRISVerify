@@ -2539,6 +2539,7 @@ fn run_fedcode_new(a: FedcodeNew) {
     let key_id = fedcode::derive_key_id(&a.label, &ed_pub);
     let fc = FedCode {
         owned_nodes: Vec::new(),
+        ml_dsa_65_pubkey_sha256: None,
         kind,
         key_id: key_id.clone(),
         pubkey_ed25519_base64: base64::engine::general_purpose::STANDARD.encode(&ed_pub),
@@ -2626,6 +2627,9 @@ fn emit_fedcode(
                     "key_id": n.key_id,
                     "transport_pubkey_ed25519_base64": n.transport_pubkey_ed25519_base64,
                 })).collect::<Vec<_>>(),
+                // #272: without this a host cannot bind the PQC half, and the
+                // code-admitted key can never be written to federation_keys.
+                "ml_dsa_65_pubkey_sha256": fc.ml_dsa_65_pubkey_sha256,
                 "code": code,
             })
         );
@@ -2634,6 +2638,18 @@ fn emit_fedcode(
         println!("  key_id : {key_id}");
         if let Some(g) = &fc.group_key_id {
             println!("  group  : {g}");
+        }
+        match &fc.ml_dsa_65_pubkey_sha256 {
+            Some(d) => println!("  pqc    : sha256:{d}"),
+            // #272: say so at the point of minting. A code with no PQC
+            // commitment names a key that cannot be written to
+            // `federation_keys` (those are hybrid-only), so it will be REFUSED
+            // at admission — better to learn that here than after handing the
+            // code to someone at first contact.
+            None => println!(
+                "  pqc    : (none — this code cannot be admitted to federation_keys; \
+                 use `identity create` for a hybrid identity)"
+            ),
         }
         if !fc.owned_nodes.is_empty() {
             println!(

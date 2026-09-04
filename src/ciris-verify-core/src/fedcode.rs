@@ -77,6 +77,10 @@ const MAX_OWNED_NODES: usize = 16;
 /// 1024 bytes leaves ample headroom for realistic ids at a QR density that
 /// still scans from a phone across a table.
 const MAX_PAYLOAD_BYTES: usize = 1024;
+
+/// Length of the SHA-256 commitment to the ML-DSA-65 public key, in raw bytes
+/// (CIRISVerify#272).
+const PQC_COMMITMENT_LEN: usize = 32;
 const PUBKEY_RAW_LEN: usize = 32;
 const KEY_ID_HASH_LEN: usize = 32;
 const CRC_POLY: u16 = 0x1021;
@@ -208,6 +212,35 @@ pub struct FedCode {
     /// are derived from `cached directory + per-group HKDF` and may not be
     /// emitted at all (CC 5.4.6, ruled in CIRISConstitution#91).
     pub owned_nodes: Vec<OwnedNode>,
+    /// `sha256(ml_dsa_65_pubkey)`, lowercase hex — the **commitment** to the
+    /// post-quantum half of this identity (CIRISVerify#272).
+    ///
+    /// A fedcode names an Ed25519 key and nothing else, but CIRISPersist takes
+    /// `federation_keys` writes only at `algorithm: "hybrid"` (Ed25519 +
+    /// ML-DSA-65) — so a code-admitted key had no PQC half to register and the
+    /// write could never be conformant. `ContactResolution::ReadyFromCode` was
+    /// therefore unreachable, leaving first contact with no working path at
+    /// all.
+    ///
+    /// The key itself is **1952 bytes**, which would take a code past 3 KB and
+    /// end its life as something a person can type or read aloud. So the code
+    /// carries a 32-byte commitment instead: the host admits the classical
+    /// half plus this digest, fetches the ML-DSA body through the existing Key
+    /// Pull, and **verifies it against this commitment before writing a hybrid
+    /// record**. Nothing is registered until both halves are present and
+    /// bound, so persist's hybrid-only rule stays absolute — the invariant is
+    /// preserved rather than weakened.
+    ///
+    /// Same pattern as [`crate::accord_custody_attestation`] (#113/#116),
+    /// where the ML-DSA key is committed rather than inlined for the same
+    /// size reason.
+    ///
+    /// **Trust level, stated plainly:** a fedcode is *unsigned*. This
+    /// commitment inherits exactly the trust of the code that carries it — it
+    /// binds the PQC half to the same self-asserted conveyance that already
+    /// carries the Ed25519 half, and adds no authority of its own. What it
+    /// buys is that a Key Pull cannot be substituted after the fact.
+    pub ml_dsa_65_pubkey_sha256: Option<String>,
 }
 
 /// fedcode encode/decode failures.
@@ -294,11 +327,94 @@ pub fn encode(fc: &FedCode) -> Result<String, FedCodeError> {
 /// to before, so nothing already issued changes (CIRISVerify#269). Only a
 /// non-empty node list emits `CIRIS-V3-`.
 fn prefix_for(fc: &FedCode) -> &'static str {
-    if fc.owned_nodes.is_empty() {
-        PREFIX_V2
-    } else {
+    if needs_v3(fc) {
         PREFIX_V3
+    } else {
+        PREFIX_V2
     }
+}
+
+/// Check a pulled ML-DSA-65 public key against a code's commitment
+/// (CIRISVerify#272).
+///
+/// This is the step that makes a code-admitted key registrable: the host
+/// admits the classical half plus the code's commitment, fetches the ML-DSA
+/// body through the existing Key Pull, and calls this **before** writing a
+/// `federation_keys` row. Persist's hybrid-only rule is preserved exactly —
+/// nothing is registered until both halves are present and bound.
+///
+/// Constant-time on the digest comparison, since a match gates admission.
+///
+/// # Errors
+/// [`FedCodeError::Malformed`] if the code carries no commitment (there is
+/// nothing to check against — fail closed rather than admit), or if the pulled
+/// key does not match it.
+pub fn verify_pulled_ml_dsa_65_pubkey(
+    fc: &FedCode,
+    pulled_ml_dsa_65_pubkey: &[u8],
+) -> Result<(), FedCodeError> {
+    let Some(expected) = fc.ml_dsa_65_pubkey_sha256.as_deref() else {
+        return Err(FedCodeError::Malformed(
+            "code carries no ml_dsa_65_pubkey_sha256; a pulled PQC key cannot be \
+             bound to it, so the pair MUST NOT be admitted (CIRISVerify#272)"
+                .to_string(),
+        ));
+    };
+    let expected_raw = decode_pqc_commitment(expected)?;
+    let actual = Sha256::digest(pulled_ml_dsa_65_pubkey);
+    // Constant-time: this comparison gates admission.
+    let mut diff = 0u8;
+    for (a, b) in expected_raw.iter().zip(actual.iter()) {
+        diff |= a ^ b;
+    }
+    if diff != 0 {
+        return Err(FedCodeError::Malformed(
+            "pulled ML-DSA-65 public key does not match the code's commitment — \
+             the Key Pull was substituted or the code is for a different identity"
+                .to_string(),
+        ));
+    }
+    Ok(())
+}
+
+/// Parse the lowercase-hex PQC commitment into its 32 raw bytes.
+///
+/// Rejects rather than repairs: a wrong-length or non-hex digest is a broken
+/// code, and normalizing case here would let two spellings of one identity
+/// produce two different codes.
+fn decode_pqc_commitment(hex_digest: &str) -> Result<[u8; PQC_COMMITMENT_LEN], FedCodeError> {
+    if hex_digest.len() != PQC_COMMITMENT_LEN * 2
+        || !hex_digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err(FedCodeError::Malformed(format!(
+            "ml_dsa_65_pubkey_sha256 must be {} lowercase hex chars, got {:?}",
+            PQC_COMMITMENT_LEN * 2,
+            hex_digest
+        )));
+    }
+    let mut raw = [0u8; PQC_COMMITMENT_LEN];
+    for (i, byte) in raw.iter_mut().enumerate() {
+        *byte = u8::from_str_radix(&hex_digest[i * 2..i * 2 + 2], 16).map_err(|e| {
+            FedCodeError::Malformed(format!("ml_dsa_65_pubkey_sha256 is not hex: {e}"))
+        })?;
+    }
+    Ok(raw)
+}
+
+/// Does this code need the v3 tail?
+///
+/// **Either** embedded nodes **or** a PQC commitment forces v3. The commitment
+/// is deliberately not tied to carrying nodes: the admission gap
+/// (CIRISVerify#272) affects EVERY code, so a plain `user` code with no nodes
+/// must still be able to carry its PQC half — otherwise the one shape most
+/// likely to be handed over at first contact stays unadmittable.
+///
+/// With neither, the code emits v2 byte-identically, so nothing already issued
+/// moves.
+fn needs_v3(fc: &FedCode) -> bool {
+    !fc.owned_nodes.is_empty() || fc.ml_dsa_65_pubkey_sha256.is_some()
 }
 
 /// Encode to the ungrouped QR form (`CIRIS-V2-XXXXXXXX…`).
@@ -347,10 +463,10 @@ fn build_payload(fc: &FedCode) -> Result<Vec<u8>, FedCodeError> {
     }
 
     let mut out = Vec::new();
-    out.push(if fc.owned_nodes.is_empty() {
-        FEDCODE_VERSION_V2
-    } else {
+    out.push(if needs_v3(fc) {
         FEDCODE_VERSION_V3
+    } else {
+        FEDCODE_VERSION_V2
     });
     out.push(fc.kind.as_u8());
     out.extend_from_slice(&Sha256::digest(key_id_bytes));
@@ -361,9 +477,9 @@ fn build_payload(fc: &FedCode) -> Result<Vec<u8>, FedCodeError> {
     out.extend_from_slice(&encode_hint(fc.alias_hint.as_deref())?);
     out.extend_from_slice(&encode_hint(fc.group_key_id.as_deref())?);
 
-    // v3 tail: the owner's nodes. Absent entirely on v2, so the bytes above
-    // are unchanged for every code issued so far.
-    if !fc.owned_nodes.is_empty() {
+    // v3 tail: the owner's nodes, then the PQC commitment. Absent entirely on
+    // v2, so the bytes above are unchanged for every code issued so far.
+    if needs_v3(fc) {
         if fc.owned_nodes.len() > MAX_OWNED_NODES {
             return Err(FedCodeError::Malformed(format!(
                 "at most {MAX_OWNED_NODES} owned nodes, got {}",
@@ -411,6 +527,18 @@ fn build_payload(fc: &FedCode) -> Result<Vec<u8>, FedCodeError> {
             out.push(id.len() as u8);
             out.extend_from_slice(id);
             out.extend_from_slice(&tp);
+        }
+
+        // The PQC commitment closes the v3 tail. It is LAST and
+        // presence-tagged, so a v3 code minted before #272 — which simply ends
+        // after the node list — still decodes, with the commitment absent.
+        match &fc.ml_dsa_65_pubkey_sha256 {
+            None => out.push(0x00),
+            Some(hex_digest) => {
+                let raw = decode_pqc_commitment(hex_digest)?;
+                out.push(0x01);
+                out.extend_from_slice(&raw);
+            },
         }
     }
     if out.len() > MAX_PAYLOAD_BYTES {
@@ -542,6 +670,35 @@ pub fn decode(code: &str) -> Result<FedCode, FedCodeError> {
         Vec::new()
     };
 
+    // The PQC commitment closes the v3 tail (CIRISVerify#272). A v3 code
+    // minted before #272 ends after the node list, so ABSENCE of the tag byte
+    // is tolerated and read as "no commitment" — not as truncation.
+    let ml_dsa_65_pubkey_sha256 = if version == FEDCODE_VERSION_V3 && offset < payload.len() {
+        match payload[offset] {
+            0x00 => {
+                offset += 1;
+                None
+            },
+            0x01 => {
+                offset += 1;
+                if payload.len() < offset + PQC_COMMITMENT_LEN {
+                    return Err(trunc());
+                }
+                let raw = &payload[offset..offset + PQC_COMMITMENT_LEN];
+                offset += PQC_COMMITMENT_LEN;
+                Some(raw.iter().map(|b| format!("{b:02x}")).collect::<String>())
+            },
+            other => {
+                return Err(FedCodeError::Malformed(format!(
+                    "v3 PQC-commitment tag must be 0x00 or 0x01, got 0x{other:02x}"
+                )))
+            },
+        }
+    } else {
+        None
+    };
+    let _ = offset;
+
     Ok(FedCode {
         kind,
         key_id,
@@ -550,6 +707,7 @@ pub fn decode(code: &str) -> Result<FedCode, FedCodeError> {
         alias_hint,
         group_key_id,
         owned_nodes,
+        ml_dsa_65_pubkey_sha256,
     })
 }
 
@@ -698,6 +856,7 @@ mod tests {
     fn sample(kind: FedKind) -> FedCode {
         FedCode {
             owned_nodes: Vec::new(),
+            ml_dsa_65_pubkey_sha256: None,
             kind,
             key_id: "eric-moore-k7f3qd2pza".into(),
             pubkey_ed25519_base64: pk(9),
@@ -802,6 +961,7 @@ mod owned_nodes {
             alias_hint: Some("Eric".into()),
             group_key_id: None,
             owned_nodes: nodes,
+            ml_dsa_65_pubkey_sha256: None,
         }
     }
 
@@ -906,5 +1066,173 @@ mod owned_nodes {
     fn older_versions_still_decode() {
         let v2 = encode(&user(vec![])).unwrap();
         assert_eq!(decode(&v2).unwrap().owned_nodes.len(), 0);
+    }
+}
+
+/// The PQC commitment that makes a code-admitted key registrable
+/// (CIRISVerify#272).
+#[cfg(test)]
+mod pqc_commitment {
+    use super::*;
+
+    const DIGEST: &str = "3d854734e268842395e65c84d13a5ce74ddac1e5c51e70f2e0a5455e7293c2fb";
+
+    fn user(nodes: Vec<OwnedNode>, pqc: Option<&str>) -> FedCode {
+        FedCode {
+            kind: FedKind::User,
+            key_id: "eric-moore-a1b2c3".into(),
+            pubkey_ed25519_base64: b64().encode([0x11u8; PUBKEY_RAW_LEN]),
+            transport_hint: None,
+            alias_hint: Some("Eric".into()),
+            group_key_id: None,
+            owned_nodes: nodes,
+            ml_dsa_65_pubkey_sha256: pqc.map(str::to_string),
+        }
+    }
+
+    /// **The gap #272 reports.** A plain user code — no nodes — must be able to
+    /// carry its PQC half, because the admission problem affects EVERY code,
+    /// not only node-carrying ones. This is the shape most likely to be handed
+    /// over at first contact.
+    #[test]
+    fn a_node_free_code_can_still_carry_the_commitment() {
+        let fc = user(vec![], Some(DIGEST));
+        let code = encode(&fc).unwrap();
+        assert!(code.starts_with("CIRIS-V3-"), "{code}");
+        let back = decode(&code).unwrap();
+        assert_eq!(back.ml_dsa_65_pubkey_sha256.as_deref(), Some(DIGEST));
+        assert!(back.owned_nodes.is_empty());
+        assert_eq!(back, fc);
+    }
+
+    /// Nodes and a commitment together round-trip.
+    #[test]
+    fn nodes_and_commitment_round_trip() {
+        let fc = user(
+            vec![OwnedNode {
+                key_id: "laptop-aaaa".into(),
+                transport_pubkey_ed25519_base64: b64().encode([0x22u8; PUBKEY_RAW_LEN]),
+            }],
+            Some(DIGEST),
+        );
+        assert_eq!(decode(&encode(&fc).unwrap()).unwrap(), fc);
+    }
+
+    /// **Neither present still emits byte-identical v2.** #272 must cost
+    /// nothing for codes that do not use it.
+    #[test]
+    fn neither_present_is_unchanged_v2() {
+        let code = encode(&user(vec![], None)).unwrap();
+        assert!(code.starts_with("CIRIS-V2-"), "{code}");
+        assert!(decode(&code).unwrap().ml_dsa_65_pubkey_sha256.is_none());
+    }
+
+    /// **A v3 code minted BEFORE #272 must still decode.** Those end after the
+    /// node list with no tag byte at all; that absence is "no commitment", not
+    /// truncation. Without this, v14.1.0 codes would break.
+    #[test]
+    fn a_pre_272_v3_code_still_decodes() {
+        let key_id = b"eric-moore-a1b2c3";
+        let mut payload = vec![FEDCODE_VERSION_V3, FedKind::User.as_u8()];
+        payload.extend_from_slice(&Sha256::digest(key_id));
+        payload.extend_from_slice(&[0x11; PUBKEY_RAW_LEN]);
+        payload.push(key_id.len() as u8);
+        payload.extend_from_slice(key_id);
+        payload.extend_from_slice(&[0x00, 0x00, 0x00]); // three absent hints
+        payload.push(1); // one node
+        payload.push(11);
+        payload.extend_from_slice(b"laptop-aaaa");
+        payload.extend_from_slice(&[0x22; PUBKEY_RAW_LEN]);
+        // …and then NOTHING. This is exactly what v14.1.0 emits.
+        let crc = crc16_ccitt(&payload);
+        payload.push((crc >> 8) as u8);
+        payload.push((crc & 0xFF) as u8);
+
+        let fc = decode(&format!("{PREFIX_V3}{}", b32_no_pad_encode(&payload))).unwrap();
+        assert_eq!(fc.owned_nodes.len(), 1);
+        assert!(fc.ml_dsa_65_pubkey_sha256.is_none());
+    }
+
+    /// A malformed digest is rejected, not repaired — normalizing case would
+    /// let two spellings of one identity produce two different codes.
+    #[test]
+    fn a_malformed_digest_is_refused() {
+        for bad in [
+            "abc",                                                               // short
+            "3D854734E268842395E65C84D13A5CE74DDAC1E5C51E70F2E0A5455E7293C2FB",  // upper
+            "zz854734e268842395e65c84d13a5ce74ddac1e5c51e70f2e0a5455e7293c2fbb", // non-hex
+        ] {
+            assert!(
+                encode(&user(vec![], Some(bad))).is_err(),
+                "{bad} must be refused"
+            );
+        }
+    }
+
+    /// An unknown tag byte fails closed rather than being skipped.
+    #[test]
+    fn an_unknown_commitment_tag_is_refused() {
+        let fc = user(vec![], Some(DIGEST));
+        let mut payload = build_payload(&fc).unwrap();
+        *payload.last_mut().unwrap() = 0x00; // corrupt inside the digest
+        let n = payload.len();
+        payload[n - PQC_COMMITMENT_LEN - 1] = 0x7f; // bogus tag
+        let crc = crc16_ccitt(&payload);
+        payload.push((crc >> 8) as u8);
+        payload.push((crc & 0xFF) as u8);
+        let err = decode(&format!("{PREFIX_V3}{}", b32_no_pad_encode(&payload))).unwrap_err();
+        assert!(format!("{err}").contains("tag must be"), "{err}");
+    }
+}
+
+#[cfg(test)]
+mod pqc_pull {
+    use super::*;
+
+    fn code_with(pqc: Option<String>) -> FedCode {
+        FedCode {
+            kind: FedKind::User,
+            key_id: "eric-moore-a1b2c3".into(),
+            pubkey_ed25519_base64: b64().encode([0x11u8; PUBKEY_RAW_LEN]),
+            transport_hint: None,
+            alias_hint: None,
+            group_key_id: None,
+            owned_nodes: vec![],
+            ml_dsa_65_pubkey_sha256: pqc,
+        }
+    }
+
+    /// The happy path: a pulled key matching the commitment is admissible.
+    #[test]
+    fn a_matching_pull_is_accepted() {
+        let pulled = vec![0xABu8; 1952]; // ML-DSA-65 public key size
+        let digest = Sha256::digest(&pulled)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        assert!(verify_pulled_ml_dsa_65_pubkey(&code_with(Some(digest)), &pulled).is_ok());
+    }
+
+    /// A substituted Key Pull is refused — this is what the commitment buys.
+    #[test]
+    fn a_substituted_pull_is_refused() {
+        let real = vec![0xABu8; 1952];
+        let digest = Sha256::digest(&real)
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        let substituted = vec![0xCDu8; 1952];
+        let err =
+            verify_pulled_ml_dsa_65_pubkey(&code_with(Some(digest)), &substituted).unwrap_err();
+        assert!(format!("{err}").contains("does not match"), "{err}");
+    }
+
+    /// **A code with no commitment fails CLOSED.** There is nothing to bind
+    /// the pulled key to, so admitting the pair would be exactly the
+    /// unverified mapping the commitment exists to prevent.
+    #[test]
+    fn a_code_without_a_commitment_cannot_admit_a_pull() {
+        let err = verify_pulled_ml_dsa_65_pubkey(&code_with(None), &[0xABu8; 1952]).unwrap_err();
+        assert!(format!("{err}").contains("MUST NOT be admitted"), "{err}");
     }
 }
