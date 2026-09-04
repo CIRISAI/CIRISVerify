@@ -2639,8 +2639,17 @@ fn emit_fedcode(
         if let Some(g) = &fc.group_key_id {
             println!("  group  : {g}");
         }
-        if let Some(d) = &fc.ml_dsa_65_pubkey_sha256 {
-            println!("  pqc    : sha256:{d}");
+        match &fc.ml_dsa_65_pubkey_sha256 {
+            Some(d) => println!("  pqc    : sha256:{d}"),
+            // #272: say so at the point of minting. A code with no PQC
+            // commitment names a key that cannot be written to
+            // `federation_keys` (those are hybrid-only), so it will be REFUSED
+            // at admission — better to learn that here than after handing the
+            // code to someone at first contact.
+            None => println!(
+                "  pqc    : (none — this code cannot be admitted to federation_keys; \
+                 use `identity create` for a hybrid identity)"
+            ),
         }
         if !fc.owned_nodes.is_empty() {
             println!(
