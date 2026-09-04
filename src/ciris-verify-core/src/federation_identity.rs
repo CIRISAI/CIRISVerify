@@ -233,6 +233,29 @@ pub async fn create_federation_identity(
         transport_hints,
     )
     .await?;
+    // #272: the code must commit to the ML-DSA-65 half. Read it back off the
+    // record we just built, so the commitment and the registered key are
+    // provably the same bytes rather than two independent derivations that
+    // could drift.
+    let pqc_commitment = {
+        use sha2::Digest as _;
+        let b64_pub = record
+            .record
+            .pubkey_ml_dsa_65_base64
+            .as_deref()
+            .ok_or_else(|| VerifyError::IntegrityError {
+                message: "key record carries no pubkey_ml_dsa_65_base64; refusing to \
+                          mint a fedcode that could never be admitted (#272)"
+                    .to_string(),
+            })?;
+        let raw = base64::engine::general_purpose::STANDARD
+            .decode(b64_pub)
+            .map_err(|e| VerifyError::IntegrityError {
+                message: format!("decode pubkey_ml_dsa_65_base64: {e}"),
+            })?;
+        hex::encode(sha2::Sha256::digest(&raw))
+    };
+
     let body = serde_json::to_value(&record).map_err(|e| VerifyError::IntegrityError {
         message: format!("serialize key record: {e}"),
     })?;
@@ -253,7 +276,12 @@ pub async fn create_federation_identity(
         alias_hint: label.map(str::to_string),
         group_key_id: None,
         owned_nodes: Vec::new(),
-        ml_dsa_65_pubkey_sha256: None,
+        // #272: commit to the PQC half, or this code names a key that can
+        // never be written to `federation_keys` (persist takes hybrid records
+        // only) and first contact has no working path. Emitting `None` here
+        // would leave the commitment support inert for every code verify
+        // itself mints — which is the whole population that matters.
+        ml_dsa_65_pubkey_sha256: Some(pqc_commitment),
     })
     .map_err(|e| VerifyError::IntegrityError {
         message: format!("encode fedcode: {e}"),
@@ -311,7 +339,14 @@ mod tests {
             "got {}",
             created.key_id
         );
-        assert!(created.code.starts_with("CIRIS-V2-"));
+        // **Behavior change, #272:** a minted identity code is now v3, because
+        // it carries the PQC commitment. This test previously asserted v2 —
+        // but a code with no commitment names a key that can never be written
+        // to `federation_keys`, so minting v2 here would mean verify keeps
+        // producing codes that cannot be admitted. A consumer older than
+        // v14.1.0 rejects `CIRIS-V3-` outright, which is the safe direction:
+        // it could not have admitted the key either.
+        assert!(created.code.starts_with("CIRIS-V3-"), "{}", created.code);
         assert_eq!(
             crate::fedcode::decode(&created.code).unwrap().kind,
             crate::fedcode::FedKind::User
@@ -365,6 +400,31 @@ mod tests {
 
         // The recorded ML-DSA pubkey == the seed sealed under `seal_alias`, so a
         // re-open by the alias (resolve_user_signer) reproduces it — no lockout.
+        // #272: the minted code must COMMIT to the PQC half, or the identity
+        // verify just created names a key that can never be written to
+        // `federation_keys`. This is the assertion that keeps the commitment
+        // support from being inert for the population that matters.
+        {
+            use base64::Engine as _;
+            use sha2::Digest as _;
+            let fc = crate::fedcode::decode(&created.code).expect("minted code decodes");
+            let raw = base64::engine::general_purpose::STANDARD
+                .decode(
+                    created.object.body["record"]["pubkey_ml_dsa_65_base64"]
+                        .as_str()
+                        .unwrap(),
+                )
+                .unwrap();
+            assert_eq!(
+                fc.ml_dsa_65_pubkey_sha256.as_deref(),
+                Some(hex::encode(sha2::Sha256::digest(&raw)).as_str()),
+                "the code's commitment must match the REGISTERED ML-DSA key"
+            );
+            // And the blessed check accepts the real key.
+            crate::fedcode::verify_pulled_ml_dsa_65_pubkey(&fc, &raw)
+                .expect("the registered key must satisfy the code's commitment");
+        }
+
         let recorded_mldsa_pub = created.object.body["record"]["pubkey_ml_dsa_65_base64"]
             .as_str()
             .unwrap();
