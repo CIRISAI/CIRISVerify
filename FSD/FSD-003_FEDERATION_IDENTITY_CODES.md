@@ -192,9 +192,26 @@ ml_dsa_65_pubkey_sha256 = sha256(raw ML-DSA-65 public key)
    implementation MUST NOT treat a commitment match as authentication of the
    identity.
 
-Verify exposes `fedcode::verify_pulled_ml_dsa_65_pubkey(&code, pulled)` as the
-one blessed check. A code with **no** commitment fails closed there: there is
-nothing to bind the pulled key to.
+Verify exposes two surfaces, and the second is the one a host should use:
+
+- `fedcode::verify_pulled_ml_dsa_65_pubkey(&code, pulled)` — the check itself.
+- **`fedcode::AdmittedHybridKey::admit(&code, pulled)`** — the same check in an
+  enforcing shape. Its fields are private and this is its only constructor, so
+  a value exists **only** if the pull matched. A host that takes an
+  `AdmittedHybridKey` as its registration input cannot express the unchecked
+  path; with the free function alone, nothing structurally stops a host from
+  registering a pulled body it never checked, and that failure is silent
+  (CIRISVerify#274).
+
+A code with **no** commitment fails closed in both: there is nothing to bind
+the pulled key to, so a v1/v2 code is not a hybrid registration path at all.
+
+**What the commitment proves, precisely.** It proves the ML-DSA half is the one
+the code's minter committed to — **not** that whoever holds the Ed25519 key
+also holds this ML-DSA key. Nobody cross-signs the two halves at registration,
+and they need not: persist admits `algorithm: "hybrid"` only and every row must
+verify under **both** signatures, so a holder of one half can never produce an
+admitting row. Joint control is proven at **first use**, not at registration.
 
 ### 3A.4 Compatibility
 

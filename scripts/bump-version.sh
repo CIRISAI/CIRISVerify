@@ -61,6 +61,32 @@ else
     echo -e "${RED}✗${NC} Cargo.toml not found"
 fi
 
+# 1b. Update intra-workspace path-dependency version pins.
+#
+# A member crate pins a sibling by MAJOR (`version = "14"`) alongside its
+# `path`. Cargo enforces that pin, so a major bump leaves the workspace
+# unbuildable until it is updated — and this was missed by hand at 13.0.0,
+# 14.0.0 and 15.0.0 before being automated here. Minor/patch bumps are a
+# no-op, since the pin carries only the major.
+NEW_MAJOR="${NEW_VERSION%%.*}"
+PIN_CHANGED=0
+for member_toml in "$REPO_ROOT"/src/*/Cargo.toml; do
+    [ -f "$member_toml" ] || continue
+    # Only rewrite pins on deps that also carry a `path = "../…"` — a real
+    # sibling — never a same-named crates.io dependency.
+    if grep -qE '^ciris-[a-z-]+ = \{ path = "\.\./[^"]+", version = "[0-9]+"' "$member_toml"; then
+        sed -i.bak -E "s|^(ciris-[a-z-]+ = \{ path = \"\.\./[^\"]+\", version = \")[0-9]+(\")|\1${NEW_MAJOR}\2|" "$member_toml" \
+            && rm -f "$member_toml.bak"
+        if ! git -C "$REPO_ROOT" diff --quiet -- "$member_toml" 2>/dev/null; then
+            PIN_CHANGED=1
+            echo -e "${GREEN}✓${NC} $(basename "$(dirname "$member_toml")")/Cargo.toml: sibling pin -> \"$NEW_MAJOR\""
+        fi
+    fi
+done
+if [ "$PIN_CHANGED" = "1" ]; then
+    CHANGES+=("intra-workspace sibling pins -> \"$NEW_MAJOR\"")
+fi
+
 # 2. Update Python pyproject.toml
 PYPROJECT="$REPO_ROOT/bindings/python/pyproject.toml"
 if [ -f "$PYPROJECT" ]; then

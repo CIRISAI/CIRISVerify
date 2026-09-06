@@ -175,6 +175,7 @@ impl FedKind {
 /// [`encode`] refuses a code whose embedded transport key equals the owner's
 /// own pubkey, so the specific mistake that caused #335 cannot be encoded.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct OwnedNode {
     /// The node's federation `key_id` — an identifier, not an address.
     pub key_id: String,
@@ -184,7 +185,22 @@ pub struct OwnedNode {
 }
 
 /// A decoded / to-be-encoded fedcode.
+///
+/// **`#[non_exhaustive]`, deliberately (CIRISVerify#274).** This format
+/// demonstrably grows — v3 added [`owned_nodes`](Self::owned_nodes), then
+/// #272 added the PQC commitment — and each addition was a public field on a
+/// non-`non_exhaustive` struct shipped in a MINOR, which is a compile break
+/// for every struct-literal constructor. It broke 12 call sites in CIRISEdge,
+/// and the version number said it was safe to take blind.
+///
+/// That is exactly the semver hazard #257 raised and v14.0.0 was cut to fix —
+/// but that sweep annotated **33 enums and 0 structs**, so the same class
+/// shipped twice more through the half nobody looked at.
+///
+/// Construct with [`FedCode::new`] plus the `with_*` methods; a future field
+/// is then an added method, never a break.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct FedCode {
     /// The entity kind.
     pub kind: FedKind,
@@ -241,6 +257,83 @@ pub struct FedCode {
     /// carries the Ed25519 half, and adds no authority of its own. What it
     /// buys is that a Key Pull cannot be substituted after the fact.
     pub ml_dsa_65_pubkey_sha256: Option<String>,
+}
+
+impl OwnedNode {
+    /// A node the owner controls, for embedding in a v3 code.
+    ///
+    /// `transport_pubkey_ed25519_base64` is the node's **transport** key —
+    /// never the owner's federation key. See the type docs for what that
+    /// confusion cost in CIRISServer#335.
+    pub fn new(
+        key_id: impl Into<String>,
+        transport_pubkey_ed25519_base64: impl Into<String>,
+    ) -> Self {
+        Self {
+            key_id: key_id.into(),
+            transport_pubkey_ed25519_base64: transport_pubkey_ed25519_base64.into(),
+        }
+    }
+}
+
+impl FedCode {
+    /// A code naming one entity by its Ed25519 federation key.
+    ///
+    /// Everything optional is added with the `with_*` methods, so a field
+    /// introduced later is an added method rather than a break
+    /// (CIRISVerify#274).
+    pub fn new(
+        kind: FedKind,
+        key_id: impl Into<String>,
+        pubkey_ed25519_base64: impl Into<String>,
+    ) -> Self {
+        Self {
+            kind,
+            key_id: key_id.into(),
+            pubkey_ed25519_base64: pubkey_ed25519_base64.into(),
+            transport_hint: None,
+            alias_hint: None,
+            group_key_id: None,
+            owned_nodes: Vec::new(),
+            ml_dsa_65_pubkey_sha256: None,
+        }
+    }
+
+    /// A public base URL the holder suggests for reaching them.
+    #[must_use]
+    pub fn with_transport_hint(mut self, hint: impl Into<String>) -> Self {
+        self.transport_hint = Some(hint.into());
+        self
+    }
+
+    /// A display name. Not signed, not PII-bearing — display only.
+    #[must_use]
+    pub fn with_alias_hint(mut self, alias: impl Into<String>) -> Self {
+        self.alias_hint = Some(alias.into());
+        self
+    }
+
+    /// The group's `*_key_id`, for `family` / `community` codes.
+    #[must_use]
+    pub fn with_group_key_id(mut self, group_key_id: impl Into<String>) -> Self {
+        self.group_key_id = Some(group_key_id.into());
+        self
+    }
+
+    /// The owner's nodes, so a contact resolves with no directory.
+    #[must_use]
+    pub fn with_owned_nodes(mut self, nodes: Vec<OwnedNode>) -> Self {
+        self.owned_nodes = nodes;
+        self
+    }
+
+    /// `sha256(ml_dsa_65_pubkey)`, lowercase hex — without it the code names
+    /// a key that cannot be written to `federation_keys` (CIRISVerify#272).
+    #[must_use]
+    pub fn with_ml_dsa_65_pubkey_sha256(mut self, digest: impl Into<String>) -> Self {
+        self.ml_dsa_65_pubkey_sha256 = Some(digest.into());
+        self
+    }
 }
 
 /// fedcode encode/decode failures.
@@ -331,6 +424,77 @@ fn prefix_for(fc: &FedCode) -> &'static str {
         PREFIX_V3
     } else {
         PREFIX_V2
+    }
+}
+
+/// A hybrid identity admitted from a fedcode — **constructible only by
+/// passing the commitment check** (CIRISVerify#274).
+///
+/// [`verify_pulled_ml_dsa_65_pubkey`] is the right primitive but the wrong
+/// *shape* for the job: it is a free function returning `Result<(), _>`, so
+/// nothing structurally stops a host from pulling an ML-DSA body and
+/// registering it without ever calling the check. The failure is silent — you
+/// get a registered hybrid whose PQC half came from whoever answered the Pull.
+///
+/// This type fixes the class instead of trusting each call site. Its fields
+/// are private and its only constructor is [`admit`](Self::admit), which
+/// consumes the code and the pulled bytes together and yields a value **only**
+/// on match. A host that takes an `AdmittedHybridKey` as its registration
+/// input cannot express the unchecked path.
+///
+/// Same discipline as [`crate::federation_identity::Validity`]: private
+/// fields, one fallible constructor, the type itself carrying the proof.
+///
+/// ## What this does and does not prove
+///
+/// It proves the ML-DSA half is **the one the code's minter committed to** —
+/// not that whoever holds the Ed25519 key also holds this ML-DSA key. Nobody
+/// cross-signs the two halves at registration, and they need not: persist
+/// admits `algorithm: "hybrid"` only and every row must verify under **both**
+/// signatures, so a holder of one half can never produce an admitting row.
+/// Joint control is proven at **first use**, not at registration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AdmittedHybridKey {
+    key_id: String,
+    pubkey_ed25519_base64: String,
+    ml_dsa_65_pubkey_base64: String,
+}
+
+impl AdmittedHybridKey {
+    /// Admit a pulled ML-DSA-65 public key against the code that named it.
+    ///
+    /// This is the **only** way to build the type, so an unchecked
+    /// registration input does not exist to be passed anywhere.
+    ///
+    /// # Errors
+    /// [`FedCodeError::Malformed`] if the code carries no commitment (nothing
+    /// to bind against — fail closed rather than admit), or if the pulled key
+    /// does not match it.
+    pub fn admit(fc: &FedCode, pulled_ml_dsa_65_pubkey: &[u8]) -> Result<Self, FedCodeError> {
+        verify_pulled_ml_dsa_65_pubkey(fc, pulled_ml_dsa_65_pubkey)?;
+        Ok(Self {
+            key_id: fc.key_id.clone(),
+            pubkey_ed25519_base64: fc.pubkey_ed25519_base64.clone(),
+            ml_dsa_65_pubkey_base64: b64().encode(pulled_ml_dsa_65_pubkey),
+        })
+    }
+
+    /// The federation `key_id` both halves register under.
+    #[must_use]
+    pub fn key_id(&self) -> &str {
+        &self.key_id
+    }
+
+    /// The classical half, as carried by the code.
+    #[must_use]
+    pub fn pubkey_ed25519_base64(&self) -> &str {
+        &self.pubkey_ed25519_base64
+    }
+
+    /// The PQC half, **verified against the code's commitment**.
+    #[must_use]
+    pub fn ml_dsa_65_pubkey_base64(&self) -> &str {
+        &self.ml_dsa_65_pubkey_base64
     }
 }
 
@@ -1234,5 +1398,102 @@ mod pqc_pull {
     fn a_code_without_a_commitment_cannot_admit_a_pull() {
         let err = verify_pulled_ml_dsa_65_pubkey(&code_with(None), &[0xABu8; 1952]).unwrap_err();
         assert!(format!("{err}").contains("MUST NOT be admitted"), "{err}");
+    }
+}
+
+/// The enforcing-shape follow-ups from CIRISVerify#274.
+#[cfg(test)]
+mod admission_shape {
+    use super::*;
+
+    fn pulled() -> Vec<u8> {
+        vec![0xABu8; 1952]
+    }
+
+    fn digest_of(b: &[u8]) -> String {
+        Sha256::digest(b)
+            .iter()
+            .map(|x| format!("{x:02x}"))
+            .collect()
+    }
+
+    fn code(pqc: Option<String>) -> FedCode {
+        let fc = FedCode::new(
+            FedKind::User,
+            "eric-moore-a1b2c3",
+            b64().encode([0x11u8; PUBKEY_RAW_LEN]),
+        );
+        match pqc {
+            Some(d) => fc.with_ml_dsa_65_pubkey_sha256(d),
+            None => fc,
+        }
+    }
+
+    /// A matching pull yields the admitted pair, carrying BOTH halves.
+    #[test]
+    fn admit_yields_both_halves_on_match() {
+        let p = pulled();
+        let admitted = AdmittedHybridKey::admit(&code(Some(digest_of(&p))), &p).unwrap();
+        assert_eq!(admitted.key_id(), "eric-moore-a1b2c3");
+        assert_eq!(
+            admitted.pubkey_ed25519_base64(),
+            b64().encode([0x11u8; PUBKEY_RAW_LEN])
+        );
+        assert_eq!(admitted.ml_dsa_65_pubkey_base64(), b64().encode(&p));
+    }
+
+    /// **The point of the type.** A substituted Key Pull produces no value at
+    /// all — so there is nothing to hand a `register_federation_key`, and the
+    /// silent-unchecked-registration path is unconstructible rather than
+    /// merely discouraged.
+    #[test]
+    fn a_substituted_pull_yields_no_value_to_register() {
+        let real = pulled();
+        let err =
+            AdmittedHybridKey::admit(&code(Some(digest_of(&real))), &[0xCDu8; 1952]).unwrap_err();
+        assert!(format!("{err}").contains("does not match"), "{err}");
+    }
+
+    /// A v1/v2 code is not a hybrid registration path at all.
+    #[test]
+    fn a_code_without_a_commitment_admits_nothing() {
+        let err = AdmittedHybridKey::admit(&code(None), &pulled()).unwrap_err();
+        assert!(format!("{err}").contains("MUST NOT be admitted"), "{err}");
+    }
+
+    /// The builders reproduce what struct literals used to express — including
+    /// a code that emits byte-identical v2 when nothing optional is set.
+    #[test]
+    fn builders_cover_the_literal_shape() {
+        let plain = FedCode::new(
+            FedKind::User,
+            "u-aaaa",
+            b64().encode([0x11u8; PUBKEY_RAW_LEN]),
+        );
+        assert!(encode(&plain).unwrap().starts_with("CIRIS-V2-"));
+
+        let full = FedCode::new(
+            FedKind::Family,
+            "f-aaaa",
+            b64().encode([0x11u8; PUBKEY_RAW_LEN]),
+        )
+        .with_transport_hint("https://example.invalid")
+        .with_alias_hint("Family")
+        .with_group_key_id("g-aaaa");
+        assert_eq!(decode(&encode(&full).unwrap()).unwrap(), full);
+
+        let with_nodes = FedCode::new(
+            FedKind::User,
+            "u-bbbb",
+            b64().encode([0x11u8; PUBKEY_RAW_LEN]),
+        )
+        .with_owned_nodes(vec![OwnedNode::new(
+            "laptop-aaaa",
+            b64().encode([0x22u8; PUBKEY_RAW_LEN]),
+        )])
+        .with_ml_dsa_65_pubkey_sha256(digest_of(&pulled()));
+        let back = decode(&encode(&with_nodes).unwrap()).unwrap();
+        assert_eq!(back, with_nodes);
+        assert_eq!(back.owned_nodes.len(), 1);
     }
 }
