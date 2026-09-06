@@ -2537,16 +2537,18 @@ fn run_fedcode_new(a: FedcodeNew) {
     };
 
     let key_id = fedcode::derive_key_id(&a.label, &ed_pub);
-    let fc = FedCode {
-        owned_nodes: Vec::new(),
-        ml_dsa_65_pubkey_sha256: None,
+    let mut fc = FedCode::new(
         kind,
-        key_id: key_id.clone(),
-        pubkey_ed25519_base64: base64::engine::general_purpose::STANDARD.encode(&ed_pub),
-        transport_hint: a.transport_hint.clone(),
-        alias_hint: Some(a.label.clone()),
-        group_key_id: a.group_key_id.clone(),
-    };
+        key_id.clone(),
+        base64::engine::general_purpose::STANDARD.encode(&ed_pub),
+    )
+    .with_alias_hint(a.label.clone());
+    if let Some(h) = a.transport_hint.clone() {
+        fc = fc.with_transport_hint(h);
+    }
+    if let Some(g) = a.group_key_id.clone() {
+        fc = fc.with_group_key_id(g);
+    }
     let code = match fedcode::encode(&fc) {
         Ok(c) => c,
         Err(e) => {
