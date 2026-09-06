@@ -370,6 +370,13 @@ The last row is the honest headline. Verify has had internal adversarial audits
 **no external audit**. Treat the cryptographic posture as carefully constructed
 and unreviewed by outsiders.
 
+To be precise about what *does* exist: [ciris.ai/reviews](https://ciris.ai/reviews)
+lists two outside reviews of the ecosystem — Gunnar Zarncke's assessment of the
+alignment research agenda, and Nullworks' independent operational-assurance
+review of CIRISAgent (August 2026). **Neither is a cryptographic or attestation
+audit, and neither covers this crate.** They should not be read as review of
+verify's crypto, key custody, or attestation chains.
+
 ---
 
 ## Sources
