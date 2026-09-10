@@ -134,6 +134,85 @@ pub fn decrypt(
     Ok(in_out)
 }
 
+/// Encrypt with **associated data** (CIRISVerify#279, CIRISPersist#831).
+///
+/// Same key / nonce / appended-tag conventions as [`encrypt`]; the only
+/// difference is that `aad` is authenticated (never encrypted) and must be
+/// presented byte-for-byte to [`decrypt_aad`] or the tag fails.
+///
+/// ## Why this exists beside the AAD-empty pair
+///
+/// The AAD-empty pair encrypts *opaque* blobs. Persist seals blobs through
+/// it, and edge's chat migration onto community-cohort blobs needs a
+/// ciphertext **bound to its referencing row** — author, signed instant,
+/// epoch — so a ciphertext lifted onto another validly-signed row does not
+/// open. A row-side commitment cannot give that property under a
+/// per-epoch *shared* DEK (anyone holding the DEK can re-seal); AEAD
+/// associated data can, because the binding is inside the tag.
+///
+/// The AAD-empty pair is untouched and its NIST KAT still holds: an
+/// `encrypt_aad` ciphertext does not open under [`decrypt`], and vice
+/// versa — that mutual refusal is asserted by test, since it *is* the
+/// binding property.
+///
+/// # Errors
+///
+/// `CryptoError::AesGcm { operation: "encrypt", .. }` if the cipher rejects
+/// the inputs.
+pub fn encrypt_aad(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    plaintext: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let cipher = cipher(key, "encrypt")?;
+    let mut in_out = plaintext.to_vec();
+    cipher
+        .seal_in_place_append_tag(
+            Nonce::assume_unique_for_key(*nonce),
+            Aad::from(aad),
+            &mut in_out,
+        )
+        .map_err(|_| CryptoError::AesGcm {
+            operation: "encrypt",
+            reason: "AES-256-GCM seal (with AAD) failed".to_string(),
+        })?;
+    Ok(in_out)
+}
+
+/// Decrypt a ciphertext produced by [`encrypt_aad`], presenting the same
+/// `aad`. Returns the plaintext on success.
+///
+/// # Errors
+///
+/// `CryptoError::AesGcm { operation: "decrypt", .. }` on tag mismatch —
+/// which now also covers **wrong or missing AAD**, exactly as intended: a
+/// blob presented against the wrong row is indistinguishable from a
+/// tampered blob, and callers should not be distinguishing them.
+pub fn decrypt_aad(
+    key: &[u8; 32],
+    nonce: &[u8; 12],
+    aad: &[u8],
+    ciphertext_and_tag: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let cipher = cipher(key, "decrypt")?;
+    let mut in_out = ciphertext_and_tag.to_vec();
+    let plaintext_len = cipher
+        .open_in_place(
+            Nonce::assume_unique_for_key(*nonce),
+            Aad::from(aad),
+            &mut in_out,
+        )
+        .map_err(|_| CryptoError::AesGcm {
+            operation: "decrypt",
+            reason: "AES-256-GCM open (with AAD) failed (tag mismatch, wrong AAD, or malformed ciphertext)"
+                .to_string(),
+        })?
+        .len();
+    in_out.truncate(plaintext_len);
+    Ok(in_out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -236,6 +315,101 @@ mod tests {
         // Empty plaintext → ciphertext is just the 16-byte tag.
         assert_eq!(ct, expected_tag);
         assert_eq!(decrypt(&key, &nonce, &ct).unwrap(), b"");
+    }
+
+    // ---- associated data (CIRISVerify#279) ------------------------------
+
+    /// Round-trip with AAD.
+    #[test]
+    fn aad_round_trip() {
+        let key = [0x42u8; 32];
+        let nonce = [0x07u8; 12];
+        let aad = b"author=A|signed_at=1|epoch=7";
+        let ct = encrypt_aad(&key, &nonce, aad, b"row payload").unwrap();
+        assert_eq!(ct.len(), b"row payload".len() + 16);
+        assert_eq!(decrypt_aad(&key, &nonce, aad, &ct).unwrap(), b"row payload");
+    }
+
+    /// **The binding property.** The same ciphertext presented against a
+    /// different row (different AAD) must not open — this is what a
+    /// row-side commitment under a shared DEK cannot give and AAD can.
+    #[test]
+    fn aad_mismatch_refuses() {
+        let key = [1u8; 32];
+        let nonce = [2u8; 12];
+        let ct = encrypt_aad(&key, &nonce, b"row-A", b"secret").unwrap();
+        let err = decrypt_aad(&key, &nonce, b"row-B", &ct).unwrap_err();
+        assert!(matches!(
+            err,
+            CryptoError::AesGcm {
+                operation: "decrypt",
+                ..
+            }
+        ));
+        // …and a bit-flip inside the AAD is likewise a refusal.
+        assert!(decrypt_aad(&key, &nonce, b"row-a", &ct).is_err());
+    }
+
+    /// **Cross-refusal, both directions.** An `encrypt_aad` ciphertext must
+    /// not open under the AAD-empty `decrypt`, and an AAD-empty `encrypt`
+    /// ciphertext must not open under `decrypt_aad` with non-empty AAD.
+    /// Otherwise a caller could strip the binding by choosing the other
+    /// entry point.
+    #[test]
+    fn aad_and_empty_pairs_refuse_each_other() {
+        let key = [3u8; 32];
+        let nonce = [4u8; 12];
+        let with_aad = encrypt_aad(&key, &nonce, b"row", b"pt").unwrap();
+        assert!(
+            decrypt(&key, &nonce, &with_aad).is_err(),
+            "AAD-empty decrypt must refuse an AAD ciphertext"
+        );
+        let without = encrypt(&key, &nonce, b"pt").unwrap();
+        assert!(
+            decrypt_aad(&key, &nonce, b"row", &without).is_err(),
+            "decrypt_aad must refuse an AAD-empty ciphertext"
+        );
+    }
+
+    /// Empty AAD through the new pair is byte-identical to the old pair —
+    /// so the two entry points agree on the degenerate case and the
+    /// existing AAD-empty KAT constrains `encrypt_aad(.., b"", ..)` too.
+    #[test]
+    fn aad_empty_is_identical_to_the_plain_pair() {
+        let key = [5u8; 32];
+        let nonce = [6u8; 12];
+        assert_eq!(
+            encrypt_aad(&key, &nonce, b"", b"same").unwrap(),
+            encrypt(&key, &nonce, b"same").unwrap()
+        );
+    }
+
+    /// NIST GCM known-answer vector with **non-empty AAD** — the cross-impl
+    /// lock for the new pair. From NIST `gcmEncryptExtIV256.rsp`
+    /// `[Keylen = 256] [IVlen = 96] [PTlen = 128] [AADlen = 128] [Taglen = 128]`
+    /// Count = 0, extracted from the official `gcmtestvectors.zip` and
+    /// **independently cross-checked byte-for-byte** against the copy
+    /// RustCrypto vendors in `aes-gcm-0.10.3/tests/aes256gcm.rs` — two
+    /// sources, so the fixture is not merely what this code emits.
+    ///
+    /// Source:
+    /// <https://csrc.nist.gov/CSRC/media/Projects/Cryptographic-Algorithm-Validation-Program/documents/mac/gcmtestvectors.zip>
+    #[test]
+    fn nist_vector_keylen_256_iv_96_pt_128_aad_128() {
+        let key: [u8; 32] =
+            hex_literal("92e11dcdaa866f5ce790fd24501f92509aacf4cb8b1339d50c9c1240935dd08b");
+        let nonce: [u8; 12] = hex_literal("ac93a1a6145299bde902f21a");
+        let pt: [u8; 16] = hex_literal("2d71bcfa914e4ac045b2aa60955fad24");
+        let aad: [u8; 16] = hex_literal("1e0889016f67601c8ebea4943bc23ad6");
+        let expected_ct: [u8; 16] = hex_literal("8995ae2e6df3dbf96fac7b7137bae67f");
+        let expected_tag: [u8; 16] = hex_literal("eca5aa77d51d4a0a14d9c51e1da474ab");
+
+        let out = encrypt_aad(&key, &nonce, &aad, &pt).unwrap();
+        assert_eq!(&out[..16], &expected_ct, "ciphertext");
+        assert_eq!(&out[16..], &expected_tag, "tag");
+        assert_eq!(decrypt_aad(&key, &nonce, &aad, &out).unwrap(), pt);
+        // And the AAD is load-bearing for this vector too.
+        assert!(decrypt(&key, &nonce, &out).is_err());
     }
 
     /// Helper — hex string to fixed-length array. Asserts length at
