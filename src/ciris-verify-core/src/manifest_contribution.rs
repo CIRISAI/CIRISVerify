@@ -31,8 +31,17 @@
 //! path.
 //!
 //! **Cross-impl flag:** the envelope member set (`on_behalf_of`,
-//! `delegation_ref`, the `build` sub-object) is pinned here but flagged for
+//! `delegation_ref`, the `build` sub-object, and — since CIRISVerify#281 —
+//! `evidence_refs: [build.manifest_hash]`) is pinned here but flagged for
 //! CIRISServer/Registry cross-confirmation, like the #76 partnership set.
+//!
+//! `evidence_refs` is what makes the Contribution *reference* the manifest
+//! blob it vouches for: every blob consumer (CIRISEdge `BlobMeaning::project`,
+//! CIRISPersist `envelope_binds_content`) resolves a blob to its referencing
+//! rows through that array and nothing else, so without it no pull can ever
+//! fire on a manifest. It names exactly the manifest — never `binary_hash`,
+//! since the binary is not a blob on this plane and naming it would claim
+//! bytes nobody serves.
 
 use serde_json::{json, Value};
 
@@ -68,8 +77,24 @@ pub struct BuildAttestation<'a> {
     pub build_id: &'a str,
     /// The binary's version string.
     pub binary_version: &'a str,
-    /// SHA-256 of the canonical file manifest, hex.
+    /// SHA-256 of the canonical file manifest — **64 lowercase hex chars,
+    /// no `sha256:` prefix** (CIRISVerify#281).
+    ///
+    /// This value is emitted as the Contribution's `evidence_refs[0]`, and
+    /// every blob consumer (CIRISEdge `BlobMeaning::project`, CIRISPersist
+    /// `envelope_binds_content`) resolves a blob to its referencing rows by
+    /// comparing that entry to the blob's bare sha256 hex. A prefixed or
+    /// upper-case value would produce a ref that exists and **never
+    /// matches** — so the producer refuses it rather than emit it.
     pub manifest_hash: &'a str,
+}
+
+/// Is `s` exactly 64 lowercase hex chars — the one form a blob consumer will
+/// match as an evidence ref?
+fn is_bare_sha256_hex(s: &str) -> bool {
+    s.len() == 64
+        && s.bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
 /// The `provenance:build_manifest:{target}` dimension this attests.
@@ -96,6 +121,20 @@ pub async fn sign_build_manifest_contribution(
     delegation_ref: &str,
     signed_at: &str,
 ) -> Result<SignedCegObject, VerifyError> {
+    // CIRISVerify#281: the Contribution must REFERENCE its own blob, and the
+    // reference must be in the one form consumers match. Refuse here rather
+    // than emit an `evidence_refs` entry that can never fire — a silent
+    // never-matching ref is the #272 dead-branch class in a new costume.
+    if !is_bare_sha256_hex(build.manifest_hash) {
+        return Err(VerifyError::IntegrityError {
+            message: format!(
+                "manifest_hash must be 64 lowercase hex chars with no `sha256:` prefix \
+                 (it is emitted as evidence_refs[0] and matched verbatim by blob \
+                 consumers); got {:?}",
+                build.manifest_hash
+            ),
+        });
+    }
     let envelope = json!({
         "attestation_type": "scores",
         "attesting_key_id": pipeline.key_id(),
@@ -112,6 +151,10 @@ pub async fn sign_build_manifest_contribution(
             "binary_version": build.binary_version,
             "manifest_hash": build.manifest_hash,
         },
+        // CIRISVerify#281: the blob this Contribution vouches for. Exactly the
+        // manifest — NOT `binary_hash`: the binary is not a blob on this plane,
+        // and naming it would claim bytes nobody serves.
+        "evidence_refs": [build.manifest_hash],
         "signed_at": signed_at,
     });
 
@@ -156,6 +199,11 @@ pub struct VerifiedManifest {
     pub binary_version: String,
     /// SHA-256 of the canonical file manifest, hex.
     pub manifest_hash: String,
+    /// The blob(s) this Contribution references (CIRISVerify#281) — the
+    /// `evidence_refs` a blob consumer keys on. Empty for a Contribution
+    /// signed before #281; such a row is still trusted, it simply references
+    /// no blob, so no pull fires on it (the pre-#281 status quo).
+    pub evidence_refs: Vec<String>,
 }
 
 /// Why a build-manifest Contribution was **not** trusted. Every variant is a
@@ -347,6 +395,49 @@ impl std::fmt::Display for ManifestRejection {
 impl std::error::Error for ManifestRejection {}
 
 /// Pull a `&str` field from a JSON object, or [`ManifestRejection::Malformed`].
+/// Read `evidence_refs` and enforce that it cannot drift from `build.manifest_hash`
+/// (CIRISVerify#281).
+///
+/// Absent → `Ok(vec![])`: a pre-#281 Contribution is still a valid attestation,
+/// it just references no blob. Present → it MUST be an array of bare-hex shas
+/// that **contains** `manifest_hash`; anything else is `Malformed`, so the
+/// producer's `evidence_refs` and the verifier's notion of "the blob this row
+/// vouches for" are the same bytes by construction rather than by convention.
+fn evidence_refs_bound_to(
+    env: &Value,
+    manifest_hash: &str,
+) -> Result<Vec<String>, ManifestRejection> {
+    let Some(raw) = env.get("evidence_refs") else {
+        return Ok(Vec::new());
+    };
+    let Some(arr) = raw.as_array() else {
+        return Err(ManifestRejection::Malformed {
+            field: "evidence_refs (not an array)",
+        });
+    };
+    let mut refs = Vec::with_capacity(arr.len());
+    for r in arr {
+        let Some(sha) = r.as_str() else {
+            return Err(ManifestRejection::Malformed {
+                field: "evidence_refs (non-string entry)",
+            });
+        };
+        if !is_bare_sha256_hex(sha) {
+            return Err(ManifestRejection::Malformed {
+                field: "evidence_refs (entry is not bare sha256 hex)",
+            });
+        }
+        refs.push(sha.to_string());
+    }
+    if !refs.iter().any(|r| r == manifest_hash) {
+        return Err(ManifestRejection::Malformed {
+            field: "evidence_refs (does not contain build.manifest_hash — the Contribution \
+                    does not reference the blob it attests)",
+        });
+    }
+    Ok(refs)
+}
+
 fn str_field<'a>(v: &'a Value, field: &'static str) -> Result<&'a str, ManifestRejection> {
     v.get(field)
         .and_then(Value::as_str)
@@ -554,6 +645,7 @@ pub fn verify_build_manifest_contribution(
         binary_hash: str_field(build, "binary_hash")?.to_string(),
         binary_version: str_field(build, "binary_version")?.to_string(),
         manifest_hash: str_field(build, "manifest_hash")?.to_string(),
+        evidence_refs: evidence_refs_bound_to(env, str_field(build, "manifest_hash")?)?,
     })
 }
 
@@ -690,6 +782,7 @@ pub fn verify_build_manifest_via_coscrub(
         binary_hash: str_field(build, "binary_hash")?.to_string(),
         binary_version: str_field(build, "binary_version")?.to_string(),
         manifest_hash: str_field(build, "manifest_hash")?.to_string(),
+        evidence_refs: evidence_refs_bound_to(env, str_field(build, "manifest_hash")?)?,
     })
 }
 
@@ -861,6 +954,154 @@ mod tests {
             grant,
             human.directory_member().unwrap(),
         )
+    }
+
+    // ---- CIRISVerify#281: the Contribution must REFERENCE its own blob ----
+
+    /// Mirror of `valid_chain` that lets a test mutate the envelope BEFORE the
+    /// pipeline signs it — i.e. exactly what a foreign or pre-#281 implementation
+    /// would emit, validly signed, minus this producer's guard.
+    async fn chain_with_envelope(
+        mutate: impl FnOnce(&mut Value),
+    ) -> (
+        SignedCegObject,
+        ThresholdMember,
+        SignedEnvelope,
+        ThresholdMember,
+    ) {
+        let human = HybridSigningIdentity::generate(HUMAN).unwrap();
+        let pipeline = HybridSigningIdentity::generate(PIPELINE).unwrap();
+        let grant =
+            sign_delegation_grant(&human, PIPELINE, &["infra:attest".to_string()], TS).unwrap();
+        let (bh, mh) = build_owned();
+        let mut env = json!({
+            "attestation_type": "scores",
+            "attesting_key_id": pipeline.key_id(),
+            "dimension": build_manifest_dimension("x86_64-unknown-linux-gnu"),
+            "score": 1,
+            "subject_key_ids": ["ciris-verify@6.2.0"],
+            "on_behalf_of": HUMAN,
+            "delegation_scope": MANIFEST_PUBLISH_SCOPE,
+            "delegation_ref": "delegation:infra-attest:abc123",
+            "build": {
+                "target": "x86_64-unknown-linux-gnu",
+                "binary_hash": bh,
+                "build_id": "ciris-verify@6.2.0",
+                "binary_version": "6.2.0",
+                "manifest_hash": mh,
+            },
+            "evidence_refs": [mh],
+            "signed_at": TS,
+        });
+        mutate(&mut env);
+        let signed = pipeline.sign_envelope_async(env).await.unwrap();
+        let body: Value = serde_json::to_value(&signed).unwrap();
+        let obj = SignedCegObject::new(
+            BUILD_MANIFEST_CONTRIBUTION_KIND,
+            pipeline.key_id(),
+            TS,
+            body,
+        );
+        (
+            obj,
+            pipeline.directory_member().unwrap(),
+            grant,
+            human.directory_member().unwrap(),
+        )
+    }
+
+    /// The producer emits `evidence_refs == [manifest_hash]` — and NOT the
+    /// binary hash, which is not a blob on this plane.
+    #[tokio::test]
+    async fn producer_references_exactly_the_manifest_blob() {
+        let (obj, _, _, _) = valid_chain().await;
+        let (bh, mh) = build_owned();
+        let refs = &obj.body["signed_envelope"]["evidence_refs"];
+        assert_eq!(
+            refs,
+            &json!([mh]),
+            "evidence_refs must be exactly [manifest_hash]"
+        );
+        assert!(
+            !refs.as_array().unwrap().iter().any(|r| r == &json!(bh)),
+            "binary_hash must NOT be an evidence ref — nobody serves those bytes"
+        );
+    }
+
+    /// The verifier surfaces the refs so a consumer can key on them.
+    #[tokio::test]
+    async fn verifier_surfaces_evidence_refs() {
+        let (obj, pm, grant, gm) = valid_chain().await;
+        let v = verify_build_manifest_contribution(&obj, &pm, &grant, &gm, &[HUMAN.to_string()])
+            .unwrap();
+        assert_eq!(v.evidence_refs, vec![v.manifest_hash.clone()]);
+    }
+
+    /// **The drift guard.** A validly-signed Contribution whose `evidence_refs`
+    /// names some OTHER blob is refused: the row would attest one manifest and
+    /// reference another, and a consumer keying on refs would pull the wrong
+    /// bytes on the strength of the wrong attestation.
+    #[tokio::test]
+    async fn refs_that_omit_the_manifest_hash_are_refused() {
+        let (obj, pm, grant, gm) =
+            chain_with_envelope(|e| e["evidence_refs"] = json!(["00".repeat(32)])).await;
+        let err = verify_build_manifest_contribution(&obj, &pm, &grant, &gm, &[HUMAN.to_string()])
+            .unwrap_err();
+        assert!(
+            matches!(err, ManifestRejection::Malformed { .. }),
+            "{err:?}"
+        );
+    }
+
+    /// A ref entry in a form no consumer will match (prefixed / upper-case) is
+    /// refused rather than carried as a never-firing reference.
+    #[tokio::test]
+    async fn a_prefixed_ref_entry_is_refused() {
+        let (_, mh) = build_owned();
+        let (obj, pm, grant, gm) =
+            chain_with_envelope(|e| e["evidence_refs"] = json!([format!("sha256:{mh}"), mh])).await;
+        let err = verify_build_manifest_contribution(&obj, &pm, &grant, &gm, &[HUMAN.to_string()])
+            .unwrap_err();
+        assert!(
+            matches!(err, ManifestRejection::Malformed { .. }),
+            "{err:?}"
+        );
+    }
+
+    /// **Compat.** A Contribution signed before #281 carries no `evidence_refs`.
+    /// It is still a valid attestation — it simply references no blob, so no
+    /// pull fires on it, which is exactly the pre-#281 status quo. It must not
+    /// be rejected.
+    #[tokio::test]
+    async fn a_pre_281_contribution_without_refs_still_verifies() {
+        let (obj, pm, grant, gm) = chain_with_envelope(|e| {
+            e.as_object_mut().unwrap().remove("evidence_refs");
+        })
+        .await;
+        let v = verify_build_manifest_contribution(&obj, &pm, &grant, &gm, &[HUMAN.to_string()])
+            .unwrap();
+        assert!(v.evidence_refs.is_empty());
+    }
+
+    /// The producer refuses a `manifest_hash` it could not reference in the one
+    /// form consumers match — a `sha256:`-prefixed or upper-case value would
+    /// emit a ref that exists and never fires.
+    #[tokio::test]
+    async fn producer_refuses_a_manifest_hash_no_consumer_would_match() {
+        let pipeline = HybridSigningIdentity::generate(PIPELINE).unwrap();
+        let (bh, mh) = build_owned();
+        for bad in [format!("sha256:{mh}"), mh.to_uppercase(), "abc".to_string()] {
+            let b = BuildAttestation {
+                target: "x86_64-unknown-linux-gnu",
+                binary_hash: &bh,
+                build_id: "ciris-verify@6.2.0",
+                binary_version: "6.2.0",
+                manifest_hash: &bad,
+            };
+            let r =
+                sign_build_manifest_contribution(&pipeline, &b, HUMAN, "delegation:x", TS).await;
+            assert!(r.is_err(), "{bad:?} must be refused at the producer");
+        }
     }
 
     #[tokio::test]

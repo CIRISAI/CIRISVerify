@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-build-tool"
-version = "15.1.0"
+version = "15.2.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "15.1.0"
+version = "15.2.0"
 dependencies = [
  "chacha20poly1305",
  "criterion",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "15.1.0"
+version = "15.2.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "15.1.0"
+version = "15.2.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-tpm-plugin"
-version = "15.1.0"
+version = "15.2.0"
 dependencies = [
  "sha2",
  "tracing",
@@ -788,7 +788,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "15.1.0"
+version = "15.2.0"
 dependencies = [
  "android_system_properties",
  "async-trait",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "15.1.0"
+version = "15.2.0"
 dependencies = [
  "aes-gcm",
  "android_logger",
@@ -1259,9 +1259,9 @@ dependencies = [
 
 [[package]]
 name = "der"
-version = "0.8.0"
+version = "0.8.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "71fd89660b2dc699704064e59e9dba0147b903e85319429e131620d022be411b"
+checksum = "a878c850e9e421b20262e9b41f9c860e4785fa07541c266b62ff9d1ef998a80a"
 dependencies = [
  "const-oid 0.10.2",
  "zeroize",
@@ -1492,7 +1492,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -2313,7 +2313,7 @@ checksum = "3640c1c38b8e4e43584d8df18be5fc6b0aa314ce6ebf51b53313d4306cca8e46"
 dependencies = [
  "hermit-abi 0.5.2",
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -3074,7 +3074,7 @@ version = "0.11.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "451913da69c775a56034ea8d9003d27ee8948e12443eae7c038ba100a4f21cb7"
 dependencies = [
- "der 0.8.0",
+ "der 0.8.2",
  "spki 0.8.0",
 ]
 
@@ -3678,14 +3678,14 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "rustls"
-version = "0.23.40"
+version = "0.23.45"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
+checksum = "0d41d731c7d2f962d1ccc364cec258de3c0e93b38c2fb3ba97ac74513048d634"
 dependencies = [
  "log",
  "once_cell",
@@ -3708,9 +3708,9 @@ dependencies = [
 
 [[package]]
 name = "rustls-webpki"
-version = "0.103.13"
+version = "0.103.15"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "61c429a8649f110dddef65e2a5ad240f747e85f7758a6bccc7e5777bd33f756e"
+checksum = "f3c3cf1d8b1e7d4927e2d154c3fcb02979afb9939629c62cd9048d4f07b60ac2"
 dependencies = [
  "ring",
  "rustls-pki-types",
@@ -4087,7 +4087,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1d9efca8738c78ee9484207732f728b1ef517bbb1833d6fc0879ca898a522f6f"
 dependencies = [
  "base64ct",
- "der 0.8.0",
+ "der 0.8.2",
 ]
 
 [[package]]
@@ -4190,7 +4190,7 @@ dependencies = [
  "getrandom 0.4.2",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
