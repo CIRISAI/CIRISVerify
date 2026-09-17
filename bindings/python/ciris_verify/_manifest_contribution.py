@@ -151,7 +151,9 @@ def verify_build_manifest_contribution(
     Returns:
         On trust: ``{"trusted": True, "attested_by": ..., "on_behalf_of": ...,
         "target": ..., "build_id": ..., "binary_hash": ...,
-        "binary_version": ..., "manifest_hash": ...}``. On rejection:
+        "binary_version": ..., "manifest_hash": ..., "evidence_refs": [...]}``
+        (``evidence_refs`` names the manifest blob the Contribution vouches for,
+        CIRISVerify#281; empty for a pre-#281 Contribution). On rejection:
         ``{"trusted": False, "reason": "..."}`` naming the first failing step.
 
     Raises:

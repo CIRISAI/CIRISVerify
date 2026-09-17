@@ -109,6 +109,11 @@ struct ManifestVerdict {
     /// SHA-256 of the canonical file manifest, hex (present on success).
     #[serde(skip_serializing_if = "Option::is_none")]
     manifest_hash: Option<String>,
+    /// The blob(s) the Contribution references (CIRISVerify#281) — what a
+    /// blob consumer keys on. Empty for a pre-#281 Contribution. Surfaced
+    /// here deliberately: a hand-serialized response that omitted it would
+    /// leave every wheel consumer unable to see the reference at all.
+    evidence_refs: Vec<String>,
     /// The first failing step (present on rejection).
     #[serde(skip_serializing_if = "Option::is_none")]
     reason: Option<String>,
@@ -132,7 +137,7 @@ struct ManifestVerdict {
 /// On success `result_out` receives the verified build facts
 /// (`{ "trusted": true, "attested_by": ..., "on_behalf_of": ..., "target": ...,
 /// "build_id": ..., "binary_hash": ..., "binary_version": ...,
-/// "manifest_hash": ... }`); on rejection `{ "trusted": false, "reason": "..." }`.
+/// "manifest_hash": ..., "evidence_refs": [...] }`); on rejection `{ "trusted": false, "reason": "..." }`.
 /// Returns `Success` (0), `InvalidArgument` on a null pointer, or
 /// `SerializationError` on malformed input.
 ///
@@ -171,6 +176,7 @@ pub unsafe extern "C" fn ciris_verify_build_manifest_contribution(
                 binary_hash: Some(v.binary_hash),
                 binary_version: Some(v.binary_version),
                 manifest_hash: Some(v.manifest_hash),
+                evidence_refs: v.evidence_refs,
                 reason: None,
             },
             Err(e) => ManifestVerdict {
@@ -182,6 +188,7 @@ pub unsafe extern "C" fn ciris_verify_build_manifest_contribution(
                 binary_hash: None,
                 binary_version: None,
                 manifest_hash: None,
+                evidence_refs: Vec::new(),
                 reason: Some(e.to_string()),
             },
         };
