@@ -1969,7 +1969,15 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
         let outcome: Result<serde_json::Value, String> = rt.block_on(async {
             let signer = ciris_keyring::get_platform_ed25519_signer(&alias, &seed_dir)
                 .map_err(|e| format!("open platform Ed25519 signer: {e}"))?;
-            let created = ciris_verify_core::federation_identity::create_federation_identity(
+            // #285: optional `keys_dir` — where the ML-DSA half is SEALED. Absent
+            // → the global `$CIRIS_HOME/keys`, exactly as before.
+            let keys_dir = cfg
+                .get("keys_dir")
+                .and_then(|v| v.as_str())
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(ciris_verify_core::ceg_outbox::keys_dir);
+            let created = ciris_verify_core::federation_identity::create_federation_identity_in(
+                keys_dir,
                 std::sync::Arc::from(signer),
                 &identity_type,
                 fed_key_id,

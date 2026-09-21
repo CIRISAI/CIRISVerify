@@ -92,6 +92,10 @@ def create_federation_identity(config: dict[str, Any]) -> dict[str, Any]:
             ``identity_type`` (``"user"`` | ``"agent"``; default ``"user"``),
             ``fed_key_id`` (str | None; default ``sha256(ed_pubkey)`` hex),
             ``label`` (str | None; for the ``label-fingerprint`` derived key_id),
+            ``keys_dir`` (str | None; CIRISVerify#285 — directory the ML-DSA-65
+            half is SEALED into; defaults to the global ``$CIRIS_HOME/keys``. A
+            per-home install passes ``<home>/identity/keys`` so a freshly minted
+            identity's post-quantum half lands in its own home).
             ``seal_alias`` (str | None; CIRISVerify#89 — key the ML-DSA seal under a
                 stable keystore alias while recording under the derived ``key_id``,
                 so a switch to derived key_ids needs no custody re-open. Omit for
