@@ -221,8 +221,8 @@ pub fn mint_p256_signing_key() -> Result<p256::ecdsa::SigningKey, KeyringError> 
 }
 
 pub use hw_token::{
-    get_token_signer, hardware_class_table, resolve_hardware_class, HardwareClassRule, ProbedToken,
-    TokenInterface, GENERIC_EXTERNAL_TOKEN_CLASS,
+    hardware_class_table, resolve_hardware_class, HardwareClassRule, ProbedToken, TokenInterface,
+    GENERIC_EXTERNAL_TOKEN_CLASS,
 };
 pub use signer::{HardwareSigner, KeyGenConfig};
 pub use types::{
