@@ -636,6 +636,12 @@ enum IdentityAction {
         /// for an ordinary hintless identity.
         #[arg(long = "transport-hint")]
         transport_hint: Vec<String>,
+        /// Directory the ML-DSA-65 half is SEALED into (#285). Defaults to the
+        /// global `$CIRIS_HOME/keys`; a per-home install passes
+        /// `<home>/identity/keys` so a freshly minted identity's post-quantum
+        /// half lands in its own home.
+        #[arg(long, value_name = "PATH")]
+        keys_dir: Option<String>,
         /// RFC-3339 `valid_until` — when this key STOPS being valid
         /// (CIRISVerify#267). Omit for no self-asserted expiry, which is the
         /// right default for a long-lived identity key.
@@ -2135,6 +2141,10 @@ struct IdentityCreateArgs {
     pin_policy: String,
     management_key: String,
     transport_hint: Vec<String>,
+    /// Directory the ML-DSA-65 half is SEALED into (#285). Defaults to the
+    /// global `$CIRIS_HOME/keys`; a per-home install passes `<home>/identity/keys`
+    /// so a freshly minted identity's post-quantum half lands in its own home.
+    keys_dir: Option<String>,
     /// RFC-3339 `valid_until` — when this key STOPS being valid (#267).
     /// `None` = no self-asserted expiry.
     valid_until: Option<String>,
@@ -2159,6 +2169,7 @@ async fn run_identity(action: IdentityAction, json_output: bool) {
             management_key,
             transport_hint,
             valid_until,
+            keys_dir,
         } => {
             run_identity_create(
                 IdentityCreateArgs {
@@ -2177,6 +2188,7 @@ async fn run_identity(action: IdentityAction, json_output: bool) {
                     management_key,
                     transport_hint,
                     valid_until,
+                    keys_dir,
                 },
                 json_output,
             )
@@ -2190,7 +2202,7 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
 
     use ciris_keyring::pkcs11::{open_pkcs11_signer, Pkcs11Config};
     use ciris_verify_core::ceg_outbox::SignedCegObject;
-    use ciris_verify_core::federation_identity::{create_federation_identity, Validity};
+    use ciris_verify_core::federation_identity::{create_federation_identity_in, Validity};
     use ciris_verify_core::federation_self_record::TransportHint;
 
     // Validate the request BEFORE touching hardware (#268).
@@ -2207,6 +2219,23 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
     let now = chrono::Utc::now().to_rfc3339();
     let validity = match Validity::checked(&now, args.valid_until.as_deref()) {
         Ok(v) => v,
+        Err(e) => {
+            eprintln!("❌ {e}");
+            std::process::exit(1);
+        },
+    };
+
+    // #285: resolve + preflight the sealed-key directory HERE, with the other
+    // reversible checks — `--provision` below generates an Ed25519 key in a
+    // PIV slot, which cannot be undone, and a bad `--keys-dir` used to fail
+    // only after that slot had been consumed.
+    let keys_dir = args
+        .keys_dir
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(ciris_verify_core::ceg_outbox::keys_dir);
+    let keys_dir = match ciris_verify_core::federation_identity::preflight_keys_dir(&keys_dir) {
+        Ok(d) => d,
         Err(e) => {
             eprintln!("❌ {e}");
             std::process::exit(1);
@@ -2291,7 +2320,8 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
             "🔏 signing the genesis key record on the token — tap the YubiKey if it blinks…\n"
         );
     }
-    let created = match create_federation_identity(
+    let created = match create_federation_identity_in(
+        keys_dir,
         Arc::from(hw_signer),
         &args.identity_type,
         args.fed_key_id.clone(),

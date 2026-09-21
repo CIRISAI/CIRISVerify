@@ -201,6 +201,81 @@ pub async fn create_federation_identity(
     seal_alias: Option<&str>,
     transport_hints: &[TransportHint],
 ) -> Result<CreatedIdentity, VerifyError> {
+    create_federation_identity_in(
+        keys_dir(),
+        hw_signer,
+        identity_type,
+        fed_key_id,
+        label,
+        validity,
+        seal_alias,
+        transport_hints,
+    )
+    .await
+}
+
+/// Preflight a caller-chosen sealed-key directory **before anything
+/// irreversible happens** (CIRISVerify#285 review).
+///
+/// `identity create --provision` generates an Ed25519 key in a PIV slot —
+/// a token mutation that cannot be undone — and only *then* opened the
+/// ML-DSA storage. A `--keys-dir` naming a regular file or an unwritable
+/// location therefore failed **after** the slot had been consumed. This
+/// runs first, with the other cheap, reversible checks: the directory is
+/// created if missing, must be a directory, and must be writable (probed
+/// with a real create-and-remove, since a metadata bit is not a guarantee).
+///
+/// # Errors
+/// [`VerifyError::IntegrityError`] naming the path and the reason.
+pub fn preflight_keys_dir(
+    dir: impl AsRef<std::path::Path>,
+) -> Result<std::path::PathBuf, VerifyError> {
+    let dir = dir.as_ref();
+    let bad = |reason: String| VerifyError::IntegrityError {
+        message: format!("keys_dir {}: {reason}", dir.display()),
+    };
+    if dir.exists() && !dir.is_dir() {
+        return Err(bad("exists but is not a directory".to_string()));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| bad(format!("cannot create: {e}")))?;
+    let probe = dir.join(format!(".ciris-keys-dir-probe-{}", std::process::id()));
+    std::fs::write(&probe, b"").map_err(|e| bad(format!("not writable: {e}")))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(dir.to_path_buf())
+}
+
+/// [`create_federation_identity`] with the **sealed-key directory chosen by
+/// the caller** (CIRISVerify#285).
+///
+/// The bare form seals the ML-DSA-65 half into the global
+/// [`keys_dir`] — `$CIRIS_HOME/keys` — the *process* environment, never the
+/// caller's own home. CIRISServer runs many nodes on one machine, each with
+/// its own `--home`, and `--home` scopes the database, config, logs and the
+/// Ed25519 seed — but could not scope this seal, because a newly minted
+/// identity's PQC half was written here before any server code ran. Two
+/// homes minting the same `seal_alias` then collided in one directory keyed
+/// by alias alone: one overwrote, or the second failed to unseal against the
+/// first's master (correctly — #134 refuses to re-mint), surfacing as an
+/// identity that cannot sign.
+///
+/// This form takes the directory. Nothing else changes: same mint-or-adopt
+/// (`open_or_create`), same alias rule (#89), same record. Additive on
+/// purpose — the bare form delegates here with the global dir, so every
+/// existing caller is untouched. No migration of existing material is
+/// implied; moving live sealed key material is the caller's decision.
+#[allow(clippy::too_many_arguments)] // the bare form's 7 + the dir; a Validity-style
+                                     // options struct is the right follow-up if this grows
+pub async fn create_federation_identity_in(
+    keys_dir: impl AsRef<std::path::Path>,
+    hw_signer: Arc<dyn HardwareSigner>,
+    identity_type: &str,
+    fed_key_id: Option<String>,
+    label: Option<&str>,
+    validity: Validity<'_>,
+    seal_alias: Option<&str>,
+    transport_hints: &[TransportHint],
+) -> Result<CreatedIdentity, VerifyError> {
+    let keys_dir = keys_dir.as_ref().to_path_buf();
     let ed_pub = hw_signer.public_key().await.map_err(keyring_err)?;
     let key_id =
         fed_key_id.unwrap_or_else(|| crate::fedcode::derive_key_id(label.unwrap_or("id"), &ed_pub));
@@ -220,7 +295,7 @@ pub async fn create_federation_identity(
     // `get_platform_sealed_mldsa65_signer` is now **re-open-only** and fails
     // loud (CIRISVerify#134), so identity *creation* must use this explicit path.
     let mldsa: Box<dyn ciris_keyring::PqcSigner> = Box::new(
-        ciris_keyring::SealedMlDsa65Signer::open_or_create(seal_id, keys_dir(), None)
+        ciris_keyring::SealedMlDsa65Signer::open_or_create(seal_id, keys_dir.clone(), None)
             .map_err(keyring_err)?,
     );
 
@@ -476,5 +551,78 @@ mod tests {
 
         std::env::remove_var(crate::ceg_outbox::CIRIS_HOME_ENV);
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **CIRISVerify#285 witness.** Two mints with the SAME `seal_alias` into
+    /// DIFFERENT key directories produce two independent sealed PQC halves,
+    /// both of which re-open from their own directory — and neither touches
+    /// the other's. This is the property `--home` isolation needs and the
+    /// bare form could not give.
+    #[tokio::test]
+    async fn same_alias_different_keys_dirs_are_independent() {
+        use base64::Engine as _;
+        let home_a = tempfile::tempdir().unwrap();
+        let home_b = tempfile::tempdir().unwrap();
+        let alias = "shared-alias";
+
+        let mut created = Vec::new();
+        for (home, seed) in [(&home_a, 0x11u8), (&home_b, 0x22u8)] {
+            let ed = ciris_keyring::Ed25519SoftwareSigner::from_bytes(&[seed; 32], "fed").unwrap();
+            let c = create_federation_identity_in(
+                home.path(),
+                Arc::new(ed),
+                "user",
+                None,
+                Some("eric-moore"),
+                Validity::checked("2026-01-01T00:00:00Z", None).unwrap(),
+                Some(alias),
+                &[],
+            )
+            .await
+            .unwrap();
+            created.push(c);
+        }
+
+        let pq = |c: &CreatedIdentity| {
+            c.object.body["record"]["pubkey_ml_dsa_65_base64"]
+                .as_str()
+                .unwrap()
+                .to_string()
+        };
+        // Two INDEPENDENT PQC halves under one alias.
+        assert_ne!(pq(&created[0]), pq(&created[1]));
+
+        // Each re-opens from ITS OWN directory and reproduces its recorded key.
+        for (home, c) in [(&home_a, &created[0]), (&home_b, &created[1])] {
+            let reopened =
+                ciris_keyring::get_platform_sealed_mldsa65_signer(alias, home.path()).unwrap();
+            let pubk = base64::engine::general_purpose::STANDARD
+                .encode(reopened.public_key().await.unwrap());
+            assert_eq!(pubk, pq(c));
+        }
+
+        // Cross-open must NOT quietly return the other home's half.
+        let cross =
+            ciris_keyring::get_platform_sealed_mldsa65_signer(alias, home_a.path()).unwrap();
+        let cross_pub =
+            base64::engine::general_purpose::STANDARD.encode(cross.public_key().await.unwrap());
+        assert_ne!(cross_pub, pq(&created[1]));
+    }
+
+    /// `preflight_keys_dir` refuses what would have failed AFTER the PIV slot
+    /// was consumed, and creates what merely does not exist yet.
+    #[test]
+    fn preflight_keys_dir_refuses_a_file_and_creates_a_missing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("not-a-dir");
+        std::fs::write(&file, b"x").unwrap();
+        let err = preflight_keys_dir(&file).unwrap_err();
+        assert!(format!("{err}").contains("not a directory"), "{err}");
+
+        let nested = tmp.path().join("a").join("b").join("keys");
+        assert!(!nested.exists());
+        assert_eq!(preflight_keys_dir(&nested).unwrap(), nested);
+        assert!(nested.is_dir(), "missing dir must be created");
+        assert!(preflight_keys_dir(tmp.path()).is_ok());
     }
 }
