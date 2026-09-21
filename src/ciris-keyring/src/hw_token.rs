@@ -11,36 +11,47 @@
 //!
 //! ## What this module is (and is not)
 //!
-//! - **Real and unit-tested:** the [`TokenInterface`] taxonomy, the
+//! - **Live and unit-tested:** the [`TokenInterface`] taxonomy, the
 //!   [`ProbedToken`] descriptor, and the pure, data-driven
 //!   [`resolve_hardware_class`] resolver that maps a probed device to a
 //!   CEG §9.4 `hardware_class` string via an explicit open data table with a
-//!   conservative unknown-device default. This is the piece that makes the
-//!   abstraction generic; it is exercised in the test module below.
-//! - **Honestly stubbed, pending hardware:** the actual PC/SC + PIV/PKCS#11
-//!   I/O ([`get_token_signer`]). There is no token on the build/test box, so
-//!   the hardware path returns [`KeyringError::NotSupported`]. The intended
-//!   implementation crates are [`pcsc`](https://crates.io/crates/pcsc) (PC/SC
-//!   reader transport) and [`cryptoki`](https://crates.io/crates/cryptoki)
-//!   (PKCS#11). See the TODO on [`get_token_signer`].
+//!   conservative unknown-device default. Be precise about who uses what:
+//!   `user_identity` consumes **only the [`TokenInterface`] enum**; its
+//!   `hardware_class` is a *caller-supplied* `String`, and the probe +
+//!   resolver are tested but **not yet wired** to it — a label is not
+//!   derived from a probe automatically anywhere today.
+//! - **Signing does NOT live here.** The real token-signing backend is
+//!   [`crate::pkcs11::open_pkcs11_signer`] (cryptoki, `C_Sign` on the
+//!   token). Two production routes reach it: this crate's own CLI,
+//!   `ciris-verify identity create --module <ykcs11.so>`, calls it
+//!   **directly**; CIRISServer's `identity create --backend pkcs11` and its
+//!   accord-holder provisioning reach it through
+//!   `user_identity::get_user_identity_signer`. It is the backend the
+//!   six-key HUMANITY_ACCORD ceremony ran on physical YubiKey 5 FIPS
+//!   hardware, shipped in v5.13.0 (CIRISVerify#80).
 //!
-//! ## Signing-only Ed25519 framing (CIRISVerify#62)
+//! **History, so the next reader is not misled (CIRISVerify#283):** this
+//! module once carried a `get_token_signer` stub returning `NotSupported`
+//! "pending CIRISVerify#62". #62 closed on 2026-06-18 and the backend shipped
+//! under `pkcs11.rs` instead, but the stub, its doc, and a test pinning its
+//! error text outlived it by three months — long enough for a custody review
+//! to follow the prose and conclude the accord-holder flow ran on a software
+//! stand-in. It does not. The stub was removed in 16.0.0; it had no callers.
+//!
+//! ## Signing-only Ed25519 framing (CIRISVerify#62, closed 2026-06-18)
 //!
 //! These tokens carry the **classical half only** — a non-extractable
 //! Ed25519 signing key (OpenPGP applet / PIV slot). As of 2026 no shipping
 //! token has an ML-DSA-65 (FIPS 204) applet, so the post-quantum half always
 //! lives in software alongside (see `ACCORD_KEY_GENESIS_RUNBOOK.md` §4.2).
 //! This module therefore never claims to produce a hybrid signature: it is a
-//! classical [`HardwareSigner`] producing Ed25519 signatures, and the PQC
+//! classical [`crate::signer::HardwareSigner`] producing Ed25519 signatures, and the PQC
 //! half is a separate software `PqcSigner` (feature `pqc-ml-dsa`) bound at a higher
 //! layer.
 //!
 //! The token is **signing-only**. In FIPS Approved Mode the X25519/key-exchange
 //! applet is expected to be blocked; accord keys sign over published bytes and
 //! never do key agreement.
-
-use crate::error::KeyringError;
-use crate::signer::HardwareSigner;
 
 /// The interface standard an external security token speaks.
 ///
@@ -249,52 +260,6 @@ pub fn resolve_hardware_class(probe: &ProbedToken) -> &'static str {
     GENERIC_EXTERNAL_TOKEN_CLASS
 }
 
-/// `HardwareSigner`-shaped entry point for an external token.
-///
-/// Returns a [`HardwareSigner`] bound to the Ed25519 signing key on the token
-/// reached over `interface`, selected by `alias` (PIV slot id / OpenPGP key
-/// reference / PKCS#11 key label, depending on the interface).
-///
-/// # Status: honestly stubbed, pending hardware
-///
-/// There is no PC/SC token on the build/test machine, so this **always**
-/// returns [`KeyringError::NotSupported`]. The abstraction around it — the
-/// interface taxonomy and the probe → `hardware_class` resolver — is real and
-/// tested; only the hardware I/O is stubbed.
-///
-/// TODO(CIRISVerify#62): implement the real token signer against:
-///   - [`pcsc`](https://crates.io/crates/pcsc) for the PC/SC reader transport
-///     (enumerate readers, connect, transmit APDUs) for the [`TokenInterface::Piv`]
-///     and [`TokenInterface::OpenPgpCard`] paths, and
-///   - [`cryptoki`](https://crates.io/crates/cryptoki) for the
-///     [`TokenInterface::Pkcs11`] path (load module, open session, sign).
-///
-/// The signer must be Ed25519 signing-only (classical half), gate signing
-/// behind the token's touch/PIN policy, and report a `hardware_type` derived
-/// from a probe + [`resolve_hardware_class`]. It must be put behind a
-/// `hw-token` Cargo feature (mirroring `tpm`/`android`) so the default build
-/// does not link `pcsc`/`cryptoki`.
-pub fn get_token_signer(
-    interface: TokenInterface,
-    alias: &str,
-) -> Result<Box<dyn HardwareSigner>, KeyringError> {
-    tracing::warn!(
-        interface = interface.as_str(),
-        alias,
-        "get_token_signer: external-token hardware path is not yet implemented \
-         (no PC/SC backend compiled in). Returning NotSupported. \
-         Intended impl: pcsc + cryptoki behind a `hw-token` feature."
-    );
-
-    Err(KeyringError::NotSupported {
-        operation: format!(
-            "external token signing over {} (alias={alias}); \
-             PC/SC PIV/PKCS#11 backend not yet implemented (CIRISVerify#62)",
-            interface.as_str()
-        ),
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -377,22 +342,6 @@ mod tests {
         ] {
             let probe = ProbedToken::bare(iface);
             assert_eq!(resolve_hardware_class(&probe), GENERIC_EXTERNAL_TOKEN_CLASS);
-        }
-    }
-
-    #[test]
-    fn get_token_signer_is_honestly_stubbed() {
-        // The hardware path compiles and returns a clear NotSupported with the
-        // issue reference — it does not panic and does not pretend to work.
-        // (`Box<dyn HardwareSigner>` isn't Debug, so match the Result directly
-        // rather than using `unwrap_err`.)
-        match get_token_signer(TokenInterface::Piv, "9a") {
-            Err(KeyringError::NotSupported { operation }) => {
-                assert!(operation.contains("piv"));
-                assert!(operation.contains("CIRISVerify#62"));
-            },
-            Err(other) => panic!("expected NotSupported, got {other:?}"),
-            Ok(_) => panic!("expected NotSupported, got Ok(signer)"),
         }
     }
 

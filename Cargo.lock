@@ -668,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-build-tool"
-version = "15.2.0"
+version = "16.0.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -690,7 +690,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "15.2.0"
+version = "16.0.0"
 dependencies = [
  "chacha20poly1305",
  "criterion",
@@ -722,7 +722,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "15.2.0"
+version = "16.0.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -762,7 +762,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "15.2.0"
+version = "16.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -779,7 +779,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-tpm-plugin"
-version = "15.2.0"
+version = "16.0.0"
 dependencies = [
  "sha2",
  "tracing",
@@ -788,7 +788,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "15.2.0"
+version = "16.0.0"
 dependencies = [
  "android_system_properties",
  "async-trait",
@@ -834,7 +834,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "15.2.0"
+version = "16.0.0"
 dependencies = [
  "aes-gcm",
  "android_logger",
@@ -1146,9 +1146,9 @@ dependencies = [
 
 [[package]]
 name = "cryptoki"
-version = "0.12.0"
+version = "0.12.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff765b99fc49f3116c9a908484486a2b92fd73c48da45c3a69716471c6cc56c6"
+checksum = "625cf4599c43d69a16996ce2573fc80745a0b0300c962f0bfa11d55b6cab2b2d"
 dependencies = [
  "bitflags 2.11.1",
  "cryptoki-sys",
