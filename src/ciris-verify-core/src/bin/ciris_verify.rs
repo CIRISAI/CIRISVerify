@@ -2225,6 +2225,23 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
         },
     };
 
+    // #285: resolve + preflight the sealed-key directory HERE, with the other
+    // reversible checks — `--provision` below generates an Ed25519 key in a
+    // PIV slot, which cannot be undone, and a bad `--keys-dir` used to fail
+    // only after that slot had been consumed.
+    let keys_dir = args
+        .keys_dir
+        .as_deref()
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(ciris_verify_core::ceg_outbox::keys_dir);
+    let keys_dir = match ciris_verify_core::federation_identity::preflight_keys_dir(&keys_dir) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("❌ {e}");
+            std::process::exit(1);
+        },
+    };
+
     // Parse each `--transport-hint kind=destination` into a typed hint. Split on
     // the FIRST '=' only — a destination may itself contain '=' (rare) but never
     // the leading kind token. These end up inside the SIGNED envelope (#172).
@@ -2303,11 +2320,6 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
             "🔏 signing the genesis key record on the token — tap the YubiKey if it blinks…\n"
         );
     }
-    let keys_dir = args
-        .keys_dir
-        .as_deref()
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(ciris_verify_core::ceg_outbox::keys_dir);
     let created = match create_federation_identity_in(
         keys_dir,
         Arc::from(hw_signer),

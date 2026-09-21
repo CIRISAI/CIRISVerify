@@ -1943,6 +1943,24 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
                 )))
             },
         };
+        // #285: optional `keys_dir` — where the ML-DSA half is SEALED.
+        // Absent/null → the global `$CIRIS_HOME/keys`, exactly as before.
+        // A NON-string value is refused here, not silently defaulted: a caller
+        // who asked for isolation and got the global directory would recreate
+        // the cross-home alias collision this exists to prevent — the same
+        // shape rule as `valid_until` above. Parsed AND preflighted here, with
+        // the other cheap checks, before any signer is opened.
+        let keys_dir = match cfg.get("keys_dir") {
+            None | Some(serde_json::Value::Null) => ciris_verify_core::ceg_outbox::keys_dir(),
+            Some(serde_json::Value::String(v)) => std::path::PathBuf::from(v),
+            Some(other) => {
+                return emit(err(format!("keys_dir must be a path string, got {other}")))
+            },
+        };
+        let keys_dir = match ciris_verify_core::federation_identity::preflight_keys_dir(&keys_dir) {
+            Ok(d) => d,
+            Err(e) => return emit(err(e.to_string())),
+        };
         let write_outbox = cfg
             .get("write_outbox")
             .and_then(serde_json::Value::as_bool)
@@ -1969,13 +1987,6 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
         let outcome: Result<serde_json::Value, String> = rt.block_on(async {
             let signer = ciris_keyring::get_platform_ed25519_signer(&alias, &seed_dir)
                 .map_err(|e| format!("open platform Ed25519 signer: {e}"))?;
-            // #285: optional `keys_dir` — where the ML-DSA half is SEALED. Absent
-            // → the global `$CIRIS_HOME/keys`, exactly as before.
-            let keys_dir = cfg
-                .get("keys_dir")
-                .and_then(|v| v.as_str())
-                .map(std::path::PathBuf::from)
-                .unwrap_or_else(ciris_verify_core::ceg_outbox::keys_dir);
             let created = ciris_verify_core::federation_identity::create_federation_identity_in(
                 keys_dir,
                 std::sync::Arc::from(signer),

@@ -214,6 +214,36 @@ pub async fn create_federation_identity(
     .await
 }
 
+/// Preflight a caller-chosen sealed-key directory **before anything
+/// irreversible happens** (CIRISVerify#285 review).
+///
+/// `identity create --provision` generates an Ed25519 key in a PIV slot —
+/// a token mutation that cannot be undone — and only *then* opened the
+/// ML-DSA storage. A `--keys-dir` naming a regular file or an unwritable
+/// location therefore failed **after** the slot had been consumed. This
+/// runs first, with the other cheap, reversible checks: the directory is
+/// created if missing, must be a directory, and must be writable (probed
+/// with a real create-and-remove, since a metadata bit is not a guarantee).
+///
+/// # Errors
+/// [`VerifyError::IntegrityError`] naming the path and the reason.
+pub fn preflight_keys_dir(
+    dir: impl AsRef<std::path::Path>,
+) -> Result<std::path::PathBuf, VerifyError> {
+    let dir = dir.as_ref();
+    let bad = |reason: String| VerifyError::IntegrityError {
+        message: format!("keys_dir {}: {reason}", dir.display()),
+    };
+    if dir.exists() && !dir.is_dir() {
+        return Err(bad("exists but is not a directory".to_string()));
+    }
+    std::fs::create_dir_all(dir).map_err(|e| bad(format!("cannot create: {e}")))?;
+    let probe = dir.join(format!(".ciris-keys-dir-probe-{}", std::process::id()));
+    std::fs::write(&probe, b"").map_err(|e| bad(format!("not writable: {e}")))?;
+    let _ = std::fs::remove_file(&probe);
+    Ok(dir.to_path_buf())
+}
+
 /// [`create_federation_identity`] with the **sealed-key directory chosen by
 /// the caller** (CIRISVerify#285).
 ///
@@ -577,5 +607,22 @@ mod tests {
         let cross_pub =
             base64::engine::general_purpose::STANDARD.encode(cross.public_key().await.unwrap());
         assert_ne!(cross_pub, pq(&created[1]));
+    }
+
+    /// `preflight_keys_dir` refuses what would have failed AFTER the PIV slot
+    /// was consumed, and creates what merely does not exist yet.
+    #[test]
+    fn preflight_keys_dir_refuses_a_file_and_creates_a_missing_dir() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("not-a-dir");
+        std::fs::write(&file, b"x").unwrap();
+        let err = preflight_keys_dir(&file).unwrap_err();
+        assert!(format!("{err}").contains("not a directory"), "{err}");
+
+        let nested = tmp.path().join("a").join("b").join("keys");
+        assert!(!nested.exists());
+        assert_eq!(preflight_keys_dir(&nested).unwrap(), nested);
+        assert!(nested.is_dir(), "missing dir must be created");
+        assert!(preflight_keys_dir(tmp.path()).is_ok());
     }
 }
