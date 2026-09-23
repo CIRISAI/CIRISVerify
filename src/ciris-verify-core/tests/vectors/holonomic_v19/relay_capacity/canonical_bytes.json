@@ -1,0 +1,9 @@
+{
+  "_comment": "CIRISVerify#207 item 5 \u2014 the ALM golden the \u00a719 set was missing. Derived from the SPEC layout (domain 16 | u32_be(len(peer_id)) | peer_id | u32_be(uplink_mbps) | u64_be(epoch)), independently of the Rust builder, then asserted against it.",
+  "domain_hex": "4349524953414c4d2d43415076320000",
+  "peer_id": "node-b7",
+  "uplink_mbps": 250,
+  "epoch": 42,
+  "expected_canonical_bytes_hex": "4349524953414c4d2d43415076320000000000076e6f64652d6237000000fa000000000000002a",
+  "expected_len": 39
+}
