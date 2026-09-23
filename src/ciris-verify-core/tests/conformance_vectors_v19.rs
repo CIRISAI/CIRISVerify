@@ -14,6 +14,7 @@
 use std::path::PathBuf;
 
 use ciris_verify_core::holonomic::{
+    alm::SignedRelayCapacity,
     bootstrap::SignedClaim,
     compute_merkle_root,
     fountain::{FountainCompressRequest, FountainHoldingClaim},
@@ -74,6 +75,11 @@ fn domain_separators_match() {
     assert_eq!(
         hex::encode(DOMAIN_COMPRESS_REQUEST),
         s(&v, "compress_request_v1_hex")
+    );
+    assert_eq!(
+        hex::encode(ciris_verify_core::holonomic::preimage::DOMAIN_RELAY_CAPACITY),
+        s(&v, "relay_capacity_v2_hex"),
+        "ALM §19.4 domain separator (CIRISVerify#207 item 5)"
     );
 }
 
@@ -208,4 +214,33 @@ fn fountain_compress_request_canonical_bytes() {
         hex::encode(c.signing_preimage()),
         s(&v, "expected_canonical_bytes_hex")
     );
+}
+
+/// **CIRISVerify#207 item 5 — the ALM golden the §19 set was missing.**
+///
+/// ALM was the one §19 shape with **no** conformance vector, which is exactly
+/// why a producer/verifier byte divergence under a *shared* domain separator
+/// went uncaught: both sides read `CIRISALM-CAPv2\0\0` and neither could
+/// prove they framed the same bytes. CIRISEdge has since converged onto
+/// verify's builder (CIRISEdge#359), so there is one construction today — this
+/// vector is what keeps it that way, and what a second implementation
+/// reproduces.
+///
+/// The expected bytes were derived from the **spec layout**
+/// (`domain(16) | u32_be(len(peer_id)) | peer_id | u32_be(uplink_mbps) |
+/// u64_be(epoch)`) independently of the Rust builder, so this asserts
+/// agreement between two derivations rather than echoing one.
+#[test]
+fn relay_capacity_canonical_bytes() {
+    let v = vector("relay_capacity/canonical_bytes.json");
+    let c = SignedRelayCapacity {
+        peer_id: s(&v, "peer_id"),
+        uplink_mbps: u64f(&v, "uplink_mbps") as u32,
+        epoch: u64f(&v, "epoch"),
+    };
+    let got = c.signing_preimage();
+    assert_eq!(hex::encode(&got), s(&v, "expected_canonical_bytes_hex"));
+    assert_eq!(got.len() as u64, u64f(&v, "expected_len"));
+    // The domain must be the shared one, not a look-alike.
+    assert_eq!(hex::encode(&got[..16]), s(&v, "domain_hex"));
 }

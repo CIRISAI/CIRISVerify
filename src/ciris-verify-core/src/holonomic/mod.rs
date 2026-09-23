@@ -35,6 +35,19 @@
 //! second impl reproduces those vectors byte-for-byte the §19 shapes are
 //! **pinned-but-unproven, RC-grade**. This module owns the verifier side of that
 //! vector set.
+//!
+//! **One exception, now closed (CIRISVerify#207 item 5).** The claim above
+//! said `SignedRelayCapacity` was "byte-frozen by the §19.6 conformance
+//! vectors" — and **ALM had no vector**. It was the only §19 shape with none,
+//! which is precisely how a producer/verifier byte divergence under a
+//! *shared* domain separator (`CIRISALM-CAPv2\0\0`) went unnoticed: both
+//! sides read the same domain and nothing could prove they framed the same
+//! bytes. CIRISEdge has since converged onto this crate's builder rather than
+//! forking a wider preimage (CIRISEdge#359 — `stream_id`, `max_streams` and
+//! the MDC `sub_stream_commitments` stay on the wire **unsigned**), so there
+//! is one construction; `relay_capacity/canonical_bytes.json` is the vector
+//! that now holds it, derived from the spec layout independently of this
+//! builder.
 
 pub mod aggregation;
 pub mod alm;
