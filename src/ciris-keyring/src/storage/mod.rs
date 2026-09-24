@@ -108,6 +108,14 @@ pub trait SecureBlobStorage: Send + Sync {
     ///
     /// # Returns
     /// The raw secret bytes, or error if not found or decryption fails.
+    ///
+    /// # Errors
+    /// An absent key MUST be [`KeyringError::KeyNotFound`] - not
+    /// `StorageFailed`, whatever the underlying I/O said. The sealed signers'
+    /// `open_or_create` mints only on `KeyNotFound`, so a backend that reports
+    /// absence any other way can open keys but never create one: a fresh
+    /// install cannot mint its first key (CIRISVerify#288). `StorageFailed` is
+    /// for a key that exists and could not be read.
     fn load(&self, key_id: &str) -> Result<Vec<u8>, KeyringError>;
 
     /// Check if a secret exists for the given key ID.
@@ -725,10 +733,63 @@ pub fn create_platform_storage(
     )?))
 }
 
+/// The [`SecureBlobStorage`] contract, as assertions every backend's tests run.
+///
+/// Backends were tested separately, each against its own idea of the trait,
+/// and one of them reported an absent key as `StorageFailed` - which left the
+/// sealed signers able to open keys under it but never create one
+/// (CIRISVerify#288). Checking each backend against ONE definition is what
+/// stops that recurring.
+#[cfg(test)]
+pub(crate) mod contract {
+    use super::SecureBlobStorage;
+    use crate::error::KeyringError;
+
+    /// An absent key is `KeyNotFound` - the variant `open_or_create` mints on.
+    pub(crate) fn absent_key_is_key_not_found(storage: &dyn SecureBlobStorage) {
+        let key_id = "contract.never-stored";
+        assert!(!storage.exists(key_id), "precondition: key must be absent");
+        match storage.load(key_id) {
+            Err(KeyringError::KeyNotFound { .. }) => {},
+            other => panic!(
+                "load() of an absent key must be KeyNotFound (open_or_create mints only on \
+                 that); got {other:?}"
+            ),
+        }
+    }
+
+    /// What was stored is what loads, and `exists` agrees with `load`.
+    pub(crate) fn store_load_round_trips(storage: &dyn SecureBlobStorage) {
+        let key_id = "contract.round-trip";
+        let data = b"contract secret bytes";
+        storage.store(key_id, data).expect("store");
+        assert!(storage.exists(key_id), "exists() after store");
+        assert_eq!(storage.load(key_id).expect("load"), data);
+        storage.delete(key_id).expect("delete");
+        assert!(!storage.exists(key_id), "exists() after delete");
+        absent_key_is_key_not_found_named(storage, key_id);
+    }
+
+    fn absent_key_is_key_not_found_named(storage: &dyn SecureBlobStorage, key_id: &str) {
+        assert!(
+            matches!(storage.load(key_id), Err(KeyringError::KeyNotFound { .. })),
+            "load() after delete must be KeyNotFound"
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    #[test]
+    fn software_storage_honours_the_absent_key_contract() {
+        let dir = TempDir::new().unwrap();
+        let storage = SoftwareSecureBlobStorage::new("contract", dir.path()).unwrap();
+        contract::absent_key_is_key_not_found(&storage);
+        contract::store_load_round_trips(&storage);
+    }
 
     #[test]
     fn archive_superseded_legacy_keys_is_non_destructive_and_scoped() {

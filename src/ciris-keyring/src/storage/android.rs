@@ -846,9 +846,11 @@ impl SecureBlobStorage for AndroidKeystoreSecureBlobStorage {
             let path = self.blob_path(key_id);
 
             let encrypted = std::fs::read(&path).map_err(|e| {
+                // Absence is KeyNotFound, per the trait contract - otherwise
+                // open_or_create cannot mint a first key (CIRISVerify#288).
                 if e.kind() == std::io::ErrorKind::NotFound {
-                    KeyringError::StorageFailed {
-                        reason: format!("Blob not found: {}", key_id),
+                    KeyringError::KeyNotFound {
+                        alias: key_id.to_string(),
                     }
                 } else {
                     KeyringError::StorageFailed {
