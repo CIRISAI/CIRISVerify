@@ -221,9 +221,22 @@ impl SecureBlobStorage for PluginTpmSecureBlobStorage {
 
     fn load(&self, key_id: &str) -> Result<Vec<u8>, KeyringError> {
         let path = self.blob_path(key_id);
-        let encrypted = std::fs::read(&path).map_err(|e| KeyringError::StorageFailed {
-            reason: format!("read blob {key_id}: {e}"),
-        })?;
+        // Absence is KeyNotFound, per the trait contract. Reporting it as
+        // StorageFailed meant open_or_create could never mint under this
+        // backend, so a fresh home could not boot (CIRISVerify#288).
+        let encrypted = match std::fs::read(&path) {
+            Ok(bytes) => bytes,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(KeyringError::KeyNotFound {
+                    alias: key_id.to_string(),
+                })
+            },
+            Err(e) => {
+                return Err(KeyringError::StorageFailed {
+                    reason: format!("read blob {key_id}: {e}"),
+                })
+            },
+        };
         let key = self.derive_aes_key(key_id);
         self.decrypt(&key, &encrypted)
     }
@@ -300,8 +313,43 @@ mod tests {
         let _ = dir;
     }
 
-    // The genesis/store/load round-trip requires a live TPM + the `real` plugin,
-    // which CI build boxes lack; it is validated on hardware (see #130). The
-    // per-blob crypto envelope is identical to the link-time backend, whose
-    // round-trip is covered by tpm.rs unit tests on the shared scheme.
+    /// The storage over a fixed master, bypassing the plugin. Genesis (sealing
+    /// the master) needs a live TPM; everything AFTER genesis - blob layout,
+    /// AEAD, and the error contract - does not, and was untested in CI until
+    /// CIRISVerify#288 showed the error contract was wrong.
+    fn storage_with_fixed_master(dir: &std::path::Path) -> PluginTpmSecureBlobStorage {
+        PluginTpmSecureBlobStorage {
+            alias: "contract".to_string(),
+            storage_dir: dir.to_path_buf(),
+            master: [7u8; MASTER_SECRET_SIZE],
+        }
+    }
+
+    #[test]
+    fn absent_blob_is_key_not_found_so_open_or_create_can_mint() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let storage = storage_with_fixed_master(dir.path());
+        crate::storage::contract::absent_key_is_key_not_found(&storage);
+    }
+
+    #[test]
+    fn store_load_round_trips_after_genesis() {
+        let dir = tempfile::TempDir::new().unwrap();
+        let storage = storage_with_fixed_master(dir.path());
+        crate::storage::contract::store_load_round_trips(&storage);
+    }
+
+    #[test]
+    fn a_present_but_unreadable_blob_is_still_storage_failed() {
+        // KeyNotFound is for absence ONLY. A blob that exists and cannot be read
+        // must not be mistaken for "absent" - that would let open_or_create
+        // mint a fresh key over a real one it simply failed to read (#134).
+        let dir = tempfile::TempDir::new().unwrap();
+        let storage = storage_with_fixed_master(dir.path());
+        std::fs::create_dir_all(storage.blob_path("unreadable")).unwrap();
+        match storage.load("unreadable") {
+            Err(KeyringError::StorageFailed { .. }) => {},
+            other => panic!("unreadable blob must be StorageFailed, got {other:?}"),
+        }
+    }
 }

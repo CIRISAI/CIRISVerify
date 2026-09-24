@@ -223,3 +223,102 @@ fn quote_verifies_under_ak_pubkey_on_real_tpm() {
 
     eprintln!("✓ TPM quote verified under the AK public key on real hardware");
 }
+
+/// Point the keyring at a real plugin for the hardware tests below.
+fn use_real_plugin() -> bool {
+    if std::env::var_os("CIRIS_TPM_PLUGIN").is_none() {
+        match built_plugin() {
+            Some(p) => std::env::set_var("CIRIS_TPM_PLUGIN", p),
+            None => return false,
+        }
+    }
+    true
+}
+
+/// CIRISVerify#288 on real hardware: a FRESH directory must mint through the
+/// sealed signers' `open_or_create` under the TPM plugin, and re-open to the
+/// same key.
+///
+/// This is the call a node's first boot and a device enrolment both make. It
+/// failed with `Storage failed: read blob ed25519.seed: No such file or
+/// directory` because the plugin storage reported absence as `StorageFailed`,
+/// which `open_or_create` does not treat as "mint". The existing hardware
+/// tests exercise `PluginTpmSigner` (ECDSA) and never drove the sealed signers
+/// through this storage, which is how it shipped.
+///
+/// `#[ignore]`d; run as in [`signer_roundtrip_verifies_on_real_tpm`].
+#[tokio::test]
+#[ignore = "requires a real TPM + the `real` plugin via CIRIS_TPM_PLUGIN"]
+async fn sealed_ed25519_mints_on_a_fresh_dir_under_the_plugin() {
+    use ciris_keyring::{HardwareSigner, HardwareType, SealedEd25519Signer};
+
+    if !use_real_plugin() {
+        eprintln!("no plugin built or configured; skipping");
+        return;
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let minted = SealedEd25519Signer::open_or_create("fresh-ed", dir.path(), None)
+        .expect("open_or_create must MINT on a fresh dir under the plugin (#288)");
+    let hw = minted.hardware_type();
+    if hw == HardwareType::SoftwareOnly {
+        eprintln!("plugin reported no usable TPM; skipping (fell back to software)");
+        return;
+    }
+    assert!(
+        matches!(hw, HardwareType::TpmDiscrete | HardwareType::TpmFirmware),
+        "minted key must be TPM-custodied, got {hw:?}"
+    );
+    let first = minted.public_key().await.expect("public_key");
+    assert!(
+        dir.path().join("fresh-ed.tpmplugin_seal").exists(),
+        "master must be sealed by the plugin"
+    );
+    assert!(
+        !dir.path().join("fresh-ed.master.key").exists(),
+        "no plaintext unwrap key may sit beside the blob"
+    );
+    drop(minted);
+
+    // Re-open: the SAME key, not a fresh mint (#134).
+    let reopened =
+        SealedEd25519Signer::open_existing("fresh-ed", dir.path()).expect("re-open the minted key");
+    assert_eq!(
+        reopened.public_key().await.unwrap(),
+        first,
+        "re-open must not re-mint"
+    );
+    eprintln!("✓ sealed Ed25519 minted + reopened under the TPM plugin ({hw:?})");
+}
+
+/// The ML-DSA-65 half of the same guarantee (#288).
+#[cfg(feature = "pqc-ml-dsa")]
+#[tokio::test]
+#[ignore = "requires a real TPM + the `real` plugin via CIRIS_TPM_PLUGIN"]
+async fn sealed_mldsa65_mints_on_a_fresh_dir_under_the_plugin() {
+    use ciris_keyring::{HardwareType, PqcSigner, SealedMlDsa65Signer};
+
+    if !use_real_plugin() {
+        eprintln!("no plugin built or configured; skipping");
+        return;
+    }
+    let dir = tempfile::TempDir::new().unwrap();
+
+    let minted = SealedMlDsa65Signer::open_or_create("fresh-pqc", dir.path(), None)
+        .expect("open_or_create must MINT on a fresh dir under the plugin (#288)");
+    if minted.hardware_type() == HardwareType::SoftwareOnly {
+        eprintln!("plugin reported no usable TPM; skipping");
+        return;
+    }
+    let first = minted.public_key().await.expect("public_key");
+    drop(minted);
+
+    let reopened = SealedMlDsa65Signer::open_existing("fresh-pqc", dir.path())
+        .expect("re-open the minted key");
+    assert_eq!(
+        reopened.public_key().await.unwrap(),
+        first,
+        "re-open must not re-mint"
+    );
+    eprintln!("✓ sealed ML-DSA-65 minted + reopened under the TPM plugin");
+}
