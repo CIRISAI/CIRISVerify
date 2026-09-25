@@ -74,6 +74,11 @@ pub struct SecureEnclaveSecureBlobStorage {
     wrapper_key_tag: String,
     /// Whether the wrapper key is in Secure Enclave (true) or keychain (false)
     is_secure_enclave: bool,
+    /// Prior-install key material this storage superseded at genesis, if any
+    /// (CIRISVerify#292 ask 4). Surfaced rather than discarded: the keyring
+    /// cannot know whether an archived artifact is a registered federation key,
+    /// but the host can.
+    superseded: Vec<crate::storage::SupersededLegacyKey>,
 }
 
 impl SecureEnclaveSecureBlobStorage {
@@ -110,6 +115,7 @@ impl SecureEnclaveSecureBlobStorage {
             storage_dir,
             wrapper_key_tag,
             is_secure_enclave: false, // Will be updated after key generation
+            superseded: Vec::new(),
         };
 
         // Ensure wrapper key exists
@@ -166,16 +172,43 @@ impl SecureEnclaveSecureBlobStorage {
                     tag = %self.wrapper_key_tag,
                     "Generating ECIES wrapper key for blob storage"
                 );
-                // Genesis: minting a FRESH SE/keychain wrapper. Announce + archive
-                // any prior-install lower-tier key material for this alias — never
-                // a silent orphaning (CIRISVerify#141/#145; the v8 "rotate, don't
-                // migrate" handling, parity with the plugin TPM tier).
-                crate::storage::archive_superseded_legacy_keys(
-                    &self.alias,
-                    &self.storage_dir,
+                // Genesis: mint a FRESH wrapper FIRST, then decide supersession
+                // from the outcome (CIRISVerify#292). This used to archive
+                // BEFORE minting, so a Secure Enclave init that fell back to the
+                // keychain still archived the lower-tier material — including,
+                // on a fresh home, the software tier's own seconds-old key,
+                // because the archiver's matcher covers exactly what software
+                // writes. That stranded a registered federation key and broke
+                // first-run claim (CIRISServer#595) and iOS node identity
+                // (CIRISServer#608).
+                self.generate_wrapper_key()?;
+
+                // `is_secure_enclave` is set by `generate_wrapper_key` from
+                // which path actually succeeded — true only for a real SE mint,
+                // false for the keychain fallback. A fallback is not a higher
+                // tier; it IS the lower tier, so it supersedes nothing.
+                match crate::storage::HigherTierMint::witness(
                     "secure-enclave",
-                );
-                self.generate_wrapper_key()
+                    self.is_secure_enclave,
+                ) {
+                    Some(mint) => {
+                        self.superseded = crate::storage::archive_superseded_legacy_keys(
+                            &self.alias,
+                            &self.storage_dir,
+                            &mint,
+                        );
+                    },
+                    None => {
+                        warn!(
+                            tag = %self.wrapper_key_tag,
+                            alias = %self.alias,
+                            "Secure Enclave unavailable — wrapper key minted in the KEYCHAIN \
+                             (software-grade). NOT superseding any prior-install key material: a \
+                             backend that fell back is not a higher tier (CIRISVerify#292)"
+                        );
+                    },
+                }
+                Ok(())
             },
             Err(e) => Err(e),
         }
@@ -473,6 +506,19 @@ impl SecureEnclaveSecureBlobStorage {
         info!(tag = %self.wrapper_key_tag, "Wrapper key deleted");
         Ok(())
     }
+
+    /// Prior-install key material this storage superseded at genesis
+    /// (CIRISVerify#292 ask 4). Empty in the normal case, and empty whenever the
+    /// wrapper key fell back to the keychain — a fallback supersedes nothing.
+    ///
+    /// A host that maintains a key registry SHOULD check these paths against it:
+    /// an archived artifact may be a **registered** federation key, and the
+    /// keyring has no way to know. The pre-17.0.0 log line asserted the opposite.
+    #[cfg(any(target_os = "ios", target_os = "macos"))]
+    #[must_use]
+    pub fn superseded_legacy_keys(&self) -> &[crate::storage::SupersededLegacyKey] {
+        &self.superseded
+    }
 }
 
 impl SecureBlobStorage for SecureEnclaveSecureBlobStorage {
@@ -633,6 +679,7 @@ mod tests {
             storage_dir: PathBuf::from("/tmp/test"),
             wrapper_key_tag: "test_blob_ecies_wrapper".to_string(),
             is_secure_enclave: false,
+            superseded: Vec::new(),
         };
 
         // Normal key

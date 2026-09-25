@@ -144,18 +144,14 @@ fn parse_key_and_sig(
 }
 
 impl Ed25519Verifier {
-    /// **Strict** RFC 8032 verification (ed25519-dalek `verify_strict`): in
-    /// addition to the permissive [`ClassicalVerifier::verify`] checks, it
-    /// rejects signatures whose `R`/`A` components have a small-order or
-    /// mixed-order torsion component — closing the signature-non-uniqueness
-    /// surface plain `verify` permits.
+    /// **Strict** RFC 8032 verification — identical to
+    /// [`ClassicalVerifier::verify`], which has been strict since 16.4.0.
     ///
-    /// Exposed for consumers whose acceptance rule must be strict — e.g.
-    /// CIRISPersist's trace-verify floor, which previously reached for
-    /// `ed25519-dalek` directly (a direct dep + a second Ed25519 acceptance
-    /// semantics inside one repo). Routing that path through here retires the
-    /// duplicate (crypto-DRY assessment). Both `verify` and `verify_strict`
-    /// already reject non-canonical `s`.
+    /// Retained as a named entry point because CIRISPersist's trace-verify
+    /// floor calls it explicitly (it was added in v10.4.0 so that path could
+    /// stop reaching for `ed25519-dalek` directly). Keeping the name also lets
+    /// a caller *state* that strictness is load-bearing at the call site
+    /// rather than inheriting it.
     ///
     /// # Errors
     /// [`CryptoError`] if the public key or signature is malformed; `Ok(false)`
@@ -169,17 +165,40 @@ impl Ed25519Verifier {
         let (vk, sig) = parse_key_and_sig(public_key, signature)?;
         Ok(vk.verify_strict(data, &sig).is_ok())
     }
-}
 
-impl ClassicalVerifier for Ed25519Verifier {
-    fn verify(
+    /// **Permissive** (cofactorless, ed25519-dalek `verify`) verification — the
+    /// pre-16.4.0 behaviour of [`ClassicalVerifier::verify`], kept reachable
+    /// only under a name that says what it is.
+    ///
+    /// # This accepts a universal forgery, and that is not hypothetical
+    ///
+    /// Permissive verification does not reject a small-order `A` or `R`. With
+    /// `A` = the identity point, the cofactorless equation `[s]B = R + [k]A`
+    /// collapses to `[s]B = R`, so the single 64-byte signature
+    /// `(R = identity, s = 0)` verifies against **any message whatsoever** —
+    /// with no private key in existence. A test in this module exhibits it.
+    ///
+    /// Callers therefore MUST NOT use this to decide anything. It exists so
+    /// that a caller who must reproduce another implementation's acceptance
+    /// set — e.g. to explain why a peer accepted a signature this crate
+    /// refuses — can do so deliberately and say so in the code.
+    ///
+    /// Ed25519 verifiers genuinely disagree here: cofactored vs cofactorless
+    /// verification and small-order key handling are per-implementation
+    /// choices (Chalkias, Garillot & Nikolaenko, *Taming the Many EdDSAs*,
+    /// SSR 2020; ZIP-215 exists to pin one). "RFC 8032 verify has no drift
+    /// risk" is a comfortable assumption and a false one.
+    ///
+    /// # Errors
+    /// [`CryptoError`] if the public key or signature is malformed; `Ok(false)`
+    /// if well-formed but not a valid (permissive) signature.
+    pub fn verify_permissive(
         &self,
         public_key: &[u8],
         data: &[u8],
         signature: &[u8],
     ) -> Result<bool, CryptoError> {
         let (vk, sig) = parse_key_and_sig(public_key, signature)?;
-        // Permissive verify (see `verify_strict` for the strict counterpart).
         match vk.verify(data, &sig) {
             Ok(()) => Ok(true),
             Err(_) => Ok(false),
@@ -187,9 +206,121 @@ impl ClassicalVerifier for Ed25519Verifier {
     }
 }
 
+impl ClassicalVerifier for Ed25519Verifier {
+    /// Verify strictly (CIRISVerify#207 item 1).
+    ///
+    /// **This was permissive before 16.4.0**, and every authority gate in this
+    /// workspace reaches Ed25519 through this trait method: the M-of-N
+    /// threshold verifier and everything that inherits it, the provenance
+    /// chain walk, the license JWT gate, binary self-verification, and
+    /// `HybridVerifier`'s classical half (so doc_integrity, jcs,
+    /// federation_envelope and the transparency STH too). `verify_strict`
+    /// shipped in v10.4.0 for a *downstream's* trace floor and was called by
+    /// nothing inside this workspace — the stricter primitive existed and was
+    /// not invoked on the decisions that matter.
+    ///
+    /// Strictness is the default here rather than a flag at ~8 call sites
+    /// because a flag is something a **new** call site forgets; see
+    /// [`Self::verify_permissive`] for what the old default accepted.
+    ///
+    /// No honest signer is affected: an honest key is not small-order and an
+    /// honest signature's `R` carries no torsion component, so nothing this
+    /// workspace or its peers legitimately produce changes verdict.
+    fn verify(
+        &self,
+        public_key: &[u8],
+        data: &[u8],
+        signature: &[u8],
+    ) -> Result<bool, CryptoError> {
+        let (vk, sig) = parse_key_and_sig(public_key, signature)?;
+        Ok(vk.verify_strict(data, &sig).is_ok())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The Ed25519 identity point (`y = 1`, sign bit clear) — one of the
+    /// eight small-order points.
+    fn identity_point() -> [u8; 32] {
+        let mut a = [0u8; 32];
+        a[0] = 1;
+        a
+    }
+
+    /// `(R = identity, s = 0)`. Under cofactorless verification with
+    /// `A` = identity the equation `[s]B = R + [k]A` becomes
+    /// `identity = identity`, independent of the message.
+    fn universal_forgery() -> [u8; 64] {
+        let mut sig = [0u8; 64];
+        sig[..32].copy_from_slice(&identity_point());
+        sig
+    }
+
+    /// The reason strictness is the default, stated as an executable fact
+    /// rather than a doc comment (CIRISVerify#207 item 1).
+    #[test]
+    fn permissive_accepts_a_universal_forgery_that_strict_refuses() {
+        let v = Ed25519Verifier::new();
+        let (pk, sig) = (identity_point(), universal_forgery());
+
+        // ONE signature, no private key anywhere, two unrelated messages.
+        for msg in [
+            b"transfer 1 token".as_slice(),
+            b"HALT THE ACCORD".as_slice(),
+            b"".as_slice(),
+        ] {
+            assert!(
+                v.verify_permissive(&pk, msg, &sig).unwrap(),
+                "permissive must be SHOWN to accept the forgery, or this test \
+                 asserts nothing about why the default changed"
+            );
+            assert!(
+                !v.verify_strict(&pk, msg, &sig).unwrap(),
+                "strict must refuse the forgery"
+            );
+        }
+    }
+
+    /// The default acceptance rule IS the strict one. Guards against a future
+    /// edit quietly restoring the permissive default at the one place every
+    /// authority gate in the workspace reaches Ed25519 through.
+    #[test]
+    fn default_verify_is_strict_not_permissive() {
+        let v = Ed25519Verifier::new();
+        assert!(
+            !v.verify(&identity_point(), b"anything", &universal_forgery())
+                .unwrap(),
+            "ClassicalVerifier::verify must be strict"
+        );
+    }
+
+    /// Strictness must not cost an honest signature: the default and both
+    /// named entry points agree on every real signature.
+    #[test]
+    fn honest_signatures_verify_under_every_entry_point() {
+        let signer = Ed25519Signer::random().unwrap();
+        let pk = signer.public_key().unwrap();
+        for data in [b"".as_slice(), b"x".as_slice(), &[0u8; 1024][..]] {
+            let sig = signer.sign(data).unwrap();
+            assert_eq!(
+                v_all(&pk, data, &sig),
+                (true, true, true),
+                "data len {}",
+                data.len()
+            );
+        }
+    }
+
+    fn v_all(pk: &[u8], data: &[u8], sig: &[u8]) -> (bool, bool, bool) {
+        let v = Ed25519Verifier::new();
+        (
+            v.verify(pk, data, sig).unwrap(),
+            v.verify_strict(pk, data, sig).unwrap(),
+            v.verify_permissive(pk, data, sig).unwrap(),
+        )
+    }
 
     #[test]
     fn test_ed25519_sign_verify() {

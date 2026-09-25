@@ -67,6 +67,7 @@ from ._self_enc import (
 )
 from ._federation_identity import create_federation_identity
 from ._evm_tx import keccak256, checksum_address
+from ._raw_verify import verify_ed25519, verify_p256
 from ._manifest_contribution import verify_build_manifest_contribution
 from ._accord_custody import verify_accord_custody_attestation
 from ._test_anchor import test_anchor_compiled_in
@@ -170,7 +171,7 @@ def get_library_version() -> str:
     return __version__
 
 
-__version__ = "16.3.0"
+__version__ = "17.0.0"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
@@ -179,6 +180,8 @@ __all__ = [
     "rns_destination_hash",
     "keccak256",
     "checksum_address",
+    "verify_ed25519",
+    "verify_p256",
     "scope_privacy",
     "SelfEncKeys",
     "derive_self_enc",

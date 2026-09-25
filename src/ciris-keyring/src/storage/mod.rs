@@ -536,23 +536,77 @@ pub struct SupersededLegacyKey {
 /// Suffix appended when archiving a superseded legacy key artifact.
 const SUPERSEDED_SUFFIX: &str = "superseded-pre-v8";
 
-/// When a higher-tier backend (`new_backend`) mints a fresh master for `alias`,
-/// announce — loudly and non-silently — any **prior** at-rest artifacts for that
-/// alias left by an earlier install in a lower tier, and **archive** them (rename
-/// to `*.superseded-pre-v8`, never delete) so the supersession is visible and
-/// recoverable rather than a silent orphaning (CIRISVerify#141/#145).
+/// Proof that a higher-tier backend **actually minted into that tier**
+/// (CIRISVerify#292).
+///
+/// Supersession means "a higher tier replaced a lower one". That is only true
+/// once the higher-tier mint has *succeeded* and *landed in the claimed tier* —
+/// and before 17.0.0 nothing checked either. Both call sites archived **before**
+/// minting, on intent rather than outcome, so a Secure Enclave init that fell
+/// back to the keychain (or a TPM seal that failed outright) still archived the
+/// lower-tier material. Since the archiver's own matcher covers exactly what the
+/// software tier writes (`{alias}.master.key`, `{alias}.*.blob`), a fresh home
+/// where software minted first had its **own, seconds-old** key archived as a
+/// "prior install" — stranding a registered federation key and breaking first-run
+/// claim on macOS (CIRISServer#595) and node identity on the iOS simulator
+/// (CIRISServer#608).
+///
+/// This is a witness type rather than a `bool` parameter so the fallback case is
+/// **unrepresentable**: there is no way to reach the archiver without having
+/// asked the backend, after the mint, whether the key really landed in the
+/// higher tier. A call site cannot forget the check, which is the difference
+/// between fixing an instance and fixing the class.
+#[derive(Debug, Clone)]
+pub struct HigherTierMint<'a> {
+    backend: &'a str,
+}
+
+impl<'a> HigherTierMint<'a> {
+    /// Witness a completed higher-tier mint.
+    ///
+    /// `landed_in_tier` MUST be the backend's own **post-mint** observation —
+    /// e.g. Secure Enclave storage's `is_secure_enclave` after
+    /// `generate_wrapper_key` returned `Ok`, or a TPM seal that was written and
+    /// read back. Passing a pre-mint assumption reintroduces #292.
+    ///
+    /// Returns `None` when the mint did not land in the claimed tier, in which
+    /// case **nothing may be archived**: a backend that fell back is not a
+    /// higher tier, it *is* the lower tier.
+    #[must_use]
+    pub fn witness(backend: &'a str, landed_in_tier: bool) -> Option<Self> {
+        landed_in_tier.then_some(Self { backend })
+    }
+
+    /// The backend name, for the supersession log line.
+    #[must_use]
+    pub fn backend(&self) -> &str {
+        self.backend
+    }
+}
+
+/// Archive any **prior-install** at-rest artifacts for `alias` that a
+/// now-completed higher-tier mint supersedes — renamed to
+/// `*.superseded-pre-v8`, never deleted, and announced loudly rather than
+/// silently orphaned (CIRISVerify#141/#145).
 ///
 /// This is the v8 "rotate, don't migrate" handling: hardware keys can't be
-/// exported to migrate, and no federated/signed state exists yet, so a fresh
-/// hardware key supersedes the old one. The old material is archived, never lost
-/// silently. If/when keys are federated, rotation rides Persist's `supersede`.
+/// exported to migrate, so a fresh hardware key supersedes the old one and the
+/// old material is archived for recovery.
 ///
-/// Returns what was archived (empty if nothing prior existed).
+/// **Call this only AFTER the mint has succeeded**, which
+/// [`HigherTierMint::witness`] is what enforces — see that type for the failure
+/// this ordering caused (CIRISVerify#292).
+///
+/// Returns what was archived (empty if nothing prior existed). Callers should
+/// surface it rather than discard it: the keyring cannot know whether an
+/// archived artifact is a *registered* federation key, but the host can, and
+/// only the host can decide what that means.
 pub fn archive_superseded_legacy_keys(
     alias: &str,
     storage_dir: &std::path::Path,
-    new_backend: &str,
+    mint: &HigherTierMint<'_>,
 ) -> Vec<SupersededLegacyKey> {
+    let new_backend = mint.backend();
     // Legacy at-rest artifacts a prior install may have written under `alias`:
     //  - software:   `{alias}.master.key`, `{alias}.*.blob`
     //  - pre-v8 TPM: `{alias}.tpm_seal`, `{alias}.*.tpm_blob`, `{alias}.tpm_softfallback`
@@ -590,11 +644,13 @@ pub fn archive_superseded_legacy_keys(
                     backend = %new_backend,
                     legacy = %original.display(),
                     archived = %dest.display(),
-                    "KEY SUPERSEDED — a higher-tier backend minted a FRESH key for this alias; a \
-                     prior-install key was found and ARCHIVED (not deleted, not silently orphaned). \
-                     The fresh key is the active one. No federated/signed state references the old \
-                     key (no FedIDs minted), so nothing needs re-signing; if that changes, rotation \
-                     rides Persist supersede."
+                    "KEY SUPERSEDED — a higher-tier backend minted a FRESH key for this alias and \
+                     the mint landed in that tier; a prior-install key was found and ARCHIVED (not \
+                     deleted, not silently orphaned). The fresh key is the active one. NOTE: the \
+                     archived key MAY be a registered federation key — the pre-17.0.0 text here \
+                     claimed no FedIDs existed, which stopped being true once fed-IDs were minted \
+                     and registered (CIRISVerify#292). The keyring cannot tell; the host must check \
+                     the returned list against its registry and rotate via Persist supersede if so."
                 );
                 archived.push(SupersededLegacyKey {
                     original,
@@ -791,6 +847,54 @@ mod tests {
         contract::store_load_round_trips(&storage);
     }
 
+    /// CIRISVerify#292: a backend that FELL BACK is not a higher tier, so it
+    /// must not be able to supersede anything — and the type makes that
+    /// unrepresentable rather than relying on a call site to check.
+    ///
+    /// This is the regression guard for the defect that broke first-run claim on
+    /// macOS (CIRISServer#595) and node identity on the iOS simulator
+    /// (CIRISServer#608): Secure Enclave init failed, storage fell back to the
+    /// keychain, and the pre-17.0.0 code had already archived the software
+    /// tier's own seconds-old key as a "prior install".
+    #[test]
+    fn a_fallback_cannot_supersede_anything() {
+        assert!(
+            HigherTierMint::witness("secure-enclave", false).is_none(),
+            "a mint that did not land in the claimed tier must yield no witness, \
+             so `archive_superseded_legacy_keys` is unreachable for it"
+        );
+        assert!(HigherTierMint::witness("ciris-tpm-plugin", false).is_none());
+        // And the positive case still works, or the guard proves nothing.
+        let mint = HigherTierMint::witness("secure-enclave", true).expect("landed");
+        assert_eq!(mint.backend(), "secure-enclave");
+    }
+
+    /// The same-session case the issue reports: the software tier's own files
+    /// are exactly what the matcher looks for, so if a fallback could archive,
+    /// it would archive the key this process just minted. With no witness
+    /// obtainable there is no call to make.
+    #[test]
+    fn software_tier_artifacts_survive_a_failed_higher_tier_mint() {
+        let dir = TempDir::new().unwrap();
+        let p = dir.path();
+        // What SoftwareSecureBlobStorage writes, moments ago, this session.
+        std::fs::write(p.join("agent.master.key"), b"this-session").unwrap();
+        std::fs::write(p.join("agent.ed25519.seed.blob"), b"this-session").unwrap();
+
+        // Secure Enclave init failed → keychain fallback → no witness.
+        assert!(HigherTierMint::witness("secure-enclave", false).is_none());
+
+        // Nothing was archived, because nothing could be.
+        assert!(p.join("agent.master.key").exists());
+        assert!(p.join("agent.ed25519.seed.blob").exists());
+        let archived: Vec<_> = std::fs::read_dir(p)
+            .unwrap()
+            .flatten()
+            .filter(|e| e.file_name().to_string_lossy().contains(SUPERSEDED_SUFFIX))
+            .collect();
+        assert!(archived.is_empty(), "a fallback archived {archived:?}");
+    }
+
     #[test]
     fn archive_superseded_legacy_keys_is_non_destructive_and_scoped() {
         let dir = TempDir::new().unwrap();
@@ -802,7 +906,8 @@ mod tests {
         std::fs::write(p.join("other.master.key"), b"keep").unwrap();
         std::fs::write(p.join("agent.tpmplugin_seal"), b"new-tier").unwrap();
 
-        let archived = archive_superseded_legacy_keys("agent", p, "ciris-tpm-plugin");
+        let mint = HigherTierMint::witness("ciris-tpm-plugin", true).expect("mint landed");
+        let archived = archive_superseded_legacy_keys("agent", p, &mint);
 
         // Both legacy artifacts archived (renamed), never deleted.
         assert_eq!(archived.len(), 2, "master + blob archived");
@@ -820,7 +925,8 @@ mod tests {
         assert!(p.join("agent.tpmplugin_seal").exists());
 
         // Idempotent: a second sweep finds nothing new (already archived).
-        assert!(archive_superseded_legacy_keys("agent", p, "ciris-tpm-plugin").is_empty());
+        let mint = HigherTierMint::witness("ciris-tpm-plugin", true).expect("mint landed");
+        assert!(archive_superseded_legacy_keys("agent", p, &mint).is_empty());
     }
 
     #[test]

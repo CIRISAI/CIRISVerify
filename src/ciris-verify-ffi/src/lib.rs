@@ -190,6 +190,8 @@ pub extern "C" fn ciris_verify_ffi_link_anchor() -> usize {
         // CIRISVerify#207 item 2 — RLP/keccak inside the boundary.
         acc ^= ciris_verify_sign_evm_transaction_fields as usize;
         acc ^= ciris_verify_keccak256 as usize;
+        acc ^= ciris_verify_verify_ed25519 as usize;
+        acc ^= ciris_verify_verify_p256 as usize;
         acc ^= ciris_verify_checksum_address as usize;
         acc ^= ciris_verify_sign_secp256k1 as usize;
         acc ^= ciris_verify_sign_typed_data as usize;
@@ -8194,6 +8196,195 @@ unsafe fn sign_secp256k1_inner(
     CirisVerifyError::Success as i32
 }
 
+/// Verify a raw **Ed25519** signature (CIRISVerify#207 item 1).
+///
+/// The wheel exposed `sign_ed25519` and no verify counterpart, so a Python
+/// consumer that signed through verify could not verify through it — CIRISAgent
+/// `audit/signing_protocol.py` falls back to the `cryptography` library. This
+/// closes that asymmetry.
+///
+/// In `{"public_key_hex", "message_hex", "signature_hex", "strict"?}`, out
+/// `{"ok": true, "valid": bool, "rule": "strict"|"permissive"}`.
+///
+/// # The `rule` is in the response because the two rules disagree
+///
+/// `strict` defaults to `true` and should stay there. Permissive
+/// (cofactorless) Ed25519 verification accepts a **universal forgery**: with
+/// the identity point as the public key, the single signature
+/// `(R = identity, s = 0)` verifies against any message at all. The response
+/// echoes which rule produced the answer so a caller that logs or gates on it
+/// can assert on the rule rather than assume it.
+///
+/// A malformed key or signature is a **successful call returning
+/// `ok: false`** — not an FFI error code — so a caller cannot confuse "this
+/// input was garbage" with "the library broke".
+///
+/// # Safety
+/// - `config_json` must be a valid NUL-terminated C string
+/// - `result_out` must be a valid pointer; the caller frees the returned string
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_verify_ed25519(
+    config_json: *const c_char,
+    result_out: *mut *mut c_char,
+) -> i32 {
+    ffi_guard!("ciris_verify_verify_ed25519", {
+        if config_json.is_null() || result_out.is_null() {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        let cfg_str = match std::ffi::CStr::from_ptr(config_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return CirisVerifyError::InvalidArgument as i32,
+        };
+        let emit = |value: serde_json::Value| -> i32 {
+            match std::ffi::CString::new(value.to_string()) {
+                Ok(c) => {
+                    *result_out = c.into_raw();
+                    CirisVerifyError::Success as i32
+                },
+                Err(_) => CirisVerifyError::InternalError as i32,
+            }
+        };
+        let err = |msg: String| serde_json::json!({ "ok": false, "error": msg });
+        let cfg: serde_json::Value = match serde_json::from_str(cfg_str) {
+            Ok(v) => v,
+            Err(e) => return emit(err(format!("invalid config JSON: {e}"))),
+        };
+        let field = |k: &str| -> Result<Vec<u8>, String> {
+            let Some(s) = cfg.get(k).and_then(|v| v.as_str()) else {
+                return Err(format!("{k} must be a hex string"));
+            };
+            hex::decode(s.strip_prefix("0x").unwrap_or(s)).map_err(|e| format!("{k}: {e}"))
+        };
+        let (pk, msg, sig) = match (
+            field("public_key_hex"),
+            field("message_hex"),
+            field("signature_hex"),
+        ) {
+            (Ok(a), Ok(b), Ok(c)) => (a, b, c),
+            (a, b, c) => {
+                let msgs: Vec<String> = [a.err(), b.err(), c.err()].into_iter().flatten().collect();
+                return emit(err(msgs.join("; ")));
+            },
+        };
+        // Present-but-not-a-bool is refused rather than silently falling back
+        // to the default: a caller who passed `"false"` meant something.
+        let strict = match cfg.get("strict") {
+            None | Some(serde_json::Value::Null) => true,
+            Some(serde_json::Value::Bool(b)) => *b,
+            Some(other) => return emit(err(format!("strict must be a boolean, got {other}"))),
+        };
+        let v = ciris_crypto::Ed25519Verifier::new();
+        let outcome = if strict {
+            v.verify_strict(&pk, &msg, &sig)
+        } else {
+            v.verify_permissive(&pk, &msg, &sig)
+        };
+        match outcome {
+            Ok(valid) => emit(serde_json::json!({
+                "ok": true,
+                "valid": valid,
+                "rule": if strict { "strict" } else { "permissive" },
+            })),
+            Err(e) => emit(err(e.to_string())),
+        }
+    })
+}
+
+/// Verify a raw **ECDSA P-256** signature (CIRISVerify#207 item 1).
+///
+/// In `{"public_key_hex", "message_hex", "signature_hex", "encoding"}`, out
+/// `{"ok": true, "valid": bool, "encoding": "fixed"|"der"}`. `public_key_hex`
+/// is SEC1 (`0x04 ‖ x ‖ y`); the message is hashed with SHA-256 internally.
+///
+/// # `encoding` is REQUIRED, and is deliberately not sniffed
+///
+/// `"fixed"` is the 64-byte `(r ‖ s)` form; `"der"` is the ASN.1 form
+/// WebAuthn / FIDO2 `ES256` assertions carry. Length-and-tag sniffing looks
+/// unambiguous and is not: a DER signature with a 29-byte `r` and `s` is
+/// exactly 64 bytes, and a fixed-form signature whose `r` begins `0x30`
+/// carries the DER tag. Guessing wrong returns `valid: false` for a genuinely
+/// valid signature, which on an audit-verify path reads as tampering — so the
+/// caller states the encoding and the response echoes it back.
+///
+/// # Safety
+/// - `config_json` must be a valid NUL-terminated C string
+/// - `result_out` must be a valid pointer; the caller frees the returned string
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_verify_p256(
+    config_json: *const c_char,
+    result_out: *mut *mut c_char,
+) -> i32 {
+    ffi_guard!("ciris_verify_verify_p256", {
+        if config_json.is_null() || result_out.is_null() {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        let cfg_str = match std::ffi::CStr::from_ptr(config_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return CirisVerifyError::InvalidArgument as i32,
+        };
+        let emit = |value: serde_json::Value| -> i32 {
+            match std::ffi::CString::new(value.to_string()) {
+                Ok(c) => {
+                    *result_out = c.into_raw();
+                    CirisVerifyError::Success as i32
+                },
+                Err(_) => CirisVerifyError::InternalError as i32,
+            }
+        };
+        let err = |msg: String| serde_json::json!({ "ok": false, "error": msg });
+        let cfg: serde_json::Value = match serde_json::from_str(cfg_str) {
+            Ok(v) => v,
+            Err(e) => return emit(err(format!("invalid config JSON: {e}"))),
+        };
+        let field = |k: &str| -> Result<Vec<u8>, String> {
+            let Some(s) = cfg.get(k).and_then(|v| v.as_str()) else {
+                return Err(format!("{k} must be a hex string"));
+            };
+            hex::decode(s.strip_prefix("0x").unwrap_or(s)).map_err(|e| format!("{k}: {e}"))
+        };
+        let (pk, msg, sig) = match (
+            field("public_key_hex"),
+            field("message_hex"),
+            field("signature_hex"),
+        ) {
+            (Ok(a), Ok(b), Ok(c)) => (a, b, c),
+            (a, b, c) => {
+                let msgs: Vec<String> = [a.err(), b.err(), c.err()].into_iter().flatten().collect();
+                return emit(err(msgs.join("; ")));
+            },
+        };
+        let encoding = match cfg.get("encoding").and_then(|v| v.as_str()) {
+            Some(e @ ("fixed" | "der")) => e,
+            Some(other) => {
+                return emit(err(format!(
+                    "encoding must be \"fixed\" or \"der\", got \"{other}\""
+                )))
+            },
+            None => {
+                return emit(err(
+                    "encoding is required (\"fixed\" for 64-byte r||s, \"der\" for ASN.1); \
+                     it is not inferred from the signature — see the docs"
+                        .into(),
+                ))
+            },
+        };
+        let outcome = if encoding == "der" {
+            ciris_crypto::P256Verifier::verify_webauthn_es256(&pk, &msg, &sig)
+        } else {
+            use ciris_crypto::ClassicalVerifier as _;
+            ciris_crypto::P256Verifier::new().verify(&pk, &msg, &sig)
+        };
+        match outcome {
+            Ok(valid) => emit(serde_json::json!({
+                "ok": true,
+                "valid": valid,
+                "encoding": encoding,
+            })),
+            Err(e) => emit(err(e.to_string())),
+        }
+    })
+}
+
 /// keccak256 — the EVM hash (CIRISVerify#207 item 2).
 ///
 /// Exposed so a Python caller stops sourcing it from whichever of
@@ -10709,5 +10900,196 @@ mod expiry_input {
         assert!(Validity::checked(FROM, Some("")).is_err());
         // A window that closes before it opens is not an expiry either.
         assert!(Validity::checked(FROM, Some("2020-01-01T00:00:00Z")).is_err());
+    }
+}
+
+/// FFI-layer tests for the raw Ed25519 / P-256 verify surface
+/// (CIRISVerify#207 item 1).
+///
+/// The crypto itself is covered in `ciris-crypto`; what lives only here is the
+/// routing — strict-by-default, the refusal of a non-boolean `strict`, and the
+/// required-and-never-sniffed `encoding`.
+#[cfg(test)]
+mod raw_verify_tests {
+    use super::*;
+
+    /// Drive an entry point the way a wheel caller does and return the parsed
+    /// JSON response.
+    fn call(
+        f: unsafe extern "C" fn(*const c_char, *mut *mut c_char) -> i32,
+        cfg: serde_json::Value,
+    ) -> serde_json::Value {
+        let c = std::ffi::CString::new(cfg.to_string()).unwrap();
+        let mut out: *mut c_char = std::ptr::null_mut();
+        let rc = unsafe { f(c.as_ptr(), &mut out) };
+        assert_eq!(rc, CirisVerifyError::Success as i32, "rc for {cfg}");
+        assert!(!out.is_null());
+        let s = unsafe { std::ffi::CStr::from_ptr(out) }
+            .to_str()
+            .unwrap()
+            .to_owned();
+        unsafe { ciris_verify_free_string(out) };
+        serde_json::from_str(&s).unwrap()
+    }
+
+    fn identity_hex() -> String {
+        let mut a = [0u8; 32];
+        a[0] = 1;
+        hex::encode(a)
+    }
+
+    /// `(R = identity, s = 0)`: accepted by permissive verification against any
+    /// message, with no private key in existence.
+    fn forgery_hex() -> String {
+        let mut sig = [0u8; 64];
+        sig[0] = 1;
+        hex::encode(sig)
+    }
+
+    #[test]
+    fn ed25519_round_trips_a_real_signature_and_refuses_a_tampered_one() {
+        use ciris_crypto::{ClassicalSigner, Ed25519Signer};
+        let signer = Ed25519Signer::random().unwrap();
+        let pk = signer.public_key().unwrap();
+        let msg = b"round trip";
+        let sig = signer.sign(msg).unwrap();
+
+        let r = call(
+            ciris_verify_verify_ed25519,
+            serde_json::json!({
+                "public_key_hex": hex::encode(&pk),
+                "message_hex": hex::encode(msg),
+                "signature_hex": hex::encode(&sig),
+            }),
+        );
+        assert_eq!(r["ok"], true);
+        assert_eq!(r["valid"], true);
+        assert_eq!(r["rule"], "strict", "the default must be strict");
+
+        let bad = call(
+            ciris_verify_verify_ed25519,
+            serde_json::json!({
+                "public_key_hex": hex::encode(&pk),
+                "message_hex": hex::encode(b"a different message"),
+                "signature_hex": hex::encode(&sig),
+            }),
+        );
+        assert_eq!(bad["valid"], false);
+    }
+
+    /// The default refuses the universal forgery; `strict: false` is the only
+    /// way to reach the rule that accepts it, and the response says which ran.
+    #[test]
+    fn ed25519_default_refuses_the_universal_forgery() {
+        for message in ["HALT THE ACCORD", "transfer 1 token"] {
+            let base = serde_json::json!({
+                "public_key_hex": identity_hex(),
+                "message_hex": hex::encode(message),
+                "signature_hex": forgery_hex(),
+            });
+            let strict = call(ciris_verify_verify_ed25519, base.clone());
+            assert_eq!(strict["valid"], false, "default must refuse ({message})");
+            assert_eq!(strict["rule"], "strict");
+
+            let mut permissive = base;
+            permissive["strict"] = serde_json::json!(false);
+            let p = call(ciris_verify_verify_ed25519, permissive);
+            assert_eq!(
+                p["valid"], true,
+                "permissive must be SHOWN to accept it, or the default \
+                 changing means nothing"
+            );
+            assert_eq!(p["rule"], "permissive");
+        }
+    }
+
+    #[test]
+    fn ed25519_non_boolean_strict_is_refused_not_defaulted() {
+        let r = call(
+            ciris_verify_verify_ed25519,
+            serde_json::json!({
+                "public_key_hex": identity_hex(),
+                "message_hex": "00",
+                "signature_hex": forgery_hex(),
+                "strict": "false",
+            }),
+        );
+        assert_eq!(r["ok"], false);
+        assert!(r["error"].as_str().unwrap().contains("boolean"));
+    }
+
+    #[test]
+    fn ed25519_malformed_input_is_ok_false_not_an_error_code() {
+        let r = call(
+            ciris_verify_verify_ed25519,
+            serde_json::json!({
+                "public_key_hex": "abcd",
+                "message_hex": "00",
+                "signature_hex": forgery_hex(),
+            }),
+        );
+        assert_eq!(r["ok"], false, "a bad key is a verdict, not an FFI failure");
+    }
+
+    /// `encoding` is required and is never inferred from the bytes.
+    #[test]
+    fn p256_encoding_is_required_and_closed() {
+        let base = serde_json::json!({
+            "public_key_hex": hex::encode([4u8; 65]),
+            "message_hex": "00",
+            "signature_hex": hex::encode([0u8; 64]),
+        });
+        let missing = call(ciris_verify_verify_p256, base.clone());
+        assert_eq!(missing["ok"], false);
+        assert!(missing["error"].as_str().unwrap().contains("required"));
+
+        let mut bogus = base;
+        bogus["encoding"] = serde_json::json!("sniff");
+        let r = call(ciris_verify_verify_p256, bogus);
+        assert_eq!(r["ok"], false);
+        assert!(r["error"].as_str().unwrap().contains("fixed"));
+    }
+
+    /// The `encoding` string actually selects a code path.
+    ///
+    /// Signed with `ciris-crypto`'s own P-256 signer, which emits the fixed
+    /// `(r ‖ s)` form: declaring `"fixed"` verifies it and declaring `"der"`
+    /// refuses the same bytes, so the dispatch is real rather than one branch
+    /// serving both. The DER path's *cryptography* is covered by
+    /// `ciris_crypto::ecdsa`'s `webauthn_es256_der_round_trips`, and the whole
+    /// surface was exercised through the built `.so` against signatures minted
+    /// by the Python `cryptography` library — a second implementation — rather
+    /// than only against bytes this workspace produced.
+    #[test]
+    fn p256_encoding_selects_the_path() {
+        use ciris_crypto::{ClassicalSigner, P256Signer};
+        let signer = P256Signer::random().unwrap();
+        let pk = signer.public_key().unwrap();
+        let msg = b"es256 assertion bytes";
+        let sig = signer.sign(msg).unwrap();
+
+        let ask = |encoding: &str| {
+            call(
+                ciris_verify_verify_p256,
+                serde_json::json!({
+                    "public_key_hex": hex::encode(&pk),
+                    "message_hex": hex::encode(msg),
+                    "signature_hex": hex::encode(&sig),
+                    "encoding": encoding,
+                }),
+            )
+        };
+
+        let fixed = ask("fixed");
+        assert_eq!(fixed["ok"], true, "{fixed}");
+        assert_eq!(fixed["valid"], true);
+        assert_eq!(fixed["encoding"], "fixed", "the response must echo it back");
+
+        // The same bytes under the wrong declared encoding must not verify.
+        let der = ask("der");
+        assert!(
+            der["ok"] == false || der["valid"] == false,
+            "fixed-form bytes declared der must not verify: {der}"
+        );
     }
 }

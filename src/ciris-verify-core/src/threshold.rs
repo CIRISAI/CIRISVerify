@@ -935,6 +935,65 @@ mod tests {
         );
     }
 
+    /// A gate-level demonstration of why `ciris-crypto`'s default Ed25519
+    /// acceptance rule became strict in 16.4.0 (CIRISVerify#207 item 1).
+    ///
+    /// `(R = identity, s = 0)` under the identity public key verifies against
+    /// **any** message under permissive/cofactorless verification — one
+    /// 64-byte string, no private key in existence. Before the cutover this
+    /// gate returned `Ok(1)` for it at local tier, over any payload.
+    ///
+    /// Federation tier was never exposed: `RequireHybrid` (v5.7.0 / #75)
+    /// demands an ML-DSA-65 signature over `bytes ‖ ed_sig`, which no amount
+    /// of classical malleability produces. A PQC control added for HNDL
+    /// reasons is what contained a classical hole nobody was looking at —
+    /// worth stating, because the containment was luck in the useful
+    /// direction, not design. Both tiers now refuse.
+    #[test]
+    fn small_order_key_cannot_count_at_either_tier() {
+        let b64 = base64::engine::general_purpose::STANDARD;
+        let mut identity = [0u8; 32];
+        identity[0] = 1;
+        let mut forgery = [0u8; 64];
+        forgery[..32].copy_from_slice(&identity);
+
+        let members = vec![ThresholdMember {
+            member_id: "attacker".into(),
+            ed25519_public_key_base64: b64.encode(identity),
+            mldsa65_public_key_base64: None,
+            role: None,
+        }];
+        let sigs = vec![ThresholdSignature {
+            member_id: "attacker".into(),
+            ed25519_signature_base64: b64.encode(forgery),
+            mldsa65_signature_base64: None,
+        }];
+
+        // One signature, two unrelated payloads: if either counts, the gate
+        // has been fooled without a key.
+        for payload in [
+            b"transfer 1 token".as_slice(),
+            b"HALT THE ACCORD".as_slice(),
+        ] {
+            assert!(
+                verify_threshold_signatures_with_policy(
+                    payload,
+                    &members,
+                    &sigs,
+                    1,
+                    HybridPolicy::AllowClassicalPending,
+                )
+                .is_err(),
+                "local tier must refuse a small-order-key forgery over {:?}",
+                std::str::from_utf8(payload).unwrap()
+            );
+            assert!(
+                verify_threshold_signatures(payload, &members, &sigs, 1).is_err(),
+                "federation tier must refuse it too"
+            );
+        }
+    }
+
     /// Members with `role: None` (legacy / non-infrastructure shape)
     /// are treated as Member, not Founder. A keyset of all-`None`
     /// members can never satisfy a founder quorum — fail-secure.
