@@ -49,6 +49,11 @@ pub struct PluginTpmSecureBlobStorage {
     alias: String,
     storage_dir: PathBuf,
     master: [u8; MASTER_SECRET_SIZE],
+    /// Prior-install key material superseded at genesis, if any
+    /// (CIRISVerify#292 ask 4). Surfaced rather than discarded: the keyring
+    /// cannot know whether an archived artifact is a registered federation key,
+    /// but the host can.
+    superseded: Vec<super::SupersededLegacyKey>,
 }
 
 impl PluginTpmSecureBlobStorage {
@@ -96,6 +101,7 @@ impl PluginTpmSecureBlobStorage {
         })?;
 
         let seal_path = storage_dir.join(format!("{alias}.tpmplugin_seal"));
+        let mut superseded: Vec<super::SupersededLegacyKey> = Vec::new();
         let master = if seal_path.exists() {
             let sealed = std::fs::read(&seal_path).map_err(|e| KeyringError::StorageFailed {
                 reason: format!("read seal file: {e}"),
@@ -114,17 +120,32 @@ impl PluginTpmSecureBlobStorage {
             m.copy_from_slice(&unsealed);
             m
         } else {
-            // Genesis: minting a FRESH TPM master. If a prior install left
-            // lower-tier (software / pre-v8 TPM) key material for this alias,
-            // announce it loudly and archive it — never a silent orphaning
-            // (CIRISVerify#141/#145; the v8 "rotate, don't migrate" handling).
-            super::archive_superseded_legacy_keys(&alias, &storage_dir, "ciris-tpm-plugin");
-
+            // Genesis: mint a FRESH TPM master.
             let mut m = [0u8; MASTER_SECRET_SIZE];
             use rand::RngCore;
             rand::rngs::OsRng.fill_bytes(&mut m);
             let sealed = plugin.seal(&m)?;
             write_atomic(&seal_path, &sealed)?;
+
+            // Only NOW may prior-install lower-tier material be superseded
+            // (CIRISVerify#292). This used to run BEFORE the seal, so a seal
+            // that then failed archived the old key and produced no new one.
+            // `landed_in_tier` is proven by unsealing what was just written and
+            // comparing — the master genuinely round-trips through the TPM —
+            // rather than by assuming the write implies custody.
+            let landed = plugin
+                .unseal(&sealed)
+                .map(|back| back.as_slice() == m.as_slice())
+                .unwrap_or(false);
+            if let Some(mint) = super::HigherTierMint::witness("ciris-tpm-plugin", landed) {
+                superseded = super::archive_superseded_legacy_keys(&alias, &storage_dir, &mint);
+            } else {
+                tracing::warn!(
+                    alias = %alias,
+                    "TPM master was written but did not round-trip through the plugin; NOT \
+                     superseding any prior-install key material (CIRISVerify#292)"
+                );
+            }
             m
         };
 
@@ -132,7 +153,19 @@ impl PluginTpmSecureBlobStorage {
             alias,
             storage_dir,
             master,
+            superseded,
         })
+    }
+
+    /// Prior-install key material this storage superseded at genesis
+    /// (CIRISVerify#292 ask 4). Empty in the normal case.
+    ///
+    /// A host that maintains a key registry SHOULD check these paths against it:
+    /// an archived artifact may be a **registered** federation key, and the
+    /// keyring has no way to know. The pre-17.0.0 log line asserted the opposite.
+    #[must_use]
+    pub fn superseded_legacy_keys(&self) -> &[super::SupersededLegacyKey] {
+        &self.superseded
     }
 
     fn blob_path(&self, key_id: &str) -> PathBuf {
@@ -322,6 +355,7 @@ mod tests {
             alias: "contract".to_string(),
             storage_dir: dir.to_path_buf(),
             master: [7u8; MASTER_SECRET_SIZE],
+            superseded: Vec::new(),
         }
     }
 

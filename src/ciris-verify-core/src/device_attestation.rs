@@ -134,6 +134,7 @@ impl AndroidSecurityLevel {
 /// What the chain measured. **Measurements, not levels** (`MISSION.md` §1.4):
 /// each field states what was observed; no tier is composed here.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub struct AndroidAttestationVerdict {
     /// The attestation's own security level — where the *attestation* was
     /// produced.
@@ -143,6 +144,54 @@ pub struct AndroidAttestationVerdict {
     pub keymint_security_level: AndroidSecurityLevel,
     /// `attestationVersion` from the `KeyDescription`.
     pub attestation_version: u32,
+    /// Whether the `attestationChallenge` was actually compared against a
+    /// caller-supplied value (CIRISVerify#293).
+    ///
+    /// `false` under [`AndroidChallengePolicy::GenerationOnly`]: the chain and
+    /// the anti-lift binding were enforced, but **this verdict makes no
+    /// per-enrollment or freshness claim**. A consumer that reports freshness
+    /// must read this field rather than assume it.
+    pub challenge_checked: bool,
+}
+
+/// How to treat the `attestationChallenge` in an Android Key Attestation
+/// (CIRISVerify#293).
+///
+/// # Why this is a choice and not a constant
+///
+/// Android's challenge is supplied at **key generation** via
+/// `setAttestationChallenge`, then frozen into the certificate. It is therefore
+/// a *generation-time* value, not a per-request nonce — the same timing as a
+/// YubiKey PIV slot-9c attestation, which is why persist files both under
+/// `AttestationEvidence::GenerationCustody`.
+///
+/// But unlike PIV, Android *has* a challenge slot, so two honest hosts differ:
+/// one that recorded what it passed at generation can still check it, and one
+/// reading a wire format that carries no challenge value cannot. Forcing a
+/// `&[u8]` on the second invites it to **fabricate** a challenge to satisfy the
+/// comparison, which is strictly worse than declining to check — it converts an
+/// absent control into a passing one.
+#[derive(Debug, Clone, Copy)]
+pub enum AndroidChallengePolicy<'a> {
+    /// The caller holds the challenge it passed at key generation. Compared
+    /// byte-for-byte; a mismatch is `ChallengeMismatch`.
+    ///
+    /// This binds the attestation to **this enrollment** — the stronger check,
+    /// and the one to use whenever the value is available.
+    Bound(&'a [u8]),
+    /// The caller does not hold the generation challenge.
+    ///
+    /// The chain walk and — decisively — the **anti-lift** binding
+    /// (`expected_pubkey` IS the attested key) are still enforced. What is given
+    /// up is per-enrollment binding: a genuine attestation for key `K` is
+    /// replayable as evidence for `K` by anyone holding a copy.
+    ///
+    /// That is admissible **only** where the surrounding flow independently
+    /// proves control of `K` — as an admission path does, because the record is
+    /// signed by `K`. A replayer who does not hold `K`'s private key gains
+    /// nothing. Do not use this arm where the attestation is the *only*
+    /// evidence tying the presenter to the key.
+    GenerationOnly,
 }
 
 impl AndroidAttestationVerdict {
@@ -321,6 +370,37 @@ pub fn verify_android_key_attestation(
     expected_pubkey: &[u8],
     expected_challenge: &[u8],
 ) -> Result<AndroidAttestationVerdict, AndroidAttestationError> {
+    verify_android_key_attestation_with_challenge_policy(
+        leaf_der,
+        intermediate_ders,
+        pinned_root_der,
+        expected_pubkey,
+        AndroidChallengePolicy::Bound(expected_challenge),
+    )
+}
+
+/// Verify an Android Key Attestation chain under an explicit
+/// [`AndroidChallengePolicy`] (CIRISVerify#293).
+///
+/// Use this when the wire format you are admitting from carries no challenge
+/// *value* — persist's `HardwareCustodyEvidence` carries only
+/// `nonce_captured_at`, and the keyring `AndroidAttestation` type has no field
+/// for it — so that the alternative to declining the check is fabricating one.
+///
+/// Everything else is [`verify_android_key_attestation`]'s chain, unchanged.
+/// The verdict reports `challenge_checked` so a consumer can tell which
+/// happened instead of assuming.
+///
+/// # Errors
+///
+/// An [`AndroidAttestationError`] naming the first failing step.
+pub fn verify_android_key_attestation_with_challenge_policy(
+    leaf_der: &[u8],
+    intermediate_ders: &[&[u8]],
+    pinned_root_der: &[u8],
+    expected_pubkey: &[u8],
+    challenge_policy: AndroidChallengePolicy<'_>,
+) -> Result<AndroidAttestationVerdict, AndroidAttestationError> {
     let (_, leaf) = X509Certificate::from_der(leaf_der)
         .map_err(|_| AndroidAttestationError::CertParse { which: "leaf" })?;
     let chain: Vec<X509Certificate> = intermediate_ders
@@ -365,15 +445,25 @@ pub fn verify_android_key_attestation(
         return Err(AndroidAttestationError::AttestedKeyMismatch);
     }
 
-    // --- 4. Freshness (anti-replay). ---
-    if challenge != expected_challenge {
-        return Err(AndroidAttestationError::ChallengeMismatch);
-    }
+    // --- 4. Per-enrollment binding, when the caller holds the value. ---
+    // Android's challenge is a GENERATION-time value, so this is not liveness
+    // either way; `GenerationOnly` declines the comparison rather than letting a
+    // caller fabricate a value to satisfy it (CIRISVerify#293).
+    let challenge_checked = match challenge_policy {
+        AndroidChallengePolicy::Bound(expected) => {
+            if challenge != expected {
+                return Err(AndroidAttestationError::ChallengeMismatch);
+            }
+            true
+        },
+        AndroidChallengePolicy::GenerationOnly => false,
+    };
 
     Ok(AndroidAttestationVerdict {
         attestation_security_level,
         keymint_security_level,
         attestation_version,
+        challenge_checked,
     })
 }
 
@@ -401,6 +491,30 @@ pub fn verify_android_key_attestation_with_store(
     expected_pubkey: &[u8],
     expected_challenge: &[u8],
 ) -> Result<Option<AndroidAttestationVerdict>, AndroidAttestationError> {
+    verify_android_key_attestation_with_store_and_policy(
+        store,
+        leaf_der,
+        intermediate_ders,
+        expected_pubkey,
+        AndroidChallengePolicy::Bound(expected_challenge),
+    )
+}
+
+/// [`verify_android_key_attestation_with_store`] under an explicit
+/// [`AndroidChallengePolicy`] (CIRISVerify#293) — the store-resolving twin of
+/// [`verify_android_key_attestation_with_challenge_policy`].
+///
+/// # Errors
+///
+/// An [`AndroidAttestationError`] when anchors *were* available but none
+/// validated the chain.
+pub fn verify_android_key_attestation_with_store_and_policy(
+    store: &crate::trust_anchor_store::TrustAnchorStore,
+    leaf_der: &[u8],
+    intermediate_ders: &[&[u8]],
+    expected_pubkey: &[u8],
+    challenge_policy: AndroidChallengePolicy<'_>,
+) -> Result<Option<AndroidAttestationVerdict>, AndroidAttestationError> {
     use crate::trust_anchor_store::{environments, Purpose};
 
     let anchors = store.resolve_x509(Purpose::KeyAttestation, environments::ANDROID_KEYSTORE);
@@ -410,12 +524,12 @@ pub fn verify_android_key_attestation_with_store(
 
     let mut last_err = None;
     for root in anchors {
-        match verify_android_key_attestation(
+        match verify_android_key_attestation_with_challenge_policy(
             leaf_der,
             intermediate_ders,
             root,
             expected_pubkey,
-            expected_challenge,
+            challenge_policy,
         ) {
             Ok(v) => return Ok(Some(v)),
             Err(e) => last_err = Some(e),
@@ -1063,6 +1177,7 @@ mod tests {
             attestation_security_level: km,
             keymint_security_level: km,
             attestation_version: 4,
+            challenge_checked: true,
         }
     }
 
@@ -1288,6 +1403,86 @@ mod tests {
         )
         .unwrap_err();
         assert_eq!(err, AndroidAttestationError::ChallengeMismatch);
+    }
+
+    /// CIRISVerify#293: `GenerationOnly` admits a chain whose challenge the
+    /// caller cannot supply, and says so in the verdict.
+    #[test]
+    fn generation_only_admits_without_a_challenge_and_reports_it() {
+        let leaf_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (leaf, root) = mock_chain(&leaf_kp, 2, b"a-challenge-the-host-never-recorded");
+
+        let verdict = verify_android_key_attestation_with_challenge_policy(
+            &leaf,
+            &[],
+            &root,
+            &raw_ed(&leaf_kp),
+            AndroidChallengePolicy::GenerationOnly,
+        )
+        .unwrap();
+
+        assert_eq!(
+            verdict.keymint_security_level,
+            AndroidSecurityLevel::StrongBox,
+            "the measurement is unaffected by the challenge policy"
+        );
+        assert!(
+            !verdict.challenge_checked,
+            "the verdict MUST NOT claim a check it did not perform"
+        );
+
+        // And the bound path still reports the stronger fact.
+        let bound = verify_android_key_attestation_with_challenge_policy(
+            &leaf,
+            &[],
+            &root,
+            &raw_ed(&leaf_kp),
+            AndroidChallengePolicy::Bound(b"a-challenge-the-host-never-recorded"),
+        )
+        .unwrap();
+        assert!(bound.challenge_checked);
+    }
+
+    /// The property that makes `GenerationOnly` admissible at all: dropping the
+    /// challenge does **not** drop anti-lift. A genuine attestation presented
+    /// under someone else's key is still refused, so the arm cannot be used to
+    /// launder another device's evidence onto an attacker's key.
+    ///
+    /// If this ever passes, `GenerationOnly` is unsafe and must be withdrawn.
+    #[test]
+    fn generation_only_still_refuses_a_lifted_key() {
+        let leaf_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (leaf, root) = mock_chain(&leaf_kp, 2, b"challenge-1");
+        let attacker = raw_ed(&KeyPair::generate_for(&PKCS_ED25519).unwrap());
+
+        let err = verify_android_key_attestation_with_challenge_policy(
+            &leaf,
+            &[],
+            &root,
+            &attacker,
+            AndroidChallengePolicy::GenerationOnly,
+        )
+        .unwrap_err();
+        assert_eq!(err, AndroidAttestationError::AttestedKeyMismatch);
+    }
+
+    /// `GenerationOnly` is a challenge decision, not a chain decision: a foreign
+    /// root is still refused.
+    #[test]
+    fn generation_only_still_requires_the_pinned_root() {
+        let leaf_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (leaf, _root) = mock_chain(&leaf_kp, 2, b"challenge-1");
+        let other_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (_other_leaf, foreign_root) = mock_chain(&other_kp, 2, b"challenge-1");
+
+        assert!(verify_android_key_attestation_with_challenge_policy(
+            &leaf,
+            &[],
+            &foreign_root,
+            &raw_ed(&leaf_kp),
+            AndroidChallengePolicy::GenerationOnly,
+        )
+        .is_err());
     }
 
     /// A chain that does not root at the caller's pinned root is refused — the
