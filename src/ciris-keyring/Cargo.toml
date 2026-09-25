@@ -92,7 +92,7 @@ keyring = { version = "3", optional = true }
 # The base dependency is the `random` feature only, which is `[]` plus the
 # `rand_core` this crate already pulls — so the light default stays light. The
 # heavier PQC surface is still feature-gated below.
-ciris-crypto = { path = "../ciris-crypto", version = "16", default-features = false, features = ["random"] }
+ciris-crypto = { path = "../ciris-crypto", version = "17", default-features = false, features = ["random"] }
 
 # Platform-specific
 [target.'cfg(target_os = "android")'.dependencies]
