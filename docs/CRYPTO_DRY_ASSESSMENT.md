@@ -91,6 +91,47 @@
 
 ---
 
+## Follow-up pass — Ed25519 **acceptance rule** (2026-09-25, verify v17.0.0)
+
+A narrow second pass, on one question the July sweep did not ask: *which Ed25519
+acceptance rule does each repo verify under?* It matters because `ciris-crypto`
+shipped **two** — permissive (`ClassicalVerifier::verify`) and `verify_strict` —
+and permissive accepts a **universal forgery**: with the identity point as the
+public key, the single 64-byte string `(R = identity, s = 0)` verifies against
+*any* message, with no private key in existence.
+
+Verify fixed its own half in **v17.0.0** by making the trait method strict, so a
+call site inherits the safe rule instead of remembering a flag. Every downstream
+that reaches Ed25519 through `ciris_crypto` therefore tightens on adopt.
+
+| Repo | State | Filed |
+|---|---|---|
+| **CIRISEdge** | **Already DRY** — all three production sites (`identity.rs:337`, `transport/attestation.rs:577`, `realtime_av_alm/capacity.rs:518`) go through `ciris_crypto`; no direct `ed25519-dalek` dep in the repo. Tightens for free on adopt. | CIRISEdge#677 (heads-up) |
+| **CIRISPersist** | **Two rules in one repo** — `verify/ed25519.rs:499` uses `verify_strict` (the v10.4.0 ask), while `verify/hybrid.rs:363` uses the permissive method on the **federation-row admission floor**. The mirror image of verify's own defect. Fixed by the adopt. | CIRISPersist#913 |
+| **CIRISServer** | **One straggler** — `src/auth/roles.rs:395` verifies **ROOT mint** signatures with a direct dalek dep and the permissive rule; `ciris-lens-core/capture/seal.rs:328` already migrated under CIRISServer#283 finding 5. KMP client only signs, never verifies. | CIRISServer#654 |
+| **CIRISAgent** | **Embeds the wheel and verifies nothing through it** — ~10 Python sites on `cryptography`, including accord kill-switch, emergency shutdown, ROOT mint, WiseBus, manifest, audit (Ed25519 **and** P-256 DER) and DSAR receipts. Now adoptable: v17.0.0 ships `verify_ed25519` / `verify_p256`. | CIRISAgent#1201 |
+
+**Exploitability across all four is low, stated plainly rather than inflated:**
+every site verifies against a *pinned* key, so substituting the identity point
+already requires the access the signature protected — and on hybrid paths the
+PQC mandate (#75) is what actually holds, since classical malleability cannot
+produce an ML-DSA half. The value is that the rule becomes one stated choice
+instead of N inherited ones, so a future site taking a *peer-supplied* key
+inherits the strict rule.
+
+**Measured, not assumed:** Python `cryptography` 46.0.7 was tested directly and
+**accepts** the forgery, which is what puts the agent's ten sites on the
+permissive rule.
+
+**One coupling that must not be half-fixed:** server's
+`roles.rs::verify_root_signature` is a deliberate byte-compatible port of the
+agent's `auth_service.verify_root_signature`. Both are permissive, so they agree
+today; tightening one alone yields a signature one accepts and the other rejects
+on a privilege-grant path. Decide it jointly (see CIRISServer#654 /
+CIRISAgent#1201).
+
+---
+
 ## Gaps-in-verify roadmap (what to expose so downstreams stop hand-rolling)
 
 Ordered by leverage:
