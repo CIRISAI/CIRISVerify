@@ -187,6 +187,10 @@ pub extern "C" fn ciris_verify_ffi_link_anchor() -> usize {
         acc ^= ciris_verify_get_wallet_info as usize;
         acc ^= ciris_verify_recover_evm_address as usize;
         acc ^= ciris_verify_sign_evm_transaction as usize;
+        // CIRISVerify#207 item 2 — RLP/keccak inside the boundary.
+        acc ^= ciris_verify_sign_evm_transaction_fields as usize;
+        acc ^= ciris_verify_keccak256 as usize;
+        acc ^= ciris_verify_checksum_address as usize;
         acc ^= ciris_verify_sign_secp256k1 as usize;
         acc ^= ciris_verify_sign_typed_data as usize;
     }
@@ -8188,6 +8192,256 @@ unsafe fn sign_secp256k1_inner(
 
     tracing::debug!("secp256k1 signature generated ({} bytes)", len);
     CirisVerifyError::Success as i32
+}
+
+/// keccak256 — the EVM hash (CIRISVerify#207 item 2).
+///
+/// Exposed so a Python caller stops sourcing it from whichever of
+/// pysha3 / pycryptodome / eth_hash happens to import. In
+/// `{"data_hex": "..."}`, out `{"ok": true, "keccak256_hex": "..."}`.
+///
+/// # Safety
+/// - `config_json` must be a valid NUL-terminated C string
+/// - `result_out` must be a valid pointer; the caller frees the returned string
+#[cfg(feature = "secp256k1")]
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_keccak256(
+    config_json: *const c_char,
+    result_out: *mut *mut c_char,
+) -> i32 {
+    ffi_guard!("ciris_verify_keccak256", {
+        if config_json.is_null() || result_out.is_null() {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        let cfg_str = match std::ffi::CStr::from_ptr(config_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return CirisVerifyError::InvalidArgument as i32,
+        };
+        let emit = |value: serde_json::Value| -> i32 {
+            match std::ffi::CString::new(value.to_string()) {
+                Ok(c) => {
+                    *result_out = c.into_raw();
+                    CirisVerifyError::Success as i32
+                },
+                Err(_) => CirisVerifyError::InternalError as i32,
+            }
+        };
+        let err = |msg: String| serde_json::json!({ "ok": false, "error": msg });
+        let cfg: serde_json::Value = match serde_json::from_str(cfg_str) {
+            Ok(v) => v,
+            Err(e) => return emit(err(format!("invalid config JSON: {e}"))),
+        };
+        let Some(hexs) = cfg.get("data_hex").and_then(|v| v.as_str()) else {
+            return emit(err("data_hex must be a hex string".into()));
+        };
+        let bytes = match hex::decode(hexs.strip_prefix("0x").unwrap_or(hexs)) {
+            Ok(b) => b,
+            Err(e) => return emit(err(format!("data_hex: {e}"))),
+        };
+        emit(serde_json::json!({
+            "ok": true,
+            "keccak256_hex": hex::encode(ciris_crypto::secp256k1::keccak256(&bytes)),
+        }))
+    })
+}
+
+/// EIP-55 checksum an **arbitrary** 20-byte address (CIRISVerify#207 item 2).
+///
+/// The pubkey-only helper could not reach the address that matters most on a
+/// transfer — the **recipient**. In `{"address_hex": "<40 hex>"}`, out
+/// `{"ok": true, "checksummed": "0x..."}`.
+///
+/// # Safety
+/// - `config_json` must be a valid NUL-terminated C string
+/// - `result_out` must be a valid pointer; the caller frees the returned string
+#[cfg(feature = "secp256k1")]
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_checksum_address(
+    config_json: *const c_char,
+    result_out: *mut *mut c_char,
+) -> i32 {
+    ffi_guard!("ciris_verify_checksum_address", {
+        if config_json.is_null() || result_out.is_null() {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        let cfg_str = match std::ffi::CStr::from_ptr(config_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return CirisVerifyError::InvalidArgument as i32,
+        };
+        let emit = |value: serde_json::Value| -> i32 {
+            match std::ffi::CString::new(value.to_string()) {
+                Ok(c) => {
+                    *result_out = c.into_raw();
+                    CirisVerifyError::Success as i32
+                },
+                Err(_) => CirisVerifyError::InternalError as i32,
+            }
+        };
+        let err = |msg: String| serde_json::json!({ "ok": false, "error": msg });
+        let cfg: serde_json::Value = match serde_json::from_str(cfg_str) {
+            Ok(v) => v,
+            Err(e) => return emit(err(format!("invalid config JSON: {e}"))),
+        };
+        let Some(hexs) = cfg.get("address_hex").and_then(|v| v.as_str()) else {
+            return emit(err("address_hex must be a hex string".into()));
+        };
+        let bytes = match hex::decode(hexs.strip_prefix("0x").unwrap_or(hexs)) {
+            Ok(b) => b,
+            Err(e) => return emit(err(format!("address_hex: {e}"))),
+        };
+        if bytes.len() != 20 {
+            return emit(err(format!(
+                "address must be 20 bytes, got {}",
+                bytes.len()
+            )));
+        }
+        let mut addr = [0u8; 20];
+        addr.copy_from_slice(&bytes);
+        emit(serde_json::json!({
+            "ok": true,
+            "checksummed": ciris_crypto::secp256k1::checksum_address(&addr),
+        }))
+    })
+}
+
+/// Sign a legacy EVM transaction **from its fields** — RLP + keccak inside the
+/// boundary, with a real EIP-155 `v` (CIRISVerify#207 item 2).
+///
+/// This is the funds-moving entry point.
+/// [`ciris_verify_sign_evm_transaction`] takes a caller-computed hash and
+/// returns a **legacy** `v` despite its name; this builds the EIP-155 preimage
+/// here, so the bytes the key commits to come from the crate holding the key.
+///
+/// `nonce` / `gas_price` / `gas_limit` / `value` are **decimal strings**: a JSON
+/// number cannot carry wei exactly past 2^53, and silently truncating a value
+/// or a gas price on a funds-moving call is not an acceptable failure mode.
+/// `to_hex` absent or null means contract **creation** — a different preimage
+/// from any address, never defaulted to zero. The response returns
+/// `signing_bytes_hex` as well as the hash, so a caller can diff bytes against
+/// another implementation instead of guessing why two hashes differ, plus
+/// `raw_tx_hex` (the broadcastable bytes) and `tx_hash_hex` (the txid) so the
+/// caller needs no RLP implementation of its own.
+///
+/// # Safety
+/// - `handle` must be a valid handle from `ciris_verify_init`
+/// - `config_json` must be a valid NUL-terminated C string
+/// - `result_out` must be a valid pointer; the caller frees the returned string
+#[cfg(feature = "secp256k1")]
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_sign_evm_transaction_fields(
+    handle: *mut CirisVerifyHandle,
+    config_json: *const c_char,
+    result_out: *mut *mut c_char,
+) -> i32 {
+    ffi_guard!("ciris_verify_sign_evm_transaction_fields", {
+        if handle.is_null() {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        if ATTESTATION_RUNNING.load(Ordering::SeqCst) {
+            return CirisVerifyError::AttestationInProgress as i32;
+        }
+        if config_json.is_null() || result_out.is_null() {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        let cfg_str = match std::ffi::CStr::from_ptr(config_json).to_str() {
+            Ok(s) => s,
+            Err(_) => return CirisVerifyError::InvalidArgument as i32,
+        };
+        let emit = |value: serde_json::Value| -> i32 {
+            match std::ffi::CString::new(value.to_string()) {
+                Ok(c) => {
+                    *result_out = c.into_raw();
+                    CirisVerifyError::Success as i32
+                },
+                Err(_) => CirisVerifyError::InternalError as i32,
+            }
+        };
+        let err = |msg: String| serde_json::json!({ "ok": false, "error": msg });
+        let cfg: serde_json::Value = match serde_json::from_str(cfg_str) {
+            Ok(v) => v,
+            Err(e) => return emit(err(format!("invalid config JSON: {e}"))),
+        };
+        let uint = |k: &str| -> Result<u128, String> {
+            match cfg.get(k) {
+                Some(serde_json::Value::String(v)) => {
+                    v.parse::<u128>().map_err(|e| format!("{k}: {e}"))
+                },
+                Some(other) => Err(format!("{k} must be a decimal STRING, got {other}")),
+                None => Err(format!("{k} is required")),
+            }
+        };
+        let (nonce, gas_price, gas_limit, value) = match (
+            uint("nonce"),
+            uint("gas_price"),
+            uint("gas_limit"),
+            uint("value"),
+        ) {
+            (Ok(a), Ok(b), Ok(c), Ok(d)) => (a, b, c, d),
+            (a, b, c, d) => {
+                let msgs: Vec<String> = [a.err(), b.err(), c.err(), d.err()]
+                    .into_iter()
+                    .flatten()
+                    .collect();
+                return emit(err(msgs.join("; ")));
+            },
+        };
+        let Some(chain_id) = cfg.get("chain_id").and_then(serde_json::Value::as_u64) else {
+            return emit(err("chain_id must be an integer".into()));
+        };
+        let to = match cfg.get("to_hex") {
+            None | Some(serde_json::Value::Null) => None,
+            Some(serde_json::Value::String(h)) => {
+                match hex::decode(h.strip_prefix("0x").unwrap_or(h)) {
+                    Ok(b) if b.len() == 20 => {
+                        let mut a = [0u8; 20];
+                        a.copy_from_slice(&b);
+                        Some(a)
+                    },
+                    Ok(b) => return emit(err(format!("to_hex must be 20 bytes, got {}", b.len()))),
+                    Err(e) => return emit(err(format!("to_hex: {e}"))),
+                }
+            },
+            Some(other) => {
+                return emit(err(format!(
+                    "to_hex must be a hex string or null, got {other}"
+                )))
+            },
+        };
+        let data = match cfg.get("data_hex").and_then(|v| v.as_str()) {
+            None | Some("") => Vec::new(),
+            Some(h) => match hex::decode(h.strip_prefix("0x").unwrap_or(h)) {
+                Ok(b) => b,
+                Err(e) => return emit(err(format!("data_hex: {e}"))),
+            },
+        };
+        let seed = match (*handle).ed25519_signer.get_wallet_seed() {
+            Some(s) => s,
+            None => return emit(err("wallet seed unavailable".into())),
+        };
+        let (signing_key, _) = ciris_crypto::secp256k1::derive_wallet_keypair(&seed);
+        let tx = ciris_crypto::secp256k1::LegacyTxFields::new(
+            nonce, gas_price, gas_limit, to, value, &data,
+        );
+        let sig = ciris_crypto::secp256k1::sign_legacy_transaction(&signing_key, &tx, chain_id);
+        emit(serde_json::json!({
+            "ok": true,
+            "r_hex": hex::encode(sig.r),
+            "s_hex": hex::encode(sig.s),
+            "v": sig.v,
+            "signing_hash_hex":
+                hex::encode(ciris_crypto::secp256k1::legacy_tx_signing_hash(&tx, chain_id)),
+            "signing_bytes_hex":
+                hex::encode(ciris_crypto::secp256k1::legacy_tx_signing_bytes(&tx, chain_id)),
+            // The broadcastable bytes and the txid, so a caller needs no RLP of
+            // its own to actually send the transaction — without these the
+            // preimage lives here and the wire bytes live somewhere else, which
+            // is most of what #207 item 2 is about.
+            "raw_tx_hex":
+                hex::encode(ciris_crypto::secp256k1::encode_signed_legacy_tx(&tx, &sig)),
+            "tx_hash_hex":
+                hex::encode(ciris_crypto::secp256k1::signed_legacy_tx_hash(&tx, &sig)),
+        }))
+    })
 }
 
 /// Sign an EVM transaction hash with EIP-155 replay protection.

@@ -811,6 +811,20 @@ class CIRISVerify:
         except AttributeError:
             self._has_wallet_support = False
 
+        # CIRISVerify#207 item 2 — probed separately from the wallet block above:
+        # folding it in would turn the whole wallet surface off against a .so
+        # older than 16.3.0, rather than just this one entry point.
+        try:
+            self._lib.ciris_verify_sign_evm_transaction_fields.argtypes = [
+                ctypes.c_void_p,                    # handle
+                ctypes.c_char_p,                    # config_json
+                ctypes.POINTER(ctypes.c_void_p),    # result_json (out)
+            ]
+            self._lib.ciris_verify_sign_evm_transaction_fields.restype = ctypes.c_int
+            self._has_tx_fields_support = True
+        except AttributeError:
+            self._has_tx_fields_support = False
+
         # Named key storage functions (v1.5.0)
         self._has_named_key_support = False
         try:
@@ -3071,8 +3085,18 @@ class CIRISVerify:
             tx_hash: 32-byte transaction hash
             chain_id: EVM chain ID for replay protection (e.g., 1 for mainnet, 8453 for Base)
 
+        This does **NOT** apply EIP-155 replay protection despite the name and
+        the ``chain_id`` argument: the returned ``v`` is the legacy
+        ``27 + recovery_id``, and ``chain_id`` reaches no byte of the output.
+        Nor could it — the chain id belongs in the *preimage*, which this
+        function never sees. Use :meth:`sign_evm_transaction_fields` for a
+        genuinely chain-bound signature (CIRISVerify#207 item 2).
+
+        Args (continued):
+            chain_id: accepted and currently unused; see above.
+
         Returns:
-            bytes: 65-byte signature with EIP-155 adjusted v value (27 or 28)
+            bytes: 65-byte signature, ``v`` = 27 or 28 (legacy, not EIP-155)
 
         Raises:
             CommunicationError: If signing fails.
@@ -3108,6 +3132,95 @@ class CIRISVerify:
         finally:
             if signature_data:
                 self._lib.ciris_verify_free(signature_data)
+
+    def sign_evm_transaction_fields(
+        self,
+        *,
+        nonce: int,
+        gas_price: int,
+        gas_limit: int,
+        value: int,
+        chain_id: int,
+        to: "bytes | str | None",
+        data: bytes = b"",
+    ) -> dict:
+        """Sign a legacy EVM transaction from its FIELDS, with a real EIP-155 ``v``.
+
+        RLP encoding and keccak256 happen inside the Rust boundary, so the bytes
+        the key commits to come from the crate that holds the key — not from
+        whichever of ``pysha3`` / ``pycryptodome`` / ``eth_hash`` a caller
+        happened to import (CIRISVerify#207 item 2).
+
+        Args:
+            nonce, gas_price, gas_limit, value: integers of any magnitude; they
+                cross the FFI boundary as decimal strings, because a JSON number
+                cannot carry wei exactly past 2**53 and truncating a value or a
+                gas price on a funds-moving call is not an acceptable failure.
+            chain_id: bound into the preimage **and** into ``v``.
+            to: 20-byte recipient (bytes or hex string), or ``None`` for contract
+                creation — a distinct preimage, never defaulted to the zero
+                address.
+            data: call data, empty for a plain transfer.
+
+        Returns:
+            dict with ``r_hex``, ``s_hex``, ``v``, ``signing_hash_hex``,
+            ``signing_bytes_hex``, ``raw_tx_hex`` and ``tx_hash_hex``.
+            ``raw_tx_hex`` is what you broadcast and ``tx_hash_hex`` is the txid,
+            so no RLP implementation is needed on this side at all. The preimage
+            is returned too, so a caller can diff bytes against another
+            implementation instead of guessing why two hashes disagree.
+
+        Raises:
+            CommunicationError: If the loaded library predates 16.3.0.
+            ValueError: If the library rejects the fields.
+            VerificationFailedError: If signing fails.
+        """
+        if not getattr(self, "_has_tx_fields_support", False):
+            raise CommunicationError(
+                "sign_evm_transaction_fields not available (library version < 16.3.0)"
+            )
+
+        if to is None:
+            to_hex = None
+        elif isinstance(to, bytes):
+            to_hex = to.hex()
+        else:
+            to_hex = to
+        config = {
+            "nonce": str(nonce),
+            "gas_price": str(gas_price),
+            "gas_limit": str(gas_limit),
+            "value": str(value),
+            "chain_id": chain_id,
+            "to_hex": to_hex,
+            "data_hex": data.hex(),
+        }
+
+        out = ctypes.c_void_p()
+        ret = self._lib.ciris_verify_sign_evm_transaction_fields(
+            self._handle,
+            json.dumps(config).encode("utf-8"),
+            ctypes.byref(out),
+        )
+        if ret == CIRIS_ERROR_ATTESTATION_IN_PROGRESS:
+            raise AttestationInProgressError()
+        if ret != 0:
+            raise VerificationFailedError(
+                f"sign_evm_transaction_fields failed with code {ret}"
+            )
+        if not out.value:
+            raise VerificationFailedError(
+                "sign_evm_transaction_fields returned no result"
+            )
+        borrowed = ctypes.cast(out, ctypes.c_char_p)
+        try:
+            raw = borrowed.value
+        finally:
+            self._lib.ciris_verify_free_string(borrowed)
+        result = json.loads(raw.decode("utf-8")) if raw else {}
+        if not result.get("ok"):
+            raise ValueError(result.get("error", "sign_evm_transaction_fields failed"))
+        return result
 
     def sign_typed_data(self, domain_hash: bytes, message_hash: bytes) -> bytes:
         """Sign EIP-712 typed data.
