@@ -145,7 +145,7 @@ fn parse_key_and_sig(
 
 impl Ed25519Verifier {
     /// **Strict** RFC 8032 verification — identical to
-    /// [`ClassicalVerifier::verify`], which has been strict since 16.4.0.
+    /// [`ClassicalVerifier::verify`], which has been strict since 17.0.0.
     ///
     /// Retained as a named entry point because CIRISPersist's trace-verify
     /// floor calls it explicitly (it was added in v10.4.0 so that path could
@@ -167,7 +167,7 @@ impl Ed25519Verifier {
     }
 
     /// **Permissive** (cofactorless, ed25519-dalek `verify`) verification — the
-    /// pre-16.4.0 behaviour of [`ClassicalVerifier::verify`], kept reachable
+    /// pre-17.0.0 behaviour of [`ClassicalVerifier::verify`], kept reachable
     /// only under a name that says what it is.
     ///
     /// # This accepts a universal forgery, and that is not hypothetical
@@ -209,7 +209,7 @@ impl Ed25519Verifier {
 impl ClassicalVerifier for Ed25519Verifier {
     /// Verify strictly (CIRISVerify#207 item 1).
     ///
-    /// **This was permissive before 16.4.0**, and every authority gate in this
+    /// **This was permissive before 17.0.0**, and every authority gate in this
     /// workspace reaches Ed25519 through this trait method: the M-of-N
     /// threshold verifier and everything that inherits it, the provenance
     /// chain walk, the license JWT gate, binary self-verification, and

@@ -936,7 +936,7 @@ mod tests {
     }
 
     /// A gate-level demonstration of why `ciris-crypto`'s default Ed25519
-    /// acceptance rule became strict in 16.4.0 (CIRISVerify#207 item 1).
+    /// acceptance rule became strict in 17.0.0 (CIRISVerify#207 item 1).
     ///
     /// `(R = identity, s = 0)` under the identity public key verifies against
     /// **any** message under permissive/cofactorless verification — one
