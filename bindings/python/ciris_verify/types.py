@@ -111,13 +111,17 @@ class HardwareType(str, Enum):
             HardwareType.TPM_FIRMWARE: 4,
             HardwareType.INTEL_SGX: 4,
             HardwareType.ANDROID_KEYSTORE: 3,
-            # Network/appliance HSMs: real hardware custody, but the key is held
-            # by a remote service rather than by this device's own element.
-            HardwareType.AWS_CLOUD_HSM: 4,
-            HardwareType.AZURE_HSM: 4,
-            HardwareType.GCP_CLOUD_HSM: 4,
-            HardwareType.YUBI_HSM: 4,
-            # A user-held token (YubiKey PIV / smartcard) over PKCS#11.
+            # These MIRROR Rust's canonical `HardwareType::security_level()`
+            # (ciris-keyring/src/types.rs) — FIPS 140-2 Level 3+ HSMs are 5 there.
+            # The first cut of this table reasoned them out as 4 instead of
+            # reading the canonical source two files away, which would have made
+            # the same hardware yield different tier decisions through Rust and
+            # through Python (Codex P2 on PR #298).
+            HardwareType.AWS_CLOUD_HSM: 5,
+            HardwareType.AZURE_HSM: 5,
+            HardwareType.GCP_CLOUD_HSM: 5,
+            HardwareType.YUBI_HSM: 5,
+            # External PKCS#11 token (YubiKey 5 FIPS PIV, smartcard).
             HardwareType.EXTERNAL_SECURE_ELEMENT: 5,
             HardwareType.SOFTWARE_ONLY: 1,
         }

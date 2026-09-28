@@ -4283,9 +4283,29 @@ unsafe fn run_attestation_inner(
     result.key_attestation = Some(ciris_verify_core::unified::KeyAttestationResult {
         key_type: key_type.to_string(),
         hardware_type: hw_type_str,
-        // The CC registry custody token, stated from the enum we already hold
-        // rather than re-derived from the Debug name (CIRISVerify#296).
-        hardware_platform: Some(capabilities.hardware_type.as_platform().to_string()),
+        // The CC registry custody token (CIRISVerify#296), stated from the enum
+        // rather than re-derived from the Debug name.
+        //
+        // **From where the key ACTUALLY lives, not from what the platform can
+        // offer** (Codex P1 on PR #298). `capabilities.hardware_type` is a
+        // *detection*: this host reports `TpmFirmware` while
+        // `create_hardware_signer` falls back to a software key, so the seed is
+        // in a file and `hardware_backed` is false. Emitting the detected token
+        // there would assert TPM custody for a software-held seed — and because
+        // these dimensions are now REGISTERED, a conformant consumer would
+        // *accept* that false claim where it previously refused the malformed
+        // one. Strictly worse, so the honest token is `software_only`.
+        //
+        // `hardware_backed` is the signer's own `is_hardware_backed()` gated on
+        // `!running_in_vm`, which is precisely "where does this key live".
+        hardware_platform: Some(
+            if hardware_backed {
+                capabilities.hardware_type.as_platform()
+            } else {
+                ciris_keyring::HardwareType::SoftwareOnly.as_platform()
+            }
+            .to_string(),
+        ),
         has_valid_signature: has_key,
         binary_version: env!("CARGO_PKG_VERSION").to_string(),
         running_in_vm,
@@ -10896,6 +10916,87 @@ mod tests {
             // The rest of the bundle is unaffected — a smaller claim, not a broken one.
             assert_eq!(bundle["self_verification"]["passed"], true);
 
+            libc::free(result_ptr as *mut libc::c_void);
+        }
+    }
+
+    /// Codex P2 on PR #298: an UNREGISTERED `hardware_platform` in caller-supplied
+    /// attestation JSON emits NO custody dimension.
+    ///
+    /// Emitting it with a failing score would still be refused by a conformant
+    /// consumer for its vocabulary value — recreating, for exactly the callers who
+    /// submit externally produced JSON, the interop break #296 exists to close.
+    #[test]
+    fn test_attest_bundle_omits_custody_for_an_unregistered_platform() {
+        for bad in ["tpm", "future_hsm", "tpmfirmware", "TPM_FIRMWARE"] {
+            unsafe {
+                let mut v: serde_json::Value =
+                    serde_json::from_str(&minimal_attestation_json()).unwrap();
+                v["key_attestation"]["hardware_platform"] = serde_json::json!(bad);
+                let attestation = v.to_string();
+                let key_id = b"agent-key-1";
+                let attester = b"ciris-verify";
+                let mut result_ptr: *mut u8 = std::ptr::null_mut();
+                let mut result_len: usize = 0;
+                let ret = ciris_verify_attest_bundle_from_attestation(
+                    attestation.as_ptr(),
+                    attestation.len(),
+                    key_id.as_ptr(),
+                    key_id.len(),
+                    attester.as_ptr(),
+                    attester.len(),
+                    &mut result_ptr,
+                    &mut result_len,
+                );
+                assert_eq!(ret, CirisVerifyError::Success as i32);
+                let slice = std::slice::from_raw_parts(result_ptr, result_len);
+                let bundle: serde_json::Value =
+                    serde_json::from_str(std::str::from_utf8(slice).unwrap()).unwrap();
+                let platform = &bundle["hardware_custody"]["platform"];
+                assert!(
+                    platform.is_null() || platform == "",
+                    "{bad:?} must emit no custody platform, got {platform}"
+                );
+                libc::free(result_ptr as *mut libc::c_void);
+            }
+        }
+    }
+
+    /// A REGISTERED platform is a successful measurement — including
+    /// `software_only`, which the Android projection already passes. One fact must
+    /// not get two verdicts depending on which projection produced it
+    /// (Codex P2 on PR #298).
+    #[test]
+    fn test_attest_bundle_passes_software_only_custody() {
+        unsafe {
+            let mut v: serde_json::Value =
+                serde_json::from_str(&minimal_attestation_json()).unwrap();
+            v["key_attestation"]["hardware_platform"] = serde_json::json!("software_only");
+            let attestation = v.to_string();
+            let key_id = b"agent-key-1";
+            let attester = b"ciris-verify";
+            let mut result_ptr: *mut u8 = std::ptr::null_mut();
+            let mut result_len: usize = 0;
+            let ret = ciris_verify_attest_bundle_from_attestation(
+                attestation.as_ptr(),
+                attestation.len(),
+                key_id.as_ptr(),
+                key_id.len(),
+                attester.as_ptr(),
+                attester.len(),
+                &mut result_ptr,
+                &mut result_len,
+            );
+            assert_eq!(ret, CirisVerifyError::Success as i32);
+            let slice = std::slice::from_raw_parts(result_ptr, result_len);
+            let bundle: serde_json::Value =
+                serde_json::from_str(std::str::from_utf8(slice).unwrap()).unwrap();
+            assert_eq!(bundle["hardware_custody"]["platform"], "software_only");
+            assert_eq!(
+                bundle["hardware_custody"]["verified"], true,
+                "a resolved software_only claim is a successful measurement; whether \
+                 that is good enough is consumer policy"
+            );
             libc::free(result_ptr as *mut libc::c_void);
         }
     }

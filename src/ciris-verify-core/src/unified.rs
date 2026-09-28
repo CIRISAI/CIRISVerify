@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::audit::{AuditEntry, AuditVerificationResult, AuditVerifier};
 use crate::config::VerifyConfig;
@@ -2743,21 +2743,44 @@ impl FullAttestationResult {
             // `tpmfirmware` / `androidkeystore`, which CIRISPersist >= 50 refuses
             // as `namespace_vocab_value_unregistered`.
             //
-            // The PASS/FAIL sense is also no longer a substring test on a display
-            // string (`!platform.contains("software")`, which would have matched
-            // any future token containing "software"); it asks the enum.
+            // The score is also no longer a substring test on a display string
+            // (`!platform.contains("software")`, which would have matched any
+            // future token containing "software").
             if let Some(platform) = ka.hardware_platform.as_deref() {
-                let hardware_backed = ciris_keyring::HardwareType::from_platform(platform)
-                    .is_some_and(|hw| hw.supports_professional_license());
-                b = b.attestation(AttestationEntry::new(
-                    dim::hardware_custody(platform),
-                    if hardware_backed {
-                        Score::PASS
-                    } else {
-                        Score::FAIL
-                    },
-                    attester,
-                ));
+                if ciris_keyring::HardwareType::from_platform(platform).is_some() {
+                    // A RESOLVED platform claim is a successful measurement, so it
+                    // passes — including `software_only` (Codex P2 on PR #298).
+                    // Scoring software FAIL here baked policy into a measurement
+                    // AND disagreed with the Android projection, which emits the
+                    // same `hardware_custody:software_only:v1` as a pass. One fact
+                    // must not get two verdicts depending on which projection
+                    // produced it; whether software custody is good enough is the
+                    // consumer's call (`MISSION.md` §1.4).
+                    b = b.attestation(AttestationEntry::new(
+                        dim::hardware_custody(platform),
+                        Score::PASS,
+                        attester,
+                    ));
+                } else {
+                    // An UNREGISTERED token is not emitted at all (Codex P2 on PR
+                    // #298). Emitting it with a failing score would still be
+                    // refused by a conformant consumer for its vocabulary value —
+                    // recreating, for FFI callers that submit externally produced
+                    // attestation JSON, exactly the interop break this release
+                    // exists to close.
+                    //
+                    // DEBUG rather than WARN deliberately: this projection runs on
+                    // the verification path, and a per-cycle WARN is the defect
+                    // CIRISVerify#223/#265 were cut to stop. The *enforcement* is
+                    // the omission; a caller chasing a missing dimension finds
+                    // this line at DEBUG.
+                    debug!(
+                        platform = platform,
+                        "hardware_platform is not a CC registry token — omitting the \
+                         hardware_custody dimension rather than emitting one a \
+                         conformant consumer would refuse (CIRISVerify#296)"
+                    );
+                }
             }
         }
 
