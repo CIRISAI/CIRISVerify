@@ -53,6 +53,7 @@ path = "src/bin/ciris_verify.rs"
 rcgen = { version = "0.13", optional = true }
 # Internal crates
 ciris-keyring.workspace = true
+zeroize.workspace = true
 # `kdf` + `aes-gcm` enable password-protected software keys (PBKDF2 → AES-256-GCM).
 ciris-crypto = { workspace = true, features = ["kdf", "aes-gcm"] }
 

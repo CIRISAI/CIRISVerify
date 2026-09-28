@@ -4283,6 +4283,9 @@ unsafe fn run_attestation_inner(
     result.key_attestation = Some(ciris_verify_core::unified::KeyAttestationResult {
         key_type: key_type.to_string(),
         hardware_type: hw_type_str,
+        // The CC registry custody token, stated from the enum we already hold
+        // rather than re-derived from the Debug name (CIRISVerify#296).
+        hardware_platform: Some(capabilities.hardware_type.as_platform().to_string()),
         has_valid_signature: has_key,
         binary_version: env!("CARGO_PKG_VERSION").to_string(),
         running_in_vm,
@@ -10752,7 +10755,8 @@ mod tests {
             },
             "key_attestation": {
                 "key_type": "portal",
-                "hardware_type": "tpm",
+                "hardware_type": "TpmFirmware",
+                "hardware_platform": "tpm_firmware",
                 "has_valid_signature": true,
                 "binary_version": "3.6.0",
                 "running_in_vm": false,
@@ -10830,7 +10834,67 @@ mod tests {
             assert!(bundle.get("ladder").is_none());
             assert!(bundle.get("l1").is_none());
             assert_eq!(bundle["rollback_detected"], false);
-            assert_eq!(bundle["hardware_custody"]["platform"], "tpm");
+            // CIRISVerify#296: the registry token from `hardware_platform`.
+            // An attestation that omits that field yields NO custody platform
+            // rather than a token guessed from the Debug name — asserted in
+            // `test_attest_bundle_omits_custody_without_a_platform_token`.
+            assert_eq!(bundle["hardware_custody"]["platform"], "tpm_firmware");
+
+            libc::free(result_ptr as *mut libc::c_void);
+        }
+    }
+
+    /// CIRISVerify#296: an attestation with no `hardware_platform` yields NO
+    /// custody platform — the pre-18.0.0 code would have derived one by
+    /// lowercasing the `Debug` name (`tpmfirmware`), which the CC registry
+    /// refuses. Omission is the honest answer.
+    #[test]
+    fn test_attest_bundle_omits_custody_without_a_platform_token() {
+        unsafe {
+            // Same fixture with the registry token removed. Done by parsing
+            // rather than string surgery: `json!().to_string()` emits COMPACT
+            // JSON, so a spaced `"key": "value",` pattern silently matches
+            // nothing — which is how the first cut of this test failed its own
+            // setup guard.
+            let mut v: serde_json::Value =
+                serde_json::from_str(&minimal_attestation_json()).unwrap();
+            assert!(
+                v["key_attestation"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("hardware_platform")
+                    .is_some(),
+                "the fixture must actually carry the field for its removal to prove anything"
+            );
+            let attestation = v.to_string();
+            assert!(!attestation.contains("hardware_platform"));
+            let key_id = b"agent-key-1";
+            let attester = b"ciris-verify";
+            let mut result_ptr: *mut u8 = std::ptr::null_mut();
+            let mut result_len: usize = 0;
+
+            let ret = ciris_verify_attest_bundle_from_attestation(
+                attestation.as_ptr(),
+                attestation.len(),
+                key_id.as_ptr(),
+                key_id.len(),
+                attester.as_ptr(),
+                attester.len(),
+                &mut result_ptr,
+                &mut result_len,
+            );
+            assert_eq!(ret, CirisVerifyError::Success as i32);
+            let slice = std::slice::from_raw_parts(result_ptr, result_len);
+            let bundle: serde_json::Value =
+                serde_json::from_str(std::str::from_utf8(slice).unwrap()).unwrap();
+
+            let platform = &bundle["hardware_custody"]["platform"];
+            assert!(
+                platform.is_null() || platform == "",
+                "no platform token means no custody claim, got {platform}"
+            );
+            // The rest of the bundle is unaffected — a smaller claim, not a broken one.
+            assert_eq!(bundle["self_verification"]["passed"], true);
 
             libc::free(result_ptr as *mut libc::c_void);
         }

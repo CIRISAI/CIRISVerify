@@ -203,8 +203,24 @@ pub struct SelfVerificationResult {
 pub struct KeyAttestationResult {
     /// Key type (portal or ephemeral).
     pub key_type: String,
-    /// Hardware type.
+    /// Hardware type, as the `HardwareType` **Debug** name (`TpmFirmware`,
+    /// `AndroidKeystore`, …). Retained verbatim: it is on the FFI/wheel
+    /// attestation response and consumers match it.
     pub hardware_type: String,
+    /// The CC registry `hardware_custody:{platform}` token for the same
+    /// hardware — `tpm_firmware`, `android_keystore`, … (CIRISVerify#296).
+    ///
+    /// Carried as its own field rather than re-derived from
+    /// [`Self::hardware_type`], because `hardware_type` is a **`Debug` name**
+    /// and lowercasing it yields `tpmfirmware` — which the registry refuses.
+    /// Parsing a display string back into a wire token is exactly the kind of
+    /// re-derivation that produced the bug; the producer has the enum, so it
+    /// states the token.
+    ///
+    /// `None` on a result built by something that did not supply it: the custody
+    /// dimension is then **omitted** rather than guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_platform: Option<String>,
     /// Has valid signature over challenge.
     pub has_valid_signature: bool,
     /// Binary version.
@@ -2721,16 +2737,25 @@ impl FullAttestationResult {
                 attester,
             ));
 
-            // hardware_custody:{platform} — declares where the seed
-            // lives. The platform string is the lowercased
-            // hardware_type; `software_fallback` is the one variant
-            // that structurally caps at UNLICENSED_COMMUNITY.
-            if !ka.hardware_type.is_empty() {
-                let platform = ka.hardware_type.to_ascii_lowercase();
-                let valid = !platform.contains("software");
+            // hardware_custody:{platform}:v1 — declares where the seed lives
+            // (CIRISVerify#296). Emitted ONLY from the producer-supplied registry
+            // token: this used to lowercase the `Debug` name, yielding
+            // `tpmfirmware` / `androidkeystore`, which CIRISPersist >= 50 refuses
+            // as `namespace_vocab_value_unregistered`.
+            //
+            // The PASS/FAIL sense is also no longer a substring test on a display
+            // string (`!platform.contains("software")`, which would have matched
+            // any future token containing "software"); it asks the enum.
+            if let Some(platform) = ka.hardware_platform.as_deref() {
+                let hardware_backed = ciris_keyring::HardwareType::from_platform(platform)
+                    .is_some_and(|hw| hw.supports_professional_license());
                 b = b.attestation(AttestationEntry::new(
-                    dim::hardware_custody(&platform),
-                    if valid { Score::PASS } else { Score::FAIL },
+                    dim::hardware_custody(platform),
+                    if hardware_backed {
+                        Score::PASS
+                    } else {
+                        Score::FAIL
+                    },
                     attester,
                 ));
             }
@@ -3326,6 +3351,11 @@ mod tests {
         let ka = KeyAttestationResult {
             key_type: "portal".into(),
             hardware_type: "SoftwareOnly".into(),
+            hardware_platform: Some(
+                ciris_keyring::HardwareType::SoftwareOnly
+                    .as_platform()
+                    .to_string(),
+            ),
             has_valid_signature: true,
             binary_version: "5.0.0".into(),
             running_in_vm: false,

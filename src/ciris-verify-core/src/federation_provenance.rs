@@ -185,12 +185,39 @@ pub mod dim {
     }
 
     /// Hardware-custody statement — where the seed lives. `platform`
-    /// is one of `tpm` / `ios_secure_enclave` / `android_keystore` /
-    /// `software_fallback` (the last caps at `UNLICENSED_COMMUNITY`).
+    /// `platform` MUST be a [`ciris_keyring::HardwareType::as_platform`] token —
+    /// the CC registry's **closed** 13-value vocabulary — and the dimension
+    /// carries the mandatory trailing version segment (CIRISVerify#296).
+    ///
+    /// # Both halves are load-bearing, and both were wrong before 18.0.0
+    ///
+    /// CC's registry grammar (R3) requires **exactly one trailing version
+    /// segment on every family**, whether or not `{version}` appears in that
+    /// family's own `segments` array — reading the JSON alone suggests
+    /// `hardware_custody:{platform}` takes no tail, and that reading is wrong.
+    /// Replayed through CC's own matcher:
+    ///
+    /// ```text
+    /// hardware_custody:android                  -> namespace_vocab_value_unregistered
+    /// hardware_custody:tpm                      -> namespace_vocab_value_unregistered
+    /// hardware_custody:tpmfirmware              -> namespace_vocab_value_unregistered
+    /// hardware_custody:android_strongbox        -> missing_version_segment
+    /// hardware_custody:android_strongbox:v1     -> OK
+    /// ```
+    ///
+    /// So every value this crate emitted before 18.0.0 was refused by
+    /// CIRISPersist ≥ 50, on one count or both.
     #[must_use]
     pub fn hardware_custody(platform: &str) -> String {
-        format!("hardware_custody:{platform}")
+        format!("hardware_custody:{platform}:{HARDWARE_CUSTODY_VERSION}")
     }
+
+    /// The `hardware_custody:{platform}:{version}` family's version segment.
+    ///
+    /// Pinned rather than computed: the tail is a **wire fact**, and a consumer
+    /// matching `:v1` must break loudly if this crate ever emits `:v2` rather
+    /// than silently storing a dimension nobody queries.
+    pub const HARDWARE_CUSTODY_VERSION: &str = "v1";
 
     /// CC 3.4.5's **ratified** per-family consent disposition.
     ///
@@ -743,7 +770,11 @@ mod tests {
             dim::cert_validity("registry-steward-us"),
             "cert_validity:registry-steward-us"
         );
-        assert_eq!(dim::hardware_custody("tpm"), "hardware_custody:tpm");
+        // CIRISVerify#296: a registry token AND the mandatory version tail.
+        assert_eq!(
+            dim::hardware_custody(ciris_keyring::HardwareType::TpmFirmware.as_platform()),
+            "hardware_custody:tpm_firmware:v1"
+        );
     }
 
     /// CIRISVerify#37 (v3.8.0): per-locale build_manifest leaf +

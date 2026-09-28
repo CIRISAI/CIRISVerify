@@ -23,6 +23,7 @@
 use ciris_keyring::storage::SecureBlobStorage;
 use hkdf::Hkdf;
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 use crate::error::VerifyError;
 
@@ -75,10 +76,15 @@ pub fn derive_symmetric_key(
     key_id: &str,
     context: &str,
 ) -> Result<Vec<u8>, VerifyError> {
-    let seed = storage.load(key_id)?;
+    // CIRISVerify#295: the loaded seed and the derived key are scrubbed on every
+    // exit path, so this function's only unscrubbed copies of the seed are the
+    // storage backend's own. Hygiene rather than a leak — nothing here reaches a
+    // log or disk — but a seed sitting in freed heap is a seed an unrelated bug
+    // can read, and the caller cannot scrub what it never saw.
+    let seed = Zeroizing::new(storage.load(key_id)?);
     let hkdf = Hkdf::<Sha256>::new(Some(NAMED_KEY_DERIVE_SALT), &seed);
-    let mut derived = [0u8; DERIVED_KEY_LEN];
-    hkdf.expand(context.as_bytes(), &mut derived)
+    let mut derived = Zeroizing::new([0u8; DERIVED_KEY_LEN]);
+    hkdf.expand(context.as_bytes(), derived.as_mut())
         .map_err(|_| VerifyError::IntegrityError {
             message: "HKDF-SHA256 expand failed for symmetric key derivation".to_string(),
         })?;
@@ -127,10 +133,13 @@ pub fn derive_transport_identity(
     key_id: &str,
     interface: &str,
 ) -> Result<Vec<u8>, VerifyError> {
-    let seed = storage.load(key_id)?;
+    // Same scrubbing as `derive_symmetric_key` (CIRISVerify#295). The issue named
+    // only that function; this one is the identical shape on the identical
+    // material, and fixing one of a matched pair leaves the defect next door.
+    let seed = Zeroizing::new(storage.load(key_id)?);
     let hkdf = Hkdf::<Sha256>::new(Some(TRANSPORT_IDENTITY_DERIVE_SALT), &seed);
-    let mut derived = [0u8; TRANSPORT_SEED_LEN];
-    hkdf.expand(interface.as_bytes(), &mut derived)
+    let mut derived = Zeroizing::new([0u8; TRANSPORT_SEED_LEN]);
+    hkdf.expand(interface.as_bytes(), derived.as_mut())
         .map_err(|_| VerifyError::IntegrityError {
             message: "HKDF-SHA256 expand failed for transport-identity derivation".to_string(),
         })?;
