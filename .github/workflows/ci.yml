@@ -235,6 +235,13 @@ jobs:
       # for redaction "with a test"; this is the test.
       - name: No secret material in tracing events (#265)
         run: bash scripts/check-no-secret-logging.sh
+
+      # CIRISVerify#296: the hardware_custody tokens must be accepted by CC's own
+      # matcher. Skips when CIRISConstitution is not checked out beside the repo,
+      # so this is a local/dev gate; the always-on half is the Rust test
+      # `every_hardware_type_maps_to_a_registered_platform_token`.
+      - name: CC registry tokens — custody + accord kinds (matcher replay)
+        run: bash scripts/check-cc-registry-tokens.sh
       # Six review rounds each found one more way past that guard. This is the
       # matrix, so a future narrowing fails here rather than silently
       # un-catching a case someone already paid to find (#268).

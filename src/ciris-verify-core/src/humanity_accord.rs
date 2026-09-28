@@ -32,7 +32,7 @@
 //! ```text
 //! // invoke kinds (CC §4.2.1.1):
 //! canonical = sha256(
-//!     "ciris.accord_invoke.v1\n" ||
+//!     "ciris.accord_invoke.v2\n" ||          // v1 until 18.0.0; see the const
 //!     "invocation_kind=" || ("CONSTITUTIONAL" | "notify" | "drill") || "\n" ||
 //!     "invocation_id=" || halt_id_or_notify_id_or_drill_id || "\n" ||
 //!     "nonce=" || base64url(rand_32_bytes) || "\n" ||
@@ -44,7 +44,7 @@
 //! // resumption (CC 0.4 §4.2.1.3) — distinct domain + a mandatory
 //! // `resumes_halt_id` line interposed after `invocation_id`:
 //! canonical = sha256(
-//!     "ciris.accord_lifecycle.v1\n" ||                 // NOT accord_invoke.v1
+//!     "ciris.accord_lifecycle.v1\n" ||                 // NOT accord_invoke.v2
 //!     "invocation_kind=lifecycle:active\n" ||
 //!     "invocation_id=" || resumption_id || "\n" ||
 //!     "resumes_halt_id=" || prior_constitutional_invocation_id || "\n" ||
@@ -62,7 +62,33 @@ use crate::threshold::{verify_threshold_signatures, ThresholdMember, ThresholdSi
 
 /// Domain prefix for invocation canonical bytes (§9.2.1).
 /// Trailing newline is part of the prefix.
-pub const INVOCATION_DOMAIN_PREFIX: &str = "ciris.accord_invoke.v1\n";
+///
+/// # v2 as of 18.0.0 — a v1 signature no longer verifies, deliberately
+///
+/// CIRISConstitution#112 (ratified 2026-09-26) makes casing uniform across the
+/// wire: the registry's registered literal is **lowercase** `constitutional`
+/// (`accord:invoke:constitutional:{halt_id}`), and CC's own matcher refuses the
+/// form this crate emitted as `namespace_dimension_case_malformed`:
+///
+/// ```text
+/// accord:invoke:constitutional:halt-001:v1  -> OK
+/// accord:invoke:CONSTITUTIONAL:halt-001:v1  -> namespace_dimension_case_malformed
+/// ```
+///
+/// Changing [`InvocationKind::as_str`] alone would have made a v1-signed
+/// invocation and a v2-signed one **differ only in a field value**, which is the
+/// silent-divergence shape: two preimages that look interchangeable and are not.
+/// Bumping the domain label makes the break **loud** — a signature produced
+/// under `ciris.accord_invoke.v1` fails verification outright rather than being
+/// mistaken for a malformed v2.
+///
+/// Cut with **no halt latched** (confirmed by the operator before the change),
+/// which is the whole precondition: an in-flight `CONSTITUTIONAL` halt signed
+/// under v1 would have stopped verifying at exactly the moment it mattered.
+///
+/// [`LIFECYCLE_DOMAIN_PREFIX`] stays at `v1`: `lifecycle:active` was already
+/// lowercase and registered, so its preimage does not move.
+pub const INVOCATION_DOMAIN_PREFIX: &str = "ciris.accord_invoke.v2\n";
 
 /// Domain prefix for the **separate** `accord:lifecycle:active` scope
 /// (CC 4.2.1 / CEG §9.2 resumption) — wire-isolated from `accord:invoke:*` so no
@@ -79,7 +105,13 @@ pub const LIFECYCLE_DOMAIN_PREFIX: &str = "ciris.accord_lifecycle.v1\n";
 pub enum InvocationKind {
     /// EmergencyShutdown CONSTITUTIONAL —
     /// `IncidentSeverity::INCIDENT_CONSTITUTIONAL = 5`.
-    #[serde(rename = "CONSTITUTIONAL")]
+    ///
+    /// Wire form is **lowercase** `constitutional` as of 18.0.0: that is the
+    /// registry's registered literal, and the uppercase form this crate used to
+    /// emit is refused as `namespace_dimension_case_malformed`
+    /// (CIRISConstitution#112, CIRISVerify#297 item 1). The Rust variant name is
+    /// unchanged; only the wire string moved.
+    #[serde(rename = "constitutional")]
     Constitutional,
     /// `accord:invoke:notify:{notify_id}`.
     #[serde(rename = "notify")]
@@ -108,7 +140,7 @@ impl InvocationKind {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
-            Self::Constitutional => "CONSTITUTIONAL",
+            Self::Constitutional => "constitutional",
             Self::Notify => "notify",
             Self::Drill => "drill",
             Self::LifecycleActive => "lifecycle:active",
@@ -422,7 +454,7 @@ mod tests {
     /// + drill lowercase).
     #[test]
     fn discriminator_wire_strings_are_stable() {
-        assert_eq!(InvocationKind::Constitutional.as_str(), "CONSTITUTIONAL");
+        assert_eq!(InvocationKind::Constitutional.as_str(), "constitutional");
         assert_eq!(InvocationKind::Notify.as_str(), "notify");
         assert_eq!(InvocationKind::Drill.as_str(), "drill");
         assert_eq!(InvocationKind::LifecycleActive.as_str(), "lifecycle:active");
@@ -521,7 +553,7 @@ mod tests {
             payload_sha256: "0".repeat(64),
         };
         let expected = format!(
-            "ciris.accord_invoke.v1\ninvocation_kind=CONSTITUTIONAL\ninvocation_id=halt-001\nnonce=NONCE\nasserted_at=2026-05-29T17:00:00.000Z\nvalid_until=2026-05-29T17:15:00.000Z\npayload_sha256={zero}",
+            "ciris.accord_invoke.v2\ninvocation_kind=constitutional\ninvocation_id=halt-001\nnonce=NONCE\nasserted_at=2026-05-29T17:00:00.000Z\nvalid_until=2026-05-29T17:15:00.000Z\npayload_sha256={zero}",
             zero = "0".repeat(64),
         );
         assert_eq!(String::from_utf8(inv.canonical_bytes()).unwrap(), expected);
@@ -618,7 +650,7 @@ mod tests {
     fn json_round_trip_invocation() {
         let inv = sample_invocation(InvocationKind::Constitutional, "halt-1");
         let json = serde_json::to_string(&inv).unwrap();
-        assert!(json.contains("\"invocation_kind\":\"CONSTITUTIONAL\""));
+        assert!(json.contains("\"invocation_kind\":\"constitutional\""));
         assert!(json.contains("\"invocation_id\":\"halt-1\""));
         let back: Invocation = serde_json::from_str(&json).unwrap();
         assert_eq!(inv, back);
@@ -626,9 +658,91 @@ mod tests {
 
     /// §9.2.1 domain prefix stability — the prefix string is a
     /// federation-wide wire constant.
+    /// CIRISVerify#297 item 1: every invocation-kind wire string is a registered
+    /// leaf under the CC registry's `accord:*` family, which is `leaves_closed`.
+    ///
+    /// The registered literals, from `manifests/namespace_registry.json` at CC
+    /// `1.0-rc6` (`registry_sha256 73af21af…`):
+    ///
+    /// ```text
+    /// accord:invoke:constitutional:{halt_id}
+    /// accord:invoke:notify:{notify_id}
+    /// accord:invoke:drill:{drill_id}
+    /// accord:lifecycle:active
+    /// ```
+    ///
+    /// Pinned here rather than read from a vendored copy because there is no
+    /// vendored registry yet (that is #297 item 4). The always-on half is this
+    /// test; `scripts/check-cc-registry-tokens.sh` replays the same strings
+    /// through CC's **own** matcher when the sibling repo is present, including
+    /// the uppercase negative control — the #296 lesson that reading the registry
+    /// data is not the same as asking its matcher.
+    #[test]
+    fn invocation_kind_strings_are_registry_leaves() {
+        // (kind, the registered leaf its wire string must complete)
+        let expected = [
+            (
+                InvocationKind::Constitutional,
+                "accord:invoke:constitutional",
+            ),
+            (InvocationKind::Notify, "accord:invoke:notify"),
+            (InvocationKind::Drill, "accord:invoke:drill"),
+            (InvocationKind::LifecycleActive, "accord:lifecycle:active"),
+        ];
+        for (kind, leaf) in expected {
+            let s = kind.as_str();
+            let built = match kind {
+                InvocationKind::LifecycleActive => format!("accord:{s}"),
+                _ => format!("accord:invoke:{s}"),
+            };
+            assert_eq!(
+                built, leaf,
+                "{kind:?} does not complete its registered leaf"
+            );
+            // Registry literals are lowercase and compared byte-exact ("refuse,
+            // never fold"), so an uppercase segment is `case_malformed`, not a
+            // tolerated spelling.
+            assert!(
+                s.bytes()
+                    .all(|b| b.is_ascii_lowercase() || b == b':' || b == b'_'),
+                "{s} must be lowercase to match the registered literal"
+            );
+        }
+        // The specific regression: the pre-18.0.0 uppercase form.
+        assert_ne!(InvocationKind::Constitutional.as_str(), "CONSTITUTIONAL");
+    }
+
+    /// The domain bump is what makes the casing change LOUD rather than silent.
+    ///
+    /// Had only the field value moved, a v1-signed and a v2-signed invocation
+    /// would differ in one field and otherwise look interchangeable. With the
+    /// label bumped, the old preimage cannot be mistaken for a malformed new one.
+    #[test]
+    fn a_v1_preimage_is_not_reachable_from_the_v2_producer() {
+        let inv = sample_invocation(InvocationKind::Constitutional, "halt-001");
+        let bytes = String::from_utf8(inv.canonical_bytes()).unwrap();
+        assert!(bytes.starts_with("ciris.accord_invoke.v2\n"), "{bytes}");
+        assert!(
+            !bytes.contains("ciris.accord_invoke.v1"),
+            "no v1 label may survive in the emitted preimage"
+        );
+        assert!(
+            !bytes.contains("CONSTITUTIONAL"),
+            "no uppercase kind may survive in the emitted preimage"
+        );
+        // And the two preimages genuinely differ, so a v1 signature fails.
+        let v1_equivalent = bytes
+            .replace("ciris.accord_invoke.v2", "ciris.accord_invoke.v1")
+            .replace(
+                "invocation_kind=constitutional",
+                "invocation_kind=CONSTITUTIONAL",
+            );
+        assert_ne!(v1_equivalent, bytes);
+    }
+
     #[test]
     fn domain_prefix_is_stable() {
-        assert_eq!(INVOCATION_DOMAIN_PREFIX, "ciris.accord_invoke.v1\n");
+        assert_eq!(INVOCATION_DOMAIN_PREFIX, "ciris.accord_invoke.v2\n");
     }
 
     /// Conformance harness acceptance from #41:

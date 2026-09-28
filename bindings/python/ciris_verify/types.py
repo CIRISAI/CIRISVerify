@@ -72,6 +72,16 @@ class HardwareType(str, Enum):
     """Hardware security module type.
 
     Determines maximum achievable license tier.
+
+    These values ARE the CC registry's closed ``hardware_custody:{platform}``
+    vocabulary and the Rust ``HardwareType::as_platform()`` tokens — all 13 of
+    them, byte-exact (CIRISVerify#296). The registry compares byte-exact and
+    "refuses, never folds", so do not case-fold or abbreviate them.
+
+    Five variants were missing before 18.0.0 (the four HSM kinds and the
+    external secure element), so a Rust ``YubiHsm`` could not be parsed here at
+    all — this enum was the *more* correct of the two vocabularies and still
+    incomplete.
     """
     ANDROID_KEYSTORE = "android_keystore"
     ANDROID_STRONGBOX = "android_strongbox"
@@ -81,6 +91,11 @@ class HardwareType(str, Enum):
     TPM_FIRMWARE = "tpm_firmware"
     INTEL_SGX = "intel_sgx"
     SOFTWARE_ONLY = "software_only"
+    AWS_CLOUD_HSM = "aws_cloud_hsm"
+    AZURE_HSM = "azure_hsm"
+    GCP_CLOUD_HSM = "gcp_cloud_hsm"
+    YUBI_HSM = "yubi_hsm"
+    EXTERNAL_SECURE_ELEMENT = "external_secure_element"
 
     def supports_professional_license(self) -> bool:
         """Check if this hardware supports professional licensing."""
@@ -96,6 +111,18 @@ class HardwareType(str, Enum):
             HardwareType.TPM_FIRMWARE: 4,
             HardwareType.INTEL_SGX: 4,
             HardwareType.ANDROID_KEYSTORE: 3,
+            # These MIRROR Rust's canonical `HardwareType::security_level()`
+            # (ciris-keyring/src/types.rs) — FIPS 140-2 Level 3+ HSMs are 5 there.
+            # The first cut of this table reasoned them out as 4 instead of
+            # reading the canonical source two files away, which would have made
+            # the same hardware yield different tier decisions through Rust and
+            # through Python (Codex P2 on PR #298).
+            HardwareType.AWS_CLOUD_HSM: 5,
+            HardwareType.AZURE_HSM: 5,
+            HardwareType.GCP_CLOUD_HSM: 5,
+            HardwareType.YUBI_HSM: 5,
+            # External PKCS#11 token (YubiKey 5 FIPS PIV, smartcard).
+            HardwareType.EXTERNAL_SECURE_ELEMENT: 5,
             HardwareType.SOFTWARE_ONLY: 1,
         }
         return levels.get(self, 1)

@@ -104,6 +104,90 @@ pub enum HardwareType {
 }
 
 impl HardwareType {
+    /// The CC registry's `hardware_custody:{platform}` token for this variant
+    /// (CIRISVerify#296, CIRISConstitution#112).
+    ///
+    /// **Total over the enum on purpose.** The match has no `_` arm, so adding
+    /// a variant is a compile error here rather than a dimension that silently
+    /// stops matching the registry. That is the whole point: the previous
+    /// emission sites built their token from `format!("{self:?}")` lowercased,
+    /// which yields `tpmfirmware` / `androidkeystore` — not registry tokens, and
+    /// not even snake_case, so CIRISPersist ≥ 50 refuses them as
+    /// `namespace_vocab_value_unregistered`.
+    ///
+    /// The vocabulary is **closed** (13 values) and compared byte-exact —
+    /// `_meta.case_rule` says *"refuse, never fold"* — so these strings are a
+    /// wire fact, not a display convenience.
+    ///
+    /// Note `MacOsSecureEnclave` → **`mac_os_secure_enclave`**, not
+    /// `macos_secure_enclave`: the registry splits `mac_os`, and a plausible
+    /// snake_case derivation from the variant name gets it wrong. A test pins it.
+    ///
+    /// Verified against the CC registry at `cc_version 1.0-rc6`,
+    /// `registry_sha256 73af21aff98f1e81b4bfcb3a2ccd873c87b1803b33e6dbc0ab4de9d891406ce0`,
+    /// by replaying every token through CC's own `tools/cc_namespace_match.py`
+    /// (see `scripts/check-cc-registry-tokens.sh`).
+    #[must_use]
+    pub const fn as_platform(&self) -> &'static str {
+        match self {
+            Self::AndroidKeystore => "android_keystore",
+            Self::AndroidStrongbox => "android_strongbox",
+            Self::IosSecureEnclave => "ios_secure_enclave",
+            Self::MacOsSecureEnclave => "mac_os_secure_enclave",
+            Self::TpmDiscrete => "tpm_discrete",
+            Self::TpmFirmware => "tpm_firmware",
+            Self::IntelSgx => "intel_sgx",
+            Self::SoftwareOnly => "software_only",
+            Self::AwsCloudHsm => "aws_cloud_hsm",
+            Self::AzureHsm => "azure_hsm",
+            Self::GcpCloudHsm => "gcp_cloud_hsm",
+            Self::YubiHsm => "yubi_hsm",
+            Self::ExternalSecureElement => "external_secure_element",
+        }
+    }
+
+    /// Recover the variant from an [`Self::as_platform`] token.
+    ///
+    /// Fail-closed: an unregistered token yields `None` rather than a guess, so
+    /// a caller round-tripping through the wire cannot invent a custody class.
+    #[must_use]
+    pub fn from_platform(token: &str) -> Option<Self> {
+        Some(match token {
+            "android_keystore" => Self::AndroidKeystore,
+            "android_strongbox" => Self::AndroidStrongbox,
+            "ios_secure_enclave" => Self::IosSecureEnclave,
+            "mac_os_secure_enclave" => Self::MacOsSecureEnclave,
+            "tpm_discrete" => Self::TpmDiscrete,
+            "tpm_firmware" => Self::TpmFirmware,
+            "intel_sgx" => Self::IntelSgx,
+            "software_only" => Self::SoftwareOnly,
+            "aws_cloud_hsm" => Self::AwsCloudHsm,
+            "azure_hsm" => Self::AzureHsm,
+            "gcp_cloud_hsm" => Self::GcpCloudHsm,
+            "yubi_hsm" => Self::YubiHsm,
+            "external_secure_element" => Self::ExternalSecureElement,
+            _ => return None,
+        })
+    }
+
+    /// Every registry token, for a caller that needs to enumerate the closed
+    /// vocabulary (conformance replay, exhaustiveness tests).
+    pub const ALL_PLATFORMS: &'static [&'static str] = &[
+        "android_keystore",
+        "android_strongbox",
+        "ios_secure_enclave",
+        "mac_os_secure_enclave",
+        "tpm_discrete",
+        "tpm_firmware",
+        "intel_sgx",
+        "software_only",
+        "aws_cloud_hsm",
+        "azure_hsm",
+        "gcp_cloud_hsm",
+        "yubi_hsm",
+        "external_secure_element",
+    ];
+
     /// Check if this hardware type supports professional licensing.
     ///
     /// SOFTWARE_ONLY is limited to community tier due to lack of hardware binding.
@@ -450,6 +534,108 @@ impl Default for SoftwareAttestation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every variant maps to a token in the CLOSED registry vocabulary, and the
+    /// mapping round-trips (CIRISVerify#296).
+    ///
+    /// `as_platform` is `match`-total with no `_` arm, so the compiler already
+    /// forces a new variant to be mapped; this checks the mapping is *correct*
+    /// rather than merely present, and that nothing collides.
+    #[test]
+    fn every_hardware_type_maps_to_a_registered_platform_token() {
+        let all = [
+            HardwareType::AndroidKeystore,
+            HardwareType::AndroidStrongbox,
+            HardwareType::IosSecureEnclave,
+            HardwareType::MacOsSecureEnclave,
+            HardwareType::TpmDiscrete,
+            HardwareType::TpmFirmware,
+            HardwareType::IntelSgx,
+            HardwareType::SoftwareOnly,
+            HardwareType::AwsCloudHsm,
+            HardwareType::AzureHsm,
+            HardwareType::GcpCloudHsm,
+            HardwareType::YubiHsm,
+            HardwareType::ExternalSecureElement,
+        ];
+        assert_eq!(
+            all.len(),
+            HardwareType::ALL_PLATFORMS.len(),
+            "ALL_PLATFORMS must list exactly one token per variant"
+        );
+        let mut seen = std::collections::BTreeSet::new();
+        for hw in all {
+            let token = hw.as_platform();
+            assert!(
+                HardwareType::ALL_PLATFORMS.contains(&token),
+                "{hw:?} -> {token} is not in the closed vocabulary"
+            );
+            assert!(seen.insert(token), "two variants share the token {token}");
+            assert_eq!(
+                HardwareType::from_platform(token),
+                Some(hw),
+                "{token} must round-trip back to {hw:?}"
+            );
+        }
+        assert_eq!(seen.len(), HardwareType::ALL_PLATFORMS.len());
+    }
+
+    /// The trap: the registry splits `mac_os`, so a plausible snake_case
+    /// derivation from the variant name (`macos_secure_enclave`) is WRONG and
+    /// would be refused as `namespace_vocab_value_unregistered`.
+    #[test]
+    fn mac_os_secure_enclave_is_split_not_macos() {
+        assert_eq!(
+            HardwareType::MacOsSecureEnclave.as_platform(),
+            "mac_os_secure_enclave"
+        );
+        assert!(HardwareType::from_platform("macos_secure_enclave").is_none());
+    }
+
+    /// Tokens are snake_case and byte-exact — `_meta.case_rule` says "refuse,
+    /// never fold", so a case-folded or Debug-derived form is not admissible.
+    #[test]
+    fn tokens_are_snake_case_and_never_the_debug_name() {
+        for token in HardwareType::ALL_PLATFORMS {
+            assert!(
+                token.bytes().all(|b| b.is_ascii_lowercase() || b == b'_'),
+                "{token} must be lowercase snake_case"
+            );
+        }
+        // The pre-#296 construction was `format!("{self:?}").to_ascii_lowercase()`.
+        for hw in [
+            HardwareType::TpmFirmware,
+            HardwareType::AndroidKeystore,
+            HardwareType::MacOsSecureEnclave,
+        ] {
+            let debug_derived = format!("{hw:?}").to_ascii_lowercase();
+            assert_ne!(
+                debug_derived,
+                hw.as_platform(),
+                "the Debug-derived form must NOT equal the registry token, or \
+                 this test is not protecting anything"
+            );
+            assert!(HardwareType::from_platform(&debug_derived).is_none());
+        }
+    }
+
+    /// Fail-closed: an unregistered token is not guessed at.
+    #[test]
+    fn from_platform_refuses_unregistered_tokens() {
+        for bad in [
+            "android",
+            "tpm",
+            "",
+            "ANDROID_KEYSTORE",
+            "tpm_firmware ",
+            "software",
+        ] {
+            assert!(
+                HardwareType::from_platform(bad).is_none(),
+                "{bad:?} must not resolve"
+            );
+        }
+    }
 
     #[test]
     fn test_algorithm_sizes() {

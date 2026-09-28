@@ -294,7 +294,22 @@ impl AttestBundle {
                 skill_imports
                     .entry(source.to_string())
                     .or_insert_with(|| AttestationFact::from(entry));
-            } else if let Some(platform) = d.strip_prefix("hardware_custody:") {
+            } else if let Some(rest) = d.strip_prefix("hardware_custody:") {
+                // `hardware_custody:{platform}:{version}` — the version tail is
+                // mandatory under CC's registry grammar (CIRISVerify#296), so the
+                // platform is the part BEFORE it. Taking the whole remainder
+                // would report a platform of `tpm_firmware:v1`.
+                //
+                // A dimension with no recognizable tail is read as
+                // platform-only, so a pre-18.0.0 stored entry still parses to
+                // the same platform it always did rather than being dropped.
+                let platform = rest.rsplit_once(':').map_or(rest, |(p, tail)| {
+                    if tail.starts_with('v') && tail[1..].chars().all(|c| c.is_ascii_digit()) {
+                        p
+                    } else {
+                        rest
+                    }
+                });
                 if hardware_custody.platform.is_empty() {
                     hardware_custody.platform = platform.to_string();
                     hardware_custody.verified = entry.is_pass();
@@ -444,22 +459,25 @@ mod tests {
     #[test]
     fn hardware_custody_populated_from_hardware_custody_entry() {
         let prov = fp(vec![AttestationEntry::pass(
-            dim::hardware_custody("tpm"),
+            dim::hardware_custody(ciris_keyring::HardwareType::TpmFirmware.as_platform()),
             "ciris-verify",
         )]);
         let bundle = AttestBundle::from_federation_provenance("k", prov);
-        assert_eq!(bundle.hardware_custody.platform, "tpm");
+        // CIRISVerify#296: the registry token, from the fixture's `TpmFirmware`.
+        assert_eq!(bundle.hardware_custody.platform, "tpm_firmware");
         assert!(bundle.hardware_custody.verified);
     }
 
     #[test]
     fn hardware_custody_software_fallback_is_unverified() {
         let prov = fp(vec![AttestationEntry::fail(
-            dim::hardware_custody("software_fallback"),
+            // `software_fallback` was never a registry token — the closed
+            // vocabulary calls this `software_only` (CIRISVerify#296).
+            dim::hardware_custody(ciris_keyring::HardwareType::SoftwareOnly.as_platform()),
             "ciris-verify",
         )]);
         let bundle = AttestBundle::from_federation_provenance("k", prov);
-        assert_eq!(bundle.hardware_custody.platform, "software_fallback");
+        assert_eq!(bundle.hardware_custody.platform, "software_only");
         assert!(!bundle.hardware_custody.verified);
     }
 
@@ -721,7 +739,12 @@ mod tests {
             }),
             key_attestation: Some(KeyAttestationResult {
                 key_type: "portal".into(),
-                hardware_type: "tpm".into(),
+                hardware_type: "TpmFirmware".into(),
+                hardware_platform: Some(
+                    ciris_keyring::HardwareType::TpmFirmware
+                        .as_platform()
+                        .to_string(),
+                ),
                 has_valid_signature: true,
                 binary_version: "3.6.0".into(),
                 running_in_vm: false,
@@ -765,7 +788,8 @@ mod tests {
         assert!(bundle.self_verification.as_ref().unwrap().passed);
         assert!(bundle.hardware_attestation.as_ref().unwrap().passed);
         assert!(bundle.registry_consensus.as_ref().unwrap().passed);
-        assert_eq!(bundle.hardware_custody.platform, "tpm");
+        // CIRISVerify#296: the fixture's `TpmFirmware` now yields the registry token.
+        assert_eq!(bundle.hardware_custody.platform, "tpm_firmware");
         assert!(bundle.hardware_custody.verified);
     }
 }

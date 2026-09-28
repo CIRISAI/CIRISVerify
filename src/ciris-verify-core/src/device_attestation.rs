@@ -72,6 +72,8 @@
 use x509_parser::der_parser::asn1_rs::{Enumerated, FromDer, Integer, OctetString, Sequence};
 use x509_parser::prelude::*;
 
+use ciris_keyring::HardwareType;
+
 use crate::federation_provenance::{dim, AttestationEntry};
 
 /// Android Key Attestation extension OID (the `KeyDescription`).
@@ -233,9 +235,31 @@ impl AndroidAttestationVerdict {
     #[must_use]
     pub fn to_attestation_entries(&self, attester: &str) -> Vec<AttestationEntry> {
         vec![
-            AttestationEntry::pass(dim::hardware_custody("android"), attester)
+            AttestationEntry::pass(dim::hardware_custody(self.custody_platform()), attester)
                 .with_source_ref(self.hardware_class().to_string()),
         ]
+    }
+
+    /// The registry custody token for the level the chain **measured**
+    /// (CIRISVerify#296).
+    ///
+    /// Before 18.0.0 this emitted a hardcoded `android`, which is not a registry
+    /// token — and, worse, threw away a distinction the verdict already holds:
+    /// `keymint_security_level` says whether the key lives in StrongBox or the
+    /// TEE, and that *is* the custody fact the dimension asks for. Emitting
+    /// `android` reported a coarser answer than the evidence supported, which is
+    /// the inverse of this crate's rule about not manufacturing measurements.
+    ///
+    /// A `Software` measurement maps to `software_only` — a true, registered
+    /// fact, and still a `pass` of the dimension, because the dimension records
+    /// *what was measured* and whether that is good enough is consumer policy.
+    #[must_use]
+    pub const fn custody_platform(&self) -> &'static str {
+        match self.keymint_security_level {
+            AndroidSecurityLevel::StrongBox => HardwareType::AndroidStrongbox.as_platform(),
+            AndroidSecurityLevel::TrustedEnvironment => HardwareType::AndroidKeystore.as_platform(),
+            AndroidSecurityLevel::Software => HardwareType::SoftwareOnly.as_platform(),
+        }
     }
 }
 
@@ -619,10 +643,14 @@ impl AppAttestVerdict {
     /// Project into [`AttestationEntry`] measurements — the scoring signal.
     #[must_use]
     pub fn to_attestation_entries(&self, attester: &str) -> Vec<AttestationEntry> {
-        vec![
-            AttestationEntry::pass(dim::hardware_custody("ios_secure_enclave"), attester)
-                .with_source_ref(self.hardware_class().to_string()),
-        ]
+        vec![AttestationEntry::pass(
+            // One source for the token (CIRISVerify#296) — this one was
+            // already a registered value, but it was a bare literal and it
+            // lacked the mandatory version tail.
+            dim::hardware_custody(HardwareType::IosSecureEnclave.as_platform()),
+            attester,
+        )
+        .with_source_ref(self.hardware_class().to_string())]
     }
 }
 
@@ -952,15 +980,87 @@ impl TpmEkVerdict {
     }
 
     /// Project into [`AttestationEntry`] measurements — the scoring signal.
+    ///
+    /// # `probed` is required, and `None` is the honest answer more often than not
+    ///
+    /// The registry's custody vocabulary has **no bare `tpm` token**: it offers
+    /// `tpm_discrete` and `tpm_firmware`, and an EK certificate **cannot tell
+    /// them apart** — [`TpmEkVerdict::hardware_class`] has said so since v12.2.0
+    /// (*"inferring it from the manufacturer string would be a guess presented as
+    /// a measurement"*). So CIRISVerify#296's ask, read literally — emit
+    /// `tpm_discrete`/`tpm_firmware` *from the EK* — is not satisfiable without
+    /// manufacturing the measurement this function exists to avoid.
+    ///
+    /// The resolution is to take the distinction from a source that actually
+    /// states it: the **local** `ciris_keyring` probe, which returns
+    /// `TpmDiscrete` / `TpmFirmware` outright. Hence:
+    ///
+    /// - `Some(..)` — the caller verified an EK for a TPM it can probe (a node
+    ///   attesting itself): the precise token is emitted.
+    /// - `None` — the caller is a relying party verifying a **remote** peer's EK
+    ///   and has no probe for that machine: **no custody dimension is emitted at
+    ///   all.** That is a smaller claim, not a broken one; the chain result and
+    ///   the anti-lift binding are unaffected.
+    ///
+    /// [`TpmProbedPlatform`] has exactly two variants so `Some(AndroidKeystore)`
+    /// is unrepresentable — a TPM verdict cannot be talked into emitting a
+    /// non-TPM custody class.
     #[must_use]
-    pub fn to_attestation_entries(&self, attester: &str) -> Vec<AttestationEntry> {
+    pub fn to_attestation_entries(
+        &self,
+        attester: &str,
+        probed: Option<TpmProbedPlatform>,
+    ) -> Vec<AttestationEntry> {
+        let Some(probed) = probed else {
+            return Vec::new();
+        };
         vec![
-            AttestationEntry::pass(dim::hardware_custody("tpm"), attester).with_source_ref(
-                self.manufacturer
-                    .clone()
-                    .unwrap_or_else(|| self.hardware_class().to_string()),
-            ),
+            AttestationEntry::pass(dim::hardware_custody(probed.as_platform()), attester)
+                .with_source_ref(
+                    self.manufacturer
+                        .clone()
+                        .unwrap_or_else(|| self.hardware_class().to_string()),
+                ),
         ]
+    }
+}
+
+/// Which TPM the **local probe** reports — the only source that can distinguish
+/// discrete from firmware (CIRISVerify#296).
+///
+/// Two variants by construction: an EK certificate proves *a* TPM 2.0 device,
+/// and the custody vocabulary insists on saying *which*, so the caller must
+/// supply the half the certificate does not carry — and cannot accidentally
+/// supply something that is not a TPM at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum TpmProbedPlatform {
+    /// A discrete TPM chip (`ciris_keyring::HardwareType::TpmDiscrete`).
+    Discrete,
+    /// A firmware TPM / fTPM (`ciris_keyring::HardwareType::TpmFirmware`).
+    Firmware,
+}
+
+impl TpmProbedPlatform {
+    /// The registry custody token.
+    #[must_use]
+    pub const fn as_platform(self) -> &'static str {
+        match self {
+            Self::Discrete => HardwareType::TpmDiscrete.as_platform(),
+            Self::Firmware => HardwareType::TpmFirmware.as_platform(),
+        }
+    }
+
+    /// Narrow a keyring-probed [`HardwareType`] to the TPM pair, or `None` if
+    /// the probe did not report a TPM — so a caller cannot widen a non-TPM
+    /// custody class into a TPM verdict.
+    #[must_use]
+    pub const fn from_hardware_type(hw: HardwareType) -> Option<Self> {
+        match hw {
+            HardwareType::TpmDiscrete => Some(Self::Discrete),
+            HardwareType::TpmFirmware => Some(Self::Firmware),
+            _ => None,
+        }
     }
 }
 
@@ -1213,11 +1313,68 @@ mod tests {
             entries[0].is_pass(),
             "measuring 'software-held' is a successful measurement"
         );
-        assert_eq!(entries[0].dimension, "hardware_custody:android");
+        // CIRISVerify#296: the token follows the MEASURED level. This assertion
+        // used to read `hardware_custody:android` — the bug in test form: a
+        // software-held key reported the same coarse token as a StrongBox one.
+        assert_eq!(entries[0].dimension, "hardware_custody:software_only:v1");
         assert_eq!(entries[0].source_ref.as_deref(), Some("Android_Software"));
         assert!(
             !sw.refutes("Android_Software"),
             "an honest software claim is never refuted"
+        );
+    }
+
+    /// CIRISVerify#296: the custody token follows the level the chain MEASURED.
+    ///
+    /// The pre-18.0.0 code emitted a hardcoded `android` for all three, throwing
+    /// away a distinction the verdict already held — a coarser answer than the
+    /// evidence supported.
+    #[test]
+    fn custody_token_follows_the_measured_keymint_level() {
+        for (level, expect) in [
+            (AndroidSecurityLevel::StrongBox, "android_strongbox"),
+            (AndroidSecurityLevel::TrustedEnvironment, "android_keystore"),
+            (AndroidSecurityLevel::Software, "software_only"),
+        ] {
+            let v = verdict(level);
+            assert_eq!(v.custody_platform(), expect, "{level:?}");
+            assert_eq!(
+                v.to_attestation_entries("ciris-verify")[0].dimension,
+                format!("hardware_custody:{expect}:v1"),
+                "{level:?}"
+            );
+        }
+        // StrongBox and TEE must not collapse to one token, which is the whole point.
+        assert_ne!(
+            verdict(AndroidSecurityLevel::StrongBox).custody_platform(),
+            verdict(AndroidSecurityLevel::TrustedEnvironment).custody_platform()
+        );
+    }
+
+    /// An EK certificate cannot say discrete-vs-firmware, so with no local probe
+    /// NO custody dimension is emitted — rather than a guessed token
+    /// (CIRISVerify#296).
+    #[test]
+    fn tpm_ek_emits_no_custody_dimension_without_a_probe() {
+        let ek_kp = KeyPair::generate_for(&PKCS_ED25519).unwrap();
+        let (ek, root) = mock_ek("Infineon", &ek_kp);
+        let v = verify_tpm_ek_certificate(&ek, &[], &root, &raw_ed(&ek_kp)).unwrap();
+
+        assert!(
+            v.to_attestation_entries("ciris-verify", None).is_empty(),
+            "no probe means no custody claim — not a guessed one"
+        );
+        // ...and with a probe, the precise token.
+        assert_eq!(
+            v.to_attestation_entries("ciris-verify", Some(TpmProbedPlatform::Discrete))[0]
+                .dimension,
+            "hardware_custody:tpm_discrete:v1"
+        );
+        // The narrowing refuses a non-TPM probe outright.
+        assert!(TpmProbedPlatform::from_hardware_type(HardwareType::AndroidKeystore).is_none());
+        assert_eq!(
+            TpmProbedPlatform::from_hardware_type(HardwareType::TpmFirmware),
+            Some(TpmProbedPlatform::Firmware)
         );
     }
 
@@ -1803,8 +1960,9 @@ mod tests {
         let v = verify_tpm_ek_certificate(&ek, &[], &root, &raw_ed(&ek_kp)).unwrap();
         assert_eq!(v.hardware_class(), "TPM_2_0");
         assert_eq!(
-            v.to_attestation_entries("ciris-verify")[0].dimension,
-            "hardware_custody:tpm"
+            v.to_attestation_entries("ciris-verify", Some(TpmProbedPlatform::Firmware))[0]
+                .dimension,
+            "hardware_custody:tpm_firmware:v1"
         );
     }
 

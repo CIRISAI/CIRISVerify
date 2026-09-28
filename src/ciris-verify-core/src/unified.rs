@@ -14,7 +14,7 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
-use tracing::{error, info, instrument, warn};
+use tracing::{debug, error, info, instrument, warn};
 
 use crate::audit::{AuditEntry, AuditVerificationResult, AuditVerifier};
 use crate::config::VerifyConfig;
@@ -203,8 +203,24 @@ pub struct SelfVerificationResult {
 pub struct KeyAttestationResult {
     /// Key type (portal or ephemeral).
     pub key_type: String,
-    /// Hardware type.
+    /// Hardware type, as the `HardwareType` **Debug** name (`TpmFirmware`,
+    /// `AndroidKeystore`, …). Retained verbatim: it is on the FFI/wheel
+    /// attestation response and consumers match it.
     pub hardware_type: String,
+    /// The CC registry `hardware_custody:{platform}` token for the same
+    /// hardware — `tpm_firmware`, `android_keystore`, … (CIRISVerify#296).
+    ///
+    /// Carried as its own field rather than re-derived from
+    /// [`Self::hardware_type`], because `hardware_type` is a **`Debug` name**
+    /// and lowercasing it yields `tpmfirmware` — which the registry refuses.
+    /// Parsing a display string back into a wire token is exactly the kind of
+    /// re-derivation that produced the bug; the producer has the enum, so it
+    /// states the token.
+    ///
+    /// `None` on a result built by something that did not supply it: the custody
+    /// dimension is then **omitted** rather than guessed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hardware_platform: Option<String>,
     /// Has valid signature over challenge.
     pub has_valid_signature: bool,
     /// Binary version.
@@ -2721,18 +2737,50 @@ impl FullAttestationResult {
                 attester,
             ));
 
-            // hardware_custody:{platform} — declares where the seed
-            // lives. The platform string is the lowercased
-            // hardware_type; `software_fallback` is the one variant
-            // that structurally caps at UNLICENSED_COMMUNITY.
-            if !ka.hardware_type.is_empty() {
-                let platform = ka.hardware_type.to_ascii_lowercase();
-                let valid = !platform.contains("software");
-                b = b.attestation(AttestationEntry::new(
-                    dim::hardware_custody(&platform),
-                    if valid { Score::PASS } else { Score::FAIL },
-                    attester,
-                ));
+            // hardware_custody:{platform}:v1 — declares where the seed lives
+            // (CIRISVerify#296). Emitted ONLY from the producer-supplied registry
+            // token: this used to lowercase the `Debug` name, yielding
+            // `tpmfirmware` / `androidkeystore`, which CIRISPersist >= 50 refuses
+            // as `namespace_vocab_value_unregistered`.
+            //
+            // The score is also no longer a substring test on a display string
+            // (`!platform.contains("software")`, which would have matched any
+            // future token containing "software").
+            if let Some(platform) = ka.hardware_platform.as_deref() {
+                if ciris_keyring::HardwareType::from_platform(platform).is_some() {
+                    // A RESOLVED platform claim is a successful measurement, so it
+                    // passes — including `software_only` (Codex P2 on PR #298).
+                    // Scoring software FAIL here baked policy into a measurement
+                    // AND disagreed with the Android projection, which emits the
+                    // same `hardware_custody:software_only:v1` as a pass. One fact
+                    // must not get two verdicts depending on which projection
+                    // produced it; whether software custody is good enough is the
+                    // consumer's call (`MISSION.md` §1.4).
+                    b = b.attestation(AttestationEntry::new(
+                        dim::hardware_custody(platform),
+                        Score::PASS,
+                        attester,
+                    ));
+                } else {
+                    // An UNREGISTERED token is not emitted at all (Codex P2 on PR
+                    // #298). Emitting it with a failing score would still be
+                    // refused by a conformant consumer for its vocabulary value —
+                    // recreating, for FFI callers that submit externally produced
+                    // attestation JSON, exactly the interop break this release
+                    // exists to close.
+                    //
+                    // DEBUG rather than WARN deliberately: this projection runs on
+                    // the verification path, and a per-cycle WARN is the defect
+                    // CIRISVerify#223/#265 were cut to stop. The *enforcement* is
+                    // the omission; a caller chasing a missing dimension finds
+                    // this line at DEBUG.
+                    debug!(
+                        platform = platform,
+                        "hardware_platform is not a CC registry token — omitting the \
+                         hardware_custody dimension rather than emitting one a \
+                         conformant consumer would refuse (CIRISVerify#296)"
+                    );
+                }
             }
         }
 
@@ -3326,6 +3374,11 @@ mod tests {
         let ka = KeyAttestationResult {
             key_type: "portal".into(),
             hardware_type: "SoftwareOnly".into(),
+            hardware_platform: Some(
+                ciris_keyring::HardwareType::SoftwareOnly
+                    .as_platform()
+                    .to_string(),
+            ),
             has_valid_signature: true,
             binary_version: "5.0.0".into(),
             running_in_vm: false,
