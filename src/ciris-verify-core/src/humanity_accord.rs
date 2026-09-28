@@ -33,7 +33,7 @@
 //! // invoke kinds (CC §4.2.1.1):
 //! canonical = sha256(
 //!     "ciris.accord_invoke.v2\n" ||          // v1 until 18.0.0; see the const
-//!     "invocation_kind=" || ("CONSTITUTIONAL" | "notify" | "drill") || "\n" ||
+//!     "invocation_kind=" || ("constitutional" | "notify" | "drill") || "\n" ||
 //!     "invocation_id=" || halt_id_or_notify_id_or_drill_id || "\n" ||
 //!     "nonce=" || base64url(rand_32_bytes) || "\n" ||
 //!     "asserted_at=" || rfc3339_canonical || "\n" ||   // per §0.5
