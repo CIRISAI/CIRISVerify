@@ -126,7 +126,7 @@ impl HardwareType {
     /// Verified against the CC registry at `cc_version 1.0-rc6`,
     /// `registry_sha256 73af21aff98f1e81b4bfcb3a2ccd873c87b1803b33e6dbc0ab4de9d891406ce0`,
     /// by replaying every token through CC's own `tools/cc_namespace_match.py`
-    /// (see `scripts/check-hardware-custody-tokens.sh`).
+    /// (see `scripts/check-cc-registry-tokens.sh`).
     #[must_use]
     pub const fn as_platform(&self) -> &'static str {
         match self {

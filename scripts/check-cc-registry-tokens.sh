@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# CIRISVerify#296 — every `hardware_custody:{platform}:{version}` dimension this
+# CIRISVerify#296 + #297 item 1 — every `hardware_custody:{platform}:{version}` dimension this
 # crate can emit must be ACCEPTED by CIRISConstitution's own namespace matcher.
 #
 # Why a script and not only a Rust test: the authority is CC's matcher, not our
@@ -128,6 +128,32 @@ if bad:
     raise SystemExit(1)
 print(f"Rust/Python vocabulary agrees: {len(tokens_py)} tokens, {len(py_levels)} security levels")
 PYEOF
+
+# CIRISVerify#297 item 1 — the accord invocation-kind wire strings must complete
+# registered leaves under `accord:*` (which is `leaves_closed`), with the
+# pre-18.0.0 uppercase form as the negative control. The Rust test
+# `invocation_kind_strings_are_registry_leaves` is the always-on half; this asks
+# the authority.
+ACCORD_OK=("accord:invoke:constitutional:halt-001:v1" "accord:invoke:notify:n-1:v1" \
+           "accord:invoke:drill:d-1:v1" "accord:lifecycle:active:v1")
+ACCORD_BAD=("accord:invoke:CONSTITUTIONAL:halt-001:v1" "accord:invoke:bogus:x:v1")
+
+AOUT=$(cd "$CC" && python3 "$MATCHER" "${ACCORD_OK[@]}")
+echo "$AOUT"
+if grep -qv 'refusal=None' <<< "$AOUT"; then
+  echo
+  echo "FAIL: an accord invocation dimension is REFUSED by the CC matcher:"
+  grep -v 'refusal=None' <<< "$AOUT"
+  exit 1
+fi
+ABAD=$(cd "$CC" && python3 "$MATCHER" "${ACCORD_BAD[@]}")
+if grep -q 'refusal=None' <<< "$ABAD"; then
+  echo
+  echo "FAIL: a known-bad accord dimension was ACCEPTED — the check proves nothing:"
+  grep 'refusal=None' <<< "$ABAD"
+  exit 1
+fi
+echo "accord invocation kinds: ${#ACCORD_OK[@]} accepted, ${#ACCORD_BAD[@]} known-bad refused ✓"
 
 echo
 echo "hardware_custody tokens: ${#DIMS[@]} accepted, ${#BAD[@]} known-bad forms still refused ✓"

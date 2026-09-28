@@ -16,7 +16,7 @@
 //! — it gains **no decrypt / key-exchange capability**, so an accord key stays
 //! strictly signing-only (CC §9.2 scope-isolation preserved). The wrap challenge
 //! (`ciris.accord.mldsa-usb-wrap.v1`) is domain-separated from the accord
-//! invocation preimage (`ciris.accord_invoke.v1`), so the two never collide.
+//! invocation preimage (`ciris.accord_invoke.v2`), so the two never collide.
 //!
 //! ## What this protects (and what it does not)
 //!
@@ -63,7 +63,7 @@ use crate::types::{HardwareType, PlatformAttestation, StorageDescriptor};
 /// ML-DSA-65 seed length (FIPS 204 ξ).
 const SEED_LEN: usize = 32;
 /// Domain-separated prefix the YubiKey signs to derive the wrap key. Distinct
-/// from the `ciris.accord_invoke.v1` invocation preimage — no cross-use.
+/// from the `ciris.accord_invoke.v2` invocation preimage — no cross-use.
 const WRAP_DOMAIN: &[u8] = b"ciris.accord.mldsa-usb-wrap.v1\n";
 /// HKDF `info` for the wrap-key expansion.
 const WRAP_HKDF_INFO: &[u8] = b"ciris-mldsa-usb-wrap-key-v1";
