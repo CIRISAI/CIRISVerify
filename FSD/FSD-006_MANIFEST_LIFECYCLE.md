@@ -333,15 +333,17 @@ walk-or-role. A holder-co-signed `delegates_to` grant from the same ceremony (Fa
 remains **optional**: it would add the reader-relative un-trust lever, not standing. Server offered
 to add it.
 
-### Open constitutional question: is the accord-role bless an accord power? (steward's)
+### Ruled: the accord-role bless is an enumerated power (CC rc6 22ea349)
 
-CC rc6 812170f corrects 3.1.2.1: standing is evaluated on whichever CC 3.2 T2 plane conferred it (a
-key root's delegation, or a family root's quorum-scrubbed grant). It records the shipped accord-role
-path (`/v1/accord/ci-key` co-scrub → `is_infra_attest_effective`) as **"recorded, not settled"**,
-because CC 4.2.1 enumerates accord powers and names only the canonical-conferral co-scrub, and CC 4.2
-is entrenched. That decision is on CIRISConstitution#137. Verify models it because it is what ships;
-if it is ruled out, `PipelineStanding::AccordRole` is removed and Server's ceremony adds the
-holder-co-signed grant (FamilyQuorum), which it has already offered.
+Confirmed by the steward in the CC session and landed in CC 4.2.1, "Blessing a build pipeline is in
+scope". It is bounded to `infra:attest` (a co-scrub bearing any other role on a pipeline record is
+out of role). The pipeline key holds no seat. It ends by revocation of the record or un-trust of the
+root. It is a power of any root's conferring roster, not an accord privilege, and was ratified by the
+founder under the CC 4.5.1 maturity gate. CC 3.1.2.1 now reads: standing is either the ceremony plane
+(the co-scrub) or a `trust:confers:v1` grant, and **a reader MUST evaluate both planes before finding
+a pipeline without standing.** Verify keeps `PipelineStanding::AccordRole`; registry's door asks both
+(18a138c); CIRISEdge's `bundle_gate` rewrite must too. The mesh measurement is on
+CIRISConstitution#137.
 
 ### CI (19.0.0)
 

@@ -343,6 +343,15 @@ impl PipelineStanding {
 /// The caller's statement that `pipeline_key_id` holds
 /// [`MANIFEST_PUBLISH_SCOPE`], and from which persist authority.
 ///
+/// **A reader MUST ask both authorities before concluding a pipeline has no
+/// standing** (CC 3.1.2.1, rc6 22ea349): the capability walk for a
+/// `trust:confers:v1` grant, *and* `is_infra_attest_effective` for the ceremony
+/// plane. Asking only one refuses pipelines the other blesses — the defect
+/// CIRISRegistry's door had until 18a138c, when it would have refused every
+/// production pipeline. The ceremony plane is an enumerated power of any
+/// root's conferring roster (CC 4.2.1, ratified under the CC 4.5.1 maturity
+/// gate), bounded to `infra:attest`; the pipeline key holds no seat.
+///
 /// Verify cannot check either authority (both need the directory). What it
 /// checks is that the blessing names the pipeline that actually signed, so a
 /// blessing obtained for one pipeline cannot be spent on another's
