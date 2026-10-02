@@ -1257,8 +1257,7 @@ jobs:
           # pipeline, infra:attest) grant id. Repo variables, set once after the
           # owner runs `ciris-verify delegate`. When unset, the legacy signed
           # manifest is still produced; only the CEG dual-emit is skipped.
-          CIRIS_OWNER_KEY_ID: ${{ vars.CIRIS_OWNER_KEY_ID }}
-          CIRIS_BUILD_DELEGATION_REF: ${{ vars.CIRIS_BUILD_DELEGATION_REF }}
+          CIRIS_EMIT_BUILD_CONTRIBUTION: ${{ vars.CIRIS_EMIT_BUILD_CONTRIBUTION }}
           # CEG outbox root (the dual-emit Contributions land here → artifact).
           CIRIS_HOME: ${{ github.workspace }}/ciris-home
         run: |
@@ -1336,16 +1335,17 @@ jobs:
           # the steward keys.
           "$BUILD_SIGN" self-test
 
-          # CC-native dual-emit (transition): if the owner has delegated
-          # infra:attest to this pipeline (the repo vars are set), ALSO emit a
-          # signed `build_manifest_contribution` CEG object per target into the
-          # outbox — on the owner's behalf. Skipped (legacy-only) when unset.
+          # CC-native dual-emit (transition): ALSO emit a pipeline-signed
+          # `build_manifest_contribution` per target into the outbox, in the
+          # shape a node's /v1/builds door stores as-is (FSD-006). Standing is
+          # a delegates_to(root → pipeline, infra:attest) grant the reader's
+          # walk finds — nothing this step states. Opt-in via repo var.
           DUAL_EMIT=""
-          if [ -n "${CIRIS_OWNER_KEY_ID:-}" ] && [ -n "${CIRIS_BUILD_DELEGATION_REF:-}" ]; then
-            DUAL_EMIT="--on-behalf-of ${CIRIS_OWNER_KEY_ID} --delegation-ref ${CIRIS_BUILD_DELEGATION_REF}"
-            echo "CC-native dual-emit ON (pipeline ${CIRIS_PIPELINE_KEY_ID} attesting for ${CIRIS_OWNER_KEY_ID})"
+          if [ "${CIRIS_EMIT_BUILD_CONTRIBUTION:-}" = "true" ]; then
+            DUAL_EMIT="--emit-contribution"
+            echo "CC-native dual-emit ON (pipeline ${CIRIS_PIPELINE_KEY_ID})"
           else
-            echo "CC-native dual-emit OFF (set CIRIS_OWNER_KEY_ID + CIRIS_BUILD_DELEGATION_REF repo vars to enable)"
+            echo "CC-native dual-emit OFF (set repo var CIRIS_EMIT_BUILD_CONTRIBUTION=true to enable)"
           fi
 
           mkdir -p signed-build-manifests

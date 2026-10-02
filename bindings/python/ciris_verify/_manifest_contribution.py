@@ -1,21 +1,23 @@
 """Build-manifest Contribution verification — Python binding
-(CIRISVerify#25, v6.2.0+).
+(CIRISVerify#25; reshaped in 19.0.0 for FSD-006 / CIRISVerify#299).
 
 Exposes :func:`verify_build_manifest_contribution`, a thin wrapper over the FFI
-symbol ``ciris_verify_build_manifest_contribution`` which calls
-``ciris_verify_core::manifest_contribution`` — the **consumer** of the
-pipeline-as-delegated-attester model.
+symbol ``ciris_verify_build_manifest_contribution``, which calls
+``ciris_verify_core::manifest_contribution``.
 
-A CI pipeline holds a ``node`` identity; an accountable human grants it
-``delegates_to(human → pipeline, infra:attest)`` ("publish manifests on my
-behalf"); the pipeline signs each build manifest as that human's delegate. This
-function runs the full authority walk a consumer (CIRISServer's outbox drain,
-registry tooling) must run before trusting a build: pipeline signature → the
-human's delegation grant → the §1.3 infra/agency scope split → the
-"builders I trust" decision. There is one blessed implementation; the wheel
-reaches it rather than reimplementing the chain walk.
+It checks everything a Contribution can prove about itself: the pipeline's
+bound-hybrid signature, persist's signed ``row`` mirror, the
+``provenance:build_manifest:{target}:v1`` dimension, ``infra:attest`` scope,
+``asserted_at``, and that ``evidence_refs`` names the manifest blob.
 
-**Fail-closed:** a rejection is a successful call returning ``trusted: False``
+**It does not decide whether the pipeline may attest builds.** That is one of
+persist's two authorities over the caller's own directory: the capability walk
+(``capability_roots_to_trusted_root(directory, node, pipeline, "infra:attest")``)
+or the accord role (``is_infra_attest_effective(directory, pipeline)``, which is
+how production pipelines are blessed). Pass its answer as ``blessing``; this
+function checks only that the blessing names the pipeline that signed.
+
+**Fail-closed:** a rejection is a successful call returning ``verified: False``
 with a ``reason``, never an exception. Only a malformed request raises.
 """
 
@@ -116,45 +118,34 @@ def _call(symbol: str, request: dict) -> dict:
 def verify_build_manifest_contribution(
     obj: Any,
     pipeline_member: dict,
-    grant: dict,
-    granter_member: dict,
-    trusted_build_authorities: Optional[list[str]] = None,
+    blessing: dict,
 ) -> dict:
-    """Verify a build-manifest Contribution end-to-end (CIRISVerify#25).
-
-    The full chain, all fail-closed: the pipeline's bound-hybrid signature
-    verifies against its pinned pubkeys; the Contribution carries
-    ``delegation_scope: infra:attest`` and a ``dimension`` matching its own
-    ``build.target``; the human's ``delegates_to`` grant verifies against the
-    pinned granter pubkeys, delegates to *this* pipeline, and carries
-    ``infra:attest``; the scope set passes the §1.3 node infra/agency split; and
-    the ``on_behalf_of`` human is in ``trusted_build_authorities``.
+    """Verify a build-manifest Contribution (FSD-006).
 
     Args:
-        obj: the ``build_manifest_contribution`` object as drained from the CEG
-            outbox (a JSON-able ``SignedCegObject``).
+        obj: the ``build_manifest_contribution`` object (a JSON-able
+            ``SignedCegObject``).
         pipeline_member: the pipeline ``node``'s pinned pubkeys —
             ``{"member_id": ..., "ed25519_public_key_base64": ...,
-            "mldsa65_public_key_base64": ...}``. Resolve this from your key
-            directory by the object's ``attesting_key_id`` — never take it from
-            the object (the identity-binding discipline; a forged grant under a
-            human's key_id fails the binding).
-        grant: the ``delegates_to(human → pipeline, infra:attest)`` grant —
-            ``{"signed_envelope": {...}, "ed25519_signature_base64": ...,
-            "mldsa65_signature_base64": ...}``.
-        granter_member: the human granter's pinned pubkeys (same shape as
-            ``pipeline_member``), resolved by the grant's ``attesting_key_id``.
-        trusted_build_authorities: the trio's "builders I trust" set. Pass
-            ``None``/``[]`` to verify the chain *without* the trust decision —
-            useful to surface which human a build roots in before deciding.
+            "mldsa65_public_key_base64": ...}``. Resolve it from your key
+            directory, never from the object.
+        blessing: your capability walk's answer for the pipeline —
+            either ``{"pipeline_key_id": ..., "standing": "delegation" |
+            "family_quorum", "root_key_id": ..., "grant_attestation_id": ...}``
+            (persist's capability walk ``TrustedGrant``; reader-relative), or
+            ``{"pipeline_key_id": ..., "standing": "accord_role"}`` (persist's
+            ``is_infra_attest_effective`` — the accord ci-key ceremony's
+            blessing, which is what production pipelines hold). Anything else
+            raises ValueError.
 
     Returns:
-        On trust: ``{"trusted": True, "attested_by": ..., "on_behalf_of": ...,
-        "target": ..., "build_id": ..., "binary_hash": ...,
-        "binary_version": ..., "manifest_hash": ..., "evidence_refs": [...]}``
-        (``evidence_refs`` names the manifest blob the Contribution vouches for,
-        CIRISVerify#281; empty for a pre-#281 Contribution). On rejection:
-        ``{"trusted": False, "reason": "..."}`` naming the first failing step.
+        On success: ``{"verified": True, "attested_by", "standing",
+        "conferred_by" (walk standings only), "grant_attestation_id" (walk
+        standings only),
+        "attestation_id", "asserted_at", "target",
+        "build_id", "binary_hash", "binary_version", "manifest_hash",
+        "manifest_size", "evidence_refs": [...]}``. On rejection:
+        ``{"verified": False, "reason": "..."}`` naming the first failing step.
 
     Raises:
         ValueError: the request itself is malformed (a caller error, NOT a
@@ -166,8 +157,6 @@ def verify_build_manifest_contribution(
         {
             "object": obj,
             "pipeline_member": pipeline_member,
-            "grant": grant,
-            "granter_member": granter_member,
-            "trusted_build_authorities": trusted_build_authorities or [],
+            "blessing": blessing,
         },
     )

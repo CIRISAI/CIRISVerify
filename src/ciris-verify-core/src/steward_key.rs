@@ -379,7 +379,7 @@ mod tests {
         let r = sample_response();
         let entries = r.to_attestation_entries("us-steward-2026");
         assert_eq!(entries.len(), 1);
-        assert_eq!(entries[0].dimension, "cert_validity:us-steward-2026");
+        assert_eq!(entries[0].dimension, "cert_validity:us-steward-2026:v1");
         assert_eq!(entries[0].attester, "us-steward-2026");
         assert!(entries[0]
             .source_ref

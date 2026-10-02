@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# CIRISVerify#296 + #297 item 1 — every `hardware_custody:{platform}:{version}` dimension this
-# crate can emit must be ACCEPTED by CIRISConstitution's own namespace matcher.
+# CIRISVerify#296, #297 item 1, #299 — every dimension this crate can emit must be
+# ACCEPTED by CIRISConstitution's own namespace matcher AND resolve to a registered
+# family (open vocabulary passes the matcher without a family, which would admit
+# under the default authority — the wrong home for anything verify emits).
 #
 # Why a script and not only a Rust test: the authority is CC's matcher, not our
 # reading of its registry JSON. Reading the JSON is what produced the wrong
@@ -17,6 +19,10 @@ CC="${CIRIS_CONSTITUTION_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd
 MATCHER="$CC/tools/cc_namespace_match.py"
 
 if [[ ! -f "$MATCHER" ]]; then
+  if [[ "${CIRIS_CC_REQUIRED:-}" == "1" ]]; then
+    echo "FAIL: CC matcher not found at $MATCHER and CIRIS_CC_REQUIRED=1 — a skipped guard is not a passing one"
+    exit 1
+  fi
   echo "SKIP: CC matcher not found at $MATCHER (set CIRIS_CONSTITUTION_DIR)"
   exit 0
 fi
@@ -29,12 +35,70 @@ if [[ -z "$TOKENS" ]]; then
   exit 1
 fi
 
-VERSION=$(grep -oE 'HARDWARE_CUSTODY_VERSION: &str = "v[0-9]+"' \
+VERSION=$(grep -oE 'DIMENSION_VERSION: &str = "v[0-9]+"' \
           src/ciris-verify-core/src/federation_provenance.rs | grep -oE 'v[0-9]+')
 if [[ -z "$VERSION" ]]; then
-  echo "FAIL: could not read HARDWARE_CUSTODY_VERSION"
+  echo "FAIL: could not read DIMENSION_VERSION"
   exit 1
 fi
+
+# Every OTHER family, derived from the `dim` module's own constructors rather
+# than a second list (CIRISVerify#299: 18.0.0 fixed one family and left eight
+# siblings untailed, because nothing replayed them). Each `format!` template and
+# each `&str` constant in `pub mod dim` is instantiated with a sample value per
+# placeholder.
+mapfile -t FAMILY_DIMS < <(python3 - "$VERSION" <<'PYEOF'
+import pathlib, re, sys
+version = sys.argv[1]
+src = pathlib.Path("src/ciris-verify-core/src/federation_provenance.rs").read_text()
+# The `dim` module only — never the tests, whose format! calls are not emitters.
+mod = src[src.index("pub mod dim {"):src.index("#[cfg(test)]")]
+consts = dict(re.findall(r'pub const ([A-Z_]+): &str = "([^"]*)";', mod))
+out = []
+for tmpl in re.findall(r'format!\(\s*"([^"]+)"', mod):
+    def sub(m):
+        name = m.group(1)
+        if name == "DIMENSION_VERSION":
+            return version
+        if name in consts:
+            return consts[name]
+        return {"level": "2", "tree_size": "42", "lang_code": "my",
+                "source": "registry:main", "platform": "software_only"}.get(name, "x")
+    out.append(re.sub(r"\{([A-Za-z_]+)\}", sub, tmpl))
+for name, val in consts.items():
+    # Prefixes end in ':' and are not dimensions; the version constant is not one.
+    if ":" in val and not val.endswith(":"):
+        out.append(val)
+for d in sorted(set(out)):
+    print(d)
+PYEOF
+)
+if [[ ${#FAMILY_DIMS[@]} -lt 10 ]]; then
+  echo "FAIL: derived only ${#FAMILY_DIMS[@]} dimensions from pub mod dim — the parser broke"
+  exit 1
+fi
+echo "replaying ${#FAMILY_DIMS[@]} dim-module dimensions through $MATCHER"
+FOUT=$(cd "$CC" && python3 "$MATCHER" "${FAMILY_DIMS[@]}")
+echo "$FOUT"
+if grep -qv 'refusal=None' <<< "$FOUT" || grep -q -- '-> None ' <<< "$FOUT"; then
+  echo
+  echo "FAIL: a dim-module dimension is REFUSED or resolves to no registered family:"
+  grep -v 'refusal=None' <<< "$FOUT" || true
+  grep -- '-> None ' <<< "$FOUT" || true
+  exit 1
+fi
+# Negative control: the pre-19.0.0 untailed forms MUST be refused.
+FBAD=("provenance:build_manifest:python-source-tree" "provenance:slsa:2" \
+      "rollback_detected:revision" "cert_validity:steward" "transparency_log:inclusion" \
+      "provenance:skill_import:registry:main" "delegates_to")
+FBADOUT=$(cd "$CC" && python3 "$MATCHER" "${FBAD[@]}")
+if grep -q 'refusal=None' <<< "$FBADOUT"; then
+  echo
+  echo "FAIL: a known-bad untailed dimension was ACCEPTED — the check proves nothing:"
+  grep 'refusal=None' <<< "$FBADOUT"
+  exit 1
+fi
+echo "dim-module families: ${#FAMILY_DIMS[@]} accepted, ${#FBAD[@]} untailed forms refused ✓"
 
 DIMS=()
 while read -r tok; do DIMS+=("hardware_custody:${tok}:${VERSION}"); done <<< "$TOKENS"

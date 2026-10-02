@@ -636,7 +636,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(
             entries[0].dimension,
-            "provenance:build_manifest:ios-mobile-bundle:locale:my"
+            "provenance:build_manifest:ios-mobile-bundle:locale:my:v1"
         );
         assert_eq!(entries[0].score, 1.0);
         assert!(entries[0]

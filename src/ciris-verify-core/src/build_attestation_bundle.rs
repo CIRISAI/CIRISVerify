@@ -5,8 +5,8 @@
 //!
 //! Before this module verify had two halves that never met:
 //!
-//! - [`crate::manifest_contribution`] binds **pipeline → build M** (a CI key,
-//!   accord-co-scrubbed, signs "this build is approved"). It says nothing about
+//! - [`crate::manifest_contribution`] binds **pipeline → build M** (a CI key
+//!   with `infra:attest` signs "this build is approved"). It says nothing about
 //!   who is *presenting* it.
 //! - [`crate::transport_binding`] binds **key K → transport identity T**. It says
 //!   nothing about what code K runs.
@@ -26,10 +26,10 @@
 //! Stated honestly, because the boundary is the whole point:
 //!
 //! - **Proved:** the holder of K's federation private key signed *this*
-//!   assertion, over *this* fresh envelope, referencing a manifest that
-//!   **independently roots** to the accord anchors via the pipeline's co-scrub
-//!   (CIRISVerify#185) — and, when an inclusion proof rides along, that the
-//!   manifest is a logged leaf under the committed root.
+//!   assertion, over *this* fresh envelope, referencing a manifest the pipeline
+//!   signed, whose pipeline the **caller's own capability walk** found blessed
+//!   (a [`crate::manifest_contribution::PipelineBlessing`], FSD-006 §5) — and, when an inclusion proof rides
+//!   along, that the manifest is a logged leaf under the committed root.
 //! - **NOT proved:** that the presenter is *actually executing* that binary.
 //!   Remote code execution is not remotely provable. The presenter's claim is an
 //!   **assertion**; its value is that it is *attributable* (signed by K) and
@@ -77,9 +77,8 @@ use serde_json::{json, Value};
 use crate::ceg_outbox::SignedCegObject;
 use crate::error::VerifyError;
 use crate::federation_provenance::{dim, AttestationEntry};
-use crate::federation_self_record::KeyRecord;
 use crate::manifest_contribution::{
-    verify_build_manifest_via_coscrub, ManifestRejection, VerifiedManifest,
+    verify_build_manifest_contribution, ManifestRejection, PipelineBlessing, VerifiedManifest,
 };
 use crate::self_at_login::SelfSigner;
 use crate::threshold::{verify_threshold_signatures, ThresholdMember, ThresholdSignature};
@@ -88,8 +87,49 @@ use crate::transparency::{hash_leaf, verify_inclusion, MerkleProof};
 /// CEG `kind` for a build-attestation bundle in the outbox / on the wire.
 pub const BUILD_ATTESTATION_BUNDLE_KIND: &str = "build_attestation_bundle";
 
+/// Which trust-ladder row the presenter's "I run build M" rides (FSD-006 Q6,
+/// steward ruling 2026-10-01, CC 3.1.2.1 rc6). A node's statement that it runs
+/// a build is not a second claim on the pipeline's
+/// `provenance:build_manifest:{target}` and needs no new family: it is the
+/// build attestation the ladder already carries, signed by the running node
+/// about itself.
+///
+/// Closed on purpose: a target neither row covers (a server binary, say) is a
+/// **ladder gap to report to CC** (CIRISConstitution#137), not a dimension for
+/// a presenter to choose.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PresentedBuild {
+    /// The verifier's own binary — `attestation:self_verify`.
+    SelfVerify,
+    /// An agent's source tree — `attestation:agent_integrity`.
+    AgentIntegrity,
+}
+
+impl PresentedBuild {
+    /// The ladder dimension this claim rides.
+    #[must_use]
+    pub const fn dimension(self) -> &'static str {
+        match self {
+            Self::SelfVerify => dim::SELF_VERIFY,
+            Self::AgentIntegrity => dim::AGENT_INTEGRITY,
+        }
+    }
+
+    /// Parse a presented dimension; `None` for anything off the two rows.
+    #[must_use]
+    pub fn from_dimension(d: &str) -> Option<Self> {
+        match d {
+            dim::SELF_VERIFY => Some(Self::SelfVerify),
+            dim::AGENT_INTEGRITY => Some(Self::AgentIntegrity),
+            _ => None,
+        }
+    }
+}
+
 /// The evidence a presenter packages into a bundle.
 pub struct BundleInputs<'a> {
+    /// Which ladder row the presenter's claim rides.
+    pub presents: PresentedBuild,
     /// The pipeline-signed `build_manifest_contribution` for the build the
     /// presenter claims to run (CIRISVerify#185). Carried whole as hash-bound
     /// evidence; the verifier re-roots it independently.
@@ -136,36 +176,48 @@ fn commitment_hex(obj: &SignedCegObject) -> Result<String, VerifyError> {
 pub async fn produce_build_attestation_bundle(
     presenter: &dyn SelfSigner,
     inputs: &BundleInputs<'_>,
-    signed_at: &str,
+    asserted_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<SignedCegObject, VerifyError> {
     let manifest_env = inputs
         .manifest_contribution
         .body
         .get("signed_envelope")
-        .and_then(|e| e.get("build"))
         .ok_or_else(|| VerifyError::IntegrityError {
-            message: "manifest contribution has no signed_envelope.build".into(),
+            message: "manifest contribution has no signed_envelope".into(),
         })?;
-    let field = |name: &str| -> Result<String, VerifyError> {
-        manifest_env
-            .get(name)
+    let read = |v: &Value, path: &[&str]| -> Result<String, VerifyError> {
+        path.iter()
+            .try_fold(v, |acc, k| acc.get(k))
             .and_then(Value::as_str)
             .map(str::to_string)
             .ok_or_else(|| VerifyError::IntegrityError {
-                message: format!("manifest contribution build.{name} missing"),
+                message: format!("manifest contribution {} missing", path.join(".")),
             })
     };
-    let target = field("target")?;
-    let build_id = field("build_id")?;
+    // The Contribution this claim cites, by its row id, and the blob it names.
+    let manifest_attestation_id = read(manifest_env, &["row", "attestation_id"])?;
+    let manifest_hash = read(manifest_env, &["build", "manifest_hash"])?;
 
+    let asserted_at = crate::manifest_contribution::render_signed_instant(asserted_at);
+    let presenter_key_id = presenter.key_id();
     let mut envelope = json!({
-        "attestation_type": "scores",
-        "attesting_key_id": presenter.key_id(),
-        "dimension": dim::provenance_build_manifest(&target),
-        "score": 1,
-        "subject_key_ids": [build_id],
+        "asserted_at": asserted_at,
+        "dimension": inputs.presents.dimension(),
+        // CC 3.1.2.1: the blob is cited from evidence_refs (it is served, so a
+        // pull can fire on it); the Contribution is cited by its row id.
+        "evidence_refs": [manifest_hash],
+        "references_attestation_id": manifest_attestation_id,
+        // Binds this claim to the exact Contribution object carried beside it.
         "manifest_contribution_sha256": commitment_hex(inputs.manifest_contribution)?,
-        "signed_at": signed_at,
+        "row": {
+            "attestation_id": crate::manifest_contribution::mint_attestation_id()?,
+            "attestation_type": "scores",
+            "attested_key_id": presenter_key_id,
+            "attesting_key_id": presenter_key_id,
+            "cohort_scope": "federation",
+            "subject_key_ids": [],
+        },
+        "score": 1,
     });
 
     // §0.9 materialize-when-present: the transparency root appears only when an
@@ -197,8 +249,8 @@ pub async fn produce_build_attestation_bundle(
 
     Ok(SignedCegObject::new(
         BUILD_ATTESTATION_BUNDLE_KIND,
-        presenter.key_id(),
-        signed_at,
+        presenter_key_id,
+        asserted_at,
         body,
     ))
 }
@@ -232,6 +284,8 @@ pub enum TransparencyCheck {
 pub struct BundleVerdict {
     /// The federation `key_id` that signed the bundle — the **presenter**.
     pub presenter_key_id: String,
+    /// Which ladder row the presenter's claim rides.
+    pub presents: PresentedBuild,
     /// The build facts, taken from the *pipeline-signed* manifest after it was
     /// independently re-rooted — never from the presenter's claims.
     pub build: VerifiedManifest,
@@ -242,6 +296,7 @@ pub struct BundleVerdict {
 /// Why a bundle was **not** accepted. Every variant is a hard reject; there is
 /// no partial-trust path (fail-closed).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum BundleRejection {
     /// The object is not a `build_attestation_bundle`.
     WrongKind {
@@ -267,7 +322,7 @@ pub enum BundleRejection {
     /// The carried manifest does not hash to the commitment the presenter
     /// signed — the evidence was swapped after signing.
     EvidenceCommitmentMismatch,
-    /// The carried manifest did not verify / did not root to the accord anchors.
+    /// The carried manifest did not verify, or the blessing names another pipeline.
     ManifestRejected(ManifestRejection),
     /// The presenter's envelope disagrees with the verified manifest (e.g. the
     /// `dimension` names a different target than the manifest attests) — a
@@ -329,15 +384,20 @@ fn str_field<'a>(v: &'a Value, field: &'static str) -> Result<&'a str, BundleRej
 ///    never from the object).
 /// 3. The carried manifest hashes to the signed `manifest_contribution_sha256`
 ///    commitment.
-/// 4. The carried manifest independently verifies and roots to the accord
-///    anchors via the pipeline co-scrub ([`verify_build_manifest_via_coscrub`]).
-/// 5. The presenter's `dimension` matches the verified manifest's target —
-///    the presenter cannot claim one build while carrying another's proof.
+/// 4. The carried manifest verifies ([`verify_build_manifest_contribution`])
+///    against `pipeline_member`, and `blessing` names its pipeline. Whether the
+///    pipeline is blessed is the caller's walk — persist's
+///    `capability_roots_to_trusted_root(.., "infra:attest")` — which this
+///    function cannot see and does not re-derive (FSD-006 §5).
+/// 5. The presenter's claim rides a trust-ladder row ([`PresentedBuild`]),
+///    cites **this** Contribution by `references_attestation_id`, and names its
+///    blob in `evidence_refs` — the presenter cannot claim one build while
+///    carrying another's proof.
 /// 6. If an inclusion proof is carried, it reconstructs, its root matches the
 ///    signed commitment, and its leaf is **this** manifest.
 ///
-/// `presenter_member` / `pipeline_member` / `accord_anchor_members` are all
-/// pinned by the **caller**. Nothing is trusted from the object itself.
+/// `presenter_member` / `pipeline_member` / `blessing` all come from the
+/// **caller**. Nothing is trusted from the object itself.
 ///
 /// Cheap and offline by construction — see the DoS note in the module docs.
 ///
@@ -348,8 +408,7 @@ pub fn verify_build_attestation_bundle(
     bundle: &SignedCegObject,
     presenter_member: &ThresholdMember,
     pipeline_member: &ThresholdMember,
-    pipeline_record: &KeyRecord,
-    accord_anchor_members: &[ThresholdMember],
+    blessing: &PipelineBlessing,
 ) -> Result<BundleVerdict, BundleRejection> {
     if bundle.kind != BUILD_ATTESTATION_BUNDLE_KIND {
         return Err(BundleRejection::WrongKind {
@@ -371,7 +430,15 @@ pub fn verify_build_attestation_bundle(
         .and_then(Value::as_str);
 
     // --- 2. Presenter signature verifies AND binds to the pinned member. ---
-    let attesting_key_id = str_field(env, "attesting_key_id")?;
+    let row = env
+        .get("row")
+        .ok_or(BundleRejection::Malformed { field: "row" })?;
+    let attesting_key_id = str_field(row, "attesting_key_id")?;
+    if str_field(row, "attested_key_id")? != attesting_key_id {
+        return Err(BundleRejection::Malformed {
+            field: "row.attested_key_id (a presenter's claim is about itself)",
+        });
+    }
     if attesting_key_id != presenter_member.member_id {
         return Err(BundleRejection::PresenterKeyMismatch {
             envelope: attesting_key_id.to_string(),
@@ -411,23 +478,38 @@ pub fn verify_build_attestation_bundle(
         return Err(BundleRejection::EvidenceCommitmentMismatch);
     }
 
-    // --- 4. The manifest roots to the accord anchors on its own merits. ---
-    let build = verify_build_manifest_via_coscrub(
-        &manifest,
-        pipeline_member,
-        pipeline_record,
-        accord_anchor_members,
-    )
-    .map_err(BundleRejection::ManifestRejected)?;
+    // --- 4. The manifest verifies, and the caller's blessing names its pipeline. ---
+    let build = verify_build_manifest_contribution(&manifest, pipeline_member, blessing)
+        .map_err(BundleRejection::ManifestRejected)?;
 
-    // --- 5. The presenter's claim matches what the manifest actually attests. ---
-    let claimed_dimension = str_field(env, "dimension")?;
-    let expected_dimension = dim::provenance_build_manifest(&build.target);
-    if claimed_dimension != expected_dimension {
+    // --- 5. The presenter's claim is a ladder claim citing THIS Contribution. ---
+    let presents = PresentedBuild::from_dimension(str_field(env, "dimension")?).ok_or(
+        BundleRejection::Malformed {
+            field: "dimension (not attestation:self_verify / attestation:agent_integrity)",
+        },
+    )?;
+    let cited = str_field(env, "references_attestation_id")?;
+    if cited != build.attestation_id {
         return Err(BundleRejection::PresentedBuildDiverges {
-            field: "dimension",
-            expected: expected_dimension,
-            found: claimed_dimension.to_string(),
+            field: "references_attestation_id",
+            expected: build.attestation_id.clone(),
+            found: cited.to_string(),
+        });
+    }
+    let names_the_blob = env
+        .get("evidence_refs")
+        .and_then(Value::as_array)
+        .is_some_and(|r| {
+            r.iter()
+                .any(|x| x.as_str() == Some(build.manifest_hash.as_str()))
+        });
+    if !names_the_blob {
+        return Err(BundleRejection::PresentedBuildDiverges {
+            field: "evidence_refs",
+            expected: build.manifest_hash.clone(),
+            found: env
+                .get("evidence_refs")
+                .map_or_else(String::new, Value::to_string),
         });
     }
 
@@ -457,6 +539,7 @@ pub fn verify_build_attestation_bundle(
 
     Ok(BundleVerdict {
         presenter_key_id: attesting_key_id.to_string(),
+        presents,
         build,
         transparency,
     })
@@ -479,11 +562,11 @@ impl BundleVerdict {
     /// N genuinely distinct attesters from one build echoed N times.
     #[must_use]
     pub fn to_attestation_entries(&self, attester: &str) -> Vec<AttestationEntry> {
-        let mut entries = vec![AttestationEntry::pass(
-            dim::provenance_build_manifest(&self.build.target),
-            attester,
-        )
-        .with_source_ref(self.build.manifest_hash.clone())];
+        // The presenter's ladder claim, as observed by `attester` — NOT the
+        // pipeline's `provenance:build_manifest` dimension, which belongs to
+        // the pipeline's own Contribution (FSD-006 Q6).
+        let mut entries = vec![AttestationEntry::pass(self.presents.dimension(), attester)
+            .with_source_ref(self.build.manifest_hash.clone())];
 
         // The transparency leg is reported only when it was actually exercised;
         // absence is not a failure on the SW-friendly path.
@@ -513,12 +596,14 @@ impl BundleRejection {
     /// evidence (which an honest peer and a well-resourced impostor both can).
     /// Scorers should weight a failure far more heavily than a success.
     ///
-    /// `target` is the build target when known; use `"unknown"` when the
-    /// rejection happened before the target could be established.
+    /// `presents` is the ladder row the refuted claim rode.
     #[must_use]
-    pub fn to_attestation_entry(&self, attester: &str, target: &str) -> AttestationEntry {
-        AttestationEntry::fail(dim::provenance_build_manifest(target), attester)
-            .with_source_ref(self.to_string())
+    pub fn to_attestation_entry(
+        &self,
+        attester: &str,
+        presents: PresentedBuild,
+    ) -> AttestationEntry {
+        AttestationEntry::fail(presents.dimension(), attester).with_source_ref(self.to_string())
     }
 }
 
@@ -528,22 +613,16 @@ mod tests {
     use crate::manifest_contribution::{sign_build_manifest_contribution, BuildAttestation};
     use crate::self_at_login::HybridSigningIdentity;
 
-    const TS: &str = "2026-07-31T00:00:00Z";
-
-    /// A pipeline identity + an accord-co-scrubbed KeyRecord blessing it for
-    /// `infra:attest`, mirroring the #185 fixture shape.
+    /// A presenter, a pipeline, a manifest the pipeline signed, and the
+    /// blessing the caller's walk would have returned for that pipeline.
     async fn fixture() -> (
         HybridSigningIdentity, // presenter
         HybridSigningIdentity, // pipeline
         SignedCegObject,       // manifest contribution
-        KeyRecord,
-        Vec<ThresholdMember>,
+        PipelineBlessing,
     ) {
         let presenter = HybridSigningIdentity::generate("presenter-node").unwrap();
         let pipeline = HybridSigningIdentity::generate("ci-pipeline").unwrap();
-        let a1 = HybridSigningIdentity::generate("A1").unwrap();
-        let b1 = HybridSigningIdentity::generate("B1").unwrap();
-
         let bh = "aa".repeat(32);
         let mh = "bb".repeat(32);
         let manifest = sign_build_manifest_contribution(
@@ -554,49 +633,27 @@ mod tests {
                 build_id: "build-1",
                 binary_version: "10.6.3",
                 manifest_hash: &mh,
+                manifest_size: 4096,
             },
-            "human-1",
-            "grant-1",
-            TS,
+            chrono::Utc::now(),
         )
         .await
         .unwrap();
-
-        let pm = pipeline.directory_member().unwrap();
-        let record = crate::federation_self_record::produce_multiscrub_key_record(
-            &[&a1, &b1],
-            crate::federation_self_record::ScrubTarget {
-                key_id: pipeline.key_id().to_string(),
-                pubkey_ed25519_base64: pm.ed25519_public_key_base64.clone(),
-                pubkey_ml_dsa_65_base64: pm.mldsa65_public_key_base64.clone().unwrap(),
-                identity_type: "node".to_string(),
-                roles: vec!["infra:attest".to_string()],
-            },
-            TS,
-            None,
-            &[],
-        )
-        .await
-        .unwrap()
-        .record;
-
-        let anchors = vec![
-            a1.directory_member().unwrap(),
-            b1.directory_member().unwrap(),
-        ];
-        (presenter, pipeline, manifest, record, anchors)
+        let blessing = PipelineBlessing::accord_role("ci-pipeline");
+        (presenter, pipeline, manifest, blessing)
     }
 
     #[tokio::test]
     async fn produced_bundle_verifies_and_binds_the_presenter() {
-        let (presenter, pipeline, manifest, record, anchors) = fixture().await;
+        let (presenter, pipeline, manifest, blessing) = fixture().await;
         let bundle = produce_build_attestation_bundle(
             &presenter,
             &BundleInputs {
+                presents: PresentedBuild::SelfVerify,
                 manifest_contribution: &manifest,
                 inclusion: None,
             },
-            TS,
+            chrono::Utc::now(),
         )
         .await
         .unwrap();
@@ -605,8 +662,7 @@ mod tests {
             &bundle,
             &presenter.directory_member().unwrap(),
             &pipeline.directory_member().unwrap(),
-            &record,
-            &anchors,
+            &blessing,
         )
         .unwrap();
 
@@ -621,15 +677,16 @@ mod tests {
     /// else's bundle as its own.
     #[tokio::test]
     async fn another_node_cannot_present_this_bundle_as_its_own() {
-        let (presenter, pipeline, manifest, record, anchors) = fixture().await;
+        let (presenter, pipeline, manifest, blessing) = fixture().await;
         let impostor = HybridSigningIdentity::generate("impostor").unwrap();
         let bundle = produce_build_attestation_bundle(
             &presenter,
             &BundleInputs {
+                presents: PresentedBuild::SelfVerify,
                 manifest_contribution: &manifest,
                 inclusion: None,
             },
-            TS,
+            chrono::Utc::now(),
         )
         .await
         .unwrap();
@@ -638,8 +695,7 @@ mod tests {
             &bundle,
             &impostor.directory_member().unwrap(),
             &pipeline.directory_member().unwrap(),
-            &record,
-            &anchors,
+            &blessing,
         )
         .unwrap_err();
         assert!(matches!(err, BundleRejection::PresenterKeyMismatch { .. }));
@@ -648,14 +704,15 @@ mod tests {
     /// Swapping the carried evidence after signing breaks the commitment.
     #[tokio::test]
     async fn tampered_evidence_breaks_the_commitment() {
-        let (presenter, pipeline, manifest, record, anchors) = fixture().await;
+        let (presenter, pipeline, manifest, blessing) = fixture().await;
         let mut bundle = produce_build_attestation_bundle(
             &presenter,
             &BundleInputs {
+                presents: PresentedBuild::SelfVerify,
                 manifest_contribution: &manifest,
                 inclusion: None,
             },
-            TS,
+            chrono::Utc::now(),
         )
         .await
         .unwrap();
@@ -667,26 +724,26 @@ mod tests {
             &bundle,
             &presenter.directory_member().unwrap(),
             &pipeline.directory_member().unwrap(),
-            &record,
-            &anchors,
+            &blessing,
         )
         .unwrap_err();
         assert_eq!(err, BundleRejection::EvidenceCommitmentMismatch);
     }
 
-    /// A bundle whose manifest does not root to the caller's anchors is
-    /// rejected — the presenter's signature does not launder an unrooted build.
+    /// A blessing the caller's walk returned for a different pipeline does not
+    /// root this bundle's manifest — the presenter's signature does not launder
+    /// an unblessed build.
     #[tokio::test]
-    async fn manifest_that_does_not_root_is_rejected() {
-        let (presenter, pipeline, manifest, record, _) = fixture().await;
-        let stranger = HybridSigningIdentity::generate("stranger").unwrap();
+    async fn a_blessing_for_another_pipeline_does_not_root_the_manifest() {
+        let (presenter, pipeline, manifest, _) = fixture().await;
         let bundle = produce_build_attestation_bundle(
             &presenter,
             &BundleInputs {
+                presents: PresentedBuild::SelfVerify,
                 manifest_contribution: &manifest,
                 inclusion: None,
             },
-            TS,
+            chrono::Utc::now(),
         )
         .await
         .unwrap();
@@ -695,18 +752,114 @@ mod tests {
             &bundle,
             &presenter.directory_member().unwrap(),
             &pipeline.directory_member().unwrap(),
-            &record,
-            &[stranger.directory_member().unwrap()],
+            &PipelineBlessing::accord_role("some-other-pipeline"),
         )
         .unwrap_err();
-        assert!(matches!(err, BundleRejection::ManifestRejected(_)));
+        assert!(matches!(
+            err,
+            BundleRejection::ManifestRejected(
+                ManifestRejection::BlessingNamesAnotherPipeline { .. }
+            )
+        ));
+    }
+
+    /// FSD-006 Q6 / CC 3.1.2.1: the claim rides the ladder, cites the
+    /// Contribution by row id, and names the blob in evidence_refs.
+    #[tokio::test]
+    async fn the_presenter_claim_rides_the_ladder_and_cites_the_contribution() {
+        let (presenter, pipeline, manifest, blessing) = fixture().await;
+        let bundle = produce_build_attestation_bundle(
+            &presenter,
+            &BundleInputs {
+                presents: PresentedBuild::AgentIntegrity,
+                manifest_contribution: &manifest,
+                inclusion: None,
+            },
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+        let env = &bundle.body["signed_envelope"];
+        let m = &manifest.body["signed_envelope"];
+        assert_eq!(env["dimension"], "attestation:agent_integrity");
+        assert_eq!(env["references_attestation_id"], m["row"]["attestation_id"]);
+        assert_eq!(env["evidence_refs"], json!([m["build"]["manifest_hash"]]));
+        assert_eq!(env["row"]["attesting_key_id"], "presenter-node");
+        assert_eq!(env["row"]["attested_key_id"], "presenter-node");
+        assert!(
+            env.get("attesting_key_id").is_none(),
+            "identity is stated once, in row"
+        );
+
+        let v = verify_build_attestation_bundle(
+            &bundle,
+            &presenter.directory_member().unwrap(),
+            &pipeline.directory_member().unwrap(),
+            &blessing,
+        )
+        .unwrap();
+        assert_eq!(v.presents, PresentedBuild::AgentIntegrity);
+    }
+
+    /// A claim citing some other Contribution, re-signed by the presenter, is
+    /// refused even though every signature is genuine.
+    #[tokio::test]
+    async fn a_claim_citing_another_contribution_is_refused() {
+        let (presenter, pipeline, manifest, blessing) = fixture().await;
+        let bundle = produce_build_attestation_bundle(
+            &presenter,
+            &BundleInputs {
+                presents: PresentedBuild::SelfVerify,
+                manifest_contribution: &manifest,
+                inclusion: None,
+            },
+            chrono::Utc::now(),
+        )
+        .await
+        .unwrap();
+        let mut env = bundle.body["signed_envelope"].clone();
+        env["references_attestation_id"] = json!("00000000-0000-4000-8000-000000000000");
+        let resigned = presenter.sign_envelope_async(env).await.unwrap();
+        let mut forged = bundle.clone();
+        let mut body = serde_json::to_value(&resigned).unwrap();
+        body["manifest_contribution"] = bundle.body["manifest_contribution"].clone();
+        forged.body = body;
+
+        let err = verify_build_attestation_bundle(
+            &forged,
+            &presenter.directory_member().unwrap(),
+            &pipeline.directory_member().unwrap(),
+            &blessing,
+        )
+        .unwrap_err();
+        assert!(matches!(
+            err,
+            BundleRejection::PresentedBuildDiverges {
+                field: "references_attestation_id",
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn presented_build_is_closed_over_the_two_ladder_rows() {
+        for p in [PresentedBuild::SelfVerify, PresentedBuild::AgentIntegrity] {
+            assert_eq!(PresentedBuild::from_dimension(p.dimension()), Some(p));
+        }
+        for bad in [
+            "provenance:build_manifest:x:v1",
+            "provenance:runs_build:x:v1",
+            "attestation:hardware_rooted",
+        ] {
+            assert_eq!(PresentedBuild::from_dimension(bad), None, "{bad}");
+        }
     }
 
     /// An inclusion proof for an unrelated leaf must not count, even when the
     /// proof itself reconstructs correctly.
     #[tokio::test]
     async fn inclusion_proof_for_another_leaf_does_not_count() {
-        let (presenter, pipeline, manifest, record, anchors) = fixture().await;
+        let (presenter, pipeline, manifest, blessing) = fixture().await;
         let foreign_leaf = hash_leaf(b"some other log entry");
         let proof = MerkleProof {
             entry_index: 0,
@@ -717,10 +870,11 @@ mod tests {
         let bundle = produce_build_attestation_bundle(
             &presenter,
             &BundleInputs {
+                presents: PresentedBuild::SelfVerify,
                 manifest_contribution: &manifest,
                 inclusion: Some(&proof),
             },
-            TS,
+            chrono::Utc::now(),
         )
         .await
         .unwrap();
@@ -729,8 +883,7 @@ mod tests {
             &bundle,
             &presenter.directory_member().unwrap(),
             &pipeline.directory_member().unwrap(),
-            &record,
-            &anchors,
+            &blessing,
         )
         .unwrap();
         assert_eq!(verdict.transparency, TransparencyCheck::Invalid);
@@ -738,14 +891,15 @@ mod tests {
 
     #[tokio::test]
     async fn verdict_projects_to_measurement_entries() {
-        let (presenter, pipeline, manifest, record, anchors) = fixture().await;
+        let (presenter, pipeline, manifest, blessing) = fixture().await;
         let bundle = produce_build_attestation_bundle(
             &presenter,
             &BundleInputs {
+                presents: PresentedBuild::SelfVerify,
                 manifest_contribution: &manifest,
                 inclusion: None,
             },
-            TS,
+            chrono::Utc::now(),
         )
         .await
         .unwrap();
@@ -753,8 +907,7 @@ mod tests {
             &bundle,
             &presenter.directory_member().unwrap(),
             &pipeline.directory_member().unwrap(),
-            &record,
-            &anchors,
+            &blessing,
         )
         .unwrap();
 
@@ -762,8 +915,8 @@ mod tests {
         assert_eq!(entries.len(), 1, "no transparency proof carried");
         assert!(entries[0].is_pass());
         assert_eq!(
-            entries[0].dimension,
-            "provenance:build_manifest:x86_64-unknown-linux-gnu"
+            entries[0].dimension, "attestation:self_verify",
+            "the presenter's ladder claim, never the pipeline's dimension (FSD-006 Q6)"
         );
         assert_eq!(
             entries[0].source_ref.as_deref(),
@@ -774,11 +927,8 @@ mod tests {
     #[test]
     fn rejection_projects_to_a_failing_entry() {
         let entry = BundleRejection::PresenterSignatureInvalid
-            .to_attestation_entry("ciris-verify", "x86_64-unknown-linux-gnu");
+            .to_attestation_entry("ciris-verify", PresentedBuild::AgentIntegrity);
         assert!(entry.is_fail());
-        assert_eq!(
-            entry.dimension,
-            "provenance:build_manifest:x86_64-unknown-linux-gnu"
-        );
+        assert_eq!(entry.dimension, "attestation:agent_integrity");
     }
 }
