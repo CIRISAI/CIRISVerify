@@ -58,3 +58,4 @@ bindings/python/ciris_verify/ciris_verify_ffi.dll
 android-libs/
 .venv/
 .claude/
+/.cc/

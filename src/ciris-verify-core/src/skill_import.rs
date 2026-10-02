@@ -526,7 +526,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(
             entries[0].dimension,
-            "provenance:skill_import:registry:ciris-registry-us"
+            "provenance:skill_import:registry:ciris-registry-us:v1"
         );
         assert_eq!(entries[0].score, 1.0);
         assert_eq!(entries[0].attester, "registry-steward-us");

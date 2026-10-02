@@ -1,79 +1,121 @@
-//! Build manifest as a CEG `scores` Contribution — the **pipeline-as-delegated-
-//! attester** model (drops the free-floating "steward key").
-//!
-//! ## The trust model
-//!
-//! Authority roots in an accountable human (CC §1.13.2), never a bare build
-//! key. So:
-//!
-//! 1. The CI **pipeline** holds a `node` (infrastructure) hybrid identity — its
-//!    own keyset, made into a nodecode ([`crate::fedcode`], `kind: node`).
-//! 2. The human **grants** the pipeline `delegates_to(human → pipeline,
-//!    infra:attest)` (CC §2.4.1; the existing [`MANIFEST_PUBLISH_SCOPE`] infra
-//!    scope from the #77 split — a `node` may hold `infra:*`, never `agency:*`).
-//!    That grant is "publish manifests on my behalf."
-//! 3. The pipeline signs each build manifest **as the human's delegate** — this
-//!    producer. The Contribution carries `on_behalf_of` (the human) +
-//!    `delegation_ref` (the grant), so a consumer can walk the authority chain
-//!    up from the pipeline's `attesting_key_id` to the human (CC RC24 walk-up).
-//! 4. The canonical infra trio (`ciris-canonical`, [`crate::infrastructure_community`],
-//!    #31) trusts a build iff its chain roots in a human the trio recognizes as
-//!    a build authority — "trust the builds I trust," configured once.
+//! Build manifest as a CEG `scores` Contribution, in the one shape a node can
+//! store (CIRISVerify#299).
 //!
 //! ## The object
 //!
-//! A JCS-canonicalized `scores` Contribution on
-//! `provenance:build_manifest:{target}` ([`crate::federation_provenance`]),
-//! bound-hybrid-signed by the pipeline identity (any [`SelfSigner`]), emitted as
-//! a [`SignedCegObject`] for the CEG outbox → CIRISServer relay → CEG-native
-//! replication by registry/server. The signature is the same threshold-1
-//! bound-hybrid the rest of the federation verifies; no bespoke `/v1/builds`
-//! path.
+//! A `scores` attestation on `provenance:build_manifest:{target}:v1`, signed
+//! bound-hybrid by the CI pipeline's own `node` key, naming the manifest blob
+//! by hash in `evidence_refs`. Its envelope is persist's attestation envelope:
 //!
-//! **Cross-impl flag:** the envelope member set (`on_behalf_of`,
-//! `delegation_ref`, the `build` sub-object, and — since CIRISVerify#281 —
-//! `evidence_refs: [build.manifest_hash]`) is pinned here but flagged for
-//! CIRISServer/Registry cross-confirmation, like the #76 partnership set.
+//! ```json
+//! {
+//!   "asserted_at": "2026-10-01T14:50:29.308Z",
+//!   "build": { "target": "…", "build_id": "…", "binary_hash": "…",
+//!              "binary_version": "…", "manifest_hash": "…",
+//!              "manifest_size": 41237 },
+//!   "delegation_scope": "infra:attest",
+//!   "dimension": "provenance:build_manifest:python-source-tree:v1",
+//!   "evidence_refs": ["<manifest_hash>"],
+//!   "row": { "attestation_id": "…", "attestation_type": "scores",
+//!            "attested_key_id": "<pipeline>", "attesting_key_id": "<pipeline>",
+//!            "cohort_scope": "federation", "subject_key_ids": [] },
+//!   "score": 1
+//! }
+//! ```
 //!
-//! `evidence_refs` is what makes the Contribution *reference* the manifest
-//! blob it vouches for: every blob consumer (CIRISEdge `BlobMeaning::project`,
-//! CIRISPersist `envelope_binds_content`) resolves a blob to its referencing
-//! rows through that array and nothing else, so without it no pull can ever
-//! fire on a manifest. It names exactly the manifest — never `binary_hash`,
-//! since the binary is not a blob on this plane and naming it would claim
-//! bytes nobody serves.
+//! Three properties are load-bearing, and v18 got the first two wrong:
+//!
+//! - **The dimension carries the `:v1` tail.** CC 3.1.7 R3 requires exactly
+//!   one trailing version segment; persist refuses its absence as
+//!   `missing_version_segment`.
+//! - **The row's columns live in the signed `row` mirror** (CIRISPersist#643).
+//!   A node derives `attestation_id`, `attesting_key_id`, `attestation_type`,
+//!   `attested_key_id`, `subject_key_ids` and `cohort_scope` from these bytes,
+//!   so whoever stores the row cannot choose them. They are stated **once**:
+//!   the envelope has no top-level copies that could disagree with the mirror.
+//!   `subject_key_ids` is empty because CC 2.3.2.1 admits only canonical
+//!   key_ids there, and a build id is not one — the build is named by `build`
+//!   and by the blob in `evidence_refs`.
+//! - **`asserted_at` is the one signed instant**, rendered persist's way
+//!   (RFC 3339, UTC, millisecond, `Z` — CC 2.6.2).
+//!
+//! Persist's canonical bytes are JCS, so the pipeline's bound-hybrid signature
+//! over this envelope is what persist re-verifies, unchanged. CIRISRegistry's
+//! `fold_builds::contribution_envelope` spells the same members; the
+//! round-trip test there is the cross-repo witness.
+//!
+//! ## Who may attest a build — and who decides
+//!
+//! A Contribution is worth something only if the pipeline key holds
+//! [`MANIFEST_PUBLISH_SCOPE`]. That answer lives in the node's directory —
+//! grants, role withdrawals, expiry, and which roots *this* node accepts — and
+//! Verify does not re-derive it: a pure function holding a copy of one grant or
+//! one key record cannot see its withdrawal, and a second, staler authority
+//! beside the substrate's is exactly the drift this ecosystem keeps paying for.
+//!
+//! Persist holds **two** authorities that can bless a pipeline, and production
+//! uses the second:
+//!
+//! - the capability walk above (Delegation or FamilyQuorum arm) — a grant; and
+//! - `admission::is_infra_attest_effective(directory, pipeline)` — the
+//!   `infra:attest` role inside the pipeline's accord-co-scrubbed key record,
+//!   which is what CIRISServer's `/v1/accord/ci-key` ceremony writes.
+//!
+//! So the verifier takes a [`PipelineBlessing`] stating which authority the
+//! caller asked and what it answered, and checks that it names **this**
+//! pipeline. A call site cannot reach a [`VerifiedManifest`] without having
+//! asked one of them.
+//!
+//! (Until 19.0.0 verify carried two authority models of its own: a one-hop
+//! grant check, and an accord co-scrub check on the pipeline's key record. The
+//! co-scrub check was the right *question* — it is what persist's
+//! `is_infra_attest_effective` answers — but verify's copy could not see a
+//! quorum role-withdrawal, so a withdrawn pipeline still verified. Both are
+//! gone; the substrate, which sees withdrawals, answers.)
 
+use chrono::{DateTime, Timelike, Utc};
 use serde_json::{json, Value};
 
 use crate::ceg_outbox::SignedCegObject;
 use crate::error::VerifyError;
-use crate::federation_self_record::KeyRecord;
-use crate::operational_admit::verify_delegation_scope_split;
-use crate::self_at_login::{SelfSigner, SignedEnvelope};
+use crate::self_at_login::SelfSigner;
 use crate::threshold::{verify_threshold_signatures, ThresholdMember, ThresholdSignature};
 
-/// Distinct accord co-scrubs a pipeline `KeyRecord` needs to be a blessed build
-/// signer (CIRISVerify#185) — the same **≥2 distinct anchor** quorum
-/// CIRISPersist confers the `canonical` role on (#174 / #383). One scrub is not
-/// a blessing; a single compromised holder cannot mint a manifest authority.
-pub const MIN_ACCORD_COSCRUBS: usize = 2;
-
-/// The `infra:*` scope a pipeline must hold (via `delegates_to`) to publish
-/// manifests on a human's behalf — the existing #77 "attest on my behalf" scope.
+/// The `infra:*` scope a pipeline must hold to publish build manifests (the
+/// #77 "attest on my behalf" scope). Persist's capability walk asks for
+/// exactly this token.
 pub const MANIFEST_PUBLISH_SCOPE: &str = "infra:attest";
 
 /// CEG `kind` for a build-manifest Contribution in the outbox.
 pub const BUILD_MANIFEST_CONTRIBUTION_KIND: &str = "build_manifest_contribution";
 
+/// The `attestation_type` of a build-manifest Contribution.
+const ATTESTATION_TYPE_SCORES: &str = "scores";
+
+/// The `cohort_scope` a build-manifest Contribution is published at.
+const COHORT_SCOPE_FEDERATION: &str = "federation";
+
+/// The members persist's `RowMirror` admits (`deny_unknown_fields`). A row
+/// carrying anything else is refused there, so it is refused here too.
+const ROW_MIRROR_MEMBERS: &[&str] = &[
+    "attestation_id",
+    "attesting_key_id",
+    "attestation_type",
+    "attested_key_id",
+    "subject_key_ids",
+    "cohort_scope",
+    "weight",
+];
+
 /// The build facts a manifest Contribution attests. (The full file manifest
 /// stays available by `manifest_hash`; the Contribution carries the trust-
-/// bearing facts so the trio can decide without fetching the file list.)
+/// bearing facts so a consumer can decide without fetching the file list.)
 pub struct BuildAttestation<'a> {
-    /// Rust target triple (e.g. `x86_64-unknown-linux-gnu`).
+    /// Build target (a Rust triple, `python-source-tree`, …).
     pub target: &'a str,
     /// SHA-256 of the built binary, hex.
     pub binary_hash: &'a str,
-    /// The build identifier (the Contribution's subject).
+    /// The build identifier.
     pub build_id: &'a str,
     /// The binary's version string.
     pub binary_version: &'a str,
@@ -87,6 +129,11 @@ pub struct BuildAttestation<'a> {
     /// upper-case value would produce a ref that exists and **never
     /// matches** — so the producer refuses it rather than emit it.
     pub manifest_hash: &'a str,
+    /// The manifest blob's length in bytes. CC 5.3.2.5: a descriptor citing a
+    /// blob from `evidence_refs` carries its size, and a fetcher checks size
+    /// **before** the full SHA, so an oversized or truncated body is refused
+    /// without hashing it. `build` is that descriptor (CC 3.1.2.1).
+    pub manifest_size: u64,
 }
 
 /// Is `s` exactly 64 lowercase hex chars — the one form a blob consumer will
@@ -97,34 +144,70 @@ fn is_bare_sha256_hex(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// The `provenance:build_manifest:{target}` dimension this attests.
+/// The `provenance:build_manifest:{target}:v1` dimension a Contribution for
+/// `target` attests. One spelling, shared with
+/// [`crate::federation_provenance::dim::provenance_build_manifest`].
 #[must_use]
 pub fn build_manifest_dimension(target: &str) -> String {
-    format!("provenance:build_manifest:{target}")
+    crate::federation_provenance::dim::provenance_build_manifest(target)
 }
 
-/// Sign a build-manifest Contribution **as the human's delegate**.
+/// Render a signed instant the way persist mints and binds it (CC 2.6.2):
+/// truncated to the millisecond, RFC 3339, UTC, `Z` suffix.
 ///
-/// `pipeline` is the pipeline's hybrid `node` identity (owner-bound to
-/// `on_behalf_of` via the `delegation_ref` grant). The output verifies as a
-/// threshold-1 bound-hybrid signature against the pipeline's pinned pubkeys;
-/// the consumer additionally walks the authority chain to `on_behalf_of` and
-/// checks the trio trusts that human.
+/// Truncated **before** rendering, so the signed string and any column a node
+/// derives from it are the same instant by construction.
+#[must_use]
+pub fn render_signed_instant(t: DateTime<Utc>) -> String {
+    let millis = t.nanosecond() / 1_000_000 * 1_000_000;
+    t.with_nanosecond(millis)
+        .unwrap_or(t)
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+}
+
+/// Mint a row's `attestation_id`: a random UUIDv4, drawn through the
+/// SP 800-90B-latched RNG (#74) like every other value this crate mints.
+///
+/// Minted into the signed bytes, so one envelope can only ever name one row —
+/// the reason persist moved the id inside the signature (CIRISPersist#643).
+pub(crate) fn mint_attestation_id() -> Result<String, VerifyError> {
+    let mut b = [0u8; 16];
+    ciris_crypto::random::fill(&mut b).map_err(|e| VerifyError::IntegrityError {
+        message: format!("attestation_id draw failed closed: {e}"),
+    })?;
+    b[6] = (b[6] & 0x0f) | 0x40; // version 4
+    b[8] = (b[8] & 0x3f) | 0x80; // RFC 4122 variant
+    let h = hex::encode(b);
+    Ok(format!(
+        "{}-{}-{}-{}-{}",
+        &h[0..8],
+        &h[8..12],
+        &h[12..16],
+        &h[16..20],
+        &h[20..32]
+    ))
+}
+
+/// Sign a build-manifest Contribution with the pipeline's own key.
+///
+/// The output's `body` is a signed envelope (`signed_envelope`,
+/// `ed25519_signature_base64`, `mldsa65_signature_base64`) that a node stores
+/// as-is: every column comes out of the signed `row` mirror. Whether the
+/// pipeline is *blessed* to attest builds is not something the producer can
+/// state — see the module docs.
 ///
 /// # Errors
 ///
-/// [`VerifyError`] only on a canonicalization or signer fault.
+/// [`VerifyError`] if `manifest_hash` is not bare lowercase sha256 hex, if the
+/// RNG health latch has tripped, or on a canonicalization or signer fault.
 pub async fn sign_build_manifest_contribution(
     pipeline: &dyn SelfSigner,
     build: &BuildAttestation<'_>,
-    on_behalf_of: &str,
-    delegation_ref: &str,
-    signed_at: &str,
+    asserted_at: DateTime<Utc>,
 ) -> Result<SignedCegObject, VerifyError> {
     // CIRISVerify#281: the Contribution must REFERENCE its own blob, and the
     // reference must be in the one form consumers match. Refuse here rather
-    // than emit an `evidence_refs` entry that can never fire — a silent
-    // never-matching ref is the #272 dead-branch class in a new costume.
+    // than emit an `evidence_refs` entry that can never fire.
     if !is_bare_sha256_hex(build.manifest_hash) {
         return Err(VerifyError::IntegrityError {
             message: format!(
@@ -135,27 +218,33 @@ pub async fn sign_build_manifest_contribution(
             ),
         });
     }
+    let asserted_at = render_signed_instant(asserted_at);
+    let pipeline_key_id = pipeline.key_id();
     let envelope = json!({
-        "attestation_type": "scores",
-        "attesting_key_id": pipeline.key_id(),
-        "dimension": build_manifest_dimension(build.target),
-        "score": 1,
-        "subject_key_ids": [build.build_id],
-        "on_behalf_of": on_behalf_of,
-        "delegation_scope": MANIFEST_PUBLISH_SCOPE,
-        "delegation_ref": delegation_ref,
+        "asserted_at": asserted_at,
         "build": {
             "target": build.target,
-            "binary_hash": build.binary_hash,
             "build_id": build.build_id,
+            "binary_hash": build.binary_hash,
             "binary_version": build.binary_version,
             "manifest_hash": build.manifest_hash,
+            "manifest_size": build.manifest_size,
         },
+        "delegation_scope": MANIFEST_PUBLISH_SCOPE,
+        "dimension": build_manifest_dimension(build.target),
         // CIRISVerify#281: the blob this Contribution vouches for. Exactly the
         // manifest — NOT `binary_hash`: the binary is not a blob on this plane,
         // and naming it would claim bytes nobody serves.
         "evidence_refs": [build.manifest_hash],
-        "signed_at": signed_at,
+        "row": {
+            "attestation_id": mint_attestation_id()?,
+            "attestation_type": ATTESTATION_TYPE_SCORES,
+            "attested_key_id": pipeline_key_id,
+            "attesting_key_id": pipeline_key_id,
+            "cohort_scope": COHORT_SCOPE_FEDERATION,
+            "subject_key_ids": [],
+        },
+        "score": 1,
     });
 
     let signed = pipeline.sign_envelope_async(envelope).await?;
@@ -164,34 +253,140 @@ pub async fn sign_build_manifest_contribution(
     })?;
     Ok(SignedCegObject::new(
         BUILD_MANIFEST_CONTRIBUTION_KIND,
-        pipeline.key_id(),
-        signed_at,
+        pipeline_key_id,
+        asserted_at,
         body,
     ))
 }
 
 // ===========================================================================
-// Consumer side: verify a build-manifest Contribution end-to-end.
-//
-// This is the verify-side primitive CIRISServer (#25) calls when it drains the
-// CEG outbox. Per the #65 two-quorums split, *signature + authority
-// verification is Verify's* — the substrate's merge logic never counts
-// signatures. The server resolves the pinned pubkeys from its key directory and
-// the trusted-author set from the trio's config, then asks this one function
-// "should I trust this build?".
+// Consumer side.
 // ===========================================================================
 
-/// The trust-bearing facts of a build, returned once a Contribution has passed
-/// the full chain. The server stores/relays these — never the unverified body.
+/// Which arm of persist's **capability walk** conferred the scope. Mirrors the
+/// two arms of persist's `trust_root::ConferralPlane` that can bless a pipeline.
+///
+/// The walk's third arm, `AccordCoScrub`, is deliberately absent: it makes the
+/// subject itself the candidate root and then requires `trust_root_valid` on it
+/// (a self-charter, a recovery commitment, a fresh heartbeat), which a build
+/// pipeline never has. So it cannot produce a pipeline blessing, and a value that
+/// claims it could would be a wrong state. The accord co-scrub reaches a
+/// pipeline through [`PipelineStanding::AccordRole`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WalkPlane {
+    /// A live `delegates_to(root → pipeline)` grant (`trust:confers:v1`).
+    Delegation,
+    /// A grant whose scrub set reached a constitutional family's quorum. The
+    /// root is the **family id**, not a key.
+    FamilyQuorum,
+}
+
+/// How the pipeline came to hold [`MANIFEST_PUBLISH_SCOPE`] — the answer of
+/// whichever persist authority the caller asked. Verify cannot ask either one
+/// (both read the caller's directory), so the caller states it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PipelineStanding {
+    /// persist's `trust_root::capability_roots_to_trusted_root(directory,
+    /// reader, pipeline, "infra:attest")` returned a `TrustedGrant`.
+    /// **Reader-relative**: it holds for the node that ran it, against the
+    /// roots that node accepts.
+    Conferred {
+        /// The trust root (a family id under [`WalkPlane::FamilyQuorum`]).
+        root_key_id: String,
+        /// The grant that conferred the scope.
+        grant_attestation_id: String,
+        /// Which arm of the walk.
+        plane: WalkPlane,
+    },
+    /// persist's `admission::is_infra_attest_effective(directory, pipeline)`
+    /// returned `true`: the pipeline's key record carries `infra:attest` inside
+    /// its accord-co-scrubbed registration envelope, at the accord's quorum,
+    /// and no quorum role-withdrawal has ended it (CIRISPersist#422/#424).
+    ///
+    /// This is how CIRISServer's `/v1/accord/ci-key/{propose,cosign}` ceremony
+    /// blesses production pipelines (CIRISVerify#185), and it gives a
+    /// `federation`-scope manifest Global reach. Not reader-relative.
+    AccordRole,
+}
+
+impl PipelineStanding {
+    /// Wire name of the standing's source: `delegation` | `family_quorum` |
+    /// `accord_role`.
+    #[must_use]
+    pub const fn plane_str(&self) -> &'static str {
+        match self {
+            Self::Conferred {
+                plane: WalkPlane::Delegation,
+                ..
+            } => "delegation",
+            Self::Conferred {
+                plane: WalkPlane::FamilyQuorum,
+                ..
+            } => "family_quorum",
+            Self::AccordRole => "accord_role",
+        }
+    }
+}
+
+/// The caller's statement that `pipeline_key_id` holds
+/// [`MANIFEST_PUBLISH_SCOPE`], and from which persist authority.
+///
+/// Verify cannot check either authority (both need the directory). What it
+/// checks is that the blessing names the pipeline that actually signed, so a
+/// blessing obtained for one pipeline cannot be spent on another's
+/// Contribution.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PipelineBlessing {
+    /// The pipeline key the authority was asked about.
+    pub pipeline_key_id: String,
+    /// What the authority answered.
+    pub standing: PipelineStanding,
+}
+
+impl PipelineBlessing {
+    /// The walk's answer — from persist's `TrustedGrant`.
+    #[must_use]
+    pub fn conferred(
+        pipeline_key_id: impl Into<String>,
+        root_key_id: impl Into<String>,
+        grant_attestation_id: impl Into<String>,
+        plane: WalkPlane,
+    ) -> Self {
+        Self {
+            pipeline_key_id: pipeline_key_id.into(),
+            standing: PipelineStanding::Conferred {
+                root_key_id: root_key_id.into(),
+                grant_attestation_id: grant_attestation_id.into(),
+                plane,
+            },
+        }
+    }
+
+    /// `is_infra_attest_effective(directory, pipeline_key_id) == true`.
+    #[must_use]
+    pub fn accord_role(pipeline_key_id: impl Into<String>) -> Self {
+        Self {
+            pipeline_key_id: pipeline_key_id.into(),
+            standing: PipelineStanding::AccordRole,
+        }
+    }
+}
+
+/// The facts of a build whose Contribution passed every check. A server stores
+/// or relays these — never the unverified body.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedManifest {
     /// The pipeline `node` key_id that signed the Contribution.
     pub attested_by: String,
-    /// The accountable human the chain roots in (CC §1.13.2).
-    pub on_behalf_of: String,
-    /// Rust target triple.
+    /// How the pipeline holds `infra:attest` (from the [`PipelineBlessing`]).
+    pub standing: PipelineStanding,
+    /// The row id minted into the signed envelope.
+    pub attestation_id: String,
+    /// The signed instant.
+    pub asserted_at: String,
+    /// Build target.
     pub target: String,
-    /// The build identifier (Contribution subject).
+    /// The build identifier.
     pub build_id: String,
     /// SHA-256 of the built binary, hex.
     pub binary_hash: String,
@@ -199,41 +394,37 @@ pub struct VerifiedManifest {
     pub binary_version: String,
     /// SHA-256 of the canonical file manifest, hex.
     pub manifest_hash: String,
-    /// The blob(s) this Contribution references (CIRISVerify#281) — the
-    /// `evidence_refs` a blob consumer keys on. Empty for a Contribution
-    /// signed before #281; such a row is still trusted, it simply references
-    /// no blob, so no pull fires on it (the pre-#281 status quo).
+    /// The manifest blob's declared length in bytes (CC 5.3.2.5). A fetcher
+    /// MUST refuse a body of any other length before hashing it.
+    pub manifest_size: u64,
+    /// The blob(s) this Contribution references (CIRISVerify#281); always
+    /// contains `manifest_hash`.
     pub evidence_refs: Vec<String>,
 }
 
-/// Why a build-manifest Contribution was **not** trusted. Every variant is a
+/// Why a build-manifest Contribution was **not** accepted. Every variant is a
 /// hard reject — there is no partial-trust path (fail-closed).
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ManifestRejection {
-    /// **The pipeline `KeyRecord`'s signed envelope is about a different key
-    /// than the record declares** (CIRISVerify#252). The scrubs may be
-    /// entirely valid — they are simply not about this key.
-    PipelineRecordSubjectMismatch {
-        /// Which member disagreed, and how.
-        source: crate::subject_binding::SubjectBindingError,
-    },
     /// The outbox object is not a `build_manifest_contribution`.
     WrongKind {
         /// The kind actually found.
         kind: String,
     },
-    /// A required field is missing or the wrong type.
+    /// A required member is missing, the wrong type, or not the value this
+    /// shape requires.
     Malformed {
-        /// Which field.
+        /// Which member, and what was wrong with it.
         field: &'static str,
     },
     /// The pipeline's bound-hybrid signature did not verify at threshold 1
     /// against its pinned pubkeys (RequireHybrid — federation tier).
     PipelineSignatureInvalid,
-    /// The envelope's `attesting_key_id` does not match the supplied pipeline
-    /// member's `member_id` — the caller pinned the wrong key.
+    /// The signed `row.attesting_key_id` is not the supplied pipeline member —
+    /// the caller pinned the wrong key.
     PipelineKeyMismatch {
-        /// The `attesting_key_id` in the envelope.
+        /// The `row.attesting_key_id` in the envelope.
         envelope: String,
         /// The `member_id` of the pinned member.
         member: String,
@@ -243,149 +434,62 @@ pub enum ManifestRejection {
         /// The scope found.
         scope: String,
     },
-    /// The `dimension` is not `provenance:build_manifest:{target}` for the
-    /// attested `build.target` — a mismatched/forged subject.
+    /// The `dimension` is not `provenance:build_manifest:{target}:v1` for the
+    /// attested `build.target`.
     DimensionMismatch {
         /// The dimension expected from `build.target`.
         expected: String,
         /// The dimension found in the envelope.
         found: String,
     },
-    /// The granter's (human's) signature over the delegation grant did not
-    /// verify at threshold 1 against the pinned granter pubkeys.
-    GrantSignatureInvalid,
-    /// The grant envelope is not a `dimension: "delegates_to"` capability grant.
-    GrantNotDelegation {
-        /// The dimension found on the grant.
-        dimension: String,
-    },
-    /// The grant's `attesting_key_id` (the granter) does not equal the
-    /// Contribution's `on_behalf_of`, or the pinned granter member — the grant
-    /// does not authorize *this* human.
-    GranterMismatch {
-        /// The grant's `attesting_key_id`.
-        grant: String,
-        /// The Contribution's `on_behalf_of`.
-        on_behalf_of: String,
-    },
-    /// The grant's `subject_key_ids` does not include the pipeline — the human
-    /// delegated to someone else, not this pipeline.
-    GrantSubjectMismatch {
-        /// The pipeline key_id that should have been the subject.
+    /// The [`PipelineBlessing`] was obtained for a different pipeline than the
+    /// one that signed this Contribution.
+    BlessingNamesAnotherPipeline {
+        /// The pipeline the blessing names.
+        blessing: String,
+        /// The pipeline that signed.
         pipeline: String,
-    },
-    /// The grant does not actually carry [`MANIFEST_PUBLISH_SCOPE`].
-    GrantMissingScope {
-        /// The scope the Contribution claimed but the grant omits.
-        scope: String,
-    },
-    /// The grant's scope set violates the §1.3 infra/agency split for a `node`
-    /// delegate (e.g. it smuggles an `agency:*` scope).
-    ScopeSplitViolation {
-        /// Human-readable detail from [`verify_delegation_scope_split`].
-        detail: String,
-    },
-    /// The chain is cryptographically sound but the human it roots in is **not**
-    /// in the trio's trusted-build-authority set — "I don't trust this builder."
-    AuthorityNotTrusted {
-        /// The human key_id that was not trusted.
-        on_behalf_of: String,
-    },
-    /// #185: the supplied pipeline `KeyRecord` is for a different key than the
-    /// one that signed the manifest (`attesting_key_id`).
-    PipelineRecordMismatch {
-        /// The `KeyRecord`'s `key_id`.
-        record: String,
-        /// The manifest's `attesting_key_id`.
-        pipeline: String,
-    },
-    /// #185: the pipeline `KeyRecord` does not carry `infra:attest` in its
-    /// scrub-attested envelope roles — it was never blessed for manifest signing.
-    NotBlessedForManifest {
-        /// The scope that had to be present.
-        scope: String,
-    },
-    /// #185: the pipeline `KeyRecord` is not co-scrubbed by enough **distinct**
-    /// accord anchors (a 1-scrub record does not root a build authority).
-    InsufficientAccordScrubs {
-        /// Distinct accord-anchor scrubs that verified.
-        found: usize,
-        /// The `≥` threshold ([`MIN_ACCORD_COSCRUBS`]).
-        needed: usize,
     },
 }
 
 impl std::fmt::Display for ManifestRejection {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::PipelineRecordSubjectMismatch { source } => {
-                write!(f, "pipeline key record: {source}")
-            },
             Self::WrongKind { kind } => {
                 write!(f, "not a build-manifest contribution: kind {kind:?}")
             },
             Self::Malformed { field } => {
-                write!(f, "malformed manifest contribution: field {field:?}")
+                write!(f, "malformed manifest contribution: {field}")
             },
             Self::PipelineSignatureInvalid => {
-                write!(f, "pipeline bound-hybrid signature did not verify")
+                write!(
+                    f,
+                    "pipeline signature does not verify against the pinned key"
+                )
             },
             Self::PipelineKeyMismatch { envelope, member } => {
                 write!(
                     f,
-                    "pipeline key mismatch: envelope {envelope:?} != pinned member {member:?}"
+                    "row.attesting_key_id {envelope:?} is not the pinned pipeline {member:?}"
                 )
             },
-            Self::WrongScope { scope } => write!(
-                f,
-                "contribution delegation_scope {scope:?} is not infra:attest"
-            ),
+            Self::WrongScope { scope } => {
+                write!(
+                    f,
+                    "delegation_scope is {scope:?}, expected {MANIFEST_PUBLISH_SCOPE:?}"
+                )
+            },
             Self::DimensionMismatch { expected, found } => {
                 write!(
                     f,
-                    "dimension mismatch: expected {expected:?}, found {found:?}"
+                    "dimension is {found:?}, expected {expected:?} for this build's target"
                 )
             },
-            Self::GrantSignatureInvalid => write!(f, "delegation grant signature did not verify"),
-            Self::GrantNotDelegation { dimension } => {
-                write!(f, "grant is not delegates_to: dimension {dimension:?}")
-            },
-            Self::GranterMismatch {
-                grant,
-                on_behalf_of,
-            } => {
+            Self::BlessingNamesAnotherPipeline { blessing, pipeline } => {
                 write!(
                     f,
-                    "granter mismatch: grant signer {grant:?} != on_behalf_of {on_behalf_of:?}"
-                )
-            },
-            Self::GrantSubjectMismatch { pipeline } => {
-                write!(f, "grant does not delegate to pipeline {pipeline:?}")
-            },
-            Self::GrantMissingScope { scope } => write!(f, "grant does not carry scope {scope:?}"),
-            Self::ScopeSplitViolation { detail } => write!(f, "scope split violation: {detail}"),
-            Self::AuthorityNotTrusted { on_behalf_of } => {
-                write!(
-                    f,
-                    "authority not trusted: {on_behalf_of:?} is not a trusted build authority"
-                )
-            },
-            Self::PipelineRecordMismatch { record, pipeline } => {
-                write!(
-                    f,
-                    "pipeline KeyRecord {record:?} is not for the signing key {pipeline:?}"
-                )
-            },
-            Self::NotBlessedForManifest { scope } => {
-                write!(
-                    f,
-                    "pipeline KeyRecord does not carry {scope:?} in its scrub-attested roles"
-                )
-            },
-            Self::InsufficientAccordScrubs { found, needed } => {
-                write!(
-                    f,
-                    "pipeline KeyRecord has {found} distinct accord scrub(s), needs >= {needed}"
+                    "blessing is for pipeline {blessing:?}, but {pipeline:?} signed this \
+                     contribution"
                 )
             },
         }
@@ -394,27 +498,25 @@ impl std::fmt::Display for ManifestRejection {
 
 impl std::error::Error for ManifestRejection {}
 
-/// Pull a `&str` field from a JSON object, or [`ManifestRejection::Malformed`].
-/// Read `evidence_refs` and enforce that it cannot drift from `build.manifest_hash`
-/// (CIRISVerify#281).
-///
-/// Absent → `Ok(vec![])`: a pre-#281 Contribution is still a valid attestation,
-/// it just references no blob. Present → it MUST be an array of bare-hex shas
-/// that **contains** `manifest_hash`; anything else is `Malformed`, so the
-/// producer's `evidence_refs` and the verifier's notion of "the blob this row
-/// vouches for" are the same bytes by construction rather than by convention.
+fn str_field<'a>(v: &'a Value, field: &'static str) -> Result<&'a str, ManifestRejection> {
+    v.get(field)
+        .and_then(Value::as_str)
+        .ok_or(ManifestRejection::Malformed { field })
+}
+
+/// Read `evidence_refs` and enforce that it names `manifest_hash` in the one
+/// form a blob consumer matches (CIRISVerify#281). Required: a Contribution
+/// that references no blob can never trigger a pull, so it is not this shape.
 fn evidence_refs_bound_to(
     env: &Value,
     manifest_hash: &str,
 ) -> Result<Vec<String>, ManifestRejection> {
-    let Some(raw) = env.get("evidence_refs") else {
-        return Ok(Vec::new());
-    };
-    let Some(arr) = raw.as_array() else {
-        return Err(ManifestRejection::Malformed {
-            field: "evidence_refs (not an array)",
-        });
-    };
+    let arr =
+        env.get("evidence_refs")
+            .and_then(Value::as_array)
+            .ok_or(ManifestRejection::Malformed {
+                field: "evidence_refs (absent or not an array)",
+            })?;
     let mut refs = Vec::with_capacity(arr.len());
     for r in arr {
         let Some(sha) = r.as_str() else {
@@ -438,10 +540,48 @@ fn evidence_refs_bound_to(
     Ok(refs)
 }
 
-fn str_field<'a>(v: &'a Value, field: &'static str) -> Result<&'a str, ManifestRejection> {
-    v.get(field)
-        .and_then(Value::as_str)
-        .ok_or(ManifestRejection::Malformed { field })
+/// The signed `row` mirror, checked against what a build-manifest
+/// Contribution must say about itself. Returns `(attesting_key_id,
+/// attestation_id)`.
+fn row_mirror(env: &Value) -> Result<(&str, &str), ManifestRejection> {
+    let row = env
+        .get("row")
+        .and_then(Value::as_object)
+        .ok_or(ManifestRejection::Malformed {
+            field: "row (no signed row mirror — CIRISPersist#643)",
+        })?;
+    if row
+        .keys()
+        .any(|k| !ROW_MIRROR_MEMBERS.contains(&k.as_str()))
+    {
+        return Err(ManifestRejection::Malformed {
+            field: "row (member outside persist's RowMirror)",
+        });
+    }
+    let row = env.get("row").expect("checked above");
+    if str_field(row, "attestation_type")? != ATTESTATION_TYPE_SCORES {
+        return Err(ManifestRejection::Malformed {
+            field: "row.attestation_type (not `scores`)",
+        });
+    }
+    if str_field(row, "cohort_scope")? != COHORT_SCOPE_FEDERATION {
+        return Err(ManifestRejection::Malformed {
+            field: "row.cohort_scope (not `federation`)",
+        });
+    }
+    let attesting = str_field(row, "attesting_key_id")?;
+    if str_field(row, "attested_key_id")? != attesting {
+        return Err(ManifestRejection::Malformed {
+            field: "row.attested_key_id (a build Contribution is the pipeline's own claim)",
+        });
+    }
+    let attestation_id = str_field(row, "attestation_id")?;
+    if attestation_id.is_empty() {
+        return Err(ManifestRejection::Malformed {
+            field: "row.attestation_id (empty)",
+        });
+    }
+    Ok((attesting, attestation_id))
 }
 
 /// Verify a bound-hybrid signature over `envelope` at threshold 1 against a
@@ -463,37 +603,21 @@ fn envelope_verifies(
     verify_threshold_signatures(&bytes, std::slice::from_ref(member), &[sig], 1) == Ok(1)
 }
 
-/// Verify a build-manifest Contribution end-to-end and return the trusted build
-/// facts — the **consumer** of [`sign_build_manifest_contribution`].
+/// Verify a build-manifest Contribution and return its facts.
 ///
-/// **Superseded by [`verify_build_manifest_via_coscrub`] (CIRISVerify#185).** The
-/// manifest trust root now folds onto the accord co-scrub (the pipeline key is an
-/// accord-co-scrubbed `KeyRecord` carrying `infra:attest`, exactly like a canonical
-/// server), retiring the `delegates_to(human → pipeline)` grant. This grant-based
-/// path is **retained one release** as a deprecated shim for any emitter still
-/// producing the grant shape; new callers MUST use the co-scrub verifier.
+/// All fail-closed, in this order:
 ///
-/// The full chain (all fail-closed):
-///
-/// 1. `obj` is a `build_manifest_contribution`; its envelope is well-formed.
-/// 2. The **pipeline** bound-hybrid signature verifies at threshold 1 against
-///    `pipeline_member` (the pinned `node` pubkeys), and the envelope's
-///    `attesting_key_id` is that member.
-/// 3. The Contribution carries `delegation_scope == infra:attest` and a
-///    `dimension` matching its own `build.target`.
-/// 4. The **granter** (human) signature over `grant` verifies at threshold 1
-///    against `granter_member`, and `grant` is a `delegates_to` whose signer is
-///    the Contribution's `on_behalf_of`, whose `subject_key_ids` includes the
-///    pipeline, and whose `delegated_scope` carries `infra:attest`.
-/// 5. That scope set passes the §1.3 infra/agency split for a `node` delegate.
-/// 6. `on_behalf_of` is in `trusted_build_authorities` — the trio's "builders I
-///    trust" set. (Pass an empty slice to verify the chain *without* the trust
-///    decision — e.g. to surface "who does this root in?" before deciding.)
-///
-/// `pipeline_member` / `granter_member` are pinned by the **caller** from its
-/// key directory (by `attesting_key_id`) — never taken from the object — so a
-/// forged grant under a human's key_id fails the binding (the #65 / §8.1.12.7.1
-/// identity-binding discipline).
+/// 1. `obj` is a `build_manifest_contribution` carrying a `signed_envelope`.
+/// 2. The signed `row` mirror is persist's shape — `scores`, `federation`,
+///    the pipeline attesting about itself — and `row.attesting_key_id` is
+///    `pipeline_member`, which the **caller** pinned from its own key
+///    directory (never from the object).
+/// 3. The pipeline's bound-hybrid signature verifies at threshold 1.
+/// 4. `delegation_scope` is [`MANIFEST_PUBLISH_SCOPE`], the `dimension` is
+///    `provenance:build_manifest:{build.target}:v1`, `asserted_at` is present,
+///    and `evidence_refs` names `build.manifest_hash`.
+/// 5. `blessing` names this pipeline. Whether the blessing is *true* is the
+///    caller's walk — see [`PipelineBlessing`].
 ///
 /// # Errors
 ///
@@ -501,42 +625,40 @@ fn envelope_verifies(
 pub fn verify_build_manifest_contribution(
     obj: &SignedCegObject,
     pipeline_member: &ThresholdMember,
-    grant: &SignedEnvelope,
-    granter_member: &ThresholdMember,
-    trusted_build_authorities: &[String],
+    blessing: &PipelineBlessing,
 ) -> Result<VerifiedManifest, ManifestRejection> {
     if obj.kind != BUILD_MANIFEST_CONTRIBUTION_KIND {
         return Err(ManifestRejection::WrongKind {
             kind: obj.kind.clone(),
         });
     }
-
-    // --- 1. Extract the signed Contribution envelope + its signatures. ---
     let env = obj
         .body
         .get("signed_envelope")
         .ok_or(ManifestRejection::Malformed {
             field: "signed_envelope",
         })?;
-    let ed_sig = str_field(&obj.body, "ed25519_signature_base64")?;
-    let mldsa_sig = obj
-        .body
-        .get("mldsa65_signature_base64")
-        .and_then(Value::as_str);
 
-    // --- 2. Pipeline signature verifies, and binds to the pinned member. ---
-    let attesting_key_id = str_field(env, "attesting_key_id")?;
+    // --- 2. The row mirror, and who signed. ---
+    let (attesting_key_id, attestation_id) = row_mirror(env)?;
     if attesting_key_id != pipeline_member.member_id {
         return Err(ManifestRejection::PipelineKeyMismatch {
             envelope: attesting_key_id.to_string(),
             member: pipeline_member.member_id.clone(),
         });
     }
+
+    // --- 3. The signature. ---
+    let ed_sig = str_field(&obj.body, "ed25519_signature_base64")?;
+    let mldsa_sig = obj
+        .body
+        .get("mldsa65_signature_base64")
+        .and_then(Value::as_str);
     if !envelope_verifies(env, ed_sig, mldsa_sig, pipeline_member) {
         return Err(ManifestRejection::PipelineSignatureInvalid);
     }
 
-    // --- 3. Scope + dimension self-consistency. ---
+    // --- 4. What the Contribution says about itself. ---
     let scope = str_field(env, "delegation_scope")?;
     if scope != MANIFEST_PUBLISH_SCOPE {
         return Err(ManifestRejection::WrongScope {
@@ -555,895 +677,426 @@ pub fn verify_build_manifest_contribution(
             found: dimension.to_string(),
         });
     }
-    let on_behalf_of = str_field(env, "on_behalf_of")?;
+    let asserted_at = str_field(env, "asserted_at")?;
+    let manifest_hash = str_field(build, "manifest_hash")?;
+    let evidence_refs = evidence_refs_bound_to(env, manifest_hash)?;
 
-    // --- 4. The delegation grant: human → pipeline, signature-valid. ---
-    let grant_env = &grant.signed_envelope;
-    let grant_dimension = str_field(grant_env, "dimension")?;
-    if grant_dimension != "delegates_to" {
-        return Err(ManifestRejection::GrantNotDelegation {
-            dimension: grant_dimension.to_string(),
-        });
-    }
-    let grant_signer = str_field(grant_env, "attesting_key_id")?;
-    // The grant must be signed by the human the Contribution claims, *and* that
-    // human must be the pinned granter member (binding to the directory, not to
-    // the self-asserted field).
-    if grant_signer != on_behalf_of || grant_signer != granter_member.member_id {
-        return Err(ManifestRejection::GranterMismatch {
-            grant: grant_signer.to_string(),
-            on_behalf_of: on_behalf_of.to_string(),
-        });
-    }
-    let mldsa_grant = if grant.mldsa65_signature_base64.is_empty() {
-        None
-    } else {
-        Some(grant.mldsa65_signature_base64.as_str())
-    };
-    if !envelope_verifies(
-        grant_env,
-        &grant.ed25519_signature_base64,
-        mldsa_grant,
-        granter_member,
-    ) {
-        return Err(ManifestRejection::GrantSignatureInvalid);
-    }
-
-    // The grant must delegate to *this* pipeline.
-    let subjects = grant_env
-        .get("subject_key_ids")
-        .and_then(Value::as_array)
-        .ok_or(ManifestRejection::Malformed {
-            field: "subject_key_ids",
-        })?;
-    if !subjects
-        .iter()
-        .any(|s| s.as_str() == Some(attesting_key_id))
-    {
-        return Err(ManifestRejection::GrantSubjectMismatch {
+    // --- 5. The blessing is about this pipeline. ---
+    if blessing.pipeline_key_id != attesting_key_id {
+        return Err(ManifestRejection::BlessingNamesAnotherPipeline {
+            blessing: blessing.pipeline_key_id.clone(),
             pipeline: attesting_key_id.to_string(),
-        });
-    }
-
-    // The grant must actually carry the manifest-publish scope.
-    let grant_scopes: Vec<String> = grant_env
-        .get("delegated_scope")
-        .and_then(Value::as_array)
-        .ok_or(ManifestRejection::Malformed {
-            field: "delegated_scope",
-        })?
-        .iter()
-        .filter_map(|s| s.as_str().map(str::to_string))
-        .collect();
-    if !grant_scopes.iter().any(|s| s == MANIFEST_PUBLISH_SCOPE) {
-        return Err(ManifestRejection::GrantMissingScope {
-            scope: MANIFEST_PUBLISH_SCOPE.to_string(),
-        });
-    }
-
-    // --- 5. §1.3 infra/agency split: a `node` pipeline may hold only infra:*. ---
-    if let Err(e) = verify_delegation_scope_split("node", &grant_scopes) {
-        return Err(ManifestRejection::ScopeSplitViolation {
-            detail: e.to_string(),
-        });
-    }
-
-    // --- 6. The trust decision: is the root human a trusted build authority? ---
-    if !trusted_build_authorities.is_empty()
-        && !trusted_build_authorities.iter().any(|a| a == on_behalf_of)
-    {
-        return Err(ManifestRejection::AuthorityNotTrusted {
-            on_behalf_of: on_behalf_of.to_string(),
         });
     }
 
     Ok(VerifiedManifest {
         attested_by: attesting_key_id.to_string(),
-        on_behalf_of: on_behalf_of.to_string(),
+        standing: blessing.standing.clone(),
+        attestation_id: attestation_id.to_string(),
+        asserted_at: asserted_at.to_string(),
         target: target.to_string(),
         build_id: str_field(build, "build_id")?.to_string(),
         binary_hash: str_field(build, "binary_hash")?.to_string(),
         binary_version: str_field(build, "binary_version")?.to_string(),
-        manifest_hash: str_field(build, "manifest_hash")?.to_string(),
-        evidence_refs: evidence_refs_bound_to(env, str_field(build, "manifest_hash")?)?,
+        manifest_hash: manifest_hash.to_string(),
+        manifest_size: build.get("manifest_size").and_then(Value::as_u64).ok_or(
+            ManifestRejection::Malformed {
+                field: "build.manifest_size (absent or not a u64 — CC 5.3.2.5)",
+            },
+        )?,
+        evidence_refs,
     })
 }
 
-/// Verify a build-manifest Contribution rooted via the **accord co-scrub** of the
-/// pipeline key (CIRISVerify#185) — the shape that **supersedes** the
-/// `delegates_to`-grant path ([`verify_build_manifest_contribution`], retained one
-/// release). "Same ceremony, different CEG object": the pipeline key is blessed by
-/// the same m-of-n accord co-scrub the Trust Root card uses for canonical servers,
-/// carrying `infra:attest` where a canonical server carries the `canonical` role.
-///
-/// Authority chain (all fail-closed):
-/// 1. `obj` is a `build_manifest_contribution`; envelope well-formed.
-/// 2. The pipeline bound-hybrid signature verifies at threshold 1 against
-///    `pipeline_member`, and the envelope's `attesting_key_id` is that member.
-/// 3. `delegation_scope == infra:attest` and `dimension` matches `build.target`.
-/// 4. `pipeline_record` is the accord-co-scrubbed `KeyRecord` for THIS pipeline
-///    key, carries `infra:attest` in its **scrub-attested** envelope roles
-///    ([`KeyRecord::roles_in_envelope`]), and is scrubbed by
-///    **≥ [`MIN_ACCORD_COSCRUBS`] distinct** accord anchors — each scrub
-///    hybrid-verifying over the record's canonical `registration_envelope`.
-///
-/// `accord_anchor_members` are the seated accord holders' pinned
-/// [`ThresholdMember`]s (both pubkey halves), resolved by the CALLER from its
-/// directory / the baked genesis — the same anchor the `canonical` role roots to.
-/// Only a scrub whose `scrub_key_id` is in this set (and cryptographically
-/// verifies) counts toward the quorum, so a non-anchor scrub can't inflate it.
-///
-/// No `delegates_to` grant, no `on_behalf_of` authority-walk: the co-scrub IS the
-/// authority chain.
-///
-/// # Errors
-/// A [`ManifestRejection`] naming the first failing step.
-pub fn verify_build_manifest_via_coscrub(
-    obj: &SignedCegObject,
-    pipeline_member: &ThresholdMember,
-    pipeline_record: &KeyRecord,
-    accord_anchor_members: &[ThresholdMember],
-) -> Result<VerifiedManifest, ManifestRejection> {
-    if obj.kind != BUILD_MANIFEST_CONTRIBUTION_KIND {
-        return Err(ManifestRejection::WrongKind {
-            kind: obj.kind.clone(),
-        });
+#[cfg(test)]
+pub(crate) mod test_fixtures {
+    //! Shared by this module's tests and `build_attestation_bundle`'s.
+    use super::*;
+    use crate::self_at_login::HybridSigningIdentity;
+
+    pub(crate) const PIPELINE: &str = "ci-pipeline-node-k7";
+    pub(crate) const ROOT: &str = "humanity-accord";
+    pub(crate) const GRANT: &str = "grant-infra-attest-1";
+
+    pub(crate) fn asserted_at() -> DateTime<Utc> {
+        DateTime::parse_from_rfc3339("2026-10-01T14:50:29.308917Z")
+            .unwrap()
+            .with_timezone(&Utc)
     }
 
-    // --- 1-2. Pipeline signature verifies + binds to the pinned member. ---
-    let env = obj
-        .body
-        .get("signed_envelope")
-        .ok_or(ManifestRejection::Malformed {
-            field: "signed_envelope",
-        })?;
-    let ed_sig = str_field(&obj.body, "ed25519_signature_base64")?;
-    let mldsa_sig = obj
-        .body
-        .get("mldsa65_signature_base64")
-        .and_then(Value::as_str);
-    let attesting_key_id = str_field(env, "attesting_key_id")?;
-    if attesting_key_id != pipeline_member.member_id {
-        return Err(ManifestRejection::PipelineKeyMismatch {
-            envelope: attesting_key_id.to_string(),
-            member: pipeline_member.member_id.clone(),
-        });
-    }
-    if !envelope_verifies(env, ed_sig, mldsa_sig, pipeline_member) {
-        return Err(ManifestRejection::PipelineSignatureInvalid);
+    pub(crate) fn blessing() -> PipelineBlessing {
+        PipelineBlessing::conferred(PIPELINE, ROOT, GRANT, WalkPlane::Delegation)
     }
 
-    // --- 3. Scope + dimension self-consistency. ---
-    let scope = str_field(env, "delegation_scope")?;
-    if scope != MANIFEST_PUBLISH_SCOPE {
-        return Err(ManifestRejection::WrongScope {
-            scope: scope.to_string(),
-        });
-    }
-    let build = env
-        .get("build")
-        .ok_or(ManifestRejection::Malformed { field: "build" })?;
-    let target = str_field(build, "target")?;
-    let dimension = str_field(env, "dimension")?;
-    let expected_dim = build_manifest_dimension(target);
-    if dimension != expected_dim {
-        return Err(ManifestRejection::DimensionMismatch {
-            expected: expected_dim,
-            found: dimension.to_string(),
-        });
-    }
-
-    // --- 4. The pipeline key is BLESSED: its accord-co-scrubbed KeyRecord carries
-    //        infra:attest AND reaches the ≥2 distinct-anchor quorum. ---
-    //
-    // #252: bind the record's DECLARED identity to its SIGNED envelope FIRST.
-    // The identity comparison below reads the sibling `key_id`, while the
-    // authority evidence (roles, anchor scrubs) is verified against the
-    // envelope. Unbound, a record whose sibling names the pinned pipeline but
-    // whose envelope is a genuinely co-scrubbed record for a DIFFERENT key
-    // carrying `infra:attest` satisfies all three — blessing a key that was
-    // never blessed, out of entirely valid signatures.
-    pipeline_record
-        .check_subject_binding()
-        .map_err(|source| ManifestRejection::PipelineRecordSubjectMismatch { source })?;
-    if pipeline_record.key_id != attesting_key_id {
-        return Err(ManifestRejection::PipelineRecordMismatch {
-            record: pipeline_record.key_id.clone(),
-            pipeline: attesting_key_id.to_string(),
-        });
-    }
-    if !pipeline_record
-        .roles_in_envelope()
-        .iter()
-        .any(|r| r == MANIFEST_PUBLISH_SCOPE)
-    {
-        return Err(ManifestRejection::NotBlessedForManifest {
-            scope: MANIFEST_PUBLISH_SCOPE.to_string(),
-        });
-    }
-    // A post-hoc role flip changes the envelope bytes → the anchor scrubs no
-    // longer verify over them → the count drops below quorum (fail-secure by
-    // construction; the roles are covered by the very signatures we count).
-    let distinct = count_verifying_anchor_scrubs(pipeline_record, accord_anchor_members);
-    if distinct < MIN_ACCORD_COSCRUBS {
-        return Err(ManifestRejection::InsufficientAccordScrubs {
-            found: distinct,
-            needed: MIN_ACCORD_COSCRUBS,
-        });
+    /// A pipeline identity and a Contribution it signed for `target`.
+    pub(crate) async fn signed(target: &str) -> (HybridSigningIdentity, SignedCegObject, String) {
+        let pipeline = HybridSigningIdentity::generate(PIPELINE).unwrap();
+        let manifest_hash = "cd".repeat(32);
+        let obj = sign_build_manifest_contribution(
+            &pipeline,
+            &BuildAttestation {
+                target,
+                binary_hash: &"ab".repeat(32),
+                build_id: "ciris-verify@19.0.0",
+                binary_version: "19.0.0",
+                manifest_hash: &manifest_hash,
+                manifest_size: 41_237,
+            },
+            asserted_at(),
+        )
+        .await
+        .unwrap();
+        (pipeline, obj, manifest_hash)
     }
 
-    Ok(VerifiedManifest {
-        attested_by: attesting_key_id.to_string(),
-        // Authority is the accord anchor, not a single human — surface the anchor
-        // that scrubbed the pipeline record (scrub #1) as the rooted identity.
-        on_behalf_of: pipeline_record.scrub_key_id.clone(),
-        target: target.to_string(),
-        build_id: str_field(build, "build_id")?.to_string(),
-        binary_hash: str_field(build, "binary_hash")?.to_string(),
-        binary_version: str_field(build, "binary_version")?.to_string(),
-        manifest_hash: str_field(build, "manifest_hash")?.to_string(),
-        evidence_refs: evidence_refs_bound_to(env, str_field(build, "manifest_hash")?)?,
-    })
-}
-
-/// Count the **distinct** accord anchors whose scrub on `record` hybrid-verifies
-/// (Strict) over the record's canonical `registration_envelope`. Only anchors
-/// present in `anchor_members` (matched by `scrub_key_id`) count — a scrub by a
-/// non-anchor key is ignored, so it can't inflate the quorum.
-fn count_verifying_anchor_scrubs(record: &KeyRecord, anchor_members: &[ThresholdMember]) -> usize {
-    let Ok(canonical) = crate::jcs::canonicalize(&record.registration_envelope) else {
-        return 0;
-    };
-    let mut verified = std::collections::BTreeSet::new();
-    for scrub in record.scrubs() {
-        let Some(member) = anchor_members
-            .iter()
-            .find(|m| m.member_id == scrub.scrub_key_id)
-        else {
-            continue;
-        };
-        let sig = ThresholdSignature {
-            member_id: member.member_id.clone(),
-            ed25519_signature_base64: scrub.scrub_signature_classical.clone(),
-            mldsa65_signature_base64: scrub.scrub_signature_pqc.clone(),
-        };
-        if verify_threshold_signatures(&canonical, std::slice::from_ref(member), &[sig], 1) == Ok(1)
-        {
-            verified.insert(scrub.scrub_key_id.clone());
-        }
+    /// Re-sign `env` with `pipeline` into a Contribution object, so a test can
+    /// alter the envelope and still present a valid signature over it.
+    pub(crate) async fn resigned(pipeline: &HybridSigningIdentity, env: Value) -> SignedCegObject {
+        let signed = pipeline.sign_envelope_async(env).await.unwrap();
+        SignedCegObject::new(
+            BUILD_MANIFEST_CONTRIBUTION_KIND,
+            PIPELINE,
+            "2026-10-01T14:50:29.308Z",
+            serde_json::to_value(&signed).unwrap(),
+        )
     }
-    verified.len()
 }
 
 #[cfg(test)]
 mod tests {
+    use super::test_fixtures::*;
     use super::*;
-    use crate::jcs;
-    use crate::self_at_login::{sign_delegation_grant, HybridSigningIdentity};
-    use crate::threshold::{verify_threshold_signatures, ThresholdSignature};
 
-    fn build_owned() -> (String, String) {
-        ("ab".repeat(32), "cd".repeat(32))
+    const TARGET: &str = "python-source-tree";
+
+    fn verify(
+        pipeline: &crate::self_at_login::HybridSigningIdentity,
+        obj: &SignedCegObject,
+    ) -> Result<VerifiedManifest, ManifestRejection> {
+        verify_build_manifest_contribution(obj, &pipeline.directory_member().unwrap(), &blessing())
     }
 
+    /// The exact member set persist and CIRISRegistry's `fold_builds` read.
+    /// A member added or dropped here is a wire change and must be deliberate.
     #[tokio::test]
-    async fn pipeline_signed_manifest_verifies_at_threshold_one() {
-        let pipeline = HybridSigningIdentity::generate("ci-pipeline-node-k7").unwrap();
-        let (bh, mh) = build_owned();
-        let b = BuildAttestation {
-            target: "x86_64-unknown-linux-gnu",
-            binary_hash: &bh,
-            build_id: "ciris-verify@6.0.0",
-            binary_version: "6.0.0",
-            manifest_hash: &mh,
-        };
-
-        let obj = sign_build_manifest_contribution(
-            &pipeline,
-            &b,
-            "eric-moore-6qg6wdx2dq", // the human the pipeline attests FOR
-            "delegation:infra-attest:abc123",
-            "2026-06-18T00:00:00Z",
-        )
-        .await
-        .unwrap();
-
-        assert_eq!(obj.kind, BUILD_MANIFEST_CONTRIBUTION_KIND);
+    async fn producer_emits_the_persist_storable_shape() {
+        let (_, obj, mh) = signed(TARGET).await;
         let env = &obj.body["signed_envelope"];
-        assert_eq!(env["attestation_type"], "scores");
+        let mut top: Vec<&str> = env
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        top.sort_unstable();
+        assert_eq!(
+            top,
+            [
+                "asserted_at",
+                "build",
+                "delegation_scope",
+                "dimension",
+                "evidence_refs",
+                "row",
+                "score"
+            ],
+            "no top-level identity members: the row mirror states them once"
+        );
         assert_eq!(
             env["dimension"],
-            "provenance:build_manifest:x86_64-unknown-linux-gnu"
+            "provenance:build_manifest:python-source-tree:v1"
         );
-        assert_eq!(env["on_behalf_of"], "eric-moore-6qg6wdx2dq");
-        assert_eq!(env["delegation_scope"], "infra:attest");
+        assert_eq!(
+            env["asserted_at"], "2026-10-01T14:50:29.308Z",
+            "ms-truncated, Z"
+        );
+        assert_eq!(env["evidence_refs"], json!([mh]));
+        let row = &env["row"];
+        assert_eq!(row["attestation_type"], "scores");
+        assert_eq!(row["cohort_scope"], "federation");
+        assert_eq!(row["attesting_key_id"], PIPELINE);
+        assert_eq!(row["attested_key_id"], PIPELINE);
+        assert_eq!(row["subject_key_ids"], json!([]));
+        let mut members: Vec<&str> = row
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        members.sort_unstable();
+        assert!(members.iter().all(|m| ROW_MIRROR_MEMBERS.contains(m)));
+    }
 
-        // The pipeline's signature verifies at threshold 1 (the consumer then
-        // walks on_behalf_of/delegation_ref to root the authority in the human).
-        let bytes = jcs::canonicalize(env).unwrap();
-        let sig = ThresholdSignature {
-            member_id: "ci-pipeline-node-k7".to_string(),
-            ed25519_signature_base64: obj.body["ed25519_signature_base64"]
+    /// The CC 3.1.7 R3 tail is on the dimension the producer emits — the
+    /// defect #299 measured against a live persist Engine.
+    #[tokio::test]
+    async fn dimension_carries_the_version_tail() {
+        let (_, obj, _) = signed("x86_64-unknown-linux-gnu").await;
+        let d = obj.body["signed_envelope"]["dimension"].as_str().unwrap();
+        assert!(d.ends_with(":v1"), "{d}");
+        assert_eq!(d, build_manifest_dimension("x86_64-unknown-linux-gnu"));
+    }
+
+    #[tokio::test]
+    async fn attestation_ids_are_fresh_uuid_v4() {
+        let (_, a, _) = signed(TARGET).await;
+        let (_, b, _) = signed(TARGET).await;
+        let id = |o: &SignedCegObject| {
+            o.body["signed_envelope"]["row"]["attestation_id"]
                 .as_str()
                 .unwrap()
-                .to_string(),
-            mldsa65_signature_base64: obj.body["mldsa65_signature_base64"]
-                .as_str()
-                .map(str::to_string),
+                .to_string()
         };
+        let (ia, ib) = (id(&a), id(&b));
+        assert_ne!(ia, ib, "one envelope names one row");
+        assert_eq!(ia.len(), 36);
+        assert_eq!(&ia[14..15], "4", "version nibble");
+        assert!(matches!(&ia[19..20], "8" | "9" | "a" | "b"), "variant bits");
+    }
+
+    #[tokio::test]
+    async fn round_trip_verifies_and_carries_the_blessing() {
+        let (pipeline, obj, mh) = signed(TARGET).await;
+        let v = verify(&pipeline, &obj).unwrap();
+        assert_eq!(v.attested_by, PIPELINE);
         assert_eq!(
-            verify_threshold_signatures(&bytes, &[pipeline.directory_member().unwrap()], &[sig], 1),
-            Ok(1),
+            v.standing,
+            PipelineStanding::Conferred {
+                root_key_id: ROOT.into(),
+                grant_attestation_id: GRANT.into(),
+                plane: WalkPlane::Delegation,
+            }
         );
+        assert_eq!(v.target, TARGET);
+        assert_eq!(v.manifest_hash, mh);
+        assert_eq!(v.evidence_refs, vec![mh]);
+        assert_eq!(v.manifest_size, 41_237);
+        assert_eq!(v.asserted_at, "2026-10-01T14:50:29.308Z");
+    }
+
+    /// The pre-19 unversioned dimension is refused, signature notwithstanding —
+    /// no compatibility path, because no node could store that shape.
+    #[tokio::test]
+    async fn an_unversioned_dimension_is_refused() {
+        let (pipeline, obj, _) = signed(TARGET).await;
+        let mut env = obj.body["signed_envelope"].clone();
+        env["dimension"] = json!("provenance:build_manifest:python-source-tree");
+        let obj = resigned(&pipeline, env).await;
+        assert!(matches!(
+            verify(&pipeline, &obj),
+            Err(ManifestRejection::DimensionMismatch { .. })
+        ));
     }
 
     #[tokio::test]
-    async fn tampering_the_binary_hash_breaks_the_signature() {
-        let pipeline = HybridSigningIdentity::generate("ci-pipeline-node-k7").unwrap();
-        let (bh, mh) = build_owned();
-        let b = BuildAttestation {
-            target: "x",
-            binary_hash: &bh,
-            build_id: "b",
-            binary_version: "v",
-            manifest_hash: &mh,
-        };
-        let mut obj =
-            sign_build_manifest_contribution(&pipeline, &b, "human", "ref", "2026-06-18T00:00:00Z")
-                .await
-                .unwrap();
-        // Swap the attested binary_hash after signing.
-        obj.body["signed_envelope"]["build"]["binary_hash"] = json!("00".repeat(32));
-        let bytes = jcs::canonicalize(&obj.body["signed_envelope"]).unwrap();
-        let sig = ThresholdSignature {
-            member_id: "ci-pipeline-node-k7".to_string(),
-            ed25519_signature_base64: obj.body["ed25519_signature_base64"]
-                .as_str()
-                .unwrap()
-                .into(),
-            mldsa65_signature_base64: obj.body["mldsa65_signature_base64"]
-                .as_str()
-                .map(Into::into),
-        };
-        assert!(
-            verify_threshold_signatures(&bytes, &[pipeline.directory_member().unwrap()], &[sig], 1)
-                .is_err(),
-            "a tampered build_hash must break the manifest signature"
-        );
+    async fn a_dimension_for_another_target_is_refused() {
+        let (pipeline, obj, _) = signed(TARGET).await;
+        let mut env = obj.body["signed_envelope"].clone();
+        env["dimension"] = json!(build_manifest_dimension("ios-mobile-bundle"));
+        let obj = resigned(&pipeline, env).await;
+        assert!(matches!(
+            verify(&pipeline, &obj),
+            Err(ManifestRejection::DimensionMismatch { .. })
+        ));
     }
 
-    // -- Consumer side: verify_build_manifest_contribution --------------------
-
-    const HUMAN: &str = "eric-moore-6qg6wdx2dq";
-    const PIPELINE: &str = "ciris-verify-build-pipeline";
-    const TS: &str = "2026-06-18T00:00:00Z";
-
-    /// Build a full valid chain: a human grants `infra:attest` to a pipeline
-    /// `node`, the pipeline signs a manifest Contribution on the human's behalf.
-    /// Returns everything `verify_build_manifest_contribution` needs.
-    async fn valid_chain() -> (
-        SignedCegObject,
-        ThresholdMember,
-        SignedEnvelope,
-        ThresholdMember,
-    ) {
-        let human = HybridSigningIdentity::generate(HUMAN).unwrap();
-        let pipeline = HybridSigningIdentity::generate(PIPELINE).unwrap();
-        let grant =
-            sign_delegation_grant(&human, PIPELINE, &["infra:attest".to_string()], TS).unwrap();
-        let (bh, mh) = build_owned();
-        let b = BuildAttestation {
-            target: "x86_64-unknown-linux-gnu",
-            binary_hash: &bh,
-            build_id: "ciris-verify@6.2.0",
-            binary_version: "6.2.0",
-            manifest_hash: &mh,
-        };
-        let obj = sign_build_manifest_contribution(
-            &pipeline,
-            &b,
-            HUMAN,
-            "delegation:infra-attest:abc123",
-            TS,
-        )
-        .await
-        .unwrap();
-        (
-            obj,
-            pipeline.directory_member().unwrap(),
-            grant,
-            human.directory_member().unwrap(),
-        )
-    }
-
-    // ---- CIRISVerify#281: the Contribution must REFERENCE its own blob ----
-
-    /// Mirror of `valid_chain` that lets a test mutate the envelope BEFORE the
-    /// pipeline signs it — i.e. exactly what a foreign or pre-#281 implementation
-    /// would emit, validly signed, minus this producer's guard.
-    async fn chain_with_envelope(
-        mutate: impl FnOnce(&mut Value),
-    ) -> (
-        SignedCegObject,
-        ThresholdMember,
-        SignedEnvelope,
-        ThresholdMember,
-    ) {
-        let human = HybridSigningIdentity::generate(HUMAN).unwrap();
-        let pipeline = HybridSigningIdentity::generate(PIPELINE).unwrap();
-        let grant =
-            sign_delegation_grant(&human, PIPELINE, &["infra:attest".to_string()], TS).unwrap();
-        let (bh, mh) = build_owned();
-        let mut env = json!({
-            "attestation_type": "scores",
-            "attesting_key_id": pipeline.key_id(),
-            "dimension": build_manifest_dimension("x86_64-unknown-linux-gnu"),
-            "score": 1,
-            "subject_key_ids": ["ciris-verify@6.2.0"],
-            "on_behalf_of": HUMAN,
-            "delegation_scope": MANIFEST_PUBLISH_SCOPE,
-            "delegation_ref": "delegation:infra-attest:abc123",
-            "build": {
-                "target": "x86_64-unknown-linux-gnu",
-                "binary_hash": bh,
-                "build_id": "ciris-verify@6.2.0",
-                "binary_version": "6.2.0",
-                "manifest_hash": mh,
-            },
-            "evidence_refs": [mh],
-            "signed_at": TS,
-        });
-        mutate(&mut env);
-        let signed = pipeline.sign_envelope_async(env).await.unwrap();
-        let body: Value = serde_json::to_value(&signed).unwrap();
-        let obj = SignedCegObject::new(
-            BUILD_MANIFEST_CONTRIBUTION_KIND,
-            pipeline.key_id(),
-            TS,
-            body,
-        );
-        (
-            obj,
-            pipeline.directory_member().unwrap(),
-            grant,
-            human.directory_member().unwrap(),
-        )
-    }
-
-    /// The producer emits `evidence_refs == [manifest_hash]` — and NOT the
-    /// binary hash, which is not a blob on this plane.
+    /// The v18 shape: top-level identity members, no row mirror.
     #[tokio::test]
-    async fn producer_references_exactly_the_manifest_blob() {
-        let (obj, _, _, _) = valid_chain().await;
-        let (bh, mh) = build_owned();
-        let refs = &obj.body["signed_envelope"]["evidence_refs"];
-        assert_eq!(
-            refs,
-            &json!([mh]),
-            "evidence_refs must be exactly [manifest_hash]"
-        );
-        assert!(
-            !refs.as_array().unwrap().iter().any(|r| r == &json!(bh)),
-            "binary_hash must NOT be an evidence ref — nobody serves those bytes"
-        );
+    async fn an_envelope_without_a_row_mirror_is_refused() {
+        let (pipeline, obj, _) = signed(TARGET).await;
+        let mut env = obj.body["signed_envelope"].clone();
+        let o = env.as_object_mut().unwrap();
+        o.remove("row");
+        o.insert("attesting_key_id".into(), json!(PIPELINE));
+        let obj = resigned(&pipeline, env).await;
+        assert!(matches!(
+            verify(&pipeline, &obj),
+            Err(ManifestRejection::Malformed { .. })
+        ));
     }
 
-    /// The verifier surfaces the refs so a consumer can key on them.
     #[tokio::test]
-    async fn verifier_surfaces_evidence_refs() {
-        let (obj, pm, grant, gm) = valid_chain().await;
-        let v = verify_build_manifest_contribution(&obj, &pm, &grant, &gm, &[HUMAN.to_string()])
-            .unwrap();
-        assert_eq!(v.evidence_refs, vec![v.manifest_hash.clone()]);
+    async fn row_mirror_shape_violations_are_refused() {
+        let (pipeline, obj, _) = signed(TARGET).await;
+        for (member, value) in [
+            ("attestation_type", json!("delegates_to")),
+            ("cohort_scope", json!("self")),
+            ("attested_key_id", json!("someone-else")),
+            ("attestation_id", json!("")),
+            ("on_behalf_of", json!("a-human")),
+        ] {
+            let mut env = obj.body["signed_envelope"].clone();
+            env["row"][member] = value;
+            let o = resigned(&pipeline, env).await;
+            assert!(
+                matches!(
+                    verify(&pipeline, &o),
+                    Err(ManifestRejection::Malformed { .. })
+                ),
+                "row.{member} must be refused"
+            );
+        }
     }
 
-    /// **The drift guard.** A validly-signed Contribution whose `evidence_refs`
-    /// names some OTHER blob is refused: the row would attest one manifest and
-    /// reference another, and a consumer keying on refs would pull the wrong
-    /// bytes on the strength of the wrong attestation.
+    /// CC 5.3.2.5: the descriptor carries the blob's size; without it a
+    /// fetcher can only fall back to the global cap.
     #[tokio::test]
-    async fn refs_that_omit_the_manifest_hash_are_refused() {
-        let (obj, pm, grant, gm) =
-            chain_with_envelope(|e| e["evidence_refs"] = json!(["00".repeat(32)])).await;
-        let err = verify_build_manifest_contribution(&obj, &pm, &grant, &gm, &[HUMAN.to_string()])
-            .unwrap_err();
-        assert!(
-            matches!(err, ManifestRejection::Malformed { .. }),
-            "{err:?}"
-        );
-    }
-
-    /// A ref entry in a form no consumer will match (prefixed / upper-case) is
-    /// refused rather than carried as a never-firing reference.
-    #[tokio::test]
-    async fn a_prefixed_ref_entry_is_refused() {
-        let (_, mh) = build_owned();
-        let (obj, pm, grant, gm) =
-            chain_with_envelope(|e| e["evidence_refs"] = json!([format!("sha256:{mh}"), mh])).await;
-        let err = verify_build_manifest_contribution(&obj, &pm, &grant, &gm, &[HUMAN.to_string()])
-            .unwrap_err();
-        assert!(
-            matches!(err, ManifestRejection::Malformed { .. }),
-            "{err:?}"
-        );
-    }
-
-    /// **Compat.** A Contribution signed before #281 carries no `evidence_refs`.
-    /// It is still a valid attestation — it simply references no blob, so no
-    /// pull fires on it, which is exactly the pre-#281 status quo. It must not
-    /// be rejected.
-    #[tokio::test]
-    async fn a_pre_281_contribution_without_refs_still_verifies() {
-        let (obj, pm, grant, gm) = chain_with_envelope(|e| {
-            e.as_object_mut().unwrap().remove("evidence_refs");
-        })
-        .await;
-        let v = verify_build_manifest_contribution(&obj, &pm, &grant, &gm, &[HUMAN.to_string()])
-            .unwrap();
-        assert!(v.evidence_refs.is_empty());
-    }
-
-    /// The producer refuses a `manifest_hash` it could not reference in the one
-    /// form consumers match — a `sha256:`-prefixed or upper-case value would
-    /// emit a ref that exists and never fires.
-    #[tokio::test]
-    async fn producer_refuses_a_manifest_hash_no_consumer_would_match() {
-        let pipeline = HybridSigningIdentity::generate(PIPELINE).unwrap();
-        let (bh, mh) = build_owned();
-        for bad in [format!("sha256:{mh}"), mh.to_uppercase(), "abc".to_string()] {
-            let b = BuildAttestation {
-                target: "x86_64-unknown-linux-gnu",
-                binary_hash: &bh,
-                build_id: "ciris-verify@6.2.0",
-                binary_version: "6.2.0",
-                manifest_hash: &bad,
-            };
-            let r =
-                sign_build_manifest_contribution(&pipeline, &b, HUMAN, "delegation:x", TS).await;
-            assert!(r.is_err(), "{bad:?} must be refused at the producer");
+    async fn a_build_without_a_declared_size_is_refused() {
+        let (pipeline, obj, _) = signed(TARGET).await;
+        for bad in [json!(null), json!("41237"), json!(-1)] {
+            let mut env = obj.body["signed_envelope"].clone();
+            if bad.is_null() {
+                env["build"]
+                    .as_object_mut()
+                    .unwrap()
+                    .remove("manifest_size");
+            } else {
+                env["build"]["manifest_size"] = bad;
+            }
+            let o = resigned(&pipeline, env).await;
+            assert!(matches!(
+                verify(&pipeline, &o),
+                Err(ManifestRejection::Malformed { .. })
+            ));
         }
     }
 
     #[tokio::test]
-    async fn valid_chain_verifies_and_roots_in_the_trusted_human() {
-        let (obj, pm, grant, gm) = valid_chain().await;
-        let v = verify_build_manifest_contribution(&obj, &pm, &grant, &gm, &[HUMAN.to_string()])
-            .expect("a fully valid chain rooting in a trusted human must verify");
-        assert_eq!(v.attested_by, PIPELINE);
-        assert_eq!(v.on_behalf_of, HUMAN);
-        assert_eq!(v.target, "x86_64-unknown-linux-gnu");
-        assert_eq!(v.binary_version, "6.2.0");
-    }
-
-    #[tokio::test]
-    async fn empty_trust_set_verifies_chain_without_trust_decision() {
-        // Chain-valid but no trust list supplied → "who does this root in?" path.
-        let (obj, pm, grant, gm) = valid_chain().await;
-        let v = verify_build_manifest_contribution(&obj, &pm, &grant, &gm, &[]).unwrap();
-        assert_eq!(v.on_behalf_of, HUMAN);
-    }
-
-    #[tokio::test]
-    async fn untrusted_human_is_rejected_even_with_a_valid_chain() {
-        let (obj, pm, grant, gm) = valid_chain().await;
-        let err = verify_build_manifest_contribution(
-            &obj,
-            &pm,
-            &grant,
-            &gm,
-            &["someone-else-zzz".to_string()],
-        )
-        .unwrap_err();
-        assert_eq!(
-            err,
-            ManifestRejection::AuthorityNotTrusted {
-                on_behalf_of: HUMAN.to_string()
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn tampered_contribution_fails_the_pipeline_signature() {
-        let (mut obj, pm, grant, gm) = valid_chain().await;
+    async fn tampering_after_signing_breaks_the_signature() {
+        let (pipeline, mut obj, _) = signed(TARGET).await;
         obj.body["signed_envelope"]["build"]["binary_hash"] = json!("00".repeat(32));
-        let err = verify_build_manifest_contribution(&obj, &pm, &grant, &gm, &[HUMAN.to_string()])
-            .unwrap_err();
-        assert_eq!(err, ManifestRejection::PipelineSignatureInvalid);
-    }
-
-    #[tokio::test]
-    async fn wrong_pinned_pipeline_key_is_rejected_before_sig_check() {
-        let (obj, _pm, grant, gm) = valid_chain().await;
-        let wrong = HybridSigningIdentity::generate("not-the-pipeline")
-            .unwrap()
-            .directory_member()
-            .unwrap();
-        let err =
-            verify_build_manifest_contribution(&obj, &wrong, &grant, &gm, &[HUMAN.to_string()])
-                .unwrap_err();
-        assert!(matches!(err, ManifestRejection::PipelineKeyMismatch { .. }));
-    }
-
-    #[tokio::test]
-    async fn forged_grant_under_the_humans_key_id_fails_the_binding() {
-        // An attacker mints a grant claiming the human's key_id but signs it with
-        // their own key. The pinned granter member is the REAL human → sig fails.
-        let (obj, pm, _grant, gm) = valid_chain().await;
-        let attacker = HybridSigningIdentity::generate(HUMAN).unwrap(); // same id, different keys
-        let forged =
-            sign_delegation_grant(&attacker, PIPELINE, &["infra:attest".to_string()], TS).unwrap();
-        let err = verify_build_manifest_contribution(&obj, &pm, &forged, &gm, &[HUMAN.to_string()])
-            .unwrap_err();
-        assert_eq!(err, ManifestRejection::GrantSignatureInvalid);
-    }
-
-    #[tokio::test]
-    async fn grant_to_a_different_pipeline_is_rejected() {
-        let (obj, pm, _grant, _gm) = valid_chain().await;
-        // The human really did sign a grant — but to some other node. Rebuild a
-        // fresh granter member so its keys match this new grant.
-        let human = HybridSigningIdentity::generate(HUMAN).unwrap();
-        let gm2 = human.directory_member().unwrap();
-        let grant =
-            sign_delegation_grant(&human, "some-other-node", &["infra:attest".to_string()], TS)
-                .unwrap();
-        let err = verify_build_manifest_contribution(&obj, &pm, &grant, &gm2, &[HUMAN.to_string()])
-            .unwrap_err();
         assert_eq!(
-            err,
-            ManifestRejection::GrantSubjectMismatch {
-                pipeline: PIPELINE.to_string()
-            }
+            verify(&pipeline, &obj),
+            Err(ManifestRejection::PipelineSignatureInvalid)
         );
     }
 
     #[tokio::test]
-    async fn grant_missing_infra_attest_scope_is_rejected() {
-        let (obj, pm, _grant, _gm) = valid_chain().await;
-        let human = HybridSigningIdentity::generate(HUMAN).unwrap();
-        let gm2 = human.directory_member().unwrap();
-        // A grant that delegates SOME infra scope, but not infra:attest.
-        let grant =
-            sign_delegation_grant(&human, PIPELINE, &["infra:relay".to_string()], TS).unwrap();
-        let err = verify_build_manifest_contribution(&obj, &pm, &grant, &gm2, &[HUMAN.to_string()])
-            .unwrap_err();
-        assert_eq!(
-            err,
-            ManifestRejection::GrantMissingScope {
-                scope: "infra:attest".to_string()
-            }
-        );
+    async fn a_contribution_by_another_key_is_refused_before_the_signature() {
+        let (_, obj, _) = signed(TARGET).await;
+        let other =
+            crate::self_at_login::HybridSigningIdentity::generate("other-pipeline").unwrap();
+        assert!(matches!(
+            verify_build_manifest_contribution(
+                &obj,
+                &other.directory_member().unwrap(),
+                &blessing()
+            ),
+            Err(ManifestRejection::PipelineKeyMismatch { .. })
+        ));
+    }
+
+    /// A blessing the caller obtained for pipeline P cannot be spent on a
+    /// Contribution signed by Q.
+    #[tokio::test]
+    async fn a_blessing_for_another_pipeline_is_refused() {
+        let (pipeline, obj, _) = signed(TARGET).await;
+        let other = PipelineBlessing::accord_role("other-pipeline");
+        assert!(matches!(
+            verify_build_manifest_contribution(&obj, &pipeline.directory_member().unwrap(), &other),
+            Err(ManifestRejection::BlessingNamesAnotherPipeline { .. })
+        ));
     }
 
     #[tokio::test]
-    async fn node_grant_smuggling_agency_scope_fails_the_split() {
-        let (obj, pm, _grant, _gm) = valid_chain().await;
-        let human = HybridSigningIdentity::generate(HUMAN).unwrap();
-        let gm2 = human.directory_member().unwrap();
-        // Carries infra:attest (so the scope check passes) but also an agency
-        // scope a node must never hold → §1.3 split rejects it.
-        let grant = sign_delegation_grant(
-            &human,
-            PIPELINE,
-            &["infra:attest".to_string(), "agency:act".to_string()],
-            TS,
-        )
-        .unwrap();
-        let err = verify_build_manifest_contribution(&obj, &pm, &grant, &gm2, &[HUMAN.to_string()])
-            .unwrap_err();
-        assert!(matches!(err, ManifestRejection::ScopeSplitViolation { .. }));
+    async fn producer_references_exactly_the_manifest_blob() {
+        let (_, obj, mh) = signed(TARGET).await;
+        let env = &obj.body["signed_envelope"];
+        assert_eq!(env["evidence_refs"], json!([mh]));
+        assert_ne!(env["evidence_refs"][0], env["build"]["binary_hash"]);
+    }
+
+    #[tokio::test]
+    async fn evidence_refs_must_name_the_manifest() {
+        let (pipeline, obj, _) = signed(TARGET).await;
+        for refs in [
+            json!(null),
+            json!(["ee".repeat(32)]),
+            json!([format!("sha256:{}", "cd".repeat(32))]),
+        ] {
+            let mut env = obj.body["signed_envelope"].clone();
+            if refs.is_null() {
+                env.as_object_mut().unwrap().remove("evidence_refs");
+            } else {
+                env["evidence_refs"] = refs;
+            }
+            let o = resigned(&pipeline, env).await;
+            assert!(matches!(
+                verify(&pipeline, &o),
+                Err(ManifestRejection::Malformed { .. })
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn producer_refuses_a_manifest_hash_no_consumer_would_match() {
+        let pipeline = crate::self_at_login::HybridSigningIdentity::generate(PIPELINE).unwrap();
+        for bad in [format!("sha256:{}", "cd".repeat(32)), "CD".repeat(32)] {
+            let r = sign_build_manifest_contribution(
+                &pipeline,
+                &BuildAttestation {
+                    target: TARGET,
+                    binary_hash: &"ab".repeat(32),
+                    build_id: "b",
+                    binary_version: "v",
+                    manifest_hash: &bad,
+                    manifest_size: 1,
+                },
+                asserted_at(),
+            )
+            .await;
+            assert!(r.is_err(), "{bad}");
+        }
     }
 
     #[tokio::test]
     async fn wrong_kind_object_is_rejected() {
-        let (mut obj, pm, grant, gm) = valid_chain().await;
-        obj.kind = "something_else".to_string();
-        let err = verify_build_manifest_contribution(&obj, &pm, &grant, &gm, &[HUMAN.to_string()])
-            .unwrap_err();
+        let (pipeline, mut obj, _) = signed(TARGET).await;
+        obj.kind = "something_else".into();
+        assert!(matches!(
+            verify(&pipeline, &obj),
+            Err(ManifestRejection::WrongKind { .. })
+        ));
+    }
+
+    /// The production path (CIRISServer's accord ci-key ceremony): no grant
+    /// exists, the accord role on the key record is the standing.
+    #[tokio::test]
+    async fn an_accord_role_blessing_verifies_and_is_reported_as_such() {
+        let (pipeline, obj, _) = signed(TARGET).await;
+        let v = verify_build_manifest_contribution(
+            &obj,
+            &pipeline.directory_member().unwrap(),
+            &PipelineBlessing::accord_role(PIPELINE),
+        )
+        .unwrap();
+        assert_eq!(v.standing, PipelineStanding::AccordRole);
+        assert_eq!(v.standing.plane_str(), "accord_role");
+    }
+
+    #[test]
+    fn standing_wire_names_are_distinct() {
+        let names = [
+            PipelineBlessing::conferred("p", "r", "g", WalkPlane::Delegation)
+                .standing
+                .plane_str(),
+            PipelineBlessing::conferred("p", "r", "g", WalkPlane::FamilyQuorum)
+                .standing
+                .plane_str(),
+            PipelineBlessing::accord_role("p").standing.plane_str(),
+        ];
+        assert_eq!(names, ["delegation", "family_quorum", "accord_role"]);
+    }
+
+    #[test]
+    fn signed_instants_render_at_millisecond_resolution() {
         assert_eq!(
-            err,
-            ManifestRejection::WrongKind {
-                kind: "something_else".to_string()
-            }
+            render_signed_instant(asserted_at()),
+            "2026-10-01T14:50:29.308Z"
         );
-    }
-
-    // -- #185: manifest rooted via the accord co-scrub (retires delegates_to) --
-
-    use crate::federation_self_record::{append_scrub, produce_scrubbed_key_record, ScrubTarget};
-
-    /// A manifest Contribution signed by `pipeline` + that pipeline's
-    /// accord-co-scrubbed `KeyRecord`. `scrubbers` co-scrub the record (each an
-    /// accord anchor); `roles` is the scrub-attested role set; `anchors` is the
-    /// pinned accord-member set the verifier trusts.
-    async fn coscrub_setup(
-        roles: Vec<String>,
-        scrubbers: &[&HybridSigningIdentity],
-        anchors: &[&HybridSigningIdentity],
-    ) -> (
-        SignedCegObject,
-        ThresholdMember,
-        KeyRecord,
-        Vec<ThresholdMember>,
-    ) {
-        let pipeline = HybridSigningIdentity::generate(PIPELINE).unwrap();
-        let pm = pipeline.directory_member().unwrap();
-        let (bh, mh) = build_owned();
-        let b = BuildAttestation {
-            target: "x86_64-unknown-linux-gnu",
-            binary_hash: &bh,
-            build_id: "ciris-verify@8.13.0",
-            binary_version: "8.13.0",
-            manifest_hash: &mh,
-        };
-        // The manifest is signed by the pipeline key directly (on_behalf_of /
-        // delegation_ref are vestigial under the co-scrub model — ignored here).
-        let obj = sign_build_manifest_contribution(&pipeline, &b, HUMAN, "unused", TS)
-            .await
-            .unwrap();
-
-        let target = ScrubTarget {
-            key_id: PIPELINE.to_string(),
-            pubkey_ed25519_base64: pm.ed25519_public_key_base64.clone(),
-            pubkey_ml_dsa_65_base64: pm.mldsa65_public_key_base64.clone().unwrap(),
-            identity_type: "node".to_string(),
-            roles,
-        };
-        let mut rec = produce_scrubbed_key_record(scrubbers[0], target, TS, None, &[])
-            .await
-            .unwrap();
-        for s in &scrubbers[1..] {
-            rec = append_scrub(rec, *s).await.unwrap();
-        }
-        let anchor_members: Vec<ThresholdMember> = anchors
-            .iter()
-            .map(|a| a.directory_member().unwrap())
-            .collect();
-        (obj, pm, rec.record, anchor_members)
-    }
-
-    #[tokio::test]
-    async fn coscrubbed_pipeline_with_infra_attest_verifies() {
-        let a1 = HybridSigningIdentity::generate("A1").unwrap();
-        let b1 = HybridSigningIdentity::generate("B1").unwrap();
-        let (obj, pm, rec, anchors) =
-            coscrub_setup(vec!["infra:attest".to_string()], &[&a1, &b1], &[&a1, &b1]).await;
-        let v = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors)
-            .expect("2-of-3 co-scrub carrying infra:attest must verify");
-        assert_eq!(v.attested_by, PIPELINE);
-        assert_eq!(v.target, "x86_64-unknown-linux-gnu");
-        assert_eq!(v.binary_version, "8.13.0");
-    }
-
-    #[tokio::test]
-    async fn single_scrub_is_not_a_blessing() {
-        let a1 = HybridSigningIdentity::generate("A1").unwrap();
-        let (obj, pm, rec, anchors) =
-            coscrub_setup(vec!["infra:attest".to_string()], &[&a1], &[&a1]).await;
-        let err = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors).unwrap_err();
-        assert_eq!(
-            err,
-            ManifestRejection::InsufficientAccordScrubs {
-                found: 1,
-                needed: 2
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn role_absent_record_is_not_blessed() {
-        let a1 = HybridSigningIdentity::generate("A1").unwrap();
-        let b1 = HybridSigningIdentity::generate("B1").unwrap();
-        // 2-of-3 scrubbed but WITHOUT infra:attest → not a manifest signer.
-        let (obj, pm, rec, anchors) = coscrub_setup(vec![], &[&a1, &b1], &[&a1, &b1]).await;
-        let err = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors).unwrap_err();
-        assert_eq!(
-            err,
-            ManifestRejection::NotBlessedForManifest {
-                scope: "infra:attest".to_string()
-            }
-        );
-    }
-
-    /// **CIRISVerify#252 on the blessing surface — privilege transfer, refused.**
-    ///
-    /// Mallory's key was never blessed. She takes a **genuinely**
-    /// accord-co-scrubbed record for a key that WAS blessed with
-    /// `infra:attest` — real envelope, real ≥2-anchor scrubs — and relabels
-    /// only the sibling `key_id` to the pipeline the verifier pins.
-    ///
-    /// Pre-#252 that satisfied all three gates: the identity comparison read
-    /// the sibling, `roles_in_envelope()` read the (genuine) envelope, and the
-    /// quorum verified the (genuine) scrubs. A key that was never blessed came
-    /// out blessed, from entirely valid signatures.
-    #[tokio::test]
-    async fn relabelled_record_over_a_genuine_blessed_envelope_is_refused() {
-        let a1 = HybridSigningIdentity::generate("A1").unwrap();
-        let b1 = HybridSigningIdentity::generate("B1").unwrap();
-        let (obj, pm, blessed, anchors) =
-            coscrub_setup(vec!["infra:attest".to_string()], &[&a1, &b1], &[&a1, &b1]).await;
-
-        // The genuine record, relabelled on the OUTSIDE only. Envelope,
-        // content hash and both anchor scrubs are untouched and valid.
-        let mut lifted = blessed.clone();
-        lifted.key_id = PIPELINE.to_string();
-        lifted.registration_envelope["key_id"] = json!("victim-key-that-was-blessed");
-
-        // The authority evidence is still genuine …
-        assert!(lifted
-            .roles_in_envelope()
-            .iter()
-            .any(|r| r == MANIFEST_PUBLISH_SCOPE));
-
-        // … and it is refused anyway, on the subject.
-        let err = verify_build_manifest_via_coscrub(&obj, &pm, &lifted, &anchors).unwrap_err();
-        assert!(
-            matches!(err, ManifestRejection::PipelineRecordSubjectMismatch { .. }),
-            "a relabelled record MUST be refused on the subject, got {err:?}"
-        );
-    }
-
-    #[tokio::test]
-    async fn pipeline_record_for_a_different_key_is_rejected() {
-        let a1 = HybridSigningIdentity::generate("A1").unwrap();
-        let b1 = HybridSigningIdentity::generate("B1").unwrap();
-        let (obj, pm, mut rec, anchors) =
-            coscrub_setup(vec!["infra:attest".to_string()], &[&a1, &b1], &[&a1, &b1]).await;
-        // Move BOTH halves, so the record is internally coherent and this
-        // exercises the key_id rule rather than the #252 binding. (Its scrubs
-        // no longer verify over the changed envelope, which is why the binding
-        // is checked first — see the companion test below.)
-        rec.key_id = "some-other-node".to_string();
-        rec.registration_envelope["key_id"] = json!("some-other-node");
-        let err = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors).unwrap_err();
-        assert_eq!(
-            err,
-            ManifestRejection::PipelineRecordMismatch {
-                record: "some-other-node".to_string(),
-                pipeline: PIPELINE.to_string(),
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn a_non_anchor_scrub_does_not_count_toward_quorum() {
-        // Scrubbed by A1 (anchor) + X1 (NOT in the trusted anchor set). Only A1
-        // counts → 1 < 2 → rejected. A non-anchor can't inflate the quorum.
-        let a1 = HybridSigningIdentity::generate("A1").unwrap();
-        let x1 = HybridSigningIdentity::generate("X1").unwrap();
-        let (obj, pm, rec, _) =
-            coscrub_setup(vec!["infra:attest".to_string()], &[&a1, &x1], &[&a1, &x1]).await;
-        // Verifier trusts only A1 as an anchor.
-        let anchors = vec![a1.directory_member().unwrap()];
-        let err = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors).unwrap_err();
-        assert_eq!(
-            err,
-            ManifestRejection::InsufficientAccordScrubs {
-                found: 1,
-                needed: 2
-            }
-        );
-    }
-
-    #[tokio::test]
-    async fn tampering_the_record_envelope_drops_the_quorum() {
-        // Flip a byte in the scrub-signed envelope after the co-scrub → both
-        // anchor scrubs stop verifying over it → quorum collapses (fail-secure).
-        let a1 = HybridSigningIdentity::generate("A1").unwrap();
-        let b1 = HybridSigningIdentity::generate("B1").unwrap();
-        let (obj, pm, mut rec, anchors) =
-            coscrub_setup(vec!["infra:attest".to_string()], &[&a1, &b1], &[&a1, &b1]).await;
-        // Tamper a member that is NOT part of the subject binding, so the
-        // binding still holds and the *quorum* is what collapses — otherwise
-        // this would only re-test #252.
-        rec.registration_envelope["valid_from"] = json!("1999-01-01T00:00:00Z");
-        let err = verify_build_manifest_via_coscrub(&obj, &pm, &rec, &anchors).unwrap_err();
-        assert_eq!(
-            err,
-            ManifestRejection::InsufficientAccordScrubs {
-                found: 0,
-                needed: 2
-            }
-        );
+        let whole = DateTime::parse_from_rfc3339("2026-10-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(render_signed_instant(whole), "2026-10-01T00:00:00.000Z");
     }
 }

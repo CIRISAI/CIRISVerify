@@ -1433,7 +1433,7 @@ mod tests {
         assert_eq!(entries.len(), 1);
         assert_eq!(
             entries[0].dimension,
-            "provenance:build_manifest:x86_64-unknown-linux-gnu"
+            "provenance:build_manifest:x86_64-unknown-linux-gnu:v1"
         );
         assert_eq!(entries[0].score, 1.0);
         assert_eq!(entries[0].attester, "verify-steward-2026");
@@ -1451,7 +1451,7 @@ mod tests {
         let entries = manifest.to_attestation_entries("verify-steward-2026");
         assert_eq!(
             entries[0].dimension,
-            "provenance:build_manifest:aarch64-apple-ios"
+            "provenance:build_manifest:aarch64-apple-ios:v1"
         );
     }
 
@@ -1468,7 +1468,7 @@ mod tests {
         // Target is still the canonical target string verbatim.
         assert_eq!(
             entries[0].dimension,
-            "provenance:build_manifest:x86_64-unknown-linux-gnu"
+            "provenance:build_manifest:x86_64-unknown-linux-gnu:v1"
         );
     }
 }

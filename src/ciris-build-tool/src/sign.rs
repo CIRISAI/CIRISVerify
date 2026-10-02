@@ -138,16 +138,13 @@ enum Cmd {
         #[arg(short, long)]
         output: Option<PathBuf>,
 
-        /// CC-native dual-emit (transition): the human `key_id` the pipeline
-        /// attests **on behalf of**. With `--delegation-ref`, also emits a
-        /// `build_manifest_contribution` CEG object to the outbox (FSD-003).
+        /// Also emit the build as a `build_manifest_contribution` CEG object
+        /// to the outbox, signed by this pipeline key in the shape a node's
+        /// `/v1/builds` door stores as-is (FSD-006). Whether the pipeline may
+        /// attest builds is a `delegates_to(root → pipeline, infra:attest)`
+        /// grant the reader's capability walk finds, not a flag here.
         #[arg(long)]
-        on_behalf_of: Option<String>,
-
-        /// The `delegates_to(human → pipeline, infra:attest)` grant id that
-        /// authorizes this pipeline to publish on the human's behalf.
-        #[arg(long, requires = "on_behalf_of")]
-        delegation_ref: Option<String>,
+        emit_contribution: bool,
     },
 
     /// Generate a fresh Ed25519 + ML-DSA-65 keypair pair for testing
@@ -305,8 +302,7 @@ fn main() -> Result<()> {
             mldsa_secret,
             key_id,
             output,
-            on_behalf_of,
-            delegation_ref,
+            emit_contribution,
         } => {
             let primitive = parse_primitive(&primitive);
 
@@ -376,10 +372,6 @@ fn main() -> Result<()> {
 
             // Capture the facts the CC-native dual-emit needs before the
             // by-value args are moved into sign_build_manifest.
-            let dual_emit = on_behalf_of
-                .as_ref()
-                .zip(delegation_ref.as_ref())
-                .map(|(o, d)| (o.clone(), d.clone()));
             let facts = (
                 target.clone(),
                 binary_hash.clone(),
@@ -415,7 +407,7 @@ fn main() -> Result<()> {
             // CC-native dual-emit (transition): also publish the manifest as a
             // pipeline-signed CEG Contribution to the outbox. Runs alongside the
             // legacy signed manifest until consumers cut over (CIRISServer#25).
-            if let Some((obo, dref)) = dual_emit {
+            if emit_contribution {
                 let (target, binary_hash, build_id, binary_version, key_id) = facts;
                 emit_manifest_contribution(EmitArgs {
                     ed_seed: &ed_seed,
@@ -426,8 +418,6 @@ fn main() -> Result<()> {
                     build_id: &build_id,
                     binary_version: &binary_version,
                     signed_manifest: &signed,
-                    on_behalf_of: &obo,
-                    delegation_ref: &dref,
                 })?;
             }
         },
@@ -581,13 +571,12 @@ struct EmitArgs<'a> {
     build_id: &'a str,
     binary_version: &'a str,
     signed_manifest: &'a [u8],
-    on_behalf_of: &'a str,
-    delegation_ref: &'a str,
 }
 
-/// CC-native dual-emit: sign the build as a `build_manifest_contribution` CEG
-/// object with the pipeline node's hybrid key (on the human's behalf) and write
-/// it to the CEG outbox (FSD-003 / CIRISVerify `manifest_contribution`).
+/// Sign the build as a `build_manifest_contribution` CEG object with the
+/// pipeline node's hybrid key and write it to the CEG outbox (FSD-006 /
+/// CIRISVerify `manifest_contribution`). The manifest blob is exactly the
+/// signed-manifest bytes, so its hash and size are taken from them.
 fn emit_manifest_contribution(a: EmitArgs<'_>) -> anyhow::Result<()> {
     use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
     use ciris_verify_core::manifest_contribution::{
@@ -602,9 +591,10 @@ fn emit_manifest_contribution(a: EmitArgs<'_>) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("pipeline ML-DSA-65 seed: {e}"))?;
     let identity = HybridSigningIdentity::new(a.pipeline_key_id, ed, mldsa);
 
-    // Bind the Contribution to the exact signed manifest + take its timestamp.
+    // Bind the Contribution to the exact signed manifest + take its timestamp,
+    // so the Contribution and the manifest name one instant.
     let manifest_hash = hex::encode(Sha256::digest(a.signed_manifest));
-    let signed_at = serde_json::from_slice::<serde_json::Value>(a.signed_manifest)
+    let asserted_at = serde_json::from_slice::<serde_json::Value>(a.signed_manifest)
         .ok()
         .and_then(|v| {
             v.get("generated_at")
@@ -612,6 +602,9 @@ fn emit_manifest_contribution(a: EmitArgs<'_>) -> anyhow::Result<()> {
                 .map(String::from)
         })
         .ok_or_else(|| anyhow::anyhow!("signed manifest has no generated_at"))?;
+    let asserted_at = chrono::DateTime::parse_from_rfc3339(&asserted_at)
+        .map_err(|e| anyhow::anyhow!("signed manifest generated_at is not RFC 3339: {e}"))?
+        .with_timezone(&chrono::Utc);
 
     let build = BuildAttestation {
         target: a.target,
@@ -619,6 +612,7 @@ fn emit_manifest_contribution(a: EmitArgs<'_>) -> anyhow::Result<()> {
         build_id: a.build_id,
         binary_version: a.binary_version,
         manifest_hash: &manifest_hash,
+        manifest_size: a.signed_manifest.len() as u64,
     };
 
     let obj = tokio::runtime::Builder::new_current_thread()
@@ -628,9 +622,7 @@ fn emit_manifest_contribution(a: EmitArgs<'_>) -> anyhow::Result<()> {
         .block_on(sign_build_manifest_contribution(
             &identity,
             &build,
-            a.on_behalf_of,
-            a.delegation_ref,
-            &signed_at,
+            asserted_at,
         ))
         .map_err(|e| anyhow::anyhow!("sign manifest contribution: {e}"))?;
 

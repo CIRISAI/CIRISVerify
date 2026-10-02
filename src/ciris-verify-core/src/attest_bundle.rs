@@ -267,7 +267,22 @@ impl AttestBundle {
                 continue;
             }
 
-            // Parameterized dimensions.
+            // Parameterized dimensions. CC 3.1.7 R3: each ends in exactly one
+            // version segment, so the tail is split off ONCE here rather than by
+            // each family's parser (CIRISVerify#299 — 18.0.0 split it for
+            // `hardware_custody` alone and every sibling would have read
+            // `2:v1` as a level and `steward:v1` as an authority). Only the rule
+            // version this crate emits is projected: an untailed (pre-19.0.0) or
+            // other-version entry names a rule this projection does not read,
+            // so it is not guessed at — it stays in
+            // `federation_provenance.attestations_consumed` below.
+            let Some(d) = d
+                .rsplit_once(':')
+                .filter(|(_, version)| *version == dim::DIMENSION_VERSION)
+                .map(|(head, _)| head)
+            else {
+                continue;
+            };
             if let Some(level_str) = d.strip_prefix("provenance:slsa:") {
                 if entry.is_pass() {
                     if let Ok(level) = level_str.parse::<u8>() {
@@ -294,22 +309,7 @@ impl AttestBundle {
                 skill_imports
                     .entry(source.to_string())
                     .or_insert_with(|| AttestationFact::from(entry));
-            } else if let Some(rest) = d.strip_prefix("hardware_custody:") {
-                // `hardware_custody:{platform}:{version}` — the version tail is
-                // mandatory under CC's registry grammar (CIRISVerify#296), so the
-                // platform is the part BEFORE it. Taking the whole remainder
-                // would report a platform of `tpm_firmware:v1`.
-                //
-                // A dimension with no recognizable tail is read as
-                // platform-only, so a pre-18.0.0 stored entry still parses to
-                // the same platform it always did rather than being dropped.
-                let platform = rest.rsplit_once(':').map_or(rest, |(p, tail)| {
-                    if tail.starts_with('v') && tail[1..].chars().all(|c| c.is_ascii_digit()) {
-                        p
-                    } else {
-                        rest
-                    }
-                });
+            } else if let Some(platform) = d.strip_prefix("hardware_custody:") {
                 if hardware_custody.platform.is_empty() {
                     hardware_custody.platform = platform.to_string();
                     hardware_custody.verified = entry.is_pass();
@@ -368,6 +368,46 @@ mod tests {
             b = b.attestation(e);
         }
         b.build()
+    }
+
+    /// CIRISVerify#299: the projection reads only the rule version this crate
+    /// emits. An untailed (pre-19.0.0) or other-version entry is not guessed at,
+    /// and is still carried in `attestations_consumed`.
+    #[test]
+    fn only_the_emitted_rule_version_is_projected() {
+        let prov = fp(vec![
+            AttestationEntry::pass("provenance:slsa:3", "x"),
+            AttestationEntry::pass("cert_validity:steward", "x"),
+            AttestationEntry::pass("hardware_custody:tpm_firmware", "x"),
+            AttestationEntry::pass("provenance:build_manifest:t:v2", "x"),
+        ]);
+        let bundle = AttestBundle::from_federation_provenance("k", prov);
+        assert!(bundle.provenance.slsa_level.is_none());
+        assert!(bundle.cert_validity.is_empty());
+        assert!(bundle.hardware_custody.platform.is_empty());
+        assert!(bundle.provenance.build_manifest.is_empty());
+        assert_eq!(bundle.federation_provenance.attestations_consumed.len(), 4);
+
+        let prov = fp(vec![
+            AttestationEntry::pass(dim::provenance_slsa(3), "x"),
+            AttestationEntry::pass(dim::cert_validity("steward"), "x"),
+            AttestationEntry::pass(dim::hardware_custody("tpm_firmware"), "x"),
+            AttestationEntry::pass(
+                dim::provenance_skill_import("direct:https://e.org/a:b"),
+                "x",
+            ),
+        ]);
+        let bundle = AttestBundle::from_federation_provenance("k", prov);
+        assert_eq!(bundle.provenance.slsa_level, Some(3));
+        assert!(bundle.cert_validity.contains_key("steward"));
+        assert_eq!(bundle.hardware_custody.platform, "tpm_firmware");
+        assert!(
+            bundle
+                .provenance
+                .skill_imports
+                .contains_key("direct:https://e.org/a:b"),
+            "a source containing colons keeps them; only the last segment is the tail"
+        );
     }
 
     #[test]

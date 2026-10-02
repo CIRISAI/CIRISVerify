@@ -236,12 +236,27 @@ jobs:
       - name: No secret material in tracing events (#265)
         run: bash scripts/check-no-secret-logging.sh
 
-      # CIRISVerify#296: the hardware_custody tokens must be accepted by CC's own
-      # matcher. Skips when CIRISConstitution is not checked out beside the repo,
-      # so this is a local/dev gate; the always-on half is the Rust test
-      # `every_hardware_type_maps_to_a_registered_platform_token`.
-      - name: CC registry tokens — custody + accord kinds (matcher replay)
+      # CIRISVerify#296/#299: every dimension this crate emits must be accepted
+      # by CC's own matcher AND resolve to a registered family. Until 19.0.0 this
+      # step SKIPPED in CI (CIRISConstitution was never checked out here), so the
+      # replay only ever ran on a developer's machine. CC is checked out at a
+      # pinned commit — moving the pin is a deliberate re-target of the
+      # registry — and CIRIS_CC_REQUIRED makes an absent matcher a failure.
+      - uses: actions/checkout@v4
+        with:
+          repository: CIRISAI/CIRISConstitution
+          ref: b384bebe47c212c1c82726c15322b6a014cbc496 # rc6, FSD-006 rulings
+          path: .cc
+      - name: CC registry tokens — every emitted family (matcher replay)
+        env:
+          CIRIS_CONSTITUTION_DIR: ${{ github.workspace }}/.cc
+          CIRIS_CC_REQUIRED: "1"
         run: bash scripts/check-cc-registry-tokens.sh
+      # CC's own repo-wide audit (CC 3.1.7: an emitted literal that resolves as
+      # open vocabulary is a defect). Sees literals only — the replay above
+      # covers dimensions built by the `dim` constructors.
+      - name: CC audit — no unregistered emitted dimension
+        run: python3 .cc/tools/audit_emitted_dimensions.py "$GITHUB_WORKSPACE/src" "$GITHUB_WORKSPACE/bindings"
       # Six review rounds each found one more way past that guard. This is the
       # matrix, so a future narrowing fails here rather than silently
       # un-catching a case someone already paid to find (#268).

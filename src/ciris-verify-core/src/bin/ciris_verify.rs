@@ -282,24 +282,18 @@ enum Commands {
 #[derive(Subcommand)]
 enum ManifestAction {
     /// Sign a build-manifest Contribution with the CI pipeline's hybrid `node`
-    /// key, on behalf of the human who delegated `infra:attest` to it. Emits the
-    /// canonical `SignedCegObject` (kind `build_manifest_contribution`, bound
-    /// hybrid over JCS) → outbox. This is the ONE producer both verify and the
-    /// registry/CI converge on — no hand-reproduced body, no schema drift.
+    /// key. Emits the canonical `SignedCegObject` (kind
+    /// `build_manifest_contribution`, persist's envelope with the signed `row`
+    /// mirror, bound hybrid over JCS) → outbox, storable as-is by a node's
+    /// `/v1/builds` door (FSD-006). Whether the pipeline may attest builds is a
+    /// `delegates_to(root → pipeline, infra:attest)` grant the reader's
+    /// capability walk finds — not something the Contribution states.
     Sign {
         /// The CI pipeline `node` `key_id` that signs (its Ed25519 owner-binding
         /// half + the sealed ML-DSA-65 half under `~/ciris/keys`).
         #[arg(long)]
         pipeline_key_id: String,
-        /// The human fed-id the pipeline attests on behalf of (the accord holder
-        /// who granted `infra:attest` — e.g. `A1`).
-        #[arg(long)]
-        on_behalf_of: String,
-        /// The `delegation_ref` of the granting `delegates_to` grant
-        /// (e.g. `delegation:A1:<pipeline_key_id>`, from `ciris-verify delegate`).
-        #[arg(long)]
-        delegation_ref: String,
-        /// Rust target triple (e.g. `x86_64-unknown-linux-gnu`).
+        /// Build target (a Rust triple, `python-source-tree`, …).
         #[arg(long)]
         target: String,
         /// SHA-256 of the built binary, hex.
@@ -314,6 +308,10 @@ enum ManifestAction {
         /// SHA-256 of the canonical file manifest, hex (matches the served manifest).
         #[arg(long)]
         manifest_hash: String,
+        /// Length of the manifest blob in bytes (CC 5.3.2.5 — a fetcher checks
+        /// it before the SHA).
+        #[arg(long)]
+        manifest_size: u64,
         /// Where the sealed keys live (default `~/ciris/keys`).
         #[arg(long)]
         seed_dir: Option<String>,
@@ -3525,7 +3523,7 @@ async fn run_delegate(a: DelegateArgs) {
         println!("  delegation_ref : {delegation_ref}");
         println!("  CEG object     : {}", path.display());
         println!(
-            "\n  Wire it to the pipeline's build signer:\n    ciris-build-sign sign … \\\n      --on-behalf-of {granter_key_id} --delegation-ref {delegation_ref}"
+            "\n  Submit it beside the pipeline's first build (`pipeline_grant` on POST /v1/builds);\n  a node's capability walk, not the build Contribution, reads it (FSD-006 §5)."
         );
     }
 }
@@ -3533,13 +3531,12 @@ async fn run_delegate(a: DelegateArgs) {
 #[allow(clippy::struct_excessive_bools)]
 struct ManifestSignArgs {
     pipeline_key_id: String,
-    on_behalf_of: String,
-    delegation_ref: String,
     target: String,
     binary_hash: String,
     build_id: String,
     binary_version: String,
     manifest_hash: String,
+    manifest_size: u64,
     seed_dir: Option<String>,
     module: Option<String>,
     key_label: Option<String>,
@@ -3631,17 +3628,9 @@ async fn run_manifest_sign(a: ManifestSignArgs) {
         build_id: &a.build_id,
         binary_version: &a.binary_version,
         manifest_hash: &a.manifest_hash,
+        manifest_size: a.manifest_size,
     };
-    let now = chrono::Utc::now().to_rfc3339();
-    let obj = match sign_build_manifest_contribution(
-        &identity,
-        &build,
-        &a.on_behalf_of,
-        &a.delegation_ref,
-        &now,
-    )
-    .await
-    {
+    let obj = match sign_build_manifest_contribution(&identity, &build, chrono::Utc::now()).await {
         Ok(o) => o,
         Err(e) => {
             eprintln!("❌ sign build-manifest contribution: {e}");
@@ -3665,8 +3654,6 @@ async fn run_manifest_sign(a: ManifestSignArgs) {
             "{}",
             serde_json::json!({
                 "pipeline_key_id": pipeline_key_id,
-                "on_behalf_of": a.on_behalf_of,
-                "delegation_ref": a.delegation_ref,
                 "target": a.target,
                 "build_id": a.build_id,
                 "binary_hash": a.binary_hash,
@@ -3678,8 +3665,6 @@ async fn run_manifest_sign(a: ManifestSignArgs) {
     } else {
         println!("✅ build-manifest contribution signed (CEG-native)\n");
         println!("  pipeline_key_id : {pipeline_key_id}");
-        println!("  on_behalf_of    : {}", a.on_behalf_of);
-        println!("  delegation_ref  : {}", a.delegation_ref);
         println!("  target          : {}", a.target);
         println!("  build_id        : {}", a.build_id);
         println!("  binary_hash     : {}", a.binary_hash);
@@ -3865,13 +3850,12 @@ async fn main() {
         Some(Commands::Manifest { action }) => {
             let ManifestAction::Sign {
                 pipeline_key_id,
-                on_behalf_of,
-                delegation_ref,
                 target,
                 binary_hash,
                 build_id,
                 binary_version,
                 manifest_hash,
+                manifest_size,
                 seed_dir,
                 module,
                 key_label,
@@ -3881,13 +3865,12 @@ async fn main() {
             } = action;
             run_manifest_sign(ManifestSignArgs {
                 pipeline_key_id,
-                on_behalf_of,
-                delegation_ref,
                 target,
                 binary_hash,
                 build_id,
                 binary_version,
                 manifest_hash,
+                manifest_size,
                 seed_dir,
                 module,
                 key_label,

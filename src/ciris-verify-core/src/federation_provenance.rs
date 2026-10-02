@@ -42,25 +42,27 @@
 //! `identity_type="witness"`), so it is exposed here as a *recognition*
 //! constant with no emitter — see [`dim::TRANSPARENCY_LOG_COSIGNED_PREFIX`].
 //!
-//! Addressable via the [`dim`] module:
+//! Addressable via the [`dim`] module. Every parameterized family carries
+//! the CC 3.1.7 R3 tail `:{version}` = [`dim::DIMENSION_VERSION`] (19.0.0,
+//! CIRISVerify#299); the bare `attestation:*` constants are R3-exempt.
 //!
 //! | Dimension                                  | Polarity         |
 //! |--------------------------------------------|------------------|
 //! | `attestation:self_verify`                  | boolean-via-score |
-//! | `attestation:hardware_rooted`                     | boolean-via-score |
+//! | `attestation:hardware_rooted`              | boolean-via-score |
 //! | `attestation:registry_consensus`           | boolean-via-score + Indeterminate (future) |
 //! | `attestation:license_validity`             | boolean-via-score |
 //! | `attestation:agent_integrity`              | boolean-via-score |
-//! | `provenance:slsa:{level}`                  | boolean-via-score |
-//! | `provenance:build_manifest:{target}`       | boolean-via-score |
-//! | `provenance:build_manifest:{target}:locale:{lang_code}` | boolean-via-score (v3.8.0+, #37) |
-//! | `provenance:skill_import:{source}`         | **signed** (per CC part_3; v3.8.0+, #37) |
-//! | `transparency_log:inclusion`               | boolean-via-score |
-//! | `transparency_log:consistency`             | boolean-via-score |
-//! | `transparency_log:cosigned:{tree_size}`    | **signed** — *recognized, never emitted by verify* (witness-emitted per CC part_3) |
-//! | `rollback_detected:{revision_field}`       | **-1 only** (no positive direction) |
-//! | `cert_validity:{authority}`                | boolean-via-score |
-//! | `hardware_custody:{platform}`              | boolean-via-score |
+//! | `provenance:slsa:{level}:{version}`        | boolean-via-score |
+//! | `provenance:build_manifest:{target}:{version}` | boolean-via-score |
+//! | `provenance:build_manifest:{target}:locale:{lang_code}:{version}` | boolean-via-score (v3.8.0+, #37) |
+//! | `provenance:skill_import:{source}:{version}` | **signed** (per CC part_3; v3.8.0+, #37) |
+//! | `transparency_log:inclusion:{version}`     | boolean-via-score |
+//! | `transparency_log:consistency:{version}`   | boolean-via-score |
+//! | `transparency_log:cosigned:{tree_size}:{version}` | **signed** — *recognized, never emitted by verify* (witness-emitted per CC part_3) |
+//! | `rollback_detected:{revision_field}:{version}` | **-1 only** (no positive direction) |
+//! | `cert_validity:{authority}:{version}`      | boolean-via-score |
+//! | `hardware_custody:{platform}:{version}`    | boolean-via-score |
 //!
 //! "boolean-via-score" means a 0.0 or 1.0 score; `rollback_detected`
 //! is the one dimension that may legitimately emit a *negative* score
@@ -111,10 +113,10 @@ pub mod dim {
     pub const AGENT_INTEGRITY: &str = "attestation:agent_integrity";
 
     /// RFC 6962 inclusion proof for an audit leaf.
-    pub const TRANSPARENCY_LOG_INCLUSION: &str = "transparency_log:inclusion";
+    pub const TRANSPARENCY_LOG_INCLUSION: &str = "transparency_log:inclusion:v1";
 
     /// RFC 6962 consistency proof between two STHs.
-    pub const TRANSPARENCY_LOG_CONSISTENCY: &str = "transparency_log:consistency";
+    pub const TRANSPARENCY_LOG_CONSISTENCY: &str = "transparency_log:consistency:v1";
 
     /// Prefix of CC part_3's 15th verify-namespace dimension,
     /// `transparency_log:cosigned:{tree_size}`.
@@ -134,19 +136,19 @@ pub mod dim {
     /// [`TRANSPARENCY_LOG_COSIGNED_PREFIX`]).
     #[must_use]
     pub fn transparency_log_cosigned(tree_size: u64) -> String {
-        format!("{TRANSPARENCY_LOG_COSIGNED_PREFIX}{tree_size}")
+        format!("{TRANSPARENCY_LOG_COSIGNED_PREFIX}{tree_size}:{DIMENSION_VERSION}")
     }
 
     /// SLSA build provenance at `level` (1-3). FSD-002 §3.2.
     #[must_use]
     pub fn provenance_slsa(level: u8) -> String {
-        format!("provenance:slsa:{level}")
+        format!("provenance:slsa:{level}:{DIMENSION_VERSION}")
     }
 
     /// Per-target canonical-staged-runtime manifest hash equality.
     #[must_use]
     pub fn provenance_build_manifest(target: &str) -> String {
-        format!("provenance:build_manifest:{target}")
+        format!("provenance:build_manifest:{target}:{DIMENSION_VERSION}")
     }
 
     /// Per-locale leaf under a `provenance:build_manifest:{target}`
@@ -158,7 +160,7 @@ pub mod dim {
     /// verdict.
     #[must_use]
     pub fn provenance_build_manifest_locale(target: &str, lang_code: &str) -> String {
-        format!("provenance:build_manifest:{target}:locale:{lang_code}")
+        format!("provenance:build_manifest:{target}:locale:{lang_code}:{DIMENSION_VERSION}")
     }
 
     /// Community-skill import provenance (CIRISRegistry#28 /
@@ -168,20 +170,20 @@ pub mod dim {
     /// the signer identity is checked against.
     #[must_use]
     pub fn provenance_skill_import(source: &str) -> String {
-        format!("provenance:skill_import:{source}")
+        format!("provenance:skill_import:{source}:{DIMENSION_VERSION}")
     }
 
     /// Anti-rollback signal — a decrease in a revocation revision.
     /// **Polarity: -1 only.** Emit with `score = -1.0`.
     #[must_use]
     pub fn rollback_detected(revision_field: &str) -> String {
-        format!("rollback_detected:{revision_field}")
+        format!("rollback_detected:{revision_field}:{DIMENSION_VERSION}")
     }
 
     /// Validity of a certification authority's signature over the key.
     #[must_use]
     pub fn cert_validity(authority: &str) -> String {
-        format!("cert_validity:{authority}")
+        format!("cert_validity:{authority}:{DIMENSION_VERSION}")
     }
 
     /// Hardware-custody statement — where the seed lives. `platform`
@@ -209,15 +211,24 @@ pub mod dim {
     /// CIRISPersist ≥ 50, on one count or both.
     #[must_use]
     pub fn hardware_custody(platform: &str) -> String {
-        format!("hardware_custody:{platform}:{HARDWARE_CUSTODY_VERSION}")
+        format!("hardware_custody:{platform}:{DIMENSION_VERSION}")
     }
 
-    /// The `hardware_custody:{platform}:{version}` family's version segment.
+    /// The trailing version segment CC 3.1.7 R3 requires on every
+    /// parameterized family this crate emits (CIRISVerify#296, #299).
+    ///
+    /// R3's grammar is **global**: exactly one trailing `:vN`, whether or not
+    /// `{version}` appears in a family's own `segments` array — so reading the
+    /// registry JSON family-by-family suggests most families take no tail, and
+    /// that reading is wrong. 18.0.0 fixed `hardware_custody` alone and left
+    /// its eight siblings refused as `missing_version_segment`; 19.0.0 puts
+    /// every family on this one constant so they cannot diverge again. The
+    /// four bare `attestation:*` constants are R3-exempt and carry none.
     ///
     /// Pinned rather than computed: the tail is a **wire fact**, and a consumer
     /// matching `:v1` must break loudly if this crate ever emits `:v2` rather
     /// than silently storing a dimension nobody queries.
-    pub const HARDWARE_CUSTODY_VERSION: &str = "v1";
+    pub const DIMENSION_VERSION: &str = "v1";
 
     /// CC 3.4.5's **ratified** per-family consent disposition.
     ///
@@ -726,6 +737,40 @@ impl FederationProvenanceBuilder {
 mod tests {
     use super::*;
 
+    /// CIRISVerify#299, always on (the matcher replay in
+    /// `scripts/check-cc-registry-tokens.sh` skips when CIRISConstitution is not
+    /// beside the repo). Every family this crate emits ends in exactly one
+    /// `:v1`; only the four bare `attestation:*` constants are R3-exempt.
+    #[test]
+    fn every_emitted_family_carries_exactly_one_version_tail() {
+        let tail = format!(":{}", dim::DIMENSION_VERSION);
+        let emitted = [
+            dim::provenance_slsa(2),
+            dim::provenance_build_manifest("python-source-tree"),
+            dim::provenance_build_manifest_locale("ios-mobile-bundle", "my"),
+            dim::provenance_skill_import("direct:https://example.org/s.tar.gz"),
+            dim::rollback_detected("license_revocation_revision"),
+            dim::cert_validity("steward"),
+            dim::hardware_custody("software_only"),
+            dim::transparency_log_cosigned(42),
+            dim::TRANSPARENCY_LOG_INCLUSION.to_string(),
+            dim::TRANSPARENCY_LOG_CONSISTENCY.to_string(),
+        ];
+        for d in &emitted {
+            assert!(d.ends_with(&tail), "{d} lacks the R3 version tail");
+            assert!(!d[..d.len() - tail.len()].ends_with(&tail), "{d} has two");
+        }
+        for exempt in [
+            dim::SELF_VERIFY,
+            dim::HARDWARE,
+            dim::REGISTRY_CONSENSUS,
+            dim::LICENSE_VALIDITY,
+            dim::AGENT_INTEGRITY,
+        ] {
+            assert!(exempt.starts_with("attestation:") && !exempt.ends_with(&tail));
+        }
+    }
+
     #[test]
     fn pass_and_fail_helpers() {
         let p = AttestationEntry::pass(dim::LICENSE_VALIDITY, "registry-steward-us");
@@ -744,7 +789,10 @@ mod tests {
         assert!(r.is_rollback());
         assert!(!r.is_pass() && !r.is_fail());
         assert_eq!(r.score, -1.0);
-        assert_eq!(r.dimension, "rollback_detected:license_revocation_revision");
+        assert_eq!(
+            r.dimension,
+            "rollback_detected:license_revocation_revision:v1"
+        );
     }
 
     #[test]
@@ -757,18 +805,18 @@ mod tests {
 
     #[test]
     fn parameterized_dimensions_format_correctly() {
-        assert_eq!(dim::provenance_slsa(3), "provenance:slsa:3");
+        assert_eq!(dim::provenance_slsa(3), "provenance:slsa:3:v1");
         assert_eq!(
             dim::provenance_build_manifest("aarch64-apple-ios"),
-            "provenance:build_manifest:aarch64-apple-ios"
+            "provenance:build_manifest:aarch64-apple-ios:v1"
         );
         assert_eq!(
             dim::rollback_detected("license_revocation_revision"),
-            "rollback_detected:license_revocation_revision"
+            "rollback_detected:license_revocation_revision:v1"
         );
         assert_eq!(
             dim::cert_validity("registry-steward-us"),
-            "cert_validity:registry-steward-us"
+            "cert_validity:registry-steward-us:v1"
         );
         // CIRISVerify#296: a registry token AND the mandatory version tail.
         assert_eq!(
@@ -784,23 +832,23 @@ mod tests {
     fn skill_import_and_per_locale_dimensions_format_correctly() {
         assert_eq!(
             dim::provenance_skill_import("registry:ciris-registry-us"),
-            "provenance:skill_import:registry:ciris-registry-us"
+            "provenance:skill_import:registry:ciris-registry-us:v1"
         );
         assert_eq!(
             dim::provenance_skill_import("direct:https://example.org/skill.tar.gz"),
-            "provenance:skill_import:direct:https://example.org/skill.tar.gz"
+            "provenance:skill_import:direct:https://example.org/skill.tar.gz:v1"
         );
         assert_eq!(
             dim::provenance_skill_import("local:/opt/ciris/skills/triage.tar.gz"),
-            "provenance:skill_import:local:/opt/ciris/skills/triage.tar.gz"
+            "provenance:skill_import:local:/opt/ciris/skills/triage.tar.gz:v1"
         );
         assert_eq!(
             dim::provenance_build_manifest_locale("ios-mobile-bundle", "my"),
-            "provenance:build_manifest:ios-mobile-bundle:locale:my"
+            "provenance:build_manifest:ios-mobile-bundle:locale:my:v1"
         );
         assert_eq!(
             dim::provenance_build_manifest_locale("python-source-tree", "en"),
-            "provenance:build_manifest:python-source-tree:locale:en"
+            "provenance:build_manifest:python-source-tree:locale:en:v1"
         );
     }
 
@@ -886,11 +934,11 @@ mod tests {
         assert_eq!(dim::AGENT_INTEGRITY, "attestation:agent_integrity");
         assert_eq!(
             dim::TRANSPARENCY_LOG_INCLUSION,
-            "transparency_log:inclusion"
+            "transparency_log:inclusion:v1"
         );
         assert_eq!(
             dim::TRANSPARENCY_LOG_CONSISTENCY,
-            "transparency_log:consistency"
+            "transparency_log:consistency:v1"
         );
     }
 
@@ -914,7 +962,7 @@ mod tests {
         assert_eq!(j["policy"], "registry-v1.4-direct-trust");
         assert_eq!(
             j["attestations_consumed"][0]["dimension"],
-            "provenance:slsa:3"
+            "provenance:slsa:3:v1"
         );
         assert_eq!(j["attestations_consumed"][0]["score"], 1.0);
         assert_eq!(
