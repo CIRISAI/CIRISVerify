@@ -356,6 +356,19 @@ The founders of `ciris-canonical` are A1/B1/C1 directly, and shipped roots are m
 witnessed mode off (`witness_quorum: 0`). Verify's GenesisBundle consumer must not expect a witness
 directory.
 
+### Cross-repo witness (2026-10-01)
+
+A Contribution minted by the release `ciris-build-sign sign --emit-contribution` binary was submitted
+by CIRISRegistry, in-process, to `fold_builds`' submit door (SQLite Engine, persist v52.0.1,
+registry 18a138c), with the pipeline registered from its public keys only and **no** blessing. The
+door passed size, manifest hash, the facts (dimension `:v1`, `delegation_scope`, `evidence_refs`,
+bare-hex hash), the row mirror, key lookup, and **the bound-hybrid signature over persist's canonical
+bytes**, then refused `pipeline_not_blessed`, which is correct with no standing given. Control: the
+same body with `build.build_id` altered after signing → `signature_invalid`. Admission into persist
+(`assemble` + `put_attestation`) and a 201 under `accord_role` with replication are pending the
+Server mesh ladder run. The witness also caught a second digest form (`binary_hash: sha256:…` beside a
+bare `manifest_hash`): the producer now requires bare hex for both (CC 2.6.3).
+
 ## 10. Sign-off
 
 Each owning session: reply with **ACCEPT**, or with the numbered questions you rule on and any

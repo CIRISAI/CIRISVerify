@@ -113,7 +113,10 @@ const ROW_MIRROR_MEMBERS: &[&str] = &[
 pub struct BuildAttestation<'a> {
     /// Build target (a Rust triple, `python-source-tree`, …).
     pub target: &'a str,
-    /// SHA-256 of the built binary, hex.
+    /// SHA-256 of the built artifact — **64 lowercase hex chars, no
+    /// `sha256:` prefix**, the same form as `manifest_hash`. One digest form
+    /// per descriptor: a reader comparing a prefixed value to a bare digest
+    /// never matches (CC 2.6.3).
     pub binary_hash: &'a str,
     /// The build identifier.
     pub build_id: &'a str,
@@ -215,6 +218,15 @@ pub async fn sign_build_manifest_contribution(
                  (it is emitted as evidence_refs[0] and matched verbatim by blob \
                  consumers); got {:?}",
                 build.manifest_hash
+            ),
+        });
+    }
+    if !is_bare_sha256_hex(build.binary_hash) {
+        return Err(VerifyError::IntegrityError {
+            message: format!(
+                "binary_hash must be 64 lowercase hex chars with no `sha256:` prefix — the \
+                 same form as manifest_hash (CC 2.6.3); got {:?}",
+                build.binary_hash
             ),
         });
     }
@@ -680,6 +692,12 @@ pub fn verify_build_manifest_contribution(
     let asserted_at = str_field(env, "asserted_at")?;
     let manifest_hash = str_field(build, "manifest_hash")?;
     let evidence_refs = evidence_refs_bound_to(env, manifest_hash)?;
+    let binary_hash = str_field(build, "binary_hash")?;
+    if !is_bare_sha256_hex(binary_hash) {
+        return Err(ManifestRejection::Malformed {
+            field: "build.binary_hash (not bare lowercase sha256 hex — CC 2.6.3)",
+        });
+    }
 
     // --- 5. The blessing is about this pipeline. ---
     if blessing.pipeline_key_id != attesting_key_id {
@@ -696,7 +714,7 @@ pub fn verify_build_manifest_contribution(
         asserted_at: asserted_at.to_string(),
         target: target.to_string(),
         build_id: str_field(build, "build_id")?.to_string(),
-        binary_hash: str_field(build, "binary_hash")?.to_string(),
+        binary_hash: binary_hash.to_string(),
         binary_version: str_field(build, "binary_version")?.to_string(),
         manifest_hash: manifest_hash.to_string(),
         manifest_size: build.get("manifest_size").and_then(Value::as_u64).ok_or(
@@ -1032,6 +1050,20 @@ mod tests {
     async fn producer_refuses_a_manifest_hash_no_consumer_would_match() {
         let pipeline = crate::self_at_login::HybridSigningIdentity::generate(PIPELINE).unwrap();
         for bad in [format!("sha256:{}", "cd".repeat(32)), "CD".repeat(32)] {
+            let bin = sign_build_manifest_contribution(
+                &pipeline,
+                &BuildAttestation {
+                    target: TARGET,
+                    binary_hash: &bad,
+                    build_id: "b",
+                    binary_version: "v",
+                    manifest_hash: &"cd".repeat(32),
+                    manifest_size: 1,
+                },
+                asserted_at(),
+            )
+            .await;
+            assert!(bin.is_err(), "binary_hash {bad}");
             let r = sign_build_manifest_contribution(
                 &pipeline,
                 &BuildAttestation {

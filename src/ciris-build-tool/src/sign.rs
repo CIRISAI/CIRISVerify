@@ -606,9 +606,15 @@ fn emit_manifest_contribution(a: EmitArgs<'_>) -> anyhow::Result<()> {
         .map_err(|e| anyhow::anyhow!("signed manifest generated_at is not RFC 3339: {e}"))?
         .with_timezone(&chrono::Utc);
 
+    // The legacy signed manifest carries `sha256:<hex>`; the Contribution's
+    // descriptor carries bare hex, the same form as `manifest_hash` (CC 2.6.3).
+    let binary_hash = a
+        .binary_hash
+        .strip_prefix("sha256:")
+        .unwrap_or(a.binary_hash);
     let build = BuildAttestation {
         target: a.target,
-        binary_hash: a.binary_hash,
+        binary_hash,
         build_id: a.build_id,
         binary_version: a.binary_version,
         manifest_hash: &manifest_hash,
