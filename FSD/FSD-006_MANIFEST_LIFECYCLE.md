@@ -364,9 +364,19 @@ registry 18a138c), with the pipeline registered from its public keys only and **
 door passed size, manifest hash, the facts (dimension `:v1`, `delegation_scope`, `evidence_refs`,
 bare-hex hash), the row mirror, key lookup, and **the bound-hybrid signature over persist's canonical
 bytes**, then refused `pipeline_not_blessed`, which is correct with no standing given. Control: the
-same body with `build.build_id` altered after signing → `signature_invalid`. Admission into persist
-(`assemble` + `put_attestation`) and a 201 under `accord_role` with replication are pending the
-Server mesh ladder run. The witness also caught a second digest form (`binary_hash: sha256:…` beside a
+same body with `build.build_id` altered after signing → `signature_invalid`.
+
+**Then on the mesh (three docker nodes, CIRISServer 0.5.218 triple, registry-core 18a138c, Server
+5c831337, synthetic trust root; ladder 15/15 green):** the test root scrub-signed a key record for
+the pipeline's two public keys with `roles: [infra:attest]`, and nothing signed as the pipeline.
+`POST /v1/builds` with verify's `.body` verbatim → **201**, `standing: accord_role`,
+`attestation_id` = the one verify's producer minted, `newly_stored: true`. So persist admitted the
+row and stored the 5408-byte blob. About 2.5 min later the second registry served
+`GET /v1/builds/manifest/{sha}` with bytes whose SHA-256 matched, having received the Contribution,
+the key record and the blob, and answered `is_infra_attest_effective` from the record it received.
+The same runs measured delegation standing (works) and an unblessed pipeline (refused, served
+nowhere). Reproduce: CIRISServer `harness/mesh-repro`, `MAN_EXTERNAL_PIPELINE=<dir>
+./run_scenario.sh manifest`. The witness also caught a second digest form (`binary_hash: sha256:…` beside a
 bare `manifest_hash`): the producer now requires bare hex for both (CC 2.6.3).
 
 ## 10. Sign-off
