@@ -135,6 +135,14 @@ pub enum InvocationKind {
     /// verify-authored (first impl) and flagged for CEG cross-confirmation.
     #[serde(rename = "lifecycle:active")]
     LifecycleActive,
+    /// `accord:lifecycle:confirmed` (CC 4.2.1.3, CIRISConstitution#146 amended,
+    /// rc7 `7923cde`) — the cosigned strict-majority confirmation that keeps a
+    /// one-holder `constitutional` halt past its fuse. Same lifecycle domain as
+    /// `lifecycle:active`, with a `confirms_halt_id=` line in place of
+    /// `resumes_halt_id=`. A confirmation after the fuse has lapsed confirms
+    /// nothing.
+    #[serde(rename = "lifecycle:confirmed")]
+    LifecycleConfirmed,
 }
 
 impl InvocationKind {
@@ -170,7 +178,7 @@ impl InvocationKind {
         }
         Some(match self {
             Self::Constitutional | Self::Drill | Self::Notify => 1,
-            Self::LifecycleActive => roster_len / 2 + 1,
+            Self::LifecycleActive | Self::LifecycleConfirmed => roster_len / 2 + 1,
         })
     }
 
@@ -183,6 +191,7 @@ impl InvocationKind {
             Self::Notify => "notify",
             Self::Drill => "drill",
             Self::LifecycleActive => "lifecycle:active",
+            Self::LifecycleConfirmed => "lifecycle:confirmed",
         }
     }
 
@@ -194,7 +203,7 @@ impl InvocationKind {
     #[must_use]
     fn domain_prefix(self) -> &'static str {
         match self {
-            Self::LifecycleActive => LIFECYCLE_DOMAIN_PREFIX,
+            Self::LifecycleActive | Self::LifecycleConfirmed => LIFECYCLE_DOMAIN_PREFIX,
             _ => INVOCATION_DOMAIN_PREFIX,
         }
     }
@@ -223,6 +232,12 @@ pub struct Invocation {
     /// the canonical bytes immediately after `invocation_id` (and so is signed).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resumes_halt_id: Option<String>,
+    /// **`lifecycle:confirmed` ONLY** (CC 4.2.1.3, CIRISConstitution#146
+    /// amended): the `invocation_id` of the one `constitutional` halt this row
+    /// confirms. Mandatory for `lifecycle:confirmed`, forbidden for every other
+    /// kind; rides the canonical bytes where `resumes_halt_id` would.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub confirms_halt_id: Option<String>,
     /// `base64url(rand_32_bytes)`. Verify only checks form; CSPRNG
     /// is the producer's responsibility.
     pub nonce: String,
@@ -249,8 +264,15 @@ impl Invocation {
         // (kind == LifecycleActive AND resumes_halt_id is Some): a malformed
         // object (lifecycle:active without the field, or an invoke kind with it)
         // is rejected structurally by `verify_invocation`, not silently re-laid.
-        let resumes_line = match (self.invocation_kind, &self.resumes_halt_id) {
-            (InvocationKind::LifecycleActive, Some(id)) => format!("resumes_halt_id={id}\n"),
+        let resumes_line = match (
+            self.invocation_kind,
+            &self.resumes_halt_id,
+            &self.confirms_halt_id,
+        ) {
+            (InvocationKind::LifecycleActive, Some(id), _) => format!("resumes_halt_id={id}\n"),
+            (InvocationKind::LifecycleConfirmed, _, Some(id)) => {
+                format!("confirms_halt_id={id}\n")
+            },
             _ => String::new(),
         };
         let body = format!(
@@ -386,12 +408,17 @@ pub fn verify_invocation(
     // `lifecycle:active` and forbidden for every other kind. Enforce before the
     // signature check so a malformed resumption is rejected on its own terms,
     // not merely as a preimage mismatch.
-    let is_lifecycle = matches!(invocation.invocation_kind, InvocationKind::LifecycleActive);
+    // Each lifecycle kind carries exactly its own binding line and no other;
+    // the invoke kinds carry neither (they are not in their preimage).
+    let kind = invocation.invocation_kind;
     let has_resumes = invocation.resumes_halt_id.is_some();
-    if is_lifecycle != has_resumes {
+    let has_confirms = invocation.confirms_halt_id.is_some();
+    let wants_resumes = matches!(kind, InvocationKind::LifecycleActive);
+    let wants_confirms = matches!(kind, InvocationKind::LifecycleConfirmed);
+    if wants_resumes != has_resumes || wants_confirms != has_confirms {
         return Err(InvocationError::MalformedResumption {
-            invocation_kind: invocation.invocation_kind,
-            had_resumes_halt_id: has_resumes,
+            invocation_kind: kind,
+            had_resumes_halt_id: has_resumes || has_confirms,
         });
     }
 
@@ -496,6 +523,9 @@ mod tests {
             invocation_id: id.to_string(),
             // lifecycle:active requires resumes_halt_id; other kinds forbid it.
             resumes_halt_id: matches!(kind, InvocationKind::LifecycleActive)
+                .then(|| format!("halt-for-{id}")),
+            // lifecycle:confirmed requires confirms_halt_id; other kinds forbid it.
+            confirms_halt_id: matches!(kind, InvocationKind::LifecycleConfirmed)
                 .then(|| format!("halt-for-{id}")),
             nonce: "AAAA-base64url-32-bytes-XXXXXXXXXXXX".to_string(),
             asserted_at: "2026-05-29T17:00:00.000Z".to_string(),
@@ -602,6 +632,7 @@ mod tests {
             invocation_kind: InvocationKind::Constitutional,
             invocation_id: "halt-001".to_string(),
             resumes_halt_id: None,
+            confirms_halt_id: None,
             nonce: "NONCE".to_string(),
             asserted_at: "2026-05-29T17:00:00.000Z".to_string(),
             valid_until: "2026-05-29T17:15:00.000Z".to_string(),
@@ -624,6 +655,7 @@ mod tests {
             invocation_kind: InvocationKind::Constitutional,
             invocation_id: "id-001".to_string(),
             resumes_halt_id: None,
+            confirms_halt_id: None,
             nonce: "same-nonce".to_string(),
             asserted_at: "2026-05-29T17:00:00.000Z".to_string(),
             valid_until: "2026-05-29T17:15:00.000Z".to_string(),

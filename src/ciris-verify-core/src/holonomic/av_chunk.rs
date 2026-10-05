@@ -41,7 +41,7 @@ pub const AV_NONCE_LEN: usize = 12;
 /// Kept so a historical artifact is recognisable; nothing seals with it. The
 /// inner seal is the CC 5.3.3.1 STREAM nonce ([`av_inner_nonce`]).
 #[deprecated(
-    since = "19.1.0",
+    since = "20.0.0",
     note = "the A/V inner seal is the CC 5.3.3.1 STREAM nonce (CIRISConstitution#140); use av_inner_nonce"
 )]
 pub const AV_INNER_DOMAIN: &[u8] = b"CIRIS-AV-INNER-V1";
@@ -129,7 +129,7 @@ fn sha256_12(parts: &[&[u8]]) -> [u8; AV_NONCE_LEN] {
 /// CC rc7 `7561d07`); use [`av_inner_nonce`]. Retained only so an existing
 /// artifact can be identified, never to seal.
 #[deprecated(
-    since = "19.1.0",
+    since = "20.0.0",
     note = "the A/V inner seal is the CC 5.3.3.1 STREAM nonce (CIRISConstitution#140); use av_inner_nonce"
 )]
 #[must_use]

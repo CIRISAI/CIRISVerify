@@ -69,7 +69,7 @@ from ._federation_identity import create_federation_identity
 from ._evm_tx import keccak256, checksum_address
 from ._raw_verify import verify_ed25519, verify_p256
 from ._manifest_contribution import verify_build_manifest_contribution
-from ._accord_invocation import verify_accord_invocation
+from ._accord_invocation import accord_latch_apply, accord_latch_status, verify_accord_invocation
 from ._accord_custody import verify_accord_custody_attestation
 from ._test_anchor import test_anchor_compiled_in
 from ._canonical_subject import (
@@ -172,7 +172,7 @@ def get_library_version() -> str:
     return __version__
 
 
-__version__ = "19.1.0"
+__version__ = "20.0.0"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
@@ -194,6 +194,8 @@ __all__ = [
     "create_federation_identity",
     "verify_build_manifest_contribution",
     "verify_accord_invocation",
+    "accord_latch_apply",
+    "accord_latch_status",
     "verify_accord_custody_attestation",
     "test_anchor_compiled_in",
     "canonical_subject",

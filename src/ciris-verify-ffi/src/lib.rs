@@ -146,6 +146,8 @@ pub extern "C" fn ciris_verify_ffi_link_anchor() -> usize {
     acc ^= ciris_verify_init as usize;
     acc ^= ciris_verify_invocation_canonical_bytes as usize;
     acc ^= ciris_verify_accord_invocation_verify as usize;
+    acc ^= ciris_verify_accord_latch_apply as usize;
+    acc ^= ciris_verify_accord_latch_status as usize;
     acc ^= wheel_jcs::ciris_verify_jcs_canonicalize as usize;
     acc ^= ciris_verify_list_named_keys as usize;
     acc ^= ciris_verify_load_manifest_cache as usize;
@@ -3851,6 +3853,163 @@ pub unsafe extern "C" fn ciris_verify_accord_invocation_verify(
         *result_out = ptr;
         *result_len_out = len;
         CirisVerifyError::Success as i32
+    })
+}
+
+fn write_json_out(json: &str, result_out: *mut *mut u8, result_len_out: *mut usize) -> i32 {
+    let len = json.len();
+    // SAFETY: caller-validated non-null out-pointers; malloc'd buffer of `len`.
+    unsafe {
+        let ptr = libc::malloc(len.max(1)) as *mut u8;
+        if ptr.is_null() {
+            return CirisVerifyError::InternalError as i32;
+        }
+        std::ptr::copy_nonoverlapping(json.as_ptr(), ptr, len);
+        *result_out = ptr;
+        *result_len_out = len;
+    }
+    CirisVerifyError::Success as i32
+}
+
+/// The halt latch's view at `now`, as JSON.
+fn latch_view(
+    latch: &ciris_verify_core::accord_halt_latch::HaltLatch,
+    now: chrono::DateTime<chrono::Utc>,
+    fuse: u64,
+) -> serde_json::Value {
+    let active = latch.active_halt(now, fuse);
+    serde_json::json!({
+        "latch": latch,
+        "paused": active.is_some(),
+        "halt_id": active.map(|h| h.halt_id.clone()),
+        "confirmed": active.map(|h| h.confirmed),
+        "lapses_at": latch.lapses_at(fuse).filter(|_| active.is_some()).map(|t| t.to_rfc3339()),
+    })
+}
+
+/// Apply an accord row to the node's halt latch (CIRISVerify#305,
+/// CIRISConstitution#146 as amended): verify it against the caller's **pinned**
+/// roster at its kind's threshold, then apply the CC 4.2.1.1 / 4.2.1.3 latch
+/// rules — one holder pauses; the pause lapses `halt_fuse_secs` after THIS
+/// node's receipt unless a majority `lifecycle:confirmed` names it; a majority
+/// `lifecycle:active` naming it ends it. Verification and latching are one
+/// call, so an unverified row can never touch the latch.
+///
+/// Input JSON: `{"latch": <state or null>, "invocation": {...},
+/// "roster": [...], "signatures": [...], "now": "<rfc3339>",
+/// "halt_fuse_secs": <u64, optional, default 86400>}`.
+///
+/// Output JSON: `{"outcome": "paused"|"confirmed"|"resumed"|"unchanged"|"refused",
+/// "reason"?, "latch": <state to persist>, "paused", "halt_id", "confirmed",
+/// "lapses_at"}`. A refused row leaves the latch exactly as given.
+///
+/// # Safety
+///
+/// `input_json` must point to `input_len` valid bytes; `result_out` and
+/// `result_len_out` must be valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_accord_latch_apply(
+    input_json: *const u8,
+    input_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_accord_latch_apply", {
+        use ciris_verify_core::accord_halt_latch::{
+            verify_for_latch, HaltLatch, LatchOutcome, DEFAULT_HALT_FUSE_SECS,
+        };
+        use ciris_verify_core::humanity_accord::Invocation;
+        use ciris_verify_core::threshold::{ThresholdMember, ThresholdSignature};
+
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Req {
+            latch: Option<HaltLatch>,
+            invocation: Invocation,
+            roster: Vec<ThresholdMember>,
+            signatures: Vec<ThresholdSignature>,
+            now: String,
+            #[serde(default)]
+            halt_fuse_secs: Option<u64>,
+        }
+
+        if input_json.is_null() || result_out.is_null() || result_len_out.is_null() {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        let bytes = std::slice::from_raw_parts(input_json, input_len);
+        let Ok(req) = serde_json::from_slice::<Req>(bytes) else {
+            return CirisVerifyError::SerializationError as i32;
+        };
+        let Ok(now) = chrono::DateTime::parse_from_rfc3339(&req.now) else {
+            return CirisVerifyError::SerializationError as i32;
+        };
+        let now = now.with_timezone(&chrono::Utc);
+        let fuse = req.halt_fuse_secs.unwrap_or(DEFAULT_HALT_FUSE_SECS);
+        let mut latch = req.latch.unwrap_or_default();
+
+        let (outcome, reason) =
+            match verify_for_latch(&req.invocation, &req.roster, &req.signatures) {
+                Err(e) => ("refused", Some(e.to_string())),
+                Ok(row) => match latch.apply(&row, now, fuse) {
+                    LatchOutcome::Paused => ("paused", None),
+                    LatchOutcome::Confirmed => ("confirmed", None),
+                    LatchOutcome::Resumed => ("resumed", None),
+                    LatchOutcome::Unchanged { why } => ("unchanged", Some(why.to_string())),
+                    _ => ("unchanged", None),
+                },
+            };
+        let mut out = latch_view(&latch, now, fuse);
+        out["outcome"] = serde_json::json!(outcome);
+        if let Some(r) = reason {
+            out["reason"] = serde_json::json!(r);
+        }
+        write_json_out(&out.to_string(), result_out, result_len_out)
+    })
+}
+
+/// The act gate's question (CC 4.2.1.1): is the node paused at `now`?
+///
+/// Input JSON: `{"latch": <state or null>, "now": "<rfc3339>",
+/// "halt_fuse_secs": <u64, optional, default 86400>}`. Output JSON:
+/// `{"paused", "halt_id", "confirmed", "lapses_at", "latch"}`.
+///
+/// # Safety
+///
+/// `input_json` must point to `input_len` valid bytes; `result_out` and
+/// `result_len_out` must be valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_accord_latch_status(
+    input_json: *const u8,
+    input_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_accord_latch_status", {
+        use ciris_verify_core::accord_halt_latch::{HaltLatch, DEFAULT_HALT_FUSE_SECS};
+
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Req {
+            latch: Option<HaltLatch>,
+            now: String,
+            #[serde(default)]
+            halt_fuse_secs: Option<u64>,
+        }
+
+        if input_json.is_null() || result_out.is_null() || result_len_out.is_null() {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        let bytes = std::slice::from_raw_parts(input_json, input_len);
+        let Ok(req) = serde_json::from_slice::<Req>(bytes) else {
+            return CirisVerifyError::SerializationError as i32;
+        };
+        let Ok(now) = chrono::DateTime::parse_from_rfc3339(&req.now) else {
+            return CirisVerifyError::SerializationError as i32;
+        };
+        let latch = req.latch.unwrap_or_default();
+        let fuse = req.halt_fuse_secs.unwrap_or(DEFAULT_HALT_FUSE_SECS);
+        let out = latch_view(&latch, now.with_timezone(&chrono::Utc), fuse);
+        write_json_out(&out.to_string(), result_out, result_len_out)
     })
 }
 
@@ -10609,6 +10768,129 @@ unsafe fn ciris_verify_tree_inner(
 mod tests {
     use super::*;
 
+    /// The latch through the FFI, with real signatures: one holder pauses; a
+    /// forged row is refused and leaves the latch as given; the lone pause would
+    /// lapse at receipt + fuse; a majority confirmation makes it stand past
+    /// that; a majority resumption ends it.
+    #[tokio::test]
+    async fn accord_latch_round_trip_through_the_ffi() {
+        use ciris_verify_core::accord_genesis::{co_sign_invocation, founder_member};
+        use ciris_verify_core::humanity_accord::{Invocation, InvocationKind};
+        use ciris_verify_core::self_at_login::HybridSigningIdentity;
+
+        let hs: Vec<HybridSigningIdentity> = ["A1", "B1", "C1"]
+            .iter()
+            .map(|k| HybridSigningIdentity::generate(*k).unwrap())
+            .collect();
+        let mut roster = Vec::new();
+        for h in &hs {
+            roster.push(founder_member(h).await.unwrap());
+        }
+        let row = |kind, id: &str, names: Option<&str>| Invocation {
+            invocation_kind: kind,
+            invocation_id: id.to_string(),
+            resumes_halt_id: matches!(kind, InvocationKind::LifecycleActive)
+                .then(|| names.unwrap().to_string()),
+            confirms_halt_id: matches!(kind, InvocationKind::LifecycleConfirmed)
+                .then(|| names.unwrap().to_string()),
+            nonce: "G".repeat(43),
+            asserted_at: "2020-01-01T00:00:00.000Z".to_string(),
+            valid_until: "2099-01-01T00:00:00.000Z".to_string(),
+            payload_sha256: "77".repeat(32),
+        };
+        let call =
+            |sym: unsafe extern "C" fn(*const u8, usize, *mut *mut u8, *mut usize) -> i32,
+             body: serde_json::Value|
+             -> serde_json::Value {
+                let b = body.to_string();
+                let mut out: *mut u8 = std::ptr::null_mut();
+                let mut len = 0usize;
+                assert_eq!(
+                    unsafe { sym(b.as_ptr(), b.len(), &mut out, &mut len) },
+                    CirisVerifyError::Success as i32
+                );
+                let v = unsafe { std::slice::from_raw_parts(out, len) }.to_vec();
+                unsafe { libc::free(out.cast()) };
+                serde_json::from_slice(&v).unwrap()
+            };
+        let apply =
+            |latch: &serde_json::Value, inv: &Invocation, sigs: serde_json::Value, now: &str| {
+                call(
+                    ciris_verify_accord_latch_apply,
+                    serde_json::json!({"latch": latch, "invocation": inv, "roster": &roster,
+                                   "signatures": sigs, "now": now}),
+                )
+            };
+
+        let halt = row(InvocationKind::Constitutional, "h1", None);
+        let a = co_sign_invocation(&hs[0], &halt).await.unwrap();
+        let v = apply(
+            &serde_json::Value::Null,
+            &halt,
+            serde_json::json!([a]),
+            "2026-10-05T12:00:00Z",
+        );
+        assert_eq!(v["outcome"], "paused", "{v}");
+        assert_eq!(
+            v["lapses_at"], "2026-10-06T12:00:00+00:00",
+            "receipt + 86400, not asserted_at"
+        );
+        let latch = v["latch"].clone();
+
+        // A forged confirmation is refused and leaves the latch as given.
+        let conf = row(InvocationKind::LifecycleConfirmed, "c1", Some("h1"));
+        let outsider = HybridSigningIdentity::generate("B1").unwrap();
+        let forged = co_sign_invocation(&outsider, &conf).await.unwrap();
+        let v = apply(
+            &latch,
+            &conf,
+            serde_json::json!([forged]),
+            "2026-10-05T13:00:00Z",
+        );
+        assert_eq!(v["outcome"], "refused");
+        assert_eq!(v["latch"], latch);
+
+        // One genuine confirmation is not a majority.
+        let ca = co_sign_invocation(&hs[0], &conf).await.unwrap();
+        let v = apply(
+            &latch,
+            &conf,
+            serde_json::json!([&ca]),
+            "2026-10-05T13:00:00Z",
+        );
+        assert_eq!(v["outcome"], "refused");
+
+        // Two are; the halt then stands past the fuse.
+        let cb = co_sign_invocation(&hs[1], &conf).await.unwrap();
+        let v = apply(
+            &latch,
+            &conf,
+            serde_json::json!([ca, cb]),
+            "2026-10-05T13:00:00Z",
+        );
+        assert_eq!(v["outcome"], "confirmed", "{v}");
+        let latch = v["latch"].clone();
+        let s = call(
+            ciris_verify_accord_latch_status,
+            serde_json::json!({"latch": &latch, "now": "2027-01-01T00:00:00Z"}),
+        );
+        assert_eq!(s["paused"], true);
+        assert_eq!(s["lapses_at"], serde_json::Value::Null);
+
+        // A majority resumption ends it.
+        let res = row(InvocationKind::LifecycleActive, "r1", Some("h1"));
+        let ra = co_sign_invocation(&hs[1], &res).await.unwrap();
+        let rb = co_sign_invocation(&hs[2], &res).await.unwrap();
+        let v = apply(
+            &latch,
+            &res,
+            serde_json::json!([ra, rb]),
+            "2027-01-01T00:00:00Z",
+        );
+        assert_eq!(v["outcome"], "resumed", "{v}");
+        assert_eq!(v["paused"], false);
+    }
+
     /// CIRISVerify#305 through the FFI: one seated holder's signature fires a
     /// constitutional halt; a resumption needs a strict majority; a rejection is
     /// a successful call that says why.
@@ -10630,6 +10912,7 @@ mod tests {
             invocation_kind: kind,
             invocation_id: "halt-1".to_string(),
             resumes_halt_id: resumes.map(str::to_string),
+            confirms_halt_id: None,
             nonce: "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE".to_string(),
             asserted_at: "2026-10-05T00:00:00.000Z".to_string(),
             valid_until: "2026-10-06T00:00:00.000Z".to_string(),

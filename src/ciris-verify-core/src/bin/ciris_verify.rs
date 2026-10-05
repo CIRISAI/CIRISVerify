@@ -375,9 +375,11 @@ struct AccordInvokeArgs {
     /// genesis co-sign bundles' `member` field, or the holder records).
     #[arg(long)]
     roster: String,
-    /// Invocation kind (closed set per CC 4.2.1). `reactivate` is the
-    /// `accord:lifecycle:active` resumption after a halt (separate scope).
-    #[arg(long, value_parser = ["constitutional", "notify", "drill", "reactivate"])]
+    /// Invocation kind (closed set per CC 4.2.1). `confirm` is the
+    /// `accord:lifecycle:confirmed` majority confirmation that keeps a one-holder
+    /// halt past its fuse; `reactivate` is the `accord:lifecycle:active`
+    /// resumption. Both are the separate lifecycle scope.
+    #[arg(long, value_parser = ["constitutional", "notify", "drill", "confirm", "reactivate"])]
     kind: String,
     /// Per-kind unique id (`halt_id` / `notify_id` / `drill_id` / `resumption_id`).
     #[arg(long)]
@@ -387,6 +389,11 @@ struct AccordInvokeArgs {
     /// reactivate`; rejected for any other kind.
     #[arg(long)]
     resumes_halt_id: Option<String>,
+    /// **`confirm` ONLY** (CC 4.2.1.3, CIRISConstitution#146 amended): the
+    /// `invocation_id` of the one-holder halt this confirms. **Required** for
+    /// `--kind confirm`; rejected for any other kind.
+    #[arg(long)]
+    confirms_halt_id: Option<String>,
     /// Lowercase-hex SHA-256 of the application payload (§0.6).
     #[arg(long)]
     payload_sha256: String,
@@ -2966,9 +2973,10 @@ async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
         "notify" => InvocationKind::Notify,
         "drill" => InvocationKind::Drill,
         "reactivate" => InvocationKind::LifecycleActive,
+        "confirm" => InvocationKind::LifecycleConfirmed,
         other => {
             eprintln!(
-                "❌ unknown invocation kind {other:?} (constitutional|notify|drill|reactivate)"
+                "❌ unknown invocation kind {other:?} (constitutional|notify|drill|confirm|reactivate)"
             );
             std::process::exit(2);
         },
@@ -2983,6 +2991,17 @@ async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
         eprintln!("❌ --resumes-halt-id is only valid with --kind reactivate (CC 4.2.1.3)");
         std::process::exit(2);
     }
+    // CIRISConstitution#146 (amended): confirms_halt_id is mandatory for confirm,
+    // forbidden else.
+    if matches!(kind, InvocationKind::LifecycleConfirmed) {
+        if a.confirms_halt_id.is_none() {
+            eprintln!("❌ --kind confirm requires --confirms-halt-id <the one-holder halt id> (CC 4.2.1.3)");
+            std::process::exit(2);
+        }
+    } else if a.confirms_halt_id.is_some() {
+        eprintln!("❌ --confirms-halt-id is only valid with --kind confirm (CC 4.2.1.3)");
+        std::process::exit(2);
+    }
     let now = chrono::Utc::now();
     let nonce_bytes = ciris_crypto::random::bytes(32).unwrap_or_else(|e| {
         eprintln!("❌ RNG: {e}");
@@ -2992,6 +3011,7 @@ async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
         invocation_kind: kind,
         invocation_id: a.invocation_id.clone(),
         resumes_halt_id: a.resumes_halt_id.clone(),
+        confirms_halt_id: a.confirms_halt_id.clone(),
         nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&nonce_bytes),
         asserted_at: now.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         valid_until: (now + chrono::Duration::minutes(a.valid_mins))

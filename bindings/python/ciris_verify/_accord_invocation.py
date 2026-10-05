@@ -26,7 +26,7 @@ import threading as _threading
 from pathlib import Path
 from typing import Any, Optional
 
-__all__ = ["verify_accord_invocation"]
+__all__ = ["verify_accord_invocation", "accord_latch_apply", "accord_latch_status"]
 
 _lib: Optional[ctypes.CDLL] = None
 _lib_lock = _threading.Lock()
@@ -75,6 +75,8 @@ def _load_lib() -> ctypes.CDLL:
             try:
                 lib = ctypes.CDLL(path)
                 _wire(lib.ciris_verify_accord_invocation_verify)
+                _wire(lib.ciris_verify_accord_latch_apply)
+                _wire(lib.ciris_verify_accord_latch_status)
             except (OSError, AttributeError) as exc:
                 last_err = exc
                 continue
@@ -144,3 +146,57 @@ def verify_accord_invocation(invocation: dict, roster: list, signatures: list) -
         "ciris_verify_accord_invocation_verify",
         {"invocation": invocation, "roster": roster, "signatures": signatures},
     )
+
+
+def accord_latch_apply(
+    latch: Optional[dict],
+    invocation: dict,
+    roster: list,
+    signatures: list,
+    now: str,
+    halt_fuse_secs: Optional[int] = None,
+) -> dict:
+    """Verify an accord row and apply it to the node's halt latch, in one call.
+
+    The CC 4.2.1.1 / 4.2.1.3 rules (CIRISConstitution#146 as amended): one
+    holder's ``constitutional`` row pauses agents; the pause lapses
+    ``halt_fuse_secs`` (default 86400) after **this node's receipt** unless a
+    majority ``lifecycle:confirmed`` naming it arrives first; a majority
+    ``lifecycle:active`` naming it ends it, confirmed or not. Verification and
+    latching are one call, so an unverified row can never touch the latch.
+
+    Args:
+        latch: the state returned by the previous call (``None`` when clear).
+            Persist it: the latch must survive a restart.
+        invocation, roster, signatures: as for :func:`verify_accord_invocation`;
+            ``roster`` is your own pinned roster.
+        now: this node's clock, RFC 3339 — the receipt time for a new halt.
+        halt_fuse_secs: the charter's value; omit for the 86400 default.
+
+    Returns:
+        ``{"outcome": "paused"|"confirmed"|"resumed"|"unchanged"|"refused",
+        "reason"?, "latch", "paused", "halt_id", "confirmed", "lapses_at"}``.
+        A refused row returns ``latch`` exactly as given.
+    """
+    req: dict = {
+        "latch": latch,
+        "invocation": invocation,
+        "roster": roster,
+        "signatures": signatures,
+        "now": now,
+    }
+    if halt_fuse_secs is not None:
+        req["halt_fuse_secs"] = halt_fuse_secs
+    return _call("ciris_verify_accord_latch_apply", req)
+
+
+def accord_latch_status(latch: Optional[dict], now: str, halt_fuse_secs: Optional[int] = None) -> dict:
+    """The act gate's question: is this node paused at ``now``?
+
+    Call it before every effectful act (CC 4.2.1.1). Returns
+    ``{"paused", "halt_id", "confirmed", "lapses_at", "latch"}``.
+    """
+    req: dict = {"latch": latch, "now": now}
+    if halt_fuse_secs is not None:
+        req["halt_fuse_secs"] = halt_fuse_secs
+    return _call("ciris_verify_accord_latch_status", req)

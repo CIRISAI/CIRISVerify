@@ -2201,6 +2201,7 @@ mod tests {
             invocation_kind: InvocationKind::Drill,
             invocation_id: id.to_string(),
             resumes_halt_id: None,
+            confirms_halt_id: None,
             nonce: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
             asserted_at: "2026-06-19T00:00:00.000Z".to_string(),
             valid_until: "2026-06-20T00:00:00.000Z".to_string(),
@@ -2215,6 +2216,7 @@ mod tests {
             invocation_kind: InvocationKind::Constitutional,
             invocation_id: id.to_string(),
             resumes_halt_id: None,
+            confirms_halt_id: None,
             nonce: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC".to_string(),
             // Signed long ago and sealed: a pre-signed halt is valid when
             // published, so nothing here may depend on the present.
@@ -2229,6 +2231,7 @@ mod tests {
             invocation_kind: InvocationKind::LifecycleActive,
             invocation_id: id.to_string(),
             resumes_halt_id: Some(of.to_string()),
+            confirms_halt_id: None,
             nonce: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD".to_string(),
             asserted_at: "2026-10-05T00:00:00.000Z".to_string(),
             valid_until: "2026-10-06T00:00:00.000Z".to_string(),
@@ -2390,18 +2393,121 @@ mod tests {
             let resume = K::LifecycleActive.required_signatures(n).unwrap();
             assert_eq!(fire, 1, "n={n}");
             assert_eq!(resume, n / 2 + 1, "n={n}");
+            assert_eq!(
+                K::LifecycleConfirmed.required_signatures(n),
+                Some(n / 2 + 1),
+                "n={n}"
+            );
             assert!(
                 fire <= resume,
                 "fire must never be harder than un-firing (n={n})"
             );
         }
-        for k in [K::Constitutional, K::LifecycleActive, K::Notify, K::Drill] {
+        for k in [
+            K::Constitutional,
+            K::LifecycleActive,
+            K::LifecycleConfirmed,
+            K::Notify,
+            K::Drill,
+        ] {
             assert_eq!(
                 k.required_signatures(0),
                 None,
                 "{k:?}: nothing verifies against nobody"
             );
         }
+    }
+
+    fn confirmation(id: &str, of: &str) -> Invocation {
+        Invocation {
+            invocation_kind: InvocationKind::LifecycleConfirmed,
+            invocation_id: id.to_string(),
+            resumes_halt_id: None,
+            confirms_halt_id: Some(of.to_string()),
+            nonce: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF".to_string(),
+            asserted_at: "2026-10-05T01:00:00.000Z".to_string(),
+            valid_until: "2026-10-06T00:00:00.000Z".to_string(),
+            payload_sha256: "66".repeat(32),
+        }
+    }
+
+    /// CC 4.2.1.3 (rc7 7923cde): `lifecycle:confirmed` signs the lifecycle
+    /// domain with `confirms_halt_id=` where `resumes_halt_id=` would be —
+    /// written out literally so a layout change is a red here, not a silent
+    /// re-derivation.
+    #[test]
+    fn confirmation_canonical_bytes_are_the_cc_4_2_1_3_layout() {
+        let c = confirmation("confirm-1", "halt-1");
+        assert_eq!(
+            String::from_utf8(c.canonical_bytes()).unwrap(),
+            "ciris.accord_lifecycle.v1\n\
+             invocation_kind=lifecycle:confirmed\n\
+             invocation_id=confirm-1\n\
+             confirms_halt_id=halt-1\n\
+             nonce=FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\n\
+             asserted_at=2026-10-05T01:00:00.000Z\n\
+             valid_until=2026-10-06T00:00:00.000Z\n\
+             payload_sha256=6666666666666666666666666666666666666666666666666666666666666666"
+        );
+    }
+
+    /// Each lifecycle kind carries exactly its own binding line.
+    #[test]
+    fn a_confirmation_must_name_its_halt_and_only_that_way() {
+        let roster: Vec<ThresholdMember> = Vec::new();
+        let mut c = confirmation("c", "halt-1");
+        c.confirms_halt_id = None;
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&c, &roster, &[]),
+            Err(crate::humanity_accord::InvocationError::MalformedResumption { .. })
+        ));
+        let mut c = confirmation("c", "halt-1");
+        c.resumes_halt_id = Some("halt-1".into());
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&c, &roster, &[]),
+            Err(crate::humanity_accord::InvocationError::MalformedResumption { .. })
+        ));
+        let mut r = resumption("r", "halt-1");
+        r.confirms_halt_id = Some("halt-1".into());
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&r, &roster, &[]),
+            Err(crate::humanity_accord::InvocationError::MalformedResumption { .. })
+        ));
+        let mut h = halt("h");
+        h.confirms_halt_id = Some("halt-0".into());
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&h, &roster, &[]),
+            Err(crate::humanity_accord::InvocationError::MalformedResumption { .. })
+        ));
+    }
+
+    /// Confirmation is a strict majority; a lone holder (the firer included)
+    /// cannot confirm alone, and a resumption signature is not a confirmation.
+    #[tokio::test]
+    async fn confirmation_needs_a_majority_and_is_not_a_resumption() {
+        let hs = holders();
+        let roster = members_of(&hs).await;
+        let c = confirmation("confirm-1", "halt-1");
+        let a = co_sign_invocation(&hs[0], &c).await.unwrap();
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&c, &roster, std::slice::from_ref(&a)),
+            Err(crate::humanity_accord::InvocationError::QuorumNotMet {
+                valid: 1,
+                required: 2
+            })
+        ));
+        let b = co_sign_invocation(&hs[1], &c).await.unwrap();
+        assert_eq!(
+            crate::humanity_accord::verify_invocation(&c, &roster, &[a, b]).unwrap(),
+            2
+        );
+
+        // Two genuine signatures over a RESUMPTION of the same halt, presented
+        // as a confirmation, verify nothing: the kind line is signed.
+        let r = resumption("confirm-1", "halt-1");
+        let ra = co_sign_invocation(&hs[0], &r).await.unwrap();
+        let rb = co_sign_invocation(&hs[1], &r).await.unwrap();
+        assert!(crate::humanity_accord::verify_invocation(&c, &roster, &[ra, rb]).is_err());
     }
 
     #[tokio::test]
@@ -2426,6 +2532,7 @@ mod tests {
             invocation_kind: InvocationKind::LifecycleActive,
             invocation_id: "resume-2026-06".to_string(),
             resumes_halt_id: Some("halt-2026-05".to_string()),
+            confirms_halt_id: None,
             nonce: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_string(),
             asserted_at: "2026-06-21T00:00:00.000Z".to_string(),
             valid_until: "2026-06-22T00:00:00.000Z".to_string(),

@@ -536,7 +536,7 @@ pub struct FireVerdict {
 /// [`LiveQuorumError::WrongAction`] if `proposal.action` isn't [`AccordAction::Fire`];
 /// any [`tally_live_quorum`] error.
 #[deprecated(
-    since = "19.1.0",
+    since = "20.0.0",
     note = "a constitutional halt is one holder's row that fires on receipt (CIRISConstitution#146); verify it with humanity_accord::verify_invocation"
 )]
 pub fn verify_fire_by_live_quorum(
@@ -747,7 +747,7 @@ pub struct ResumeVerdict {
 /// [`LiveQuorumError`] for a wrong action, an active-halt mismatch, or a bad
 /// participation. The yes/no outcome is [`ResumeVerdict::resumed`].
 #[deprecated(
-    since = "19.1.0",
+    since = "20.0.0",
     note = "resumption is a cosigned accord:lifecycle:active row by a strict majority of the standing roster (CIRISConstitution#146); verify it with humanity_accord::verify_invocation"
 )]
 pub fn verify_resume_by_live_quorum(
