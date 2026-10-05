@@ -1,7 +1,20 @@
 //! HUMANITY_ACCORD live-quorum objects — Phase 1, step 1 (FSD-004 / CC §4.2.6).
 //!
-//! The wire objects the live-quorum decimation-recovery rides on:
-//! `AccordProposal` (the action + server-issued nonce + window) and
+//! **Scope since CIRISConstitution#146 (entrenched CC 4.2, rc7): roster changes
+//! only.** A `constitutional` halt is one holder's self-contained, pre-signable
+//! row that fires on receipt — no proposal, no participation window, no vote,
+//! no decision object ([`crate::humanity_accord::verify_invocation`]). A
+//! resumption is a cosigned `accord:lifecycle:active` row by a strict majority
+//! of the standing roster. So [`crate::accord_live_quorum::verify_fire_by_live_quorum`] and
+//! [`crate::accord_live_quorum::verify_resume_by_live_quorum`] are deprecated;
+//! [`crate::accord_live_quorum::AccordAction::Fire`] /
+//! [`crate::accord_live_quorum::AccordAction::Resume`] stay in the closed wire vocabulary only so that
+//! stored rows still parse. The ruling's model is CC `formal/accord_halt`: the
+//! proposal path shows a visible window and a stuck state; the one-row path
+//! closes them.
+//!
+//! The wire objects the live-quorum roster-change path rides on:
+//! `AccordProposal` (the action + **proposer-minted** nonce + window) and
 //! `AccordParticipation` (a holder's **proof-of-life bundled with a vote** in
 //! ONE signed object — entering the live set `L` and voting are the same act).
 //! The tally / membership-change / fire surfaces are step 2.
@@ -50,18 +63,15 @@ pub const PARTICIPATION_DOMAIN_PREFIX: &str = "ciris.accord_participation.v1\n";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AccordAction {
-    /// A live-quorum `CONSTITUTIONAL` fire — tallied at the floor of 1 (the easy
-    /// end of the bias gradient; a missed fire is terminal).
+    /// **Retired for new objects** (CIRISConstitution#146): a `constitutional`
+    /// halt is one holder's row, not a proposal. Kept so stored rows parse.
     Fire,
     /// A roster grow / shrink / swap — tallied at strict-majority-of-`L` + the
     /// `L_floor` steward backstop (the hard end), carried as a family `supersedes`.
     RosterChange,
-    /// A resumption (un-fire) of the currently-active `CONSTITUTIONAL` halt
-    /// (`accord:lifecycle:active`, CC §4.2.1.3) — tallied at the **roster-change
-    /// threshold**, NEVER the fire floor: un-firing leans hard, because a lone
-    /// coerced/replayed key undoing a legitimate halt is the failure the
-    /// halt-authority exists to prevent (the `fire ≤ roster-change ≤ standing`
-    /// gradient).
+    /// **Retired for new objects** (CIRISConstitution#146): resumption is a
+    /// cosigned `accord:lifecycle:active` row by a strict majority of the
+    /// standing roster, not a proposal. Kept so stored rows parse.
     Resume,
 }
 
@@ -101,7 +111,7 @@ impl Vote {
     }
 }
 
-/// An accord live-quorum proposal: the action, the **server-issued** freshness
+/// An accord live-quorum proposal: the action, the **proposer-minted** freshness
 /// nonce, the window upper bound, and the standing-roster anti-replay anchor.
 ///
 /// The proposal's `digest` is what every
@@ -113,8 +123,10 @@ pub struct AccordProposal {
     pub family_key_id: String,
     /// What is being decided.
     pub action: AccordAction,
-    /// Server-issued freshness nonce, `base64url(rand_32)`. Verify checks form;
-    /// the authoritative server owns issuance + the issued-nonce set (M4).
+    /// Freshness nonce, `base64url(rand_32)`, **minted by the proposer — never
+    /// issued by a server** (CIRISConstitution#146). A server-issued nonce makes
+    /// the server a party every proposal must reach first, which is a place to
+    /// jam or coerce. Verify checks form; single use is the substrate's dedup.
     pub nonce: String,
     /// §0.5 canonical RFC 3339 — the window upper bound `W`. The authoritative
     /// `L` membership is server-observed arrival within `W`, NOT a holder's
@@ -523,6 +535,10 @@ pub struct FireVerdict {
 /// # Errors
 /// [`LiveQuorumError::WrongAction`] if `proposal.action` isn't [`AccordAction::Fire`];
 /// any [`tally_live_quorum`] error.
+#[deprecated(
+    since = "19.1.0",
+    note = "a constitutional halt is one holder's row that fires on receipt (CIRISConstitution#146); verify it with humanity_accord::verify_invocation"
+)]
 pub fn verify_fire_by_live_quorum(
     proposal: &AccordProposal,
     participations: &[AccordParticipation],
@@ -730,6 +746,10 @@ pub struct ResumeVerdict {
 /// # Errors
 /// [`LiveQuorumError`] for a wrong action, an active-halt mismatch, or a bad
 /// participation. The yes/no outcome is [`ResumeVerdict::resumed`].
+#[deprecated(
+    since = "19.1.0",
+    note = "resumption is a cosigned accord:lifecycle:active row by a strict majority of the standing roster (CIRISConstitution#146); verify it with humanity_accord::verify_invocation"
+)]
 pub fn verify_resume_by_live_quorum(
     proposal: &AccordProposal,
     participations: &[AccordParticipation],
@@ -912,6 +932,7 @@ pub fn decisions_equivocate(a: &AccordDecision, b: &AccordDecision) -> bool {
 }
 
 #[cfg(test)]
+#[allow(deprecated)] // exercises the retired fire/resume tallies while they exist
 mod tests {
     use super::*;
     use base64::Engine;

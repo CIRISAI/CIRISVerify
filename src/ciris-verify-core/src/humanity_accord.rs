@@ -16,8 +16,10 @@
 //! - [`InvocationDedup`] — in-memory dedup tracker rejecting
 //!   duplicate `invocation_id` within its `valid_until` window
 //!   (per-kind unique per the §9.2.1 normative rule).
-//! - [`verify_invocation`] — 2-of-3 holder hybrid signature
-//!   verification (reuses existing `verify_threshold_signatures`).
+//! - [`verify_invocation`] — holder hybrid signature verification at the
+//!   threshold each kind requires ([`InvocationKind::required_signatures`]):
+//!   **one** holder fires a `constitutional` halt, a **strict majority of the
+//!   standing roster** resumes from one (CIRISConstitution#146, CC rc7).
 //!
 //! ## Strongest safety-critical path in the grammar
 //!
@@ -126,7 +128,8 @@ pub enum InvocationKind {
     /// exactly {CONSTITUTIONAL, notify, drill}, and accord scopes are
     /// "wire-isolated AND scope-isolated", so a `LifecycleActive` signs a
     /// **distinct** canonical-bytes domain ([`LIFECYCLE_DOMAIN_PREFIX`]) — never
-    /// the invoke preimage. It is still quorum-cleared 2/3 and rides the same
+    /// the invoke preimage. It is a **cosigned row by a strict majority of the
+    /// standing roster** (CC 4.2.1.3, CIRISConstitution#146) and rides the same
     /// concurrence flow. **NB:** CC §4.2.1.1 pins only the `accord:invoke`
     /// preimage; the `accord:lifecycle` canonical-bytes layout here is
     /// verify-authored (first impl) and flagged for CEG cross-confirmation.
@@ -135,6 +138,42 @@ pub enum InvocationKind {
 }
 
 impl InvocationKind {
+    /// How many **distinct** roster holders' valid signatures this kind needs,
+    /// for a standing roster of `roster_len` holders. The one place the
+    /// thresholds live: [`verify_invocation`] and the concurrence flow's
+    /// status both read it, so they cannot disagree.
+    ///
+    /// The CC 4.2.6 bias gradient `fire ≤ roster-change ≤ standing`, as ruled on
+    /// CIRISConstitution#146 (entrenched CC 4.2, founder-ratified, rc7):
+    ///
+    /// - **`constitutional`: 1.** One holder's hybrid signature over the CC
+    ///   4.2.1.1 bytes, checked against the pinned roster, fires. A missed fire
+    ///   is terminal and unrecoverable; a false fire is recoverable by
+    ///   resumption. (rc6 counted ≥ 2 here while CC 4.2.6 said one; the ruling
+    ///   reconciles them on the missed-fire side.)
+    /// - **`lifecycle:active`: a strict majority of the standing roster**,
+    ///   `⌊n/2⌋ + 1` (2 of 3 today). Un-firing leans hard: a lone coerced or
+    ///   replayed key must never undo a legitimate halt.
+    /// - **`drill`: 1** — a drill rehearses the fire path, so it must take what
+    ///   a fire takes; one that needed more would not rehearse the fire.
+    /// - **`notify`: 1** — the safeguard against a notify carrying a halt's
+    ///   weight is the CC 4.2.1.2 visual distinction, not a signature count.
+    ///
+    /// (Steward ruling, CC 4.2.1.1 rc7 threshold table, CIRISConstitution#146.)
+    ///
+    /// `None` for an empty roster: no number of signatures is meaningful
+    /// against nobody, and treating that as "0 needed" would fire on nothing.
+    #[must_use]
+    pub const fn required_signatures(self, roster_len: usize) -> Option<usize> {
+        if roster_len == 0 {
+            return None;
+        }
+        Some(match self {
+            Self::Constitutional | Self::Drill | Self::Notify => 1,
+            Self::LifecycleActive => roster_len / 2 + 1,
+        })
+    }
+
     /// Stable wire-string per §9.2.1 — exactly the form that goes
     /// into canonical bytes.
     #[must_use]
@@ -245,14 +284,16 @@ impl Invocation {
 #[derive(Debug, Clone)]
 #[non_exhaustive]
 pub enum InvocationError {
-    /// Fewer than 2 of the 3 holder signatures verified — the §9.2.1
-    /// 2-of-3 threshold was not met.
+    /// Fewer distinct valid holder signatures than this kind requires
+    /// ([`InvocationKind::required_signatures`]).
     QuorumNotMet {
         /// How many valid signatures were observed.
         valid: usize,
-        /// The threshold (2).
+        /// The number this kind requires for this roster.
         required: usize,
     },
+    /// The roster to verify against is empty.
+    EmptyRoster,
     /// Duplicate `(invocation_kind, invocation_id)` within the
     /// active dedup window — §9.2.1 anti-replay rejected.
     DuplicateInvocationId {
@@ -309,6 +350,7 @@ impl std::fmt::Display for InvocationError {
                     invocation_kind.as_str(),
                 )
             },
+            Self::EmptyRoster => write!(f, "CC 4.2.1.1: no holder roster to verify against"),
             Self::Threshold(msg) => write!(f, "§9.2.1 threshold verify: {msg}"),
         }
     }
@@ -316,13 +358,21 @@ impl std::fmt::Display for InvocationError {
 
 impl std::error::Error for InvocationError {}
 
-/// Verify an invocation: 2-of-3 holder hybrid signatures over the
-/// §9.2.1 canonical bytes.
+/// Verify an invocation: distinct holder hybrid signatures over the CC 4.2.1.1
+/// / 4.2.1.3 canonical bytes, at the threshold its kind requires
+/// ([`InvocationKind::required_signatures`]).
 ///
-/// `holders` is the 3-member accord-holder set; `signatures` are
-/// the (≤ 3) holder cosignatures. Returns `Ok(valid_count)` on
-/// success (≥ 2 of 3 verified); the caller's dedup tracker is
-/// queried separately via [`InvocationDedup::record_or_reject`].
+/// `holders` is the **pinned** standing roster (the bundle's, folded under
+/// CC 4.2.6) — never a roster taken from the object being verified.
+/// `signatures` are the holders' signatures. Returns `Ok(valid_count)`.
+///
+/// A `constitutional` halt verifies on **one** holder's signature and fires on
+/// receipt (CIRISConstitution#146). It may have been signed long before it is
+/// published: a sealed, pre-signed row is valid when published, so this
+/// function deliberately does not compare `asserted_at` to the present. Replay
+/// is the caller's dedup ([`InvocationDedup::record_or_reject`], a duplicate
+/// `invocation_id` within `valid_until` refused) and the consumer's halt latch,
+/// which is idempotent.
 ///
 /// This function deliberately keeps verification + dedup separate
 /// so a caller can dedup-first-then-verify or vice versa per its
@@ -345,20 +395,25 @@ pub fn verify_invocation(
         });
     }
 
+    let required = invocation
+        .invocation_kind
+        .required_signatures(holders.len())
+        .ok_or(InvocationError::EmptyRoster)?;
     let canonical = invocation.canonical_bytes();
-    let valid = verify_threshold_signatures(&canonical, holders, signatures, 2).map_err(|e| {
-        // Map the threshold error: short quorum is "quorum not met";
-        // any other variant is an underlying threshold-layer issue.
-        match e {
-            crate::threshold::ThresholdError::Insufficient {
-                valid, threshold, ..
-            } => InvocationError::QuorumNotMet {
-                valid,
-                required: threshold,
-            },
-            other => InvocationError::Threshold(format!("{other:?}")),
-        }
-    })?;
+    let valid =
+        verify_threshold_signatures(&canonical, holders, signatures, required).map_err(|e| {
+            // Map the threshold error: short quorum is "quorum not met";
+            // any other variant is an underlying threshold-layer issue.
+            match e {
+                crate::threshold::ThresholdError::Insufficient {
+                    valid, threshold, ..
+                } => InvocationError::QuorumNotMet {
+                    valid,
+                    required: threshold,
+                },
+                other => InvocationError::Threshold(format!("{other:?}")),
+            }
+        })?;
     Ok(valid)
 }
 
