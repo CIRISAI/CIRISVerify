@@ -160,6 +160,15 @@ pub fn av_stream_id(stream_id: &[u8; STREAM_ID_LEN]) -> String {
 /// CC 5.3.3.1 STREAM nonce over [`av_stream_id`], with `counter = chunk_seq`
 /// and `last` set on the epoch's final chunk (CIRISConstitution#140).
 ///
+/// **`chunk_seq` must be the chunk's index WITHIN its epoch**, restarting at 0
+/// on every epoch roll. That is what the STREAM counter is, and it is how
+/// CIRISPersist seals a stored chunk (`rec.chunk_count`, reset at every roll).
+/// A stream-global sequence number coincides with it only in epoch 0 of a
+/// stream that never rolled; past that, a live chunk sealed with the global
+/// number and its stored copy sealed with the epoch-local one carry different
+/// nonces, and the recording no longer opens. A stream-global position belongs
+/// in the AAD (persist binds it there), never in the nonce counter.
+///
 /// `None` when `chunk_seq` exceeds `u32::MAX`: the STREAM counter is 32 bits
 /// and CC requires the epoch to roll before it wraps, so such a chunk cannot be
 /// sealed under this epoch. Truncating instead would reuse a `(DEK, nonce)`
