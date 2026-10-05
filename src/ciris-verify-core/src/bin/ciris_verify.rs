@@ -350,12 +350,15 @@ enum AccordAction {
     /// Verify (2/3 distinct-key founder quorum) + assemble the founder co-signs
     /// into the genesis object → outbox. Software-only (no token).
     Assemble(AccordAssembleArgs),
-    /// Invoke an accord action (CONSTITUTIONAL kill / notify / drill) — sign it on
-    /// **your** token → a partially-signed object another holder can concur with.
+    /// Invoke an accord action (constitutional kill / notify / drill / reactivate)
+    /// — sign it on **your** token. A constitutional halt, notify or drill is
+    /// complete on your one signature (CIRISConstitution#146); a reactivation
+    /// needs a strict majority of the standing roster, gathered by `concur`.
     /// (Closed vocabulary per CIRIS Constitution CC 4.2.1 — no other kinds.)
     Invoke(AccordInvokeArgs),
     /// Concur with a pending invocation you're a roster member of — add your
-    /// signature toward the 2/3 quorum → updated object → outbox.
+    /// signature toward its threshold (a strict majority of the standing roster
+    /// for a reactivation) → updated object → outbox.
     Concur(AccordConcurArgs),
     /// List accord objects in a directory (default: the CEG outbox); show each
     /// object's family, your roster membership, and quorum progress.
@@ -3018,18 +3021,33 @@ async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
     );
     let id = format!("{}-{}", a.kind, a.invocation_id);
     let path = write_object(&obj, &id, a.out.as_deref());
+    // The kind's own threshold (CIRISConstitution#146): a halt is complete on
+    // this one signature, and telling its holder otherwise could make them wait.
+    let required = invocation
+        .invocation_kind
+        .required_signatures(roster.len())
+        .unwrap_or(usize::MAX);
     if json_output {
         println!(
             "{}",
             serde_json::json!({
                 "kind": a.kind, "invocation_id": a.invocation_id,
-                "signatures": 1, "quorum_threshold": 2, "object": path,
+                "signatures": 1, "quorum_threshold": required,
+                "complete": required <= 1, "object": path,
             })
+        );
+    } else if required <= 1 {
+        println!(
+            "✅ invoked {} {} as {} — COMPLETE on your signature; publish it → {path}",
+            a.kind, a.invocation_id, a.key_id
         );
     } else {
         println!(
-            "✅ invoked {} {} as {} — 1/2 signatures (needs 1 more to concur) → {path}",
-            a.kind, a.invocation_id, a.key_id
+            "✅ invoked {} {} as {} — 1/{required} signatures (needs {} more to concur) → {path}",
+            a.kind,
+            a.invocation_id,
+            a.key_id,
+            required - 1
         );
     }
 }
@@ -3077,7 +3095,7 @@ async fn run_accord_concur(a: AccordConcurArgs, json_output: bool) {
                 "quorum_threshold": st.quorum_threshold,
                 "quorum_met": st.quorum_met,
                 // `quorum_met` is computed against the object's EMBEDDED roster —
-                // advisory only. Authoritative 2/3 verification is server-side
+                // advisory only. Authoritative verification is server-side
                 // against `federation_keys` (real accord-holder pubkeys).
                 "quorum_advisory": true,
                 "object": path,
@@ -3090,7 +3108,7 @@ async fn run_accord_concur(a: AccordConcurArgs, json_output: bool) {
             st.valid_signers.len(),
             st.quorum_threshold,
             if st.quorum_met {
-                " — QUORUM MET (advisory; canonical 2/3 verified server-side vs federation_keys)"
+                " — QUORUM MET (advisory; authoritative check is server-side vs federation_keys)"
             } else {
                 ""
             }
@@ -3146,7 +3164,7 @@ fn run_accord_list(a: &AccordListArgs, json_output: bool) {
                         "invocation_kind": parsed.invocation.invocation_kind.as_str(),
                         "invocation_id": parsed.invocation.invocation_id,
                         "signatures": st.as_ref().map(|s| s.valid_signers.len()),
-                        "quorum_threshold": 2,
+                        "quorum_threshold": st.as_ref().map(|s| s.quorum_threshold),
                         "quorum_met": st.as_ref().map(|s| s.quorum_met),
                         "i_am_member": mine.map(|(m, _)| m),
                         "i_signed": mine.map(|(_, s)| s),

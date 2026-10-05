@@ -145,6 +145,7 @@ pub extern "C" fn ciris_verify_ffi_link_anchor() -> usize {
     acc ^= ciris_verify_import_key as usize;
     acc ^= ciris_verify_init as usize;
     acc ^= ciris_verify_invocation_canonical_bytes as usize;
+    acc ^= ciris_verify_accord_invocation_verify as usize;
     acc ^= wheel_jcs::ciris_verify_jcs_canonicalize as usize;
     acc ^= ciris_verify_list_named_keys as usize;
     acc ^= ciris_verify_load_manifest_cache as usize;
@@ -3770,6 +3771,87 @@ unsafe fn invocation_canonical_bytes_inner(
     *result_out = ptr;
     *result_len_out = len;
     CirisVerifyError::Success as i32
+}
+
+/// Verify a HUMANITY_ACCORD invocation against the caller's **pinned** holder
+/// roster, at the threshold its kind requires (CIRISVerify#305,
+/// CIRISConstitution#146, CC 4.2.1.1 rc7): ONE holder for `constitutional`,
+/// `drill` and `notify`; a strict majority of the standing roster for
+/// `lifecycle:active`.
+///
+/// Input JSON: `{"invocation": {...}, "roster": [ThresholdMember...],
+/// "signatures": [ThresholdSignature...]}`. `roster` MUST come from the
+/// caller's own pinned bundle — never from the object being verified.
+///
+/// Output JSON: `{"verified": bool, "invocation_kind", "invocation_id",
+/// "valid": n, "required": n}` plus `"reason"` on rejection. A rejection is a
+/// successful call; only malformed input is an error code. Replay (a duplicate
+/// `invocation_id` within `valid_until`), the halt latch, and binding a
+/// resumption to the halt actually in force are the caller's state.
+///
+/// # Safety
+///
+/// `input_json` must point to `input_len` valid bytes; `result_out` and
+/// `result_len_out` must be valid pointers.
+#[no_mangle]
+pub unsafe extern "C" fn ciris_verify_accord_invocation_verify(
+    input_json: *const u8,
+    input_len: usize,
+    result_out: *mut *mut u8,
+    result_len_out: *mut usize,
+) -> i32 {
+    ffi_guard!("ciris_verify_accord_invocation_verify", {
+        use ciris_verify_core::humanity_accord::{verify_invocation, Invocation, InvocationError};
+        use ciris_verify_core::threshold::{ThresholdMember, ThresholdSignature};
+
+        #[derive(serde::Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Req {
+            invocation: Invocation,
+            roster: Vec<ThresholdMember>,
+            signatures: Vec<ThresholdSignature>,
+        }
+
+        if input_json.is_null() || result_out.is_null() || result_len_out.is_null() {
+            return CirisVerifyError::InvalidArgument as i32;
+        }
+        let bytes = std::slice::from_raw_parts(input_json, input_len);
+        let Ok(req) = serde_json::from_slice::<Req>(bytes) else {
+            return CirisVerifyError::SerializationError as i32;
+        };
+        let required = req
+            .invocation
+            .invocation_kind
+            .required_signatures(req.roster.len());
+        let mut out = serde_json::json!({
+            "invocation_kind": req.invocation.invocation_kind.as_str(),
+            "invocation_id": req.invocation.invocation_id,
+            "required": required,
+        });
+        match verify_invocation(&req.invocation, &req.roster, &req.signatures) {
+            Ok(valid) => {
+                out["verified"] = serde_json::json!(true);
+                out["valid"] = serde_json::json!(valid);
+            },
+            Err(e) => {
+                out["verified"] = serde_json::json!(false);
+                if let InvocationError::QuorumNotMet { valid, .. } = &e {
+                    out["valid"] = serde_json::json!(valid);
+                }
+                out["reason"] = serde_json::json!(e.to_string());
+            },
+        }
+        let json = out.to_string();
+        let len = json.len();
+        let ptr = libc::malloc(len) as *mut u8;
+        if ptr.is_null() {
+            return CirisVerifyError::InternalError as i32;
+        }
+        std::ptr::copy_nonoverlapping(json.as_ptr(), ptr, len);
+        *result_out = ptr;
+        *result_len_out = len;
+        CirisVerifyError::Success as i32
+    })
 }
 
 /// CEG §10.3.1 STH cosignature consistency-proof verification
@@ -10526,6 +10608,65 @@ unsafe fn ciris_verify_tree_inner(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// CIRISVerify#305 through the FFI: one seated holder's signature fires a
+    /// constitutional halt; a resumption needs a strict majority; a rejection is
+    /// a successful call that says why.
+    #[tokio::test]
+    async fn accord_invocation_verify_applies_the_per_kind_thresholds() {
+        use ciris_verify_core::accord_genesis::{co_sign_invocation, founder_member};
+        use ciris_verify_core::humanity_accord::{Invocation, InvocationKind};
+        use ciris_verify_core::self_at_login::HybridSigningIdentity;
+
+        let hs: Vec<HybridSigningIdentity> = ["A1", "B1", "C1"]
+            .iter()
+            .map(|k| HybridSigningIdentity::generate(*k).unwrap())
+            .collect();
+        let mut roster = Vec::new();
+        for h in &hs {
+            roster.push(founder_member(h).await.unwrap());
+        }
+        let inv = |kind, resumes: Option<&str>| Invocation {
+            invocation_kind: kind,
+            invocation_id: "halt-1".to_string(),
+            resumes_halt_id: resumes.map(str::to_string),
+            nonce: "EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE".to_string(),
+            asserted_at: "2026-10-05T00:00:00.000Z".to_string(),
+            valid_until: "2026-10-06T00:00:00.000Z".to_string(),
+            payload_sha256: "55".repeat(32),
+        };
+        let call = |body: serde_json::Value| -> serde_json::Value {
+            let b = body.to_string();
+            let mut out: *mut u8 = std::ptr::null_mut();
+            let mut len = 0usize;
+            let rc = unsafe {
+                ciris_verify_accord_invocation_verify(b.as_ptr(), b.len(), &mut out, &mut len)
+            };
+            assert_eq!(rc, CirisVerifyError::Success as i32);
+            let v = unsafe { std::slice::from_raw_parts(out, len) }.to_vec();
+            unsafe { libc::free(out.cast()) };
+            serde_json::from_slice(&v).unwrap()
+        };
+
+        let halt = inv(InvocationKind::Constitutional, None);
+        let a = co_sign_invocation(&hs[0], &halt).await.unwrap();
+        let v = call(serde_json::json!({"invocation": halt, "roster": roster, "signatures": [a]}));
+        assert_eq!(v["verified"], true, "{v}");
+        assert_eq!(v["required"], 1);
+
+        let resume = inv(InvocationKind::LifecycleActive, Some("halt-0"));
+        let a = co_sign_invocation(&hs[0], &resume).await.unwrap();
+        let v =
+            call(serde_json::json!({"invocation": &resume, "roster": &roster, "signatures": [&a]}));
+        assert_eq!(v["verified"], false);
+        assert_eq!(v["required"], 2);
+        assert_eq!(v["valid"], 1);
+        assert!(v["reason"].as_str().is_some());
+        let b = co_sign_invocation(&hs[1], &resume).await.unwrap();
+        let v =
+            call(serde_json::json!({"invocation": resume, "roster": roster, "signatures": [a, b]}));
+        assert_eq!(v["verified"], true, "{v}");
+    }
     use std::ffi::CString;
 
     /// Run the full platform conformance test suite.
