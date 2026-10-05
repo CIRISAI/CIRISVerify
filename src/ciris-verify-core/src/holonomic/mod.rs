@@ -99,6 +99,10 @@ pub use alm::{
 };
 
 pub use av_chunk::{
-    inner_nonce, outer_nonce, parse_header, ChunkLayer, SealedAvChunkHeader, AV_NONCE_LEN,
-    CHUNK_HEADER_LEN,
+    av_inner_nonce, av_stream_id, outer_nonce, parse_header, ChunkLayer, SealedAvChunkHeader,
+    AV_NONCE_LEN, CHUNK_HEADER_LEN,
 };
+// Retired (CIRISConstitution#140): still re-exported so a downstream path
+// resolves and gets the deprecation note, rather than a hard break in a MINOR.
+#[allow(deprecated)]
+pub use av_chunk::inner_nonce;

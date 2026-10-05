@@ -49,7 +49,7 @@
 | 🟡 low | Agent | `my_data.py:1480` | DSAR delete signing bytes via `json.dumps`; cross-process contract with Lens | `jcs_canonicalize` |
 | 🟡 low | Edge | `holonomic/wholeness_witness.rs` | Local twin of §19.1 WholenessWitness (Merkle+preimage+bound verify) despite depending on verify v10.3.0 | `holonomic::wholeness_witness` (+ `#267` re-export precedent) |
 | 🟡 low | Edge | `holonomic/*` (4 sites) | Residual §19 preimage/Merkle twins (WW, fountain, CIRIS-CLAIM, ALM) | `holonomic::preimage` + siblings |
-| 🟡 low | Edge | `transport/realtime_av.rs:425` | Re-derives §10.5.8 A/V AEAD nonces (`CIRIS-AV-INNER/OUTER-V1`) | `holonomic::av_chunk::{inner,outer}_nonce` |
+| 🟡 low | Edge | `transport/realtime_av.rs:425` | Re-derives §10.5.8 A/V AEAD nonces (`CIRIS-AV-INNER/OUTER-V1`) | `holonomic::av_chunk::{av_inner_nonce, outer_nonce}`. **Updated 19.1.0:** the inner seal is now the CC 5.3.3.1 STREAM nonce (CIRISConstitution#140, CIRISVerify#303), canonical in `ciris_crypto::stream_seal::stream_nonce`; `inner_nonce` is deprecated. CIRISPersist v53 `stream_seal` is a second copy to delegate. |
 | 🟡 low | Edge | `identity.rs:417` | Replay nonce via `Uuid::new_v4` bypassing the RNG facade (but 16B is the pinned wire size — don't widen) | `ciris_crypto::random::fill` |
 | 🟡 low | Server | `ciris-lens-core/capture/seal.rs:287` | `verify_trace_signature` on raw `ed25519-dalek` (test-only callers, but pulls a direct dalek dep) | `ciris_crypto::Ed25519Verifier` |
 

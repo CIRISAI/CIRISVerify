@@ -727,9 +727,11 @@ pub fn humanity_accord_genesis() -> Option<&'static SignedCegObject> {
 /// A provenance chain that terminates at **any one** of these seated holder keys
 /// roots during cold-start bootstrap — the anchor check in
 /// [`crate::provenance::verify_provenance_chain`] is set-**membership** (1-of-N),
-/// NOT a 2/3 threshold. (The 2/3 quorum governs accord *invocation* — the
-/// kill-switch — not rooting.) So a mesh whose canonical node is scrubbed by A1
-/// alone roots, while the constitutional off-switch still needs 2-of-3.
+/// NOT a 2/3 threshold. So a mesh whose canonical node is scrubbed by A1 alone
+/// roots. (Invocation thresholds are their own matter — see
+/// [`crate::humanity_accord::InvocationKind::required_signatures`]: since
+/// CIRISConstitution#146 a `constitutional` halt fires on ONE holder's signature
+/// and resumption needs a strict majority of the standing roster.)
 ///
 /// **One source of truth, cross-validated:** the anchor is the *seated roster*
 /// resolved from the baked [`humanity_accord_genesis()`] against the pinned
@@ -1072,13 +1074,17 @@ pub fn verify_accord_membership_change(
 //
 // One holder invokes (signs `accord:invoke:*`), ships the object; another holder
 // picks it up, confirms it's for a family they're a member of, and CONCURS (adds
-// their signature) → the 2/3 quorum is reached. `humanity_accord` owns the
+// their signature) until the kind's threshold is reached. Since
+// CIRISConstitution#146 that threshold is ONE for a `constitutional` halt — the
+// invoking holder's own signature fires it, and concurrence adds nothing a
+// consumer needs — and a strict majority of the standing roster for
+// `lifecycle:active` resumption, the act that leans hard. `humanity_accord` owns the
 // `Invocation` type + `verify_invocation`; this is the producer + the
 // self-contained CEG object that carries the roster, invocation, and the
 // accumulating signatures so a concurring holder has everything in one file.
 //
 // Two crown-jewel properties (adversarially verified): (a) one key cannot reach
-// the 2/3 quorum alone — each signature is checked against its OWN roster
+// a multi-holder threshold (resumption) alone — each signature is checked against its OWN roster
 // member's pubkey, and the distinct-key gate (`require_distinct_keys`) applies in
 // both `accord_invocation_status` and `concur_accord_invocation`; (b) a `drill` /
 // `notify` signature cannot be replayed onto a `CONSTITUTIONAL` kill — the
@@ -1246,9 +1252,12 @@ pub struct InvocationStatus {
     pub roster_member_ids: Vec<String>,
     /// Member ids whose signature over the invocation verifies (distinct).
     pub valid_signers: Vec<String>,
-    /// The §9.2.1 quorum threshold (2).
+    /// How many distinct valid signers this kind needs for this roster
+    /// ([`crate::humanity_accord::InvocationKind::required_signatures`]): 1 for
+    /// a `constitutional` halt, a strict majority for `lifecycle:active`.
     pub quorum_threshold: usize,
-    /// Whether the 2/3 quorum is met by distinct valid signers.
+    /// Whether that many distinct valid signers are present. **Advisory** — see
+    /// the boundary note above: the roster here is the object's own.
     pub quorum_met: bool,
 }
 
@@ -1283,20 +1292,29 @@ pub fn accord_invocation_status(
             }
         }
     }
-    let quorum_met = valid.len() >= ACCORD_QUORUM_THRESHOLD;
+    let threshold = parsed
+        .invocation
+        .invocation_kind
+        .required_signatures(parsed.roster.len())
+        .ok_or_else(|| AccordGenesisError::MalformedEnvelope {
+            detail: "invocation roster is empty".to_string(),
+        })?;
+    let quorum_met = valid.len() >= threshold;
     Ok(InvocationStatus {
         family_key_id: parsed.family_key_id.clone(),
         invocation_kind: parsed.invocation.invocation_kind.as_str().to_string(),
         invocation_id: parsed.invocation.invocation_id.clone(),
         roster_member_ids: parsed.roster.iter().map(|m| m.member_id.clone()).collect(),
         valid_signers: valid,
-        quorum_threshold: ACCORD_QUORUM_THRESHOLD,
+        quorum_threshold: threshold,
         quorum_met,
     })
 }
 
 /// Holder B picks up A's invocation object and **concurs** — adds their own
-/// signature, reaching toward the 2/3 quorum.
+/// signature, reaching toward the kind's threshold (a strict majority of the
+/// standing roster for `lifecycle:active`; a `constitutional` halt needs no
+/// concurrence — one signature fires it).
 ///
 /// Fail-closed: the signer must be a roster member **by matching pubkeys** (not
 /// just key_id), must not have already signed, the roster must be distinct keys,
@@ -2183,11 +2201,324 @@ mod tests {
             invocation_kind: InvocationKind::Drill,
             invocation_id: id.to_string(),
             resumes_halt_id: None,
+            confirms_halt_id: None,
             nonce: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA".to_string(),
             asserted_at: "2026-06-19T00:00:00.000Z".to_string(),
             valid_until: "2026-06-20T00:00:00.000Z".to_string(),
             payload_sha256: "00".repeat(32),
         }
+    }
+
+    // -- CIRISConstitution#146 (entrenched CC 4.2, rc7): one holder fires --------
+
+    fn halt(id: &str) -> Invocation {
+        Invocation {
+            invocation_kind: InvocationKind::Constitutional,
+            invocation_id: id.to_string(),
+            resumes_halt_id: None,
+            confirms_halt_id: None,
+            nonce: "CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC".to_string(),
+            // Signed long ago and sealed: a pre-signed halt is valid when
+            // published, so nothing here may depend on the present.
+            asserted_at: "2020-01-01T00:00:00.000Z".to_string(),
+            valid_until: "2099-01-01T00:00:00.000Z".to_string(),
+            payload_sha256: "22".repeat(32),
+        }
+    }
+
+    fn resumption(id: &str, of: &str) -> Invocation {
+        Invocation {
+            invocation_kind: InvocationKind::LifecycleActive,
+            invocation_id: id.to_string(),
+            resumes_halt_id: Some(of.to_string()),
+            confirms_halt_id: None,
+            nonce: "DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD".to_string(),
+            asserted_at: "2026-10-05T00:00:00.000Z".to_string(),
+            valid_until: "2026-10-06T00:00:00.000Z".to_string(),
+            payload_sha256: "33".repeat(32),
+        }
+    }
+
+    /// The ruling itself: ONE seated holder's hybrid signature fires a
+    /// constitutional halt, through both the verifier and the concurrence
+    /// status — and a pre-signed row signed years ago is valid when published.
+    #[tokio::test]
+    async fn one_holder_fires_a_constitutional_halt() {
+        let hs = holders();
+        let roster = members_of(&hs).await;
+        let inv = halt("halt-sealed-2020");
+        let sig = co_sign_invocation(&hs[1], &inv).await.unwrap();
+        assert_eq!(
+            crate::humanity_accord::verify_invocation(&inv, &roster, std::slice::from_ref(&sig))
+                .unwrap(),
+            1
+        );
+        let obj = build_accord_invocation_object(
+            HUMANITY_ACCORD_FAMILY_KEY_ID,
+            &roster,
+            &inv,
+            std::slice::from_ref(&sig),
+            TS,
+        );
+        let st = accord_invocation_status(&parse_accord_invocation(&obj).unwrap()).unwrap();
+        assert_eq!(st.quorum_threshold, 1);
+        assert!(st.quorum_met, "one holder's halt is complete on arrival");
+    }
+
+    /// One is the floor, not a bypass: the signature must be a SEATED holder's,
+    /// over THIS row, verifying against that holder's pinned key.
+    #[tokio::test]
+    async fn a_one_signature_halt_still_needs_a_genuine_seated_holder() {
+        let hs = holders();
+        let roster = members_of(&hs).await;
+        let inv = halt("halt-1");
+
+        // No signature at all.
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&inv, &roster, &[]),
+            Err(crate::humanity_accord::InvocationError::QuorumNotMet {
+                valid: 0,
+                required: 1
+            })
+        ));
+
+        // An outsider's key, claiming a seated member's id.
+        let outsider = HybridSigningIdentity::generate("A1").unwrap();
+        let forged = co_sign_invocation(&outsider, &inv).await.unwrap();
+        assert!(crate::humanity_accord::verify_invocation(
+            &inv,
+            &roster,
+            std::slice::from_ref(&forged)
+        )
+        .is_err());
+
+        // A genuine holder signature over a DIFFERENT row (a drill) does not
+        // fire this halt: kind and nonce are inside the signed bytes.
+        let drill_sig = co_sign_invocation(&hs[0], &drill("d-1")).await.unwrap();
+        assert!(crate::humanity_accord::verify_invocation(
+            &inv,
+            &roster,
+            std::slice::from_ref(&drill_sig)
+        )
+        .is_err());
+
+        // Tampering with the halt after signing drops the signature.
+        let sig = co_sign_invocation(&hs[0], &inv).await.unwrap();
+        let mut tampered = inv.clone();
+        tampered.payload_sha256 = "44".repeat(32);
+        assert!(crate::humanity_accord::verify_invocation(
+            &tampered,
+            &roster,
+            std::slice::from_ref(&sig)
+        )
+        .is_err());
+    }
+
+    /// Un-firing leans hard: one holder can never resume a halt; a strict
+    /// majority of the STANDING roster can, and the majority grows with it.
+    #[tokio::test]
+    async fn resumption_needs_a_strict_majority_of_the_standing_roster() {
+        let hs = holders();
+        let roster = members_of(&hs).await;
+        let inv = resumption("resume-1", "halt-1");
+        let a = co_sign_invocation(&hs[0], &inv).await.unwrap();
+        let b = co_sign_invocation(&hs[1], &inv).await.unwrap();
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&inv, &roster, std::slice::from_ref(&a)),
+            Err(crate::humanity_accord::InvocationError::QuorumNotMet {
+                valid: 1,
+                required: 2
+            })
+        ));
+        assert_eq!(
+            crate::humanity_accord::verify_invocation(&inv, &roster, &[a.clone(), b.clone()])
+                .unwrap(),
+            2
+        );
+
+        // A grown five-seat roster: two is no longer a majority.
+        let five: Vec<HybridSigningIdentity> = ["A1", "B1", "C1", "D1", "E1"]
+            .iter()
+            .map(|k| HybridSigningIdentity::generate(*k).unwrap())
+            .collect();
+        let roster5 = members_of(&five).await;
+        let mut sigs = Vec::new();
+        for h in &five[..2] {
+            sigs.push(co_sign_invocation(h, &inv).await.unwrap());
+        }
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&inv, &roster5, &sigs),
+            Err(crate::humanity_accord::InvocationError::QuorumNotMet {
+                valid: 2,
+                required: 3
+            })
+        ));
+        sigs.push(co_sign_invocation(&five[2], &inv).await.unwrap());
+        assert_eq!(
+            crate::humanity_accord::verify_invocation(&inv, &roster5, &sigs).unwrap(),
+            3
+        );
+    }
+
+    /// Steward ruling (CC 4.2.1.1 rc7 threshold table): notify and drill take
+    /// ONE holder, like the fire they share a path with.
+    #[tokio::test]
+    async fn notify_and_drill_take_one_holder() {
+        let hs = holders();
+        let roster = members_of(&hs).await;
+        for kind in [InvocationKind::Notify, InvocationKind::Drill] {
+            let mut inv = drill("x-1");
+            inv.invocation_kind = kind;
+            let a = co_sign_invocation(&hs[0], &inv).await.unwrap();
+            assert_eq!(
+                crate::humanity_accord::verify_invocation(&inv, &roster, std::slice::from_ref(&a))
+                    .unwrap(),
+                1,
+                "{kind:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn thresholds_follow_the_bias_gradient() {
+        use crate::humanity_accord::InvocationKind as K;
+        for n in 1..=9 {
+            assert_eq!(
+                K::Drill.required_signatures(n),
+                Some(1),
+                "a drill takes what a fire takes"
+            );
+            assert_eq!(K::Notify.required_signatures(n), Some(1));
+            let fire = K::Constitutional.required_signatures(n).unwrap();
+            let resume = K::LifecycleActive.required_signatures(n).unwrap();
+            assert_eq!(fire, 1, "n={n}");
+            assert_eq!(resume, n / 2 + 1, "n={n}");
+            assert_eq!(
+                K::LifecycleConfirmed.required_signatures(n),
+                Some(n / 2 + 1),
+                "n={n}"
+            );
+            assert!(
+                fire <= resume,
+                "fire must never be harder than un-firing (n={n})"
+            );
+        }
+        for k in [
+            K::Constitutional,
+            K::LifecycleActive,
+            K::LifecycleConfirmed,
+            K::Notify,
+            K::Drill,
+        ] {
+            assert_eq!(
+                k.required_signatures(0),
+                None,
+                "{k:?}: nothing verifies against nobody"
+            );
+        }
+    }
+
+    fn confirmation(id: &str, of: &str) -> Invocation {
+        Invocation {
+            invocation_kind: InvocationKind::LifecycleConfirmed,
+            invocation_id: id.to_string(),
+            resumes_halt_id: None,
+            confirms_halt_id: Some(of.to_string()),
+            nonce: "FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF".to_string(),
+            asserted_at: "2026-10-05T01:00:00.000Z".to_string(),
+            valid_until: "2026-10-06T00:00:00.000Z".to_string(),
+            payload_sha256: "66".repeat(32),
+        }
+    }
+
+    /// CC 4.2.1.3 (rc7 7923cde): `lifecycle:confirmed` signs the lifecycle
+    /// domain with `confirms_halt_id=` where `resumes_halt_id=` would be —
+    /// written out literally so a layout change is a red here, not a silent
+    /// re-derivation.
+    #[test]
+    fn confirmation_canonical_bytes_are_the_cc_4_2_1_3_layout() {
+        let c = confirmation("confirm-1", "halt-1");
+        assert_eq!(
+            String::from_utf8(c.canonical_bytes()).unwrap(),
+            "ciris.accord_lifecycle.v1\n\
+             invocation_kind=lifecycle:confirmed\n\
+             invocation_id=confirm-1\n\
+             confirms_halt_id=halt-1\n\
+             nonce=FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF\n\
+             asserted_at=2026-10-05T01:00:00.000Z\n\
+             valid_until=2026-10-06T00:00:00.000Z\n\
+             payload_sha256=6666666666666666666666666666666666666666666666666666666666666666"
+        );
+    }
+
+    /// Each lifecycle kind carries exactly its own binding line.
+    #[test]
+    fn a_confirmation_must_name_its_halt_and_only_that_way() {
+        let roster: Vec<ThresholdMember> = Vec::new();
+        let mut c = confirmation("c", "halt-1");
+        c.confirms_halt_id = None;
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&c, &roster, &[]),
+            Err(crate::humanity_accord::InvocationError::MalformedResumption { .. })
+        ));
+        let mut c = confirmation("c", "halt-1");
+        c.resumes_halt_id = Some("halt-1".into());
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&c, &roster, &[]),
+            Err(crate::humanity_accord::InvocationError::MalformedResumption { .. })
+        ));
+        let mut r = resumption("r", "halt-1");
+        r.confirms_halt_id = Some("halt-1".into());
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&r, &roster, &[]),
+            Err(crate::humanity_accord::InvocationError::MalformedResumption { .. })
+        ));
+        let mut h = halt("h");
+        h.confirms_halt_id = Some("halt-0".into());
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&h, &roster, &[]),
+            Err(crate::humanity_accord::InvocationError::MalformedResumption { .. })
+        ));
+    }
+
+    /// Confirmation is a strict majority; a lone holder (the firer included)
+    /// cannot confirm alone, and a resumption signature is not a confirmation.
+    #[tokio::test]
+    async fn confirmation_needs_a_majority_and_is_not_a_resumption() {
+        let hs = holders();
+        let roster = members_of(&hs).await;
+        let c = confirmation("confirm-1", "halt-1");
+        let a = co_sign_invocation(&hs[0], &c).await.unwrap();
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&c, &roster, std::slice::from_ref(&a)),
+            Err(crate::humanity_accord::InvocationError::QuorumNotMet {
+                valid: 1,
+                required: 2
+            })
+        ));
+        let b = co_sign_invocation(&hs[1], &c).await.unwrap();
+        assert_eq!(
+            crate::humanity_accord::verify_invocation(&c, &roster, &[a, b]).unwrap(),
+            2
+        );
+
+        // Two genuine signatures over a RESUMPTION of the same halt, presented
+        // as a confirmation, verify nothing: the kind line is signed.
+        let r = resumption("confirm-1", "halt-1");
+        let ra = co_sign_invocation(&hs[0], &r).await.unwrap();
+        let rb = co_sign_invocation(&hs[1], &r).await.unwrap();
+        assert!(crate::humanity_accord::verify_invocation(&c, &roster, &[ra, rb]).is_err());
+    }
+
+    #[tokio::test]
+    async fn an_empty_roster_verifies_nothing() {
+        let hs = holders();
+        let inv = halt("halt-1");
+        let sig = co_sign_invocation(&hs[0], &inv).await.unwrap();
+        assert!(matches!(
+            crate::humanity_accord::verify_invocation(&inv, &[], std::slice::from_ref(&sig)),
+            Err(crate::humanity_accord::InvocationError::EmptyRoster)
+        ));
     }
 
     #[tokio::test]
@@ -2201,6 +2532,7 @@ mod tests {
             invocation_kind: InvocationKind::LifecycleActive,
             invocation_id: "resume-2026-06".to_string(),
             resumes_halt_id: Some("halt-2026-05".to_string()),
+            confirms_halt_id: None,
             nonce: "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB".to_string(),
             asserted_at: "2026-06-21T00:00:00.000Z".to_string(),
             valid_until: "2026-06-22T00:00:00.000Z".to_string(),
@@ -2232,9 +2564,11 @@ mod tests {
 
     #[tokio::test]
     async fn invocation_concurrence_reaches_two_of_three() {
+        // Since CIRISConstitution#146 only resumption is multi-holder — every
+        // invoke kind completes on one — so concurrence is exercised on it.
         let hs = holders();
         let roster = members_of(&hs).await;
-        let inv = drill("drill-2026-06");
+        let inv = resumption("resume-2026-06", "halt-2026-05");
         // Holder A invokes (signs) → object with 1 signature.
         let sig_a = co_sign_invocation(&hs[0], &inv).await.unwrap();
         let obj = build_accord_invocation_object(

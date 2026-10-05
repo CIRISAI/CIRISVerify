@@ -350,12 +350,15 @@ enum AccordAction {
     /// Verify (2/3 distinct-key founder quorum) + assemble the founder co-signs
     /// into the genesis object → outbox. Software-only (no token).
     Assemble(AccordAssembleArgs),
-    /// Invoke an accord action (CONSTITUTIONAL kill / notify / drill) — sign it on
-    /// **your** token → a partially-signed object another holder can concur with.
+    /// Invoke an accord action (constitutional kill / notify / drill / reactivate)
+    /// — sign it on **your** token. A constitutional halt, notify or drill is
+    /// complete on your one signature (CIRISConstitution#146); a reactivation
+    /// needs a strict majority of the standing roster, gathered by `concur`.
     /// (Closed vocabulary per CIRIS Constitution CC 4.2.1 — no other kinds.)
     Invoke(AccordInvokeArgs),
     /// Concur with a pending invocation you're a roster member of — add your
-    /// signature toward the 2/3 quorum → updated object → outbox.
+    /// signature toward its threshold (a strict majority of the standing roster
+    /// for a reactivation) → updated object → outbox.
     Concur(AccordConcurArgs),
     /// List accord objects in a directory (default: the CEG outbox); show each
     /// object's family, your roster membership, and quorum progress.
@@ -372,9 +375,11 @@ struct AccordInvokeArgs {
     /// genesis co-sign bundles' `member` field, or the holder records).
     #[arg(long)]
     roster: String,
-    /// Invocation kind (closed set per CC 4.2.1). `reactivate` is the
-    /// `accord:lifecycle:active` resumption after a halt (separate scope).
-    #[arg(long, value_parser = ["constitutional", "notify", "drill", "reactivate"])]
+    /// Invocation kind (closed set per CC 4.2.1). `confirm` is the
+    /// `accord:lifecycle:confirmed` majority confirmation that keeps a one-holder
+    /// halt past its fuse; `reactivate` is the `accord:lifecycle:active`
+    /// resumption. Both are the separate lifecycle scope.
+    #[arg(long, value_parser = ["constitutional", "notify", "drill", "confirm", "reactivate"])]
     kind: String,
     /// Per-kind unique id (`halt_id` / `notify_id` / `drill_id` / `resumption_id`).
     #[arg(long)]
@@ -384,6 +389,11 @@ struct AccordInvokeArgs {
     /// reactivate`; rejected for any other kind.
     #[arg(long)]
     resumes_halt_id: Option<String>,
+    /// **`confirm` ONLY** (CC 4.2.1.3, CIRISConstitution#146 amended): the
+    /// `invocation_id` of the one-holder halt this confirms. **Required** for
+    /// `--kind confirm`; rejected for any other kind.
+    #[arg(long)]
+    confirms_halt_id: Option<String>,
     /// Lowercase-hex SHA-256 of the application payload (§0.6).
     #[arg(long)]
     payload_sha256: String,
@@ -2963,9 +2973,10 @@ async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
         "notify" => InvocationKind::Notify,
         "drill" => InvocationKind::Drill,
         "reactivate" => InvocationKind::LifecycleActive,
+        "confirm" => InvocationKind::LifecycleConfirmed,
         other => {
             eprintln!(
-                "❌ unknown invocation kind {other:?} (constitutional|notify|drill|reactivate)"
+                "❌ unknown invocation kind {other:?} (constitutional|notify|drill|confirm|reactivate)"
             );
             std::process::exit(2);
         },
@@ -2980,6 +2991,17 @@ async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
         eprintln!("❌ --resumes-halt-id is only valid with --kind reactivate (CC 4.2.1.3)");
         std::process::exit(2);
     }
+    // CIRISConstitution#146 (amended): confirms_halt_id is mandatory for confirm,
+    // forbidden else.
+    if matches!(kind, InvocationKind::LifecycleConfirmed) {
+        if a.confirms_halt_id.is_none() {
+            eprintln!("❌ --kind confirm requires --confirms-halt-id <the one-holder halt id> (CC 4.2.1.3)");
+            std::process::exit(2);
+        }
+    } else if a.confirms_halt_id.is_some() {
+        eprintln!("❌ --confirms-halt-id is only valid with --kind confirm (CC 4.2.1.3)");
+        std::process::exit(2);
+    }
     let now = chrono::Utc::now();
     let nonce_bytes = ciris_crypto::random::bytes(32).unwrap_or_else(|e| {
         eprintln!("❌ RNG: {e}");
@@ -2989,6 +3011,7 @@ async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
         invocation_kind: kind,
         invocation_id: a.invocation_id.clone(),
         resumes_halt_id: a.resumes_halt_id.clone(),
+        confirms_halt_id: a.confirms_halt_id.clone(),
         nonce: base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&nonce_bytes),
         asserted_at: now.format("%Y-%m-%dT%H:%M:%S%.3fZ").to_string(),
         valid_until: (now + chrono::Duration::minutes(a.valid_mins))
@@ -3018,18 +3041,33 @@ async fn run_accord_invoke(a: AccordInvokeArgs, json_output: bool) {
     );
     let id = format!("{}-{}", a.kind, a.invocation_id);
     let path = write_object(&obj, &id, a.out.as_deref());
+    // The kind's own threshold (CIRISConstitution#146): a halt is complete on
+    // this one signature, and telling its holder otherwise could make them wait.
+    let required = invocation
+        .invocation_kind
+        .required_signatures(roster.len())
+        .unwrap_or(usize::MAX);
     if json_output {
         println!(
             "{}",
             serde_json::json!({
                 "kind": a.kind, "invocation_id": a.invocation_id,
-                "signatures": 1, "quorum_threshold": 2, "object": path,
+                "signatures": 1, "quorum_threshold": required,
+                "complete": required <= 1, "object": path,
             })
+        );
+    } else if required <= 1 {
+        println!(
+            "✅ invoked {} {} as {} — COMPLETE on your signature; publish it → {path}",
+            a.kind, a.invocation_id, a.key_id
         );
     } else {
         println!(
-            "✅ invoked {} {} as {} — 1/2 signatures (needs 1 more to concur) → {path}",
-            a.kind, a.invocation_id, a.key_id
+            "✅ invoked {} {} as {} — 1/{required} signatures (needs {} more to concur) → {path}",
+            a.kind,
+            a.invocation_id,
+            a.key_id,
+            required - 1
         );
     }
 }
@@ -3077,7 +3115,7 @@ async fn run_accord_concur(a: AccordConcurArgs, json_output: bool) {
                 "quorum_threshold": st.quorum_threshold,
                 "quorum_met": st.quorum_met,
                 // `quorum_met` is computed against the object's EMBEDDED roster —
-                // advisory only. Authoritative 2/3 verification is server-side
+                // advisory only. Authoritative verification is server-side
                 // against `federation_keys` (real accord-holder pubkeys).
                 "quorum_advisory": true,
                 "object": path,
@@ -3090,7 +3128,7 @@ async fn run_accord_concur(a: AccordConcurArgs, json_output: bool) {
             st.valid_signers.len(),
             st.quorum_threshold,
             if st.quorum_met {
-                " — QUORUM MET (advisory; canonical 2/3 verified server-side vs federation_keys)"
+                " — QUORUM MET (advisory; authoritative check is server-side vs federation_keys)"
             } else {
                 ""
             }
@@ -3146,7 +3184,7 @@ fn run_accord_list(a: &AccordListArgs, json_output: bool) {
                         "invocation_kind": parsed.invocation.invocation_kind.as_str(),
                         "invocation_id": parsed.invocation.invocation_id,
                         "signatures": st.as_ref().map(|s| s.valid_signers.len()),
-                        "quorum_threshold": 2,
+                        "quorum_threshold": st.as_ref().map(|s| s.quorum_threshold),
                         "quorum_met": st.as_ref().map(|s| s.quorum_met),
                         "i_am_member": mine.map(|(m, _)| m),
                         "i_signed": mine.map(|(_, s)| s),
