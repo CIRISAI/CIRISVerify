@@ -58,6 +58,11 @@ pub mod aes_gcm;
 /// stream-nonce HKDF derivation. Unconditional: `hkdf` + `sha2` are non-optional.
 pub mod epoch_key;
 
+/// CC 5.3.3.1 STREAM chunk nonce — the one per-chunk seal nonce for live and
+/// stored streams (CIRISVerify#303). Unconditional: `hkdf` + `sha2` are
+/// non-optional.
+pub mod stream_seal;
+
 #[cfg(feature = "kdf")]
 pub mod kdf;
 

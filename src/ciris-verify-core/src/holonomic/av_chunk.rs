@@ -36,7 +36,14 @@ pub const STREAM_ID_LEN: usize = 32;
 /// AES-GCM nonce width (96-bit / 12 bytes).
 pub const AV_NONCE_LEN: usize = 12;
 
-/// Inner-seal (end-to-end epoch-DEK) nonce domain separator.
+/// Inner-seal nonce domain separator of the **retired** A/V inner nonce.
+///
+/// Kept so a historical artifact is recognisable; nothing seals with it. The
+/// inner seal is the CC 5.3.3.1 STREAM nonce ([`av_inner_nonce`]).
+#[deprecated(
+    since = "19.1.0",
+    note = "the A/V inner seal is the CC 5.3.3.1 STREAM nonce (CIRISConstitution#140); use av_inner_nonce"
+)]
 pub const AV_INNER_DOMAIN: &[u8] = b"CIRIS-AV-INNER-V1";
 /// Outer-seal (per-RNS-Link transit) nonce domain separator.
 pub const AV_OUTER_DOMAIN: &[u8] = b"CIRIS-AV-OUTER-V1";
@@ -114,9 +121,19 @@ fn sha256_12(parts: &[&[u8]]) -> [u8; AV_NONCE_LEN] {
     out
 }
 
-/// Derive the **inner** (end-to-end) AES-GCM nonce (§10.5.8.3):
+/// The **retired** A/V inner nonce:
 /// `SHA-256( b"CIRIS-AV-INNER-V1" ‖ stream_id[32] ‖ epoch_be8 ‖ chunk_seq_be8 )[0..12]`.
+///
+/// It was a second normative seal for what CC calls one wire. The steward ruled
+/// the realtime inner seal is the CC 5.3.3.1 STREAM nonce (CIRISConstitution#140,
+/// CC rc7 `7561d07`); use [`av_inner_nonce`]. Retained only so an existing
+/// artifact can be identified, never to seal.
+#[deprecated(
+    since = "19.1.0",
+    note = "the A/V inner seal is the CC 5.3.3.1 STREAM nonce (CIRISConstitution#140); use av_inner_nonce"
+)]
 #[must_use]
+#[allow(deprecated)]
 pub fn inner_nonce(
     stream_id: &[u8; STREAM_ID_LEN],
     epoch: u64,
@@ -128,6 +145,42 @@ pub fn inner_nonce(
         &epoch.to_be_bytes(),
         &chunk_seq.to_be_bytes(),
     ])
+}
+
+/// The STREAM `stream_id` of an A/V stream: the lowercase hex of the header's
+/// 32 bytes (64 ASCII chars). CIRISEdge names a kept call's persist recording by
+/// this same string, so a live stream and its stored segments share one
+/// `stream_id` and one seal (CIRISVerify#303).
+#[must_use]
+pub fn av_stream_id(stream_id: &[u8; STREAM_ID_LEN]) -> String {
+    hex::encode(stream_id)
+}
+
+/// The **inner** (end-to-end, epoch-DEK) AES-GCM nonce for an A/V chunk: the
+/// CC 5.3.3.1 STREAM nonce over [`av_stream_id`], with `counter = chunk_seq`
+/// and `last` set on the epoch's final chunk (CIRISConstitution#140).
+///
+/// `None` when `chunk_seq` exceeds `u32::MAX`: the STREAM counter is 32 bits
+/// and CC requires the epoch to roll before it wraps, so such a chunk cannot be
+/// sealed under this epoch. Truncating instead would reuse a `(DEK, nonce)`
+/// pair. (A persist epoch terminator is not affected: its nonce counter is the
+/// epoch's next chunk index, not its storage position.)
+#[must_use]
+pub fn av_inner_nonce(
+    epoch_dek: &[u8; ciris_crypto::stream_seal::EPOCH_DEK_LEN],
+    stream_id: &[u8; STREAM_ID_LEN],
+    epoch: u64,
+    chunk_seq: u64,
+    last: bool,
+) -> Option<[u8; AV_NONCE_LEN]> {
+    let counter = ciris_crypto::stream_seal::counter_from_seq(chunk_seq)?;
+    Some(ciris_crypto::stream_seal::stream_nonce(
+        epoch_dek,
+        &av_stream_id(stream_id),
+        epoch,
+        counter,
+        last,
+    ))
 }
 
 /// Derive the **outer** (per-RNS-Link transit) AES-GCM nonce (§10.5.8.3):
@@ -146,19 +199,46 @@ mod tests {
 
     // ---- KATs: the nonce derivations are byte-pinned (RC10 / §19.6 vectors).
 
+    /// The inner seal is the STREAM nonce over the header's hex `stream_id`,
+    /// byte-for-byte (CIRISConstitution#140). Golden derived independently in
+    /// Python: DEK `[0x42;32]`, `stream_id` `[0x11;32]`, epoch 1, seq 0.
     #[test]
-    fn inner_nonce_kat() {
-        let stream_id = [0x11u8; 32];
-        let n = inner_nonce(&stream_id, 1, 0);
-        // Recompute independently to lock the construction (domain ‖ id ‖ be8 ‖ be8).
+    fn av_inner_nonce_is_the_cc_5_3_3_1_stream_nonce() {
+        let dek = [0x42u8; 32];
+        let sid = [0x11u8; 32];
+        assert_eq!(av_stream_id(&sid), "11".repeat(32));
+        let n = av_inner_nonce(&dek, &sid, 1, 0, false).unwrap();
+        assert_eq!(hex::encode(n), "03d118a1cbe0350000000000");
+        assert_eq!(
+            n,
+            ciris_crypto::stream_seal::stream_nonce(&dek, &"11".repeat(32), 1, 0, false)
+        );
+        assert_eq!(av_inner_nonce(&dek, &sid, 1, 0, true).unwrap()[11], 0x01);
+    }
+
+    /// The KAT inverted: the retired construction must not be what seals.
+    #[test]
+    #[allow(deprecated)]
+    fn the_retired_inner_nonce_is_not_the_seal() {
+        let sid = [0x11u8; 32];
+        let retired = inner_nonce(&sid, 1, 0);
         let mut h = Sha256::new();
         h.update(b"CIRIS-AV-INNER-V1");
-        h.update([0x11u8; 32]);
+        h.update(sid);
         h.update(1u64.to_be_bytes());
         h.update(0u64.to_be_bytes());
-        let expect = &h.finalize()[..12];
-        assert_eq!(&n[..], expect);
-        assert_eq!(n.len(), 12);
+        assert_eq!(&retired[..], &h.finalize()[..12], "still identifiable");
+        for dek in [[0x42u8; 32], [0u8; 32]] {
+            assert_ne!(av_inner_nonce(&dek, &sid, 1, 0, false).unwrap(), retired);
+        }
+    }
+
+    #[test]
+    fn a_chunk_seq_past_the_stream_counter_is_refused() {
+        let dek = [0x42u8; 32];
+        let sid = [0u8; 32];
+        assert!(av_inner_nonce(&dek, &sid, 1, u64::from(u32::MAX), true).is_some());
+        assert!(av_inner_nonce(&dek, &sid, 1, u64::from(u32::MAX) + 1, false).is_none());
     }
 
     #[test]
@@ -172,12 +252,14 @@ mod tests {
     }
 
     #[test]
-    fn inner_nonce_unique_per_seq_and_epoch() {
+    fn av_inner_nonce_unique_per_seq_epoch_and_stream() {
+        let d = [0x42u8; 32];
         let s = [0u8; 32];
-        assert_ne!(inner_nonce(&s, 1, 0), inner_nonce(&s, 1, 1));
-        assert_ne!(inner_nonce(&s, 1, 0), inner_nonce(&s, 2, 0));
-        // BE encoding: epoch=1,seq=0 must differ from epoch=0,seq=1 (no axis swap).
-        assert_ne!(inner_nonce(&s, 1, 0), inner_nonce(&s, 0, 1));
+        let n = |sid: &[u8; 32], e, q| av_inner_nonce(&d, sid, e, q, false).unwrap();
+        assert_ne!(n(&s, 1, 0), n(&s, 1, 1));
+        assert_ne!(n(&s, 1, 0), n(&s, 2, 0));
+        assert_ne!(n(&s, 1, 0), n(&s, 0, 1));
+        assert_ne!(n(&s, 1, 0), n(&[1u8; 32], 1, 0));
     }
 
     #[test]
