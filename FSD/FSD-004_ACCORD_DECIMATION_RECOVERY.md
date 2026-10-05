@@ -1,5 +1,15 @@
 # FSD-004 — Accord Live-Quorum Operation & Recovery Under Decimation
 
+> **Superseded in part, 2026-10-05 (CIRISConstitution#146, entrenched CC 4.2, founder-ratified; verify 20.0.0).**
+> The live-quorum **fire** and **resume** paths described below are retired: a `constitutional` halt is now one
+> holder's self-contained, pre-signable row that fires on receipt — no proposal, no participation window, no vote,
+> no decision object, and **no server-issued nonce** — and resumption is a cosigned `lifecycle:active` row by a
+> strict majority of the standing roster. A one-holder halt lapses after `halt_fuse_secs` unless a majority
+> `lifecycle:confirmed` names it. The proposal/participation/decision objects remain for **roster changes only**,
+> with a **proposer-minted** nonce. `verify_fire_by_live_quorum` / `verify_resume_by_live_quorum` are deprecated;
+> see `humanity_accord::verify_invocation` and `accord_halt_latch::HaltLatch`. The CC `formal/accord_halt` model
+> shows why: the proposal path has a visible window in three steps and a stuck state in four.
+
 **Status:** RATIFIED + EXPANDED (constitutional grounding landed and generalized) — **Phase 1 IMPLEMENTED in verify v8.2.0** (`ciris_verify_core::accord_live_quorum`, 1,764 lines, 32 tests). Phase 3 (server-side state/recompute) and the H7 CC cross-confirm remain downstream.
 
 > **Corrected 2026-09-25.** This line read *"not yet implemented"* for the whole span after v8.2.0 shipped the machinery. That is not a cosmetic slip: CIRISVerify#98 asks whether the accord can recover from catastrophic holder loss, and a reader who trusted this header would conclude it cannot — or would build it a second time. The repo-structure table in `CLAUDE.md` carried the same claim plus *"Not ratified"*, which CC 0.3 §4.2.6 had already falsified.

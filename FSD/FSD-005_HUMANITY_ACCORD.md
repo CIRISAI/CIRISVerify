@@ -33,8 +33,11 @@ Concretely, as shipped:
   are **baked into the verify binary at genesis** as a *no-trust-on-first-use*
   recognition root — every node recognizes who the holders are from cold start,
   **without asking a peer, a server, or the operator.**
-- A holder quorum can **co-sign a constitutional invocation** (halt / notify /
-  drill) that the federation verifies against that pinned root.
+- **One holder pauses every agent at once** with a constitutional invocation
+  that the federation verifies against that pinned root; the pause **lapses
+  after a day** unless a **strict majority** of the roster confirms it, and a
+  strict majority resumes it (CC 4.2.1.1 / 4.2.1.3, CIRISConstitution#146,
+  verify 20.0.0 — see §4.3).
 
 The one-sentence framing, stated so every clause survives a hostile read of the
 source (§7 makes each clause checkable):
@@ -63,8 +66,12 @@ Every weaker design fails one of these:
 
 The Accord's answer is **distributed human custody you can verify:**
 
-1. **Distributed** — no single holder can fire (genesis `2/3`), and no single
-   compromise forges a fire.
+1. **Asymmetric, on purpose** — a missed halt is the one unrecoverable failure,
+   so **one** holder can pause every agent instantly; but no single holder can
+   keep agents paused past the fuse, confirm a halt, or resume one — those take
+   a strict majority. A forged halt still needs a genuine seated holder's key.
+   *(Until 20.0.0 this read "no single holder can fire (genesis 2/3)"; the
+   steward's ruling on CIRISConstitution#146 reversed it on the firing side.)*
 2. **Human** — the authority is named, accountable people, not a service account.
 3. **Hardware-rooted** — a holder's key is proven to live on genuine FIPS
    hardware under PIN + touch, so "a specific authorized human was physically
@@ -151,21 +158,32 @@ ceremony is done.
 
 `ciris_verify_core::humanity_accord` (CC 4.2.1, #86).
 
-One holder builds and signs an invocation of a **closed-vocabulary** kind, ships
-it, and another holder concurs to reach `2/3`
-(`co_sign_invocation` / `concur_accord_invocation` / `accord_invocation_status` /
-`verify_invocation` — kind-agnostic, distinct-key, identity-bound). The vocabulary
-is deliberately closed:
+One holder builds and signs an invocation of a **closed-vocabulary** kind and
+ships it (`co_sign_invocation` / `verify_invocation` — distinct-key,
+identity-bound). How many holders each kind needs is one table,
+`InvocationKind::required_signatures` (CC 4.2.1.1 rc7, CIRISConstitution#146):
+
+| Kind | Signatures |
+|------|-----------|
+| `constitutional`, `drill`, `notify` | **one** holder |
+| `lifecycle:confirmed`, `lifecycle:active` | a **strict majority of the standing roster**, cosigned (`concur_accord_invocation`) |
+
+A one-holder halt is an **agent pause** that **lapses `halt_fuse_secs` (24 h)
+after each node receives it** unless a majority `lifecycle:confirmed` names it;
+a majority `lifecycle:active` ends any halt. The node-side rules are
+`accord_halt_latch::HaltLatch` (verify 20.0.0, model
+`formal/accord_halt/AccordHaltFuse.tla`). The vocabulary is deliberately closed:
 
 | `InvocationKind` | Wire | Meaning |
 |------------------|------|---------|
 | `Constitutional` | `accord:invoke` | the halt — `EmergencyShutdown CONSTITUTIONAL` |
 | `Notify` | `accord:invoke` | a non-halting holder notification |
 | `Drill` | `accord:invoke` | a rehearsal, non-binding |
+| `LifecycleConfirmed` | `lifecycle:confirmed` | the majority confirmation that keeps a one-holder halt past its fuse |
 | `LifecycleActive` | `lifecycle:active` | the *only* sanctioned resumption after a constitutional halt |
 
 The `accord:invoke` preimage is normatively closed to `{Constitutional, Notify,
-Drill}` (CC §4.2.1.1); `LifecycleActive` is therefore **wire- and
+Drill}` (CC §4.2.1.1); the lifecycle kinds are therefore **wire- and
 scope-isolated** — it signs a *distinct* canonical-bytes domain
 (`LIFECYCLE_DOMAIN_PREFIX = "ciris.accord_lifecycle.v1\n"`), so no signature ever
 crosses the invoke↔lifecycle boundary even with identical id/nonce/payload.
@@ -219,8 +237,9 @@ Stated plainly so no consumer or reader over-claims:
 1. **Custody is Ed25519-strength.** §5 — the hardware proof covers the classical
    key; the PQC half rides by directory + signature.
 2. **Enforcement is downstream.** Verify ships the *authority + custody + signed-
-   invocation verification*. The agent actually **halting** on a verified `2/3`
-   `Constitutional` invocation is the CIRISServer / WiseBus enforcement layer
+   invocation verification* and the latch rules. The agent actually **pausing**
+   on a verified one-holder `constitutional` invocation is the CIRISServer /
+   agent enforcement layer (CIRISServer#737, CIRISAgent#1231)
    (`PROHIBITED_CAPABILITIES`). This FSD does not claim end-to-end actuation.
 3. **Recovery under decimation is unspecified-as-shipped.** The standing-roster
    quorum **deadlocks** if most holders are lost. FSD-004 respecifies this as a
@@ -242,7 +261,8 @@ Each public claim maps to a checkable artifact, so "prove it" gets specifics:
 | Verification is **offline / peer-free** | `humanity_accord_genesis()` is `include_str!`-baked into the binary; resolution uses only the pinned object |
 | Custody chains to genuine FIPS hardware | `verify_yubikey_piv_attestation` (9c→f9→pinned Yubico root) + the `examples/validate_yubikey_attestation` real-key run |
 | The roster is **named humans on real tokens** | the #118 ceremony artifacts: 6 holder records + 6 custody attestations + the 2-of-3-cosigned genesis |
-| No single holder can fire / forge | strict-majority `2·M>N`, distinct-key gate (`reject_duplicate_member_keys`), identity binding |
+| One holder can pause; no single holder can keep agents paused, confirm, or resume | `InvocationKind::required_signatures` (1 to fire; `⌊n/2⌋+1` to confirm or resume) + `accord_halt_latch::HaltLatch` (the fuse); `accord_genesis::tests::one_holder_fires_a_constitutional_halt`, `resumption_needs_a_strict_majority_of_the_standing_roster`, `accord_halt_latch::tests::*` |
+| A forged halt does not fire | distinct-key gate (`reject_duplicate_member_keys`), identity binding; `a_one_signature_halt_still_needs_a_genuine_seated_holder` |
 
 ## 8. Prior art — concede the territory, claim the delta
 
