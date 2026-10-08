@@ -150,6 +150,7 @@ x509-parser = { version = "0.16", features = ["verify"] }
 # Also forward-looking: CoRIM/CoTS is a CBOR encoding, so the deferred
 # `trust_anchor_store` wire format (CIRISVerify#227) lands on this same dep.
 ciborium = "0.2"
+zip = { version = "7.2.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # SQLite for audit trail verification.
 #

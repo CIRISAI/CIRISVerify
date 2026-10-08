@@ -25,6 +25,7 @@ pub mod build_manifest;
 pub mod file_integrity;
 pub mod function_integrity;
 mod platform;
+pub mod wheel;
 
 // Re-export from the main security module
 use sha2::{Digest, Sha256};
