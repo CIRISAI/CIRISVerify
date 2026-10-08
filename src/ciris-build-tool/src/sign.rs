@@ -347,7 +347,10 @@ fn main() -> Result<()> {
             } else {
                 // Binary-blob mode (existing behavior).
                 let bh = match (binary, binary_hash) {
-                    (Some(p), None) => sha256_file(&p)?,
+                    (Some(p), None) => {
+                        refuse_mismatched_wheel(&p, &binary_version, &target)?;
+                        sha256_file(&p)?
+                    },
                     (None, Some(h)) => h,
                     (None, None) => {
                         anyhow::bail!(
@@ -558,6 +561,42 @@ fn main() -> Result<()> {
         },
     }
 
+    Ok(())
+}
+
+/// CIRISVerify#306 (CIRISPersist#1029): before signing a **wheel**, confirm it
+/// is the version and platform the manifest is about to claim. Persist's CI
+/// signed v53.1.8 manifests over a v29 wheel picked by `ls … | head -1` from a
+/// cache-restored directory; every signature was genuine, so the v29 wheel
+/// would then have verified as v53.1.8. This refuses at the only moment the
+/// mistake is cheap, through the same check the verifier runs
+/// (`verify_wheel_blob`), so the two ends cannot disagree. Non-wheel binaries
+/// carry no embedded version and are signed as before.
+fn refuse_mismatched_wheel(
+    path: &std::path::Path,
+    binary_version: &str,
+    target: &str,
+) -> anyhow::Result<()> {
+    if path.extension().and_then(|e| e.to_str()) != Some("whl") {
+        return Ok(());
+    }
+    let bytes = fs::read(path).with_context(|| format!("read wheel {}", path.display()))?;
+    let identity = ciris_verify_core::security::wheel::read_wheel_identity(&bytes)
+        .map_err(|e| anyhow::anyhow!("{}: {e}", path.display()))?;
+    ciris_verify_core::security::wheel::check_wheel_matches(&identity, binary_version, target)
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "refusing to sign {}: {e}. Is this the wheel you built for this release, \
+                 or one left behind in a cached directory?",
+                path.display()
+            )
+        })?;
+    eprintln!(
+        "Wheel identity confirmed: {} {} ({})",
+        identity.name,
+        identity.version,
+        identity.platforms().join(", ")
+    );
     Ok(())
 }
 

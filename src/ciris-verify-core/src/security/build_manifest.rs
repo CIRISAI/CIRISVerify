@@ -778,6 +778,33 @@ pub fn verify_binary_blob(manifest: &BuildManifest, binary: &[u8]) -> Result<(),
     }
 }
 
+/// Verify a **wheel** against its manifest: [`verify_binary_blob`], then the
+/// wheel's own identity (`*.dist-info`) against what the manifest claims —
+/// `binary_version` must be the wheel's `Version:` and, for a known target
+/// triple, a platform tag must fit `target` (CIRISVerify#306).
+///
+/// The hash check alone cannot catch a manifest that was **signed over the
+/// wrong wheel**: CIRISPersist#1029 shipped v53.1.8 manifests whose
+/// `binary_hash` was a v29 wheel's, so that v29 wheel matched the hash and
+/// would have been attested as v53.1.8. The wheel states its own version, so
+/// the mismatch is caught here from the bytes alone.
+///
+/// Returns the wheel's identity on success.
+///
+/// # Errors
+///
+/// Whatever [`verify_binary_blob`] refuses, or an `IntegrityError` naming the
+/// version or platform the wheel and manifest disagree on.
+pub fn verify_wheel_blob(
+    manifest: &BuildManifest,
+    wheel: &[u8],
+) -> Result<super::wheel::WheelIdentity, VerifyError> {
+    verify_binary_blob(manifest, wheel)?;
+    let identity = super::wheel::read_wheel_identity(wheel)?;
+    super::wheel::check_wheel_matches(&identity, &manifest.binary_version, &manifest.target)?;
+    Ok(identity)
+}
+
 // =============================================================================
 // Migration Helpers (v1.7 → v1.8)
 // =============================================================================
@@ -1373,6 +1400,48 @@ mod tests {
         );
         let err = verify_function_level(&manifest).unwrap_err();
         assert!(format!("{err:?}").contains("empty functions table"));
+    }
+
+    /// CIRISPersist#1029, reproduced: a v53.1.8 manifest whose signed
+    /// `binary_hash` is a v29 wheel's. `verify_binary_blob` lets that v29 wheel
+    /// through (the hash matches — this is the rollback); `verify_wheel_blob`
+    /// refuses it, and accepts the manifest's real wheel only when the hash
+    /// agrees too.
+    #[test]
+    fn verify_wheel_blob_refuses_a_hash_signed_over_another_versions_wheel() {
+        use crate::security::wheel::test_wheels::wheel;
+        use sha2::{Digest, Sha256};
+        let sha = |b: &[u8]| format!("sha256:{}", hex::encode(Sha256::digest(b)));
+
+        let old = wheel("ciris_persist", "29.0.0", "manylinux_2_17_aarch64");
+        let current = wheel("ciris_persist", "53.1.8", "manylinux_2_17_aarch64");
+
+        let mut bad = build_test_manifest(BuildPrimitive::Persist, None);
+        bad.target = "aarch64-unknown-linux-gnu".into();
+        bad.binary_version = "53.1.8".into();
+        bad.binary_hash = sha(&old);
+
+        assert!(
+            verify_binary_blob(&bad, &old).is_ok(),
+            "the hash-only check is fooled"
+        );
+        let err = verify_wheel_blob(&bad, &old).unwrap_err().to_string();
+        assert!(err.contains("29.0.0") && err.contains("53.1.8"), "{err}");
+        assert!(
+            verify_wheel_blob(&bad, &current).is_err(),
+            "the real wheel misses the hash"
+        );
+
+        let mut good = bad.clone();
+        good.binary_hash = sha(&current);
+        assert_eq!(
+            verify_wheel_blob(&good, &current).unwrap().version,
+            "53.1.8"
+        );
+
+        let mut wrong_target = good.clone();
+        wrong_target.target = "x86_64-pc-windows-msvc".into();
+        assert!(verify_wheel_blob(&wrong_target, &current).is_err());
     }
 
     #[test]
