@@ -19,11 +19,31 @@
 //! (ct, ss_kem) = ML-KEM-768.Encaps(relay_mlkem768_pub)
 //! ikm          = shared_x ‖ ss_kem
 //! salt         = link_id[16] ‖ eph_pub[32] ‖ relay_x25519_pub[32] ‖ ct[1088] ‖ relay_mlkem768_pub[1184]
-//! ids          = u16_be(len(i)) ‖ i ‖ u16_be(len(r)) ‖ r
+//! bound        = u8(len(suite)) ‖ suite ‖ u16_be(len(i)) ‖ i ‖ u16_be(len(r)) ‖ r
+//!                  suite = b"transit_x25519_mlkem768_hkdf_sha256"
 //!                  i = initiator occurrence_key_id, r = relay (responder) occurrence_key_id
-//! k_i2r        = HKDF-SHA256(salt, ikm, b"ciris-transit-key/v1/initiator-to-responder" ‖ ids, 32)
-//! k_r2i        = HKDF-SHA256(salt, ikm, b"ciris-transit-key/v1/responder-to-initiator" ‖ ids, 32)
+//! k_i2r        = HKDF-SHA256(salt, ikm, b"ciris-transit-key/v1/initiator-to-responder" ‖ bound, 32)
+//! k_r2i        = HKDF-SHA256(salt, ikm, b"ciris-transit-key/v1/responder-to-initiator" ‖ bound, 32)
 //! ```
+//!
+//! ## Agility: a new scheme is a new suite, not a new format
+//!
+//! The hybrid will grow (a different ML-KEM level, a third component). Three
+//! things keep that an addition rather than a break:
+//!
+//! - The handshake **opens** with the length-prefixed suite identifier and the
+//!   parser dispatches on it, so everything after the two key ids is defined
+//!   per suite: a larger ciphertext or an extra component is a new
+//!   [`TransitSuite`] variant with its own body, and this envelope never moves.
+//! - The suite identifier is **bound into the KDF info**, so two suites can
+//!   never derive the same key from the same secrets, whatever their labels.
+//! - Every component's shared secret goes into **one** KDF call (`ikm` is
+//!   their concatenation in suite order); dropping or swapping a component
+//!   changes the key, and breaking one primitive alone does not reveal it.
+//!
+//! No size is fixed outside a suite's own body, so the transport must carry
+//! the handshake as opaque bytes of any length (ML-KEM-1024's ciphertext alone
+//! is 1568 B), never as a fixed number of fragments.
 //!
 //! ## Why two keys
 //!
@@ -74,6 +94,31 @@ use crate::{kdf, ml_kem, x25519};
 /// Wire-vocabulary identifier of the in-transit KEX (CC 5.3.3.5 E1). Distinct
 /// from the at-rest `wrap_algorithm`; matched by exact byte comparison.
 pub const TRANSIT_KEX_IDENTIFIER: &str = "transit_x25519_mlkem768_hkdf_sha256";
+
+/// The transit KEX suite a handshake runs under. Closed and exhaustive on
+/// purpose: a new suite is a wire change every consumer must notice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TransitSuite {
+    /// X25519 + ML-KEM-768, HKDF-SHA256 ([`TRANSIT_KEX_IDENTIFIER`]).
+    X25519MlKem768HkdfSha256,
+}
+
+impl TransitSuite {
+    /// The suite's wire identifier.
+    #[must_use]
+    pub const fn identifier(self) -> &'static str {
+        match self {
+            Self::X25519MlKem768HkdfSha256 => TRANSIT_KEX_IDENTIFIER,
+        }
+    }
+
+    /// Resolve a wire identifier by exact byte match; `None` for anything
+    /// else, including the at-rest `wrap_algorithm` (CC 5.1).
+    #[must_use]
+    pub fn from_identifier(id: &[u8]) -> Option<Self> {
+        (id == TRANSIT_KEX_IDENTIFIER.as_bytes()).then_some(Self::X25519MlKem768HkdfSha256)
+    }
+}
 
 /// HKDF info label for the initiator → responder key.
 pub const TRANSIT_LABEL_INITIATOR_TO_RESPONDER: &[u8] =
@@ -163,13 +208,14 @@ pub enum TransitRole {
 /// and rejoins those bytes but never parses them.
 ///
 /// ```text
-/// u8(len(identifier)) ‖ identifier
+/// u8(len(identifier)) ‖ identifier          (stable envelope, all suites)
 /// ‖ u16_be(len(initiator_key_id)) ‖ initiator_key_id
 /// ‖ u16_be(len(responder_key_id)) ‖ responder_key_id
-/// ‖ x25519_ephemeral_pub[32] ‖ mlkem768_ciphertext[1088]
+/// ‖ x25519_ephemeral_pub[32] ‖ mlkem768_ciphertext[1088]   (suite body)
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TransitHandshake {
+    suite: TransitSuite,
     initiator_key_id: String,
     responder_key_id: String,
     x25519_ephemeral_pub: [u8; 32],
@@ -177,6 +223,12 @@ pub struct TransitHandshake {
 }
 
 impl TransitHandshake {
+    /// The suite this handshake runs under.
+    #[must_use]
+    pub fn suite(&self) -> TransitSuite {
+        self.suite
+    }
+
     /// The initiator's **claimed** `occurrence_key_id`. Unauthenticated by
     /// this module: the relay must verify it before admitting the peer.
     #[must_use]
@@ -193,7 +245,7 @@ impl TransitHandshake {
     /// Serialize under the pinned layout.
     #[must_use]
     pub fn to_bytes(&self) -> Vec<u8> {
-        let id = TRANSIT_KEX_IDENTIFIER.as_bytes();
+        let id = self.suite.identifier().as_bytes();
         let mut out = Vec::with_capacity(
             1 + id.len()
                 + 4
@@ -202,9 +254,7 @@ impl TransitHandshake {
                 + 32
                 + self.mlkem768_ciphertext.len(),
         );
-        // The identifier is a compile-time constant well under 256 bytes.
-        out.push(id.len() as u8);
-        out.extend_from_slice(id);
+        push_suite(&mut out, self.suite);
         push_key_id(&mut out, &self.initiator_key_id);
         push_key_id(&mut out, &self.responder_key_id);
         out.extend_from_slice(&self.x25519_ephemeral_pub);
@@ -218,18 +268,24 @@ impl TransitHandshake {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, TransitKexError> {
         let mut r = Reader(bytes);
         let id_len = usize::from(r.take(1)?[0]);
-        if r.take(id_len)? != TRANSIT_KEX_IDENTIFIER.as_bytes() {
-            return Err(TransitKexError::WrongIdentifier);
-        }
+        let suite = TransitSuite::from_identifier(r.take(id_len)?)
+            .ok_or(TransitKexError::WrongIdentifier)?;
         let initiator_key_id = r.key_id()?;
         let responder_key_id = r.key_id()?;
-        let mut x25519_ephemeral_pub = [0u8; 32];
-        x25519_ephemeral_pub.copy_from_slice(r.take(32)?);
-        let mlkem768_ciphertext = r.take(ML_KEM_768_CIPHERTEXT_LEN)?.to_vec();
+        // The suite body: a new suite adds an arm here, the envelope above
+        // never changes.
+        let (x25519_ephemeral_pub, mlkem768_ciphertext) = match suite {
+            TransitSuite::X25519MlKem768HkdfSha256 => {
+                let mut eph = [0u8; 32];
+                eph.copy_from_slice(r.take(32)?);
+                (eph, r.take(ML_KEM_768_CIPHERTEXT_LEN)?.to_vec())
+            },
+        };
         if !r.0.is_empty() {
             return Err(TransitKexError::Malformed("trailing bytes"));
         }
         Ok(Self {
+            suite,
             initiator_key_id,
             responder_key_id,
             x25519_ephemeral_pub,
@@ -378,6 +434,7 @@ fn finish_initiate(
     )?;
     Ok((
         TransitHandshake {
+            suite: TransitSuite::X25519MlKem768HkdfSha256,
             initiator_key_id: initiator_key_id.to_owned(),
             responder_key_id: responder_key_id.to_owned(),
             x25519_ephemeral_pub: eph_pk,
@@ -430,13 +487,14 @@ pub fn derive_transit_keys(
     salt.extend_from_slice(mlkem768_ciphertext);
     salt.extend_from_slice(relay_mlkem768_pub);
 
-    let mut ids = Vec::new();
-    push_key_id(&mut ids, initiator_key_id);
-    push_key_id(&mut ids, responder_key_id);
+    let mut bound = Vec::new();
+    push_suite(&mut bound, TransitSuite::X25519MlKem768HkdfSha256);
+    push_key_id(&mut bound, initiator_key_id);
+    push_key_id(&mut bound, responder_key_id);
 
     Ok(TransitKeys {
-        initiator_to_responder: expand(&ikm, &salt, TRANSIT_LABEL_INITIATOR_TO_RESPONDER, &ids)?,
-        responder_to_initiator: expand(&ikm, &salt, TRANSIT_LABEL_RESPONDER_TO_INITIATOR, &ids)?,
+        initiator_to_responder: expand(&ikm, &salt, TRANSIT_LABEL_INITIATOR_TO_RESPONDER, &bound)?,
+        responder_to_initiator: expand(&ikm, &salt, TRANSIT_LABEL_RESPONDER_TO_INITIATOR, &bound)?,
     })
 }
 
@@ -460,6 +518,13 @@ fn check_key_id(id: &str) -> Result<(), TransitKexError> {
         return Err(TransitKexError::InvalidKeyId);
     }
     Ok(())
+}
+
+fn push_suite(out: &mut Vec<u8>, suite: TransitSuite) {
+    // Suite identifiers are compile-time constants well under 256 bytes.
+    let id = suite.identifier().as_bytes();
+    out.push(id.len() as u8);
+    out.extend_from_slice(id);
 }
 
 fn push_key_id(out: &mut Vec<u8>, id: &str) {
@@ -662,6 +727,27 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn the_suite_round_trips_and_is_bound() {
+        let (_, x_pk, _, kem_pk) = relay();
+        let (hs, _) = initiate(&LINK, INIT, RELAY, &x_pk, &kem_pk).unwrap();
+        assert_eq!(hs.suite(), TransitSuite::X25519MlKem768HkdfSha256);
+        assert_eq!(
+            TransitHandshake::from_bytes(&hs.to_bytes())
+                .unwrap()
+                .suite(),
+            hs.suite()
+        );
+        assert_eq!(
+            TransitSuite::from_identifier(TRANSIT_KEX_IDENTIFIER.as_bytes()),
+            Some(TransitSuite::X25519MlKem768HkdfSha256)
+        );
+        assert_eq!(
+            TransitSuite::from_identifier(b"transit_x25519_mlkem1024_hkdf_sha256"),
+            None
+        );
+    }
+
     /// The KDF step alone, against vectors computed independently with a
     /// from-scratch RFC 5869 HKDF in Python from these fixed inputs. A red
     /// here means the derivation no longer matches the layout in the module
@@ -690,8 +776,8 @@ mod tests {
         assert_eq!(hex(k.responder_to_initiator()), KDF_R2I);
     }
 
-    const KDF_I2R: &str = "30ea7dfe1f6ff994997bc33b9a6cab01191ca7dc4746a61ba87ef4422c9cff59";
-    const KDF_R2I: &str = "2b0792102adb8f58f8d84958e2ce43033c80988d80c38c6be64618d4b8d64a79";
+    const KDF_I2R: &str = "141c0595eeb264ccad2d1b7c500b6def12b8a1c10a9f57cd5145291c2f105af5";
+    const KDF_R2I: &str = "bba06dbf629ea03211a4f3a079fc43e508f0de0d493a06926ab570d5d6cc9772";
 
     /// End to end with fixed randomness: the handshake bytes and both keys.
     /// X25519 and the KDF were reproduced independently in Python
@@ -718,6 +804,6 @@ mod tests {
 
     const E2E_HANDSHAKE_SHA256: &str =
         "41af915dd3568609d2afe644be486f4be5b90b4cc847fb8d0f68c20d0e84de8e";
-    const E2E_I2R: &str = "4cdd7ac798adcffbf729f6f402e5e746f5fc3635e7cc22fe44dabeda44129b37";
-    const E2E_R2I: &str = "6abd0e4417f36141c8f913595da2f9bfba57160c952201a20bd8442d8bfccd76";
+    const E2E_I2R: &str = "4626d0360796cce6027afcede2a06f9c0bfb2d0b45d8406049d5df8725156ca3";
+    const E2E_R2I: &str = "c7b2192779a1ab092d7196e64c1de20e21aa51b9b967117192eae4a2c4210683";
 }
