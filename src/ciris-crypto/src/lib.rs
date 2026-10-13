@@ -96,6 +96,11 @@ pub mod ml_kem;
 #[cfg(feature = "hybrid-kex")]
 pub mod hybrid_kex;
 
+// v20.2.0+ — CC 5.3.3.5 E1 A/V per-hop transit key: hybrid KEX against a
+// relay's published transit pair, two per-direction keys (CIRISVerify#309).
+#[cfg(feature = "transit-kex")]
+pub mod transit_kex;
+
 // v8.x+ — deterministic self content-encryption keypair derivation
 // (X25519 + ML-KEM-768) from the Ed25519 base seed (CIRISVerify#151).
 #[cfg(feature = "self-enc")]

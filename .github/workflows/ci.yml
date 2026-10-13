@@ -439,7 +439,7 @@ jobs:
       - name: Test ciris-crypto with full crypto feature set
         run: |
           cargo nextest run -p ciris-crypto --profile ci \
-            --features ecdsa-p256,ed25519,secp256k1,random,aes-gcm,kdf,hmac,pqc-ml-dsa,x25519,ml-kem,hybrid-kex,key-grant,xchacha,hpke,scope-privacy
+            --features ecdsa-p256,ed25519,secp256k1,random,aes-gcm,kdf,hmac,pqc-ml-dsa,x25519,ml-kem,hybrid-kex,key-grant,xchacha,hpke,scope-privacy,transit-kex
         env:
           PROPTEST_CASES: 64
       # CIRISVerify#202: the test-anchor tests are feature-gated, so `nextest run
