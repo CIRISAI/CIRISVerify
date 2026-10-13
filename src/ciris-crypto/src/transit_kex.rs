@@ -84,6 +84,17 @@ pub const TRANSIT_LABEL_RESPONDER_TO_INITIATOR: &[u8] =
     b"ciris-transit-key/v1/responder-to-initiator";
 
 /// RNS `LinkId` length: the hash of the LINKREQUEST, held by both ends.
+///
+/// Callers MUST pass the **wire** link id, the hash of the LINKREQUEST that
+/// actually established the link. An establishment retry regenerates the
+/// initiator's link keys and so the wire id, and an API that keeps reporting
+/// the first attempt's id would make the two ends bind different ids: every
+/// frame then fails its tag. The same id feeds the outer nonce, which has the
+/// same requirement.
+///
+/// The outer nonce's `link_seq` is each direction's own `u64` counter under
+/// that direction's key, never a value derived from the link's Channel
+/// sequence (a `u16` that wraps).
 pub const LINK_ID_LEN: usize = 16;
 
 /// Transit key length (AES-256-GCM).
