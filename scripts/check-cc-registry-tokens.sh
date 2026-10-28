@@ -127,18 +127,15 @@ if grep -q 'refusal=None' <<< "$BADOUT"; then
 fi
 
 # The wheel's `HardwareType` is a SECOND copy of this vocabulary, so it can drift
-# from Rust's — and did: the first cut of #296's Python half invented security
-# levels of 4 for the HSMs where Rust says 5, which would have made the same
-# hardware yield different tier decisions per language (Codex P2 on PR #298).
-# Both the token set and the security levels are compared here.
+# from Rust's; a divergent security level would make the same hardware yield
+# different tier decisions per language. Both the token set and the security
+# levels are compared here.
 python3 - <<'PYEOF'
 import pathlib, re
 
-# Both sides are read as TEXT, deliberately. An earlier cut imported the wheel
-# module instead, and a stale `__pycache__` made this check report a mismatch
-# that no longer existed — which means it could equally have validated stale
-# values and reported a false PASS. A guard that can silently stop guarding is
-# the exact class this repo keeps removing, so neither side is imported.
+# Both sides are read as TEXT, deliberately: importing the wheel module would
+# let a stale `__pycache__` decide the result, so the check could report a
+# false mismatch or a false PASS. Neither side is imported.
 rs = pathlib.Path("src/ciris-keyring/src/types.rs").read_text()
 py = pathlib.Path("bindings/python/ciris_verify/types.py").read_text()
 

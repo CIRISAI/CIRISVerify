@@ -1,7 +1,6 @@
-//! HUMANITY_ACCORD live-quorum objects — Phase 1, step 1 (FSD-004 / CC §4.2.6).
+//! HUMANITY_ACCORD live-quorum objects (FSD-004 / CC §4.2.6).
 //!
-//! **Scope since CIRISConstitution#146 (entrenched CC 4.2, rc7): roster changes
-//! only.** A `constitutional` halt is one holder's self-contained, pre-signable
+//! **Scope (entrenched CC 4.2): roster changes only.** A `constitutional` halt is one holder's self-contained, pre-signable
 //! row that fires on receipt — no proposal, no participation window, no vote,
 //! no decision object ([`crate::humanity_accord::verify_invocation`]). A
 //! resumption is a cosigned `accord:lifecycle:active` row by a strict majority
@@ -9,19 +8,18 @@
 //! [`crate::accord_live_quorum::verify_resume_by_live_quorum`] are deprecated;
 //! [`crate::accord_live_quorum::AccordAction::Fire`] /
 //! [`crate::accord_live_quorum::AccordAction::Resume`] stay in the closed wire vocabulary only so that
-//! stored rows still parse. The ruling's model is CC `formal/accord_halt`: the
-//! proposal path shows a visible window and a stuck state; the one-row path
+//! stored rows still parse. CC's model `formal/accord_halt` shows why: the
+//! proposal path has a visible window and a stuck state; the one-row path
 //! closes them.
 //!
 //! The wire objects the live-quorum roster-change path rides on:
 //! `AccordProposal` (the action + **proposer-minted** nonce + window) and
 //! `AccordParticipation` (a holder's **proof-of-life bundled with a vote** in
-//! ONE signed object — entering the live set `L` and voting are the same act).
-//! The tally / membership-change / fire surfaces are step 2.
+//! ONE signed object — entering the live set `L` and voting are the same act),
+//! tallied by [`crate::accord_live_quorum::tally_live_quorum`].
 //!
-//! This module exists to satisfy the **CRITICAL** obligations the adversarial
-//! review (`FSD/FSD-004_ADVERSARIAL_REVIEW.md`) found in the design's soft
-//! underbelly — the participation preimage — *before* any tally code is written:
+//! This module satisfies the **CRITICAL** obligations of the adversarial
+//! review (`FSD/FSD-004_ADVERSARIAL_REVIEW.md`) on the participation preimage:
 //!
 //! - **C1 (vote-flip / cross-proposal replay):** `AccordParticipation` has an
 //!   exact, domain-separated `canonical_bytes`
@@ -32,7 +30,7 @@
 //! - **C3 (anti-replay anchor):** the proposal binds `prior_family_digest` — the
 //!   digest of the **standing** family envelope — so a participation is bound to a
 //!   decision over a specific standing roster, never the manipulable live set.
-//!   (The tally in step 2 keeps the anti-replay anchor on the standing roster.)
+//!   (The tally keeps the anti-replay anchor on the standing roster.)
 //! - **M3 (directory-only resolution):** a participation's signature is verified
 //!   against the holder's **pinned** `ThresholdMember` key, and its `member_id`
 //!   self-attests its seat in the preimage.

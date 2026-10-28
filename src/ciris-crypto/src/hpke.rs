@@ -1,5 +1,5 @@
 //! HPKE mode_base (RFC 9180 §5.1.1) over the X-Wing hybrid KEM
-//! (CIRISVerify#82, v6.3.0+).
+//! (CIRISVerify#82).
 //!
 //! The single-shot public-key encryption primitive for the scope-native
 //! privacy MLS Welcome wrap (CEWP SCOPE_PRIVACY.md §3.3): an MLS Welcome is

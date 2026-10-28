@@ -1,12 +1,11 @@
 //! CC 5.3.3.5 E1 — the A/V **per-hop transit key**: the key that seals the
-//! outer layer of `double_sealed_ciphertext` on one hop (CIRISVerify#309,
-//! CIRISEdge#805, CIRISConstitution#171).
+//! outer layer of `double_sealed_ciphertext` on one hop.
 //!
 //! The outer nonce is already pinned in `ciris-verify-core`'s `av_chunk`
 //! (`SHA-256("CIRIS-AV-OUTER-V1" ‖ link_id ‖ link_seq_be8)[0..12]`); this
 //! module pins the key it is used under.
 //!
-//! ## Pattern (CC 3.3.6.2, steward ruling 2026-10-13)
+//! ## Pattern (CC 3.3.6.2)
 //!
 //! The relay publishes a static `transit_kex_pubkeys {x25519, ml_kem_768}` on
 //! its signed `transport_destination` binding. The initiator (always the

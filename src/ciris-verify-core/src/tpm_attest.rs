@@ -7,7 +7,7 @@
 //! to the registry** and returns its verdict. Nothing here walks a chain.
 //!
 //! For **local** TPM verification — no network, pinned vendor root — use
-//! [`crate::device_attestation::verify_tpm_ek_certificate`] (v12.2.0). That is
+//! [`crate::device_attestation::verify_tpm_ek_certificate`]. That is
 //! the entry point an admission gate should cite; this one makes an online
 //! third party load-bearing.
 //!

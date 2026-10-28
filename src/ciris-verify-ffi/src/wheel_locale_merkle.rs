@@ -1,5 +1,5 @@
 //! Per-locale Merkle root + inclusion-proof FFI surface for the Python
-//! wheel (CIRISVerify#50, v4.7.0+).
+//! wheel (CIRISVerify#50).
 //!
 //! Wraps [`ciris_verify_core::locale_merkle::merkle_root`] and
 //! [`ciris_verify_core::locale_merkle::verify_locale_inclusion`] so

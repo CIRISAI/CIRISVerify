@@ -4503,14 +4503,13 @@ unsafe fn run_attestation_inner(
         // rather than re-derived from the Debug name.
         //
         // **From where the key ACTUALLY lives, not from what the platform can
-        // offer** (Codex P1 on PR #298). `capabilities.hardware_type` is a
-        // *detection*: this host reports `TpmFirmware` while
-        // `create_hardware_signer` falls back to a software key, so the seed is
-        // in a file and `hardware_backed` is false. Emitting the detected token
-        // there would assert TPM custody for a software-held seed — and because
-        // these dimensions are now REGISTERED, a conformant consumer would
-        // *accept* that false claim where it previously refused the malformed
-        // one. Strictly worse, so the honest token is `software_only`.
+        // offer**. `capabilities.hardware_type` is a *detection*: a host can
+        // report `TpmFirmware` while `create_hardware_signer` falls back to a
+        // software key, so the seed is in a file and `hardware_backed` is
+        // false. Emitting the detected token there would assert TPM custody
+        // for a software-held seed — and because these dimensions are
+        // REGISTERED, a conformant consumer would *accept* that false claim.
+        // The honest token is `software_only`.
         //
         // `hardware_backed` is the signer's own `is_hardware_backed()` gated on
         // `!running_in_vm`, which is precisely "where does this key live".
@@ -11264,17 +11263,16 @@ mod tests {
     }
 
     /// CIRISVerify#296: an attestation with no `hardware_platform` yields NO
-    /// custody platform — the pre-18.0.0 code would have derived one by
-    /// lowercasing the `Debug` name (`tpmfirmware`), which the CC registry
-    /// refuses. Omission is the honest answer.
+    /// custody platform. Deriving one from the `Debug` name (`tpmfirmware`)
+    /// would produce a token the CC registry refuses; omission is the honest
+    /// answer.
     #[test]
     fn test_attest_bundle_omits_custody_without_a_platform_token() {
         unsafe {
             // Same fixture with the registry token removed. Done by parsing
             // rather than string surgery: `json!().to_string()` emits COMPACT
-            // JSON, so a spaced `"key": "value",` pattern silently matches
-            // nothing — which is how the first cut of this test failed its own
-            // setup guard.
+            // JSON, so a spaced `"key": "value",` pattern would silently match
+            // nothing; the assert below guards the setup.
             let mut v: serde_json::Value =
                 serde_json::from_str(&minimal_attestation_json()).unwrap();
             assert!(
@@ -11319,12 +11317,12 @@ mod tests {
         }
     }
 
-    /// Codex P2 on PR #298: an UNREGISTERED `hardware_platform` in caller-supplied
-    /// attestation JSON emits NO custody dimension.
+    /// An UNREGISTERED `hardware_platform` in caller-supplied attestation JSON
+    /// emits NO custody dimension.
     ///
     /// Emitting it with a failing score would still be refused by a conformant
-    /// consumer for its vocabulary value — recreating, for exactly the callers who
-    /// submit externally produced JSON, the interop break #296 exists to close.
+    /// consumer for its vocabulary value — an interop break for exactly the
+    /// callers who submit externally produced JSON (#296).
     #[test]
     fn test_attest_bundle_omits_custody_for_an_unregistered_platform() {
         for bad in ["tpm", "future_hsm", "tpmfirmware", "TPM_FIRMWARE"] {
@@ -11363,8 +11361,7 @@ mod tests {
 
     /// A REGISTERED platform is a successful measurement — including
     /// `software_only`, which the Android projection already passes. One fact must
-    /// not get two verdicts depending on which projection produced it
-    /// (Codex P2 on PR #298).
+    /// not get two verdicts depending on which projection produced it.
     #[test]
     fn test_attest_bundle_passes_software_only_custody() {
         unsafe {

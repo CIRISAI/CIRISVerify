@@ -1,5 +1,5 @@
 //! Per-locale build_manifest Merkle composition verifier
-//! (CIRISVerify#37 Phase 2, v3.9.0+).
+//! (CIRISVerify#37 Phase 2).
 //!
 //! Canonical-bytes contract pinned by CIRISRegistry FSD-002 v1.4.3
 //! §3.2.1.2. The parent `provenance:build_manifest:{target}` manifest
@@ -33,11 +33,11 @@
 //! )
 //! ```
 //!
-//! **v11.0.0 wire break.** v1 concatenated `key=value\n` pairs. Several members
-//! are free text (`target`, `build_id`, `signer_identity`) and nothing rejected
-//! embedded newlines, so a crafted value could forge a field boundary. CC
-//! 3.1.2.1 replaced it with the JCS form — structure lives in the encoding, not
-//! in delimiters — and states *"Producers MUST emit v2."*
+//! **Why JCS, not delimiters.** Several members are free text (`target`,
+//! `build_id`, `signer_identity`); a `key=value\n` concatenation would let a
+//! crafted value forge a field boundary. CC 3.1.2.1's JCS form puts the
+//! structure in the encoding, not in delimiters, and states *"Producers MUST
+//! emit v2."*
 //!
 //! ## Parent hash (§3.2.1.2)
 //!

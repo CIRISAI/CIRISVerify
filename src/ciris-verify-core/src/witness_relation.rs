@@ -1,5 +1,5 @@
 //! CEG §4 envelope-metadata fields + §0.5 self-attestation admission
-//! (CIRISVerify#40, v4.2.0+).
+//! (CIRISVerify#40).
 //!
 //! Per CIRISRegistry CEG §4 the canonical envelope carries two
 //! optional metadata fields beyond the signed canonical bytes:

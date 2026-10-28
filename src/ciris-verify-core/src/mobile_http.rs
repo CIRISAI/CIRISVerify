@@ -160,11 +160,9 @@ pub fn get_json<T: serde::de::DeserializeOwned>(
     };
 
     // Read as text, then decode — so a schema drift is reported as
-    // ResponseSchemaMismatch with the same diagnosis the desktop path gives.
-    // Previously mobile flattened this into a generic HttpsError("JSON parse
-    // error: ..."), so an Android/iOS operator hitting the SAME registry
-    // payload got neither the structured error nor the explanation (#268
-    // review). The endpoint is identical; the diagnosis should be too.
+    // ResponseSchemaMismatch with the same diagnosis the desktop path gives,
+    // rather than a generic HttpsError. The endpoint is identical; the
+    // diagnosis should be too.
     let text = response
         .into_string()
         .map_err(|e| VerifyError::HttpsError {

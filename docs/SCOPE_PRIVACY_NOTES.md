@@ -1,14 +1,13 @@
-# Scope-Native Privacy — ciris-crypto surface notes (#82)
+# Scope-Native Privacy — ciris-crypto surface notes
 
-The **first cut** of the cross-cdylib lockstep cascade for CEWP
+The `ciris-crypto` surface for CEWP
 [`FSD/SCOPE_PRIVACY.md`](https://github.com/CIRISAI/CEWP/blob/main/FSD/SCOPE_PRIVACY.md)
-(CC 1.13.3 anonymous-tier opt-in). `ciris-crypto` v6.3.0 ships the public crypto
-surface; CIRISPersist / CIRISEdge / CIRISRegistry / CIRISConformance pin this
-release and build on it. This doc is the authoritative reference for the
+(CC 1.13.3 anonymous-tier opt-in). CIRISPersist / CIRISEdge / CIRISRegistry /
+CIRISConformance build on it. This doc is the authoritative reference for the
 **cross-impl agreements** the construction depends on — the things a second
 implementation must match byte-for-byte.
 
-## What shipped (`ciris-crypto`)
+## Surface (`ciris-crypto`)
 
 | Surface | Feature | Spec |
 |---------|---------|------|

@@ -226,7 +226,7 @@ pub struct FedCode {
     /// identity that already announces publicly and carries no anonymity
     /// claim. A code MUST NOT carry group-scoped material, whose destinations
     /// are derived from `cached directory + per-group HKDF` and may not be
-    /// emitted at all (CC 5.4.6, ruled in CIRISConstitution#91).
+    /// emitted at all (CC 5.4.6).
     pub owned_nodes: Vec<OwnedNode>,
     /// `sha256(ml_dsa_65_pubkey)`, lowercase hex — the **commitment** to the
     /// post-quantum half of this identity (CIRISVerify#272).

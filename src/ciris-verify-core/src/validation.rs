@@ -3,7 +3,7 @@
 //! Every configured HTTPS host is asked for its GenesisBundle, each bundle is
 //! verified on its own against the accord holders baked into this binary
 //! ([`crate::genesis_bundle::verify_genesis_bundle`]), and one is selected by
-//! CC's rule (CIRISConstitution ruling 2026-10-28, CC 3.2 T8(ii)):
+//! the CC 3.2 T8(ii) rule:
 //!
 //! 1. a bundle counts only if it verifies;
 //! 2. among those, the highest `version` is the successor;
@@ -12,10 +12,9 @@
 //!    tie ("an instant selects nothing").
 //!
 //! A holder-quorum-signed bundle is authoritative on its own, so extra hosts
-//! add availability, not trust: one verified source is enough. DNS is no
-//! longer a source (steward ruling, 2026-10-28), and there is no single
-//! "steward key" any more — the old registry key is retired and has no
-//! standing (CIRISRegistry#133).
+//! add availability, not trust: one verified source is enough. DNS is not a
+//! trust-root source, and there is no single "steward key": the registry key
+//! has no standing.
 
 use std::collections::BTreeMap;
 use std::time::Duration;

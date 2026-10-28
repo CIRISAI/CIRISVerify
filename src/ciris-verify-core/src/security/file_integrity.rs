@@ -64,11 +64,9 @@ impl std::fmt::Display for FileCheckStatus {
 /// (`ciris-build-tool`). A manifest produced by one and checked by another can
 /// never match, by construction.
 ///
-/// The old code recomputed exactly one of them, **self-diagnosed the benign
-/// cause in its own warning**, and still reported the result as a tampering-
-/// shaped failure. Worse, `check_full` then returned early with
-/// `files_checked: 0`, so the per-file hashes — the actual integrity control —
-/// were never checked at all. A false alarm that also disables the real alarm.
+/// So the check tries each known construction, and an unreproduced hash is
+/// reported as such rather than as tampering. Either way the per-file hashes —
+/// the actual integrity control — are still checked.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 #[non_exhaustive]
@@ -244,11 +242,9 @@ fn verify_manifest_integrity(manifest: &FileManifest) -> Option<ManifestHashChec
         .unwrap_or(&manifest.manifest_hash);
 
     // Validate the DIGEST, not just the raw field. `"sha256:"` alone is
-    // non-empty and passed the check above, then compared as an empty string
-    // and fell through to `Unrecognized` — so a malformed hash was treated as
-    // an unknown construction rather than the hard failure it is. Same for a
-    // wrong-length or non-hex value: those are not a third algorithm, they are
-    // a broken document.
+    // non-empty and passes the check above; it, a wrong-length value and a
+    // non-hex value are not an unknown construction (`Unrecognized`), they are
+    // a broken document, and fail hard.
     if stored.len() != 64 || !stored.bytes().all(|b| b.is_ascii_hexdigit()) {
         tracing::error!(
             stored_len = stored.len(),

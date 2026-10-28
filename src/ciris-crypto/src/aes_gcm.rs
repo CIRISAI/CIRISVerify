@@ -1,4 +1,4 @@
-//! AES-256-GCM authenticated encryption (CIRISVerify#7, v2.0.0+).
+//! AES-256-GCM authenticated encryption (CIRISVerify#7).
 //!
 //! AES-256-GCM is the federation's only AEAD. Used for:
 //! - `EncryptedSecretRecord` per-secret encryption (CIRISPersist#19)

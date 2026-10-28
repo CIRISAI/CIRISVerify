@@ -44,8 +44,7 @@ impl MlDsa65Signer {
     /// refuses to draw when the SP 800-90B startup RNG health latch is
     /// `Failed` — so on broken entropy this returns
     /// `CryptoError::RngHealthCheckFailed` without generating a
-    /// predictable PQC identity key. (Previously this called
-    /// `OsRng.fill_bytes` directly, bypassing the latch.) When the
+    /// predictable PQC identity key. When the
     /// `random` feature is disabled the seed is drawn directly from
     /// `OsRng` (no latch is compiled to consult).
     ///

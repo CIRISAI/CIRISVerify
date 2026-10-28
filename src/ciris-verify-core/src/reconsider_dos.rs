@@ -1,5 +1,5 @@
 //! F-AV-RECONSIDER-DOS primitives — defense surface for P11
-//! reconsideration weaponization (CIRISVerify#46, v4.5.0+).
+//! reconsideration weaponization (CIRISVerify#46).
 //!
 //! Per `docs/FEDERATION_THREAT_MODEL.md` §6.5 F-AV-RECONSIDER-DOS, the
 //! attack shape is an organized bloc filing up to 9 reconsiderations

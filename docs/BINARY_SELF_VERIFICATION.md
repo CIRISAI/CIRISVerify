@@ -226,9 +226,9 @@ Binary self-verification is **one layer** in a defense-in-depth approach. It is 
 
 | Attack Vector | Our Attempt | Caveat |
 |---------------|-------------|--------|
-| Registry MITM | Multi-source consensus (2/3 geo-distributed) | Attacker with 2+ sources wins |
+| Registry MITM | Trust root verified against the baked accord holders (CC 5.3.4) | A host can withhold, not substitute; manifest bytes still come from the registry |
 | Malicious initial install | Encourage trusted channels (Play Store, App Store, PyPI) | We can't control distribution |
-| Manifest forgery | Steward key signature verification | Key compromise defeats this |
+| Manifest forgery | Hybrid signature by the embedded manifest-signing key | Key compromise defeats this |
 | Timing attacks | Constant-time comparison | Implementation may have flaws |
 
 **We make no guarantees.** This is research software exploring approaches to agent verification.

@@ -27,8 +27,7 @@ impl Ed25519Signer {
     /// entropy source failed that check, the draw is refused and this
     /// returns `CryptoError::RngHealthCheckFailed` WITHOUT generating a
     /// key — so a broken-entropy environment cannot mint a predictable
-    /// long-term identity key. (Previously this drew `OsRng` directly,
-    /// bypassing the latch — the bug fixed here.)
+    /// long-term identity key.
     ///
     /// When the `random` feature is disabled the facade is not compiled;
     /// in that build the seed is drawn directly from `OsRng` (no latch

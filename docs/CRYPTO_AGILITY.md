@@ -1,13 +1,11 @@
 # Cryptographic Agility & Algorithm Migration
 
 How CIRISVerify retires a signature algorithm and adopts a successor
-without a wire-format break. Closes `THREAT_MODEL.md` §10 Gap 6 ("PQC
-algorithm-agility plan unspecified"). CIRISVerify#29 WS-5.
+without a wire-format break (`THREAT_MODEL.md` §10, PQC algorithm agility).
 
 ## The schema is already agile
 
-CIRISVerify did not need a new "third algorithm slot" — the v2.0 hybrid
-schema (`src/ciris-crypto/src/types.rs`) is already algorithm-agile:
+No "third algorithm slot" is needed — the hybrid schema (`src/ciris-crypto/src/types.rs`) is already algorithm-agile:
 
 - **`crypto_kind: [u8; 4]`** — a four-character whole-system identifier
   (Veilid pattern), `CRYPTO_KIND_CIRIS_V1 = b"CIR1"`. A wholesale
@@ -90,7 +88,6 @@ two-slot schema intact.
 
 ## Status
 
-Closes §10 Gap 6: the agility schema is shipped (v2.0), the policy gate
-is shipped (`meets_federation_policy`, v2.11.0), and this document is
-the migration plan. No successor migration is in progress; ML-DSA-65 +
+The agility schema and the policy gate (`meets_federation_policy`) are
+implemented, and this document is the migration plan. No successor migration is in progress; ML-DSA-65 +
 Ed25519 under `CIR1` remains the federation default.

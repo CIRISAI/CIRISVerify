@@ -14,7 +14,7 @@
 //! The Merkle construction is **fully specified by §19.1 and KAT-locked here**,
 //! distinct from the [`crate::transparency`] RFC 6962 log:
 //! - `leaf order` is **lexicographic over leaf bytes** (the §0.9.2.1
-//!   set-semantics rule — v4.0.0's "either order as long as both agree" is the
+//!   set-semantics rule — "either order as long as both agree" is the
 //!   §0.9-class divergence hazard and is non-conformant);
 //! - `leaf = SHA-256(leaf_bytes)`, `node = SHA-256(left ‖ right)`;
 //! - **odd node duplicated** (`node = SHA-256(last ‖ last)`);
@@ -33,7 +33,7 @@
 //! ## Authority (N3 / N4)
 //!
 //! A WholenessWitness is federation-tier: hybrid PQC verified **at ingest and
-//! before persistence** ([`crate::holonomic::verify_bound_hybrid`]);
+//! before persistence** ([`crate::substrate::verify_bound_hybrid`]);
 //! [`compare_witnesses`] MUST NOT run on an unverified witness. Two
 //! validly-signed witnesses from the same `(peer_id, epoch_id,
 //! claim_namespace_set)` with **different** `merkle_root` are **non-repudiable
@@ -170,7 +170,7 @@ const FORBIDDEN_NAMESPACE_MARKERS: &[&str] = &["anonymous", "self"];
 /// recompute of the root.
 ///
 /// `witness_preimage` is the §19.1 signed preimage (built via
-/// [`crate::holonomic::Preimage`] over the witness's members). `leaves`, when
+/// [`crate::substrate::Preimage`] over the witness's members). `leaves`, when
 /// `Some`, are re-hashed and the resulting root must equal `witness.merkle_root`
 /// — catching a signer who signs a root inconsistent with the disclosed leaves.
 ///

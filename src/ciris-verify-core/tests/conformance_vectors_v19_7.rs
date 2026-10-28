@@ -7,7 +7,7 @@
 //! second reproduces them byte-for-byte. **CIRISVerify is that first impl.**
 //!
 //! This harness runs **emit-or-verify**: a missing vector file is generated from
-//! `ciris_verify_core::holonomic::aggregation` (emit); an existing one is read
+//! `ciris_verify_core::substrate::aggregation` (emit); an existing one is read
 //! back and re-derived (verify). The committed JSON files are the published
 //! reference CIRISEdge / CIRISPersist reproduce to lift §19.7 from RC-grade to
 //! 1.0. A drift in this impl fails the verify pass; a regeneration is an
@@ -15,15 +15,15 @@
 
 use std::path::PathBuf;
 
-use ciris_verify_core::holonomic::aggregation::{
+use ciris_verify_core::substrate::aggregation::{
     descend_order, member_commitment, AggregationMetaV1,
 };
-use ciris_verify_core::holonomic::DOMAIN_AGG_META;
+use ciris_verify_core::substrate::DOMAIN_AGG_META;
 use serde_json::{json, Value};
 
 fn vectors_dir() -> PathBuf {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("tests/vectors/holonomic_v19_7");
+    p.push("tests/vectors/substrate_v19_7");
     p
 }
 
@@ -207,7 +207,7 @@ fn aggregation_meta_v2_canonical_bytes_with_n_eff() {
 // ---- §19.7.1.3 AggregationMetaV1 v3 — multiplicity + mass commitment (#191) --
 #[test]
 fn aggregation_meta_v3_canonical_bytes_multiplicity_and_mass() {
-    use ciris_verify_core::holonomic::aggregation::{effective_source_count, mass_commitment};
+    use ciris_verify_core::substrate::aggregation::{effective_source_count, mass_commitment};
     let member_ids = ids(&["src-001", "src-002", "src-003"]);
     // Per-member fixed-point masses (micro-units) the mass_commitment binds.
     let masses: Vec<(String, u64)> = member_ids
@@ -283,7 +283,7 @@ fn aggregation_meta_v3_canonical_bytes_multiplicity_and_mass() {
 /// it would have failed every conformant implementation instead of the fixture.
 #[test]
 fn aggregation_meta_v3_vector_is_internally_reproducible() {
-    use ciris_verify_core::holonomic::aggregation::{effective_source_count, mass_commitment};
+    use ciris_verify_core::substrate::aggregation::{effective_source_count, mass_commitment};
 
     let path = vectors_dir().join("aggregation_meta/canonical_bytes_v3.json");
     let v: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
@@ -326,8 +326,8 @@ fn aggregation_meta_v3_vector_is_internally_reproducible() {
 
 #[test]
 fn storage_budget_v1_canonical_bytes() {
-    use ciris_verify_core::holonomic::storage_contention::{ScopeBudget, StorageBudgetV1};
-    use ciris_verify_core::holonomic::DOMAIN_STORAGE_BUDGET;
+    use ciris_verify_core::substrate::storage_contention::{ScopeBudget, StorageBudgetV1};
+    use ciris_verify_core::substrate::DOMAIN_STORAGE_BUDGET;
     assert_eq!(
         DOMAIN_STORAGE_BUDGET.len(),
         16,
@@ -374,8 +374,8 @@ fn storage_budget_v1_canonical_bytes() {
 
 #[test]
 fn corpus_want_v1_canonical_bytes() {
-    use ciris_verify_core::holonomic::storage_contention::CorpusWantV1;
-    use ciris_verify_core::holonomic::DOMAIN_CORPUS_WANT;
+    use ciris_verify_core::substrate::storage_contention::CorpusWantV1;
+    use ciris_verify_core::substrate::DOMAIN_CORPUS_WANT;
     assert_eq!(
         DOMAIN_CORPUS_WANT.len(),
         16,

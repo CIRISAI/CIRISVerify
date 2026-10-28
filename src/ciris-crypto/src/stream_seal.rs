@@ -1,6 +1,5 @@
 //! CC 5.3.3.1 — the STREAM chunk nonce: the **one** per-chunk AES-256-GCM
-//! nonce for sealed streams, live and stored (CIRISVerify#303,
-//! CIRISConstitution#140, CC rc7 `7561d07`).
+//! nonce for sealed streams, live and stored.
 //!
 //! ```text
 //! nonce[12] = prefix[7] ‖ counter_be[4] ‖ last_flag[1]
@@ -17,10 +16,9 @@
 //!
 //! ## Why this lives here
 //!
-//! CIRISPersist v53 shipped this derivation (`federation::stream_seal`) on top
-//! of [`crate::kdf::hkdf_sha256`] with an empty salt. Pinning it in the crate
-//! that owns that KDF gives persist, edge and verify **one** implementation to
-//! call instead of three to keep identical. The golden vectors below were
+//! The derivation is [`crate::kdf::hkdf_sha256`] with an empty salt. Pinning it
+//! in the crate that owns that KDF gives persist, edge and verify **one**
+//! implementation to call instead of three to keep identical. The golden vectors below were
 //! derived independently (a from-scratch RFC 5869 HKDF in Python), not by
 //! running this code.
 //!
@@ -31,12 +29,12 @@
 //! a length-prefixed `stream_id`. The two are not interchangeable and neither
 //! is a variant of the other.
 //!
-//! ## Superseded
+//! ## The A/V inner seal
 //!
-//! The A/V inner seal used `SHA-256(b"CIRIS-AV-INNER-V1" ‖ stream_id ‖ epoch ‖
-//! seq)[0..12]`, a second normative seal for what CC calls one wire. The steward
-//! ruled the realtime inner seal is this STREAM nonce (CIRISConstitution#140);
-//! the old derivation is deprecated in `ciris-verify-core`'s `av_chunk`.
+//! The realtime A/V inner seal is this STREAM nonce, so live and stored streams
+//! share one seal. The retired `SHA-256(b"CIRIS-AV-INNER-V1" ‖ stream_id ‖
+//! epoch ‖ seq)[0..12]` construction is deprecated in `ciris-verify-core`'s
+//! `av_chunk` and seals nothing.
 
 use hkdf::Hkdf;
 use sha2::Sha256;

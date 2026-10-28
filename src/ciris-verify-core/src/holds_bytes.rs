@@ -1,5 +1,5 @@
 //! CEG 0.2 §10.1.1 full-SHA verification before consumption
-//! (v4.0.0-rc2+).
+//!.
 //!
 //! Per CIRISRegistry CEG 0.2 §10.1.1 (normative): a CEG-Conforming
 //! Consumer (CCC) MUST verify the full SHA-256 of received bytes

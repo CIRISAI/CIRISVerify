@@ -1,4 +1,4 @@
-//! Bootstrap-trusted steward keyset loader (v2.2.0+, issue #22).
+//! Bootstrap-trusted steward keyset loader.
 //!
 //! Loads the packaged `data/bootstrap_stewards.json` keyset embedded at
 //! compile time via `include_bytes!`. Decoded entries are exposed to the
@@ -7,27 +7,23 @@
 //!
 //! ## Trust model
 //!
-//! The keyset shares the exact trust boundary of the v2.1.x hardcoded
-//! constants — both are baked into the wheel and propagated by the same
-//! signed release artifact. The structural difference is that keys are
-//! now *addressable* (by `key_id`) instead of source-code-embedded,
-//! which unblocks:
+//! The keyset is baked into the wheel and propagated by the signed release
+//! artifact, the same trust boundary as source-embedded constants. Keys are
+//! *addressable* (by `key_id`), which allows:
 //!
 //! - **Multi-steward bootstrap**: a single wheel can list multiple
 //!   trusted stewards. Needed for CIRISAgent 2.9.1 decentralization,
 //!   where every agent bundles its own CIRISRegistry and acts as a
 //!   steward for its scope.
-//! - **Hot rotation in v2.3.0+**: the keyset becomes a versioned,
+//! - **Hot rotation**: the keyset can be a versioned,
 //!   independently-signable artifact distinct from the binary, so
-//!   rotation no longer requires a wheel respin propagated to every
+//!   rotation need not require a wheel respin propagated to every
 //!   agent.
 //!
-//! ## Fallback removed (v3.0.1)
+//! ## No fallback
 //!
-//! v2.2.0–v3.0.0 kept the v2.1.x hardcoded steward constants in
-//! `constructor.rs` as a belt-and-suspenders fallback for a keyset
-//! parse failure. **v3.0.1 removed them** (the #29 deferral; the drop
-//! was scheduled for v2.3.0). The embedded keyset is
+//! There are no hardcoded steward constants to fall back to on a keyset
+//! parse failure. The embedded keyset is
 //! `include_bytes!`-baked and CI-verified parseable on every release
 //! (`tests::embedded_keyset_parses`), so "keyset propagation" cannot
 //! lag the binary — the keyset *is* the binary. If `load_keyset`
@@ -37,17 +33,17 @@
 //!
 //! ## Deliberately NOT here: steward transport identities (CIRISVerify#27)
 //!
-//! The AV-42 transport-identity binding (`FederationEnvelope`, v2.9.0)
+//! The AV-42 transport-identity binding (`FederationEnvelope`)
 //! could in principle pin each bootstrap steward's Reticulum transport
 //! identity here, giving zero-TOFU cold contact with the trust anchors.
 //! It does **not**, and must not. This keyset is `include_bytes!`-baked
 //! into the wheel; a steward's *transport* key is cheap plumbing that
 //! rotates often, and baking it in would make every transport-key
-//! rotation require a wheel respin — re-imposing exactly the rigidity
-//! issue #22 removed for the long-lived federation pubkeys. A steward's
+//! rotation require a wheel respin — exactly the rigidity the addressable
+//! keyset avoids for the long-lived federation pubkeys. A steward's
 //! transport identity is *learned* from its first authenticated
-//! `FederationEnvelope` (or, later, carried by the v2.3.0+
-//! runtime-loadable signed keyset artifact). This file holds only the
+//! `FederationEnvelope` (or carried by a runtime-loadable signed keyset
+//! artifact). This file holds only the
 //! long-lived Ed25519 / ML-DSA federation pubkeys.
 
 use base64::Engine;

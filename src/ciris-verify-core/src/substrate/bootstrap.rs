@@ -52,7 +52,7 @@ pub struct TrustRoot {
 ///
 /// The `SignedClaim` preimage layout (domain `b"CIRIS-CLAIM-v1\0\0"`) gains
 /// owner-binding fields under CIRISEdge#143 and is byte-frozen by the §19.6
-/// vectors — the caller builds it via [`crate::holonomic::Preimage`]; this hop
+/// vectors — the caller builds it via [`crate::substrate::Preimage`]; this hop
 /// carries the bytes plus the pinned pubkeys to verify against.
 pub struct BootstrapHop<'a> {
     /// The attesting (delegating) peer.
@@ -268,7 +268,7 @@ impl SignedClaim {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::holonomic::Preimage;
+    use crate::substrate::Preimage;
     use ciris_crypto::{ClassicalSigner, Ed25519Signer, MlDsa65Signer, PqcSigner};
 
     struct Peer {

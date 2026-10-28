@@ -1,9 +1,9 @@
-//! §19 holonomic cross-impl conformance vectors — the CIRISVerify#57 freeze gate.
+//! Substrate (CC 6.1) cross-impl conformance vectors — the CIRISVerify#57 freeze gate.
 //!
 //! These vectors are **vendored from CIRISEdge v4.1.2**
 //! (`conformance_vectors/19/`, tag sha `e11dde77ae664fedaa9493af505e0b2db87a1bea`),
 //! the *fixed reference impl* the §19.6 freeze gate pins against. Each asserts
-//! that CIRISVerify's **independent** `ciris_verify_core::holonomic`
+//! that CIRISVerify's **independent** `ciris_verify_core::substrate`
 //! implementation reproduces Edge's expected bytes **byte-for-byte**. When this
 //! suite is green, the §19 shapes are proven cross-impl — lifting them from
 //! "pinned-but-unproven, RC-grade" (§19.6) toward the CEG 1.0 GA label.
@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 
-use ciris_verify_core::holonomic::{
+use ciris_verify_core::substrate::{
     alm::SignedRelayCapacity,
     bootstrap::SignedClaim,
     compute_merkle_root,
@@ -25,7 +25,7 @@ use serde_json::Value;
 
 fn vector(rel: &str) -> Value {
     let mut p = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    p.push("tests/vectors/holonomic_v19");
+    p.push("tests/vectors/substrate_v19");
     p.push(rel);
     let raw = std::fs::read_to_string(&p).unwrap_or_else(|e| panic!("read {p:?}: {e}"));
     serde_json::from_str(&raw).unwrap_or_else(|e| panic!("parse {p:?}: {e}"))
@@ -77,7 +77,7 @@ fn domain_separators_match() {
         s(&v, "compress_request_v1_hex")
     );
     assert_eq!(
-        hex::encode(ciris_verify_core::holonomic::preimage::DOMAIN_RELAY_CAPACITY),
+        hex::encode(ciris_verify_core::substrate::preimage::DOMAIN_RELAY_CAPACITY),
         s(&v, "relay_capacity_v2_hex"),
         "ALM §19.4 domain separator (CIRISVerify#207 item 5)"
     );

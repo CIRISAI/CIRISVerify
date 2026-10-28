@@ -1,7 +1,6 @@
-//! `HardwareSigner` over the runtime-loaded TPM plugin (CIRISVerify#141, stage B).
+//! `HardwareSigner` over the runtime-loaded TPM plugin.
 //!
-//! The keyring's TPM signer (v8.0.0; the former link-time `TpmSigner` was
-//! deleted with `tss-esapi`, #141): an ECDSA
+//! The keyring's TPM signer: an ECDSA
 //! P-256 signing key held inside the TPM, driven through the `ciris-tpm-plugin`
 //! C ABI ([`crate::tpm_plugin`]) instead of link-bound `tss-esapi`. So the
 //! native TPM *signing* path works on every target that can load the plugin

@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
-# CIRISVerify#11 follow-up: the retired EU registry hostname must not reappear
-# in any live code path.
+# The retired EU registry hostname must not reappear in any live code path
+# (CIRISVerify#11).
 #
 # `eu.registry.ciris-services-eu-1.com` is NXDOMAIN — wrong sub-zone AND TLD.
-# v1.12.0 fixed `config.rs` (the desktop path) and MISSED the mobile FFI, where
-# `DNS_EU_HOSTNAME` fed a real DoH lookup. The EU leg of the 2-of-3 DNS
-# consensus therefore failed on every iOS and Android call for releases, in a
-# way no test noticed: a dead source degrades consensus rather than erroring.
+# A live reference fails silently: a dead source degrades rather than erroring,
+# so no other test notices it.
 #
 # Source-level, so it fires in every build configuration. Historical mentions in
 # a `//` comment are allowed — the point is that nothing RESOLVES it.

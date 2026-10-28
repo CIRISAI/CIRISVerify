@@ -1,4 +1,4 @@
-//! HMAC-SHA256 + constant-time equality (CIRISVerify#7, v2.0.0+).
+//! HMAC-SHA256 + constant-time equality (CIRISVerify#7).
 //!
 //! Used for `EncryptedSecretRecord.edge_hmac` integrity check
 //! (CIRISPersist#19): edge computes HMAC over `canonical(SecretRecord)`

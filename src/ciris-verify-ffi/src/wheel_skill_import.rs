@@ -1,5 +1,5 @@
 //! `SkillImportManifest` FFI surface for the Python wheel
-//! (CIRISVerify#50, v4.7.0+).
+//! (CIRISVerify#50).
 //!
 //! Wraps [`ciris_verify_core::skill_import::verify_skill_import_manifest`]
 //! so wheel consumers can drive CEG-0.2 §3.2.1.1 / §5.2.1 community-skill

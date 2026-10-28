@@ -1,9 +1,11 @@
 //! Generic secure blob storage abstraction.
 //!
 //! Platform-specific implementations:
-//! - `TpmSecureBlobStorage` - TPM 2.0 (Linux/Windows, requires `tpm` feature)
-//! - `AndroidKeystoreStorage` - Android Keystore (requires `android` feature)
-//! - `SecureEnclaveStorage` - iOS Secure Enclave (requires `ios` feature)
+//! - `PluginTpmSecureBlobStorage` - TPM 2.0 via the runtime-loaded TPM plugin
+//!   (`tpm-plugin` feature)
+//! - `AndroidKeystoreSecureBlobStorage` - Android Keystore (requires `android` feature)
+//! - `SecureEnclaveSecureBlobStorage` - iOS/macOS Secure Enclave
+//! - `SoftwareSecureBlobStorage` - software fallback
 //!
 //! This module provides a platform-agnostic interface for storing arbitrary
 //! secret material (keys, seeds, etc.) with hardware-backed protection where

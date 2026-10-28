@@ -137,17 +137,17 @@ or rejected the record (check its logs).
 
 - **Ed25519 is hardware-non-extractable + touch-gated.** Good — the classical half
   genuinely lives on the token and requires a physical touch per signature.
-- **The ML-DSA-65 seed is sealed at rest** under `~/ciris/keys` (#71
-  `get_platform_sealed_mldsa65_signer`): **TPM-sealed** when you build
-  `--features tpm` on a TPM host, Secure Enclave / StrongBox on mobile, or a
+- **The ML-DSA-65 seed is sealed at rest** under `~/ciris/keys`
+  (`get_platform_sealed_mldsa65_signer`): **TPM-sealed** on a TPM host where the
+  runtime TPM plugin (`libciris_tpm_plugin`) loads, Secure Enclave / StrongBox on mobile, or a
   software AES-GCM-sealed blob (derived key) as the fallback — **never a plaintext
   file.** The honest boundary that remains: ML-DSA-65 *signing* is software (no
   token/TPM/SE can sign PQC yet), so the seed is unsealed into process memory to
   sign — a much higher bar than reading a file at rest. **A TPM-sealed seed is
   bound to that machine's TPM** and cannot be unsealed elsewhere, so it is *not*
   portable: enroll a second device's key (OR-of-N redundancy) rather than copying
-  the seed. Build the desktop CLI with `--features pkcs11,tpm` to get TPM sealing
-  (without `tpm` you get the software-sealed fallback). See `THREAT_MODEL.md`
+  the seed. The desktop CLI needs `--features pkcs11` for the token; TPM sealing
+  comes from the plugin (without it you get the software-sealed fallback). See `THREAT_MODEL.md`
   AV-44 for the full disclosure.
 - **`$CIRIS_HOME` overrides the root.** If you set it, set it consistently for both
   this tool and CIRISServer, or the server will drain a different outbox than the

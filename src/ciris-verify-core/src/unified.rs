@@ -2724,19 +2724,16 @@ impl FullAttestationResult {
 
             // hardware_custody:{platform}:v1 — declares where the seed lives
             // (CIRISVerify#296). Emitted ONLY from the producer-supplied registry
-            // token: this used to lowercase the `Debug` name, yielding
-            // `tpmfirmware` / `androidkeystore`, which CIRISPersist >= 50 refuses
-            // as `namespace_vocab_value_unregistered`.
-            //
-            // The score is also no longer a substring test on a display string
-            // (`!platform.contains("software")`, which would have matched any
-            // future token containing "software").
+            // token, never derived from the `Debug` name (`tpmfirmware` /
+            // `androidkeystore`), which a conformant consumer refuses as
+            // `namespace_vocab_value_unregistered`. The score is not a
+            // substring test on a display string either.
             if let Some(platform) = ka.hardware_platform.as_deref() {
                 if ciris_keyring::HardwareType::from_platform(platform).is_some() {
                     // A RESOLVED platform claim is a successful measurement, so it
-                    // passes — including `software_only` (Codex P2 on PR #298).
-                    // Scoring software FAIL here baked policy into a measurement
-                    // AND disagreed with the Android projection, which emits the
+                    // passes — including `software_only`. Scoring software FAIL
+                    // here would bake policy into a measurement AND disagree with
+                    // the Android projection, which emits the
                     // same `hardware_custody:software_only:v1` as a pass. One fact
                     // must not get two verdicts depending on which projection
                     // produced it; whether software custody is good enough is the
@@ -2747,16 +2744,14 @@ impl FullAttestationResult {
                         attester,
                     ));
                 } else {
-                    // An UNREGISTERED token is not emitted at all (Codex P2 on PR
-                    // #298). Emitting it with a failing score would still be
-                    // refused by a conformant consumer for its vocabulary value —
-                    // recreating, for FFI callers that submit externally produced
-                    // attestation JSON, exactly the interop break this release
-                    // exists to close.
+                    // An UNREGISTERED token is not emitted at all. Emitting it with
+                    // a failing score would still be refused by a conformant
+                    // consumer for its vocabulary value — an interop break for FFI
+                    // callers that submit externally produced attestation JSON.
                     //
                     // DEBUG rather than WARN deliberately: this projection runs on
-                    // the verification path, and a per-cycle WARN is the defect
-                    // CIRISVerify#223/#265 were cut to stop. The *enforcement* is
+                    // the verification path, and a per-cycle WARN violates the
+                    // CIRIS Logging Standard. The *enforcement* is
                     // the omission; a caller chasing a missing dimension finds
                     // this line at DEBUG.
                     debug!(

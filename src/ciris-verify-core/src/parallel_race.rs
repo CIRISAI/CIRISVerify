@@ -1,6 +1,6 @@
 //! Race-to-first-success helper with strict wall-clock budget.
 //!
-//! Used by [`crate::registry::ResilientRegistryClient`] (v4.8.0+) to
+//! Used by [`crate::registry::ResilientRegistryClient`] to
 //! convert sequential endpoint failover into parallel racing. The
 //! first future to return `Ok` wins; remaining futures are cancelled
 //! (cooperative cancellation via drop). If the budget expires before

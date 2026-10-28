@@ -1,7 +1,6 @@
 # Runtime tree-walking verifier (`verify_tree`)
 
-**Status:** Stable since v1.13.0 (CIRISVerify#9). Verdict semantics
-refined in v1.14.0 (CIRISVerify#15) — see "Verdict semantics" below.
+**Status:** Stable. See "Verdict semantics" below.
 
 The runtime tree-walking verifier walks a source tree on disk and compares
 it byte-for-byte against the registered `file_manifest_json` for a
@@ -55,14 +54,14 @@ verdict will diverge accordingly.
 
 | field                  | type                  | meaning                                                                 |
 | ---------------------- | --------------------- | ----------------------------------------------------------------------- |
-| `valid`                | `bool`                | **Tampering verdict.** No `Mismatch`, no `Extra`, registry reachable. **Does NOT gate on `Missing`** (v1.14.0+). |
+| `valid`                | `bool`                | **Tampering verdict.** No `Mismatch`, no `Extra`, registry reachable. **Does NOT gate on `Missing`**. |
 | `files_checked`        | `int`                 | Files walked on disk.                                                   |
 | `files_passed`         | `int`                 | Files whose disk hash matched the registered hash.                      |
-| `failed_files`         | `list[FailedFile]`    | `Mismatch` + `Extra` only (v1.14.0+). Empty iff `valid == True`.        |
-| `missing_files`        | `list[FailedFile]`    | **v1.14.0+.** Files in registry, absent on disk. Informational — does NOT gate `valid`. |
+| `failed_files`         | `list[FailedFile]`    | `Mismatch` + `Extra` only. Empty iff `valid == True`.        |
+| `missing_files`        | `list[FailedFile]`    | Files in registry, absent on disk. Informational — does NOT gate `valid`. |
 | `total_hash`           | `str`                 | Canonical computed total `sha256:<hex>`. Always populated.              |
 | `expected_total_hash`  | `str \| None`         | Registered `file_manifest_hash`. `None` when registry fetch failed.     |
-| `registry_match`       | `bool`                | **Strict literal-equality.** `total_hash == expected_total_hash` AND no `failed_files` AND no `missing_files` (v1.14.0+). |
+| `registry_match`       | `bool`                | **Strict literal-equality.** `total_hash == expected_total_hash` AND no `failed_files` AND no `missing_files`. |
 | `registry_error`       | `str \| None`         | Set when registry fetch failed (network down, 404, parse error, …).    |
 | `project`              | `str`                 | Echoed.                                                                 |
 | `binary_version`       | `str`                 | Echoed.                                                                 |
@@ -76,7 +75,7 @@ verdict will diverge accordingly.
 | `computed_hash`  | `str | None`   | Disk hash (`sha256:<hex>`); `None` for `missing`.             |
 | `expected_hash`  | `str | None`   | Registered hash (`sha256:<hex>`); `None` for `extra`.         |
 
-## Verdict semantics (v1.14.0+, CIRISVerify#15)
+## Verdict semantics
 
 **Missing files are not a tampering signal.** An agent missing critical
 code doesn't run — that's a broken-not-tampered failure mode caught at
@@ -87,7 +86,7 @@ mobile AABs (where the wallet provider needs it at runtime) but
 explicitly excluded from desktop wheels by `setup.py` (don't ship
 secrets via pip). The signed manifest covers it (so mobile installs
 can verify it); a desktop wheel walking against that manifest will
-flag it as `Missing`. Pre-v1.14.0 that capped desktop L4 at L3.
+flag it as `Missing`, which does not gate `valid`.
 
 Two verdicts on `TreeVerifyResult`:
 

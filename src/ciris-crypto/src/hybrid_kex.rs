@@ -1,5 +1,5 @@
 //! Hybrid X25519 + ML-KEM-768 KEX with HKDF-SHA256 binding —
-//! Fed TM §3.3 Gap C closure (CIRISVerify#47, v4.6.0+).
+//! Fed TM §3.3 Gap C closure (CIRISVerify#47).
 //!
 //! Mirrors HPKE RFC 9180 base-mode shape: an initiator generates
 //! ephemeral key material against a recipient's published long-term

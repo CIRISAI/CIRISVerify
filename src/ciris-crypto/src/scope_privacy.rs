@@ -1,4 +1,4 @@
-//! Scope-native privacy derivation helpers (CIRISVerify#82, v6.3.0+).
+//! Scope-native privacy derivation helpers (CIRISVerify#82).
 //!
 //! The §2.2 / §2.4 / §3.4 key-derivation surface of CEWP SCOPE_PRIVACY.md.
 //! Verify is the **first conformant impl**, so it authors the cross-impl
@@ -32,11 +32,6 @@
 //!
 //! ## Where the 32-byte input comes from — **also a wire fact** (#259)
 //!
-//! Until v13.5.0 this module said the caller supplies "the group's **raw**
-//! MLS `exporter_secret`" and MUST NOT call `export_secret`. That was
-//! **underspecified to the point of being unimplementable**, and CIRISEdge
-//! caught it while building against the spec:
-//!
 //! RFC 9420 §8.5's exporter is a **labelled** KDF —
 //! `MlsGroup::export_secret(crypto, label, context, len)` — and openmls
 //! exposes no accessor for the bare key-schedule secret. So "the exporter
@@ -44,16 +39,15 @@
 //! **two members agree only if they export under the same label**. That makes
 //! the label as wire-affecting as the derivation itself.
 //!
-//! Pinned here, as the first conformant impl:
+//! Pinned here:
 //!
 //! ```text
 //! S_record  = MLS-Exporter(RECORD_EXPORTER_LABEL,      "", 32)   // → k_record_id, k_symbol
 //! S_dest    = MLS-Exporter(DESTINATION_EXPORTER_LABEL, "", 32)   // → k_destination
 //! ```
 //!
-//! **The derivations themselves are unchanged** — every golden vector
-//! published for v13.4.0 still holds byte-for-byte. What v13.5.0 pins is
-//! *where the caller's 32 bytes must come from*.
+//! The labels fix *where the caller's 32 bytes must come from*; the
+//! derivations below take those 32 bytes as input.
 //!
 //! ### Why the destination gets its OWN exporter label
 //!
@@ -391,19 +385,16 @@ pub fn derive_symbol_key(k_symbol: &[u8; 32], record_id: &[u8; 32], symbol_index
 /// future field is appended — and appending without noticing is precisely how
 /// concatenation ambiguity gets introduced.
 ///
-/// ## The output IS the address (ratified, CIRISConstitution#91)
+/// ## The output IS the address (CC 5.4.6)
 ///
-/// CIRISEdge asked whether this should instead seed a **per-group RNS
-/// identity**, letting RNS compute the address natively so a scoped
-/// destination becomes announceable and therefore multi-hop
-/// (CIRISVerify#262). That would have demoted this function from *address* to
-/// *name*.
+/// The alternative — seeding a **per-group RNS identity** so RNS computes the
+/// address natively and a scoped destination becomes announceable and
+/// multi-hop — would demote this function from *address* to *name*.
 ///
-/// **Ruled against: CC 5.4.6's announce prohibition binds the emission, not
-/// the addressing mode**, so a targeted announce iterated over a roster
-/// inherits it rather than escaping it. The derived value therefore remains
-/// the destination hash. See `ciris_verify_core::announce_policy` for the
-/// ruling's three legs.
+/// **CC 5.4.6's announce prohibition binds the emission, not the addressing
+/// mode**, so a targeted announce iterated over a roster inherits it rather
+/// than escaping it. The derived value therefore is the destination hash. See
+/// `ciris_verify_core::announce_policy` for the three reasons.
 ///
 /// The practical consequence for callers: a scoped destination is **one hop by
 /// construction** — unprobeable and unannounceable, and reachable only over a

@@ -131,7 +131,7 @@ Level 3 (Registry)   → validated by       → Level 2 (This Binary)
 
 2. **Subsequent Updates**: Once a trusted binary is installed, it can verify updates against the registry manifest.
 
-3. **Multi-Source Validation**: Level 3 uses 2-of-3 consensus across geographically distributed sources (US DNS, EU DNS, HTTPS) to prevent registry MITM.
+3. **Trust-Root Validation**: Level 3 verifies each registry host's GenesisBundle against the accord holders baked into the binary (CC 5.3.4), so a host can withhold a trust root but cannot substitute one.
 
 ### What Self-Verification Does NOT Protect Against
 

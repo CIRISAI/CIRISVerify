@@ -1,6 +1,6 @@
 # TPM EK trust-anchor provenance record
 
-**Status:** current as of v12.6.0 (2026-08-03) · CIRISVerify#199, #227
+**Status:** current.
 
 This document records **how the baked TPM EK vendor roots were obtained**, what
 was tried first and failed, and precisely what the resulting anchors do and do

@@ -1,10 +1,10 @@
-//! Federation provenance — scalar attestation surface (CIRISVerify#33).
+//! Federation provenance — scalar attestation surface.
 //!
 //! The response-shape change that makes verify's `MISSION.md` §1.4
 //! invariant — *every federation primitive authenticates origin; none
 //! confers trust* — **structural** rather than just documented.
 //!
-//! Today verify returns a binary trust verdict. In the decentralized
+//! In the decentralized
 //! federation (Agent 3.0 — registry / node / lens fold into the agent;
 //! no central authority), no single verdict can be authoritative
 //! because no single party decides policy. Verify must therefore
@@ -16,14 +16,13 @@
 //!
 //! Dimensions are named for what is **measured** — no L1/L2/L3/L4/L5 ladder
 //! numbering in the wire shape, because the ladder is consumer policy, not
-//! verify-side framing (v3.7.0+). CC part_3 ratified that choice explicitly:
+//! verify-side framing. CC part_3 states it explicitly:
 //! *"L-numbers name a verdict-shape (ladder position), not a mechanism — the
 //! L1-L5 ladder lives as consumer-side composition."*
 //!
 //! ### How many dimensions? (the count, stated precisely)
 //!
-//! Prose here previously said "twelve", which matched nothing. The number
-//! depends on what is counted, so all three are given:
+//! The number depends on what is counted, so all three are given:
 //!
 //! | Count | What it counts |
 //! |---|---|
@@ -31,7 +30,7 @@
 //! | **14** | distinct prefix **families** — [`dim::ALL`], the registry below |
 //! | **13** | families verify actually **emits** (`transparency_log:cosigned:` is witness-emitted) |
 //!
-//! **Authority note (v11.0.0).** Where CC part_3 and CIRISRegistry FSD-002
+//! **Authority note.** Where CC part_3 and CIRISRegistry FSD-002
 //! §3.2 disagree, **CC wins**. FSD-002 §3.2 still specifies the retired
 //! ladder-named prefixes (`attestation:l1:self_verify`, …); CC and this crate
 //! agree on the mechanism-named set. Tracked as CIRISRegistry#132.
@@ -43,8 +42,7 @@
 //! constant with no emitter — see [`dim::TRANSPARENCY_LOG_COSIGNED_PREFIX`].
 //!
 //! Addressable via the [`dim`] module. Every parameterized family carries
-//! the CC 3.1.7 R3 tail `:{version}` = [`dim::DIMENSION_VERSION`] (19.0.0,
-//! CIRISVerify#299); the bare `attestation:*` constants are R3-exempt.
+//! the CC 3.1.7 R3 tail `:{version}` = [`dim::DIMENSION_VERSION`]; the bare `attestation:*` constants are R3-exempt.
 //!
 //! | Dimension                                  | Polarity         |
 //! |--------------------------------------------|------------------|
@@ -55,8 +53,8 @@
 //! | `attestation:agent_integrity`              | boolean-via-score |
 //! | `provenance:slsa:{level}:{version}`        | boolean-via-score |
 //! | `provenance:build_manifest:{target}:{version}` | boolean-via-score |
-//! | `provenance:build_manifest:{target}:locale:{lang_code}:{version}` | boolean-via-score (v3.8.0+, #37) |
-//! | `provenance:skill_import:{source}:{version}` | **signed** (per CC part_3; v3.8.0+, #37) |
+//! | `provenance:build_manifest:{target}:locale:{lang_code}:{version}` | boolean-via-score |
+//! | `provenance:skill_import:{source}:{version}` | **signed** (per CC part_3) |
 //! | `transparency_log:inclusion:{version}`     | boolean-via-score |
 //! | `transparency_log:consistency:{version}`   | boolean-via-score |
 //! | `transparency_log:cosigned:{tree_size}:{version}` | **signed** — *recognized, never emitted by verify* (witness-emitted per CC part_3) |
@@ -68,7 +66,7 @@
 //! is the one dimension that may legitimately emit a *negative* score
 //! (and only -1.0 — there is no positive direction).
 //! `attestation:registry_consensus` may also emit Indeterminate
-//! (mapped to `Score::Indeterminate` in v3.2+; not yet wired by
+//! (mapped to `Score::Indeterminate`; not yet wired by
 //! [`crate::unified::FullAttestationResult`]).
 //!
 //! ## What this module does NOT do
@@ -230,23 +228,17 @@ pub mod dim {
     /// than silently storing a dimension nobody queries.
     pub const DIMENSION_VERSION: &str = "v1";
 
-    /// CC 3.4.5's **ratified** per-family consent disposition.
+    /// CC 3.4.5's per-family consent disposition.
     ///
     /// # This tracks CC; it is not verify's opinion
     ///
-    /// An earlier version of this type (v11.0.0–v11.1.0) shipped a verify-side
-    /// *proposal* that placed four families on the consensual-reputation side.
-    /// **CIRISConstitution rc3 ratified CC 3.4.5, which disposes of all
-    /// fourteen families individually and places every one OUTSIDE the consent
-    /// gate.** The proposal contradicted the ruling, so the proposal is gone —
-    /// this enum now records CC's disposition and nothing else.
+    /// **CC 3.4.5 disposes of all fourteen families individually and places
+    /// every one OUTSIDE the consent gate.** This enum records CC's
+    /// disposition and nothing else. Consumers (CIRISPersist's admission gate)
+    /// derive from this registry rather than transcribing a list, so the
+    /// classification is load-bearing in other repos.
     ///
-    /// CIRISPersist#569 derived its admission gate from this registry rather
-    /// than transcribing a list (the right instinct — it avoids two lists that
-    /// disagree), which made the classification load-bearing in another repo.
-    /// CIRISVerify#238 caught the contradiction before it shipped there.
-    ///
-    /// # Why the old classification failed in a security-relevant direction
+    /// # Why consent-gating these families would fail in a security-relevant direction
     ///
     /// - **`rollback_detected:*` is −1-only.** Gating it on subject consent
     ///   would let an **adversary opt out of rollback detection** by declining
@@ -278,8 +270,7 @@ pub mod dim {
 
     impl crate::classification::Classification for ConsentDisposition {
         /// **NORMATIVE.** Tracks CC 3.4.5's ratified per-family disposition, so
-        /// a consumer may gate on it. (v11.0.0 shipped this as an unlabelled
-        /// *proposal*; that is what CIRISPersist#569 read as a ruling.)
+        /// a consumer may gate on it.
         fn gating() -> crate::classification::Gating {
             crate::classification::Gating::Normative {
                 authority: "CC 3.4.5",
@@ -320,7 +311,7 @@ pub mod dim {
         /// a library; what is retained is a property of the deployment, so the
         /// frame belongs to the *harness* and is the caller's to declare. A
         /// baked-in default here would be exactly the unstated assumption the
-        /// ruling forbids.
+        /// arity analysis (CIRISOntology#3) forbids.
         ///
         /// # Errors
         /// [`UndeclaredFrame`] when this disposition is frame-relative and no
@@ -1068,10 +1059,10 @@ mod registry_tests {
         }
     }
 
-    /// **CC 3.4.5 (ratified) — no verify-owned family is consent-gated.**
+    /// **CC 3.4.5 — no verify-owned family is consent-gated.**
     ///
     /// The Constitution disposes of all fourteen families individually and puts
-    /// every one outside the gate. This asserts the ruling directly, so a future
+    /// every one outside the gate. This asserts the rule directly, so a future
     /// edit that reintroduces a consent-gated family fails here rather than in a
     /// downstream admission path (CIRISVerify#238 / CIRISPersist#569).
     #[test]

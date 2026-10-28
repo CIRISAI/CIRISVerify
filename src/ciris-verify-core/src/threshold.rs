@@ -312,7 +312,7 @@ pub enum HybridPolicy {
     /// submission counts on the classical half alone. MUST NOT be used at any
     /// federation authority gate — admission, quorum, provenance, binding.
     /// Exists solely so a genuinely local self-read can tolerate a row whose
-    /// cold-path PQC sign has not yet landed.
+    /// cold-path PQC signature is not yet present.
     AllowClassicalPending,
 }
 

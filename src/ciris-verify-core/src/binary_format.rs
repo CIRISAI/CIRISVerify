@@ -1,4 +1,4 @@
-//! Binary-format-aware hashing primitives (CIRISVerify#19, v2.0.5+).
+//! Binary-format-aware hashing primitives (CIRISVerify#19).
 //!
 //! The CIRIS federation produces and verifies binaries across multiple
 //! platforms (Linux ELF, Windows PE, iOS/macOS Mach-O). For
@@ -8,16 +8,15 @@
 //! (adds `LC_CODE_SIGNATURE`, shifts offsets) but never touches the
 //! actual code sections inside `__TEXT`.
 //!
-//! Three sites consumed this algorithm before v2.0.5:
+//! Three sites consume this algorithm, all through this module:
 //!
 //! - `ciris-verify-core::registry::compute_self_hash` — runtime L2 self-verify
 //! - `release.yml::macho_text_hash` — CI release-time Python algorithm
 //! - `ciris-manifest-tool::manifest::compute_file_hash` — sign-time
-//!   manifest generator (BUG before v2.0.5: was using whole-file hash,
-//!   structurally mismatching the runtime path)
+//!   manifest generator
 //!
-//! v2.0.5 unifies all three on this module. Sign-time and runtime now
-//! compute byte-equal hashes on the same Mach-O binary.
+//! so sign-time and runtime compute byte-equal hashes on the same Mach-O
+//! binary.
 
 use goblin::mach::Mach;
 

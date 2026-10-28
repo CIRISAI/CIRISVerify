@@ -1,4 +1,4 @@
-//! Key derivation functions (CIRISVerify#7, v2.0.0+).
+//! Key derivation functions (CIRISVerify#7).
 //!
 //! Two KDFs the federation needs:
 //!

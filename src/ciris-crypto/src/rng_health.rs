@@ -1,4 +1,4 @@
-//! Startup RNG health-check (CIRISVerify#55 Gap H, v4.9.0+).
+//! Startup RNG health-check (CIRISVerify#55 Gap H).
 //!
 //! A NIST SP 800-90B-shaped startup health-check on the OS RNG, plus a
 //! process-global fail-secure gate. The federation's RNG facade

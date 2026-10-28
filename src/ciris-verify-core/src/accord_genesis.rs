@@ -2375,8 +2375,8 @@ mod tests {
         );
     }
 
-    /// Steward ruling (CC 4.2.1.1 rc7 threshold table): notify and drill take
-    /// ONE holder, like the fire they share a path with.
+    /// CC 4.2.1.1 threshold table: notify and drill take ONE holder, like the
+    /// fire they share a path with.
     #[tokio::test]
     async fn notify_and_drill_take_one_holder() {
         let hs = holders();

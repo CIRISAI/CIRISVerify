@@ -1,27 +1,23 @@
 //! Device-attestation chain validation — the **hardware half** of "never trust
-//! a self-report" (CIRISVerify#199, CC 4.2.2.1).
+//! a self-report" (CC 4.2.2.1).
 //!
 //! ## The rule, and the half this closes
 //!
-//! [`crate::build_attestation_bundle`] (CIRISVerify#181) refuses to believe a
+//! [`crate::build_attestation_bundle`] refuses to believe a
 //! peer's *build* string; it walks a chain to a pinned trust root instead. CC
 //! 4.2.2.1 applies the same rule to the other claim a peer makes about itself —
 //! its **hardware class**. A peer asserting `StrongBox` is asserting a string
 //! until someone walks its attestation chain to a **pinned vendor root**.
 //!
-//! Verify already pins exactly one such root: the Yubico Attestation Root,
-//! consumed by
+//! The Yubico Attestation Root is consumed by
 //! [`crate::accord_custody_attestation::verify_yubikey_piv_attestation`]. This
 //! module is the sibling for platform devices: **Android Key Attestation**
 //! (X.509 + the `KeyDescription` extension) and **Apple App Attest** (a CBOR
 //! attestation object, WebAuthn-shaped) and **TPM 2.0 EK** (X.509 to a vendor
 //! *set*, resolved through the trust-anchor store rather than a pinned root).
 //!
-//! All three device legs of #199 are implemented. What remains for TPM is
-//! **sourcing** the vendor roots — the validator is here and the store slot
-//! (`environments::TPM_EK`) is defined, but no vendor anchor is baked, so a TPM
-//! chain currently resolves to `Ok(None)`: *no hardware evidence*, never a
-//! refusal.
+//! A chain whose vendor has no anchor in the store resolves to `Ok(None)`:
+//! *no hardware evidence*, never a refusal.
 //!
 //! Neither validator is platform-gated, and that is deliberate: verifying a
 //! device attestation is a **relying-party** operation. The phone produces the

@@ -265,7 +265,7 @@ cryptographically distinguishable from a tampered one.
 stable key identifiers. BBS+ and AnonCreds deliver unlinkable presentation
 today; verify does not. Its position is explicit rather than aspirational —
 unlinkability is a **property commitment with a staged adoption path**,
-ZK-wrapped *unmodified* ML-DSA is the designated candidate, and one interim
+ZK-wrapped *unmodified* ML-DSA is the designated candidate, and one
 constraint is enforced in code: identity must stay separable from presentation
 format, so the upgrade is a format addition rather than a re-issuance event
 ([`presentation.rs`](../src/ciris-verify-core/src/presentation.rs)).
@@ -341,9 +341,8 @@ people's standards, which is the correct default for security software.
    a named body), `Structural { breaks }` (a mechanism, amendable by nobody),
    `Measurement`, or `Proposal { tracking }` — and propagates weakest-wins
    through derivation, so a measurement cannot be laundered into policy by
-   aggregation. We know of no peer that does this. It exists because a
-   downstream repo once read a proposal as a ruling and built an admission gate
-   on it.
+   aggregation. We know of no peer that does this. It prevents a consumer from
+   reading a proposal as a ruling and building an admission gate on it.
 5. **Refuter asymmetry as an explicit stance.** Weight refutations heavily,
    passes lightly, absence not at all.
 

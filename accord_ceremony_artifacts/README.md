@@ -31,10 +31,9 @@ test is a loud signal the audit trail no longer verifies.
 - `humanity_accord_genesis.json` — the assembled family genesis carrying the
   **2-of-3 founder cosignatures** (`founder_signatures`, 3 collected) over the
   family envelope. This is the seed for `humanity_accord_genesis()` /
-  `HUMANITY_ACCORD_GENESIS_JSON` (accord_genesis.rs). This is the **full
-  founder-signed `SignedCegObject`** (`kind: accord_family_genesis`, `key_id:
-  humanity-accord`, 3 founder cosignatures) — **directly pasteable** into
-  `HUMANITY_ACCORD_GENESIS_JSON` to bake `humanity_accord_genesis()`.
+  `HUMANITY_ACCORD_GENESIS_JSON` (accord_genesis.rs): the full founder-signed
+  `SignedCegObject` (`kind: accord_family_genesis`, `key_id: humanity-accord`,
+  3 founder cosignatures).
 - `holders/{A1,A2,B1,B2,C1,C2}.json` — per-key bundles: `{ key_id, holder_record
   (SignedKeyRecord), custody_attestation (SignedCegObject) }`.
 - `custody_attestations/{A1,A2,B1,B2,C1,C2}.json` — the `portable_2fa` custody
@@ -43,19 +42,15 @@ test is a loud signal the audit trail no longer verifies.
   (`developers.yubico.com/PKI/yubico-ca-1.pem`), committed so verification needs
   no network. This is the durable **root**, not the rotating intermediate.
 
-## Status (all shipped)
+## Relation to the binary
 
-- **Genesis baked (v7.2.0).** `humanity_accord_genesis.json` here is semantically
-  identical to the pinned `src/ciris-verify-core/src/genesis/humanity_accord_genesis.json`
-  that `humanity_accord_genesis()` / `HUMANITY_ACCORD_GENESIS_JSON` returns — the
-  no-TOFU kill-switch recognition root. The seated roster is the 3 primaries
-  (A1/B1/C1), `quorum:2/3`; the 3 spares (A2/B2/C2) are vaulted, not seated.
-- **#116** (hash-commit the ML-DSA-65 pubkey — these artifacts were produced with
-  that fix) and **#117** (custody attestation → persist `attestation_evidence`
-  bridge) are both shipped (v6.13.0/7.0.0, v7.1.0).
-- **CIRISPersist#268** — the `accord_holder` admission gate's YubiKey/external-SE
-  variant is the remaining registration/entrenchment step (downstream; these
-  custody attestations are its fixtures).
+`humanity_accord_genesis.json` here is semantically identical to the pinned
+`src/ciris-verify-core/src/genesis/humanity_accord_genesis.json` that
+`humanity_accord_genesis()` / `HUMANITY_ACCORD_GENESIS_JSON` returns — the no-TOFU
+accord recognition root. The seated roster is the 3 primaries (A1/B1/C1),
+`quorum:2/3`; the 3 spares (A2/B2/C2) are vaulted, not seated. The custody
+attestations convert to CIRISPersist `attestation_evidence` through
+`custody_attestation_to_platform_attestation`.
 
 ## Safety
 
@@ -66,5 +61,5 @@ the 9c signing keys are non-extractable on the YubiKeys and never left them.
 ## Provenance
 
 Produced on the CIRISServer fabric node (loopback `/v1/accord/provision-holder`,
-`/family/cosign`, `/genesis/assemble`) against CIRISVerify v6.13.0 + the #116 local
-fix; ykcs11/yubico-piv-tool 2.7.3; YubiKey 5.7.4 FIPS.
+`/family/cosign`, `/genesis/assemble`) against CIRISVerify v6.13.0 with the hash-committed ML-DSA-65 pubkey format;
+ykcs11/yubico-piv-tool 2.7.3; YubiKey 5.7.4 FIPS.

@@ -3,7 +3,7 @@
 **Decide whether evidence about a machine, a build, or a key is worth
 believing — and say exactly how much.**
 
-v16.2.1 · Rust + Python · AGPL-3.0 · Post-quantum from day one
+v21.0.0 · Rust + Python · AGPL-3.0 · Post-quantum from day one
 
 CIRISVerify is an embeddable Rust library (with C FFI and a Python wheel) for
 **hardware attestation verification, trust-anchor management, and artifact
@@ -102,6 +102,12 @@ Enclave / StrongBox / TPM, ML-DSA-65 seed sealed at rest) plus the signed
 objects and shareable identity codes (`fedcode`) the rest of the federation
 consumes.
 
+Its trust root is the GenesisBundle authorized by the HUMANITY_ACCORD holders
+whose keys are baked into the binary (CC 5.3.4), fetched over HTTPS from the
+registry hosts at `/v1/trust-root/bundle`. A licence is a cosigned
+`licensure:{authority}:v1` row (CC 4.4.3.8); verify does not yet evaluate those
+rows, so every deployment currently reports community status.
+
 It proves an agent is **authentic** — necessary, not sufficient. Ethical
 *behavior* is the separate job of the CIRIS covenant system.
 
@@ -123,7 +129,7 @@ ciris-verify identity create --module libykcs11.so --label eric-moore --provisio
 | [`docs/BINARY_SELF_VERIFICATION.md`](docs/BINARY_SELF_VERIFICATION.md) | "Who watches the watchmen" — runtime self-verification |
 | [`docs/CRYPTO_AGILITY.md`](docs/CRYPTO_AGILITY.md) | Algorithm migration posture |
 | [`docs/BENCHMARKS.md`](docs/BENCHMARKS.md) | Benchmark suite, recorded numbers, leak gate |
-| [`docs/HOLONOMIC_SUBSTRATE.md`](docs/HOLONOMIC_SUBSTRATE.md) | CEG §19 / §19.7 verifiers (cross-impl-proven) |
+| [`docs/SUBSTRATE.md`](docs/SUBSTRATE.md) | Substrate verifiers (CC 6.1): wholeness witness, noise floor, replication |
 | [`docs/FEDERATION_IDENTITY.md`](docs/FEDERATION_IDENTITY.md) | Operator runbook: YubiKey → federation ID |
 | [`FSD/FSD-001`](FSD/FSD-001_CIRISVERIFY_PROTOCOL.md) | Full protocol specification (authoritative) |
 | [`protocol/ciris_verify.proto`](protocol/ciris_verify.proto) | Public gRPC/protobuf API contract |

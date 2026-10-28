@@ -1,4 +1,4 @@
-//! Hardware-rooted key-derivation benchmarks (CIRISVerify#25, v2.7.0).
+//! Hardware-rooted key-derivation benchmarks (CIRISVerify#25).
 //!
 //! Measures `ciris_verify_core::keys::derive_symmetric_key` — the
 //! named-key HKDF-SHA256 derivation CIRISPersist's `secrets-hw` calls

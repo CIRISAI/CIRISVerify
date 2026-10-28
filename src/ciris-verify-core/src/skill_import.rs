@@ -1,6 +1,5 @@
 //! `SkillImportManifest` — community-skill import provenance verifier
-//! (CIRISVerify#37 Phase 2, v3.9.0+; canonicalization tightened to
-//! CEG 0.2 §0.5 / §0.6 / §5.2.1 in v4.0.0).
+//! (canonicalization per CEG 0.2 §0.5 / §0.6 / §5.2.1).
 //!
 //! Canonical-bytes contract pinned by CIRISRegistry CEG 0.2 §5.2.1
 //! (supersedes FSD-002 v1.4.3 §3.2.1.1). A `SkillImportManifest` is
@@ -8,7 +7,7 @@
 //! attestation. Signature scheme is hybrid Ed25519 + ML-DSA-65 per
 //! CEG 0.2 §10.0 federation discipline.
 //!
-//! ## CEG 0.2 §0.5 date-time canonicalization (v4.0.0+)
+//! ## CEG 0.2 §0.5 date-time canonicalization
 //!
 //! `import_timestamp` and `valid_until` MUST be canonical RFC 3339:
 //! UTC suffix `Z` (not `+00:00`, not lowercase `z`), exactly
@@ -16,7 +15,7 @@
 //! `YYYY-MM-DDTHH:MM:SS.sssZ`. Producers emit this form; consumers
 //! reject any other.
 //!
-//! ## CEG 0.2 §0.6 hexadecimal canonicalization (v4.0.0+)
+//! ## CEG 0.2 §0.6 hexadecimal canonicalization
 //!
 //! `skill_manifest_sha256` MUST be lowercase, unpadded (no `0x`
 //! prefix, no separators), exactly 64 hex characters. Producers

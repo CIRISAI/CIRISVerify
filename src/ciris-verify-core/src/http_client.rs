@@ -1,4 +1,4 @@
-//! Centralized HTTP client factory for CIRISVerify (v4.8.0+, #52).
+//! Centralized HTTP client factory for CIRISVerify (#52).
 //!
 //! Every reqwest::Client construction in `ciris-verify-core` goes
 //! through [`build_async_http_client`]. The factory enforces:
@@ -10,8 +10,7 @@
 //! - `user_agent("CIRISVerify/{ver}")`
 //!
 //! No naked `reqwest::Client::new()` / `reqwest::Client::builder()`
-//! call sites should remain in `ciris-verify-core` after the v4.8.0
-//! integration.
+//! call sites belong in `ciris-verify-core`.
 //!
 //! # reqwest 0.12.28 compatibility note
 //!

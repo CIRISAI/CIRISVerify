@@ -113,10 +113,9 @@ class HardwareType(str, Enum):
             HardwareType.ANDROID_KEYSTORE: 3,
             # These MIRROR Rust's canonical `HardwareType::security_level()`
             # (ciris-keyring/src/types.rs) — FIPS 140-2 Level 3+ HSMs are 5 there.
-            # The first cut of this table reasoned them out as 4 instead of
-            # reading the canonical source two files away, which would have made
-            # the same hardware yield different tier decisions through Rust and
-            # through Python (Codex P2 on PR #298).
+            # The two tables must agree, or the same hardware yields different
+            # tier decisions through Rust and Python; scripts/check-cc-registry-tokens.sh
+            # compares them.
             HardwareType.AWS_CLOUD_HSM: 5,
             HardwareType.AZURE_HSM: 5,
             HardwareType.GCP_CLOUD_HSM: 5,
@@ -601,7 +600,7 @@ class HardwareInfo(BaseModel):
 
 
 # =============================================================================
-# Runtime tree-walking verifier (CIRISVerify#9, v1.13.0+)
+# Runtime tree-walking verifier (CIRISVerify#9)
 # =============================================================================
 #
 # Walks a source tree on disk and compares against the registered
@@ -672,7 +671,7 @@ class TreeVerifyResult(BaseModel):
     is unreachable); inspect `registry_error` to distinguish a tampered
     tree from a network failure.
 
-    ## v1.14.0 verdict semantics (CIRISVerify#15)
+    ## Verdict semantics (CIRISVerify#15)
 
     Missing files are NOT a tampering signal — an agent missing critical
     code doesn't run (broken-not-tampered, caught at boot). Common case:

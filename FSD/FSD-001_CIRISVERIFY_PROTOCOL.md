@@ -3,25 +3,15 @@
 **Status**: Draft
 **Author**: Eric Moore, CIRIS L3C
 **Created**: 2026-01-25
-**Updated**: 2026-01-25
+**Updated**: 2026-10-28
 **Scope**: Hardware-rooted license verification for CIRIS ecosystem
 **Risk Level**: CRITICAL (Life-Safety Systems Dependent)
-
-> **Superseded in part (21.0.0, CIRISVerify#176 / #69).** Multi-source validation
-> is no longer DNS + HTTPS consensus over a single steward key. The trust root is
-> the accord-authorized **GenesisBundle** (CC 5.3.4), fetched over HTTPS from each
-> trust-root host and verified against the accord holders baked into this binary;
-> DNS is not a source and the steward key is retired. A licence is no longer a JWT
-> verified against a steward key but a cosigned `licensure:{authority}:v1` row
-> honoured through the reader's trust set (CC 4.4.3.8); until verify evaluates
-> those rows every deployment is community. §5 below is current; the DNS TXT,
-> steward-key and licence-JWT material later in this document is historical.
 
 ## Executive Summary
 
 CIRISVerify is an open-source (AGPL-3.0) binary module that provides hardware-rooted license verification for the CIRIS ecosystem. It enables CIRISAgent deployments to cryptographically prove their license status, ensuring that community agents (CIRISCare) cannot masquerade as licensed professional agents (CIRISMedical, CIRISLegal, CIRISFinancial) even if the open-source code is modified.
 
-**The core guarantee**: An agent cannot claim to be licensed without cryptographic proof from a hardware-bound verification module that validates against multiple independent sources.
+**The core guarantee**: An agent cannot claim to be licensed without cryptographic proof from a hardware-bound verification module whose trust root is authorized by the accord holders baked into the binary (CC 5.3.4).
 
 ## Mission Alignment
 
@@ -101,12 +91,13 @@ CIRISVerify is implemented in **Rust** for the following reasons:
 | Component | Crate | Purpose |
 |-----------|-------|---------|
 | Classical crypto | `p256`, `ed25519-dalek` | ECDSA P-256, Ed25519 signatures |
-| Post-quantum | `ml-dsa` or `aws-lc-rs` | ML-DSA-65 (FIPS 204) |
-| Hardware keystore | `keyring-manager` (Veilid fork) | Cross-platform secure storage |
-| TPM | `tss-esapi` | TPM 2.0 integration |
-| gRPC | `tonic` | Protocol implementation |
-| Protobuf | `prost` | Message serialization |
+| Post-quantum | `ml-dsa` | ML-DSA-65 (FIPS 204) |
+| Hardware keystore | `ciris-keyring` (extends Veilid's `keyring-manager` pattern) | Cross-platform secure storage |
+| TPM | runtime-loaded `libciris_tpm_plugin` (C ABI over `tss-esapi`) | TPM 2.0 integration without link-time `libtss2` |
+| Canonicalization | `serde_jcs` | RFC 8785 JCS for signed bytes |
 | Async runtime | `tokio` | Async I/O |
+
+The protocol is defined in `protocol/ciris_verify.proto`; the shipped interface is the C FFI (Appendix A) and the Python/Swift bindings over it.
 
 ### Architecture Overview
 
@@ -115,13 +106,13 @@ CIRISVerify is implemented in **Rust** for the following reasons:
 │                    VERIFICATION INFRASTRUCTURE                           │
 │                                                                          │
 │  ┌────────────────────────────────────────────────────────────────────┐ │
-│  │                    Multi-Source Validation                          │ │
+│  │                    Trust-Root Hosts (HTTPS)                         │ │
 │  │                                                                     │ │
-│  │  DNS (US)                 DNS (EU)                HTTPS Endpoint   │ │
-│  │  ciris-services-1.ai      ciris-services-eu-1.com verify.ciris.ai  │ │
-│  │  (Registrar A)            (Registrar B, .com TLD) (Cloudflare)     │ │
+│  │  api.registry.        us.registry.          eu.registry.           │ │
+│  │  ciris-services-1.ai  ciris-services-1.ai   ciris-services-1.ai    │ │
 │  │                                                                     │ │
-│  │  All three MUST agree on steward public key and revocation status  │ │
+│  │  Each serves a GenesisBundle; each is verified on its own against  │ │
+│  │  the baked accord holders. Highest verified version is the root.   │ │
 │  └────────────────────────────────────────────────────────────────────┘ │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -130,7 +121,7 @@ CIRISVerify is implemented in **Rust** for the following reasons:
 │                 CIRIS VERIFY MODULE (Open Source - AGPL-3.0)             │
 │                                                                          │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐   │
-│  │  Hardware   │  │  Multi-DNS  │  │  Binary     │  │  License    │   │
+│  │  Hardware   │  │  Trust-Root │  │  Binary     │  │  License    │   │
 │  │  Security   │  │  Validator  │  │  Integrity  │  │  Engine     │   │
 │  │  Module     │  │             │  │  Checker    │  │             │   │
 │  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘  └──────┬──────┘   │
@@ -165,9 +156,9 @@ CIRISVerify is implemented in **Rust** for the following reasons:
 
 | Component | Classical Algorithm | Post-Quantum Algorithm | Status |
 |-----------|--------------------|-----------------------|--------|
-| **License Signing** | Ed25519 | ML-DSA-65 (FIPS 204) | **Required** |
+| **Trust-root authorization** (accord holders) | Ed25519 | ML-DSA-65 (FIPS 204) | **Required** |
+| **Federation rows** (licensure, revocation, key records) | Ed25519 | ML-DSA-65 | **Required** |
 | **Hardware Attestation** | Platform-preferred (see below) | ML-DSA-65 (software) | **Required** |
-| **Steward Key** | Ed25519 | ML-DSA-65 | **Required** |
 | **Response Signatures** | Ed25519 (software) | ML-DSA-65 | **Required** |
 
 **Verification requires BOTH signatures to pass.** This provides:
@@ -211,31 +202,31 @@ The verification response is signed by a key that is:
 
 An adversary who modifies the code cannot forge this signature.
 
-#### 2. Multi-Source Validation
-No single point of compromise:
-- DNS record at `ciris-services-1.ai` (US registrar)
-- DNS record at `ciris-services-eu-1.com` (EU registrar, .com TLD)
-- HTTPS endpoint at `verify.ciris.ai`
+#### 3. Accord-Authorized Trust Root
+The trust root is a GenesisBundle authorized by a strict majority of the accord
+holders whose keys are baked into the binary (CC 5.3.4, §5). No host, registrar or
+single key can substitute it:
+- a host can withhold a bundle but cannot forge one;
+- one verified host is enough to select a root;
+- two verified bundles at the same version with different fingerprints are
+  equivocation, select nothing, and report `ERROR_SOURCES_DISAGREE`.
 
-All three must agree. Compromising one triggers `SOURCES_DISAGREE` status.
-
-#### 3. Fail-Safe to Community Mode
+#### 4. Fail-Safe to Community Mode
 Any error condition degrades to CIRISCare (unlicensed) behavior:
 - Binary tampered → LOCKDOWN
-- Sources disagree → RESTRICTED
-- Verification failed → COMMUNITY MODE
-- License expired → COMMUNITY MODE
-- License revoked → COMMUNITY MODE
+- Trust-root equivocation → RESTRICTED
+- No trust root verified → COMMUNITY MODE
+- No honoured licensure row → COMMUNITY MODE
 
 **The failure mode is always MORE restrictive, never less.**
 
-#### 4. Mandatory Disclosure
+#### 5. Mandatory Disclosure
 The binary returns a `mandatory_disclosure` string that:
 - Is baked into the binary (cannot be modified without detection)
 - MUST be displayed to users
 - Accurately reflects the actual license status
 
-#### 5. Public Protocol, Open Implementation
+#### 6. Public Protocol, Open Implementation
 - **Public**: Protocol spec (this document), interface definition (protobuf)
 - **Open Source**: Implementation source code (AGPL-3.0)
 - **Verifiable**: Behavior is deterministic and auditable
@@ -246,16 +237,16 @@ The binary returns a `mandatory_disclosure` string that:
 
 ```protobuf
 // ciris_verify.proto
-// Version: 1.0.0
+// Version: 2.0.0
 //
 // This protocol is PUBLIC. Anyone can implement a client.
 // The server implementation is open-source (AGPL-3.0).
 
 syntax = "proto3";
 
-package ciris.verify.v1;
+package ciris.verify.v2;
 
-option go_package = "github.com/cirisai/ciris-verify/proto/v1";
+option go_package = "github.com/cirisai/ciris-verify/proto/v2";
 
 // CIRISVerify provides hardware-rooted license verification
 service CIRISVerify {
@@ -265,8 +256,8 @@ service CIRISVerify {
   // Check if a specific capability is allowed
   rpc CheckCapability(CapabilityCheckRequest) returns (CapabilityCheckResponse);
 
-  // Get the current steward public key (for external verification)
-  rpc GetStewardKey(StewardKeyRequest) returns (StewardKeyResponse);
+  // The trust root this module selected (CC 5.3.4)
+  rpc GetTrustRoot(TrustRootRequest) returns (TrustRoot);
 
   // Health check
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
@@ -310,8 +301,8 @@ message LicenseStatusResponse {
 enum LicenseStatus {
   LICENSE_STATUS_UNSPECIFIED = 0;
 
-  // Licensed statuses
-  LICENSED_PROFESSIONAL = 1;      // Full steward-backed license
+  // Licensed statuses (reserved for the licensure gate, CC 4.4.3.8)
+  LICENSED_PROFESSIONAL = 1;      // Professional licence
   LICENSED_COMMUNITY_PLUS = 2;    // Enhanced community (some features)
 
   // Unlicensed statuses
@@ -320,14 +311,17 @@ enum LicenseStatus {
 
   // Error statuses
   ERROR_BINARY_TAMPERED = 10;     // Integrity check failed
-  ERROR_SOURCES_DISAGREE = 11;    // Multi-source mismatch (attack?)
-  ERROR_VERIFICATION_FAILED = 12; // Could not reach any source
-  ERROR_LICENSE_REVOKED = 13;     // Explicitly revoked by steward
-  ERROR_LICENSE_EXPIRED = 14;     // Past expiration date
+  ERROR_SOURCES_DISAGREE = 11;    // Trust-root equivocation
+  ERROR_VERIFICATION_FAILED = 12; // No trust root verified
+  ERROR_LICENSE_REVOKED = 13;     // Reserved for the licensure gate
+  ERROR_LICENSE_EXPIRED = 14;     // Reserved for the licensure gate
 }
 ```
 
 ### 3. License Details
+
+`LicenseDetails` is populated only by the licensure gate (see Licensure below), which
+is not implemented; it is absent from every response today.
 
 ```protobuf
 message LicenseDetails {
@@ -356,7 +350,7 @@ message LicenseDetails {
   // Deployment constraints
   DeploymentConstraints constraints = 11;
 
-  // Original signed license JWT (for external verification)
+  // Never populated (no licence JWT exists)
   string license_jwt = 12;
 }
 
@@ -555,7 +549,7 @@ only `bundle` is read. Each bundle is verified independently:
 6. it carries a `genesis-charter` row.
 
 The authorization digest is SHA-256 over the JCS canonicalization of the projection
-in `ciris_verify_core::genesis_bundle` (moved there from CIRISPersist, #1141).
+in `ciris_verify_core::genesis_bundle`.
 
 Selection: the highest verified `version` is the root; two verified bundles at that
 version with different fingerprints are equivocation and select nothing
@@ -633,7 +627,7 @@ message ResponseMetadata {
 
 ## Mandatory Disclosure Strings
 
-The following disclosure strings are baked into the binary and cannot be modified:
+The following disclosure strings are baked into the binary and cannot be modified. The licensed, revoked and expired strings apply only once the licensure gate (CC 4.4.3.8) exists:
 
 ```
 LICENSED_PROFESSIONAL:
@@ -667,12 +661,12 @@ Contact: security@ciris.ai"
 
 ERROR_SOURCES_DISAGREE:
 "⚠️ SECURITY WARNING ⚠️
-Verification sources returned conflicting information.
+Trust-root hosts served two different verified bundles at the same version.
 Possible security incident or network attack detected.
 Operating in restricted mode. Contact: security@ciris.ai"
 
 ERROR_LICENSE_REVOKED:
-"License {license_id} has been REVOKED by the steward.
+"License {license_id} has been REVOKED.
 Reason: {revocation_reason}
 This deployment is no longer authorized for professional use.
 Operating in community mode only."
@@ -683,199 +677,33 @@ Operating in community mode until license is renewed.
 Contact your administrator or licensing@ciris.ai"
 ```
 
-## DNS Record Format (Hybrid Keys)
+## HTTPS Endpoint
 
-### TXT Record Schema
+### GET /v1/trust-root/bundle
 
-ML-DSA public keys are ~2KB, exceeding practical DNS TXT limits. The solution: store the Ed25519 key directly and the ML-DSA key fingerprint, with full PQC key available via HTTPS.
+Each trust-root host serves its GenesisBundle here (registries also serve it at
+`/v1/steward-key`). The response is a JSON wrapper whose only field read is
+`bundle`; the wrapper is unsigned and carries no authority. Verification and
+selection are specified in §5. Defaults: `https://api.registry.ciris-services-1.ai`,
+`https://us.registry.ciris-services-1.ai`, `https://eu.registry.ciris-services-1.ai`.
+Hosts add availability, not trust: a host can withhold a bundle but cannot forge
+one, because only the baked accord holders can authorize it. DNS is not a source.
 
-```
-_ciris-verify.ciris-services-1.ai     TXT "v=ciris2 key=ed25519:{base64_pubkey} pqc_fp=sha256:{hex_fingerprint} rev={revision} ts={timestamp}"
-_ciris-verify.ciris-services-eu-1.com TXT "v=ciris2 key=ed25519:{base64_pubkey} pqc_fp=sha256:{hex_fingerprint} rev={revision} ts={timestamp}"
-```
+## Licensure (CC 4.4.3.8)
 
-**Fields**:
-- `v`: Protocol version (**ciris2** - indicates hybrid mode)
-- `key`: Steward Ed25519 public key (base64, ~44 chars)
-- `pqc_fp`: SHA-256 fingerprint of ML-DSA public key (hex, 64 chars)
-- `rev`: Revocation list revision number
-- `ts`: Last update timestamp (Unix)
+A licence is a cosigned `licensure:{authority}:v1` row about the deployment's key,
+honoured when its authority is in the reader's trust set. This module does not yet
+evaluate licensure rows, so the licence gate returns no licence and every deployment
+reports `UNLICENSED_COMMUNITY` or a more restrictive status. The local cache is never
+an authority for a licence. `LICENSED_PROFESSIONAL`, `LICENSED_COMMUNITY_PLUS`,
+`ERROR_LICENSE_EXPIRED`, `ERROR_LICENSE_REVOKED` and the `LicenseDetails` message are
+reserved for the licensure gate and are not produced today; `LicenseDetails.license_jwt`
+and the `license_pqc_*` / `signature_mode` fields are never populated.
 
-### Example
+## Revocation
 
-```
-_ciris-verify.ciris-services-1.ai TXT "v=ciris2 key=ed25519:MCowBQYDK2VwAyEAb3X9... pqc_fp=sha256:a1b2c3d4e5f6... rev=2026012501 ts=1737763200"
-```
-
-### PQC Key Retrieval
-
-The full ML-DSA public key is retrieved via HTTPS:
-
-1. Fetch `GET https://verify.ciris.ai/v1/steward-key`
-2. Compute `SHA-256(response.steward_key_pqc)`
-3. Compare with `pqc_fp` from DNS records
-4. All three sources (DNS US, DNS EU, HTTPS) must have matching fingerprint
-
-This maintains multi-source validation while accommodating PQC key sizes.
-
-## HTTPS Endpoint Specification
-
-### GET /v1/steward-key
-
-Returns current steward signing keys (both classical and PQC).
-
-**Response**:
-```json
-{
-  "classical": {
-    "algorithm": "Ed25519",
-    "key": "MCowBQYDK2VwAyEA...",
-    "key_id": "steward-2026-01"
-  },
-  "pqc": {
-    "algorithm": "ML-DSA-65",
-    "key": "MIIFxjALBglg...",
-    "key_id": "steward-pqc-2026-01",
-    "fingerprint": "sha256:a1b2c3d4e5f6..."
-  },
-  "signature_mode": "HYBRID_REQUIRED",
-  "revision": 2026012501,
-  "timestamp": 1737763200,
-  "next_rotation": 1745625600,
-  "response_signature_classical": "base64...",
-  "response_signature_pqc": "base64..."
-}
-```
-
-**Note**: The response itself is signed with both keys to prevent MITM on the key exchange.
-
-### GET /v1/revocation/{license_id}
-
-Check if a specific license is revoked.
-
-**Response**:
-```json
-{
-  "license_id": "CML-2026-0001",
-  "revoked": false,
-  "checked_at": 1737763200
-}
-```
-
-Or if revoked:
-```json
-{
-  "license_id": "CML-2026-0001",
-  "revoked": true,
-  "revoked_at": 1737500000,
-  "reason": "License holder request",
-  "checked_at": 1737763200
-}
-```
-
-### POST /v1/validate-license
-
-Validate a license JWT.
-
-**Request**:
-```json
-{
-  "license_jwt": "eyJ..."
-}
-```
-
-**Response**:
-```json
-{
-  "valid": true,
-  "license_id": "CML-2026-0001",
-  "license_type": "PROFESSIONAL_MEDICAL",
-  "organization": "Metro Hospital Network",
-  "expires_at": 1745625600,
-  "capabilities": ["domain:medical:triage", "domain:medical:diagnosis_support"]
-}
-```
-
-## License JWT Format (Hybrid Signatures)
-
-Licenses are issued with **dual signatures** (Ed25519 + ML-DSA). This is a day-1 requirement per CNSA 2.0 guidance.
-
-### Header
-```json
-{
-  "alg": "EdDSA+ML-DSA-65",
-  "typ": "CIRIS-LICENSE-HYBRID",
-  "kid": "steward-2026-01",
-  "pqc_kid": "steward-pqc-2026-01"
-}
-```
-
-### Payload
-```json
-{
-  "iss": "verify.ciris.ai",
-  "sub": "org:metro-hospital-network",
-  "aud": "ciris-verify",
-  "iat": 1737763200,
-  "exp": 1745625600,
-  "nbf": 1737763200,
-  "jti": "CML-2026-0001",
-
-  "ciris": {
-    "license_type": "PROFESSIONAL_MEDICAL",
-    "organization_name": "Metro Hospital Network",
-    "organization_id": "org-mhn-001",
-
-    "capabilities": [
-      "domain:medical:triage",
-      "domain:medical:diagnosis_support",
-      "domain:medical:prescription_verify",
-      "domain:medical:imaging"
-    ],
-
-    "capabilities_denied": [
-      "domain:medical:surgery",
-      "domain:medical:autonomous_treatment"
-    ],
-
-    "max_autonomy_tier": "A3",
-
-    "constraints": {
-      "requires_supervisor": true,
-      "supervisor_credentials": ["PMDC", "GMC", "USMLE"],
-      "offline_grace_hours": 72,
-      "requires_hardware_attestation": false
-    },
-
-    "crypto": {
-      "classical_alg": "Ed25519",
-      "pqc_alg": "ML-DSA-65",
-      "signature_mode": "HYBRID_REQUIRED"
-    }
-  }
-}
-```
-
-### Dual Signatures
-
-The license includes **two signatures**, both of which MUST validate:
-
-```
-License = Base64URL(Header) + "." + Base64URL(Payload) + "." + Base64URL(ClassicalSig) + "." + Base64URL(PQCSig)
-```
-
-| Signature | Algorithm | Key ID | Size |
-|-----------|-----------|--------|------|
-| **Classical** | Ed25519 | `steward-2026-01` | 64 bytes |
-| **Post-Quantum** | ML-DSA-65 | `steward-pqc-2026-01` | ~3,293 bytes |
-
-**Verification Process**:
-1. Parse the license JWT (4 parts instead of standard 3)
-2. Verify Ed25519 signature against `steward_key_classical`
-3. Verify ML-DSA-65 signature against `steward_key_pqc`
-4. **Both must pass** - failure of either rejects the license
-
-**Note**: The total license size increases from ~500 bytes to ~5KB due to the ML-DSA signature. This is acceptable for license issuance operations.
+Revocation is a quorum-signed `federation_revocations` row. There is no separate
+signed revocation list and no revocation endpoint.
 
 ## Integration Requirements
 
@@ -940,10 +768,11 @@ class WiseBus:
 | Threat | Mitigation |
 |--------|------------|
 | Code modification to skip verification | Hardware signature cannot be forged without hardware key |
-| Fake license file | Signature verification against multi-source steward key |
-| MITM of verify.ciris.ai | DNS sources won't match HTTPS |
-| DNS poisoning of one source | Other sources won't match |
-| Replay of old valid license | Revocation check, expiry validation |
+| Fake license file | A licence is a cosigned licensure row honoured only through the reader's trust set; no file or cache is an authority |
+| Substituted or MITM trust-root host | Bundle must verify against the baked accord holders; a host can withhold, not forge |
+| Equivocating hosts | Two verified bundles at one version select nothing (`ERROR_SOURCES_DISAGREE`) |
+| Rollback to an older trust root | Highest verified version is selected |
+| Replay of a revoked object | Quorum-signed `federation_revocations` rows |
 | Emulator/debugger interception | Platform integrity checks |
 | Binary modification | Self-integrity verification |
 | Key extraction from binary | Keys stored in hardware, never in binary |
@@ -951,8 +780,8 @@ class WiseBus:
 ### Security Assumptions
 
 1. Hardware security modules (TPM/Secure Enclave/Keystore) are not compromised
-2. Multiple DNS registrars are not simultaneously compromised
-3. HTTPS certificate infrastructure is not compromised
+2. Fewer than a strict majority of the baked accord holders' keys are compromised
+3. At least one trust-root host is reachable (otherwise the module stays in community mode)
 4. Adversary does not have physical access to hardware
 5. System clocks are reasonably synchronized (within 5 minutes of actual time)
 6. Network path to at least one verification source is not fully compromised
@@ -987,31 +816,25 @@ IF hardware_type == SOFTWARE_ONLY:
 The PQC signature MUST cover the classical signature to prevent signature stripping attacks:
 
 ```
-signed_payload = Header || Payload || Classical_Signature
-PQC_Signature = Sign_ML-DSA(steward_pqc_key, signed_payload)
+ed25519_sig = Sign_Ed25519(key, message)
+mldsa_sig   = Sign_ML-DSA-65(pqc_key, message || ed25519_sig)
 ```
 
 Verification order:
-1. Verify classical signature over (Header || Payload)
-2. Verify PQC signature over (Header || Payload || Classical_Signature)
-3. **Both MUST pass** - failure of either rejects the license
+1. Verify the Ed25519 signature over `message`
+2. Verify the ML-DSA-65 signature over `message || ed25519_sig`
+3. **Both MUST pass** - failure of either rejects the object
+
+For a GenesisBundle authorization, `message` is the 32-byte authorization digest (§5).
 
 This binding ensures an attacker cannot strip one signature while preserving the other.
 
-#### 3. Certificate Pinning
+#### 3. Transport Security
 
-CIRISVerify MUST implement certificate pinning for `verify.ciris.ai`:
-
-```
-Primary Pin: SHA-256 fingerprint of verify.ciris.ai leaf certificate
-Backup Pin: SHA-256 fingerprint of issuing CA certificate
-Pin Expiry: Pins valid for 90 days, updated via binary releases
-```
-
-If certificate does not match pinned values:
-- Log security event
-- Fall back to DNS-only validation (2 sources)
-- Return `PARTIAL_AGREEMENT` status with security warning
+TLS protects availability and privacy of the bundle fetch, not its authority: a
+bundle is accepted only if it verifies against the baked accord holders, so a host
+presenting a different certificate can at most withhold a root. `VerifyConfig.cert_pin`
+accepts a `sha256:` certificate fingerprint for a host.
 
 #### 4. Constant-Time Cryptographic Operations
 
@@ -1065,7 +888,7 @@ Rationale: Exposing individual check results allows attackers to enumerate and b
 
 #### 7. PARTIAL_AGREEMENT Capability Restrictions
 
-When validation status is `PARTIAL_AGREEMENT` (2 of 3 sources agree):
+When validation status is `PARTIAL_AGREEMENT` (a root was selected, but some hosts failed or served a lower version):
 
 | Capability | Allowed |
 |------------|---------|
@@ -1075,12 +898,12 @@ When validation status is `PARTIAL_AGREEMENT` (2 of 3 sources agree):
 | A3_HIGH | **Reduced** - requires supervisor confirmation |
 | A4_CRITICAL | **NO** |
 
-Rationale: Partial agreement may indicate an ongoing attack. High-autonomy actions should require additional confirmation.
+Rationale: Partial agreement may indicate a host under attack. High-autonomy actions should require additional confirmation.
 
 ### Known Limitations
 
 1. **Software-only mode**: Limited to community tier only (see requirement above)
-2. **Offline operation**: Cached licenses may become stale; grace period configurable
+2. **Offline operation**: With no reachable trust-root host the module stays in community mode
 3. **Novel attacks**: New hardware vulnerabilities may emerge; binary updates required
 4. **Social engineering**: Cannot prevent users from ignoring warnings
 5. **Hardware PQC gap**: PQC signatures are software-based until HSMs support ML-DSA
@@ -1089,15 +912,15 @@ Rationale: Partial agreement may indicate an ongoing attack. High-autonomy actio
 ## Testing Requirements
 
 ### Unit Tests
-- License JWT parsing and validation
-- Multi-source consensus algorithm
+- GenesisBundle verification against the baked roster
+- Trust-root selection (highest version, equivocation)
 - Capability grant/deny logic
 - Mandatory disclosure selection
 
 ### Integration Tests
-- End-to-end license verification flow
+- End-to-end trust-root fetch and verification
 - Offline degradation behavior
-- Source disagreement handling
+- Equivocation handling
 - Cache TTL and refresh
 
 ### Security Tests
@@ -1138,29 +961,17 @@ ciris-verify/
     └── ciris_verify.proto
 ```
 
-### Checksum Verification (Hybrid Signatures)
+### Release Verification (Hybrid Signatures)
 
-All binaries are accompanied by steward-signed checksums using **both** Ed25519 and ML-DSA:
+Each release artifact is described by a build-manifest Contribution
+(`provenance:build_manifest:{target}:v1`) signed with a bound hybrid signature
+(Ed25519 + ML-DSA-65) by the CI pipeline key. The manifest names the artifact's
+`binary_hash`, `binary_version` and target; a wheel's own `Version` and platform tag
+must match the manifest (`verify_wheel_blob`). The pipeline key has standing either
+by delegation from an accord-rooted authority or by the accord role on its key record.
+The full lifecycle is FSD-006; the manifest shape is `docs/BUILD_MANIFEST.md`.
 
-```
-SHA256SUMS:
-abc123...  android/arm64-v8a/libciris_verify.so
-def456...  android/armeabi-v7a/libciris_verify.so
-...
-
-SHA256SUMS.sig.ed25519: Ed25519 signature of SHA256SUMS
-SHA256SUMS.sig.mldsa65: ML-DSA-65 signature of SHA256SUMS
-```
-
-**Verification Process**:
-1. Download `SHA256SUMS`, `SHA256SUMS.sig.ed25519`, and `SHA256SUMS.sig.mldsa65`
-2. Fetch steward keys from `verify.ciris.ai/v1/steward-key`
-3. Verify Ed25519 signature against `steward_key_classical`
-4. Verify ML-DSA-65 signature against `steward_key_pqc`
-5. **Both signatures must pass** before trusting binary checksums
-6. Verify binary SHA-256 matches the signed checksum
-
-Clients MUST verify both signatures before loading binaries.
+Clients MUST verify the manifest signature and the artifact hash before loading a binary.
 
 ## Versioning
 
@@ -1169,11 +980,7 @@ Clients MUST verify both signatures before loading binaries.
 - Minor: Backward-compatible additions
 - Patch: Bug fixes
 
-Current version: **2.0.0** (Hybrid Cryptography)
-
-Version history:
-- 2.0.0 (2026-01-25): Hybrid cryptography as day-1 standard
-- 1.0.0 (never released): Classical-only draft
+Current version: **2.0.0** (Hybrid Cryptography, package `ciris.verify.v2`).
 
 ### Binary Versioning
 Binaries are versioned independently but must support current protocol version.
@@ -1183,16 +990,13 @@ The protocol supports algorithm agility via the `PQCAlgorithm` enum. Future NIST
 
 ## Governance
 
-### Key Rotation
-- Steward signing keys rotate annually
-- 30-day overlap period for transition
-- Emergency rotation procedure for compromise
+### Trust-Root Rotation
+- The trust root rotates by a new GenesisBundle `version` authorized by the accord quorum (§5); the highest verified version is selected.
+- The accord roster itself changes by an entrenched-family `supersedes` authorized by the prior roster's strict majority (FSD-004, FSD-005).
 
 ### Revocation
-- Steward may revoke licenses for cause
-- 7-day cure period for minor violations
-- Immediate revocation for safety-critical violations
-- Published revocation policy
+- Revocation is a quorum-signed `federation_revocations` row.
+- Revocation policy for licences is the licensing authority's, expressed through its licensure rows (CC 4.4.3.8).
 
 ### Disputes
 - Arbitration process defined in license agreement
@@ -1200,7 +1004,7 @@ The protocol supports algorithm agility via the `PQCAlgorithm` enum. Future NIST
 
 ### Humanitarian and Extended Deployment Options
 
-The following license options MAY be configured by the steward for specific deployment contexts:
+The following licence options MAY be configured by the licensing authority for specific deployment contexts:
 
 #### Extended Offline Grace Period
 
@@ -1213,20 +1017,13 @@ Standard licenses include 72-hour offline grace. For humanitarian deployments (r
 | Humanitarian field mission | 336 hours (14 days) |
 | Disaster response | 504 hours (21 days) |
 
-Configuration via license JWT:
-```json
-"constraints": {
-  "offline_grace_hours": 336,
-  "deployment_context": "humanitarian_field"
-}
-```
+The grace period is `DeploymentConstraints.offline_grace_hours`.
 
 #### Low-Bandwidth Mode
 
-For deployments with limited connectivity (satellite, 2G), licenses MAY be configured to:
-- Accept 2-of-3 source validation without degradation
-- Use fingerprint-only PQC validation (skip full key fetch)
-- Extend cache TTL to reduce verification frequency
+For deployments with limited connectivity (satellite, 2G), a licence MAY extend the
+cache TTL to reduce verification frequency. One verified trust-root host is already
+sufficient to select a root.
 
 #### Multi-Language Disclosure
 
@@ -1236,11 +1033,9 @@ Mandatory disclosures are available in localized versions. The binary includes d
 
 Future versions will support runtime locale selection via `Accept-Language` header equivalent.
 
-#### Emergency Override (Future)
+#### Emergency Override (Not Specified)
 
-**Status: Under consideration for v2.1**
-
-For mass casualty events and declared emergencies, a steward-activated emergency mode MAY:
+For mass casualty events and declared emergencies, an emergency mode MAY:
 - Extend all active licenses by 72 hours
 - Issue temporary emergency tokens to registered humanitarian organizations
 - Enable geographic emergency zones with relaxed verification

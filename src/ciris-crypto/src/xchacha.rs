@@ -1,4 +1,4 @@
-//! XChaCha20-Poly1305 authenticated encryption (CIRISVerify#82, v6.3.0+).
+//! XChaCha20-Poly1305 authenticated encryption (CIRISVerify#82).
 //!
 //! The extended-nonce ChaCha20-Poly1305 AEAD — 24-byte (192-bit) nonce,
 //! large enough that random nonces never collide in practice. This is the

@@ -1,5 +1,5 @@
 //! Federation message envelope — the authenticated transport-identity
-//! binding substrate (CIRISVerify#27, v2.9.0+).
+//! binding substrate (CIRISVerify#27).
 //!
 //! ## What this is
 //!
@@ -47,12 +47,11 @@
 //! identity cannot be replayed back over a newer binding. This mirrors
 //! the `revocation_revision` anti-rollback rule.
 //!
-//! ## Rollout (v2.9.0)
+//! ## Advisory binding
 //!
-//! `sender_transport_identities` is **advisory** in v2.9.0 — an empty
-//! list is valid (no binding asserted), recipients tolerate it. A later
-//! release makes a non-empty binding required after a fleet floor
-//! version + flag day (CIRISVerify#28 Phase 4).
+//! `sender_transport_identities` is **advisory** — an empty list is valid
+//! (no binding asserted), and recipients tolerate it. Requiring a non-empty
+//! binding is a fleet-wide flag day (CIRISVerify#28 Phase 4).
 
 use std::collections::HashMap;
 use std::sync::RwLock;

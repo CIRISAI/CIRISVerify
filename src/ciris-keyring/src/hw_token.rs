@@ -28,17 +28,10 @@
 //!   accord-holder provisioning reach it through
 //!   `user_identity::get_user_identity_signer`. It is the backend the
 //!   six-key HUMANITY_ACCORD ceremony ran on physical YubiKey 5 FIPS
-//!   hardware, shipped in v5.13.0 (CIRISVerify#80).
+//!   hardware. Token signing lives there, not in this module; the
+//!   accord-holder flow does not run on a software stand-in.
 //!
-//! **History, so the next reader is not misled (CIRISVerify#283):** this
-//! module once carried a `get_token_signer` stub returning `NotSupported`
-//! "pending CIRISVerify#62". #62 closed on 2026-06-18 and the backend shipped
-//! under `pkcs11.rs` instead, but the stub, its doc, and a test pinning its
-//! error text outlived it by three months — long enough for a custody review
-//! to follow the prose and conclude the accord-holder flow ran on a software
-//! stand-in. It does not. The stub was removed in 16.0.0; it had no callers.
-//!
-//! ## Signing-only Ed25519 framing (CIRISVerify#62, closed 2026-06-18)
+//! ## Signing-only Ed25519 framing
 //!
 //! These tokens carry the **classical half only** — a non-extractable
 //! Ed25519 signing key (OpenPGP applet / PIV slot). As of 2026 no shipping

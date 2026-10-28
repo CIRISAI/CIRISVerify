@@ -1,5 +1,5 @@
 //! Build manifest as a CEG `scores` Contribution, in the one shape a node can
-//! store (CIRISVerify#299).
+//! store.
 //!
 //! ## The object
 //!
@@ -23,7 +23,7 @@
 //! }
 //! ```
 //!
-//! Three properties are load-bearing, and v18 got the first two wrong:
+//! Three properties are load-bearing:
 //!
 //! - **The dimension carries the `:v1` tail.** CC 3.1.7 R3 requires exactly
 //!   one trailing version segment; persist refuses its absence as
@@ -64,14 +64,9 @@
 //! So the verifier takes a [`PipelineBlessing`] stating which authority the
 //! caller asked and what it answered, and checks that it names **this**
 //! pipeline. A call site cannot reach a [`VerifiedManifest`] without having
-//! asked one of them.
-//!
-//! (Until 19.0.0 verify carried two authority models of its own: a one-hop
-//! grant check, and an accord co-scrub check on the pipeline's key record. The
-//! co-scrub check was the right *question* — it is what persist's
-//! `is_infra_attest_effective` answers — but verify's copy could not see a
-//! quorum role-withdrawal, so a withdrawn pipeline still verified. Both are
-//! gone; the substrate, which sees withdrawals, answers.)
+//! asked one of them. Verify keeps no authority model of its own: only the
+//! substrate sees a quorum role-withdrawal, so only the substrate can say a
+//! withdrawn pipeline no longer verifies.
 
 use chrono::{DateTime, Timelike, Utc};
 use serde_json::{json, Value};

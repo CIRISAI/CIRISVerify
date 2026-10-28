@@ -3,15 +3,15 @@
 //!
 //! ## The gap this closes
 //!
-//! A `BuildManifest` signs `binary_hash` and `binary_version` side by side, but
-//! nothing related one to the other. CIRISPersist's CI signed v53.1.8 manifests
-//! whose `binary_hash` was the sha256 of a **v29.0.0** wheel (the signer took
-//! `ls … | head -1` from a cache-restored `target/wheels/`). Every signature was
-//! genuine, so:
+//! A `BuildManifest` signs `binary_hash` and `binary_version` side by side, and
+//! a signature over both does not relate one to the other. A signer that picks
+//! up a stale wheel (say, from a cache-restored `target/wheels/`) produces a
+//! genuinely signed manifest whose `binary_hash` is an **older** wheel's, so a
+//! hash check alone:
 //!
-//! - the real v53.1.8 wheel was refused as tampered, and
-//! - **the v29 wheel passed, attested as v53.1.8** — a rollback under the
-//!   current version's signed name, with nothing in the chain able to object.
+//! - refuses the real current wheel as tampered, and
+//! - **passes the old wheel, attested as the current version** — a rollback
+//!   under the current version's signed name.
 //!
 //! A wheel states its own version and platform inside its `*.dist-info`, so the
 //! mismatch is detectable from the bytes alone, offline. [`read_wheel_identity`]

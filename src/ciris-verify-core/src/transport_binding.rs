@@ -300,8 +300,8 @@ pub struct TransportBindingVerdict {
     /// [`TransportBindingReason`] is deliberately coarse and `Copy`, so the
     /// diagnosis lives here instead of in the variant. Without it this plane
     /// could not be **probed**: a consumer asserting that its own subject
-    /// projection agrees with verify's needs the member *name*, and
-    /// previously the error was logged and discarded inside the verifier.
+    /// projection agrees with verify's needs the member *name*, which the
+    /// verdict would otherwise not carry.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subject_binding_error: Option<crate::subject_binding::SubjectBindingError>,
 }

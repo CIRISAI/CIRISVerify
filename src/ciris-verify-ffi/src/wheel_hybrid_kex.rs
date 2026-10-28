@@ -1,5 +1,5 @@
 //! Hybrid X25519 + ML-KEM-768 KEX — Python wheel surface
-//! (CIRISVerify#50, v4.7.0+).
+//! (CIRISVerify#50).
 //!
 //! Exposes the v4.6.0 [`ciris_crypto::hybrid_kex`] primitives to
 //! cross-wheel callers (notably the `ciris-verify` PyPI wheel) so
