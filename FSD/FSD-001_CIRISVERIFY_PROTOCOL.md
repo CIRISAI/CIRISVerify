@@ -7,6 +7,16 @@
 **Scope**: Hardware-rooted license verification for CIRIS ecosystem
 **Risk Level**: CRITICAL (Life-Safety Systems Dependent)
 
+> **Superseded in part (21.0.0, CIRISVerify#176 / #69).** Multi-source validation
+> is no longer DNS + HTTPS consensus over a single steward key. The trust root is
+> the accord-authorized **GenesisBundle** (CC 5.3.4), fetched over HTTPS from each
+> trust-root host and verified against the accord holders baked into this binary;
+> DNS is not a source and the steward key is retired. A licence is no longer a JWT
+> verified against a steward key but a cosigned `licensure:{authority}:v1` row
+> honoured through the reader's trust set (CC 4.4.3.8); until verify evaluates
+> those rows every deployment is community. §5 below is current; the DNS TXT,
+> steward-key and licence-JWT material later in this document is historical.
+
 ## Executive Summary
 
 CIRISVerify is an open-source (AGPL-3.0) binary module that provides hardware-rooted license verification for the CIRIS ecosystem. It enables CIRISAgent deployments to cryptographically prove their license status, ensuring that community agents (CIRISCare) cannot masquerade as licensed professional agents (CIRISMedical, CIRISLegal, CIRISFinancial) even if the open-source code is modified.
@@ -527,59 +537,44 @@ message SoftwareAttestation {
 }
 ```
 
-### 5. Multi-Source Validation
+### 5. Trust-Root Validation (CC 5.3.4)
+
+Each configured trust-root host serves a GenesisBundle at `GET /v1/trust-root/bundle`
+(registries also serve it at `/v1/steward-key`). The response wrapper is unsigned;
+only `bundle` is read. Each bundle is verified independently:
+
+1. it parses under the wire shape (each `attestations` element is exactly one of a
+   delegation row, a `family` record or a `community` record, rows first);
+2. `version` is 4 (the only accepted root version);
+3. `family_key_id` is the baked accord family;
+4. `consensus_protocol` is `quorum:M/N` (anything else is refused, never guessed);
+5. at least `max(M, strict_majority(baked roster))` distinct baked holders authorized
+   it with a hybrid signature (Ed25519 over the 32-byte authorization digest,
+   ML-DSA-65 over `digest ‖ ed25519_sig`); a duplicate holder is refused, a holder
+   outside the baked roster never counts;
+6. it carries a `genesis-charter` row.
+
+The authorization digest is SHA-256 over the JCS canonicalization of the projection
+in `ciris_verify_core::genesis_bundle` (moved there from CIRISPersist, #1141).
+
+Selection: the highest verified `version` is the root; two verified bundles at that
+version with different fingerprints are equivocation and select nothing
+(`produced_at` breaks no tie, CC 3.2 T8(ii)). One verified host is enough.
 
 ```protobuf
 message SourceValidation {
-  // DNS source 1 (US)
-  SourceResult dns_us = 1;
-
-  // DNS source 2 (EU)
-  SourceResult dns_eu = 2;
-
-  // HTTPS endpoint
-  SourceResult https_endpoint = 3;
-
-  // Overall validation status
   ValidationStatus overall_status = 4;
-
-  // Consensus steward key (if all sources agree)
-  bytes consensus_steward_key = 5;
-
-  // Consensus revocation revision
-  int64 consensus_revocation_revision = 6;
+  repeated SourceResult sources = 12;  // one per trust-root host
+  TrustRoot trust_root = 13;           // the selected root, if any
 }
 
 message SourceResult {
-  // Source identifier
-  string source = 1;
-
-  // Was the source reachable?
+  string source = 1;              // host base URL
   bool reachable = 2;
-
-  // Did it return valid data?
-  bool valid = 3;
-
-  // Steward key from this source
-  bytes steward_key = 4;
-
-  // Revocation list revision
-  int64 revocation_revision = 5;
-
-  // Timestamp of check
+  bool valid = 3;                 // served a bundle that verifies
   int64 checked_at = 6;
-
-  // Error message (if any)
   string error = 7;
-}
-
-enum ValidationStatus {
-  VALIDATION_STATUS_UNSPECIFIED = 0;
-  ALL_SOURCES_AGREE = 1;          // All 3 sources match
-  PARTIAL_AGREEMENT = 2;          // 2 of 3 sources match (degraded)
-  SOURCES_DISAGREE = 3;           // Sources return different keys (attack?)
-  NO_SOURCES_REACHABLE = 4;       // Offline - use cached
-  VALIDATION_ERROR = 5;           // Unexpected error
+  string bundle_fingerprint = 12; // sha256:<hex> over JCS(bundle)
 }
 ```
 

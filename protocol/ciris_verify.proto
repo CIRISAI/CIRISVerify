@@ -32,8 +32,9 @@ service CIRISVerify {
   // Check if a specific capability is allowed under current license
   rpc CheckCapability(CapabilityCheckRequest) returns (CapabilityCheckResponse);
 
-  // Get the current steward public key (for external verification)
-  rpc GetStewardKey(StewardKeyRequest) returns (StewardKeyResponse);
+  // The trust root this module selected (CC 5.3.4). Replaces GetStewardKey:
+  // the single steward key is retired (21.0.0).
+  rpc GetTrustRoot(TrustRootRequest) returns (TrustRoot);
 
   // Health check
   rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
@@ -376,75 +377,76 @@ message SoftwareAttestation {
 }
 
 // =============================================================================
-// MULTI-SOURCE VALIDATION
+// TRUST-ROOT VALIDATION (CC 5.3.4; 21.0.0)
 // =============================================================================
+//
+// Each trust-root host serves a GenesisBundle (GET /v1/trust-root/bundle,
+// registry alias /v1/steward-key). Each bundle is verified on its own against
+// the accord holders baked into this binary: max(carried M, strict majority of
+// the baked roster) distinct hybrid authorizations over the authorization
+// digest. The highest verified version is selected; two verified bundles at
+// one version with different fingerprints are equivocation (fail closed).
+// One verified host suffices; DNS is not a source.
 
 message SourceValidation {
-  // DNS source 1 (US-based registrar)
-  SourceResult dns_us = 1;
-
-  // DNS source 2 (EU-based registrar)
-  SourceResult dns_eu = 2;
-
-  // HTTPS endpoint
-  SourceResult https_endpoint = 3;
+  reserved 1, 2, 3, 5, 6, 10, 11;
+  reserved "dns_us", "dns_eu", "https_endpoint", "consensus_steward_key_classical",
+           "consensus_revocation_revision", "consensus_steward_key_pqc",
+           "consensus_pqc_key_fingerprint";
 
   // Overall validation status
   ValidationStatus overall_status = 4;
 
-  // === CONSENSUS KEYS (Hybrid) ===
-  // Consensus steward Ed25519 public key (if all sources agree)
-  bytes consensus_steward_key_classical = 5;
+  // One result per configured trust-root host, in configuration order
+  repeated SourceResult sources = 12;
 
-  // Consensus steward ML-DSA public key (from HTTPS, validated via DNS fingerprint)
-  bytes consensus_steward_key_pqc = 10;
-
-  // PQC key fingerprint (SHA-256, matched across DNS sources)
-  bytes consensus_pqc_key_fingerprint = 11;
-
-  // Consensus revocation list revision number
-  int64 consensus_revocation_revision = 6;
+  // The selected trust root, when one was selected
+  TrustRoot trust_root = 13;
 }
 
 message SourceResult {
-  // Source identifier (e.g., "dns:ciris-services-1.ai")
+  reserved 4, 5, 10, 11;
+  reserved "steward_key_classical", "revocation_revision",
+           "steward_key_pqc_or_fingerprint", "is_pqc_fingerprint";
+
+  // The host's base URL
   string source = 1;
 
-  // Was the source reachable?
+  // Did the host answer?
   bool reachable = 2;
 
-  // Did it return valid, parseable data?
+  // Did it serve a GenesisBundle that verifies against the baked holders?
   bool valid = 3;
-
-  // === CLASSICAL KEY ===
-  // Steward Ed25519 public key returned by this source
-  bytes steward_key_classical = 4;
-
-  // === PQC KEY (Fingerprint for DNS, Full Key for HTTPS) ===
-  // For DNS sources: SHA-256 fingerprint of ML-DSA key
-  // For HTTPS source: Full ML-DSA public key
-  bytes steward_key_pqc_or_fingerprint = 10;
-
-  // Is field 10 a fingerprint (DNS) or full key (HTTPS)?
-  bool is_pqc_fingerprint = 11;
-
-  // Revocation list revision from this source
-  int64 revocation_revision = 5;
 
   // Timestamp when this source was checked
   int64 checked_at = 6;
 
   // Error message if check failed
   string error = 7;
+
+  // sha256:<hex> over JCS(bundle) of the verified bundle
+  string bundle_fingerprint = 12;
+}
+
+message TrustRoot {
+  uint32 version = 1;
+  string family_key_id = 2;
+  // attested_key_id of the verified genesis-charter row
+  string charter_root_key_id = 3;
+  // Baked holders whose authorization verified
+  repeated string authorized_by = 4;
+  uint32 threshold = 5;
+  string bundle_fingerprint = 6;
+  repeated string serve_node_key_ids = 7;
 }
 
 enum ValidationStatus {
   VALIDATION_STATUS_UNSPECIFIED = 0;
-  ALL_SOURCES_AGREE = 1;          // All 3 sources returned matching data
-  PARTIAL_AGREEMENT = 2;          // 2 of 3 sources agree (degraded mode)
-  SOURCES_DISAGREE = 3;           // Sources returned conflicting data (possible attack)
-  NO_SOURCES_REACHABLE = 4;       // Offline - using cached data
-  VALIDATION_ERROR = 5;           // Unexpected error during validation
+  ALL_SOURCES_AGREE = 1;          // A root was selected and every host served it
+  PARTIAL_AGREEMENT = 2;          // A root was selected; some hosts failed or were superseded
+  SOURCES_DISAGREE = 3;           // Equivocation: two verified bundles at one version
+  NO_SOURCES_REACHABLE = 4;       // No host reachable: no root
+  VALIDATION_ERROR = 5;           // Hosts answered, none verified: no root
 }
 
 // =============================================================================
@@ -477,52 +479,12 @@ message CapabilityCheckResponse {
 }
 
 // =============================================================================
-// STEWARD KEY
+// TRUST ROOT
 // =============================================================================
 
-message StewardKeyRequest {
-  // Force refresh from remote sources
+message TrustRootRequest {
+  // Force a fresh fetch from every trust-root host
   bool force_refresh = 1;
-}
-
-message StewardKeyResponse {
-  // === CLASSICAL KEY (Ed25519) ===
-  // Current steward Ed25519 public key
-  bytes steward_key_classical = 1;
-
-  // Classical key identifier
-  string key_id_classical = 2;
-
-  // === POST-QUANTUM KEY (ML-DSA) ===
-  // Current steward ML-DSA public key (~1,952 bytes for ML-DSA-65)
-  bytes steward_key_pqc = 10;
-
-  // PQC key identifier
-  string key_id_pqc = 11;
-
-  // PQC algorithm used
-  PQCAlgorithm pqc_algorithm = 12;
-
-  // SHA-256 fingerprint of PQC key (for DNS validation)
-  bytes pqc_key_fingerprint = 13;
-
-  // === COMMON FIELDS ===
-  // Signature mode (should be HYBRID_REQUIRED)
-  SignatureMode signature_mode = 20;
-
-  // Revocation list revision
-  int64 revocation_revision = 3;
-
-  // Key rotation timestamp (when these keys became active)
-  int64 activated_at = 4;
-
-  // Expected next rotation timestamp
-  int64 next_rotation_at = 5;
-
-  // === RESPONSE INTEGRITY ===
-  // This response is itself signed with both keys
-  bytes response_signature_classical = 30;
-  bytes response_signature_pqc = 31;
 }
 
 // =============================================================================
