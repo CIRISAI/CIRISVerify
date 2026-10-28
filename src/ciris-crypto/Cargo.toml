@@ -89,7 +89,7 @@ ml-kem = { version = "0.3", optional = true, default-features = false, features 
 signature.workspace = true
 
 # secp256k1 for EVM wallet signing
-k256 = { version = "0.13", features = ["ecdsa", "ecdsa-core"], optional = true }
+k256 = { version = "0.14", features = ["ecdsa", "ecdsa-core"], optional = true }
 sha3 = "0.10"  # keccak256 for EVM addresses
 hkdf = "0.12"  # Key derivation
 hex = "0.4"    # Hex encoding for EVM addresses

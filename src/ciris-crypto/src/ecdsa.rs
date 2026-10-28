@@ -7,11 +7,24 @@ use p256::ecdsa::{
     signature::{Signer, Verifier},
     Signature, SigningKey, VerifyingKey,
 };
-use p256::elliptic_curve::rand_core::OsRng;
 
 use crate::error::CryptoError;
 use crate::hybrid::{ClassicalSigner, ClassicalVerifier};
 use crate::types::ClassicalAlgorithm;
+
+/// Fill key material: the RNG facade (health-latched) when built with
+/// `random`, the OS RNG otherwise.
+fn fill_key_bytes(buf: &mut [u8]) -> Result<(), CryptoError> {
+    #[cfg(feature = "random")]
+    {
+        crate::random::fill(buf)
+    }
+    #[cfg(not(feature = "random"))]
+    {
+        rand_core::RngCore::fill_bytes(&mut rand_core::OsRng, buf);
+        Ok(())
+    }
+}
 
 /// ECDSA P-256 signer.
 pub struct P256Signer {
@@ -51,9 +64,18 @@ impl P256Signer {
                 ));
             }
         }
-        Ok(Self {
-            signing_key: SigningKey::random(&mut OsRng),
-        })
+        // Draw the scalar's bytes through the RNG facade (the health latch
+        // gates the bytes themselves, not just a probe before an unchecked
+        // draw) and reject the ~2^-128 chance of an out-of-range scalar.
+        loop {
+            let mut bytes = [0u8; 32];
+            fill_key_bytes(&mut bytes)?;
+            let key = SigningKey::from_slice(&bytes);
+            bytes.fill(0);
+            if let Ok(signing_key) = key {
+                return Ok(Self { signing_key });
+            }
+        }
     }
 
     /// Create a signer from an existing key.
@@ -62,7 +84,7 @@ impl P256Signer {
     ///
     /// Returns error if the key bytes are invalid.
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, CryptoError> {
-        let signing_key = SigningKey::from_bytes(bytes.into())
+        let signing_key = SigningKey::from_slice(bytes)
             .map_err(|e| CryptoError::invalid_private_key(e.to_string()))?;
 
         Ok(Self { signing_key })
@@ -82,7 +104,7 @@ impl ClassicalSigner for P256Signer {
 
     fn public_key(&self) -> Result<Vec<u8>, CryptoError> {
         let vk = self.signing_key.verifying_key();
-        let encoded = vk.to_encoded_point(false); // Uncompressed
+        let encoded = vk.to_sec1_point(false); // Uncompressed
         Ok(encoded.as_bytes().to_vec())
     }
 
@@ -163,8 +185,8 @@ mod tests {
     fn webauthn_es256_der_round_trips() {
         use p256::ecdsa::signature::Signer as _;
         use p256::ecdsa::{Signature, SigningKey};
-        let sk = SigningKey::random(&mut rand_core::OsRng);
-        let vk_sec1 = sk.verifying_key().to_encoded_point(false);
+        let sk = SigningKey::from_slice(&[7u8; 32]).unwrap();
+        let vk_sec1 = sk.verifying_key().to_sec1_point(false);
         // WebAuthn signs `authData ‖ SHA256(clientDataJSON)` with DER ES256.
         let message = b"authenticator_data||sha256(clientDataJSON)";
         let sig: Signature = sk.sign(message);
