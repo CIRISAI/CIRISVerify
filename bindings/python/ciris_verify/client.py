@@ -28,6 +28,8 @@ from .types import (
     HardwareType,
     ValidationStatus,
     SourceDetails,
+    SourceCheck,
+    TrustRoot,
     AttestationData,
     PythonModuleHashes,
     PythonIntegrityResult,
@@ -1031,32 +1033,33 @@ class CIRISVerify:
         platform_info = attestation_data.get("platform", {})
         hardware_type = self._parse_hardware_type(platform_info)
 
-        # Parse validation results
+        # Parse trust-root validation results (CC 5.3.4)
         validation = resp.get("validation", {})
         overall_str = validation.get("overall", "ValidationError")
-        dns_us = validation.get("dns_us", {})
-        dns_eu = validation.get("dns_eu", {})
-        https_src = validation.get("https", {})
-
+        root = validation.get("trust_root")
+        trust_root = TrustRoot(**root) if root else None
+        sources = [
+            SourceCheck(
+                source=s.get("source", ""),
+                reachable=s.get("reachable", False),
+                valid=s.get("valid", False),
+                bundle_fingerprint=s.get("bundle_fingerprint"),
+                error=s.get("error_details") or s.get("error"),
+                error_category=s.get("error_category"),
+            )
+            for s in validation.get("sources", [])
+        ]
         source_details = SourceDetails(
-            dns_us_reachable=dns_us.get("reachable", False),
-            dns_eu_reachable=dns_eu.get("reachable", False),
-            https_reachable=https_src.get("reachable", False),
+            sources=sources,
             validation_status=_RUST_VALIDATION_MAP.get(
                 overall_str, ValidationStatus.VALIDATION_ERROR
             ),
-            sources_agreeing=sum([
-                dns_us.get("valid", False),
-                dns_eu.get("valid", False),
-                https_src.get("valid", False),
-            ]),
-            # Error details (added in v0.6.6)
-            dns_us_error=dns_us.get("error_details") or dns_us.get("error"),
-            dns_us_error_category=dns_us.get("error_category"),
-            dns_eu_error=dns_eu.get("error_details") or dns_eu.get("error"),
-            dns_eu_error_category=dns_eu.get("error_category"),
-            https_error=https_src.get("error_details") or https_src.get("error"),
-            https_error_category=https_src.get("error_category"),
+            trust_root=trust_root,
+            sources_agreeing=sum(
+                1
+                for s in sources
+                if trust_root and s.bundle_fingerprint == trust_root.bundle_fingerprint
+            ),
         )
 
         # Parse license details if present
@@ -3726,11 +3729,21 @@ class MockCIRISVerify(CIRISVerify):
             ),
             hardware_type=self._mock_hardware,
             source_details=SourceDetails(
-                dns_us_reachable=True,
-                dns_eu_reachable=True,
-                https_reachable=True,
+                sources=[
+                    SourceCheck(source="mock://trust-root", reachable=True, valid=True,
+                                bundle_fingerprint="sha256:mock"),
+                ],
                 validation_status=ValidationStatus.ALL_SOURCES_AGREE,
-                sources_agreeing=3,
+                trust_root=TrustRoot(
+                    version=4,
+                    family_key_id="humanity-accord",
+                    charter_root_key_id="humanity-accord",
+                    authorized_by=["A1", "B1"],
+                    threshold=2,
+                    bundle_fingerprint="sha256:mock",
+                    serve_node_key_ids=["mock-serve-node"],
+                ),
+                sources_agreeing=1,
             ),
             cached=False,
             verification_timestamp=datetime.now(timezone.utc),
@@ -3868,9 +3881,10 @@ class MockCIRISVerify(CIRISVerify):
             },
             "file_integrity": None,  # Skipped in mock
             "sources": {
-                "dns_us": {"reachable": True, "valid": True},
-                "dns_eu": {"reachable": True, "valid": True},
-                "https": {"reachable": True, "valid": True},
+                "sources": [{"endpoint": "mock://trust-root", "reachable": True,
+                             "verified": True, "bundle_fingerprint": "sha256:mock"}],
+                "trust_root": {"version": 4, "bundle_fingerprint": "sha256:mock"},
+                "validation_status": "AllSourcesAgree",
             },
             "audit_trail": None,  # Skipped in mock
             "python_integrity": {
@@ -3917,9 +3931,10 @@ class MockCIRISVerify(CIRISVerify):
             },
             "file_integrity": None,
             "sources": {
-                "dns_us": {"reachable": True, "valid": True},
-                "dns_eu": {"reachable": True, "valid": True},
-                "https": {"reachable": True, "valid": True},
+                "sources": [{"endpoint": "mock://trust-root", "reachable": True,
+                             "verified": True, "bundle_fingerprint": "sha256:mock"}],
+                "trust_root": {"version": 4, "bundle_fingerprint": "sha256:mock"},
+                "validation_status": "AllSourcesAgree",
             },
             "audit_trail": None,
             "python_integrity": {

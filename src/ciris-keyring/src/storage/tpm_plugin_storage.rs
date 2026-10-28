@@ -101,7 +101,7 @@ impl PluginTpmSecureBlobStorage {
         })?;
 
         let seal_path = storage_dir.join(format!("{alias}.tpmplugin_seal"));
-        let mut superseded: Vec<super::SupersededLegacyKey> = Vec::new();
+        let superseded: Vec<super::SupersededLegacyKey> = Vec::new();
         let master = if seal_path.exists() {
             let sealed = std::fs::read(&seal_path).map_err(|e| KeyringError::StorageFailed {
                 reason: format!("read seal file: {e}"),
@@ -127,25 +127,11 @@ impl PluginTpmSecureBlobStorage {
             let sealed = plugin.seal(&m)?;
             write_atomic(&seal_path, &sealed)?;
 
-            // Only NOW may prior-install lower-tier material be superseded
-            // (CIRISVerify#292). This used to run BEFORE the seal, so a seal
-            // that then failed archived the old key and produced no new one.
-            // `landed_in_tier` is proven by unsealing what was just written and
-            // comparing — the master genuinely round-trips through the TPM —
-            // rather than by assuming the write implies custody.
-            let landed = plugin
-                .unseal(&sealed)
-                .map(|back| back.as_slice() == m.as_slice())
-                .unwrap_or(false);
-            if let Some(mint) = super::HigherTierMint::witness("ciris-tpm-plugin", landed) {
-                superseded = super::archive_superseded_legacy_keys(&alias, &storage_dir, &mint);
-            } else {
-                tracing::warn!(
-                    alias = %alias,
-                    "TPM master was written but did not round-trip through the plugin; NOT \
-                     superseding any prior-install key material (CIRISVerify#292)"
-                );
-            }
+            // No supersession here (CIRISVerify#311). This path runs only for
+            // an alias with nothing on disk — `create_platform_storage` reopens
+            // the tier an existing key lives in — so there is no prior key to
+            // replace, and minting a master is not storing a key: archiving
+            // lower-tier material at this point is exactly what stranded keys.
             m
         };
 

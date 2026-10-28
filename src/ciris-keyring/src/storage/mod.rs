@@ -674,9 +674,125 @@ pub fn archive_superseded_legacy_keys(
 // Factory Function
 // =============================================================================
 
-/// Create the best available secure storage for the current platform.
+/// The tier an alias's key material already lives in, read off the files in
+/// `storage_dir` (CIRISVerify#311).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExistingTier {
+    /// The TPM plugin tier: a `{alias}.tpmplugin_seal`, with or without blobs.
+    PluginTpm,
+    /// The software tier: a `{alias}.master.key`.
+    Software,
+    /// The platform secure element (Secure Enclave / Android Keystore):
+    /// blobs (`.blob` / `.enc`) with no software master.
+    PlatformSecureElement,
+    /// Nothing on disk for this alias: a genuinely fresh home.
+    None,
+}
+
+fn alias_files(alias: &str, storage_dir: &std::path::Path) -> Vec<String> {
+    let prefix = format!("{alias}.");
+    std::fs::read_dir(storage_dir)
+        .map(|entries| {
+            entries
+                .flatten()
+                .filter_map(|e| e.file_name().to_str().map(str::to_string))
+                .filter(|n| n.starts_with(&prefix))
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Which tier holds this alias's keys, by the artifacts present.
 ///
-/// Tries hardware-backed storage first (TPM on Linux/Windows), falls back to software.
+/// - plugin blobs (`{alias}.*.tpmp_blob`) → the plugin tier;
+/// - a software master (`{alias}.master.key`) → the software tier;
+/// - a plugin seal with no blobs → the plugin tier (nothing else to strand);
+/// - secure-element blobs (`.blob` / `.enc`) with no software master → the
+///   platform secure element;
+/// - otherwise nothing.
+#[must_use]
+pub fn existing_tier(alias: &str, storage_dir: &std::path::Path) -> ExistingTier {
+    let files = alias_files(alias, storage_dir);
+    let has = |pred: &dyn Fn(&str) -> bool| files.iter().any(|n| pred(n));
+    if has(&|n| n.ends_with(".tpmp_blob")) {
+        return ExistingTier::PluginTpm;
+    }
+    if has(&|n| n == format!("{alias}.master.key")) {
+        return ExistingTier::Software;
+    }
+    if has(&|n| n == format!("{alias}.tpmplugin_seal")) {
+        return ExistingTier::PluginTpm;
+    }
+    if has(&|n| n.ends_with(".blob") || n.ends_with(".enc")) {
+        return ExistingTier::PlatformSecureElement;
+    }
+    ExistingTier::None
+}
+
+/// Undo a pre-#311 supersession that stranded the key (CIRISVerify#311 ask 3).
+///
+/// Before 20.3.0 a re-open under a newly visible higher tier minted that
+/// tier's master and renamed the live software key to `*.superseded-pre-v8`
+/// without writing anything into the new tier, so every later load answered
+/// `KeyNotFound`. A home in that state has a superseded software master and
+/// **no live blob in any tier**; restoring is then lossless — the archived
+/// files are the only copy of the key. Returns the restored paths. A home with
+/// any live blob is left alone: something was written after the archive, and
+/// choosing between them is the host's decision, not this function's.
+pub fn restore_stranded_software_key(alias: &str, storage_dir: &std::path::Path) -> Vec<PathBuf> {
+    let files = alias_files(alias, storage_dir);
+    let superseded_master = format!("{alias}.master.key.{SUPERSEDED_SUFFIX}");
+    let live_blob = |n: &String| {
+        !n.ends_with(SUPERSEDED_SUFFIX)
+            && (n.ends_with(".tpmp_blob") || n.ends_with(".blob") || n.ends_with(".enc"))
+    };
+    if !files.contains(&superseded_master)
+        || files.iter().any(|n| n == &format!("{alias}.master.key"))
+        || files.iter().any(live_blob)
+    {
+        return Vec::new();
+    }
+    let mut restored = Vec::new();
+    for name in files.iter().filter(|n| n.ends_with(SUPERSEDED_SUFFIX)) {
+        let original = &name[..name.len() - SUPERSEDED_SUFFIX.len() - 1];
+        let (from, to) = (storage_dir.join(name), storage_dir.join(original));
+        if to.exists() {
+            continue;
+        }
+        match std::fs::rename(&from, &to) {
+            Ok(()) => restored.push(to),
+            Err(e) => tracing::warn!(
+                alias = %alias,
+                archived = %from.display(),
+                error = %e,
+                "could not restore a superseded key file"
+            ),
+        }
+    }
+    if !restored.is_empty() {
+        tracing::warn!(
+            alias = %alias,
+            restored = restored.len(),
+            "KEY RESTORED — this home's software key had been superseded by a higher-tier \
+             master that never received it (CIRISVerify#311). The archived software key was \
+             the only copy and is the active key again."
+        );
+    }
+    restored
+}
+
+/// Open the secure storage for `alias`, **in the tier its keys already live
+/// in** (CIRISVerify#311).
+///
+/// A home that already holds key material reopens that tier and nothing
+/// else: becoming able to reach a better tier later (a TPM plugin that turns
+/// visible, a signed macOS binary) never moves an existing key, mints a new
+/// master, or supersedes anything. Only a fresh alias, with nothing on disk,
+/// gets the best tier available now (TPM plugin, then the platform's secure
+/// element, then software). A home stranded by the pre-#311 behaviour is
+/// restored first ([`restore_stranded_software_key`]). If the tier the keys
+/// live in is unavailable (the plugin gone, say) this fails rather than falling
+/// back, because falling back is how a key ends up unreadable.
 ///
 /// # Arguments
 /// * `alias` - Prefix for stored secrets
@@ -691,6 +807,41 @@ pub fn create_platform_storage(
     let alias = alias.into();
     let storage_dir = storage_dir.into();
 
+    restore_stranded_software_key(&alias, &storage_dir);
+    match existing_tier(&alias, &storage_dir) {
+        ExistingTier::Software => {
+            tracing::debug!(alias = %alias, "reopening the software tier this alias lives in");
+            return Ok(Box::new(SoftwareSecureBlobStorage::new(
+                alias,
+                storage_dir,
+            )?));
+        },
+        ExistingTier::PluginTpm => {
+            #[cfg(feature = "tpm-plugin")]
+            {
+                return PluginTpmSecureBlobStorage::new(&alias, &storage_dir)
+                    .map(|s| Box::new(s) as Box<dyn SecureBlobStorage>)
+                    .map_err(|e| KeyringError::HardwareError {
+                        reason: format!(
+                            "alias {alias} is sealed under the TPM plugin, which is unavailable \
+                             ({e}); refusing to fall back to another tier (CIRISVerify#311)"
+                        ),
+                    });
+            }
+            #[cfg(not(feature = "tpm-plugin"))]
+            {
+                return Err(KeyringError::NotSupported {
+                    operation: format!(
+                        "alias {alias} is sealed under the TPM plugin, and this build has no \
+                         tpm-plugin support"
+                    ),
+                });
+            }
+        },
+        ExistingTier::PlatformSecureElement | ExistingTier::None => {},
+    }
+    let skip_plugin = existing_tier(&alias, &storage_dir) == ExistingTier::PlatformSecureElement;
+
     // Runtime-loaded TPM plugin (CIRISVerify#130/#141) — the keyring's sole TPM
     // backend as of v8.0.0. TPM custody works wherever the plugin .so + a device
     // exist, incl. the wheel cdylib, musl, and any target — with no tss-esapi
@@ -698,7 +849,7 @@ pub fn create_platform_storage(
     // a no-op fall-through on mobile/desktop
     // without one.
     #[cfg(feature = "tpm-plugin")]
-    {
+    if !skip_plugin {
         match PluginTpmSecureBlobStorage::new(&alias, &storage_dir) {
             Ok(storage) => {
                 tracing::info!(
@@ -838,6 +989,96 @@ pub(crate) mod contract {
 mod tests {
     use super::*;
     use tempfile::TempDir;
+
+    // ---- CIRISVerify#311: a re-open uses the tier the key lives in ----
+
+    fn software_home(dir: &std::path::Path, alias: &str) {
+        let s = SoftwareSecureBlobStorage::new(alias, dir).unwrap();
+        s.store("ed25519.seed", &[7u8; 32]).unwrap();
+    }
+
+    fn names(dir: &std::path::Path) -> Vec<String> {
+        let mut v: Vec<String> = std::fs::read_dir(dir)
+            .unwrap()
+            .flatten()
+            .map(|e| e.file_name().to_string_lossy().into_owned())
+            .collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn a_software_home_reopens_in_software_and_nothing_is_renamed() {
+        let dir = TempDir::new().unwrap();
+        software_home(dir.path(), "a");
+        let before = names(dir.path());
+        assert_eq!(existing_tier("a", dir.path()), ExistingTier::Software);
+        let storage = create_platform_storage("a", dir.path()).unwrap();
+        assert_eq!(storage.load("ed25519.seed").unwrap(), vec![7u8; 32]);
+        assert_eq!(
+            names(dir.path()),
+            before,
+            "a re-open must not touch the files"
+        );
+    }
+
+    /// The exact state the pre-#311 re-open left: a minted plugin seal with no
+    /// blobs beside the superseded software pair. It must come back readable.
+    #[test]
+    fn a_stranded_home_is_restored_and_the_key_loads_again() {
+        let dir = TempDir::new().unwrap();
+        software_home(dir.path(), "a");
+        for n in names(dir.path()) {
+            std::fs::rename(
+                dir.path().join(&n),
+                dir.path().join(format!("{n}.{SUPERSEDED_SUFFIX}")),
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.path().join("a.tpmplugin_seal"), b"sealed-master").unwrap();
+        assert_eq!(existing_tier("a", dir.path()), ExistingTier::PluginTpm);
+
+        let storage = create_platform_storage("a", dir.path()).unwrap();
+        assert_eq!(storage.load("ed25519.seed").unwrap(), vec![7u8; 32]);
+        assert_eq!(existing_tier("a", dir.path()), ExistingTier::Software);
+        assert!(names(dir.path())
+            .iter()
+            .all(|n| !n.ends_with(SUPERSEDED_SUFFIX)));
+    }
+
+    /// Something was written after the archive: choosing is the host's call,
+    /// so nothing is restored.
+    #[test]
+    fn restore_leaves_a_home_with_a_live_blob_alone() {
+        let dir = TempDir::new().unwrap();
+        software_home(dir.path(), "a");
+        for n in names(dir.path()) {
+            std::fs::rename(
+                dir.path().join(&n),
+                dir.path().join(format!("{n}.{SUPERSEDED_SUFFIX}")),
+            )
+            .unwrap();
+        }
+        std::fs::write(dir.path().join("a.ed25519.seed.tpmp_blob"), b"x").unwrap();
+        assert!(restore_stranded_software_key("a", dir.path()).is_empty());
+    }
+
+    #[test]
+    fn existing_tier_reads_the_artifacts() {
+        let dir = TempDir::new().unwrap();
+        assert_eq!(existing_tier("a", dir.path()), ExistingTier::None);
+        std::fs::write(dir.path().join("a.x.enc"), b"").unwrap();
+        assert_eq!(
+            existing_tier("a", dir.path()),
+            ExistingTier::PlatformSecureElement
+        );
+        std::fs::write(dir.path().join("a.master.key"), b"").unwrap();
+        assert_eq!(existing_tier("a", dir.path()), ExistingTier::Software);
+        std::fs::write(dir.path().join("a.x.tpmp_blob"), b"").unwrap();
+        assert_eq!(existing_tier("a", dir.path()), ExistingTier::PluginTpm);
+        // Another alias's files never count.
+        assert_eq!(existing_tier("b", dir.path()), ExistingTier::None);
+    }
 
     #[test]
     fn software_storage_honours_the_absent_key_contract() {

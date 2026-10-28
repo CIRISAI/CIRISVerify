@@ -3,43 +3,16 @@
 use std::path::PathBuf;
 use std::time::Duration;
 
-/// Trust model for multi-source validation.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum TrustModel {
-    /// HTTPS is authoritative when reachable; DNS is advisory cross-check.
-    /// Multiple HTTPS endpoints at different domains provide redundancy.
-    HttpsAuthoritative,
-    /// All sources weighted equally (legacy 2-of-3 consensus).
-    EqualWeight,
-}
-
-/// DNS transport preference for multi-source validation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DnsTransportPreference {
-    /// Auto-detect based on platform (default).
-    #[default]
-    Auto,
-    /// Always use DNS-over-HTTPS (DoH) - more reliable, slightly slower.
-    DnsOverHttps,
-    /// Always use native DNS - faster, may be filtered.
-    Native,
-}
-
 /// Configuration for CIRISVerify.
 #[derive(Debug, Clone)]
 pub struct VerifyConfig {
-    /// DNS resolver for US source.
-    pub dns_us_host: String,
-    /// DNS resolver for EU source.
-    pub dns_eu_host: String,
-    /// HTTPS endpoint URL.
+    /// Primary HTTPS endpoint (registry API base URL). Also the first
+    /// trust-root host (CC 5.3.4).
     pub https_endpoint: String,
-    /// Additional HTTPS endpoints at different domains for redundancy.
+    /// Further trust-root hosts, queried alongside `https_endpoint`. Every
+    /// host's GenesisBundle is verified on its own against the baked accord
+    /// holders; extra hosts add availability, not trust. DNS is not a source.
     pub https_endpoints: Vec<String>,
-    /// Trust model for multi-source validation.
-    pub trust_model: TrustModel,
-    /// DNS transport preference (Auto, DoH, or Native).
-    pub dns_transport: DnsTransportPreference,
     /// Certificate fingerprint for pinning.
     pub cert_pin: Option<String>,
     /// Request timeout.
@@ -77,15 +50,11 @@ pub struct VerifyConfig {
 impl Default for VerifyConfig {
     fn default() -> Self {
         Self {
-            dns_us_host: "us.registry.ciris-services-1.ai".into(),
-            // v1.12.0 fix (#11): was eu.registry.ciris-services-eu-1.com
-            // (NXDOMAIN — wrong sub-zone AND TLD). Actually-deployed name
-            // is eu.registry.ciris-services-1.ai.
-            dns_eu_host: "eu.registry.ciris-services-1.ai".into(),
             https_endpoint: "https://api.registry.ciris-services-1.ai".into(),
-            https_endpoints: Vec::new(),
-            trust_model: TrustModel::HttpsAuthoritative,
-            dns_transport: DnsTransportPreference::Auto,
+            https_endpoints: vec![
+                "https://us.registry.ciris-services-1.ai".into(),
+                "https://eu.registry.ciris-services-1.ai".into(),
+            ],
             cert_pin: None,
             timeout: Duration::from_secs(10), // Must be < Python's 30s timeout
             cache_ttl: Duration::from_secs(300),
@@ -99,6 +68,20 @@ impl Default for VerifyConfig {
 }
 
 impl VerifyConfig {
+    /// Every trust-root host: `https_endpoint` then `https_endpoints`,
+    /// duplicates dropped.
+    #[must_use]
+    pub fn trust_root_endpoints(&self) -> Vec<String> {
+        let mut out: Vec<String> = Vec::new();
+        for ep in std::iter::once(&self.https_endpoint).chain(&self.https_endpoints) {
+            let ep = ep.trim_end_matches('/').to_string();
+            if !out.contains(&ep) {
+                out.push(ep);
+            }
+        }
+        out
+    }
+
     /// Get the default cache directory path.
     ///
     /// Uses XDG cache directory on Linux, Application Support on macOS,

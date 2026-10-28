@@ -296,24 +296,46 @@ class LicenseDetails(BaseModel):
         return False
 
 
-class SourceDetails(BaseModel):
-    """Details about multi-source validation."""
+class SourceCheck(BaseModel):
+    """One trust-root host's result (CC 5.3.4)."""
     model_config = ConfigDict(frozen=True)
 
-    dns_us_reachable: bool = False
-    dns_eu_reachable: bool = False
-    https_reachable: bool = False
-    validation_status: ValidationStatus = ValidationStatus.NO_SOURCES_REACHABLE
-    sources_agreeing: int = 0
+    source: str
+    reachable: bool = False
+    valid: bool = False
+    bundle_fingerprint: Optional[str] = None
+    error: Optional[str] = None
+    error_category: Optional[str] = None
 
-    # Error details for each source (added in v0.6.6)
-    # These expose the actual network error when a source fails
-    dns_us_error: Optional[str] = None
-    dns_us_error_category: Optional[str] = None
-    dns_eu_error: Optional[str] = None
-    dns_eu_error_category: Optional[str] = None
-    https_error: Optional[str] = None
-    https_error_category: Optional[str] = None
+
+class TrustRoot(BaseModel):
+    """The trust root this node selected: what its verified GenesisBundle says."""
+    model_config = ConfigDict(frozen=True)
+
+    version: int
+    family_key_id: str
+    charter_root_key_id: str
+    authorized_by: List[str] = Field(default_factory=list)
+    threshold: int
+    bundle_fingerprint: str
+    serve_node_key_ids: List[str] = Field(default_factory=list)
+
+
+class SourceDetails(BaseModel):
+    """Trust-root validation (CC 5.3.4).
+
+    Each trust-root host's GenesisBundle is verified on its own against the
+    accord holders baked into the verify binary. One verified host is enough;
+    two different verified bundles at the same version is equivocation. DNS is
+    not a source (removed in 21.0.0).
+    """
+    model_config = ConfigDict(frozen=True)
+
+    sources: List[SourceCheck] = Field(default_factory=list)
+    validation_status: ValidationStatus = ValidationStatus.NO_SOURCES_REACHABLE
+    trust_root: Optional[TrustRoot] = None
+    sources_agreeing: int = 0
+    """How many hosts served the selected trust root."""
 
 
 class AttestationData(BaseModel):

@@ -17,6 +17,7 @@ use async_trait::async_trait;
 use ed25519_dalek::{
     Signature as Ed25519Signature, Signer as Ed25519SignerTrait, SigningKey as Ed25519SigningKey,
 };
+use p256::ecdsa::signature::Signer as _;
 use p256::ecdsa::{Signature, SigningKey};
 
 use crate::error::KeyringError;
@@ -91,25 +92,23 @@ impl SoftwareSigner {
         // Try to load existing key
         let signing_key = if key_path.exists() {
             match std::fs::read(&key_path) {
-                Ok(bytes) if bytes.len() == 32 => {
-                    match SigningKey::from_bytes((&bytes[..]).into()) {
-                        Ok(key) => {
-                            tracing::info!(
-                                alias = %alias,
-                                key_path = ?key_path,
-                                "SoftwareSigner: loaded existing key from disk"
-                            );
-                            Some(key)
-                        },
-                        Err(e) => {
-                            tracing::warn!(
-                                alias = %alias,
-                                error = %e,
-                                "SoftwareSigner: failed to parse key file, generating new key"
-                            );
-                            None
-                        },
-                    }
+                Ok(bytes) if bytes.len() == 32 => match SigningKey::from_slice(&bytes[..]) {
+                    Ok(key) => {
+                        tracing::info!(
+                            alias = %alias,
+                            key_path = ?key_path,
+                            "SoftwareSigner: loaded existing key from disk"
+                        );
+                        Some(key)
+                    },
+                    Err(e) => {
+                        tracing::warn!(
+                            alias = %alias,
+                            error = %e,
+                            "SoftwareSigner: failed to parse key file, generating new key"
+                        );
+                        None
+                    },
                 },
                 Ok(bytes) => {
                     tracing::warn!(
@@ -267,7 +266,7 @@ impl HardwareSigner for SoftwareSigner {
         })?;
 
         let verifying_key = key.verifying_key();
-        let encoded = verifying_key.to_encoded_point(false);
+        let encoded = verifying_key.to_sec1_point(false);
 
         Ok(encoded.as_bytes().to_vec())
     }
@@ -2395,7 +2394,7 @@ mod tests {
     async fn test_software_signer_sign_and_verify() {
         use p256::ecdsa::signature::Verifier;
 
-        let signing_key = SigningKey::random(&mut rand_core::OsRng);
+        let signing_key = crate::mint_p256_signing_key().unwrap();
         let verifying_key = *signing_key.verifying_key();
 
         let key_path = test_key_dir().join("test_sign.p256.key");

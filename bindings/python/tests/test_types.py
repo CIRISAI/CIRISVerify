@@ -14,6 +14,8 @@ from ciris_verify.types import (
     HardwareType,
     ValidationStatus,
     SourceDetails,
+    SourceCheck,
+    TrustRoot,
 )
 
 
@@ -193,24 +195,29 @@ class TestCapabilityCheckResult:
 
 
 class TestSourceDetails:
-    """Tests for SourceDetails model."""
+    """Tests for SourceDetails (trust-root validation, CC 5.3.4)."""
 
-    def test_all_sources_reachable(self):
+    def test_one_verified_host_selects_a_root(self):
         details = SourceDetails(
-            dns_us_reachable=True,
-            dns_eu_reachable=True,
-            https_reachable=True,
-            validation_status=ValidationStatus.ALL_SOURCES_AGREE,
-            sources_agreeing=3,
-        )
-        assert details.sources_agreeing == 3
-
-    def test_partial_sources(self):
-        details = SourceDetails(
-            dns_us_reachable=True,
-            dns_eu_reachable=False,
-            https_reachable=True,
+            sources=[
+                SourceCheck(source="https://a", reachable=True, valid=True,
+                            bundle_fingerprint="sha256:aa"),
+                SourceCheck(source="https://b", reachable=False, valid=False,
+                            error="timeout", error_category="timeout"),
+            ],
             validation_status=ValidationStatus.PARTIAL_AGREEMENT,
-            sources_agreeing=2,
+            trust_root=TrustRoot(
+                version=4, family_key_id="humanity-accord",
+                charter_root_key_id="humanity-accord", authorized_by=["A1", "B1"],
+                threshold=2, bundle_fingerprint="sha256:aa",
+                serve_node_key_ids=["ciris-canonical-1"],
+            ),
+            sources_agreeing=1,
         )
-        assert details.sources_agreeing == 2
+        assert details.trust_root.threshold == 2
+        assert details.sources_agreeing == 1
+
+    def test_no_root_when_nothing_verified(self):
+        details = SourceDetails(validation_status=ValidationStatus.VALIDATION_ERROR)
+        assert details.trust_root is None
+        assert details.sources == []

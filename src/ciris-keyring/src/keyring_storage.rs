@@ -84,12 +84,11 @@ impl KeyringStorageSigner {
             },
         })?;
 
-        let signing_key =
-            p256::ecdsa::SigningKey::from_bytes((&key_bytes[..]).into()).map_err(|e| {
-                KeyringError::InvalidKey {
-                    reason: format!("Failed to parse key: {e}"),
-                }
-            })?;
+        let signing_key = p256::ecdsa::SigningKey::from_slice(&key_bytes[..]).map_err(|e| {
+            KeyringError::InvalidKey {
+                reason: format!("Failed to parse key: {e}"),
+            }
+        })?;
 
         self.signing_key = Some(signing_key);
         Ok(())
@@ -148,7 +147,7 @@ impl HardwareSigner for KeyringStorageSigner {
             })?;
 
         let verifying_key = signing_key.verifying_key();
-        let encoded = verifying_key.to_encoded_point(false);
+        let encoded = verifying_key.to_sec1_point(false);
         Ok(encoded.as_bytes().to_vec())
     }
 

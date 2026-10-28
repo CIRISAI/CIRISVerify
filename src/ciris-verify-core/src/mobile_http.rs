@@ -173,7 +173,7 @@ pub fn get_json<T: serde::de::DeserializeOwned>(
     serde_json::from_str::<T>(&text).map_err(|e| VerifyError::ResponseSchemaMismatch {
         url: url.to_string(),
         status: 200,
-        detail: crate::https::diagnose_steward_key_drift(&e.to_string(), &text),
+        detail: e.to_string(),
     })
 }
 

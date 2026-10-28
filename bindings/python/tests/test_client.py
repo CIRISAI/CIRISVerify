@@ -94,9 +94,8 @@ class TestMockCIRISVerify:
         status = await mock_client.get_license_status(nonce)
 
         # Mock always returns all sources agreeing
-        assert status.source_details.dns_us_reachable
-        assert status.source_details.dns_eu_reachable
-        assert status.source_details.https_reachable
+        assert status.source_details.trust_root is not None
+        assert status.source_details.sources_agreeing >= 1
         assert status.source_details.validation_status == ValidationStatus.ALL_SOURCES_AGREE
 
 

@@ -92,7 +92,7 @@ pub fn derive_wallet_keypair(ed25519_seed: &[u8; 32]) -> (SigningKey, VerifyingK
 #[cfg(feature = "secp256k1")]
 pub fn derive_secp256k1_public_key(ed25519_seed: &[u8; 32]) -> [u8; 65] {
     let (_, verifying_key) = derive_wallet_keypair(ed25519_seed);
-    let encoded = verifying_key.to_encoded_point(false);
+    let encoded = verifying_key.to_sec1_point(false);
     let bytes = encoded.as_bytes();
 
     let mut result = [0u8; 65];
@@ -594,7 +594,7 @@ pub fn recover_address(message_hash: &[u8; 32], signature: &[u8; 65]) -> Option<
     let verifying_key = VerifyingKey::recover_from_prehash(message_hash, &sig, recovery_id).ok()?;
 
     // Get address
-    let encoded = verifying_key.to_encoded_point(false);
+    let encoded = verifying_key.to_sec1_point(false);
     let bytes = encoded.as_bytes();
     let mut pubkey = [0u8; 65];
     pubkey.copy_from_slice(bytes);
@@ -619,8 +619,8 @@ mod tests {
             "Private keys should match"
         );
         assert_eq!(
-            pk1.to_encoded_point(false).as_bytes(),
-            pk2.to_encoded_point(false).as_bytes(),
+            pk1.to_sec1_point(false).as_bytes(),
+            pk2.to_sec1_point(false).as_bytes(),
             "Public keys should match"
         );
     }
@@ -634,8 +634,8 @@ mod tests {
         let (_, pk2) = derive_wallet_keypair(&seed2);
 
         assert_ne!(
-            pk1.to_encoded_point(false).as_bytes(),
-            pk2.to_encoded_point(false).as_bytes(),
+            pk1.to_sec1_point(false).as_bytes(),
+            pk2.to_sec1_point(false).as_bytes(),
             "Different seeds should produce different keys"
         );
     }
@@ -986,7 +986,7 @@ mod tx_fields_tests {
         // recovered a different — and entirely plausible — sender.
         let key = spec_key();
         let expected = {
-            let encoded = key.verifying_key().to_encoded_point(false);
+            let encoded = key.verifying_key().to_sec1_point(false);
             let mut pk = [0u8; 65];
             pk.copy_from_slice(encoded.as_bytes());
             get_evm_address(&pk)
