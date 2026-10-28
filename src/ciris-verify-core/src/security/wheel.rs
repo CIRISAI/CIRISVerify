@@ -75,8 +75,15 @@ pub fn read_wheel_identity(bytes: &[u8]) -> Result<WheelIdentity, VerifyError> {
     let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes))
         .map_err(|e| bad(format!("not a wheel (zip): {e}")))?;
 
-    let dist_infos: Vec<String> = zip
+    // An entry name that does not decode refuses the wheel: skipping it could
+    // hide a second dist-info, which is the ambiguity this check refuses.
+    let names: Vec<String> = zip
         .file_names()
+        .map(|n| n.map(std::borrow::Cow::into_owned))
+        .collect::<Result<_, _>>()
+        .map_err(|e| bad(format!("wheel entry name does not decode: {e}")))?;
+    let dist_infos: Vec<String> = names
+        .iter()
         .filter_map(|n| {
             let (dir, file) = n.split_once('/')?;
             (file == "METADATA" && dir.ends_with(".dist-info")).then(|| dir.to_string())
