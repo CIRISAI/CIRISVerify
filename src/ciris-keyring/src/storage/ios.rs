@@ -187,26 +187,17 @@ impl SecureEnclaveSecureBlobStorage {
                 // which path actually succeeded — true only for a real SE mint,
                 // false for the keychain fallback. A fallback is not a higher
                 // tier; it IS the lower tier, so it supersedes nothing.
-                match crate::storage::HigherTierMint::witness(
-                    "secure-enclave",
-                    self.is_secure_enclave,
-                ) {
-                    Some(mint) => {
-                        self.superseded = crate::storage::archive_superseded_legacy_keys(
-                            &self.alias,
-                            &self.storage_dir,
-                            &mint,
-                        );
-                    },
-                    None => {
-                        warn!(
-                            tag = %self.wrapper_key_tag,
-                            alias = %self.alias,
-                            "Secure Enclave unavailable — wrapper key minted in the KEYCHAIN \
-                             (software-grade). NOT superseding any prior-install key material: a \
-                             backend that fell back is not a higher tier (CIRISVerify#292)"
-                        );
-                    },
+                // No supersession (CIRISVerify#311): this genesis runs only for
+                // an alias with no software master on disk —
+                // `create_platform_storage` reopens the tier an existing key lives
+                // in — so there is nothing to replace.
+                if !self.is_secure_enclave {
+                    warn!(
+                        tag = %self.wrapper_key_tag,
+                        alias = %self.alias,
+                        "Secure Enclave unavailable — wrapper key minted in the KEYCHAIN \
+                         (software-grade)"
+                    );
                 }
                 Ok(())
             },

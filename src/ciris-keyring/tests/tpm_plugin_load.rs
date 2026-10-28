@@ -322,3 +322,37 @@ async fn sealed_mldsa65_mints_on_a_fresh_dir_under_the_plugin() {
     );
     eprintln!("✓ sealed ML-DSA-65 minted + reopened under the TPM plugin");
 }
+
+/// CIRISVerify#311 on a real TPM: a key minted while the plugin was NOT
+/// visible lives in the software tier; once the plugin becomes visible, a
+/// re-open must still return that key — not mint a TPM master and supersede
+/// the software one. `#[ignore]`d; run with CIRIS_TPM_PLUGIN set as above.
+#[tokio::test]
+#[ignore = "requires a real TPM + the `real` plugin via CIRIS_TPM_PLUGIN"]
+async fn a_key_minted_before_the_plugin_was_visible_survives_reopen_on_real_tpm() {
+    use ciris_keyring::{HardwareSigner, SealedEd25519Signer};
+    let plugin =
+        std::env::var_os("CIRIS_TPM_PLUGIN").expect("set CIRIS_TPM_PLUGIN to a `real` plugin .so");
+    let dir = tempfile::TempDir::new().unwrap();
+
+    // Plugin invisible: the mint lands in software.
+    std::env::set_var("CIRIS_TPM_PLUGIN", "/nonexistent/libciris_tpm_plugin.so");
+    let minted = SealedEd25519Signer::open_or_create("a", dir.path(), None).unwrap();
+    let pubkey = minted.public_key().await.unwrap();
+    assert!(dir.path().join("a.master.key").exists());
+
+    // Plugin visible: the re-open keeps the key where it is.
+    std::env::set_var("CIRIS_TPM_PLUGIN", &plugin);
+    let reopened = SealedEd25519Signer::open_existing("a", dir.path()).unwrap();
+    assert_eq!(reopened.public_key().await.unwrap(), pubkey);
+    let names: Vec<String> = std::fs::read_dir(dir.path())
+        .unwrap()
+        .flatten()
+        .map(|e| e.file_name().to_string_lossy().into_owned())
+        .collect();
+    assert!(
+        names.iter().all(|n| !n.ends_with("superseded-pre-v8")),
+        "{names:?}"
+    );
+    assert!(!dir.path().join("a.tpmplugin_seal").exists(), "{names:?}");
+}

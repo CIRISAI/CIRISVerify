@@ -440,10 +440,13 @@ mod tests {
 
     #[test]
     fn test_software_signer_creation() {
-        let signer = create_software_signer("test_factory_key");
-        assert!(signer.is_ok());
+        // A process-unique alias: the default key dir is shared with every other
+        // test run on the machine, and a fixed alias collided with them.
+        let alias = format!("test_factory_key_{}", std::process::id());
+        let signer = create_software_signer(&alias);
+        assert!(signer.is_ok(), "{:?}", signer.err());
         // Cleanup: delete persisted key file
-        let key_path = default_key_dir().join("test_factory_key.p256.key");
+        let key_path = default_key_dir().join(format!("{alias}.p256.key"));
         let _ = std::fs::remove_file(&key_path);
     }
 
