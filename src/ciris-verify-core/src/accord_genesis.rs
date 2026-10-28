@@ -720,6 +720,26 @@ pub fn humanity_accord_genesis() -> Option<&'static SignedCegObject> {
         .as_ref()
 }
 
+/// The seated accord holders baked into this binary — the baked
+/// `humanity_accord_genesis()` roster resolved against the pinned
+/// `founder_pubkeys.json`, both halves of each key. Empty if either is not
+/// baked or does not resolve: callers treat that as "no roster", never as an
+/// empty quorum.
+///
+/// This is the roster a trust-root bundle is verified against
+/// ([`crate::genesis_bundle::verify_genesis_bundle`]) and the source of
+/// [`accord_holder_bootstrap_anchor`], so the two cannot drift.
+#[must_use]
+pub fn baked_accord_roster() -> Vec<ThresholdMember> {
+    let Some(genesis) = humanity_accord_genesis() else {
+        return Vec::new();
+    };
+    let Ok(founders) = serde_json::from_str::<Vec<ThresholdMember>>(FOUNDER_PUBKEYS_JSON) else {
+        return Vec::new();
+    };
+    accord_roster_from_family(genesis, &founders).unwrap_or_default()
+}
+
 /// The trusted-bootstrap **rooting anchor** for genesis mesh seeding
 /// (CIRISVerify#160, the "centipede head"): the Ed25519 public keys of the
 /// **seated** HUMANITY_ACCORD holders (A1/B1/C1).
@@ -760,15 +780,10 @@ pub fn accord_holder_bootstrap_anchor() -> Vec<[u8; 32]> {
         return test_root;
     }
 
-    let Some(genesis) = humanity_accord_genesis() else {
+    let roster = baked_accord_roster();
+    if roster.is_empty() {
         return Vec::new();
-    };
-    let Ok(founders) = serde_json::from_str::<Vec<ThresholdMember>>(FOUNDER_PUBKEYS_JSON) else {
-        return Vec::new();
-    };
-    let Ok(roster) = accord_roster_from_family(genesis, &founders) else {
-        return Vec::new();
-    };
+    }
     let b64 = base64::engine::general_purpose::STANDARD;
     let mut anchor = Vec::with_capacity(roster.len());
     for member in &roster {
