@@ -173,14 +173,12 @@ impl SecureEnclaveSecureBlobStorage {
                     "Generating ECIES wrapper key for blob storage"
                 );
                 // Genesis: mint a FRESH wrapper FIRST, then decide supersession
-                // from the outcome (CIRISVerify#292). This used to archive
-                // BEFORE minting, so a Secure Enclave init that fell back to the
-                // keychain still archived the lower-tier material — including,
-                // on a fresh home, the software tier's own seconds-old key,
-                // because the archiver's matcher covers exactly what software
-                // writes. That stranded a registered federation key and broke
-                // first-run claim (CIRISServer#595) and iOS node identity
-                // (CIRISServer#608).
+                // from the outcome (CIRISVerify#292). Archiving before the mint
+                // would let a Secure Enclave init that fell back to the keychain
+                // archive the lower-tier material — including, on a fresh home,
+                // the software tier's own seconds-old key, because the
+                // archiver's matcher covers exactly what software writes —
+                // stranding a registered federation key.
                 self.generate_wrapper_key()?;
 
                 // `is_secure_enclave` is set by `generate_wrapper_key` from

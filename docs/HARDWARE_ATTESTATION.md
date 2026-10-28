@@ -17,7 +17,7 @@ making the policy decision, which it must not.
 
 This is the same shape as [`ProvenanceChain`](./THREAT_MODEL.md#av-8)
 verification: verify *exposes* the chain, the consumer pins which
-steward bootstrap is trusted.
+trust root is trusted.
 
 ## The two methods to ask about, on the trait
 
@@ -198,26 +198,24 @@ Consumers compose the distinction from the surface above:
    challenge (see `attestation_with_nonce`). Replay defense.
 
 Steps 1–2 are pure structural matching on what verify exposes. Step 4
-is supplied by the caller. **Step 3 — active chain validation —
-currently routes through the registry** (the `play_integrity` / `tpm_attest`
-/ `app_attest` modules in `ciris-verify-core` are request/response
-types for the registry-side verifier, not local verifiers). The
-follow-on work to add **local chain-validation helpers**
-(`verify_play_integrity_token`, `verify_android_key_chain`,
-`verify_app_attest_assertion`, `verify_tpm_quote`) is tracked at
-[CIRISVerify#32 Ask 5](https://github.com/CIRISAI/CIRISVerify/issues/32)
-— see the FSD-002 §7.3 hardware-class taxonomy the federation aims
-for.
+is supplied by the caller. **Step 3 — chain validation — is local** in
+`ciris_verify_core::device_attestation`, each walk ending at an anchor
+resolved from the constrained trust-anchor store
+(`trust_anchor_store::baked::default_store()`, resolved on purpose +
+environment together):
 
-Until those helpers ship, a consumer can:
-- Structurally match (`hardware_type` + evidence presence + nonce
-  binding) — fully local, no registry call.
-- Route the evidence to the registry's existing attestation-verify
-  endpoints for active chain validation — verify already has the
-  request/response surface (`play_integrity::IntegrityVerifyRequest`,
-  `tpm_attest::TpmAttestVerifyRequest`, `app_attest::AppAttestVerifyRequest`).
-- Apply its own policy on the structural result while it waits for
-  the local verifiers.
+| Class | Local validator | Binds |
+|-------|-----------------|-------|
+| Android Key Attestation | `verify_android_key_attestation{,_with_store}` (+ `_with_challenge_policy`) | attested key = expected key; `attestationChallenge` (or `GenerationOnly`, reported as `challenge_checked`) |
+| Apple App Attest | `verify_apple_app_attest{,_with_store}` | credential key id; nonce; `rpIdHash`; `signCount == 0` |
+| TPM 2.0 EK | `verify_tpm_ek_certificate{,_with_store}` | certified key = pinned EK (device identity only — no PCR-quote verifier, no nonce) |
+| YubiKey PIV | `accord_custody_attestation::verify_yubikey_piv_attestation` | attested key = holder Ed25519; FIPS + touch policy |
+
+A store miss returns `Ok(None)` — no hardware evidence, never a refusal.
+No validator checks revocation. The `play_integrity` / `tpm_attest` /
+`app_attest` modules are request/response types for the registry's
+attestation endpoints; their verdicts are an online third party's and are
+advisory, not an admission gate.
 
 ## Refs
 
@@ -226,5 +224,5 @@ Until those helpers ship, a consumer can:
 - [`src/ciris-keyring/src/types.rs`](../src/ciris-keyring/src/types.rs) — `PlatformAttestation`, `HardwareType`
 - [`src/ciris-keyring/src/signer.rs`](../src/ciris-keyring/src/signer.rs) — `HardwareSigner`
 - [`src/ciris-verify-core/src/types.rs`](../src/ciris-verify-core/src/types.rs) — `AttestationProof`
+- [`src/ciris-verify-core/src/device_attestation.rs`](../src/ciris-verify-core/src/device_attestation.rs) — local chain validators
 - [`src/ciris-verify-core/src/play_integrity.rs`](../src/ciris-verify-core/src/play_integrity.rs), [`tpm_attest.rs`](../src/ciris-verify-core/src/tpm_attest.rs), [`app_attest.rs`](../src/ciris-verify-core/src/app_attest.rs) — registry-side verify request/response types
-- [CIRISVerify#32](https://github.com/CIRISAI/CIRISVerify/issues/32) — Ask 5: local chain-validation helpers (follow-on)

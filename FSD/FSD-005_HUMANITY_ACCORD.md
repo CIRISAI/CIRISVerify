@@ -1,19 +1,15 @@
 # FSD-005 — The Humanity Accord: What & Why
 
-**Status:** DESCRIPTIVE — documents shipped behaviour as of **CIRISVerify v7.2.0**
-(2026-06-23). This FSD specifies the *what and why* of the HUMANITY_ACCORD: the
-constitutional kill-switch whose authority to halt a CIRIS agent is rooted in
-hardware-attested human custody. The recognition root, custody attestation, and
-invocation-concurrence mechanisms described here are **implemented and released**
-(see §9 status table); the recovery-under-decimation behaviour is specified
-separately in **FSD-004** and is not yet implemented.
+**Status:** DESCRIPTIVE — documents shipped behaviour. This FSD specifies the *what and
+why* of the HUMANITY_ACCORD: the constitutional kill-switch whose authority to halt a CIRIS
+agent is rooted in hardware-attested human custody. The recognition root, custody
+attestation, invocation and halt-latch mechanisms described here are implemented (see §9);
+roster operation and recovery under decimation is specified in **FSD-004**.
 
-**Tracks:** CIRISVerify#91 (custody), #95/#104 (growable M-of-N), #107 (baked
-recognition root), #116 (real-hardware custody), #117 (registration bridge).
 **Builds on:** FSD-001 (protocol), FSD-003 (federation identity codes).
 **Constitutional grounding:** CIRIS Constitution §9.1 (entrenched `family`),
-CC 4.2.1 (invocation concurrence), CEG §9.1/§9.2/§9.4. **Extended by:** FSD-004
-(live-quorum operation & recovery under decimation).
+CC 4.2.1 (invocation, halt fuse, resumption), CC 4.2.6 (live quorum), CEG §9.1/§9.2/§9.4.
+**Extended by:** FSD-004 (live-quorum roster operation & recovery under decimation).
 
 ---
 
@@ -36,8 +32,7 @@ Concretely, as shipped:
 - **One holder pauses every agent at once** with a constitutional invocation
   that the federation verifies against that pinned root; the pause **lapses
   after a day** unless a **strict majority** of the roster confirms it, and a
-  strict majority resumes it (CC 4.2.1.1 / 4.2.1.3, CIRISConstitution#146,
-  verify 20.0.0 — see §4.3).
+  strict majority resumes it (CC 4.2.1.1 / 4.2.1.3 — see §4.3).
 
 The one-sentence framing, stated so every clause survives a hostile read of the
 source (§7 makes each clause checkable):
@@ -70,8 +65,6 @@ The Accord's answer is **distributed human custody you can verify:**
    so **one** holder can pause every agent instantly; but no single holder can
    keep agents paused past the fuse, confirm a halt, or resume one — those take
    a strict majority. A forged halt still needs a genuine seated holder's key.
-   *(Until 20.0.0 this read "no single holder can fire (genesis 2/3)"; the
-   steward's ruling on CIRISConstitution#146 reversed it on the firing side.)*
 2. **Human** — the authority is named, accountable people, not a service account.
 3. **Hardware-rooted** — a holder's key is proven to live on genuine FIPS
    hardware under PIN + touch, so "a specific authorized human was physically
@@ -125,16 +118,16 @@ coordinator assembles the genesis after the quorum verifies
 keys**, hybrid-required).
 
 That genesis object is then **baked** into the verify binary
-(`humanity_accord_genesis() -> Option<&'static SignedCegObject>`, #107). The
-function returns `None` until a real ceremony genesis is pinned (no-TOFU: absence
-means "not yet pinned", **never** "fetch it from a peer" — fetching would be
-trust-on-first-use). As of v7.2.0 it returns the real genesis. A consumer resolves
+(`humanity_accord_genesis() -> Option<&'static SignedCegObject>`), which returns the
+ceremony genesis. A build without a pinned genesis returns `None` (no-TOFU: absence
+means "not pinned", **never** "fetch it from a peer" — fetching would be
+trust-on-first-use). A consumer resolves
 the roster (`accord_roster_from_family`) and threshold
 (`accord_quorum_from_family`) from this **pinned** object only.
 
 ### 4.2 The custody attestation — *the holders hold genuine hardware*
 
-`ciris_verify_core::accord_custody_attestation` (#91).
+`ciris_verify_core::accord_custody_attestation`.
 
 A holder cannot merely *claim* its key is on a FIPS YubiKey — a patched verify
 could forge that. So each holder ships a separate signed object
@@ -143,25 +136,26 @@ attestation certificate**, signed inside the token by its factory slot-f9 key,
 chaining `9c → f9 → …intermediates… → ` the **pinned Yubico attestation root**.
 
 `verify_accord_custody_attestation` proves: (1) the bundle is holder-hybrid-signed;
-(2) the 9c cert chains to the pinned root (variable-length path — Yubico's 2024-12
-PKI is 5 levels); (3) the **attested key equals the holder's federation Ed25519
+(2) the 9c cert chains to the pinned root (variable-length path — current Yubico
+chains are 4 certificates: 9c → f9 → `Yubico PIV Attestation B 1` → `Yubico
+Attestation Root 1`); (3) the **attested key equals the holder's federation Ed25519
 key**; (4) the Yubico extensions show **FIPS-certified + touch=always** →
 `hardware_class: YubiKey_5_FIPS`. Fail-closed. Validated end-to-end against a
-physical **YubiKey 5 FIPS fw 5.7.4** (v6.7.1).
+physical **YubiKey 5 FIPS fw 5.7.4**.
 
-`custody_attestation_to_platform_attestation` (#117) bridges a *verified* custody
+`custody_attestation_to_platform_attestation` bridges a *verified* custody
 attestation into a `ciris_keyring::PlatformAttestation::ExternalSecureElement`, so
 the downstream substrate can admit/entrench a holder **non-interactively** once the
 ceremony is done.
 
 ### 4.3 The invocation — *exercising the switch*
 
-`ciris_verify_core::humanity_accord` (CC 4.2.1, #86).
+`ciris_verify_core::humanity_accord` (CC 4.2.1).
 
 One holder builds and signs an invocation of a **closed-vocabulary** kind and
 ships it (`co_sign_invocation` / `verify_invocation` — distinct-key,
 identity-bound). How many holders each kind needs is one table,
-`InvocationKind::required_signatures` (CC 4.2.1.1 rc7, CIRISConstitution#146):
+`InvocationKind::required_signatures` (CC 4.2.1.1):
 
 | Kind | Signatures |
 |------|-----------|
@@ -171,8 +165,7 @@ identity-bound). How many holders each kind needs is one table,
 A one-holder halt is an **agent pause** that **lapses `halt_fuse_secs` (24 h)
 after each node receives it** unless a majority `lifecycle:confirmed` names it;
 a majority `lifecycle:active` ends any halt. The node-side rules are
-`accord_halt_latch::HaltLatch` (verify 20.0.0, model
-`formal/accord_halt/AccordHaltFuse.tla`). The vocabulary is deliberately closed:
+`accord_halt_latch::HaltLatch` (model `formal/accord_halt/AccordHaltFuse.tla`). The vocabulary is deliberately closed:
 
 | `InvocationKind` | Wire | Meaning |
 |------------------|------|---------|
@@ -190,7 +183,7 @@ crosses the invoke↔lifecycle boundary even with identical id/nonce/payload.
 
 ### 4.4 Portable high-secure custody (optional)
 
-`ciris_keyring::usb_wrapped_mldsa65` (#88). The ML-DSA-65 seed can be
+`ciris_keyring::usb_wrapped_mldsa65`. The ML-DSA-65 seed can be
 AES-256-GCM-wrapped onto a USB key under a key derived from the YubiKey's
 deterministic Ed25519 signature over a domain-separated challenge — so **both** the
 USB (ciphertext) **and** the YubiKey + PIN + touch are required to unwrap. The
@@ -203,7 +196,7 @@ The Accord's defensibility depends on using **exact** terms. Two layers, with
 
 - **Authority layer (the genesis cosign + invocations): fully post-quantum.**
   `verify_founder_quorum` checks **both halves — Ed25519 *and* ML-DSA-65 — of
-  every founder signature** (hybrid-required since v5.7.0). So *who can fire* and
+  every founder signature** (hybrid-required). So *who can fire* and
   *the act of firing* survive a CRQC.
 - **Custody proof (the hardware-rootedness): classical-strength.** The YubiKey 9c
   attestation chains an **Ed25519** key to genuine FIPS hardware. **No shipping
@@ -225,10 +218,11 @@ computing one ML-DSA signature. Call it **"M-of-N quorum custody,"** never
 
 **The quorum rule.** One rule everywhere a quorum is declared: valid iff
 `2·M > N` (strict majority), `1 ≤ M ≤ N`, **no `1/2` escape hatch** and no `M==1`
-single-point-of-compromise. Genesis is `2/3`; the family is growable
+single-point-of-compromise in the family's declared quorum (invocation thresholds are
+per kind, §4.3). Genesis is `2/3`; the family is growable
 (`build_accord_family_envelope` derives `quorum:M/N` for the member count) and
 rosters change through an entrenchment-preserving `supersedes` authorized by the
-**prior** roster's quorum (#95/#104).
+**prior** roster's quorum.
 
 ## 6. Honest boundaries
 
@@ -239,11 +233,12 @@ Stated plainly so no consumer or reader over-claims:
 2. **Enforcement is downstream.** Verify ships the *authority + custody + signed-
    invocation verification* and the latch rules. The agent actually **pausing**
    on a verified one-holder `constitutional` invocation is the CIRISServer /
-   agent enforcement layer (CIRISServer#737, CIRISAgent#1231)
-   (`PROHIBITED_CAPABILITIES`). This FSD does not claim end-to-end actuation.
-3. **Recovery under decimation is unspecified-as-shipped.** The standing-roster
-   quorum **deadlocks** if most holders are lost. FSD-004 respecifies this as a
-   live quorum; it is RATIFIED but **not implemented**.
+   agent enforcement layer (`PROHIBITED_CAPABILITIES`; open gaps tracked as
+   CIRISServer#737 and CIRISAgent#1231). This FSD does not claim end-to-end actuation.
+3. **Recovery under decimation runs on the live quorum.** Firing never needs a
+   quorum (one holder halts). Roster changes and recovery are taken over the live
+   set (FSD-004, `accord_live_quorum`); the authoritative server-side recompute is
+   CIRISServer's.
 4. **The hardware-class taxonomy and Yubico encodings are pinned to observed
    reality** (validated on fw 5.7.4) but a vendor PKI change is a deliberate
    re-pin, not an automatic follow.
@@ -260,7 +255,7 @@ Each public claim maps to a checkable artifact, so "prove it" gets specifics:
 | The genesis quorum verifies **both** hybrid halves | `accord_genesis::tests::humanity_accord_genesis_is_baked_and_quorum_valid` (re-verifies the 2-of-3 hybrid quorum, `count == 3`) |
 | Verification is **offline / peer-free** | `humanity_accord_genesis()` is `include_str!`-baked into the binary; resolution uses only the pinned object |
 | Custody chains to genuine FIPS hardware | `verify_yubikey_piv_attestation` (9c→f9→pinned Yubico root) + the `examples/validate_yubikey_attestation` real-key run |
-| The roster is **named humans on real tokens** | the #118 ceremony artifacts: 6 holder records + 6 custody attestations + the 2-of-3-cosigned genesis |
+| The roster is **named humans on real tokens** | `accord_ceremony_artifacts/`: 6 holder records + 6 custody attestations + the 2-of-3-cosigned genesis |
 | One holder can pause; no single holder can keep agents paused, confirm, or resume | `InvocationKind::required_signatures` (1 to fire; `⌊n/2⌋+1` to confirm or resume) + `accord_halt_latch::HaltLatch` (the fuse); `accord_genesis::tests::one_holder_fires_a_constitutional_halt`, `resumption_needs_a_strict_majority_of_the_standing_roster`, `accord_halt_latch::tests::*` |
 | A forged halt does not fire | distinct-key gate (`reject_duplicate_member_keys`), identity binding; `a_one_signature_halt_still_needs_a_genuine_seated_holder` |
 
@@ -289,31 +284,28 @@ application-first, scoped to a verifiable public artifact — and **never** an
 unscoped "first PQC/threshold/kill-switch" superlative (each of which prior art
 defeats).
 
-## 9. Status — shipped vs designed
+## 9. Status
 
-| Capability | Module | Shipped |
-|------------|--------|---------|
-| HUMANITY_ACCORD genesis producer (entrenched family, 2/3) | `accord_genesis` | v6.4.0 |
-| Invocation concurrence (CC 4.2.1, closed vocab) | `humanity_accord` | v6.5.0 |
-| Portable USB-wrapped ML-DSA custody | `usb_wrapped_mldsa65` | v6.6.0 |
-| Custody attestation (YubiKey PIV → pinned root) | `accord_custody_attestation` | v6.7.0 |
-| Real-hardware validation (fw 5.7.4) | `examples/validate_yubikey_attestation` | v6.7.1 |
-| Growable M-of-N + membership-change `supersedes` | `accord_genesis` | v6.8.0 |
-| `accord:lifecycle:active` resumption scope | `humanity_accord` | v6.10.0 |
-| Pinned no-TOFU genesis accessor (empty) | `accord_genesis` | v6.11.0 |
-| Custody attestation produces on real hardware (#116) | `accord_custody_attestation` | **v7.0.0** |
-| Custody → persist `attestation_evidence` bridge (#117) | `accord_custody_attestation` | **v7.1.0** |
-| **Genesis BAKED — recognition root live (#107)** | `accord_genesis` | **v7.2.0** |
-| Live-quorum operation & recovery under decimation | — | **FSD-004, not implemented** |
-| Agent-halts-on-fire enforcement | CIRISServer / WiseBus | downstream |
+| Capability | Module | Status |
+|------------|--------|--------|
+| HUMANITY_ACCORD genesis producer (entrenched family, 2/3) | `accord_genesis` | shipped |
+| Invocations + concurrence (CC 4.2.1, closed vocab) | `humanity_accord` | shipped |
+| Halt latch (one-holder pause, fuse, confirm, resume) | `accord_halt_latch` | shipped |
+| Portable USB-wrapped ML-DSA custody | `usb_wrapped_mldsa65` | shipped |
+| Custody attestation (YubiKey PIV → pinned root) | `accord_custody_attestation` | shipped, validated on fw 5.7.4 |
+| Custody → persist `attestation_evidence` bridge | `accord_custody_attestation` | shipped |
+| Growable M-of-N + membership-change `supersedes` | `accord_genesis` | shipped |
+| Baked no-TOFU genesis (recognition root) | `accord_genesis` | shipped |
+| Live-quorum roster operation & recovery under decimation | `accord_live_quorum` | shipped (FSD-004) |
+| Agent-pauses-on-halt enforcement | CIRISServer / CIRISAgent | downstream |
 | Client ceremony / invocation UI | CIRISAgent/client (KMP) | downstream |
 
 ## 10. Relationship to other documents
 
 - **FSD-001** — the CIRISVerify protocol this rides on.
 - **FSD-003** — federation identity codes (the `accord_holder` identity type, §9.3).
-- **FSD-004** — live-quorum operation & recovery under decimation; the natural
-  extension of §6.3 here. RATIFIED, not implemented.
+- **FSD-004** — live-quorum roster operation & recovery under decimation; the
+  extension of §6.3 here.
 - **CLAUDE.md** — current implementation status, module map, family-vs-community
   reading discipline.
 - **docs/ACCORD_KEY_GENESIS_RUNBOOK.md** — the operator procedure for the genesis

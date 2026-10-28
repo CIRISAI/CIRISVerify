@@ -77,18 +77,14 @@ impl<'a> Validity<'a> {
     /// (CIRISVerify#268).
     ///
     /// This is the **only** way to construct a `Validity`. The fields are
-    /// private and there is no unchecked constructor, because a previous
-    /// revision offered `new`/`starting` alongside this and a caller doing the
-    /// natural thing got no validation at all — an optional check is skippable
-    /// by omission, which is the same lesson #252 rule 3 records and the third
-    /// time this pull request has had to learn it.
+    /// private and there is no unchecked constructor: an optional check is
+    /// skippable by omission (the #252 rule 3 lesson).
     ///
     /// It is also the single validation rule for every entry point — the CLI's
-    /// `--valid-until`, the FFI's `valid_until`, and any Rust caller. They
-    /// previously disagreed: the FFI refused `soon` while the CLI accepted it,
-    /// opened or minted the sealed PQC key, and emitted a **signed** record
-    /// carrying an expiry no consumer could evaluate. Two checks for one rule
-    /// is how they drift, so there is one.
+    /// `--valid-until`, the FFI's `valid_until`, and any Rust caller — so no
+    /// entry point can emit a **signed** record carrying an expiry no consumer
+    /// could evaluate. Two checks for one rule is how they drift, so there is
+    /// one.
     ///
     /// # Errors
     /// [`VerifyError::IntegrityError`] if either instant is not RFC-3339, or
@@ -414,13 +410,11 @@ mod tests {
             "got {}",
             created.key_id
         );
-        // **Behavior change, #272:** a minted identity code is now v3, because
-        // it carries the PQC commitment. This test previously asserted v2 —
-        // but a code with no commitment names a key that can never be written
-        // to `federation_keys`, so minting v2 here would mean verify keeps
-        // producing codes that cannot be admitted. A consumer older than
-        // v14.1.0 rejects `CIRIS-V3-` outright, which is the safe direction:
-        // it could not have admitted the key either.
+        // A minted identity code is v3 because it carries the PQC commitment
+        // (#272): a code with no commitment names a key that can never be
+        // written to `federation_keys`. A consumer that predates v3 rejects
+        // `CIRIS-V3-` outright, which is the safe direction: it could not have
+        // admitted the key either.
         assert!(created.code.starts_with("CIRIS-V3-"), "{}", created.code);
         assert_eq!(
             crate::fedcode::decode(&created.code).unwrap().kind,

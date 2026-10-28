@@ -1,12 +1,11 @@
 //! Transparency log with Merkle tree for tamper-evident audit trail.
 //!
-//! v2.3.0 (CIRISVerify#23): SOTA upgrade aligning with RFC 6962 / RFC 9162
-//! (Certificate Transparency) so this becomes the canonical transparency
-//! substrate for the entire CIRIS stack — license verification (Verify),
+//! Aligned with RFC 6962 / RFC 9162 (Certificate Transparency) as the
+//! canonical transparency substrate for the entire CIRIS stack — license verification (Verify),
 //! audit chain (Persist), and edge nodes (Edge) plug in via the
 //! `TransparencyLeaf` and `TransparencyStore` traits.
 //!
-//! ## What the SOTA upgrade buys us
+//! ## Threats and mitigations
 //!
 //! | Threat | Mitigation |
 //! |---|---|
@@ -19,15 +18,12 @@
 //! | Quantum break on signing | Hybrid Ed25519 + ML-DSA-65 via `ciris-crypto` |
 //! | Quantum break on tree | SHA-256 (PQ-resistant) |
 //!
-//! ## Breaking change from v2.2.x
+//! ## Hash prefixes
 //!
-//! `hash_leaf` / `hash_node` now use RFC 6962 byte prefixes (`0x00` /
-//! `0x01`) instead of the v2.2.x string prefixes (`"ciris-log-entry:"` /
-//! `"ciris-merkle-node:"`). Merkle roots computed by v2.3.0+ are
-//! **not** byte-comparable with v2.2.x roots. The architectural call
-//! (#23, 2026-05-16) treats this as a clean cutover: persist's audit-
-//! chain-bridge policy is genesis-on-cutover + archive legacy chain,
-//! and Verify is the wellspring (downstream pins the new minor).
+//! `hash_leaf` / `hash_node` use the RFC 6962 byte prefixes (`0x00` /
+//! `0x01`). Roots computed under the older string prefixes
+//! (`"ciris-log-entry:"` / `"ciris-merkle-node:"`) are **not**
+//! byte-comparable with these; a legacy chain is archived, not bridged.
 //!
 //! ## Trait-based architecture
 //!
@@ -1224,11 +1220,10 @@ pub fn verify_consistency(
 
 /// Hash leaf bytes under the RFC 6962 §2.1 leaf prefix (`0x00`).
 ///
-/// Exported (crypto-DRY assessment) so downstream [`TransparencyStore`]
-/// implementors — CIRISPersist's `PgMerkleStore` / `SqliteMerkleStore`, which
-/// must fill a `leaf_hash` column — reuse this exact construction instead of
-/// re-deriving `sha256(0x00 ‖ canonical)` (they previously replicated it
-/// byte-for-byte and pinned parity with a CI test).
+/// Exported so downstream [`TransparencyStore`] implementors — CIRISPersist's
+/// `PgMerkleStore` / `SqliteMerkleStore`, which must fill a `leaf_hash` column —
+/// reuse this exact construction instead of re-deriving
+/// `sha256(0x00 ‖ canonical)`.
 pub fn hash_leaf(canonical: &[u8]) -> [u8; 32] {
     let mut hasher = Sha256::new();
     hasher.update([0x00]);

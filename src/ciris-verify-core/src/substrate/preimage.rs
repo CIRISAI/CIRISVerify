@@ -64,7 +64,7 @@ pub const DOMAIN_CORPUS_WANT: &[u8] = b"CIRIS-WANT-HAVE\0";
 /// Length of an Ed25519 public key / the raw signature is 64; pubkey 32.
 const ED25519_PUBKEY_LEN: usize = 32;
 
-/// Why a §19 holonomic verification failed. Coarse by design (enough for audit,
+/// Why a substrate verification failed. Coarse by design (enough for audit,
 /// never granular enough to aid forgery — the opaque-failure discipline).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]

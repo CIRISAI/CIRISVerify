@@ -10,7 +10,7 @@
 //! **receiver-side**, so a storage-plane fix is inert: the redacting node
 //! tolerates its own redaction and the first peer it replicates to refuses it.
 //!
-//! ## What CC ruled out, and why it matters
+//! ## What CC 2.6 rules out, and why it matters
 //!
 //! The shape every drafter reaches for first — a signed *"I redacted this"*
 //! marker — is a **normative dead end** (CC 2.6):

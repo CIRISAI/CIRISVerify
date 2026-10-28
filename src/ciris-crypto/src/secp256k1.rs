@@ -492,11 +492,10 @@ fn rlp_uint_bytes(out: &mut Vec<u8>, be: &[u8]) {
 ///
 /// # This does NOT apply EIP-155 replay protection (CIRISVerify#207 item 2)
 ///
-/// The doc here previously claimed "EIP-155 adjusted v value" and the
-/// `chain_id` parameter suggests it, but the body ignores `chain_id` and
-/// returns `v = 27 + recovery_id`. For funds-moving code that mismatch is how
-/// a caller broadcasts a **replayable** transaction believing otherwise, so
-/// it is now stated rather than buried in a body comment.
+/// The `chain_id` parameter suggests otherwise, but the body ignores
+/// `chain_id` and returns `v = 27 + recovery_id`. For funds-moving code that
+/// mismatch is how a caller broadcasts a **replayable** transaction believing
+/// otherwise, so it is stated here.
 ///
 /// Use [`sign_legacy_transaction`] for replay protection: it takes the tx
 /// *fields*, builds the EIP-155 preimage inside the boundary, and returns a

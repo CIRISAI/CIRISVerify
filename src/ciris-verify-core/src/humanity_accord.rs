@@ -1,5 +1,5 @@
 //! CEG §9.2.1 HUMANITY_ACCORD invocation anti-replay surface
-//! (CIRISVerify#41, v4.2.0+).
+//! (CIRISVerify#41).
 //!
 //! Per CIRISRegistry CEG §9.2.1: every `accord:invoke:*`
 //! Contribution signs canonical bytes binding the discriminator,
@@ -19,7 +19,7 @@
 //! - [`verify_invocation`] — holder hybrid signature verification at the
 //!   threshold each kind requires ([`InvocationKind::required_signatures`]):
 //!   **one** holder fires a `constitutional` halt, a **strict majority of the
-//!   standing roster** resumes from one (CIRISConstitution#146, CC rc7).
+//!   standing roster** resumes from one (CC 4.2.1.1).
 //!
 //! ## Strongest safety-critical path in the grammar
 //!
@@ -65,31 +65,26 @@ use crate::threshold::{verify_threshold_signatures, ThresholdMember, ThresholdSi
 /// Domain prefix for invocation canonical bytes (§9.2.1).
 /// Trailing newline is part of the prefix.
 ///
-/// # v2 as of 18.0.0 — a v1 signature no longer verifies, deliberately
+/// # v2 — a v1 signature does not verify, deliberately
 ///
-/// CIRISConstitution#112 (ratified 2026-09-26) makes casing uniform across the
-/// wire: the registry's registered literal is **lowercase** `constitutional`
-/// (`accord:invoke:constitutional:{halt_id}`), and CC's own matcher refuses the
-/// form this crate emitted as `namespace_dimension_case_malformed`:
+/// CC's namespace registry makes casing uniform across the wire: the registered
+/// literal is **lowercase** `constitutional`
+/// (`accord:invoke:constitutional:{halt_id}`), and CC's matcher refuses the
+/// uppercase form as `namespace_dimension_case_malformed`:
 ///
 /// ```text
 /// accord:invoke:constitutional:halt-001:v1  -> OK
 /// accord:invoke:CONSTITUTIONAL:halt-001:v1  -> namespace_dimension_case_malformed
 /// ```
 ///
-/// Changing [`InvocationKind::as_str`] alone would have made a v1-signed
-/// invocation and a v2-signed one **differ only in a field value**, which is the
-/// silent-divergence shape: two preimages that look interchangeable and are not.
-/// Bumping the domain label makes the break **loud** — a signature produced
-/// under `ciris.accord_invoke.v1` fails verification outright rather than being
-/// mistaken for a malformed v2.
+/// The lowercase kind rides under a new domain label rather than the old one,
+/// so a v1-signed and a v2-signed invocation never **differ only in a field
+/// value** — two preimages that look interchangeable and are not. A signature
+/// produced under `ciris.accord_invoke.v1` fails verification outright rather
+/// than being mistaken for a malformed v2.
 ///
-/// Cut with **no halt latched** (confirmed by the operator before the change),
-/// which is the whole precondition: an in-flight `CONSTITUTIONAL` halt signed
-/// under v1 would have stopped verifying at exactly the moment it mattered.
-///
-/// [`LIFECYCLE_DOMAIN_PREFIX`] stays at `v1`: `lifecycle:active` was already
-/// lowercase and registered, so its preimage does not move.
+/// [`LIFECYCLE_DOMAIN_PREFIX`] stays at `v1`: `lifecycle:active` is lowercase
+/// and registered under that label.
 pub const INVOCATION_DOMAIN_PREFIX: &str = "ciris.accord_invoke.v2\n";
 
 /// Domain prefix for the **separate** `accord:lifecycle:active` scope
@@ -135,8 +130,7 @@ pub enum InvocationKind {
     /// verify-authored (first impl) and flagged for CEG cross-confirmation.
     #[serde(rename = "lifecycle:active")]
     LifecycleActive,
-    /// `accord:lifecycle:confirmed` (CC 4.2.1.3, CIRISConstitution#146 amended,
-    /// rc7 `7923cde`) — the cosigned strict-majority confirmation that keeps a
+    /// `accord:lifecycle:confirmed` (CC 4.2.1.3) — the cosigned strict-majority confirmation that keeps a
     /// one-holder `constitutional` halt past its fuse. Same lifecycle domain as
     /// `lifecycle:active`, with a `confirms_halt_id=` line in place of
     /// `resumes_halt_id=`. A confirmation after the fuse has lapsed confirms
@@ -151,14 +145,13 @@ impl InvocationKind {
     /// thresholds live: [`verify_invocation`] and the concurrence flow's
     /// status both read it, so they cannot disagree.
     ///
-    /// The CC 4.2.6 bias gradient `fire ≤ roster-change ≤ standing`, as ruled on
-    /// CIRISConstitution#146 (entrenched CC 4.2, founder-ratified, rc7):
+    /// The CC 4.2.6 bias gradient `fire ≤ roster-change ≤ standing`, per the
+    /// CC 4.2.1.1 threshold table (entrenched CC 4.2):
     ///
     /// - **`constitutional`: 1.** One holder's hybrid signature over the CC
     ///   4.2.1.1 bytes, checked against the pinned roster, fires. A missed fire
     ///   is terminal and unrecoverable; a false fire is recoverable by
-    ///   resumption. (rc6 counted ≥ 2 here while CC 4.2.6 said one; the ruling
-    ///   reconciles them on the missed-fire side.)
+    ///   resumption.
     /// - **`lifecycle:active`: a strict majority of the standing roster**,
     ///   `⌊n/2⌋ + 1` (2 of 3 today). Un-firing leans hard: a lone coerced or
     ///   replayed key must never undo a legitimate halt.
@@ -166,8 +159,6 @@ impl InvocationKind {
     ///   a fire takes; one that needed more would not rehearse the fire.
     /// - **`notify`: 1** — the safeguard against a notify carrying a halt's
     ///   weight is the CC 4.2.1.2 visual distinction, not a signature count.
-    ///
-    /// (Steward ruling, CC 4.2.1.1 rc7 threshold table, CIRISConstitution#146.)
     ///
     /// `None` for an empty roster: no number of signatures is meaningful
     /// against nobody, and treating that as "0 needed" would fire on nothing.

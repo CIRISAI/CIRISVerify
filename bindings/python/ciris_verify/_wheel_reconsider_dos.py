@@ -431,7 +431,7 @@ def attach_to(cls) -> None:
 
 # ---------------------------------------------------------------------------
 # Smoke test — exercised when the module is run directly. Requires the
-# loaded CDLL to expose the reconsider_dos symbols (v4.7.0+).
+# loaded CDLL to expose the reconsider_dos symbols.
 # ---------------------------------------------------------------------------
 
 

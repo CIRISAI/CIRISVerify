@@ -1,11 +1,11 @@
-//! §19 Holonomic substrate verifiers (CEG 1.0-RC11, CIRISVerify#78).
+//! The substrate verifiers (CC 6.1): the wholeness witness (CC 6.1.1), the
+//! noise floor and its aggregation tier (CC 6.1.2), durable storage and
+//! replication (CC 6.1.5), deterministic ALM topology (CC 6.1.6), transitive
+//! trust discovery (CC 6.1.8), and the A/V chunk seal (CC 5.3.3.2.5).
 //!
-//! CEG absorbed the CIRISEdge v4.0.0 "holonomic substrate" — ALM relay trees,
-//! RaptorQ fountain storage, WholenessWitness divergence detection, recursive
-//! trust bootstrap — as additive normative sections **with guardrails** (§19).
-//! The adversarial review (→ CIRISEdge#143) found edge v4.0.0 does not enforce
-//! the guardrails; **Verify is where they become real.** This module is the
-//! cross-impl verifier home for them.
+//! Producers (CIRISEdge, CIRISPersist) build these objects; this module is
+//! where their invariants are checked, so every implementation is held to the
+//! same verifier.
 //!
 //! ## What's here
 //!

@@ -96,11 +96,6 @@ pub mod federation_self_record;
 pub mod genesis_bundle;
 pub mod hardware_info;
 pub mod holds_bytes;
-/// §19 Holonomic substrate verifiers (CEG 1.0-RC11, CIRISVerify#78) — ALM
-/// capacity authenticity, fountain holding claims, WholenessWitness divergence
-/// detection + equivocation, recursive trust bootstrap, A/V chunk nonces. All
-/// ride the §19.0 binary signed-preimage framing + the PQC-mandatory gate.
-pub mod holonomic;
 pub mod http_client;
 pub mod https;
 pub mod humanity_accord;
@@ -129,6 +124,11 @@ pub mod security;
 pub mod self_at_login;
 pub mod skill_import;
 pub mod subject_binding;
+/// §19 Holonomic substrate verifiers (CEG 1.0-RC11, CIRISVerify#78) — ALM
+/// capacity authenticity, fountain holding claims, WholenessWitness divergence
+/// detection + equivocation, recursive trust bootstrap, A/V chunk nonces. All
+/// ride the §19.0 binary signed-preimage framing + the PQC-mandatory gate.
+pub mod substrate;
 /// CIRISVerify#202 — compile-time-fenced test-only trust-root / custody
 /// relaxation for the local mesh harness (never in a prod artifact).
 pub mod test_anchor;

@@ -1,11 +1,10 @@
 # HUMANITY_ACCORD Key Genesis Provisioning Runbook
 
-**Status:** DRAFT (2026-06-09; M-of-N + name-free key labels 2026-06-21). Genesis
-ceremony for the HUMANITY_ACCORD holders. Scoped for the nascent-project genesis
+**Status:** Operational runbook. Genesis ceremony for the HUMANITY_ACCORD holders. Scoped for the nascent-project genesis
 — proportionate security, not a full production HSM ceremony. Production-hardening
 notes are marked **[harden]**.
 
-**Authoritative spec:** CEG 0.15 §9 (`CIRISRegistry/FSD/CEG/.../ceg-0.15.tex`).
+**Authoritative spec:** the CIRIS Constitution (CC 4.2, the HUMANITY_ACCORD) and CEG §9.
 This runbook is the operational counterpart; where it and the spec disagree,
 the spec wins.
 
@@ -82,7 +81,7 @@ row). They are not copies of one key.
 
 A YubiKey 5 FIPS **refuses PIV key generation until it is in FIPS Approved Mode**
 (`ERROR: YubiKey FIPS must be in FIPS approved mode prior to key generation` —
-confirmed on a real key, #91). Approved mode is entered by moving **all three**
+confirmed on a real key). Approved mode is entered by moving **all three**
 PIV credentials off their factory defaults. Each holder does this on **their own**
 key (the PIN is the holder's secret; no one provisions another's key):
 
@@ -95,7 +94,7 @@ ykman piv access change-puk    # current 12345678  → your PUK  (8 chars, non-t
 ykman piv access change-management-key --generate --protect      # (enter your PIN)
 ```
 
-Gotchas (all hit + solved during the #91 validation):
+Gotchas (all observed on real keys):
 
 - **Order matters.** `change-management-key --protect` itself requires approved
   mode, so change **PIN + PUK first**. If `--protect` still errors, run it once as
@@ -181,7 +180,7 @@ Expected (cross-check firmware/serial against the physical key via `ykman piv in
 
 `9c.pem` / `f9.pem` are also regenerable from the key, so they need not be archived
 long-term — but you need them in hand when you build the custody attestation (§5).
-The CIRISServer admission gate (#41) pins **`Yubico Attestation Root 1`**
+The CIRISServer admission gate pins **`Yubico Attestation Root 1`**
 (`yubico-ca-1.pem`) and carries the intermediates in the bundle.
 
 ### 4.2 ML-DSA-65 in software (PQC half) — air-gapped
@@ -194,7 +193,7 @@ The CIRISServer admission gate (#41) pins **`Yubico Attestation Root 1`**
   decryption capability — CC §9.2 scope isolation), so we do **not** add an
   OpenPGP/PIV decryption subkey to re-couple it; instead the seed is re-coupled to
   hardware presence via the holder's Ed25519 *signature*.
-  **Tooled since v6.6.0 — the portable mode** (`accord … --portable-usb <dir>`,
+  **Tooled — the portable mode** (`accord … --portable-usb <dir>`,
   `ciris_keyring::usb_wrapped_mldsa65`): the ML-DSA-65 seed is AES-256-GCM-wrapped
   on a USB key under a key derived from the YubiKey's deterministic Ed25519
   *signature* (so the YubiKey stays signing-only — no decrypt capability added),
@@ -232,7 +231,7 @@ Row fields (confirm exact schema against CIRISPersist `federation_keys`):
 `mldsa65_public_key`, `hardware_class="YubiKey_5_FIPS"`, `valid_from`,
 self-signature.
 
-### 5.1 Spares are pre-attested + vaulted — **never live roster seats** (CIRISVerify#96)
+### 5.1 Spares are pre-attested + vaulted — **never live roster seats**
 
 A `federation_keys` `accord_holder` row exists for spares too (so a swap is fast),
 but **the kill-switch quorum roster is the family `members` set, NOT "every
@@ -253,7 +252,7 @@ accord_holder row."** This is load-bearing:
   seats. A person may hold several spares; only one of their keys is ever a live
   seat at a time.
 
-The CIRISServer admission gate (CIRISServer#41/#61) MUST enforce this: build the
+The CIRISServer admission gate MUST enforce this: build the
 quorum roster from `family.members`, ignore non-member `accord_holder` rows.
 
 ## 6. Cross-attestation by the 3 regional stewards (§9.3)
@@ -291,18 +290,18 @@ object (CEG §9.1):
   omit-vs-materialize rule — sign exactly these members, don't inject defaults.
 - The founders sign those bytes (each Ed25519-touch + ML-DSA-65). The
   consensus_protocol is `quorum:2/3`, so genesis is authorized by a **2-of-3
-  quorum of distinct founder keys** — the *same* threshold the accord uses for
-  everything. Genesis is **not** unanimous: founding must not require every
+  quorum of distinct founder keys** — the family's declared quorum, which also
+  governs roster changes, halt confirmation and resumption (a halt itself needs
+  one holder, CC 4.2.1.1). Genesis is **not** unanimous: founding must not require every
   holder present (that would defeat the fault-tolerance 2/3 exists for), and any
   2-of-3 is a trusted quorum under the accord's own model. Having all three sign
   at the ceremony is **recommended** (clean record of all-founder consent) but
-  not required. *(Earlier drafts said "all 3 sign / `Ok(3)`"; corrected to 2/3 in
-  v6.4.1 — unanimity was an inconsistency + a bootstrapping single-point-of-failure.)*
+  not required.
 - Verify before publishing: `threshold::verify_founder_quorum(bytes, members, sigs, 2)`
   must return `Ok(n)` with `n ≥ 2`. The roster (`members`) is the full 3 founders;
   2-of-3 *of them* must validly sign. `consensus_protocol_entrenched: true` means
   the substrate will reject any future `supersedes` that weakens the protocol or
-  moves admission off the founders — that's the entrenchment gate (#31).
+  moves admission off the founders — that's the entrenchment gate.
 - Roster integrity at genesis is the **distinct-key gate** (no key may fill two
   seats — `assemble_accord_family_genesis` enforces distinct Ed25519/ML-DSA
   pubkeys, since a single key could otherwise meet 2/3 alone) **plus** the §6
@@ -318,13 +317,15 @@ ML-DSA-65 decryption secret across two custodians.
 
 ## 9. Acceptance test (before declaring genesis complete)
 
-1. **Drill invocation.** Have 2 of the 3 primaries sign an `accord:invoke:drill`
-   over the §9.2.1 canonical bytes (use `humanity_accord::Invocation::canonical_bytes`).
-   Confirm `humanity_accord::verify_invocation` returns valid with **exactly 2**
-   holder signatures, and that the same signature does **not** verify against a
+1. **Drill invocation.** Have one primary sign an `accord:invoke:drill` over the
+   §9.2.1 canonical bytes (use `humanity_accord::Invocation::canonical_bytes`).
+   Confirm `humanity_accord::verify_invocation` returns valid with **1** holder
+   signature, and that the same signature does **not** verify against a
    `CONSTITUTIONAL` or `notify` discriminator (cross-replay rejection — the whole
    point of §9.2.1).
-2. **Quorum floor.** Confirm **1** signature is rejected (insufficient).
+2. **Resumption floor.** Confirm a `lifecycle:active` with **1** signature is
+   rejected and one with **2** of the 3 is accepted (strict majority of the roster,
+   `InvocationKind::required_signatures`).
 3. **Touch proof.** Confirm each signature required a physical touch (no signature
    without it → touch policy `fixed` is live).
 4. **Round-trip the family.** Re-fetch the published `humanity-accord` Contribution,
@@ -344,7 +345,7 @@ the entrenched-family `supersedes` ceremony — **CEG §9.2 /
 entrenched, a `supersedes` is the *only* path to change the roster, and it must be
 signed by the **current** roster's strict-majority quorum (the existing holders
 authorize who joins/leaves; an incoming/spare key never authorizes its own
-admission). Tooled in CIRISVerify (#95):
+admission). Tooled in CIRISVerify:
 
 ```text
 # Coordinator builds the new-roster envelope superseding the prior family genesis.
@@ -372,17 +373,17 @@ accord_genesis::verify_accord_membership_change(&prior_family_genesis, &new_enve
   whose `supersedes.prior_member_key_ids` doesn't match the real prior roster
   (anti-replay).
 
-## 11. What's tooled vs. manual today (honest status)
+## 11. What's tooled vs. manual
 
 - **Tooled (CIRISVerify ships it):** hybrid sign/verify (`ciris_crypto`),
   `jcs::canonicalize` (+ `jcs_canonicalize` Python binding) for the Contribution
   signing bytes, `threshold::verify_founder_quorum`, `humanity_accord::{Invocation,
   verify_invocation, InvocationDedup}` for §9.2.1, the `boundary_degraded` /
-  hardware attestation surface, **and — since v6.4.0 — the producer side:
+  hardware attestation surface, **and the producer side:
   `ciris_verify_core::accord_genesis` (`produce_accord_holder_record`,
   `build_accord_family_envelope`, `co_sign_accord_family`,
   `assemble_accord_family_genesis`) + the `ciris-verify accord` CLI, which wraps
-  §5–§7 of this runbook** (the "future ceremony tool" called out below). The
+  §5–§7 of this runbook**. The
   assembler verifies the accord's **2/3** founder quorum of distinct keys before
   anything reaches the outbox — the producer round-trips through
   `verify_founder_quorum`.
@@ -394,7 +395,7 @@ accord_genesis::verify_accord_membership_change(&prior_family_genesis, &new_enve
   read-back, vaulting. The CLI tools the *signing + assembly* (§5/§7); the
   hardware/air-gap/vault steps remain hands-on by design.
 
-### 11.1 CLI — the `ciris-verify accord` ceremony commands (v6.4.0+)
+### 11.1 CLI — the `ciris-verify accord` ceremony commands
 
 ```bash
 # §5 — each holder, on their own machine, produces their accord_holder genesis
@@ -424,10 +425,8 @@ ciris-verify accord assemble --envelope family.json \
 `--module` omitted → the platform-sealed Ed25519 key (`~/ciris/keys`); the
 ML-DSA-65 half is always the sealed software seed. Assembly is offline + tokenless.
 
-> No single "provision-accord-genesis" command exists yet; this is the script
-> humans run. A future ceremony tool could wrap §4–§7. — *partially done: §5–§7
-> signing + assembly are now `ciris-verify accord` (§11.1). §4 keygen
-> (YubiKey/air-gap) stays manual.*
+> §5–§7 signing + assembly are `ciris-verify accord` (§11.1); §4 keygen
+> (YubiKey/air-gap) is manual.
 
 ## 12. Security non-negotiables (the short list)
 

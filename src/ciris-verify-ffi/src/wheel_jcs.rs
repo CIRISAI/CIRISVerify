@@ -1,5 +1,5 @@
 //! JCS (RFC 8785) canonicalization FFI surface for the Python wheel
-//! (CIRISVerify#61, v5.0.0+).
+//! (CIRISVerify#61).
 //!
 //! Wraps [`ciris_verify_core::jcs::canonicalize`] so the CIRISAgent
 //! producer — and any other wheel consumer — can canonicalize a JSON

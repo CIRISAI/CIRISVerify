@@ -1,6 +1,6 @@
 # CEWP Orientation — where CIRISVerify sits
 
-*Captured per CIRISVerify#43. This is orientation, not specification —
+*This is orientation, not specification —
 it keeps the surface this repo maintains aimed at the right platform
 targets. The authoritative platform docs live in CIRISNodeCore.*
 

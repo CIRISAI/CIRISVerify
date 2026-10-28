@@ -1,9 +1,9 @@
 //! Peer-presentable, peer-verifiable **build-attestation bundle** — the
-//! presenter binding (CIRISVerify#181).
+//! presenter binding.
 //!
 //! ## The gap this closes
 //!
-//! Before this module verify had two halves that never met:
+//! Without this module verify has two halves that never meet:
 //!
 //! - [`crate::manifest_contribution`] binds **pipeline → build M** (a CI key
 //!   with `infra:attest` signs "this build is approved"). It says nothing about
@@ -36,12 +36,12 @@
 //!   *falsifiable* (it can be caught contradicting other evidence), not that it
 //!   is self-certifying.
 //!
-//! Per CIRISVerify#181 this path is deliberately **SW-friendly**: no hardware,
+//! This path is deliberately **SW-friendly**: no hardware,
 //! no trust in the peer's self-report. The build facts are never read from the
 //! presenter's claims — they come from the *pipeline-signed* manifest, which the
 //! verifier re-roots itself. Hardware-rooted device attestation (StrongBox /
 //! App Attest / TPM vendor chains) is the separate, complementary
-//! CIRISVerify#199 leg and is intentionally absent here.
+//! [`crate::device_attestation`] path and is intentionally absent here.
 //!
 //! ## Denial-of-service posture (load-bearing design constraint)
 //!
@@ -67,7 +67,7 @@
 //! The signed envelope commits to `sha256(JCS(manifest_contribution))`; the
 //! manifest object itself rides in the **unsigned** outer `body` and is
 //! recomputed + checked by the verifier. Same discipline as
-//! [`crate::accord_custody_attestation`] (CIRISVerify#113/#116): the presenter's
+//! [`crate::accord_custody_attestation`]: the presenter's
 //! signing preimage stays small and **independent of the manifest's size**, so a
 //! hardware Ed25519 token with a single-shot input ceiling can produce this
 //! bundle. Tampering with the carried evidence breaks the commitment.
@@ -88,7 +88,7 @@ use crate::transparency::{hash_leaf, verify_inclusion, MerkleProof};
 pub const BUILD_ATTESTATION_BUNDLE_KIND: &str = "build_attestation_bundle";
 
 /// Which trust-ladder row the presenter's "I run build M" rides (FSD-006 Q6,
-/// steward ruling 2026-10-01, CC 3.1.2.1 rc6). A node's statement that it runs
+/// CC 3.1.2.1). A node's statement that it runs
 /// a build is not a second claim on the pipeline's
 /// `provenance:build_manifest:{target}` and needs no new family: it is the
 /// build attestation the ladder already carries, signed by the running node
@@ -558,7 +558,7 @@ impl BundleVerdict {
     /// vocabulary is minted here. The `source_ref` carries the manifest hash so
     /// a scorer can correlate independent presenters of the same build — the
     /// input a source-independence gate
-    /// ([`crate::holonomic::aggregation::effective_source_count`]) needs to tell
+    /// ([`crate::substrate::aggregation::effective_source_count`]) needs to tell
     /// N genuinely distinct attesters from one build echoed N times.
     #[must_use]
     pub fn to_attestation_entries(&self, attester: &str) -> Vec<AttestationEntry> {

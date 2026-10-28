@@ -32,8 +32,7 @@ service CIRISVerify {
   // Check if a specific capability is allowed under current license
   rpc CheckCapability(CapabilityCheckRequest) returns (CapabilityCheckResponse);
 
-  // The trust root this module selected (CC 5.3.4). Replaces GetStewardKey:
-  // the single steward key is retired (21.0.0).
+  // The trust root this module selected (CC 5.3.4).
   rpc GetTrustRoot(TrustRootRequest) returns (TrustRoot);
 
   // Health check
@@ -54,7 +53,7 @@ message LicenseStatusRequest {
   // Force refresh from remote sources (bypass cache)
   bool force_refresh = 3;
 
-  // === RUNTIME VALIDATION (v1.2.0) ===
+  // === RUNTIME VALIDATION ===
   // Agent binary hash (from registry)
   bytes agent_hash = 10;
 
@@ -90,7 +89,7 @@ message LicenseStatusResponse {
   // Response metadata
   ResponseMetadata metadata = 6;
 
-  // === RUNTIME VALIDATION (v1.2.0) ===
+  // === RUNTIME VALIDATION ===
   // Runtime validation results (violations, enforcement)
   RuntimeValidation runtime_validation = 7;
 
@@ -101,8 +100,9 @@ message LicenseStatusResponse {
 enum LicenseStatus {
   LICENSE_STATUS_UNSPECIFIED = 0;
 
-  // Licensed statuses
-  LICENSED_PROFESSIONAL = 1;      // Full steward-backed professional license
+  // Licensed statuses (produced only by the licensure gate, CC 4.4.3.8,
+  // which is not implemented; no deployment is licensed today)
+  LICENSED_PROFESSIONAL = 1;      // Professional license
   LICENSED_COMMUNITY_PLUS = 2;    // Enhanced community with some features
 
   // Unlicensed statuses
@@ -111,16 +111,18 @@ enum LicenseStatus {
 
   // Error statuses - require immediate attention
   ERROR_BINARY_TAMPERED = 10;     // Integrity check failed - possible attack
-  ERROR_SOURCES_DISAGREE = 11;    // Multi-source mismatch - possible attack
-  ERROR_VERIFICATION_FAILED = 12; // Could not reach any verification source
-  ERROR_LICENSE_REVOKED = 13;     // License explicitly revoked by steward
-  ERROR_LICENSE_EXPIRED = 14;     // License past expiration date
+  ERROR_SOURCES_DISAGREE = 11;    // Trust-root equivocation - possible attack
+  ERROR_VERIFICATION_FAILED = 12; // No trust root verified (none reachable or none valid)
+  ERROR_LICENSE_REVOKED = 13;     // Reserved for the licensure gate (CC 4.4.3.8)
+  ERROR_LICENSE_EXPIRED = 14;     // Reserved for the licensure gate (CC 4.4.3.8)
 }
 
 // =============================================================================
 // LICENSE DETAILS
 // =============================================================================
 
+// Populated only by the licensure gate (CC 4.4.3.8), which is not
+// implemented; absent from every response today.
 message LicenseDetails {
   // Unique license identifier (e.g., "CML-2026-0001")
   string license_id = 1;
@@ -149,22 +151,19 @@ message LicenseDetails {
   // Deployment constraints
   DeploymentConstraints constraints = 11;
 
-  // === HYBRID LICENSE JWT (v2.0) ===
-  // Original signed license JWT with dual signatures
-  // Format: header.payload.ed25519_sig.mldsa_sig
+  // Never populated: a licence is a cosigned licensure row, not a JWT.
   string license_jwt = 12;
 
-  // PQC signature of license (extracted for convenience)
-  // Full verification requires checking both signatures in JWT
+  // Never populated.
   bytes license_pqc_signature = 20;
 
-  // PQC algorithm used for license signing
+  // Never populated.
   PQCAlgorithm license_pqc_algorithm = 21;
 
-  // Signature mode (must be HYBRID_REQUIRED for v2.0 licenses)
+  // Never populated.
   SignatureMode signature_mode = 22;
 
-  // === IDENTITY TEMPLATE ENFORCEMENT (v1.2.0) ===
+  // === IDENTITY TEMPLATE ENFORCEMENT ===
   // Identity template name (echo, scout, sage, datum, ally, default, custom)
   string identity_template = 30;
 
@@ -235,7 +234,7 @@ message HardwareAttestation {
   // Classical signature over response using hardware key
   bytes hardware_signature = 3;
 
-  // === POST-QUANTUM SIGNATURE (Required for v2.0) ===
+  // === POST-QUANTUM SIGNATURE (Required) ===
   // ML-DSA public key (software-generated, stored securely)
   // Note: Hardware HSMs do not yet support PQC, so this is software-based
   bytes pqc_public_key = 10;
@@ -247,7 +246,7 @@ message HardwareAttestation {
   // PQC algorithm used (must be ML_DSA_65 or higher)
   PQCAlgorithm pqc_algorithm = 12;
 
-  // Signature mode (must be HYBRID_REQUIRED for v2.0)
+  // Signature mode (must be HYBRID_REQUIRED)
   SignatureMode signature_mode = 13;
 
   // Platform-specific attestation data
@@ -298,7 +297,7 @@ enum PQCAlgorithm {
 // Signature mode for hybrid cryptography
 enum SignatureMode {
   SIGNATURE_MODE_UNSPECIFIED = 0;
-  CLASSICAL_ONLY = 1;       // DEPRECATED - not accepted by CIRISVerify 2.0
+  CLASSICAL_ONLY = 1;       // Not accepted
   HYBRID_REQUIRED = 2;      // Both classical + ML-DSA required (default)
   PQC_ONLY = 3;             // Reserved for future post-transition use
 }
@@ -330,9 +329,7 @@ message IntegrityStatus {
   // Number of integrity checks performed (not which ones)
   int32 checks_performed = 11;
 
-  // DEPRECATED: Individual check fields removed for security
-  // These fields were: debugger_detected, hooks_detected, device_compromised, emulator_detected
-  // Use integrity_valid and failure_category instead
+  // Individual check results are deliberately not exposed.
 }
 
 message AndroidAttestation {
@@ -377,7 +374,7 @@ message SoftwareAttestation {
 }
 
 // =============================================================================
-// TRUST-ROOT VALIDATION (CC 5.3.4; 21.0.0)
+// TRUST-ROOT VALIDATION (CC 5.3.4)
 // =============================================================================
 //
 // Each trust-root host serves a GenesisBundle (GET /v1/trust-root/bundle,
@@ -540,7 +537,7 @@ message ResponseMetadata {
   // Request tracking ID
   string request_id = 6;
 
-  // === CRYPTOGRAPHIC METADATA (v2.0) ===
+  // === CRYPTOGRAPHIC METADATA ===
   // Signature mode used for this response
   SignatureMode signature_mode = 10;
 
@@ -552,7 +549,7 @@ message ResponseMetadata {
 }
 
 // =============================================================================
-// RUNTIME VALIDATION (v1.2.0)
+// RUNTIME VALIDATION
 // =============================================================================
 
 // Results of runtime identity template validation.

@@ -1,4 +1,4 @@
-//! Property tests for trust-root selection (CC 5.3.4; ruling 2026-10-28).
+//! Property tests for trust-root selection (CC 5.3.4, CC 3.2 T8(ii)).
 //!
 //! Whatever mix of hosts answers, the selected root is the single verified
 //! bundle at the highest version, two verified bundles at that version are

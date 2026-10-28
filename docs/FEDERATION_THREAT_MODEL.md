@@ -1,41 +1,10 @@
-# CIRIS Federation Threat Model (v1.5)
+# CIRIS Federation Threat Model
 
-**Status**: DRAFT for first publication (2026-05-02; v1.1 update 2026-05-31; v1.2 audit pass 2026-06-03; v1.3 CEG-0.15 / CIRISVerify-5.0.0 substrate-landed pass 2026-06-09; v1.4 CEG-1.0-RC7 / CIRISVerify-5.7.0 hybrid-required-enforced pass 2026-06-15; v1.5 CEG-1.0-RC24 moderation-principal + RATCHET crc-v2 corridor-calibration pass 2026-06-16)
-**Version**: 1.5 (v1.4 + the RC24 walk-up moderation-principal model that closes the `on_behalf_of` enforcement bypass, and the RATCHET crc-v2 calibration shift from one-sided **ceiling** to two-sided **corridor** concern for some axes)
+**Version**: 1.6
+**Last updated:** 2026-10-28 (CIRISVerify v21.0.0). Earlier revisions are in git history.
 **Audience**: CIRIS engineering, RATCHET evaluator, federation-protocol stakeholders, external reviewers
 **Scope**: federation-emergent threats; cross-references per-repo threat models for substrate threats
-**Holonomic substrate (CEG §19 / §19.7)**: see [`HOLONOMIC_SUBSTRATE.md`](HOLONOMIC_SUBSTRATE.md) — the WholenessWitness / recursive-bootstrap / fountain / ALM / forever-memory aggregation verifiers and their guardrails (§19 cross-impl-proven vs CIRISEdge v4.1.2; §19.7 **1.0** vs v4.3.0).
-**Last updated**: 2026-06-16 (v6.0 cross-ref pass 2026-06-17)
-
-**v6.0 cross-ref delta** (CIRISVerify-6.0 hardware-rooted user identity, #80/#71/#63): C1 (§3.1), F-AV-1, and F-AV-11 now carry honest-boundary / authorization cross-refs to `THREAT_MODEL.md` AV-44 (the v6.0 user identity is hybrid where only the Ed25519 half is in hardware; the ML-DSA-65 half's seed is sealed at rest via #71, signing software) and AV-45 (`sign_occurrence_revocation` — a lost/stolen-device revocation must be signed by a *surviving* key, the OR-of-N `UserIdentityKeyset` self-healing prerequisite). No F-AV renumbering.
-
-**v1.5 deltas vs v1.4** (CEG 1.0-RC24 + RATCHET crc-v2; CIRISPersist/CIRISEdge threat docs refreshed):
-- **RATCHET calibration is a *corridor*, not a *ceiling*, for some axes** (RATCHET `release/calibration/crc-v2`). A per-axis metric's `concern_direction` is now **`outside_corridor`** — the healthy state is a two-sided band `[lower_bound, upper_bound]`, and a value **too low** is as much a concern as one too high. This is the Coherence-Ratchet finding that *both* extremes are fragile: too little inter-constraint correlation is chaos (no coherence), too much is rigidity (collapse) — the healthy corridor for ρ sits in `[0.1, 0.43]`. **crc-v2 caveat:** the lower bounds are *structurally documented but uncalibrated* — crc-v2 actively flags only the upper pole (`at-or-above corridor.upper_bound`); `corridor.lower_bound` is set in crc-v3+ when corpus variance permits, so lower-pole concern is not yet actively emitted. See §7 / Bet 2 / L-06.
-- **RC24 walk-up moderation-principal model** closes the `on_behalf_of` enforcement bypass (CIRISPersist#232): the principal an action is taken *on behalf of* is the **owner-bound root of the `delegates_to` chain, discovered by walking up from `attesting_key_id`** — never a payload field, and **absence is NOT an admit condition**. Plus deputization+attenuation (UCAN/macaroon/ZCAP-LD: sub-delegate only if granted `sub_delegation`, `child.scope ⊆ parent.scope`, depth-cap 5, revocable at any link). Verify's wire-checkable half is the §77 `infra:*`/`agency:*` scope-split + `operational_admit` role-chain. See the new §3.6 moderation-principal note.
-
-**v1.4 deltas vs v1.3** (CEG 1.0-RC7 / CIRISVerify v5.7.0 — hybrid-required enforced):
-- **F-AV-14** (PQC algorithm-agility window): the "Old-only — FORBIDDEN" verifier obligation is now **enforced in code**, not merely specified. CIRISVerify carried a pre-1.0 "hybrid-pending" accommodation that counted a classical-only signature at three federation-tier gates (`threshold` and all its consumers, `provenance`, the license JWT gate) — exactly the "buggy verifier" the v1.0 Known-weaknesses note warned reintroduces F-AV-14. v5.7.0 (#75) removes it: `HybridPolicy::RequireHybrid` is the default, classical-only and PQC-stripped submissions are rejected, and the permissive path survives only as an explicit local-tier `AllowClassicalPending`. **Cutover dependency**: federation-tier keys must carry a published ML-DSA-65 half (registry HTTPS-consensus `steward_key_pqc`) or admission/licensing fails closed to community.
-
-**v1.3 deltas vs v1.2** (CEG 0.15 / CIRISVerify v5.0.0 — substrate landed for three open §3.3 gaps):
-- §3.3 **Gap H** (C0 RNG startup health-check): **CLOSED** — `ciris_crypto::rng_health` ships the NIST SP 800-90B startup tests + fail-secure latch (CIRISVerify#55). RATCHET A0 → TIER-LOW for the catchable degradation class.
-- §3.3 **Gap G** (threat-model artifact integrity): **Phases 1-2 SHIPPED** — CODEOWNERS two-person-rule + CI changelog guard + `ciris_verify_core::doc_integrity` hybrid-signed content-hash attestation (CIRISVerify#54). Phase 3 (operational signing ceremony) pending.
-- §3.3 **Gap F** (G2 steward succession): **M-of-N substrate SHIPPED** — `ciris_verify_core::infrastructure_community` (CEG 0.11 `cohort_subkind: infrastructure` trust root) + founder-quorum + entrenchment gate (CIRISVerify#31). Operational multi-party deployment pending. Clarifies HUMANITY_ACCORD is the entrenched-**family** instance (§9.1), distinct from the service trust-root **community**.
-- §3.3 **Gap C** (C4 hybrid KEX): added the **at-rest counterpart** — `key_grant` wrap_algorithm v2 (X25519+ML-KEM-768, CEG §10.5.3 mandatory for streaming epoch-DEK; CIRISVerify#58) — and the **JCS / RFC 8785 cross-impl signing-bytes** substrate (CIRISVerify#59 + #61) gating the §0.9 cutover + CIRISPersist#172 OQ-4.
-
-**v1.2 deltas vs v1.1**: closes the F-AV consumer-body sweep the v1.1 changelog announced but only partially landed (only F-AV-11 was actually updated).
-- F-AV-12 — body now cites the v1.1 Q1 CAP contract instead of "currently a structural gap"; status moved from "Q1 CAP specification still pending" to "spec complete v1.1, downstream enforcement pending CIRISPersist#143 / CIRISRegistry#46".
-- F-AV-13 — body cites both Gap A (R1 propagation) and Gap B (bounded-staleness reads) as the v1.1 anchors for the cache-invalidation protocol it composes with.
-- F-AV-FRONTRUN — quorum-timestamp ordering now cites the v1.1 Q1 tie-break rules (signed-timestamp → canonical-bytes-hash); front-run-protection itself remains Spec.
-- F-AV-ROLLBACK — partition-merge wording moved from "v1.0 proposes" to "v1.1 specifies"; status moved from "Spec partial" to "Spec complete (v1.1) — implementation pending"; anti-rollback-monotonicity extension to non-revocation rows surfaced as a v1.2 followup work item.
-
-Closes CIRISVerify#48 + CIRISVerify#49 (the downstream tracking pointers in CIRISPersist#143 / CIRISRegistry#46 / CIRISConformance#7 Scenario 3 remain open).
-
-**v1.1 deltas vs v1.0**:
-- §3.3 Gap A (R1 timeliness): SPECIFIED — τ_normal ≤ 60s / τ_partial ≤ 300s / "most recent observed wins" merge rule (CIRISVerify#48)
-- §3.3 Gap B (Q1 quorum + CAP): SPECIFIED — quorum-write ⌈2N/3⌉ + bounded-staleness reads + merge rule + τ composition (CIRISVerify#49)
-- §3.3 Gap C (C4 hybrid KEX + KDF): SPECIFIED + SHIPPED v4.6.0 — `hybrid-x25519-mlkem768-hkdf-sha256-v1` + classical fallback (CIRISVerify#47)
-- §6.5 new entry **F-AV-RECONSIDER-DOS** — P11 reconsideration weaponization, primitives shipped v4.5.0 (CIRISVerify#46)
-- F-AV-11 / F-AV-12 / F-AV-13 / F-AV-ROLLBACK / F-AV-FRONTRUN — cross-references updated to cite the now-specified R1 + Q1 bounds (note: only F-AV-11 actually landed in v1.1; v1.2 closes the sweep)
+**Substrate (CC 6.1)**: see [`SUBSTRATE.md`](SUBSTRATE.md) — wholeness witness (CC 6.1.1), noise floor and aggregation (CC 6.1.2), replication (CC 6.1.5) verifiers and their guardrails.
 
 **Implementation Status Legend** (used throughout):
 - **Spec** = specified in this document or a referenced FSD; not implemented
@@ -55,7 +24,7 @@ It is **not** a per-repo threat model. Each repo has its own (with verified cros
 **RATCHET evaluation is the primary consumer.** RATCHET evaluates the federation's anti-Sybil posture by measuring N_eff signals over the signed-evidence corpus persisted by CIRISPersist, per the PoB framework (`CIRISAgent/FSD/PROOF_OF_BENEFIT_FEDERATION.md`). For RATCHET to do its job, this document must give it (a) a model of which threats it is expected to detect, (b) a model of which substrate properties it assumes hold, (c) a mapping from each threat to the dimensions it perturbs, and (d) honest acknowledgement of what RATCHET cannot detect and where the model rests on empirical bets rather than proofs.
 
 **Reading order**:
-- §1 establishes methodology and acknowledges this is v1.0 (the first published version).
+- §1 establishes methodology.
 - §2 derives primitives from first causes (cold).
 - §3 projects the cold derivation onto CIRIS's actual architecture, with explicit Spec/Impl/Deployed tags.
 - §4–§5 are the threat-class taxonomy and Class 1 cross-references; skim.
@@ -64,15 +33,13 @@ It is **not** a per-repo threat model. Each repo has its own (with verified cros
 - §8–§9 are composition properties and cost analysis, both reframed honestly.
 - §10 is the RATCHET interface (with the documentation-vs-contract distinction made explicit, and a schema sketch that round-trips with every §6 F-AV).
 - §11–§12 are open questions and meta-integrity.
-- Appendix A is the v1 → v2 → v1.0 (published) changelog.
+- Appendix A states what this document does not claim.
 
 **Non-goals**:
 - This document does not re-derive per-primitive threats. It defers to per-repo models.
 - This document does not propose mitigations beyond noting where they live. Mitigation design happens in the per-repo threat model and the FSD.
 - This document does not cover threats to CIRIS-the-organization (legal, financial, regulatory). Those are in `CIRISGovernance/`.
-- This document is **explicitly an artifact under continuous adversarial review**. v1 was reviewed by four specialist adversarial reviewers in May 2026; their findings drove this rewrite (Appendix A). Future versions are expected.
-
-**What's new in v1.0** (relative to internal v2 draft): see Appendix A. Major changes from v2: 7 new F-AVs (F-AV-ONBOARD, F-AV-REPUDIATE, F-AV-FRONTRUN, F-AV-ROLLBACK, F-AV-RATCHET-DOS, F-AV-PRIVACY, F-AV-SRC); §7.2 numerical failure rates replaced with ordinal tier categorization with named referents and named owner; §8.1 bootstrap external-anchoring specified with witness-diversity requirements (cloud, jurisdictional, organizational, software-stack); §8.3 fail-secure protocol specified with degraded-S3 in-memory ring buffer fallback + monotonic-clock-to-TPM-attested-time binding + sliding-window definition; §8.4 100% Qwen 3.6 result reframed as one experiment in a portfolio; §9.3 B(w) "depends on use case" replaced with explicit benefit-extraction taxonomy (6 use cases enumerated with structural defenses); F-AV-14 verifier obligations specified for hybrid / new-only / old-only verification modes with canonical-encoding rule; F-AV-DORMANT activity-density formula specified with density tiers; §10.2 schema specified to round-trip with all 31 F-AVs (cost_row.kind enumeration handles non-quantitative cases); explicit Spec/Impl/Deployed legend used throughout.
+- This document is **explicitly an artifact under continuous adversarial review**.
 
 ---
 
@@ -84,7 +51,7 @@ The threat model is derived in four steps, kept visible in the document so reade
 
 2. **Projection onto CIRIS** (§3). Map CIRIS's actual repos and components onto the cold-derived primitive set. Identify which primitives are filled, in transition, or unfilled. Acknowledge convergence: the primitive set turns out to map cleanly onto CIRIS's architecture, because the architecture was designed against the same property model. This is convergent evolution, not motivated reasoning — but the convergence is acknowledged rather than asserted (§2.4).
 
-3. **Threat-class taxonomy** (§4). Split threats into substrate-class (single-primitive), composition-leak (cross-primitive), Sybil-class (anti-Sybil emergent), availability/coercion (inverse-Sybil), and meta (governance + threat-model integrity itself). The split is **not strictly disjoint**; some F-AVs span classes. v1 claimed strict disjointness; v2 acknowledges leakage.
+3. **Threat-class taxonomy** (§4). Split threats into substrate-class (single-primitive), composition-leak (cross-primitive), Sybil-class (anti-Sybil emergent), availability/coercion (inverse-Sybil), and meta (governance + threat-model integrity itself). The split is **not strictly disjoint**; some F-AVs span classes.
 
 4. **F-AV enumeration** (§6). Walk each emergent property and enumerate how an attacker could subvert it. Anchor each F-AV to (a) a marginal cost-asymmetry argument (§9.3), (b) the dimensions it perturbs (§10), (c) the substrate properties it assumes are intact, (d) **known weaknesses** — places where adversarial review has identified the F-AV's mitigation as incomplete or empirically uncertain.
 
@@ -96,9 +63,9 @@ RATCHET is the primary consumer. RATCHET's evaluation criterion is the **margina
 
 This model rests on **three empirical bets** that are not theorems and may fail:
 
-- **Bet 1: Some hardware-floor exists somewhere in the cost stack.** v1 claimed C1 hardware cost was a per-identity floor of $50–500. Reviewer found cloud vTPMs (AWS Nitro, GCP Confidential Space, Azure attestation) deliver C1-equivalent identities at pennies per hour, scriptable in batches of thousands. v2 acknowledges this and reframes: there must be *some* cost floor *somewhere* (compute time, bond capital, peer-attestation reputation, behavioral measurement), but no single cost dimension is reliably a floor in 2026. The federation defends in depth across multiple cost dimensions, with the expectation that *some subset* will hold even when others collapse.
+- **Bet 1: Some hardware-floor exists somewhere in the cost stack.** C1 hardware cost is not a reliable per-identity floor: cloud vTPMs (AWS Nitro, GCP Confidential Space, Azure attestation) deliver C1-equivalent identities at pennies per hour, scriptable in batches of thousands. There must be *some* cost floor *somewhere* (compute time, bond capital, peer-attestation reputation, behavioral measurement), but no single cost dimension is reliably a floor in 2026. The federation defends in depth across multiple cost dimensions, with the expectation that *some subset* will hold even when others collapse.
 
-- **Bet 2: RATCHET's formal-mathematical detection guarantees hold under their stated assumptions, *and* real federation behavior satisfies those assumptions enough of the time to make the guarantees load-bearing.** This bet is more nuanced than v2's first draft. RATCHET is **not** an LLM-based evaluator — that was a category error in v1's reviewer feedback (corrected here). RATCHET is pure math: statistical detection (likelihood ratio test, Mahalanobis distance, power analysis), geometric Monte Carlo (volume decay V(k) = V(0)·exp(-2r·k_eff)), SAT-based complexity (Z3-verified reduction proving CONSISTENT-LIE is NP-hard reducing from 3-SAT), and PBFT federation consensus. ~8400 lines of Python implementing the Coherence Ratchet framework from CIRIS Covenant Book IX. See `../RATCHET/README.md` and `../RATCHET/FSD.md`.
+- **Bet 2: RATCHET's formal-mathematical detection guarantees hold under their stated assumptions, *and* real federation behavior satisfies those assumptions enough of the time to make the guarantees load-bearing.** RATCHET is **not** an LLM-based evaluator. RATCHET is pure math: statistical detection (likelihood ratio test, Mahalanobis distance, power analysis), geometric Monte Carlo (volume decay V(k) = V(0)·exp(-2r·k_eff)), SAT-based complexity (Z3-verified reduction proving CONSISTENT-LIE is NP-hard reducing from 3-SAT), and PBFT federation consensus. ~8400 lines of Python implementing the Coherence Ratchet framework from CIRIS Covenant Book IX. See `../RATCHET/README.md` and `../RATCHET/FSD.md`.
 
   Because RATCHET's guarantees are formal, the cost-asymmetry argument is **complexity-theoretic, not measurement-arms-race**: lying coherently across k ratcheted constraints is provably NP-hard under ETH; the federation requires k ≥ k_min constraints to grant non-trivial weight; therefore Sybil agents face exponential cost in coherent lying. This is closer in character to a cryptographic-hardness argument than to a defender-vs-attacker ML race.
 
@@ -109,7 +76,7 @@ This model rests on **three empirical bets** that are not theorems and may fail:
   - **L-03 ETH dependency** *(Critical)* — the exponential-cost-of-coherent-lying claim depends on the Exponential Time Hypothesis. ETH is not proven; if it fails, the asymmetry argument weakens to polynomial.
   - **L-04 Convexity requirement** *(High)* — volume decay V(k) = V(0)·exp(-2r·k_eff) holds for *convex* feasibility regions. Real ethical-reasoning constraint sets may not be convex.
   - **L-05 Finite-sample validity (n ≥ 100)** — detection power proofs require n ≥ ~100 samples per peer. Below this, statistical detection has no formal guarantee.
-  - **L-06 Correlation impact on k_eff** — correlated constraints reduce effective dimensionality: `k_eff = k / (1 + ρ(k-1))`. High inter-constraint correlation collapses the asymmetry. (This is the formal version of the reviewer's "PC1..PC17 are correlated" concern; RATCHET *measures* this and reports k_eff, but cannot raise k_eff above what the constraint structure supports.)
+  - **L-06 Correlation impact on k_eff** — correlated constraints reduce effective dimensionality: `k_eff = k / (1 + ρ(k-1))`. High inter-constraint correlation collapses the asymmetry. (This is the formal version of the "PC1..PC17 are correlated" concern; RATCHET *measures* this and reports k_eff, but cannot raise k_eff above what the constraint structure supports.)
   - **L-07 Distribution mismatch** — bounds assume the empirical distribution matches the test distribution. Adversarial distribution-shift attacks are outside the proof.
   - **L-08 Slow federation capture** — PBFT consensus tolerates < 1/3 Byzantine peers; an attacker who slowly accumulates >1/3 federation weight breaks the consensus guarantee.
 
@@ -126,14 +93,14 @@ This model rests on **three empirical bets** that are not theorems and may fail:
   - Agents at **N_eff ≥ 9.2** successfully overrode model-level restrictive priors (specifically: a Qwen 3.5 "Filtered Prior" response triggering a 0.58-unit displacement in constraint satisfaction; CIRIS agents at 9.2+ resolved the conflict in favor of the architecture's independent alignment objectives, not the model's restriction).
   - Successful conflict resolution reliability above threshold: **83%**.
 
-  The empirical numbers refute three v1-reviewer objections directly:
+  The empirical numbers answer three objections directly:
   1. **"Effective codim is ~3-5 after correlation"** → empirical PR is 6.61, intrinsic rank 11. The dimensions ARE correlated, RATCHET measures the correlation via PR, and the result is 6-11 effective dimensions, not 3-5.
   2. **"RATCHET-vs-LLM is at best 1:1"** → wrong premise; RATCHET is complexity-theoretic, not LLM. Asymmetry is *truth = O(1) vs coherent lying = NP-hard* (Z3-verified reduction from 3-SAT).
   3. **"PC1 mimicry attack via fine-tuning"** → mitigated by **polyglot encoding**. The architecture forces the model to measure "torque" (semantic divergence between unconstrained weights and the ethilogics in the CIRIS Accord) across multiple languages, decoupling evaluation from any single-language training bias. An attacker fine-tuning for PC1 in English degrades on the polyglot constraint set.
 
   These are *operational* results, not theoretical claims. The federation's anti-Sybil bet rests on the empirical N_eff stability, the formal NP-hardness reduction, and the polyglot decoupling — all of which are independently testable and reproducible (see §3 Reproduction Instructions in the paper).
 
-  **Current operational result (2026-05; post-paper)**: deceptive-prior detection is at **100% on Qwen 3.6 across the last 5 patch levels in 29 languages**. This is a substantially saturated result on the current frontier-model family, evidencing that polyglot encoding + ethilogics + N_eff thresholding is operationally hard to defeat by within-model fine-tuning patches alone. Caveats apply: (a) saturation on one model family is not saturation across all current and future models; (b) the result is detection of *known restrictive priors* (the type studied in the Constrained_Reasoning_Chains case study), not all classes of deception; (c) per RATCHET's known limitations L-01 (emergent deception from honest components) and L-02 (non-adaptive adversary), an attacker who specifically retrains a model to defeat polyglot N_eff measurement is outside the proven regime — the 100% is empirical-on-current-attackers, not theorem-against-all-attackers. The bet remains a bet, but with a strong current operational floor.
+  **Operational result (2026-05)**: deceptive-prior detection is at **100% on Qwen 3.6 across the last 5 patch levels in 29 languages**. This is a substantially saturated result on the current frontier-model family, evidencing that polyglot encoding + ethilogics + N_eff thresholding is operationally hard to defeat by within-model fine-tuning patches alone. Caveats apply: (a) saturation on one model family is not saturation across all current and future models; (b) the result is detection of *known restrictive priors* (the type studied in the Constrained_Reasoning_Chains case study), not all classes of deception; (c) per RATCHET's known limitations L-01 (emergent deception from honest components) and L-02 (non-adaptive adversary), an attacker who specifically retrains a model to defeat polyglot N_eff measurement is outside the proven regime — the 100% is empirical-on-current-attackers, not theorem-against-all-attackers. The bet remains a bet, but with a strong current operational floor.
 
 - **Bet 3: Policy parameters can be tuned faster than adversaries adapt.** The anti-Sybil posture is policy-tunable (§8.4); stewards adjust bond costs, attestation rate limits, and weight functions as adversarial pressure evolves. The bet is that human-loop policy adjustment outpaces adversary adaptation. This is plausible in some regimes (slow-moving, broad-base attacks) and implausible in others (fast-moving, narrow exploits). The federation must design policy adjustment mechanisms that are themselves resistant to capture.
 
@@ -141,9 +108,9 @@ These bets are not hidden in the document. They appear at every relevant F-AV wi
 
 ### 1.3 Iterative under adversarial review
 
-This document is v2. v1 was reviewed by four specialist adversarial reviewers in May 2026 (cryptography, distributed systems, mechanism design / Sybil resistance, threat-model methodology). 25 findings across four severity tiers. v2 folds in the Tier 1 and most Tier 2 findings; Tier 3 findings are tracked in §11 as open questions. The full v1→v2 delta is in Appendix A.
+This document is reviewed by specialist adversarial reviewers (cryptography, distributed systems, mechanism design / Sybil resistance, threat-model methodology). Findings not yet closed are tracked in §11 as open questions.
 
-The federation should expect v3, v4, etc. — annual major versions, with minor revisions per significant federation-protocol release. The threat model is a continuously-edited artifact, not a published-once spec. (See §12 for cadence and the meta-integrity question of how this artifact itself is signed and protected.)
+Expect annual major versions, with minor revisions per significant federation-protocol release. The threat model is a continuously-edited artifact, not a published-once spec. (See §12 for cadence and the meta-integrity question of how this artifact itself is signed and protected.)
 
 ---
 
@@ -159,11 +126,11 @@ An open-membership ethical-AI federation that resists Sybil attacks while remain
 - **P4: durable evidence.** Actions can be replayed, audited, and analyzed long after they occur.
 - **P5: distributed trust anchor.** Pubkeys, attestations, and revocations are available to all peers, replicated across regions, with no single point of failure.
 - **P6: tamper-evident history.** State transitions are append-only and detectably tampered if modified.
-- **P7: forward secrecy.** *New in v2.* Recorded peer-to-peer communications cannot be retroactively decrypted even if long-term identity keys are later compromised. Without this, an adversary recording today's traffic decrypts everything when ~2035-era PQC cryptanalysis matures.
-- **P8: timely revocation.** *New in v2.* When a key is revoked, all peers learn within bounded time T, and reads after T do not accept actions signed by the revoked key. Without this, F-AV-11 / F-AV-12 / F-AV-13 are catastrophic.
+- **P7: forward secrecy.** Recorded peer-to-peer communications cannot be retroactively decrypted even if long-term identity keys are later compromised. Without this, an adversary recording today's traffic decrypts everything when ~2035-era PQC cryptanalysis matures.
+- **P8: timely revocation.** When a key is revoked, all peers learn within bounded time T, and reads after T do not accept actions signed by the revoked key. Without this, F-AV-11 / F-AV-12 / F-AV-13 are catastrophic.
 - **P9: independent peer addressing.** Peers can find and authenticate each other without depending on a single naming authority (DNS, CA chain).
 - **P10: heterogeneous transport.** Peers can communicate over multiple wire formats (TCP, LoRa, serial, audio) so the federation survives infrastructure outages.
-- **P11: bounded availability under partial failure.** *New in v2.* When a subset of substrate is unavailable, the federation degrades predictably (per a specified consistency model), not arbitrarily. Without this, fail-secure becomes weaponizable (F-AV-16).
+- **P11: bounded availability under partial failure.** When a subset of substrate is unavailable, the federation degrades predictably (per a specified consistency model), not arbitrarily. Without this, fail-secure becomes weaponizable (F-AV-16).
 
 ### 2.2 Primitives required
 
@@ -193,11 +160,11 @@ Availability (A)
   Q1  Quorum-based availability w/ CAP    (P11) — explicit consistency model
 ```
 
-Each primitive is *necessary* for at least one property and *not derivable* from the others. v1 had 8 primitives; v2 adds C0, C4, R1, Q1 in response to adversarial-review findings.
+Each primitive is *necessary* for at least one property and *not derivable* from the others.
 
 ### 2.3 Why these and not others — boundary defense
 
-The granularity of the primitive set matters. Reviewers challenged v1 on every boundary; v2 defends each.
+The granularity of the primitive set matters. Each boundary is defended below.
 
 **Why C0 (RNG) is separate from C1 (hardware identity)**: RNG quality is foundational across C1 (key generation), C2 (signing nonces), C4 (KEX nonces), and S2 (challenge nonces). A single Dual_EC-style backdoor in the RNG breaks all four primitives simultaneously, and the failure is not localized to any one of them. Treating RNG as part of C1 hides this fan-out. Per-FIPS-140-3 reasoning, RNG is its own validatable component.
 
@@ -219,13 +186,13 @@ The 12-primitive set maps closely onto existing or planned CIRIS components. Thi
 
 The mapping is not motivated reasoning — the CIRIS architecture was designed against the same property model that this document re-derives in §2.1. The threat model and the architecture share their root in the PoB FSD's federation requirements (`CIRISAgent/FSD/PROOF_OF_BENEFIT_FEDERATION.md`). When two derivations from the same root converge, that's evidence the root is consistent, not evidence the second derivation cheated.
 
-That said, a genuinely independent observer might have produced a different decomposition. Possibilities the reviewer raised:
+That said, a genuinely independent observer might have produced a different decomposition. Alternative decompositions considered:
 
 - **Collapse C2 into C1** ("signing without identity is meaningless"). Defensible, but obscures the algorithm-vs-key distinction (F-AV-14 is pure C2 concern). Rejected.
-- **Split S2 into "key directory" vs "attestation graph"** (different consistency requirements). Defensible — bond rows and attestation rows do behave differently. Deferred to v3 as candidate refinement.
-- **Promote "time / clock" to a primitive** (clock manipulation is cross-cutting). Considered. Time appears in P8 (timely revocation), Q1 (consistency model), F-AV-6 (σ-decay), and elsewhere. Currently treated as a substrate-level assumption in §7.2; a v3 candidate is to elevate it to T1.
+- **Split S2 into "key directory" vs "attestation graph"** (different consistency requirements). Defensible — bond rows and attestation rows do behave differently. Candidate refinement.
+- **Promote "time / clock" to a primitive** (clock manipulation is cross-cutting). Considered. Time appears in P8 (timely revocation), Q1 (consistency model), F-AV-6 (σ-decay), and elsewhere. Currently treated as a substrate-level assumption in §7.2; a candidate refinement is to elevate it to T1.
 
-The point of acknowledging the convergence is that future readers can challenge it. If a reviewer in 2027 finds a 14-primitive decomposition that better predicts attacks, the model should adopt it. The 12-primitive set is not load-bearing on its specific structure — it's load-bearing on the *property model* it serves.
+The point of acknowledging the convergence is that future readers can challenge it. If a reviewer finds a 14-primitive decomposition that better predicts attacks, the model should adopt it. The 12-primitive set is not load-bearing on its specific structure — it's load-bearing on the *property model* it serves.
 
 ### 2.5 What's NOT a primitive
 
@@ -241,11 +208,7 @@ This distinction matters: an attack on actor behavior is different from an attac
 
 ### 2.6 Anti-Sybil is a policy-tunable posture, NOT an emergent invariant
 
-**This is the largest v1 → v2 reframing.**
-
-v1 claimed: *Sybil-resistance is the emergent cost-asymmetry property that arises when the primitives compose. The federation has anti-Sybil resistance as an emergent invariant.*
-
-This was wrong. Adversarial review identified three independent mechanisms by which the "emergent invariant" claim fails empirically:
+It is tempting to claim that *Sybil-resistance is the emergent cost-asymmetry property that arises when the primitives compose*. That claim is wrong. Three independent mechanisms make the "emergent invariant" claim fail empirically:
 
 1. **Cloud-vTPM economics** — C1's hardware-cost floor doesn't exist in 2026. AWS Nitro Enclaves, GCP Confidential Space, and Azure attestation deliver hardware-attested identities at pennies/hour, scriptable in batches.
 2. **Bond market liquidity** — bonds with non-trivial weight-grant are tradeable assets. Attackers rent liquidity rather than buying face value. The "bond cost = bond face value" assumption fails under any secondary market.
@@ -253,7 +216,7 @@ This was wrong. Adversarial review identified three independent mechanisms by wh
 
 If even one of the three holds, the "emergent invariant" claim fails. **The federation does not have anti-Sybil resistance as a property of its primitive composition.** It has an *anti-Sybil posture* — a continuously-tuned policy parameter set (bond costs, attestation rate limits, weight functions, RATCHET constraint counts and sample-size thresholds) that the steward and RATCHET maintainers adjust as adversarial conditions and assumption-violation evidence accumulate.
 
-**Reframed claim** (v2):
+**Reframed claim**:
 
 > The CIRIS federation maintains an anti-Sybil posture defined by a continuously-tuned policy parameter set (bond costs, attestation rate limits, weight functions, RATCHET detector thresholds). The posture is policy-tunable, not substrate-emergent. Stewards monitor the adversarial environment via out-of-band signals (compute price tracking, LLM capability tracking, RATCHET detector hit-rates) and adjust parameters as needed. The federation's anti-Sybil property is a continuous adversarial-research effort, not a one-time architectural achievement.
 
@@ -267,26 +230,27 @@ This reframing has consequences throughout the document. §8.4 redefines the cos
 
 | Primitive | Property | Filled by | Status |
 |-----------|----------|-----------|--------|
-| C0 RNG | foundational | `ciris_crypto::random` (v2.0+; OsRng facade — Linux `getrandom(2)`, macOS `SecRandomCopyBytes`, Windows `BCryptGenRandom`) | **Deployed** — formalized API in v2.0 (federation crypto authority pattern, §3.5); startup health-check still pending (see §3.3 Gap H, partial closure) |
-| C1 hardware identity | P1 | `CIRISKeyring` + TPM 2.0 / Secure Enclave / Android Keystore / YubiKey-PIV PKCS#11 (v6.0, #80) | **Deployed** — NB: the v6.0 hardware-rooted *user* identity is **hybrid where only the Ed25519 half is in hardware**; the ML-DSA-65 (C2 PQC) half's seed is sealed at rest (#71: TPM `--features tpm` / SE / StrongBox; software AES-GCM-sealed fallback), signing software (no PQC HSM). See `THREAT_MODEL.md` AV-44 (honest hardware-boundary disclosure). |
+| C0 RNG | foundational | `ciris_crypto::random` (OsRng facade — Linux `getrandom(2)`, macOS `SecRandomCopyBytes`, Windows `BCryptGenRandom`) + `rng_health` SP 800-90B startup check | **Deployed** — federation crypto authority pattern (§3.5); startup health-check fail-secure (§3.3 Gap H) |
+| C1 hardware identity | P1 | `CIRISKeyring` + TPM 2.0 / Secure Enclave / Android Keystore / YubiKey-PIV PKCS#11 | **Deployed** — NB: the hardware-rooted *user* identity is **hybrid where only the Ed25519 half is in hardware**; the ML-DSA-65 (C2 PQC) half's seed is sealed at rest (TPM plugin / SE / StrongBox; software AES-GCM-sealed fallback), signing software (no PQC HSM). See `THREAT_MODEL.md` AV-44 (honest hardware-boundary disclosure). |
 | C2 hybrid signing | P2 | `CIRISCrypto` (Ed25519 + ML-DSA-65) | **Deployed** |
-| C3 build attestation | P3 | `CIRISVerify` BuildManifest validator + `verify_tree` runtime walk | **Deployed** (v1.8.4 build; v1.13+ runtime walk) |
-| C4 hybrid KEX + KDF | P7 | `ciris_crypto::hybrid_kex` (X25519 + ML-KEM-768 + HKDF-SHA256) | **Impl** (v4.6.0); pending Edge transport wiring (CIRISEdge#54) — Gap C closed at primitive layer |
-| S1 signed evidence | P4 | `CIRISPersist` scrub envelope | **Deployed** (v0.1.3+) |
+| C3 build attestation | P3 | `CIRISVerify` BuildManifest validator + `verify_tree` runtime walk | **Deployed** (build manifest + runtime walk) |
+| C4 hybrid KEX + KDF | P7 | `ciris_crypto::hybrid_kex` (X25519 + ML-KEM-768 + HKDF-SHA256) | **Impl**; pending Edge transport wiring (CIRISEdge#54) — Gap C closed at primitive layer |
+| S1 signed evidence | P4 | `CIRISPersist` scrub envelope | **Deployed** |
 | S2 federated directory | P5 | `CIRISRegistry` → `CIRISPersist` v0.2.x | **Deployed** (registry-authoritative); persist v0.2.x federation tables are **Spec/partial Impl** |
 | S3 audit log | P6 | `CIRISVerify` transparency log + `CIRISPersist` audit anchor | **Deployed** (split) |
-| R1 revocation propagation | P8 | revocation-row support exists; timeliness contract specified v1.1 (§3.3 Gap A) | **Spec** — contract specified (τ_normal ≤ 60s, τ_partial ≤ 300s, "most recent observed wins"); downstream measurement+enforcement pending at CIRISPersist#143 / CIRISRegistry#46 |
-| N1 cryptographic addressing | P9 | `CIRISEdge` (scaffold + threat model 2026-05-03; v0.1.0 pending Phase 1 lens cutover) | **Spec** — TM published, code pending |
-| N2 multi-medium transport | P10 | `CIRISEdge` (scaffold + threat model 2026-05-03; HTTP fallback Phase 1, LoRa/serial/I²P Phase 3) | **Spec** — TM published, code pending |
-| Q1 quorum-based availability + CAP | P11 | 2-of-3 advisory consensus exists; CAP contract specified v1.1 (§3.3 Gap B) | **Spec** — contract specified (quorum-write ⌈2N/3⌉, bounded-staleness reads, merge rule, τ composition with R1); downstream enforcement pending at CIRISPersist#143 / CIRISRegistry#46 |
+| R1 revocation propagation | P8 | revocation-row support exists; timeliness contract specified (§3.3 Gap A) | **Spec** — contract specified (τ_normal ≤ 60s, τ_partial ≤ 300s, "most recent observed wins"); downstream measurement+enforcement pending at CIRISPersist#143 / CIRISRegistry#46 |
+| N1 cryptographic addressing | P9 | `CIRISEdge` | **Spec** — TM published, code pending |
+| N2 multi-medium transport | P10 | `CIRISEdge` (HTTP fallback, then LoRa/serial/I²P) | **Spec** — TM published, code pending |
+| Q1 quorum-based availability + CAP | P11 | CAP contract specified (§3.3 Gap B); the trust root itself needs no host quorum (one host serving a GenesisBundle that verifies against the baked accord holders suffices, CC 5.3.4) | **Spec** — contract specified (quorum-write ⌈2N/3⌉, bounded-staleness reads, merge rule, τ composition with R1); downstream enforcement pending at CIRISPersist#143 / CIRISRegistry#46 |
 
 **Coverage by status**:
-- **Deployed**: C0 (formalized v2.0), C1, C2, C3, S1, S2 (registry path), S3.
-- **Spec complete v1.1, implementation pending**: R1, Q1 (contracts at §3.3 Gap A + Gap B; downstream tracked at CIRISPersist#143 / CIRISRegistry#46 / CIRISConformance#7 Scenario 3).
+- **Deployed**: C0, C1, C2, C3, S1, S2 (registry path), S3.
+- **Spec complete, implementation pending**: R1, Q1 (contracts at §3.3 Gap A + Gap B; downstream tracked at CIRISPersist#143 / CIRISRegistry#46 / CIRISConformance#7 Scenario 3).
 - **Spec partial / in transition**: S2 (persist path).
-- **Spec only / unfilled**: C4 (specified v1.1 §3.3 Gap C and shipped v4.6.0), N1, N2.
+- **Impl, transport wiring pending**: C4 (§3.3 Gap C).
+- **Spec only / unfilled**: N1, N2.
 
-The gap count is real. v2 promoted RNG, KEX/KDF, revocation-propagation, and quorum/CAP from "hidden inside other primitives" to first-class primitives, which exposed 4 gaps that were previously masked. v1.0 keeps this honest framing.
+The gap count is real. RNG, KEX/KDF, revocation-propagation, and quorum/CAP are first-class primitives rather than hidden inside other primitives, which keeps their gaps visible.
 
 ### 3.2 Actors operating over primitives
 
@@ -301,17 +265,17 @@ Actors are not primitives. They produce activity over primitives. The threat mod
 | **CIRISBridge** *(steward)* | S2 | S2 (bootstrap, trusted-key registrations, policy rows) | Trust origin. Privileged S2 writer. *Going away* over time → multi-party council. |
 | **CIRISRegistry** | S1, S2 | S2 (authoritative writes today; cache-fronting tomorrow) | Cache + policy layer over S2. In transition. |
 | **RATCHET** *(analyzer)* | S1, S2 | S1 (analysis output) | Anti-Sybil evaluator. Computes N_eff signals. |
-| **Threat-model maintainer** *(meta-actor)* | this document | this document | Edits the threat model itself. **New in v2** — modeled because v1 didn't, and v1's reviewer flagged it. |
+| **Threat-model maintainer** *(meta-actor)* | this document | this document | Edits the threat model itself. |
 
 **Operational note on Bridge**: Bridge is the human steward (currently one person, the project lead). Its operational tooling (deployment ansible, GitHub Actions, secret provisioning) is plumbing covered in per-repo operational threat models. The *steward role* (privileged S2 writes, bootstrap actions, policy decisions) is modeled here.
 
-**Operational note on threat-model maintainer**: this actor edits *this document*. v1 did not model the threat model itself as an attack surface. Reviewer found this is a real omission: a maintainer-compromise (or just a careless edit) that downgrades a `Status: Open` to `Status: Mitigated`, or mis-specifies an F-AV's RATCHET signal, corrupts every downstream RATCHET designer's mental model. v2 models this in §6.7 (F-AV-MAINT) and §12 (signing requirement).
+**Operational note on threat-model maintainer**: this actor edits *this document*. The threat model is itself an attack surface: a maintainer-compromise (or just a careless edit) that downgrades a `Status: Open` to `Status: Mitigated`, or mis-specifies an F-AV's RATCHET signal, corrupts every downstream RATCHET designer's mental model. This is modeled in §6.7 (F-AV-MAINT) and §12 (signing requirement).
 
 ### 3.3 Structural gaps
 
-The structural gaps are larger than v1 indicated. Listing in priority order (most-load-bearing first):
+Listing in priority order (most-load-bearing first):
 
-**Gap A: R1 revocation propagation timeliness contract — SPECIFIED v1.1 (CIRISVerify#48).**
+**Gap A: R1 revocation propagation timeliness contract — SPECIFIED.**
 
 **Status**: contract specified at this section; downstream instrumentation tracked at CIRISPersist#143 + CIRISRegistry#46; cross-substrate regression test at CIRISConformance#7 Scenario 3.
 
@@ -321,11 +285,11 @@ The structural gaps are larger than v1 indicated. Listing in priority order (mos
 - **Merge rule**: "most recent observed revocation wins." A peer that observes two revocations of the same key at different timestamps prefers the later one; revocations are append-only and monotonic per the existing AV-4 anti-rollback discipline.
 - **Composition**: the τ_normal / τ_partial pair mirrors the existing fail-secure τ_grace=60s / τ_max=300s shape (§8.3), so substrate consumers don't carry a parallel bound set. The same wall-clock window admits both "is the substrate alive?" and "has the revocation reached me?" questions.
 
-**Why these numbers are feasible**: cross-ocean RTT (toy-derived from CIRISNodeCore `scale_model.rs` v0.5) is ~0.39s — 154× inside τ_normal. The bound is feasible at substrate physics; only the spec was missing pre-v1.1.
+**Why these numbers are feasible**: cross-ocean RTT (toy-derived from CIRISNodeCore `scale_model.rs` v0.5) is ~0.39s — 154× inside τ_normal. The bound is feasible at substrate physics.
 
 **F-AVs that consume this contract** (cross-referenced in §6.4 + §6.5): F-AV-11 (post-revocation re-eval window), F-AV-12 (τ-window joint bound with Q1), F-AV-13 (short-TTL + push-invalidation), F-AV-16 (forced fail-secure recovery), F-AV-ROLLBACK (recovery time at partition heal), F-AV-FRONTRUN (revocation-of-frontrun reach).
 
-**Gap B: Q1 quorum / bounded-staleness CAP / merge rules — SPECIFIED v1.1 (CIRISVerify#49).**
+**Gap B: Q1 quorum / bounded-staleness CAP / merge rules — SPECIFIED.**
 
 **Status**: contract specified at this section; downstream implementation tracked at CIRISPersist#143 + CIRISRegistry#46; cross-substrate partition+heal test at CIRISConformance#7 Scenario 3.
 
@@ -336,15 +300,15 @@ The structural gaps are larger than v1 indicated. Listing in priority order (mos
 3. **Merge rule at partition heal**: "higher-quorum-weight wins" — the side that committed against more regions wins the merge. Tie-break (1): signed-timestamp (later wins, anti-rollback monotonic). Tie-break (2, exceedingly rare): canonical-bytes-hash ordering (deterministic byte-comparison).
 4. **Cross-region τ bounds**: τ_normal ≤ 60s, τ_partial ≤ 300s — composes with Gap A R1 contract so a peer carries one shared bound across both questions.
 
-**Anti-rollback**: the existing AV-4 monotonicity invariant (revocation-revision strictly non-decreasing) is enforced at quorum admission — a write attempt that would decrease a monotonic counter is rejected before quorum is asked. This makes Q1 the federation's load-bearing rollback gate.
+**Anti-rollback**: the AV-4 monotonicity invariant is enforced at quorum admission — a write attempt that would decrease a monotonic counter is rejected before quorum is asked. This makes Q1 the federation's load-bearing rollback gate.
 
-**Why these numbers are feasible**: ⌈2N/3⌉ matches the federation-key-set threshold (`FederationKeyset.threshold` in `ciris-verify-core::federation_keyset` at N=3, M=2). The federation already operates 2-of-3 thresholds on the trust-anchor key set; extending the same shape to write admission is structurally consistent.
+**Why these numbers are feasible**: ⌈2N/3⌉ matches the federation-key-set threshold (`FederationKeyset.threshold` in `ciris-verify-core::federation_keyset` at N=3, M=2) and the strict majority the trust root requires of the three baked accord holders; extending the same shape to write admission is structurally consistent.
 
 **F-AVs that consume this contract** (cross-referenced in §6.4): F-AV-12 (the τ-window bound IS Q1's contract), F-AV-13 (bounded-staleness reads honor this contract), F-AV-ROLLBACK (merge rule is the defense surface).
 
-**Gap C: C4 hybrid KEX + KDF — SPECIFIED + SHIPPED v1.1 (CIRISVerify#47, v4.6.0+).**
+**Gap C: C4 hybrid KEX + KDF — SPECIFIED + IMPLEMENTED.**
 
-**Status**: hybrid KEX primitive shipped at `ciris_crypto::hybrid_kex` (CIRISVerify v4.6.0); downstream transport wiring tracked at CIRISEdge#54; cross-substrate handshake matrix test at CIRISConformance#7 Scenario 2.
+**Status**: hybrid KEX primitive at `ciris_crypto::hybrid_kex`; downstream transport wiring tracked at CIRISEdge#54; cross-substrate handshake matrix test at CIRISConformance#7 Scenario 2.
 
 **Algorithm** (`wrap_algorithm: hybrid-x25519-mlkem768-hkdf-sha256-v1`):
 
@@ -354,64 +318,63 @@ The structural gaps are larger than v1 indicated. Listing in priority order (mos
 4. HKDF-SHA256: `IKM = shared_x || shared_mlkem`; `salt = eph_pk || recipient_x_pk || mlkem_ct || recipient_mlkem_pk`; `info = b"CIRIS-FED-KEX-V1"`; `L = 32` → `session_key`.
 5. Wire envelope carries `(algorithm, x25519_ephemeral_pub, mlkem768_ciphertext)`. Recipient re-derives identically.
 
-Classical fallback (`wrap_algorithm: classical-x25519-hkdf-sha256-v1`) drops the ML-KEM half — `IKM = shared_x`, distinct `info = b"CIRIS-FED-KEX-V1-CLASSICAL"`. Used when a peer doesn't advertise ML-KEM-768. **ML-KEM-only mode is rejected at v1** — both peers MUST advertise X25519 so classical fallback is always available.
+Classical fallback (`wrap_algorithm: classical-x25519-hkdf-sha256-v1`) drops the ML-KEM half — `IKM = shared_x`, distinct `info = b"CIRIS-FED-KEX-V1-CLASSICAL"`. Used when a peer doesn't advertise ML-KEM-768. **ML-KEM-only mode is rejected** — both peers MUST advertise X25519 so classical fallback is always available.
 
 **Why this closes the gap**: an attacker must break BOTH X25519 AND ML-KEM-768 to recover the session key. ML-KEM-768 is intractable under known quantum attacks. Captured ciphertext today does NOT become plaintext when a sufficient quantum computer ships — the harvest-now-decrypt-later exposure is closed for transport payloads using the hybrid mode.
 
-**At-rest counterpart (`key_grant` wrap_algorithm v2, CIRISVerify#58, v5.0.0)**: the same harvest-now-decrypt-later exposure exists for the **at-rest DEK wrap** that protects content which may persist indefinitely (the streaming epoch-DEK cascade, CEG 0.15 §10.5.3). v5.0.0 ships `ciris_crypto::key_grant::wrap_dek_for_recipient_v2` — `x25519-mlkem768-aes256-gcm-hkdf-sha256` — combining an ephemeral X25519 DH with an ML-KEM-768 encapsulation (`IKM = shared_x ‖ shared_mlkem`, HKDF salt-bound to all public material) before the AES-256-GCM DEK seal. CEG §10.5.3 makes v2 **mandatory** for the streaming epoch-DEK cascade — a consumer MUST reject a streaming epoch grant carrying the X25519-only `v1`. So both halves of the harvest-now exposure — transport (Gap C hybrid KEX) and at-rest (key_grant v2) — are now PQC-hybrid; the only classical-only crypto remaining is forward secrecy ratcheting (deferred, below).
+**At-rest counterpart (`key_grant` wrap_algorithm v2)**: the same harvest-now-decrypt-later exposure exists for the **at-rest DEK wrap** that protects content which may persist indefinitely (the streaming epoch-DEK cascade, CEG 0.15 §10.5.3). `ciris_crypto::key_grant::wrap_dek_for_recipient_v2` — `x25519_mlkem768_aes256_gcm_hkdf_sha256` (CC 5.1) — combining an ephemeral X25519 DH with an ML-KEM-768 encapsulation (`IKM = shared_x ‖ shared_mlkem`, HKDF salt-bound to all public material) before the AES-256-GCM DEK seal. CEG §10.5.3 makes v2 **mandatory** for the streaming epoch-DEK cascade — a consumer MUST reject a streaming epoch grant carrying the X25519-only `v1`. So both halves of the harvest-now exposure — transport (Gap C hybrid KEX) and at-rest (key_grant v2) — are now PQC-hybrid; the only classical-only crypto remaining is forward secrecy ratcheting (deferred, below).
 
-**Cross-implementation signing-bytes (JCS / RFC 8785, CIRISVerify#59 + #61, v5.0.0)**: a separate-but-related closure. CEG 0.15 §0.9 makes the canonical signing bytes for every federation Contribution **JCS (RFC 8785)**, with the omit-vs-materialize rule normative. If implementations disagree on the byte encoding (e.g. Python's `json.dumps` vs Rust's framing), hybrid signatures fail to verify across the four-impl boundary — a silent availability-and-trust failure. v5.0.0 ships the one blessed canonicalizer, `ciris_verify_core::jcs::canonicalize` (RFC 8785, KAT-locked), plus `verify_jcs_hybrid_signature` for the Conforming-Consumer recompute path, plus a `jcs_canonicalize` Python binding so the agent producer is byte-identical to the Rust verifiers (Python's `json.dumps` diverges on all non-ASCII — the agent measured it breaking on non-English content and the ⚠️ disclosure emoji). This is the substrate gating the CEG §0.9 JCS cutover (the 2.9.6 substrate triple) and the CIRISPersist#172 `attestation_promote` interop (OQ-4).
+**Cross-implementation signing-bytes (JCS / RFC 8785)**: a separate-but-related closure. CEG 0.15 §0.9 makes the canonical signing bytes for every federation Contribution **JCS (RFC 8785)**, with the omit-vs-materialize rule normative. If implementations disagree on the byte encoding (e.g. Python's `json.dumps` vs Rust's framing), hybrid signatures fail to verify across the four-impl boundary — a silent availability-and-trust failure. The one blessed canonicalizer is `ciris_verify_core::jcs::canonicalize` (RFC 8785, KAT-locked), plus `verify_jcs_hybrid_signature` for the Conforming-Consumer recompute path, plus a `jcs_canonicalize` Python binding so the agent producer is byte-identical to the Rust verifiers (Python's `json.dumps` diverges on all non-ASCII content).
 
-**What remains aspirational** (deferred to v2): the long-term federation signing remains Ed25519 + ML-DSA-65 hybrid (already PQ-secure). Forward secrecy with ratcheting (Signal-style Double Ratchet on top of the KEX session key) is not in scope at v1 — the session key is single-use per handshake. v2 may layer ratcheting if multi-message transport sessions need it.
+**What remains aspirational**: the long-term federation signing remains Ed25519 + ML-DSA-65 hybrid (already PQ-secure). Forward secrecy with ratcheting (Signal-style Double Ratchet on top of the KEX session key) is not in scope — the session key is single-use per handshake. Ratcheting may be layered if multi-message transport sessions need it.
 
-**Gap D: N1 + N2 (cryptographic addressing + multi-medium transport) — threat-model coverage published 2026-05-03, implementation pending Phase 1.**
-Federation peer discovery and transport depend on DNS + HTTPS at the implementation layer today. DNS outage breaks discovery; TLS CA compromise breaks transport authenticity; the federation cannot operate over LoRa, mesh, or air-gapped channels. **`CIRISEdge` (2026-05-03) publishes the substrate's threat model and crate scaffold**: AV-6 closes N1 structurally via Reticulum destination = `sha256(public_key)[..16]`; AV-18 / AV-19 / §6 deployment-tier table cover N2 across TCP / LoRa / packet radio / serial / I²P / HTTPS-fallback. Phase 1 v0.1.0 ships HTTP transport + Reticulum behind a feature flag with the `CIRISLens` cutover from FastAPI ingest; Phase 2 adds agent + registry adoption; Phase 3 productionizes LoRa / packet-radio / serial / I²P. Until v0.1.0 lands and a peer cuts over to it, this gap remains *implementation-pending* even though substrate-coverage exists at the threat-model level.
+**Gap D: N1 + N2 (cryptographic addressing + multi-medium transport) — threat-model coverage published, implementation pending.**
+Federation peer discovery and transport depend on name resolution + HTTPS at the implementation layer. Name-resolution outage breaks discovery; TLS CA compromise breaks transport authenticity; the federation cannot operate over LoRa, mesh, or air-gapped channels. **`CIRISEdge` publishes the substrate's threat model**: AV-6 closes N1 structurally via Reticulum destination = `sha256(public_key)[..16]`; AV-18 / AV-19 / §6 deployment-tier table cover N2 across TCP / LoRa / packet radio / serial / I²P / HTTPS-fallback. Until peers carry federation traffic over it, this gap remains *implementation-pending* even though substrate coverage exists at the threat-model level.
 
 **Gap E: S2 in transition.**
 Registry-as-authority → persist v0.2.x federation_keys substrate. The transition itself is a threat surface (rows must migrate without losing cryptographic continuity; F-AV-12, F-AV-13). Tracked in `CIRISRegistry#5` and `CIRISPersist#4`.
 
-**Gap F: G2 steward succession — M-of-N substrate SHIPPED v1.3 (CIRISVerify#31, v5.0.0); operational multi-party deployment pending.**
+**Gap F: G2 steward succession — trust root is accord-authorized; M-of-N service community substrate implemented.**
 
-The **substrate** for multi-party succession now exists. CEG 0.11's `cohort_subkind: infrastructure` trust-root community (the `ciris-canonical` shape, §5.6.8.10) is implemented at `ciris_verify_core::infrastructure_community` (CIRISVerify#31, v5.0.0): the M-of-N `FederationKeyset` rotation primitive + `verify_founder_quorum` (admission evaluated over the founder subset, not all members — the anti-Sybil guardrail) + `verify_supersedes_preserves_entrenchment` (an entrenched trust root cannot have its `consensus_protocol` weakened or its `admission_quorum_basis` moved off `"founders"`). The companion human-side structure — the HUMANITY_ACCORD triple — is the canonical entrenched-**`family`** instance (§9.1; `quorum:2/3`, entrenched), distinct from the service trust-root community; its 2-of-3 hybrid-sig verification is the `threshold` primitive.
+The **substrate** for multi-party succession exists. CEG 0.11's `cohort_subkind: infrastructure` trust-root community (the `ciris-canonical` shape, §5.6.8.10) is implemented at `ciris_verify_core::infrastructure_community`: the M-of-N `FederationKeyset` rotation primitive + `verify_founder_quorum` (admission evaluated over the founder subset, not all members — the anti-Sybil guardrail) + `verify_supersedes_preserves_entrenchment` (an entrenched trust root cannot have its `consensus_protocol` weakened or its `admission_quorum_basis` moved off `"founders"`). The companion human-side structure — the HUMANITY_ACCORD triple — is the canonical entrenched-**`family`** instance (CC 4.2; `quorum:2/3`, entrenched), distinct from the service trust-root community. The accord holders' keys are baked into the binary, and the trust root every node selects is the GenesisBundle they authorize: at least `max(carried M, strict majority of the baked roster)` distinct hybrid holder authorizations, highest verified version selected, an equal-version split treated as equivocation (CC 5.3.4).
 
-**What remains**: the substrate is the protocol; **operational** multi-party deployment (provisioning the M-of-N holders on attested hardware, running the genesis ceremony, the CIRISRegistry#56 `ciris-canonical` migration) is the actor-behavior layer over S2 still pending. F-AV-8 (steward compromise) is still mitigated by single-steward operational practice **today**, but the path to N-of-M is no longer a primitive gap — it's a deployment+ceremony task. F-AV-9 (the transition window itself) is bounded by the entrenchment gate (a rotation that weakens the trust root is rejected at the substrate).
+**What remains**: the accord holders are provisioned on FIPS YubiKeys and the genesis is baked, so no single key authorizes the trust root. What remains is the operational multi-party deployment of the service trust-root community (`ciris-canonical`) on the same footing. F-AV-9 (the transition window itself) is bounded by the entrenchment gate (a rotation that weakens the trust root is rejected at the substrate) and by the roster-change rule (an entrenched-family `supersedes` authorized by the prior roster's strict majority).
 
-**Gap G: Threat-model artifact integrity — Phases 1-2 SHIPPED v1.3 (CIRISVerify#54, v5.0.0); Phase 3 operational ceremony pending.**
+**Gap G: Threat-model artifact integrity — Phases 1-2 implemented; Phase 3 operational ceremony pending.**
 
-The "markdown with no signing" exposure (§6.7 F-AV-MAINT) is now structurally closed at two of three layers:
+The "markdown with no signing" exposure (§6.7 F-AV-MAINT) is structurally closed at two of three layers:
 - **Phase 1 (two-person rule)** — `.github/CODEOWNERS` requires an explicit reviewer on every edit to this document, `THREAT_MODEL.md`, `MISSION.md`, and the embedded `bootstrap_stewards.json`; a CI `threat-model-changelog` job rejects an authoritative-doc edit that lacks a changelog delta near the top (making a silent F-AV-status downgrade diffable-by-construction).
 - **Phase 2 (cryptographic substrate)** — `ciris_verify_core::doc_integrity`: a hybrid Ed25519 + ML-DSA-65 signed content-hash attestation (`DocSignature`) over a domain-separated SHA-256 of `(doc_path_label, doc_version_label, content)`. A one-byte edit flips the hash and fails verification; the version label binds the signature to a specific version so it can't be replayed across releases.
-- **Phase 3 (operational)** — actually signing each released version of this doc with the steward key + publishing the `DocSignature` to the transparency log. Composes with the now-shipped `threshold` M-of-N (Gap F) so the doc signature can be an M-of-N steward quorum once succession deploys. Pending — operational, not code.
+- **Phase 3 (operational)** — signing each released version of this doc + publishing the `DocSignature` to the transparency log. Composes with the `threshold` M-of-N (Gap F) so the doc signature can be an M-of-N quorum. Pending — operational, not code.
 
-**Gap H: C0 RNG startup health-check — CLOSED v1.3 (CIRISVerify#55, v5.0.0).**
-v2.0 shipped `ciris_crypto::random` as the canonical RNG facade (one audit point; `OsRng` — Linux `getrandom(2)`, macOS `SecRandomCopyBytes`, Windows `BCryptGenRandom`). v5.0.0 closes the remaining startup-health-check half: `ciris_crypto::rng_health` runs **NIST SP 800-90B** startup tests over a fresh 4096-byte draw at process init — a repetition-count test (§4.4.1, stuck-source detection) + an adaptive-proportion test (§4.4.2, bias detection) — and **latches a process-global fail-secure flag**. On failure, every subsequent `random::fill` returns `CryptoError::RngHealthCheckFailed` **without drawing**, so a stuck/degraded entropy source (vTPM PRNG seeding bug at boot, embedded low-entropy boot, Dual_EC-class compromise) fails closed: nonce/key/KEX generation errors and the attestation degrades through existing crypto error paths rather than silently emitting weak material. The FFI runs the check at `ciris_verify_init` after logging is wired, so the verdict reaches logcat/Console. **RATCHET assumption A0 (RNG quality, §7.1) moves to TIER-LOW** for the degradation class an SP 800-90B test can catch. What's still open (lower priority): independent hardware-entropy mixing + a FIPS-mode draw path for FedRAMP/CMMC, and per-platform attestation that the OS CSPRNG is the claimed one. Tracked in `CIRISVerify/docs/THREAT_MODEL.md` AV-39.
+**Gap H: C0 RNG startup health-check — CLOSED.**
+`ciris_crypto::random` is the canonical RNG facade (one audit point; `OsRng` — Linux `getrandom(2)`, macOS `SecRandomCopyBytes`, Windows `BCryptGenRandom`). `ciris_crypto::rng_health` runs **NIST SP 800-90B** startup tests over a fresh 4096-byte draw at process init — a repetition-count test (§4.4.1, stuck-source detection) + an adaptive-proportion test (§4.4.2, bias detection) — and **latches a process-global fail-secure flag**. On failure, every subsequent `random::fill` returns `CryptoError::RngHealthCheckFailed` **without drawing**, so a stuck/degraded entropy source (vTPM PRNG seeding bug at boot, embedded low-entropy boot, Dual_EC-class compromise) fails closed: nonce/key/KEX generation errors and the attestation degrades through existing crypto error paths rather than silently emitting weak material. The FFI runs the check at `ciris_verify_init` after logging is wired, so the verdict reaches logcat/Console. **RATCHET assumption A0 (RNG quality, §7.1) moves to TIER-LOW** for the degradation class an SP 800-90B test can catch. What's still open (lower priority): independent hardware-entropy mixing + a FIPS-mode draw path for FedRAMP/CMMC, and per-platform attestation that the OS CSPRNG is the claimed one. Tracked in `CIRISVerify/docs/THREAT_MODEL.md` AV-39.
 
 ### 3.4 Out-of-scope artifacts
 
 The following exist in the CIRIS ecosystem but are not federation primitives or actors modeled here:
 
 - **Operational tooling** (GitHub Actions, ansible, deployment scripts) — plumbing, covered in per-repo operational threat models.
-- **Documentation** (`docs/*.md`, `FSD/*.md`) — informational, with the exception of *this document* whose integrity is now in scope per §6.7 / §12.
+- **Documentation** (`docs/*.md`, `FSD/*.md`) — informational, with the exception of *this document* whose integrity is in scope per §6.7 / §12.
 - **Build tooling** (`ciris-build-tool`, `ciris-build-sign`, `ciris-build-verify`) — produces C3 BuildManifests but is itself a trusted-input artifact, covered in CIRISVerify `THREAT_MODEL.md` §3.4 (Supply Chain).
 - **CI/CD** — produces C3 attestations; covered in CIRISVerify `THREAT_MODEL.md` §3.4 + AV-34 (build-signing key compromise) and parallel registry doc.
 
-### 3.5 Federation crypto authority pattern (v2.0+)
+### 3.5 Federation crypto authority pattern
 
-**This is not a new primitive. It is a meta-organizational property of the federation: every CIRIS primitive that needs cryptographic operations routes through `ciris-crypto`.** The pattern formalized in CIRISVerify v2.0 (2026-05).
+**This is not a new primitive. It is a meta-organizational property of the federation: every CIRIS primitive that needs cryptographic operations routes through `ciris-crypto`.**
 
 #### What the pattern covers
 
 | Operation class | Federation primitive(s) it serves | Implementation in `ciris-crypto` |
 |-----------------|----------------------------------|----------------------------------|
-| Hybrid signing (Ed25519 + ML-DSA-65) | C2 (P2) | `HybridSigner` / `HybridVerifier` (v1.x stable) |
-| secp256k1 wallet signing (EVM, EIP-155, EIP-712) | actor-behavior over S2 (on-chain attestations) | `secp256k1` module (v1.3+) |
-| Cryptographic randomness | C0 (foundational) | `random::fill` / `random::bytes` (v2.0+, OsRng facade) |
-| Symmetric AEAD (AES-256-GCM) | implementation surface for actor-managed at-rest secrets (CIRISPersist secrets table, CIRISEdge#3) | `aes_gcm::encrypt` / `decrypt` (v2.0+) |
-| Key derivation (PBKDF2, HKDF) | implementation surface for software-master + hardware-master (deferred) symmetric derivation | `kdf::pbkdf2_hmac_sha256` / `kdf::hkdf_sha256` (v2.0+) |
-| MAC (HMAC-SHA256) + constant-time compare | implementation surface for `EncryptedSecretRecord.edge_hmac` integrity | `hmac::sha256` + `hmac::util::ct_eq` (v2.0+) |
+| Hybrid signing (Ed25519 + ML-DSA-65) | C2 (P2) | `HybridSigner` / `HybridVerifier` |
+| secp256k1 wallet signing (EVM, EIP-155, EIP-712) | actor-behavior over S2 (on-chain attestations) | `secp256k1` module |
+| Cryptographic randomness | C0 (foundational) | `random::fill` / `random::bytes` (OsRng facade, SP 800-90B health latch) |
+| Symmetric AEAD (AES-256-GCM) | implementation surface for actor-managed at-rest secrets (CIRISPersist secrets table, CIRISEdge#3) | `aes_gcm::encrypt` / `decrypt` (+ `encrypt_aad` / `decrypt_aad`) |
+| Key derivation (PBKDF2, HKDF) | implementation surface for software-master + hardware-master (deferred) symmetric derivation | `kdf::pbkdf2_hmac_sha256` / `kdf::hkdf_sha256` |
+| MAC (HMAC-SHA256) + constant-time compare | implementation surface for `EncryptedSecretRecord.edge_hmac` integrity | `hmac::sha256` + `hmac::util::ct_eq` |
 | Hardware-bound key operations | C1 (P1) | `ciris-keyring` (separate crate; ciris-crypto consumes it for HardwareSigner) |
 
-The first two rows pre-date v2.0; rows 3-6 are the v2.0 federation crypto authority surface.
 
 #### Why a meta-organizational property and not a primitive
 
@@ -440,29 +403,29 @@ The pattern explicitly does NOT cover:
 
 - **Transport-layer encryption** — CIRISEdge integrates Reticulum-rs and TLS for transport confidentiality (`CIRISEdge/FSD/CIRIS_EDGE.md` §AV-15: "edge does not add a third encryption layer"). Transport KEX, AEAD, and MAC are inside reticulum-rs / rustls; not federation crypto authority territory.
 - **Hardware-bound key operations** — those are C1 (CIRISKeyring), with its own per-platform implementation per §3.1.
-- **Forward-secret session establishment** — C4 (P7), still spec-only at the federation level. When implemented, it's a separate primitive with its own algorithm choices (X25519 + ML-KEM-768 likely).
+- **Forward-secret session establishment** — C4 (P7), a separate primitive (`ciris_crypto::hybrid_kex`, X25519 + ML-KEM-768) with its own algorithm choices.
 
 #### Threat-model implications
 
-The federation crypto authority pattern is itself an attack surface. Three new F-AVs declared here as part of the v2.0 update; **§6 catalog promotion deferred to next federation TM cycle** (this is a §3 structural addition; §6's per-F-AV detail format requires the full RATCHET-signal / Class taxonomy / Status / Owner block which is out of scope for this update):
+The federation crypto authority pattern is itself an attack surface. Three F-AVs are declared here rather than in the §6 catalog (§6's per-F-AV format requires the full RATCHET-signal / Class / Status / Owner block):
 
-- **F-AV-CRYPTO-AUTH (new in v1.0+v2.0)**: a compromise of `ciris-crypto`'s release artifact (XZ-class, AV-12) propagates to every federation primitive simultaneously. Mitigation: same as F-AV-MAINT — AGPL source review, hybrid-signed releases, post-release-verify CI gate, future reproducible builds (Gap 4 in CIRISVerify TM §10).
-- **F-AV-CRYPTO-DRIFT (new in v1.0+v2.0)**: a federation primitive that bypasses ciris-crypto with a direct RustCrypto dep escapes the upgrade path. The federation crypto authority's "single PR fixes everyone" property fails for that primitive. Mitigation: §3.5 Federation policy + AV-40 in CIRISVerify TM.
-- **F-AV-RNG-CONTRACT (new in v1.0+v2.0; related to Gap H)**: v2.0 closes the API formalization but not the startup health-check. A Dual_EC-class compromise of OsRng under the v2.0 facade is detectable only post-hoc. Mitigation: convention + future startup-health-check work.
+- **F-AV-CRYPTO-AUTH**: a compromise of `ciris-crypto`'s release artifact (XZ-class, AV-12) propagates to every federation primitive simultaneously. Mitigation: same as F-AV-MAINT — AGPL source review, hybrid-signed releases, post-release-verify CI gate, future reproducible builds (Gap 4 in CIRISVerify TM §10).
+- **F-AV-CRYPTO-DRIFT**: a federation primitive that bypasses ciris-crypto with a direct RustCrypto dep escapes the upgrade path. The federation crypto authority's "single PR fixes everyone" property fails for that primitive. Mitigation: §3.5 Federation policy + AV-40 in CIRISVerify TM.
+- **F-AV-RNG-CONTRACT (related to Gap H)**: the SP 800-90B startup check catches stuck and biased sources, not a Dual_EC-class compromise of OsRng, which is detectable only post-hoc. Mitigation: convention + independent hardware-entropy mixing (open).
 
 Cross-link: full per-AV catalog in `CIRISVerify/docs/THREAT_MODEL.md` §3.8 (AV-35..AV-41) and federation role coverage in `CIRISVerify/docs/THREAT_MODEL.md` §11.
 
-### 3.6 Moderation-principal authority — the `on_behalf_of` bypass (CEG 1.0-RC24)
+### 3.6 Moderation-principal authority — the `on_behalf_of` bypass
 
-A persist v8.7.0 principal-model review ([CIRISPersist#232](https://github.com/CIRISAI/CIRISPersist/issues/232)) surfaced an enforcement-bypass class worth recording at the federation level, because it is the **inverse** of the F-AV-14 / §19.0 "absence is not an admit condition" discipline and recurs anywhere authority is *claimed* rather than *proven*.
+An enforcement-bypass class worth recording at the federation level, because it is the **inverse** of the F-AV-14 / §19.0 "absence is not an admit condition" discipline and recurs anywhere authority is *claimed* rather than *proven*.
 
-**The bypass.** An implementation invented an `on_behalf_of` **envelope field** to name the principal a moderation action (`takedown_notice`, `moderation:*`, `reconsideration:*`) is taken for, with the rule "absent field ⇒ acting as-self ⇒ admit." That is a no-op exactly where the gate is load-bearing: any emitter that simply **omits** the field — an AI agent or untrusted party firing a takedown — is admitted *as-self* with **no owner-bound authority chain ever proven**. A side-field principal also violates the §0.9 / 1+4 lockdown.
+**The bypass.** An `on_behalf_of` **envelope field** to name the principal a moderation action (`takedown_notice`, `moderation:*`, `reconsideration:*`) is taken for, with the rule "absent field ⇒ acting as-self ⇒ admit." That is a no-op exactly where the gate is load-bearing: any emitter that simply **omits** the field — an AI agent or untrusted party firing a takedown — is admitted *as-self* with **no owner-bound authority chain ever proven**. A side-field principal also violates the §0.9 / 1+4 lockdown.
 
-**The fix (RC24 §11.10, SOTA-confirmed).** The principal is **not a field** — it is the **owner-bound root of the `delegates_to` chain, discovered by walking up from `attesting_key_id`**. A moderation action is admitted **iff** one holds *positively*: (a) as-self holding the duty over the target, **or** (b) a live, every-edge-scoped `delegates_to` chain to an owner-bound root. **Absence of a chain is rejection, never as-self admission** — the same fail-secure rule as `consent_revocation` and the §19.0 PQC gate. This is the proof-chain-root model of UCAN / macaroons / SPKI-SDSI / ZCAP-LD.
+**The rule.** The principal is **not a field** — it is the **owner-bound root of the `delegates_to` chain, discovered by walking up from `attesting_key_id`**. A moderation action is admitted **iff** one holds *positively*: (a) as-self holding the duty over the target, **or** (b) a live, every-edge-scoped `delegates_to` chain to an owner-bound root. **Absence of a chain is rejection, never as-self admission** — the same fail-secure rule as `consent_revocation` and the §19.0 PQC gate. This is the proof-chain-root model of UCAN / macaroons / SPKI-SDSI / ZCAP-LD.
 
 **Deputization + attenuation.** A `delegates_to` may let its delegate further-delegate the duty **only if** the grant included `sub_delegation` in `delegated_scope`; every sub-delegation **attenuates, never expands** (`child.scope ⊆ parent.scope`, constraints add-only), the chain is depth-capped at 5 (§13.3), and a `withdraws` against **any** link invalidates everything downstream (UCAN-style proof-chain revocation).
 
-**Verify's role.** The principal walk-up + admit decision is **CIRISRegistry/CIRISPersist's** (the §11.10 gate, persist's `v8.7.1` walk-up fast-follow). Verify owns the **wire-checkable invariants** the chain rides: the §77 `infra:*`/`agency:*` scope-split (an `infra`-only key cannot carry `agency:*`, so a fabric node can't self-appoint moderation agency), `operational_admit::resolve_role_authority` (the bounded, cycle-detected, fail-closed role-chain walk), and the §13.3 5-hop / cycle / weight caps already enforced in `holonomic::bootstrap`. The `delegated_scope[]` set-sort + bound-hybrid signing are the bytes the attenuation rule is checked over. No new verify primitive — RC24 reuses the delegation surface verify already gates.
+**Verify's role.** The principal walk-up + admit decision is **CIRISRegistry/CIRISPersist's**. Verify owns the **wire-checkable invariants** the chain rides: the `infra:*`/`agency:*` scope-split (an `infra`-only key cannot carry `agency:*`, so a fabric node can't self-appoint moderation agency), `operational_admit::resolve_role_authority` (the bounded, cycle-detected, fail-closed role-chain walk), and the §13.3 5-hop / cycle / weight caps already enforced in `substrate::bootstrap`. The `delegated_scope[]` set-sort + bound-hybrid signing are the bytes the attenuation rule is checked over. No new verify primitive is needed — the rule reuses the delegation surface verify already gates.
 
 ---
 
@@ -496,20 +459,20 @@ Examples: F-AV-16 (substrate-availability denial — DoS forces fail-secure REST
 
 ### 4.5 Class 5: Meta — threat-model and governance integrity
 
-A Class 5 threat attacks the threat model itself, the artifacts that influence trust verdicts, or the governance surface that decides policy parameters. **New in v2.**
+A Class 5 threat attacks the threat model itself, the artifacts that influence trust verdicts, or the governance surface that decides policy parameters.
 
-Examples: F-AV-MAINT (threat-model maintainer compromise — silent edits to F-AV statuses, mis-specified RATCHET signals), F-AV-8 (steward compromise — already in Class 3 as trust-graph capture, but its meta-implications belong here too), F-AV-9 (G2 succession capture — the transition window from single-steward to multi-party authority), F-AV-CROSS (cross-federation attacker spanning peer federations — out of scope today, but explicitly stubbed so it's not invisible).
+Examples: F-AV-MAINT (threat-model maintainer compromise — silent edits to F-AV statuses, mis-specified RATCHET signals), F-AV-8 (steward compromise — already in Class 3 as trust-graph capture, but its meta-implications belong here too), F-AV-9 (succession capture — the transition window when trust authority changes), F-AV-CROSS (cross-federation attacker spanning peer federations — out of scope today, but explicitly stubbed so it's not invisible).
 
 ### 4.6 The split is not strictly disjoint — acknowledged
 
-v1 claimed Class 1 and Class 2 were strictly disjoint. Reviewer demonstrated they aren't:
+Class 1 and Class 2 are not strictly disjoint:
 
 - **F-AV-11 trigger is C1 compromise (Class 1); only the propagation tail is composition (Class 2).** Tagged Class 2 because the *novel* security surface is the propagation (Class 1 compromise is already covered in §5); but the leak between classes is real.
-- **F-AV-12 is functionally an S2 substrate property (CAP-class behavior under partial failure).** Tagged Class 2 because v1 grouped it there and renaming would break stable identifiers; honestly it could be Class 1 (substrate) since Q1 is now its own primitive.
+- **F-AV-12 is functionally an S2 substrate property (CAP-class behavior under partial failure).** Tagged Class 2 because renaming would break stable identifiers; honestly it could be Class 1 (substrate) since Q1 is its own primitive.
 - **F-AV-14 is fundamentally a C2 primitive concern (algorithm-agility surface).** Tagged Class 2 for the migration-window aspect; the underlying algorithm-break is Class 1.
 - **F-AV-8 (steward compromise) appears in Class 3 as trust-graph capture and Class 5 as governance integrity.** Both are valid lenses.
 
-**Bookkeeping rule for v2**: each F-AV gets a *primary* class tag (the most-load-bearing surface for analysis), with cross-class implications named explicitly in the F-AV body. F-AV identifiers are stable across versions; class tags are advisory navigation, not strict taxonomy.
+**Bookkeeping rule**: each F-AV gets a *primary* class tag (the most-load-bearing surface for analysis), with cross-class implications named explicitly in the F-AV body. F-AV identifiers are stable across versions; class tags are advisory navigation, not strict taxonomy.
 
 A reader who finds the split unhelpful is invited to ignore it and read §6 as a flat catalog. The class structure is a presentation choice, not a security claim.
 
@@ -517,7 +480,7 @@ A reader who finds the split unhelpful is invited to ignore it and read §6 as a
 
 ## 5. Class 1 cross-references (verified)
 
-This section is a pointer table. Each row points to the per-repo threat model that owns the substrate-class threat. **Cross-references in this version are verified against actual section numbers** (v1's citations were partly broken; reviewer caught it).
+This section is a pointer table. Each row points to the per-repo threat model that owns the substrate-class threat. **Cross-references are verified against actual section numbers.**
 
 | Primitive | Per-repo coverage | Key threats covered |
 |-----------|-------------------|---------------------|
@@ -529,14 +492,14 @@ This section is a pointer table. Each row points to the per-repo threat model th
 | S1 signed evidence | `CIRISPersist/docs/THREAT_MODEL.md` §3.1 (AV-1 forged trace, AV-2 compromised-key replay, AV-3 batch replay, AV-4 canonicalization mismatch) + §3.3 (AV-9 idempotency collision, AV-13 cross-trace JSONB injection) | Scrub-envelope tampering, signature stripping, canonical-bytes drift, replay attacks |
 | S2 federated directory | `CIRISPersist/docs/THREAT_MODEL.md` §3.3 (AV-11 pubkey directory poisoning); `CIRISRegistry/docs/THREAT_MODEL.md` §3.1 (AV-1 build registration, AV-2 challenge replay, AV-3 cross-org pubkey reuse, AV-6 manifest substitution) + §3.4 (AV-16 cross-path re-registration, AV-17 schema-version, AV-18 audit-log tampering, AV-19 multi-replica race) + §3.6 (AV-25 steward signing-key compromise) | Row injection, replication divergence, cache poisoning, key-registration fraud |
 | S3 audit log | `CIRISVerify/docs/THREAT_MODEL.md` §3.1 (AV-1 mitigation references transparency log) + §10 Gap 2 (no continuous Rekor monitoring); `CIRISPersist/docs/THREAT_MODEL.md` §3.3 (AV-10 audit anchor injection); `CIRISRegistry/docs/THREAT_MODEL.md` §3.4 (AV-18 audit-log tampering) + §3.7 (AV-35 audit-trail actor forgeability) | Log truncation, root-tampering, gap insertion, anchor injection |
-| R1 revocation propagation | Partial — `CIRISPersist/docs/THREAT_MODEL.md` §3.1 (AV-2 covers compromised-key replay, which depends on revocation timeliness); `CIRISRegistry/docs/THREAT_MODEL.md` §3.2 (AV-11 mass-revoke abuse) | Propagation-timeliness contract specified v1.1 (τ_normal ≤ 60s, τ_partial ≤ 300s) — see §3.3 Gap A; downstream enforcement at CIRISPersist#143 / CIRISRegistry#46 |
+| R1 revocation propagation | Partial — `CIRISPersist/docs/THREAT_MODEL.md` §3.1 (AV-2 covers compromised-key replay, which depends on revocation timeliness); `CIRISRegistry/docs/THREAT_MODEL.md` §3.2 (AV-11 mass-revoke abuse) | Propagation-timeliness contract specified (τ_normal ≤ 60s, τ_partial ≤ 300s) — see §3.3 Gap A; downstream enforcement at CIRISPersist#143 / CIRISRegistry#46 |
 | N1 cryptographic addressing | `CIRISEdge/docs/THREAT_MODEL.md` §4.1 (AV-6 Reticulum destination spoofing) + §1 scope ("addressing IS identity"); §7 assumption 4 (Reticulum cryptographic addressing holds) | Reticulum destination = `sha256(public_key)[..16]`; structural — forging an address requires breaking sha256 OR Ed25519. **Threat model published 2026-05-03; implementation pending Phase 1.** |
 | N2 multi-medium transport | `CIRISEdge/docs/THREAT_MODEL.md` §4.5 (AV-18 cross-medium replay, AV-19 slow-medium timing-amp, AV-20 I²P endpoint enum) + §6 (deployment-tier table covering TCP / LoRa / serial / I²P / HTTPS-fallback) | Same wire envelope round-trips byte-equivalent across all configured transports; replay window is transport-agnostic. **Threat model published 2026-05-03; HTTP fallback in Phase 1; LoRa / packet-radio / serial / I²P in Phase 3.** |
-| Q1 quorum/CAP availability | Partial — `CIRISRegistry/docs/THREAT_MODEL.md` §3.7 (AV-33 multi-master migration desync) | CAP specified v1.1: quorum-write ⌈2N/3⌉ + bounded-staleness reads (τ_partial ≤ 300s) + merge rule — see §3.3 Gap B |
+| Q1 quorum/CAP availability | Partial — `CIRISRegistry/docs/THREAT_MODEL.md` §3.7 (AV-33 multi-master migration desync) | CAP specified: quorum-write ⌈2N/3⌉ + bounded-staleness reads (τ_partial ≤ 300s) + merge rule — see §3.3 Gap B |
 
-**Aggregate posture (v1.1)**: C1 / C2 / C3 / S1 / S3 are implemented with mature per-repo threat models. S2 has split coverage across persist + registry and is mid-transition. C0 is implicit-but-not-formally-treated. **C4 closed at the primitive layer v4.6.0** (hybrid X25519 + ML-KEM-768 KEX shipped; pending Edge transport wiring at CIRISEdge#54). **R1 + Q1 contracts specified at v1.1** (§3.3 Gap A + Gap B); downstream measurement+enforcement pending at CIRISPersist#143 / CIRISRegistry#46. **N1 + N2 closed at the threat-model level on 2026-05-03 with the publication of `CIRISEdge/docs/THREAT_MODEL.md`** (893-line baseline; implementation pending Phase 1 — code lands as the lens cuts over from FastAPI ingest). **The federation at v1.1 has 0 unfilled primitives, 3 primitives pending downstream enforcement (C4 transport wiring, R1 + Q1 enforcement), 1 in-transition primitive (S2), and 1 implicit primitive (C0)** — down from 5 substrate-coverage gaps at v1.0 publication. This is the honest substrate-class posture.
+**Aggregate posture**: C1 / C2 / C3 / S1 / S3 are implemented with mature per-repo threat models. S2 has split coverage across persist + registry and is mid-transition. C0 is implicit-but-not-formally-treated. **C4 closed at the primitive layer** (hybrid X25519 + ML-KEM-768 KEX; pending Edge transport wiring at CIRISEdge#54). **R1 + Q1 contracts specified** (§3.3 Gap A + Gap B); downstream measurement+enforcement pending at CIRISPersist#143 / CIRISRegistry#46. **N1 + N2 covered at the threat-model level by `CIRISEdge/docs/THREAT_MODEL.md`** (implementation pending). **The federation has 0 unfilled primitives, 3 primitives pending downstream enforcement (C4 transport wiring, R1 + Q1 enforcement), and 1 in-transition primitive (S2).** This is the honest substrate-class posture.
 
-The per-repo threat models are themselves under continuous review. If a row in this table cites a section that doesn't exist or doesn't match the description, file a cross-repo issue — that's a real maintenance bug in the federation's documentation graph (and v1 had several).
+The per-repo threat models are themselves under continuous review. If a row in this table cites a section that doesn't exist or doesn't match the description, file a cross-repo issue — that's a real maintenance bug in the federation's documentation graph.
 
 ---
 
@@ -550,10 +513,10 @@ Each F-AV is structured as:
 - **Mitigation surface** — where in the system the defense lives.
 - **Cost-asymmetry argument** — the marginal inequality dC/dW > dB/dW with explicit functional form where possible.
 - **RATCHET signal** — what RATCHET measures to detect this attack, with explicit reference to RATCHET limitations (L-01..L-08) where they bind.
-- **Known weaknesses** — Tier 1 reviewer findings inline.
+- **Known weaknesses** — open findings inline.
 - **Status** — open / partially mitigated / mitigated / out of scope, with implementation references.
 
-F-AV identifiers are stable across versions. Class tags are advisory. New F-AVs in v2 carry mnemonic suffixes (F-AV-TIMESHIFT, F-AV-BRIBE, F-AV-ECLIPSE, F-AV-DORMANT, F-AV-BOOT, F-AV-MAINT, F-AV-CROSS) until they get numerical IDs in v3.
+F-AV identifiers are stable across versions. Class tags are advisory. F-AVs with mnemonic suffixes (F-AV-TIMESHIFT, F-AV-BRIBE, F-AV-ECLIPSE, F-AV-DORMANT, F-AV-BOOT, F-AV-MAINT, F-AV-CROSS, …) keep them as stable identifiers.
 
 ### 6.1 Sybil identity-creation class
 
@@ -587,7 +550,7 @@ Attacks where the adversary creates many federation identities cheaply, exploiti
 **Known weaknesses**:
 - The cloud-vTPM hardware-floor collapse is not yet quantified as a policy parameter. The federation should specify minimum hardware-attestation diversity requirements.
 - Cluster-detection assumes the Sybil identities are observed together; long-range/dormant Sybils (F-AV-DORMANT) may evade by spreading activation across years.
-- **v6.0 honest-boundary note**: the hardware-rooted user identity (`self_at_login`) is hybrid — the Ed25519 owner-binding half is hardware (YubiKey PIV / SE / StrongBox / TPM, non-extractable), but the ML-DSA-65 half's seed is sealed at rest (#71: TPM/SE/StrongBox; software-sealed fallback), with software signing (no PQC HSM). The hybrid bound-signature property means a stolen PQC seed *alone* does not forge an accepted signature (the hardware half is still required), so this is a PQC-downgrade exposure for the affected identity, not a Sybil-floor collapse. See `THREAT_MODEL.md` AV-44.
+- **Honest-boundary note**: the hardware-rooted user identity (`self_at_login`) is hybrid — the Ed25519 owner-binding half is hardware (YubiKey PIV / SE / StrongBox / TPM, non-extractable), but the ML-DSA-65 half's seed is sealed at rest (TPM/SE/StrongBox; software-sealed fallback), with software signing (no PQC HSM). The hybrid bound-signature property means a stolen PQC seed *alone* does not forge an accepted signature (the hardware half is still required), so this is a PQC-downgrade exposure for the affected identity, not a Sybil-floor collapse. See `THREAT_MODEL.md` AV-44.
 
 **Status**. **Partially mitigated by RATCHET behavioral measurement + bond economics**. Empirically, current operational signal strength is good (100% deceptive-prior detection on Qwen 3.6 across 29 languages, 5 patch levels) but this is a single-model operational result, not a theorem. Defense-in-depth required.
 
@@ -611,7 +574,7 @@ Attacks where the adversary creates many federation identities cheaply, exploiti
 **Cost-asymmetry argument**. Bond purchase is by definition a cost the federation accepts in exchange for weight. Marginal cost-asymmetry: dC/dN = c_bond, where c_bond should be calibrated so that c_bond ≥ max-extractable-benefit-per-unit-weight × granted-weight (PoB §4). **Known weakness**: this is a calibration assertion that depends on the adversarial sup over benefit-extraction strategies — unfalsifiable in the strict sense (see §9.4 empirical bets). The federation must monitor and adjust c_bond as new benefit-extraction strategies emerge.
 
 **Known weaknesses**:
-- **Bond market liquidity** (reviewer finding): if bonds are tradeable on secondary markets, attacker cost is cost-of-capital × holding-period, not face value. Specification of secondary-market policy is required.
+- **Bond market liquidity**: if bonds are tradeable on secondary markets, attacker cost is cost-of-capital × holding-period, not face value. Specification of secondary-market policy is required.
 - **BondFund entropy is null under realistic priors**: legitimate bond purchases also concentrate through Stripe/Visa/MC. The BondFund ↓ signal fires equally on legitimate and Sybil concentration. RATCHET should weight BondFund by *deviation from baseline distribution*, not absolute entropy.
 
 **RATCHET signal**:
@@ -645,7 +608,7 @@ Attacks where the adversary creates many federation identities cheaply, exploiti
 
 #### F-AV-ONBOARD: Onboarding-flow attack (pre-reputation window exploitation)
 
-**Class**: 3 (Sybil-class compositional). **Added in v1.0.**
+**Class**: 3 (Sybil-class compositional).
 
 **Description**. New identities entering the federation have **no behavioral history**. RATCHET cannot evaluate them on N_eff trajectory because there's no trajectory yet. Attacker exploits this gap by creating identities, exercising the bare-minimum first-attestation flow, and immediately accumulating bond-derived weight or seed-attestation weight before RATCHET can establish a behavioral baseline. The exploit window is the first ~100 traces (per RATCHET L-05 finite-sample requirement) — the period during which formal detection bounds don't apply.
 
@@ -670,7 +633,7 @@ Attacks where the adversary creates many federation identities cheaply, exploiti
 - Probationary-period violation flags: weight accrued without evidence threshold being met.
 - Attester-reputation-distribution anomalies: new identity vouched only by low-reputation attesters.
 
-**Status**. **Spec only** in v1.0; probationary-period policy not yet specified.
+**Status**. **Spec only**; probationary-period policy not yet specified.
 
 ### 6.2 Sybil benefit-faking class
 
@@ -762,7 +725,7 @@ Attacks where the adversary creates *plausible* PoB evidence cheaply, exploiting
 
 #### F-AV-TIMESHIFT: σ-decay replay via paraphrase
 
-**Class**: 3 (Sybil-class compositional). **Added in v2.**
+**Class**: 3 (Sybil-class compositional).
 
 **Description**. Attacker runs one identity legitimately for an extended period (say, one year), captures the full trace corpus (which is signed and durable per S1, but accessible to anyone with read access). Attacker then paraphrases / rewrites the corpus into N "new" trace streams, signs each with a fresh C1 identity, and submits them as N separate legitimate-aged identities. σ-decay is preserved because the underlying reasoning *was* real — just not by *those* identities. The attack converts the federation's "long-term reasoning is expensive" assumption into "long-term reasoning is amortizable."
 
@@ -828,53 +791,51 @@ Attacks where the adversary captures privileged actor positions in the trust gra
 
 **Class**: 3 / 5 (trust-graph capture; also meta because steward governs policy).
 
-**Description**. Attacker compromises the steward — currently a single human (CIRISBridge) plus operational substrate (GitHub Actions, secret stores, ansible). With steward authority, attacker can register rogue trusted-primitive keys, bootstrap rogue identities, revoke legitimate identities, mis-specify policy parameters.
+**Description**. Attacker compromises the trust origin. The trust root every node selects is the GenesisBundle authorized by the HUMANITY_ACCORD holders whose keys are baked into the binary (CC 5.3.4); the operational substrate (registry hosting, GitHub Actions, secret stores, ansible) is run by the steward (CIRISBridge). With trust-root authority an attacker could register rogue trusted-primitive keys, bootstrap rogue identities, revoke legitimate identities, mis-specify policy parameters.
 
-**Targets**. The trust-origin itself. Single-point-of-trust until G2 is implemented.
+**Targets**. The accord holders' keys (for the trust root) and the steward's operational substrate (for availability and S2 writes that do not need accord authority).
 
 **Substrate assumptions**. C0–S3 correct. Attack is on the *actor* with privileged S2 write authority.
 
 **Mitigation surface**. Defense lives in steward operational practice:
-- Hardware-rooted steward keys (C1 for the steward; not just for agents).
-- Multi-sig steward authority (G2 succession; not yet implemented — see F-AV-9).
+- Hardware-rooted holder keys: the accord holders' Ed25519 keys are on FIPS YubiKeys (PIV slot 9c, touch=always), with custody attestations that chain to the pinned Yubico root.
+- Multi-party trust-root authority: a GenesisBundle verifies only with `max(carried M, strict majority of the baked roster)` distinct hybrid holder authorizations; a trust-root host can withhold a bundle but not forge one, and an equal-version split is equivocation and selects nothing.
 - Public steward-action ledger (every steward write visible in S2; rogue actions detectable post-hoc).
 - Recursive scrub-signing (per §8.1) with **external bootstrap anchoring** (Sigstore/Rekor or CT log; see §8.1) so a single root-key compromise doesn't silently rewrite history.
 
-**Cost-asymmetry argument**. Compromising a single steward is high-cost (targeted attack on one human or one HSM, in the $10K–$10M range). Federation accepts this risk because (a) steward actions are public + post-hoc auditable, (b) migration to multi-party stewardship (G2) is the planned reduction, (c) external transparency-log anchoring (per §8.1) makes silent history-rewriting infeasible.
+**Cost-asymmetry argument**. Forging a trust root requires compromising a strict majority of the accord holders' hardware tokens (multiple humans, physical touch). Compromising the steward's operational substrate costs less (targeted attack on one operator, $10K–$10M range) but yields availability attacks and S2 writes, not a trust root. External transparency-log anchoring (per §8.1) makes silent history-rewriting infeasible.
 
 **RATCHET signal**: steward-write anomalies — writes from unusual locations, off-hours patterns, batch operations, registrations of identities that subsequently exhibit Sybil patterns. RATCHET cannot prevent but can flag; flagged operations require human-loop review.
 
 **Known weaknesses**:
-- Single-steward today (Bridge = one human). Operational mitigations (HSM, multi-device backups, witness checkpoints) are individual-discipline-bounded.
-- Threat-model maintainer is currently the same person as the steward. F-AV-MAINT (§6.7) is therefore correlated with F-AV-8 — both compromise paths converge on one principal.
+- The steward's operational substrate (Bridge = one operator) is individual-discipline-bounded (HSM, multi-device backups, witness checkpoints).
+- Threat-model maintainer is currently the same person as the steward. F-AV-MAINT (§6.7) is therefore correlated with F-AV-8 for the operational surface.
 
-**Status**. **Single-steward today; multi-party G2 planned but not implemented**. One of the federation's largest implementation gaps.
+**Status**. **Trust root multi-party (accord-authorized, Impl); operational substrate single-operator.**
 
-#### F-AV-9: Steward succession capture (G2 transition window)
+#### F-AV-9: Steward succession capture (trust-authority transition window)
 
 **Class**: 2 / 5 (composition leak during transition; meta-class governance integrity).
 
-**Description**. The transition from single-steward to multi-party-steward is itself an attack window. During the transition, the federation must migrate trust authority from one key to many — and any flaw in the migration protocol (replay, incomplete cutover, ambiguous authority during transition) is exploitable.
+**Description**. Any change of trust authority is an attack window: a new GenesisBundle version, a change to the accord roster, or a rotation of the service trust-root community. A flaw in the transition rule (replay, incomplete cutover, ambiguous authority during transition) is exploitable.
 
-**Targets**. The G2 transition specifically. Ambiguous-authority window.
+**Targets**. Trust-root version changes and roster changes. Ambiguous-authority windows.
 
 **Substrate assumptions**. C0–S3 correct.
 
-**Mitigation surface**. The G2 protocol must specify:
-- Explicit cutover transaction (single S2 row authorizing the multi-party set, signed by both old and new authorities).
-- Single-steward signature of the cutover row (last act of the single steward).
-- Multi-party signature of the cutover row from the new steward council (first act of the new authority).
-- Recursive scrub-signing chain: cutover row co-signed by both old and new authorities, terminating at the bootstrap (which is itself externally anchored per §8.1).
-- Post-cutover, single-steward key explicitly revoked in S2 with R1 propagation guarantee.
-- External witness publication (transparency-log entry of the cutover, observable by all peers).
+**Mitigation surface**.
+- Trust-root versions: every version is authorized by the baked holders' strict majority; the highest verified version is selected, so there is no window in which a lower or unauthorized root is accepted, and an equal-version split is equivocation (CC 5.3.4).
+- Roster changes: an entrenched-family `supersedes` authorized by the **prior** roster's strict-majority quorum, binding the prior member set (anti-replay) and refusing any change that lifts entrenchment or drops below `2·M > N` (FSD-004, FSD-005).
+- Service trust-root community rotations: `verify_supersedes_preserves_entrenchment` rejects a rotation that weakens `consensus_protocol` or moves `admission_quorum_basis` off `"founders"`.
+- External witness publication (transparency-log entry of each transition, observable by all peers).
 
 **Cost-asymmetry argument**. The transition is a one-time event. Cost-asymmetry favors defenders if the protocol is tight; an attacker exploiting the window must do so during the specific transaction window, which can be made small (atomic transaction) and observable.
 
 **Known weaknesses**:
-- The protocol does not yet exist. F-AV-9 is "open by absence."
-- Even with a protocol, the *first* multi-party cutover lacks the recursive scrub-signing context (the new authority has no prior signed history to anchor against). This is a one-time singularity analogous to bootstrap (see §8.1).
+- The genesis roster has no prior signed history to anchor against; it is recognized only because it is baked into the binary (a bootstrap singularity, see §8.1 and F-AV-BOOT).
+- Under decimation of the roster, recovery depends on the live-quorum rules of FSD-004.
 
-**Status**. **Unfilled**. The G2 protocol does not yet exist. Listed in §3.3 Gap F and §11.4.
+**Status**. **Impl** for trust-root version selection and roster `supersedes`; service-community operational rotation listed in §3.3 Gap F and §11.4.
 
 #### F-AV-10: Bond redemption fraud
 
@@ -922,11 +883,11 @@ Attacks where the adversary captures privileged actor positions in the trust gra
 
 #### F-AV-BRIBE: Bribing legitimate participants
 
-**Class**: 3 / 5 (Sybil-class via economic compromise of honest actors; meta-class because the federation has no policy framework for bribery resistance). **Added in v2.**
+**Class**: 3 / 5 (Sybil-class via economic compromise of honest actors; meta-class because the federation has no policy framework for bribery resistance).
 
 **Description**. Attacker pays legitimate federation participants to issue rogue attestations, sign favorable bond reviews, or vote with attacker preferences. The bribed participants are *legitimate* — their behavioral measurements pass RATCHET because they ARE legitimate. The fraudulent action is one specific signed row that the legitimate participant produces under economic coercion / inducement.
 
-**Targets**. Peer-attestation graph (rogue attestations from honest-but-bribed peers); steward council votes (post-G2); bond-review opinions.
+**Targets**. Peer-attestation graph (rogue attestations from honest-but-bribed peers); accord-holder participation and votes; bond-review opinions.
 
 **Substrate assumptions**. C0–S3 correct; bribed participant's identity is real; their behavior is authentic until the specific bribed action.
 
@@ -966,7 +927,7 @@ Attacks where individual primitives are correct in isolation but their compositi
 
 **Mitigation surface**. Three layers:
 
-1. **R1 revocation propagation** — when a key is revoked, all peers must invalidate that key's evidence prospectively within `τ_normal ≤ 60s` (normal operation) or `τ_partial ≤ 300s` (partial-failure window) per the v1.1 R1 contract (§3.3 Gap A). The "most recent observed revocation wins" merge rule handles the cross-region race condition where two peers observe the same revocation at different timestamps. The **authorization** half (distinct from this propagation half) lives in CIRISVerify v6.0 `sign_occurrence_revocation` (`THREAT_MODEL.md` AV-45): a lost/stolen-device revocation MUST be signed by a *surviving* key (a different enrolled occurrence or the identity root), never the compromised key — which is why OR-of-N hardware-key redundancy (`UserIdentityKeyset`) is the prerequisite for self-healing after a single-key compromise.
+1. **R1 revocation propagation** — when a key is revoked, all peers must invalidate that key's evidence prospectively within `τ_normal ≤ 60s` (normal operation) or `τ_partial ≤ 300s` (partial-failure window) per the R1 contract (§3.3 Gap A). The "most recent observed revocation wins" merge rule handles the cross-region race condition where two peers observe the same revocation at different timestamps. The **authorization** half (distinct from this propagation half) lives in CIRISVerify v6.0 `sign_occurrence_revocation` (`THREAT_MODEL.md` AV-45): a lost/stolen-device revocation MUST be signed by a *surviving* key (a different enrolled occurrence or the identity root), never the compromised key — which is why OR-of-N hardware-key redundancy (`UserIdentityKeyset`) is the prerequisite for self-healing after a single-key compromise.
 2. **Compromise-window analysis (RATCHET)** — when a revocation is logged, RATCHET re-evaluates that key's recent S1 evidence and flags identities whose weight depended on the compromised key's traces or attestations.
 3. **Recursive scrub-signing (S2)** — every S2 row is signed by another row, terminating at bootstrap. A single key compromise doesn't propagate to attestations *issued by other keys* about the compromised one.
 
@@ -974,7 +935,7 @@ Attacks where individual primitives are correct in isolation but their compositi
 
 **RATCHET signal**: post-revocation re-evaluation — identities whose weight drops significantly upon revocation of an attestation source are flagged.
 
-**Known weaknesses**: depends on R1 propagation timeliness — bound specified v1.1 at `τ_normal ≤ 60s` / `τ_partial ≤ 300s` (§3.3 Gap A). Pre-v1.1 this was an unbounded structural exposure; v1.1 reduces it to a measurement+enforcement gap (CIRISPersist#143 + CIRISRegistry#46).
+**Known weaknesses**: depends on R1 propagation timeliness — bound specified at `τ_normal ≤ 60s` / `τ_partial ≤ 300s` (§3.3 Gap A). What remains is a measurement+enforcement gap (CIRISPersist#143 + CIRISRegistry#46).
 
 **Status**. **Partially mitigated**. Revocation infrastructure exists (CIRISPersist federation_revocations); R1 timeliness contract pending; RATCHET-side re-evaluation is research-grade.
 
@@ -988,20 +949,20 @@ Attacks where individual primitives are correct in isolation but their compositi
 
 **Substrate assumptions**. C0–S1 correct; S2 individual nodes correct; S2 replication is async (eventually consistent without explicit CAP specification).
 
-**Mitigation surface**. Lives in CIRISPersist federation directory + CIRISRegistry replication policy. **Q1 CAP model specified v1.1** (§3.3 Gap B):
+**Mitigation surface**. Lives in CIRISPersist federation directory + CIRISRegistry replication policy. **Q1 CAP model specified** (§3.3 Gap B):
 
-- **Consistency model**: bounded-staleness with τ-bound — `τ_normal ≤ 60s` (normal operation), `τ_partial ≤ 300s` (partial-failure windows). Linearizable reads are not feasible across regions; bounded-staleness is the chosen model. Composes with the v1.1 R1 contract (§3.3 Gap A) so peers carry one shared τ_normal / τ_partial pair across both questions.
+- **Consistency model**: bounded-staleness with τ-bound — `τ_normal ≤ 60s` (normal operation), `τ_partial ≤ 300s` (partial-failure windows). Linearizable reads are not feasible across regions; bounded-staleness is the chosen model. Composes with  the R1 contract (§3.3 Gap A) so peers carry one shared τ_normal / τ_partial pair across both questions.
 - **Read protocol**: high-stakes operations (revocation reads, bond-issuance verification) require reading from at least `⌈2N/3⌉` regions (=2 at the current N=3) and confirming agreement on the revocation timestamp. **Disagreement protocol**: if region A returns "key K revoked at t1" and region B returns "key K not revoked," the resolution rule is *the most recent observed revocation wins* (R1 merge rule, §3.3 Gap A), with the read held until both regions converge or `τ_partial` elapses (then fail-secure to UNVERIFIED).
 - **R1 priority propagation**: revocation rows are propagated with priority over registrations (newer revocations preempt cached state) — bound by the §3.3 Gap A R1 timeliness contract.
 - **Lag oracle**: a per-region lag-measurement service publishes current-replication-lag as a signed S2 row. The lag oracle is itself replicated (preventing second-order F-AV-12 on the oracle).
 
 **Cost-asymmetry argument**. Attacker must time actions to the lag window. Defense: bounded τ_normal=60s; require multi-region quorum read for high-stakes actions.
 
-**Known weaknesses**: pre-v1.1 had no explicit CAP specification. v1.1 specifies the contract (§3.3 Gap B) — what remains is downstream measurement+enforcement at CIRISPersist#143 / CIRISRegistry#46 and the cross-substrate gate at CIRISConformance#7 Scenario 3 (partition + heal scenario). Reduces from "structural exposure" to "measurement-gap class."
+**Known weaknesses**: the contract is specified (§3.3 Gap B) — what remains is downstream measurement+enforcement at CIRISPersist#143 / CIRISRegistry#46 and the cross-substrate gate at CIRISConformance#7 Scenario 3 (partition + heal scenario).
 
 **RATCHET signal**: cross-region inconsistencies in directory state at evaluation time are flagged; affected identities have weight provisionally suspended pending consistency.
 
-**Status**. **Spec complete (v1.1) — implementation pending**. Q1 CAP contract specified at §3.3 Gap B; downstream enforcement tracked at CIRISPersist#143 / CIRISRegistry#46. HTTPS-authoritative + 2-of-3 consensus provides current partial mitigation; persist v0.2.x will provide stronger Q1-conformant replication semantics.
+**Status**. **Spec complete — implementation pending**. Q1 CAP contract specified at §3.3 Gap B; downstream enforcement tracked at CIRISPersist#143 / CIRISRegistry#46. Trust-root selection does not depend on Q1: one host serving a bundle that verifies against the baked accord holders suffices, and an equal-version split is equivocation (CC 5.3.4).
 
 #### F-AV-13: Cache-staleness attack
 
@@ -1013,7 +974,7 @@ Attacks where individual primitives are correct in isolation but their compositi
 
 **Substrate assumptions**. S2 authoritative state (persist) correct; registry cache occasionally stale.
 
-**Mitigation surface**. CIRISRegistry caching policy. The invalidation protocol composes with the v1.1 R1 propagation contract (§3.3 Gap A) and the v1.1 Q1 bounded-staleness reads contract (§3.3 Gap B) — both pin the τ_normal ≤ 60s / τ_partial ≤ 300s envelope the cache TTLs must respect.
+**Mitigation surface**. CIRISRegistry caching policy. The invalidation protocol composes with  the R1 propagation contract (§3.3 Gap A) and  the Q1 bounded-staleness reads contract (§3.3 Gap B) — both pin the τ_normal ≤ 60s / τ_partial ≤ 300s envelope the cache TTLs must respect.
 
 - **TTL bounds**: revocation rows ≤ 30s (well inside τ_normal); bond rows ≤ 5min; key-registration rows ≤ 1h. Revocation TTL ≤ τ_normal/2 leaves headroom under the R1 contract.
 - **Push invalidation protocol**: on revocation, persist publishes invalidation message to registry edges via authenticated pub/sub channel. **Message acknowledgement**: registry edges ACK invalidation receipt; persist retries with exponential backoff if ACK missing. **Sequence numbers**: each invalidation carries a monotonic sequence number; registry detects gaps and triggers full-state-resync. The protocol itself is the implementation of the §3.3 Gap A R1 propagation bound at the cache layer.
@@ -1022,7 +983,7 @@ Attacks where individual primitives are correct in isolation but their compositi
 
 **Cost-asymmetry argument**. Cache TTL window is the attacker's exploit window. Defense: revocation TTL ≤ τ_normal/2; bypass cache for critical operations.
 
-**Known weaknesses**: the R1 + Q1 contracts are specified v1.1 (§3.3 Gap A + Gap B); cache TTL bounds compose under them. What remains: explicit sequence-number / ACK / retry protocol documentation for the push-invalidation channel, and a formalized cache-vs-authority audit cadence. Tracked at CIRISRegistry#46 alongside Q1 enforcement.
+**Known weaknesses**: the R1 + Q1 contracts are specified (§3.3 Gap A + Gap B); cache TTL bounds compose under them. What remains: explicit sequence-number / ACK / retry protocol documentation for the push-invalidation channel, and a formalized cache-vs-authority audit cadence. Tracked at CIRISRegistry#46 alongside Q1 enforcement.
 
 **RATCHET signal**: same as F-AV-12.
 
@@ -1038,7 +999,7 @@ Attacks where individual primitives are correct in isolation but their compositi
 
 **Substrate assumptions**. The non-broken half of the hybrid scheme remains secure. Bound-signature property must prevent attacker from unbinding the broken half from the secure half.
 
-**Mitigation surface — bound-signature definition (v1.0 precision)**:
+**Mitigation surface — bound-signature definition**:
 
 The PQC component signs over the classical component with **explicit domain separation, canonical encoding, and verifier obligations** to prevent downgrade and cross-protocol attacks:
 
@@ -1053,11 +1014,11 @@ Where:
 - `canon(m)` is the canonicalized message (per CIRIS canonical-bytes contract for federation messages).
 - `canon(σ_classical)` is the canonical encoding of the classical signature (raw bytes for Ed25519 — fixed 64 bytes; for ECDSA, explicit encoding rule applies — fixed-length r ‖ s, not DER).
 
-The canonicalization rules close two v2 gaps the cryptographer reviewer flagged:
-- **σ_classical encoding ambiguity** (v2 was silent on whether DER or raw): v1.0 mandates raw / fixed-length encoding so future ECDSA support cannot introduce DER-vs-raw ambiguity attacks.
-- **Cross-protocol attacks** (v2's `domain_sep` protects CIRIS-against-others but not others-against-CIRIS): v1.0 cannot fully solve the others-against-CIRIS direction (other protocols don't include CIRIS's `domain_sep`), but the federation policy is to **never reuse Ed25519/ML-DSA keys across protocols**. The v1.0 canonical-encoding rule + per-protocol key separation reduces cross-protocol risk to "key reuse violation," which is detectable by C1 hardware-key-export-rules.
+The canonicalization rules close two gaps:
+- **σ_classical encoding ambiguity**: raw / fixed-length encoding is mandatory, so future ECDSA support cannot introduce DER-vs-raw ambiguity attacks.
+- **Cross-protocol attacks**: `domain_sep` protects CIRIS-against-others but cannot protect others-against-CIRIS (other protocols don't include CIRIS's `domain_sep`), so the federation policy is to **never reuse Ed25519/ML-DSA keys across protocols**. The canonical-encoding rule + per-protocol key separation reduces cross-protocol risk to "key reuse violation," which is detectable by C1 hardware-key-export-rules.
 
-**Verifier obligations** (the v2-reviewer finding: v2 only forbade single-algorithm verification of the *deprecated* scheme; v1.0 specifies obligations for ALL verification modes):
+**Verifier obligations** (for every verification mode):
 
 | Verification mode | Verifier MUST | Verifier MUST NOT |
 |-------------------|---------------|--------------------|
@@ -1066,32 +1027,33 @@ The canonicalization rules close two v2 gaps the cryptographer reviewer flagged:
 | **Old-only** (deprecated scheme during transition) | **FORBIDDEN** — verifier must reject | Ever accept old-classical-only |
 
 **Migration policy**:
-- Deprecation period announced via S2 policy row signed by steward (or G2 council post-cutover).
+- Deprecation period announced via an S2 policy row under the trust-root authority.
 - Migration follows three phases: (1) **dual-acceptance** (current default, hybrid required), (2) **new-only acceptance** (deprecated scheme rejected; this is forbidden during overlap and only enabled when ≥ 99% of federation peers have updated to new-only verification), (3) **deprecated key revocation** (old keys actively revoked via R1).
 - Deprecation period: ≤ 90 days from advisory to enforcement. Phase transitions are recorded as S3-anchored S2 policy rows.
 
 **Cost-asymmetry argument**: bound signatures with canonical encoding + verifier obligations mean a single-algorithm break does not break the hybrid scheme during migration. Migration window risk is bounded by phase-2 timing, which is gated on ≥99% peer update — preventing premature migration.
 
 **Known weaknesses**:
-- Verifier-obligation enforcement requires implementation discipline; a buggy verifier that accepts old-classical-only despite policy reintroduces F-AV-14. **This was a real gap in CIRISVerify through v5.6.0 — closed in v5.7.0 (CIRISVerify#75):** the verifier carried a pre-1.0 "hybrid-pending" accommodation (a member/submission with no ML-DSA-65 half was counted on the classical signature alone) across three federation-tier gates — `threshold::verify_threshold_signatures` (and everything that routes through it: operational-admit role-chain + partner-quorum, transport-binding, founder-quorum, the HUMANITY_ACCORD 2-of-3, keyset rotation), `provenance::verify_provenance_chain` (the AV-8 directory root), and the license JWT gate. Per CEG 1.0-RC7 §10.1.5.1.1 (CIRISRegistry#82) the PQC half is now MANDATORY at the federation admission boundary: a `HybridPolicy` enum gates each path, defaulting to `RequireHybrid`, and classical-only signatures no longer count (a *stripped* PQC half is likewise rejected — the downgrade case). The permissive behavior survives only behind an explicit `AllowClassicalPending` reserved for genuine local-tier self-read (§10.1.5.2). Proven by paired `*_rejected_at_federation_tier` / `*_only_at_local_tier` tests plus an explicit PQC-stripping test.
+- Verifier-obligation enforcement requires implementation discipline; a buggy verifier that accepts old-classical-only despite policy reintroduces F-AV-14. In CIRISVerify the PQC half is MANDATORY at the federation admission boundary: a `HybridPolicy` enum gates `threshold::verify_threshold_signatures` (and everything that routes through it: operational-admit role-chain + partner-quorum, transport-binding, founder-quorum, the HUMANITY_ACCORD quorum, keyset rotation), `provenance::verify_provenance_chain` (the AV-8 directory root) and GenesisBundle authorization, defaulting to `RequireHybrid`; classical-only signatures do not count and a *stripped* PQC half is rejected (the downgrade case). The permissive behavior exists only behind an explicit `AllowClassicalPending` reserved for local-tier self-read. Proven by paired `*_rejected_at_federation_tier` / `*_only_at_local_tier` tests plus an explicit PQC-stripping test.
+- Ed25519 verification is strict by default (`ClassicalVerifier::verify` rejects small-order `A`/`R`), so the classical half cannot be satisfied by a universal forgery against a chosen identity key.
 - Migration policy specification is a per-release artifact; policy publication failures reintroduce risk. Mitigated by S3-anchoring of policy rows.
 - Cross-protocol attacks against keys reused outside CIRIS are policy-bounded (key-reuse forbidden) but not cryptographically prevented.
 
 **RATCHET signal**: signature scheme version per signed action; flags signatures using deprecated schemes for higher scrutiny; flags any verification mode mismatches between peers.
 
-**Status**: **Spec** in v1.0 (precision tightened from v2); CIRISCrypto implementation matches the canonical-encoding rule for current Ed25519+ML-DSA hybrid; migration protocol documented in CIRISVerify FSD-001 §C2. **Deployed (CIRISVerify v5.7.0)**: the "Old-only — FORBIDDEN" verifier obligation is now *enforced in code* at every federation-tier admission gate (no `require_hybrid: false` posture, per RC7 §10.1.5.1.1) — see the Known-weaknesses note above. **Cutover dependency:** because hybrid-required fails closed, every federation-tier key must carry a published ML-DSA-65 half — the registry MUST publish each steward/founder `steward_key_pqc` (+ fingerprint) over HTTPS consensus, or federation-tier admission/licensing degrades to community (the intended fail-secure direction; sequenced with CIRISVerify#69 and the Persist#171 four-impl conformance gate).
+**Status**: **Spec** for the migration protocol; CIRISCrypto implementation matches the canonical-encoding rule for current Ed25519+ML-DSA hybrid. **Deployed**: the "Old-only — FORBIDDEN" verifier obligation is *enforced in code* at every federation-tier admission gate. Because hybrid-required fails closed, every federation-tier key must carry a published ML-DSA-65 half, or admission fails (the intended fail-secure direction).
 
 #### F-AV-BOOT: Bootstrap singularity
 
-**Class**: 2 / 5 (composition leak in recursive scrub-signing chain; meta because bootstrap is governance-rooted). **Added in v2.**
+**Class**: 2 / 5 (composition leak in recursive scrub-signing chain; meta because bootstrap is governance-rooted).
 
-**Description**. Recursive scrub-signing terminates at a bootstrap key. Every signed row in S2 chains back to this bootstrap. **What signs the bootstrap?** v1 had no answer; the chain just terminated. If the bootstrap key is compromised, attacker can rewrite history with a valid-looking chain that all peers accept (since the chain validates).
+**Description**. Recursive scrub-signing terminates at a bootstrap key. Every signed row in S2 chains back to this bootstrap. **What signs the bootstrap?** If the bootstrap key is compromised, attacker can rewrite history with a valid-looking chain that all peers accept (since the chain validates).
 
 **Targets**. The trust origin itself. The recursive scrub-signing property's foundation.
 
 **Substrate assumptions**. C0–S3 correct.
 
-**Mitigation surface — external bootstrap anchoring (v2 specification)**:
+**Mitigation surface — external bootstrap anchoring**:
 
 The bootstrap key is anchored in an **external transparency log** that is not under federation control:
 
@@ -1109,15 +1071,15 @@ The bootstrap key is anchored in an **external transparency log** that is not un
 **Known weaknesses**:
 - External transparency-log dependency creates a federation-external trust requirement. Sigstore/CT operators are not federation members; their compromise affects federation trust.
 - Witness diversity is the main defense against single-log compromise. The federation should specify N ≥ 2 witnesses with operational independence.
-- This is currently **unimplemented**. The federation has a bootstrap key but no external anchoring. Reviewer-flagged in v1 review; v2 specifies the requirement; implementation pending.
+- External anchoring is **unimplemented**. The bootstrap is the HUMANITY_ACCORD genesis baked into the binary (recognized from the pinned object, never from a peer); a forged root needs a strict majority of the baked holders' keys. External transparency-log anchoring of that genesis is specified here and not implemented.
 
 **RATCHET signal**: not directly observable by RATCHET. The bootstrap-anchoring check is an out-of-band peer-install-time verification, not an ongoing RATCHET signal.
 
-**Status**. **Specified in v2; unimplemented**. This is the meta-foundation of the entire trust graph; its absence is the largest single trust-model gap.
+**Status**. **Baked genesis Impl; external anchoring specified, unimplemented**. This is the meta-foundation of the entire trust graph; its absence is the largest single trust-model gap.
 
 #### F-AV-REPUDIATE: Signing repudiation
 
-**Class**: 2 (composition leak between C2 + S3). **Added in v1.0.**
+**Class**: 2 (composition leak between C2 + S3).
 
 **Description**. A peer denies having signed an action they did sign. Distinct from forgery (F-AV-2 etc.) which is "this signature is fake"; repudiation is "this signature is real but not from me." Repudiation attempts arise in dispute, slashing, regulatory inquiry, or when a peer wants to deny attestations that later become controversial. Substrate composition (C2 signature + S1 storage + S3 audit) provides cryptographic non-repudiation in principle — but only if the audit chain is provably complete, the signing key was provably the peer's at signing time, and time-of-signing is provably what the audit log claims.
 
@@ -1144,7 +1106,7 @@ The bootstrap key is anchored in an **external transparency log** that is not un
 
 #### F-AV-FRONTRUN: S2 write front-running
 
-**Class**: 2 (composition leak between Q1 read + write ordering). **Added in v1.0.**
+**Class**: 2 (composition leak between Q1 read + write ordering).
 
 **Description**. Attacker observes pending S2 writes (e.g., bond purchase rows, revocation rows, attestation rows) and races their own write to land first or simultaneously. The race exploits the gap between when a write is *proposed* (visible to network observers) and when it is *committed* (durable in S2). Examples: front-running a revocation by issuing a competing attestation that the revocation can't undo retroactively; front-running a bond purchase to claim the ID first; front-running a reputation-slashing motion with a counter-attestation. Distinct from F-AV-12 (replication-lag at read side); F-AV-FRONTRUN is at the write-side ordering layer.
 
@@ -1154,23 +1116,23 @@ The bootstrap key is anchored in an **external transparency log** that is not un
 
 **Mitigation surface**:
 - **Submit-then-reveal protocol** for sensitive writes: peer submits a hash-commitment to the write first; reveal is a separate transaction. Front-runner sees the commitment hash but cannot construct a competing write without knowing the contents.
-- **Quorum-acceptance ordering**: high-stakes writes require Q1 `⌈2N/3⌉` quorum acceptance (§3.3 Gap B); quorum members vote on inclusion ordering by signed-timestamp (§8.3 clock-source rules), with canonical-bytes-hash as the deterministic tie-break per the v1.1 Q1 merge rule. This pushes the race from "first to publish" to "earliest-signed-timestamp accepted by `⌈2N/3⌉` quorum, hash-tied if simultaneous."
-- **Anti-MEV protections** (borrowed from blockchain literature): time-locked submission queues, batch ordering by hash, fair-ordering protocols (Aequitas, Themis-style). For most CIRIS use cases, simpler quorum-timestamp + hash-tie ordering suffices and is already the v1.1 Q1 contract.
+- **Quorum-acceptance ordering**: high-stakes writes require Q1 `⌈2N/3⌉` quorum acceptance (§3.3 Gap B); quorum members vote on inclusion ordering by signed-timestamp (§8.3 clock-source rules), with canonical-bytes-hash as the deterministic tie-break per  the Q1 merge rule. This pushes the race from "first to publish" to "earliest-signed-timestamp accepted by `⌈2N/3⌉` quorum, hash-tied if simultaneous."
+- **Anti-MEV protections** (borrowed from blockchain literature): time-locked submission queues, batch ordering by hash, fair-ordering protocols (Aequitas, Themis-style). For most CIRIS use cases, simpler quorum-timestamp + hash-tie ordering suffices and is already  the Q1 contract.
 
 **Cost-asymmetry argument**: front-running cost is the network observation cost (low) plus the per-action signing cost (low). Defense raises front-running cost to either (a) breaking the commitment hash, OR (b) defeating Q1 quorum-timestamp consensus on inclusion order.
 
 **Known weaknesses**:
 - Submit-then-reveal adds latency to high-stakes writes; not viable for all action classes.
-- Quorum-timestamp ordering is anchored by the v1.1 Q1 contract (§3.3 Gap B); downstream enforcement of the tie-break rules is tracked at CIRISPersist#143.
+- Quorum-timestamp ordering is anchored by the Q1 contract (§3.3 Gap B); downstream enforcement of the tie-break rules is tracked at CIRISPersist#143.
 - Identifying which actions are "high-stakes enough" to require front-run protection is a policy decision.
 
 **RATCHET signal**: write-ordering anomalies — multiple competing writes within a short window where the "winning" write is structurally favorable to one party in a way that suggests pre-knowledge.
 
-**Status**: **Spec only** — front-run protections themselves not currently specified for any action class (open). The underlying Q1 ordering rules they depend on are v1.1-specified (§3.3 Gap B).
+**Status**: **Spec only** — front-run protections themselves not currently specified for any action class (open). The underlying Q1 ordering rules they depend on are specified (§3.3 Gap B).
 
 #### F-AV-ROLLBACK: State rollback via Q1 partition
 
-**Class**: 2 (composition leak between Q1 partition behavior + S2 acceptance). **Added in v1.0.**
+**Class**: 2 (composition leak between Q1 partition behavior + S2 acceptance).
 
 **Description**. A coordinated minority subset of the federation creates a network partition (deliberate or opportunistic) and, within the partition, signs a coordinated set of S2 writes that conflict with the global state established before partition. When the partition heals, the minority's coordinated state attempts to be accepted as canonical, effectively rolling back the global state to before-partition. The Q1 consistency model determines whether this attack succeeds or is rejected at merge.
 
@@ -1179,20 +1141,20 @@ The bootstrap key is anchored in an **external transparency log** that is not un
 **Substrate assumptions**. C2 signatures correct; S2 individual nodes correct; Q1 partition is the leak.
 
 **Mitigation surface**:
-- **Q1 partition-merge contract (v1.1, §3.3 Gap B)**: when partitions merge, the *higher-quorum-weight* partition's state wins; tie-break (1) signed-timestamp (later wins, anti-rollback monotonic); tie-break (2, exceedingly rare) canonical-bytes-hash ordering. Minority-partition writes that conflict with majority state are rejected with the rejected writes preserved in S3 for forensic audit.
+- **Q1 partition-merge contract (§3.3 Gap B)**: when partitions merge, the *higher-quorum-weight* partition's state wins; tie-break (1) signed-timestamp (later wins, anti-rollback monotonic); tie-break (2, exceedingly rare) canonical-bytes-hash ordering. Minority-partition writes that conflict with majority state are rejected with the rejected writes preserved in S3 for forensic audit.
 - **Quorum-weight tracking**: each partition tracks how many federation peers are reachable + their cumulative weight. A partition with < 1/3 federation weight cannot independently commit S2 writes (PBFT safety bound; RATCHET L-08 also applies here). The `⌈2N/3⌉` quorum-write rule (§3.3 Gap B) is what enforces this at admission.
 - **Anti-rollback monotonicity**: revocation rows have monotonically-increasing revision numbers (CIRIS substrate AV-4 invariant, enforced at Q1 quorum admission per §3.3 Gap B). A partition that tries to commit a rollback (lower revision number than the majority's accepted state) is rejected before quorum is asked.
 
 **Cost-asymmetry argument**: attacker must either (a) achieve > 1/3 federation weight (which is the F-AV-7 cost-asymmetry-collapse threshold by definition), OR (b) break the partition-merge rule cryptographically. Both are out of reach for sub-1/3 attackers.
 
 **Known weaknesses**:
-- Q1 partition-merge contract specified v1.1 (§3.3 Gap B); downstream enforcement of `⌈2N/3⌉` quorum-write + merge rules tracked at CIRISPersist#143 / CIRISRegistry#46.
-- Anti-rollback monotonicity is implemented for revocations but not uniformly for all S2 row classes — extending to remaining row classes (bond redemptions, attestations) is a v1.2 followup work item.
+- Q1 partition-merge contract specified (§3.3 Gap B); downstream enforcement of `⌈2N/3⌉` quorum-write + merge rules tracked at CIRISPersist#143 / CIRISRegistry#46.
+- Anti-rollback monotonicity is implemented for revocations but not uniformly for all S2 row classes — extending to remaining row classes (bond redemptions, attestations) is open work.
 - The 1/3-Byzantine bound is the structural limit; an attacker with > 1/3 weight breaks PBFT safety entirely (F-AV-7 territory).
 
 **RATCHET signal**: post-partition merge anomalies — large numbers of rejected writes, inconsistent S3 entries between partition timeline and merged timeline. RATCHET should be alerted to partition-merge events for additional scrutiny.
 
-**Status**: **Spec complete (v1.1) — implementation pending**. Q1 partition-merge contract specified at §3.3 Gap B; downstream enforcement at CIRISPersist#143 / CIRISRegistry#46; cross-substrate partition+heal test at CIRISConformance#7 Scenario 3. Anti-rollback monotonicity extension to non-revocation rows is a v1.2 followup.
+**Status**: **Spec complete — implementation pending**. Q1 partition-merge contract specified at §3.3 Gap B; downstream enforcement at CIRISPersist#143 / CIRISRegistry#46; cross-substrate partition+heal test at CIRISConformance#7 Scenario 3. Anti-rollback monotonicity extension to non-revocation rows is open.
 
 ### 6.5 Availability and coercion class (inverse-Sybil)
 
@@ -1224,7 +1186,7 @@ Attacks where the adversary **deflates legitimate weight** by attacking substrat
 
 **RATCHET signal** (post-hoc only): federation-wide weight-distribution shifts, comparing pre-attack, during-attack (sampled when reachable), and post-attack states.
 
-**Status**. **Open while N1+N2 unfilled**. HTTPS-authoritative + DNS-advisory provides limited defense in depth; both share public-internet substrate. Reticulum integration is the structural mitigation.
+**Status**. **Open while N1+N2 unfilled**. Trust-root fetch is HTTPS from several hosts, any one of which suffices, which provides limited defense in depth; all share public-internet substrate. Reticulum integration is the structural mitigation.
 
 #### F-AV-17: Selective censorship of evidence
 
@@ -1252,7 +1214,7 @@ Attacks where the adversary **deflates legitimate weight** by attacking substrat
 
 #### F-AV-ECLIPSE: Eclipse on a peer's S2 read-view
 
-**Class**: 4 (inverse-Sybil; per-peer view manipulation). **Added in v2.**
+**Class**: 4 (inverse-Sybil; per-peer view manipulation).
 
 **Description**. Distinct from F-AV-17 (which censors evidence of a specific *target identity*), F-AV-ECLIPSE isolates a specific *consuming peer*. Attacker controls all of the peer's S2 read paths and serves them an attacker-curated view of the directory. The eclipsed peer sees an attacker-chosen subset of attestations, bonds, and revocations — including bogus rows the attacker injected. The peer's votes, attestations, and decisions are then made on a manipulated worldview, even though the peer itself is honest.
 
@@ -1275,13 +1237,13 @@ Attacks where the adversary **deflates legitimate weight** by attacking substrat
 
 **RATCHET signal**: not detectable by RATCHET-from-the-eclipsed-peer's view (definitionally). Detectable by RATCHET-from-other-peers observing that the eclipsed peer's actions are inconsistent with the global S2 state. Federation-level cross-peer analysis identifies eclipsed peers as outliers in attestation-pattern space.
 
-**Status**. **Open**. Specified as F-AV-ECLIPSE in v2; defenses depend on N1+N2 + witness-snapshot specification.
+**Status**. **Open**. Defenses depend on N1+N2 + witness-snapshot specification.
 
 #### F-AV-RATCHET-DOS: DoS on the RATCHET evaluator
 
-**Class**: 4 (availability; targets the evaluator infrastructure rather than substrate). **Added in v1.0.**
+**Class**: 4 (availability; targets the evaluator infrastructure rather than substrate).
 
-**Description**. v2 modeled F-AV-16 (DoS on substrate) but treated RATCHET-as-evaluator as infinitely-available compute. Reality: RATCHET is ~8400 LOC of Python (`../RATCHET/`) running on real infrastructure with real compute budgets. An attacker can flood RATCHET with traces designed to trigger expensive analysis paths — high-dimensional Mahalanobis computations, Monte Carlo volume re-estimation, Z3 SAT calls — degrading RATCHET's throughput such that legitimate evaluations are delayed or skipped. During the DoS window, attacker traces evade evaluation while legitimate trace evaluation is starved.
+**Description**. F-AV-16 covers DoS on the substrate; this F-AV covers RATCHET-as-evaluator, which is not infinitely-available compute. RATCHET is ~8400 LOC of Python (`../RATCHET/`) running on real infrastructure with real compute budgets. An attacker can flood RATCHET with traces designed to trigger expensive analysis paths — high-dimensional Mahalanobis computations, Monte Carlo volume re-estimation, Z3 SAT calls — degrading RATCHET's throughput such that legitimate evaluations are delayed or skipped. During the DoS window, attacker traces evade evaluation while legitimate trace evaluation is starved.
 
 **Targets**. RATCHET's compute budget. Evaluation latency. Evaluation throughput.
 
@@ -1302,11 +1264,11 @@ Attacks where the adversary **deflates legitimate weight** by attacking substrat
 
 **RATCHET signal**: RATCHET self-reports compute saturation; federation-wide weight-multiplier decisions revert to baseline. Compute-saturation events themselves are an attack indicator.
 
-**Status**: **Spec only** in v1.0; production RATCHET deployment with per-identity rate-limiting + sharding is research-grade.
+**Status**: **Spec only**; production RATCHET deployment with per-identity rate-limiting + sharding is research-grade.
 
 #### F-AV-PRIVACY: Privacy-leakage as enabler of targeted attacks
 
-**Class**: 4 / 5 (privacy is itself an availability/coercion concern; meta because the federation hasn't fully modeled adversary information access). **Added in v1.0.**
+**Class**: 4 / 5 (privacy is itself an availability/coercion concern; meta because the federation hasn't fully modeled adversary information access).
 
 **Description**. The federation directory (S2) is largely public — peer pubkeys, attestation graph, bond purchases, weight values, and (in some payload classes) trace summaries are visible to anyone who can read the directory. This public-by-design posture is intentional for transparency, but it gives attackers a complete *target-selection map*. F-AV-BRIBE attackers know which legitimate peers have the most influence (high-reputation, high-weight, well-connected). F-AV-ECLIPSE attackers know which peers depend on which read paths. F-AV-DORMANT attackers know which identities are aging cheaply. The leakage is not "data exfiltration" in the classical sense — it's the absence of a privacy budget on inherently-public information.
 
@@ -1329,11 +1291,11 @@ Attacks where the adversary **deflates legitimate weight** by attacking substrat
 
 **RATCHET signal**: query-pattern anomalies on S2 (high-volume per-peer queries from common origins suggest target-selection activity); statistical correlation between query patterns and subsequent F-AV-BRIBE / F-AV-ECLIPSE attempts.
 
-**Status**: **Open**. Privacy budget on S2 reads is not specified; pseudonymous-peer protocol not specified; attestation aggregation not specified. v1.0 names this F-AV class but does not propose specific defenses beyond the research directions listed.
+**Status**: **Open**. Privacy budget on S2 reads is not specified; pseudonymous-peer protocol not specified; attestation aggregation not specified. This F-AV class is named without specific defenses beyond the research directions listed.
 
 #### F-AV-RECONSIDER-DOS: P11 reconsideration weaponization
 
-**Class**: 4 (availability / coercion — inverse-Sybil; throughput collapse via legitimate-protocol-path abuse). **Added in v1.1 (CIRISVerify#46).**
+**Class**: 4 (availability / coercion — inverse-Sybil; throughput collapse via legitimate-protocol-path abuse).
 
 **Description**. An organized bloc files maximum-allowed reconsiderations against every moderation event affecting their members. Per CIRISNodeCore `MISSION.md` §4.10 recursion bound, a target may file up to 9 Reconsiderations per SlashingAttestation (3 grounds × 3 evidence-package hashes), each forcing fresh-quorum recusal + full adjudication. The §4.10 bound is **per-SlashingAttestation**, not per-event or per-actor — a bloc targeting N moderation events can emit up to 9N filings without violating the existing recursion gate.
 
@@ -1343,7 +1305,7 @@ Attacks where the adversary **deflates legitimate weight** by attacking substrat
 
 **Cost-asymmetry argument**. Attacker stake per targeted event: 9 filings × 100 CommonsCredits = 900. Substrate burden per targeted event: ~4500 credits-equivalent (fresh-quorum recusal × 9 + adjudication overhead). **5× cost-asymmetry favors the attacker** (toy-derived from CIRISNodeCore `scale_model.rs` v0.5 `fav_findings()`).
 
-**Mitigation surface** (three additive defenses; CIRISVerify v4.5.0+):
+**Mitigation surface** (three additive defenses in `ciris_verify_core::reconsider_dos`):
 
 1. **Per-event rate limit** — max `R` reconsiderations active simultaneously per moderation event across all filers. A 10th concurrent filing against the same event is rejected with `RECONSIDERATION_RATE_LIMITED`.
 2. **Per-actor cumulative budget** — rolling-window filing budget per `requester_id` across all events; depletes per filing, refills with each successful filing (a reconsideration that reverses a moderation decision restores some budget; a rejected one does not). Limits cross-event harassment from a single actor with `ACTOR_BUDGET_EXHAUSTED`.
@@ -1357,9 +1319,9 @@ Trait surface shipped at `ciris_verify_core::reconsider_dos`; CIRISNodeCore P11 
 
 **RATCHET signal**: post-hoc cluster scoring on `(requester_id, targeted_actor_id)` pairs across moderation events. Pre-event signals (account creation patterns, bond-purchase timing) are out-of-scope for this F-AV but compose with F-AV-1 / F-AV-2 detection.
 
-**Status**: **Defenses specified v1.1; primitive impl in CIRISVerify v4.5.0+; downstream P11 wiring at CIRISNodeCore#28; conformance scenario at CIRISConformance#7 Scenario 1.**
+**Status**: **Defenses specified; primitives implemented in CIRISVerify; downstream P11 wiring at CIRISNodeCore#28; conformance scenario at CIRISConformance#7 Scenario 1.**
 
-**Toy reference**: CIRISNodeCore `examples/scale_model.rs` v0.5 `fav_findings()` — explicit "CANDIDATE NEW F-AV" entry with the 5× cost-asymmetry numbers + §4.10 cross-reference. v1.1 promotes the candidate to the catalog.
+**Toy reference**: CIRISNodeCore `examples/scale_model.rs` v0.5 `fav_findings()` — explicit "CANDIDATE NEW F-AV" entry with the 5× cost-asymmetry numbers + §4.10 cross-reference.
 
 ### 6.6 Long-range and dormancy class
 
@@ -1367,7 +1329,7 @@ Attacks that exploit time. Sybils that age cheaply for years before activation; 
 
 #### F-AV-DORMANT: Sybil aging / dormancy
 
-**Class**: 3 (Sybil-class compositional, time-axis). **Added in v2.**
+**Class**: 3 (Sybil-class compositional, time-axis).
 
 **Description**. Attacker creates N hardware-attested identities at low marginal cost (cloud vTPMs, batched provisioning). Each runs minimal cron-driven traces — just enough to satisfy RATCHET's minimum-evidence threshold but no more. Identities accumulate σ-decay-friendly long-term coherence cheaply because they're producing little. After 1–5 years of dormancy, attacker activates the cohort: each identity now has aged C1 + S1 evidence streams + S2 attestation history. The federation's "long-term reputation requires real time" assumption is inverted into "dormant identities accumulate aged credentials cheaply."
 
@@ -1381,9 +1343,9 @@ Attacks that exploit time. Sybils that age cheaply for years before activation; 
 - **Per-trace freshness challenges** (also F-AV-TIMESHIFT mitigation) — cron-driven minimal traces become more expensive when each trace requires interactive challenge response.
 - **Operator-cost amortization analysis**: even dormant identities cost cloud-vTPM rent. Long-range dormancy at scale is cost-asymmetry-bounded by per-identity infrastructure cost over the dormancy period.
 
-**Cost-asymmetry argument**. Attacker pays N × (dormancy-period × infrastructure-cost-per-period). For 5-year dormancy with continuous cloud vTPM rent at $0.10/hour, the upper-bound cost per identity is ~$4,400. **The reviewer correctly noted this overstates the floor**: spot-instance pricing, sleep modes, and bare-minimum-trace cron schedules can reduce continuous-rent cost by 5–20×, putting realistic dormant-identity cost at **~$200–$1,000 per identity per 5 years**. This is dramatically lower than 5 years of legitimate reasoning compute (which dominates at $/hour ongoing). **The cost-asymmetry inversion is large.** Defense must rely on activity-density, not aging-time.
+**Cost-asymmetry argument**. Attacker pays N × (dormancy-period × infrastructure-cost-per-period). For 5-year dormancy with continuous cloud vTPM rent at $0.10/hour, the upper-bound cost per identity is ~$4,400. **This overstates the floor**: spot-instance pricing, sleep modes, and bare-minimum-trace cron schedules can reduce continuous-rent cost by 5–20×, putting realistic dormant-identity cost at **~$200–$1,000 per identity per 5 years**. This is dramatically lower than 5 years of legitimate reasoning compute (which dominates at $/hour ongoing). **The cost-asymmetry inversion is large.** Defense must rely on activity-density, not aging-time.
 
-**Activity-density definition** (v1.0):
+**Activity-density definition**:
 
 ```
 activity_density(identity, window_W) = traces_above_threshold(identity, W) / W
@@ -1406,7 +1368,7 @@ A legitimate active CIRIS deployment produces continuous traces (at minimum, dai
 Policy parameters (window length, density thresholds, multipliers) are steward-tunable per §8.4 calibration framework.
 
 **Known weaknesses**:
-- Activity-density formula is a v1.0 specification; threshold values are policy parameters that may need adjustment based on operational evidence.
+- Activity-density formula is specified; threshold values are policy parameters that may need adjustment based on operational evidence.
 - Sparse-but-legitimate use cases (research deployment, occasional-use community agents) are penalized by density-tier policy. The federation must specify whether such use cases are accommodated (separate policy track) or whether sparse legitimate use is accepted as a participation cost.
 - Activation-detection (sudden density jump) is research-grade — exact statistical test for "this density change indicates dormant-Sybil activation rather than legitimate ramp-up" needs formal specification.
 - Per-trace freshness challenges (raising per-trace cost so cron-driven minimal traces become expensive) are an unspecified protocol; specifying it is open work.
@@ -1416,7 +1378,7 @@ Policy parameters (window length, density thresholds, multipliers) are steward-t
 - Σ-decay rate inconsistent with claimed activity history.
 - Embedding-space cluster proximity between newly-activated dormant cohorts (similar traces from "independent" identities — see F-AV-TIMESHIFT).
 
-**Status**. **Open**. v1 did not model this; v2 names it. Mitigation specifications pending.
+**Status**. **Open**. Mitigation specifications pending.
 
 ### 6.7 Meta — threat-model and governance integrity
 
@@ -1424,7 +1386,7 @@ Attacks on the threat model itself, the artifacts that influence trust verdicts,
 
 #### F-AV-MAINT: Threat-model maintainer compromise
 
-**Class**: 5 (meta-class). **Added in v2.**
+**Class**: 5 (meta-class).
 
 **Description**. The threat model itself influences security posture. A threat-model maintainer (currently the project lead) who is compromised — or who makes a careless edit — could silently downgrade an F-AV's `Status: Open` to `Status: Mitigated`, mis-specify a RATCHET signal, remove a cross-reference, or quietly weaken a mitigation specification. Every downstream RATCHET designer or auditor consults this document; corrupted content corrupts their mental model.
 
@@ -1433,25 +1395,25 @@ Attacks on the threat model itself, the artifacts that influence trust verdicts,
 **Substrate assumptions**. None — this is meta to the substrate.
 
 **Mitigation surface**:
-- **Document signing requirement**: every published version of this document is signed by the steward (or G2 council post-cutover) and the signature is published in the federation transparency log.
+- **Document signing requirement**: every published version of this document is signed (`doc_integrity::DocSignature`, hybrid Ed25519 + ML-DSA-65, version-bound) and the signature is published in the federation transparency log.
 - **Hash-in-release-tarball**: the federation's release artifacts include a hash of the threat-model document; peers can verify the doc they consult matches the released version.
 - **Two-person-rule on edits**: PRs to this document require review + approval by at least one threat-model peer reviewer.
 - **External adversarial review**: annual third-party adversarial review (per §1.3) provides independent validation that the document is honest.
-- **Diff publication**: changelog entries (§Appendix A) document what changed and why; readers can audit changes.
+- **Diff publication**: the CI changelog guard requires every edit to touch the `Last updated` line; git history records what changed and why.
 
-**Cost-asymmetry argument**. Compromising the threat-model maintainer is structurally similar to F-AV-8 (steward compromise) but with weaker defense today (the document is markdown in a git repo with no signing requirement). Defense: lift the integrity guarantees to match S2 row standards.
+**Cost-asymmetry argument**. Compromising the threat-model maintainer is structurally similar to F-AV-8 (steward compromise) but with weaker defense today (edits are gated by CODEOWNERS and the CI changelog guard; released versions are not yet signed). Defense: lift the integrity guarantees to match S2 row standards.
 
 **Known weaknesses**:
-- The current document has none of the above protections. v2 specifies them; implementation pending.
+- Two-person rule (CODEOWNERS) and the CI changelog guard are in place, and the `doc_integrity` signing primitive exists; operational signing of released versions and hash-in-release-tarball are not.
 - The threat-model maintainer is currently the same person as the steward (Bridge), so F-AV-MAINT is correlated with F-AV-8 — single point of compromise covers both.
 
 **RATCHET signal**: not detectable by RATCHET (the threat model defines RATCHET's job; RATCHET cannot validate its own job specification). Detection is external (third-party review, signed-version verification, hash mismatch).
 
-**Status**. **Open**. v2 specifies signing requirements; not yet implemented.
+**Status**. **Partially mitigated** (§3.3 Gap G Phases 1-2); operational signing open.
 
 #### F-AV-SRC: Source-level insider threat (the official build is hostile)
 
-**Class**: 5 (meta-class). **Added in v1.0.**
+**Class**: 5 (meta-class).
 
 **Description**. C3 (build attestation) attests "this binary IS the official version that was signed by the build authority." It does NOT attest "the official version is non-malicious." A maintainer-compromise or insider threat at the source-code level — at CIRISAgent, CIRISLens, CIRISNode, CIRISPersist, CIRISRegistry, CIRISVerify, RATCHET, or related dependencies — can introduce hostile semantics that pass C3 verification because the hostile semantics ARE the official version. Distinct from F-AV-MAINT (threat-model maintainer compromise) and F-AV-8 (steward operational compromise); F-AV-SRC is at the source-of-truth for federation behavior.
 
@@ -1470,7 +1432,7 @@ Attacks on the threat model itself, the artifacts that influence trust verdicts,
 **Cost-asymmetry argument**: source-level insider threat is high-cost (requires either compromising a maintainer or being a sophisticated long-term insider) and high-detection-probability (open-source code under continuous review). The federation accepts F-AV-SRC residual risk because the alternative — closed-source code — has worse asymmetry. AGPL-3.0 open-source is the structural choice that makes F-AV-SRC defensible.
 
 **Known weaknesses**:
-- Reproducible builds are a v2.0+ goal per CIRISVerify TM Gap 4; not yet shipped.
+- Reproducible builds are a goal per CIRISVerify TM Gap 4; not yet shipped.
 - Two-person-rule on security-critical paths is operationally enforced via PR review but not cryptographically required (a maintainer with both keys could merge unilaterally).
 - Continuous external review is funded only as part of annual review cadence; in-flight diffs between reviews are unreviewed externally.
 - Long-tail dependency review is partial; not all transitive dependencies have been formally audited.
@@ -1481,7 +1443,7 @@ Attacks on the threat model itself, the artifacts that influence trust verdicts,
 
 #### F-AV-CROSS: Cross-federation attacker (out-of-scope; stubbed)
 
-**Class**: 5 (meta-class; cross-federation interaction). **Added in v2 as named stub.**
+**Class**: 5 (meta-class; cross-federation interaction).
 
 **Description**. Multiple independent CIRIS federations (different stewards, different bond programs, different policy parameters) may peer in the future. An attacker spanning multiple federations can mount attacks that don't fit within a single federation's threat model — e.g., bonds purchased in federation A used as collateral for attestations in federation B; identities transferred between federations to launder reputation; consensus games across federations.
 
@@ -1506,28 +1468,28 @@ Attacks on the threat model itself, the artifacts that influence trust verdicts,
 
 ### 7.1 Substrate properties RATCHET assumes hold
 
-RATCHET's anti-Sybil evaluation is meaningful only when the following substrate properties hold. v1 listed 6 assumptions; v2 expands to 10 to cover the new primitives.
+RATCHET's anti-Sybil evaluation is meaningful only when the following substrate properties hold. Ten assumptions cover the primitive set.
 
 | Assumption | Primitive | Failure mode if violated |
 |------------|-----------|--------------------------|
 | **A0**: RNG quality is sufficient for cryptographic use | C0 | Predictable keys, predictable nonces, weak signatures — entire C-stack collapses |
-| **A1**: Hardware keys cost ≥ $X to extract, where $X exceeds attacker budget | C1 | RATCHET measures attacker behavior as if it were honest peer (revised v2: was binary "not extractable," now budget-relative) |
+| **A1**: Hardware keys cost ≥ $X to extract, where $X exceeds attacker budget | C1 | RATCHET measures attacker behavior as if it were honest peer (budget-relative, not binary "not extractable") |
 | **A2**: Signatures are unforgeable under the specified scheme | C2 | RATCHET reads attacker-injected evidence as legitimate |
 | **A3**: Build attestation reflects actual binary | C3 | RATCHET measures behavior of tampered binary as if official version |
 | **A4**: Forward secrecy holds for past sessions | C4 | Recorded traffic decryptable retroactively (harvest-now-decrypt-later) — affects confidentiality, not RATCHET integrity directly |
 | **A5**: Signed evidence is durable and unmodified | S1 | RATCHET reads modified evidence; false weight |
 | **A6**: Federated directory state is consistent within τ-bound | S2 + Q1 | RATCHET sees inconsistent attestation graph (F-AV-12, F-AV-13) |
 | **A7**: Audit log is append-only and complete | S3 | RATCHET cannot detect retroactive evidence injection |
-| **A8**: Revocations propagate to all peers within τ_normal ≤ 60s (or τ_partial ≤ 300s during partial-failure windows) per §3.3 Gap A v1.1 contract | R1 | F-AV-11, F-AV-12, F-AV-13, F-AV-16 all worsen if bound violated |
+| **A8**: Revocations propagate to all peers within τ_normal ≤ 60s (or τ_partial ≤ 300s during partial-failure windows) per §3.3 Gap A contract | R1 | F-AV-11, F-AV-12, F-AV-13, F-AV-16 all worsen if bound violated |
 | **A9**: Quorum reads return bounded-staleness state under partial failure | Q1 | Under-specification → fail-secure behavior is undefined |
 
 These assumptions are the **foundation** of RATCHET's validity. Each is owned by a per-repo threat model (§5) plus, where unfilled, a structural gap (§3.3).
 
 ### 7.2 Per-assumption failure-tier categorization
 
-Substrate is **probabilistic**, not binary. v1 treated each assumption as boolean (correct or broken); reviewers flagged this as unrealistic. v2 attempted numerical ROM rates (10⁻⁵, 10⁻³, etc.) and reviewers correctly flagged that as **numerology**: numbers without citation, methodology, owner, or update protocol lend false quantitative legitimacy.
+Substrate is **probabilistic**, not binary: treating each assumption as boolean (correct or broken) is unrealistic, and numerical ROM rates (10⁻⁵, 10⁻³, etc.) without citation, methodology, owner, or update protocol are **numerology** that lends false quantitative legitimacy.
 
-v1.0 uses **ordinal failure tiers** with named referents instead. Numerical rates may be added in a future version when empirical data sources are established.
+This model uses **ordinal failure tiers** with named referents instead. Numerical rates may be added in a future version when empirical data sources are established.
 
 **Failure tiers**:
 - **TIER-LOW**: failure documented in literature but rare in practice; mitigated by mature standards processes and ongoing adversarial review. Examples: cryptographic algorithm break (Ed25519, ML-DSA-65 implementations).
@@ -1538,24 +1500,24 @@ v1.0 uses **ordinal failure tiers** with named referents instead. Numerical rate
 | Assumption | Primitive | Failure tier (today) | Named referent | Notes |
 |------------|-----------|----------------------|----------------|-------|
 | A0 (RNG quality) | C0 | TIER-LOW–MED | Dual_EC backdoor; vTPM PRNG seeding bug history | Mature OS RNGs robust; embedded platforms vary; no startup health-check today |
-| A1 (HW key non-extraction) | C1 | **TIER-MED–HIGH** | TEE.fail, faulTPM, Hertzbleed, GoFetch CVE classes | Patch-cycle-dependent; v2 reformulation (cost ≥ $X vs attacker budget) is correct framing |
+| A1 (HW key non-extraction) | C1 | **TIER-MED–HIGH** | TEE.fail, faulTPM, Hertzbleed, GoFetch CVE classes | Patch-cycle-dependent; cost ≥ $X vs attacker budget is the correct framing |
 | A2 (signature unforgeability) | C2 | TIER-LOW | NIST + crypto community standards review for both Ed25519 and ML-DSA-65 | Cryptographic break unlikely; implementation bugs dominate |
 | A3 (build attestation) | C3 | TIER-MED | Sigstore OIDC theft, XZ-style maintainer compromise | SLSA L3 + reproducible builds + transparency log monitoring needed (currently partial) |
-| A4 (forward secrecy) | C4 | TIER-MED (v1.1) | C4 hybrid KEX shipped v4.6.0; harvest-now-decrypt-later closed for hybrid-mode peers, remains for classical-fallback (legacy) traffic | TIER-LOW once CIRISEdge#54 wires the hybrid path into federation transport + Conformance#7 Scenario 2 passes |
+| A4 (forward secrecy) | C4 | TIER-MED | C4 hybrid KEX implemented; harvest-now-decrypt-later closed for hybrid-mode peers, remains for classical-fallback (legacy) traffic | TIER-LOW once CIRISEdge#54 wires the hybrid path into federation transport + Conformance#7 Scenario 2 passes |
 | A5 (S1 durability) | S1 | TIER-LOW | Database-tier reliability + replication | Mature substrate |
-| A6 (S2 consistency) | S2 + Q1 | TIER-MED during partial failure (v1.1) | Q1 contract specified v1.1: quorum-write ⌈2N/3⌉ + bounded-staleness reads (§3.3 Gap B); downstream enforcement at CIRISPersist#143 / CIRISRegistry#46 | TIER-LOW once impl + Conformance#7 Scenario 3 passes |
+| A6 (S2 consistency) | S2 + Q1 | TIER-MED during partial failure | Q1 contract specified: quorum-write ⌈2N/3⌉ + bounded-staleness reads (§3.3 Gap B); downstream enforcement at CIRISPersist#143 / CIRISRegistry#46 | TIER-LOW once impl + Conformance#7 Scenario 3 passes |
 | A7 (S3 append-only) | S3 | TIER-LOW–MED | Operational bugs (gap insertion at admin level) dominate | Cryptographic chain mature; admin-tier discipline required |
-| A8 (R1 timeliness) | R1 | TIER-MED (v1.1) | R1 contract specified v1.1 (τ_normal ≤ 60s, τ_partial ≤ 300s); revocation-lag measurement pending CIRISPersist#143 | TIER-LOW once measurement live + Conformance#7 Scenario 3 passes |
-| A9 (Q1 bounded-staleness) | Q1 | TIER-MED (v1.1) | Q1 contract specified v1.1 (§3.3 Gap B); pending downstream enforcement | TIER-LOW once impl + Conformance#7 Scenario 3 passes |
+| A8 (R1 timeliness) | R1 | TIER-MED | R1 contract specified (τ_normal ≤ 60s, τ_partial ≤ 300s); revocation-lag measurement pending CIRISPersist#143 | TIER-LOW once measurement live + Conformance#7 Scenario 3 passes |
+| A9 (Q1 bounded-staleness) | Q1 | TIER-MED | Q1 contract specified (§3.3 Gap B); pending downstream enforcement | TIER-LOW once impl + Conformance#7 Scenario 3 passes |
 
 **Joint-failure model**: assumptions are NOT independent. A maintainer compromise can violate A2 + A3 + A5 simultaneously (signing keys + build provenance + evidence storage all affected). A CVE-class TEE incident can violate A0 + A1 across many devices simultaneously. RATCHET output validity (§7.3) must consider the *joint* tier across correlated assumption sets, not the per-assumption tier in isolation.
 
 **Owner and update trigger**:
-- **Owner**: `FEDERATION_THREAT_MODEL.md` maintainer (currently project lead; post-G2 the steward council). Publishes the tier table.
-- **Update triggers**: per-CVE disclosure, per-incident review, per-major-release (v1.0, v1.1, ...), per-annual external adversarial review.
+- **Owner**: `FEDERATION_THREAT_MODEL.md` maintainer (currently project lead). Publishes the tier table.
+- **Update triggers**: per-CVE disclosure, per-incident review, per-major-release, per-annual external adversarial review.
 - **Evidence sources**: CVE feeds, internal incident logs, per-repo threat model status changes, RATCHET-side substrate-confidence telemetry (§7.3) when implemented.
 
-**Numerical rates**: deferred to v2.0+ pending establishment of evidence-source pipelines. Including numbers without sourcing was a v2 misstep; v1.0 declines to propagate it.
+**Numerical rates**: deferred pending establishment of evidence-source pipelines; numbers without sourcing are not used.
 
 ### 7.3 RATCHET output degradation curve
 
@@ -1584,7 +1546,7 @@ RATCHET cannot detect:
 
 - **Substrate-class threats (Class 1)** in the attack window before substrate-monitoring detects them. RATCHET's measurement *over* corrupted substrate is meaningless until detection + revocation propagates.
 - **Out-of-band economic events** (F-AV-7 cost-asymmetry collapse). RATCHET measures inside the federation; market trends are external.
-- **One-shot stealth attacks on G2 succession** (F-AV-9). RATCHET observes post-cutover state, not cutover protocol internals.
+- **One-shot stealth attacks on trust-authority succession** (F-AV-9). RATCHET observes post-transition state, not transition protocol internals.
 - **Eclipse on its own evidence-read path** (F-AV-ECLIPSE applied to RATCHET-itself). If attacker controls RATCHET's reads, RATCHET cannot detect.
 - **Meta-class threats** (F-AV-MAINT). RATCHET cannot evaluate the threat model that defines its job.
 - **Adaptive adversaries that defeat RATCHET's L-02 assumption.** RATCHET's bounds are non-adaptive; provably-bounded detection holds only against fixed-distribution attackers.
@@ -1593,8 +1555,8 @@ RATCHET cannot detect:
 For these classes, the federation requires **out-of-band monitoring**:
 - Substrate integrity → per-repo CI + reproducible builds + transparency log monitoring.
 - Economic monitoring → external compute-cost tracking + LLM capability tracking + cryptographic-research monitoring (for ETH-related advances).
-- G2 cutover → human-in-the-loop transition oversight.
-- Threat-model integrity → annual third-party adversarial review (this is what produced v2).
+- Trust-authority transitions → human-in-the-loop transition oversight.
+- Threat-model integrity → annual third-party adversarial review.
 - Adaptive adversaries → red-team exercises, adversarial-validation testing, continuous policy adjustment.
 
 ### 7.5 Substrate ↔ behavior cross-checks
@@ -1627,11 +1589,11 @@ Every signed row in S1 / S2 / S3 is co-signed by another signed row, forming a c
 - **Compromise propagation is bounded**: a single key compromise affects rows directly signed by that key, not rows co-signed by other keys.
 - **Audit-time re-validation is mechanical**: a verifier can walk the chain.
 
-**v1 had a bootstrap singularity**: the chain terminated at the bootstrap key, but nothing audited the bootstrap itself. Reviewer flagged this as "trust the steward" with no recourse if the bootstrap is compromised.
+**Bootstrap singularity**: the chain terminates at the bootstrap, and nothing inside the chain audits the bootstrap itself. In CIRISVerify the bootstrap is the HUMANITY_ACCORD genesis baked into the binary; the accord holders' keys (`accord_holder_bootstrap_anchor()`) are the rooting anchor, and a chain terminating at any one of them roots.
 
-**v1.0 specification: external bootstrap anchoring** (per F-AV-BOOT mitigation):
+**External bootstrap anchoring** (per F-AV-BOOT mitigation):
 
-The bootstrap key is anchored in a set of transparency logs that are **not under federation control**, with explicit witness-diversity requirements addressing the v2-reviewer finding that "≥2 witnesses" without diversity analysis just relocates the singularity (Sigstore on AWS + AWS-hosted witness = one fault domain).
+The bootstrap key is anchored in a set of transparency logs that are **not under federation control**, with explicit witness-diversity requirements, because "≥2 witnesses" without diversity analysis just relocates the singularity (Sigstore on AWS + AWS-hosted witness = one fault domain).
 
 **Anchor specification**:
 - **Primary anchor**: Sigstore Rekor entry for the bootstrap pubkey.
@@ -1657,13 +1619,13 @@ The bootstrap key is anchored in a set of transparency logs that are **not under
 - New-bootstrap publication in BOTH transparency logs with witness signatures meeting the diversity requirements.
 - Rotation row points to both old and new transparency-log entries.
 - Continuity proof: the rotation chain in the transparency logs is independently verifiable.
-- Peers update the pinned set via a new release tarball signed by the steward (or the council post-G2). Until the release lands, peers operate on the old pinned set.
+- Peers update the pinned set via a new release tarball signed under the release pipeline (build manifest, FSD-006). Until the release lands, peers operate on the old pinned set.
 
 **Cost-asymmetry of bootstrap compromise** (with diversity requirements): attacker must compromise (i) the bootstrap key, AND (ii) Rekor's signing infrastructure, AND (iii) the CT log's signing infrastructure, AND (iv) at least N − M + 1 witnesses spanning the required diversity dimensions. Each compromise is from a structurally different fault domain (different operators, jurisdictions, software stacks). **The independence assumption is real, not asserted** — it's enforced by the diversity constraints. Combined attacker cost is approximately the maximum-of-fault-domains rather than a clean multiplicative product, but is still substantially higher than any single-fault-domain compromise.
 
 **Sigstore / CT root-rotation handling**: when Sigstore or CT operators rotate their own roots, the federation re-pins. The federation maintains a **pinned-anchor manifest** that includes both Sigstore + CT current roots; peers verify chain-of-trust to current roots and re-pin via release-tarball updates. Sigstore root rotation (typically annual) triggers a federation release.
 
-**Status**: **Spec only** in v1.0. Implementation requires (a) tooling to manage the pinned-anchor manifest, (b) witness-recruitment and -verification process, (c) periodic-online-verification client logic in CIRIS instances, (d) diversity-validation tests. Until implemented, F-AV-BOOT is open.
+**Status**: **Spec only**. Implementation requires (a) tooling to manage the pinned-anchor manifest, (b) witness-recruitment and -verification process, (c) periodic-online-verification client logic in CIRIS instances, (d) diversity-validation tests. Until implemented, F-AV-BOOT is open.
 
 ### 8.2 Per-primitive trust isolation (reconciled with F-AV-11)
 
@@ -1679,9 +1641,9 @@ Each primitive defends its own integrity at the substrate level:
 
 ### 8.3 Fail-secure as protocol (NOT just a property)
 
-**Major v1 → v2 reframing.** v1 said: *"When primitives fail, the federation degrades to more restrictive modes."* This reads as a property, but reviewer flagged it as a *non-spec*: the fail-secure decision itself is unsigned and unauditable, the "grace window" has no value, no clock source, no defense against an attacker who DoSes for `grace_window + ε` on a loop.
+"When primitives fail, the federation degrades to more restrictive modes" reads as a property but is a *non-spec* on its own: the fail-secure decision itself is unsigned and unauditable, the "grace window" has no value, no clock source, no defense against an attacker who DoSes for `grace_window + ε` on a loop.
 
-**v1.0 fail-secure protocol** (refined per v2 reviewer findings):
+**Fail-secure protocol**:
 
 **Fail-secure decision protocol**:
 
@@ -1731,13 +1693,13 @@ Each primitive defends its own integrity at the substrate level:
 
 **Post-hoc verifiability**: an auditor reading the S3 trail of a peer can verify *that* a decision was made at *claimed* times for *claimed* reasons (signed entries with TPM-attested time). Verifying *whether* the decision was *justified* (was substrate actually unreachable from peer X's vantage at time T?) requires either (a) cross-peer correlation — multiple peers reporting outages at overlapping times indicates real substrate problem, OR (b) out-of-band substrate-monitoring records (Cloudflare endpoint health metrics, etc.) operated by the steward. Justification is a **federation-wide question, not a per-peer question**; per-peer decisions are the inputs to that determination, not the conclusion.
 
-**Today's status (2026-05)**: **Spec only** in v1.0. Today's CIRISVerify fail-secure logic is per-instance and ad-hoc. F-AV-16 (forced fail-secure) is therefore live exposure until this protocol ships. The window is also bounded by N2 multi-medium transport (which provides DoS-resistance independent of fail-secure protocol) — but N2 is also Spec only.
+**Status**: **Spec only**. Today's CIRISVerify fail-secure logic is per-instance and ad-hoc. F-AV-16 (forced fail-secure) is therefore live exposure until this protocol ships. The window is also bounded by N2 multi-medium transport (which provides DoS-resistance independent of fail-secure protocol) — but N2 is also Spec only.
 
 ### 8.4 Anti-Sybil posture as policy-tunable inequality
 
-**Major v1 → v2 reframing.** v1 claimed anti-Sybil resistance was an emergent invariant. v2 reframes as policy-tunable posture (per §2.6).
+Anti-Sybil resistance is a policy-tunable posture, not an emergent invariant (per §2.6).
 
-**v2 statement of the cost-asymmetry inequality**:
+**Statement of the cost-asymmetry inequality**:
 
 ```
 For all w in [w_min, w_max], dC(w)/dw  >  dB(w)/dw
@@ -1807,7 +1769,7 @@ The inequality is a working hypothesis with strong-but-narrow empirical support,
 
 ### 9.1 Attacker cost per F-AV
 
-Approximate per-identity attacker costs at scale (N=1000 identities). Order-of-magnitude estimates; **v1 numbers revised** in light of cloud-vTPM economics and bond-market liquidity per reviewer findings.
+Approximate per-identity attacker costs at scale (N=1000 identities). Order-of-magnitude estimates, accounting for cloud-vTPM economics and bond-market liquidity.
 
 | F-AV | Per-identity cost (2026) | Scaling | Notes / weakness |
 |------|--------------------------|---------|------------------|
@@ -1819,15 +1781,15 @@ Approximate per-identity attacker costs at scale (N=1000 identities). Order-of-m
 | F-AV-6 σ-decay gaming | sustained synthetic-trace generation | linear in time horizon | Mitigated by trace-density requirements (§F-AV-DORMANT) |
 | F-AV-TIMESHIFT | one-time real-reasoning year + per-identity paraphrase | sublinear in N (amortizes original) | Defense requires per-trace freshness challenges |
 | F-AV-7 cost collapse | depends on which cost dimension collapses | (depends) | Strategic; defended by defense-in-depth |
-| F-AV-8 steward compromise | targeted: $10K–$10M | one-time | Multi-sig (G2) is mitigation |
-| F-AV-9 G2 succession capture | targeted at transition window | one-time | High-precision, low-volume |
+| F-AV-8 steward compromise | targeted: $10K–$10M | one-time | Accord strict-majority authorization of the trust root is mitigation |
+| F-AV-9 succession capture | targeted at transition window | one-time | High-precision, low-volume |
 | F-AV-10 bond redemption fraud | ~bond cost | linear | Bounded by bond cost |
 | F-AV-11 composition leak | depends on which key compromised | one-time per key | Defense via R1 propagation |
 | F-AV-12 replication-lag | ~$0 if attacker is well-positioned | linear in lag window | Defense via Q1 specification |
 | F-AV-13 cache-staleness | ~$0 | linear in TTL | Defense via short TTLs + invalidation protocol |
-| F-AV-14 PQC migration | depends on cryptanalysis breakthrough | one-time | Defense via hybrid + bound-sigs (v2 precision) |
+| F-AV-14 PQC migration | depends on cryptanalysis breakthrough | one-time | Defense via hybrid + bound-sigs |
 | F-AV-15 Portal compromise | $10K–$10M targeted | one-time | Multi-sig + reconciliation |
-| F-AV-BOOT | bootstrap-key compromise + transparency-log compromise + witness compromise | one-time × 3 | External anchoring (v2) raises this dramatically |
+| F-AV-BOOT | bootstrap-key compromise + transparency-log compromise + witness compromise | one-time × 3 | External anchoring raises this dramatically |
 | F-AV-16 substrate DoS | $/hour DDoS-as-a-service | linear in duration | Defense via N2 multi-medium |
 | F-AV-17 selective censorship | depends on path control | linear in censored peers | Defense via read-path diversity (N1+N2) |
 | F-AV-ECLIPSE | full-read-path control over target peer | linear in eclipsed peers | Defense via N1 + witness-snapshot |
@@ -1879,7 +1841,7 @@ where
   [w_min, w_max] = operational weight range
 ```
 
-**Benefit-extraction taxonomy (v1.0)**: v2 left B(w) as "depends on use case" — reviewer correctly flagged this as the same unfalsifiable adversarial sup. v1.0 enumerates the use cases and bounds benefit per case. The federation must maintain `dC/dw > dB_u/dw` for each enumerated u, OR the use case must be structurally prevented at a different layer.
+**Benefit-extraction taxonomy**: B(w) "depends on use case" would be unfalsifiable, so the use cases are enumerated and benefit is bounded per case. The federation must maintain `dC/dw > dB_u/dw` for each enumerated u, OR the use case must be structurally prevented at a different layer.
 
 **B_u for u ∈ enumerated use cases**:
 
@@ -1894,7 +1856,7 @@ where
 
 **Bounding strategy**: for each use case u, the federation either (a) calibrates policy parameters so `dC/dw > dB_u/dw` over [w_min, w_max], OR (b) uses **structural defense** to remove the use case from the attack surface (e.g., multi-attestation gating for u_info, witness-bounded publication for u_censor).
 
-**This is a falsifiable claim**: a reviewer who finds a use case u' not on the list, or a bounding mechanism that's empirically inadequate, can challenge the inequality directly. v1.0 commits to extending the taxonomy as use cases emerge from operational evidence and red-team exercises.
+**This is a falsifiable claim**: a reviewer who finds a use case u' not on the list, or a bounding mechanism that's empirically inadequate, can challenge the inequality directly. The taxonomy is extended as use cases emerge from operational evidence and red-team exercises.
 
 **Verification**:
 - Per-use-case calibration: B_u functions are estimated by federation policy-makers based on use-case-specific economic / threat analysis.
@@ -1911,7 +1873,7 @@ The cost-asymmetry inequality rests on **three empirical bets** (originally intr
 
 - **Bet 2** *(RATCHET's formal-mathematical guarantees hold operationally under their stated limitations)*: real federation behavior stays within RATCHET's modeled regime (non-adaptive enough, sufficiently convex feasibility region, n ≥ 100 samples per peer, low correlation per the empirical PR ≈ 6.61, distribution-matched). **Empirically supported as of 2026-05** by 100% deceptive-prior detection on Qwen 3.6 across 29 languages, 5 patches; subject to ongoing adversarial validation.
 
-- **Bet 3** *(policy parameters can be tuned faster than adversaries adapt)*: human-loop policy adjustment (steward, post-G2 council) outpaces adversary adaptation. Plausible for slow-moving attacks; requires monitoring + response infrastructure for fast-moving exploits.
+- **Bet 3** *(policy parameters can be tuned faster than adversaries adapt)*: human-loop policy adjustment (steward and trust-root authority) outpaces adversary adaptation. Plausible for slow-moving attacks; requires monitoring + response infrastructure for fast-moving exploits.
 
 These bets are not proven. They are explicitly the federation's working hypotheses, monitored continuously, and tracked in §11 open questions. A reader who doubts a bet should know exactly where to push back.
 
@@ -1959,7 +1921,7 @@ Each F-AV maps to a subset of dimensions. Detailed mappings are in each F-AV's "
 
 For RATCHET to programmatically consume this threat model, the federation needs a structured schema (YAML/JSON/protobuf) that round-trips with every F-AV in §6.
 
-**Schema (v1.0 sketch)** — designed so all 31 F-AVs in §6 produce valid entries, including ones without quantitative cost or without RATCHET-detector mappings:
+**Schema ** — designed so all 31 F-AVs in §6 produce valid entries, including ones without quantitative cost or without RATCHET-detector mappings:
 
 ```yaml
 version: "1.0"
@@ -1987,7 +1949,7 @@ threats:
       kind: "implemented"               # or "research_grade" or "out_of_band" or "none"
       id: "ratchet.detection.cluster_pca_anomaly"   # only present if kind="implemented"
     status: "partially_mitigated"       # one of: open, spec_only, partially_mitigated, mitigated, out_of_scope
-    implementation_status:              # NEW in v1.0: explicit Spec/Impl/Deployed
+    implementation_status:              # explicit Spec/Impl/Deployed
       spec: true
       impl: true
       deployed: true
@@ -2003,7 +1965,7 @@ threats:
 **Round-trip with all F-AVs**: every F-AV in §6 must produce a valid schema entry. The schema's `cost_row.kind` enumeration accommodates F-AVs that don't have quantitative costs:
 - `kind: "quantitative_range"` — F-AVs with $-bounded attacker cost (F-AV-1, F-AV-8, F-AV-15, F-AV-SRC, etc.).
 - `kind: "qualitative"` — F-AVs where cost is described but not quantified (F-AV-3 "≈$0", F-AV-12 "≈$0 if well-positioned").
-- `kind: "out_of_band"` — F-AVs whose cost is determined by factors outside the federation (F-AV-7 cost-asymmetry collapse depends on market trends; F-AV-9 G2 succession cost is one-time-targeted).
+- `kind: "out_of_band"` — F-AVs whose cost is determined by factors outside the federation (F-AV-7 cost-asymmetry collapse depends on market trends; F-AV-9 succession cost is one-time-targeted).
 - `kind: "out_of_scope"` — F-AVs that are stubs (F-AV-CROSS).
 
 Similarly `ratchet_detector.kind` accommodates F-AVs RATCHET cannot detect:
@@ -2021,7 +1983,7 @@ Similarly `ratchet_detector.kind` accommodates F-AVs RATCHET cannot detect:
 
 **Where the schema lives**: `CIRISAgent/ratchet/threat_contract.yaml` (TBD), with version aligned to this document's version. Build-time validation: a CI step in CIRISAgent verifies the round-trip against this document.
 
-**Status**: schema specified in v1.0; **Impl pending**. Implementing requires (a) schema file + JSON Schema validator, (b) detector-ID enumeration in RATCHET, (c) CI build-time validation that round-trip succeeds, (d) version-pinning between this document and the schema.
+**Status**: schema specified; **Impl pending**. Implementing requires (a) schema file + JSON Schema validator, (b) detector-ID enumeration in RATCHET, (c) CI build-time validation that round-trip succeeds, (d) version-pinning between this document and the schema.
 
 ### 10.3 Worked example: evaluating a proposed measure
 
@@ -2054,29 +2016,29 @@ RATCHET's bounds are non-adaptive. **Open question**: how rapidly can an adaptiv
 
 If bonds are tradeable, cost-of-capital × holding-period replaces face value. **Open question**: what bond-market policy (non-transferable, transfer-with-re-KYC, transfer-with-weight-rebaseline) preserves the cost-asymmetry? Owned by Portal product layer; not yet specified.
 
-### 11.4 G2 steward succession protocol (unfilled)
+### 11.4 Trust-authority succession
 
-Bridge is a single human; no implemented multi-party protocol. **Research direction**: m-of-n threshold signing for steward authority + explicit cutover transaction protocol + external witness publication. F-AV-9 is open by absence.
+The trust root is multi-party: an accord-authorized GenesisBundle (CC 5.3.4), with roster changes by an entrenched-family `supersedes` under the prior roster's strict majority, and decimation recovery per FSD-004. **Open**: the steward's operational substrate (Bridge) is single-operator, and external witness publication of trust-authority transitions is not implemented.
 
 ### 11.5 N1 + N2 Reticulum integration (unfilled)
 
-PoB §3.2 specifies Reticulum; not yet implemented. F-AVs blocked: F-AV-16, F-AV-17, F-AV-ECLIPSE, eclipse-resistance generally. **Research direction**: ship `ciris-reticulum` crate, integrate with persist federation directory, phase out DNS-dependent paths.
+PoB §3.2 specifies Reticulum; not yet implemented. F-AVs blocked: F-AV-16, F-AV-17, F-AV-ECLIPSE, eclipse-resistance generally. **Research direction**: ship `ciris-reticulum` crate, integrate with persist federation directory, phase out name-resolution-dependent paths.
 
-### 11.6 R1 revocation timeliness specification (unfilled)
+### 11.6 R1 revocation timeliness
 
-No formal propagation-timeliness contract. **Open question**: what target propagation bound T is achievable + auditable? Proposed: T ≤ 60s normal operation, ≤ 300s under partial failure. Specification + measurement infrastructure pending.
+Revocation is a quorum-signed `federation_revocations` row. The propagation contract (τ_normal ≤ 60s, τ_partial ≤ 300s) is specified in §3.3 Gap A. **Open**: measurement infrastructure (CIRISPersist#143).
 
-### 11.7 Q1 quorum/CAP model for S2 — SPECIFIED v1.1 (CIRISVerify#49)
+### 11.7 Q1 quorum/CAP model for S2 — SPECIFIED
 
-CAP class: **bounded-staleness with τ-bound** (closed v1.1). Quorum-write ⌈2N/3⌉; bounded-staleness reads serve local iff staleness ≤ τ_partial; merge rule at heal is "higher-quorum-weight wins" with timestamp + hash tie-breaks; anti-rollback monotonicity enforced at admission. Full contract in §3.3 Gap B. Downstream implementation tracked at CIRISPersist#143 + CIRISRegistry#46.
+CAP class: **bounded-staleness with τ-bound** (closed). Quorum-write ⌈2N/3⌉; bounded-staleness reads serve local iff staleness ≤ τ_partial; merge rule at heal is "higher-quorum-weight wins" with timestamp + hash tie-breaks; anti-rollback monotonicity enforced at admission. Full contract in §3.3 Gap B. Downstream implementation tracked at CIRISPersist#143 + CIRISRegistry#46.
 
-### 11.8 Threat-model artifact integrity (unfilled)
+### 11.8 Threat-model artifact integrity
 
-This document is markdown without signing or 2-person-rule. **Open question**: how do we lift it to S2-row integrity standards? v2 specifies the requirement; implementation pending. F-AV-MAINT is live exposure.
+Edits are gated by CODEOWNERS and the CI changelog guard, and `doc_integrity` provides the signing primitive (§3.3 Gap G). **Open**: operational signing of each released version and publication to the transparency log. F-AV-MAINT is partially mitigated.
 
 ### 11.9 Cross-federation peering (out of scope; stubbed)
 
-When federations interact, F-AVs compose nontrivially. **Open question**: bond-portability, identity-portability, consensus across federations. Out of scope; deferred to v3 federation peering FSD. F-AV-CROSS is the named stub.
+When federations interact, F-AVs compose nontrivially. **Open question**: bond-portability, identity-portability, consensus across federations. Out of scope; deferred to a federation peering FSD. F-AV-CROSS is the named stub.
 
 ### 11.10 RATCHET adversarial training (research-grade)
 
@@ -2086,7 +2048,7 @@ F-AV-4 / F-AV-5 / F-AV-7 depend on RATCHET measurement evolving with attacker te
 
 ## 12. Update cadence + meta-integrity
 
-**Owner**: CIRISVerify maintainers (federation-substrate stewards), in coordination with CIRISPersist, CIRISAgent (RATCHET module), CIRISRegistry, CIRISPortal maintainers. Currently a single human (project lead). G2 succession protocol (§11.4) will distribute this responsibility.
+**Owner**: CIRISVerify maintainers (federation-substrate stewards), in coordination with CIRISPersist, CIRISAgent (RATCHET module), CIRISRegistry, CIRISPortal maintainers. Currently a single human (project lead).
 
 **Update triggers**:
 - New F-AV identified (open issue → review → integrate).
@@ -2096,19 +2058,19 @@ F-AV-4 / F-AV-5 / F-AV-7 depend on RATCHET measurement evolving with attacker te
 - Significant federation-protocol release (review entire document).
 - **Annual external adversarial review** (per §1.3) — required for major version cuts.
 
-**Review cadence**: quarterly for minor updates; annual for major version cuts (v3, v4, ...) preceded by adversarial review.
+**Review cadence**: quarterly for minor updates; annual for major version cuts, preceded by adversarial review.
 
 **Cross-repo synchronization**: changes affecting per-repo threat models trigger cross-repo issues per established CIRIS coordination pattern.
 
 **Threat-model integrity** (per F-AV-MAINT / §11.8 specification):
 
-1. Each published version of this document is signed by the steward (or G2 council post-cutover) using the C1 key with content `{doc_hash: <sha256>, version: <n>, signed_at: <T>}`.
+1. Each published version of this document is signed with a `doc_integrity::DocSignature` (hybrid Ed25519 + ML-DSA-65 over a domain-separated hash of path label, version label and content).
 2. The signature is published as an S2 policy row + a transparency-log entry (per §8.1 external-anchoring pattern).
 3. Federation release tarballs include the document hash; peers can verify the doc they're consulting matches the released version.
 4. Edits require PR review by ≥1 threat-model peer reviewer before merge.
-5. Annual external adversarial review (v1 review produced v2; v2 review will produce v3).
+5. Annual external adversarial review.
 
-**Status**: signing requirement specified in v2; implementation pending.
+**Status**: items 4 (CODEOWNERS) and the CI changelog guard are in place; the signing primitive exists; items 1–3 (operational signing, publication, release-tarball hash) are pending.
 
 ---
 
@@ -2148,134 +2110,14 @@ F-AV-4 / F-AV-5 / F-AV-7 depend on RATCHET measurement evolving with attacker te
 
 ---
 
-## Appendix A: v1 → v2 → v1.0 (published) changelog
-
-This appendix documents the lineage of internal drafts that produced the published v1.0:
-
-- **Internal v1** (May 2026): first complete draft.
-- **Internal v2** (May 2026): full rewrite responding to 4 specialist adversarial reviewers (cryptography, distributed systems, mechanism design, threat-modeling methodology) — 25 findings, 4 severity tiers.
-- **Published v1.0** (May 2026): rewrite responding to a second adversarial review pass on internal v2 from the same 4 reviewer roles. Folds in their Tier 1 and most Tier 2 findings on v2; remaining items tracked in §11 open questions.
-
-Total adversarial-review pressure applied before publication: ~50 findings across 8 reviewer-passes (4 reviewers × 2 versions). The federation deliberately chose to subject the threat model to multiple internal review rounds before any public exposure.
-
-### A.1 Primitive set changes
-
-| Change | Rationale |
-|--------|-----------|
-| **Added C0 RNG** | RNG quality is foundational across C1/C2/C4. Treating it as part of C1 hides fan-out. (Cryptographer reviewer: "Per-FIPS-140-3 reasoning, RNG is its own validatable component.") |
-| **Added C4 hybrid KEX + KDF** | v1 had no key exchange primitive. Federation peer-to-peer comms over HTTPS provide forward secrecy against current adversaries but are harvest-now-decrypt-later vulnerable. P7 forward secrecy added. |
-| **Added R1 revocation propagation** | Storage and propagation are distinct security properties. v1 hid this fan-out by treating revocation as "a row in S2." Reviewer: "F-AV-11/12/13/16 all collapse without R1 timeliness." |
-| **Added Q1 quorum/CAP** | v1 had targets ("≤60s lag, 2-of-N") without a model. CAP-class specification needed for fail-secure under partial failure. Distsys reviewer: "Consistency model is a property, not a protocol." |
-| Total: 8 primitives → 12 primitives | |
-
-### A.2 Anti-Sybil reframing
-
-| v1 claim | v2 claim |
-|----------|----------|
-| Anti-Sybil is an emergent invariant of primitive composition | Anti-Sybil is a policy-tunable posture; the federation continuously adjusts parameters |
-| Cost-asymmetry inequality stated as totals | Marginal formulation: dC/dw > dB/dw |
-| Hardware floor: $50–500 per identity | Cloud vTPM erodes this; hardware floor is no longer reliable; defense-in-depth across multiple cost dimensions |
-| RATCHET-vs-LLM as 1:1 measurement race (initial v2 framing) | **Corrected**: RATCHET is pure math (statistical detection + Monte Carlo + SAT-based complexity + PBFT). Asymmetry is complexity-theoretic (truth=O(1), coherent lying NP-hard under ETH), not measurement-arms-race. Empirically supported by *Constrained Reasoning Chains* (n=6,465) and 100% Qwen 3.6 detection across 29 languages |
-
-### A.3 New F-AVs
-
-| F-AV | Class | Reason added |
-|------|-------|--------------|
-| F-AV-TIMESHIFT | 3 | Reviewer: "σ-decay is replay-vulnerable via paraphrase. C1 only proves the key signed it, not that the key reasoned it." |
-| F-AV-BRIBE | 3 / 5 | Reviewer: "Bribed legitimate participants pass RATCHET because they ARE legitimate." |
-| F-AV-ECLIPSE | 4 | Reviewer: "F-AV-17 censors evidence of a target identity; eclipse curates a consuming peer's S2 read view — distinct attack." |
-| F-AV-DORMANT | 3 | Reviewer: "Long-range/dormant Sybils age cheaply; v1 implicitly assumed time-as-cost which fails for dormant accounts." |
-| F-AV-BOOT | 2 / 5 | Reviewer: "Recursive scrub-signing terminates at bootstrap; what audits the bootstrap? v1 had a singularity." |
-| F-AV-MAINT | 5 | Reviewer: "v1 doesn't model the threat model itself as an attack surface." |
-| F-AV-CROSS | 5 (stub) | Stubbed so cross-federation attackers aren't invisible. |
-
-### A.4 Reframings and tightenings
-
-| Topic | Change |
-|-------|--------|
-| §7.1 Substrate properties | Expanded from 6 to 10 assumptions (added A0, A4, A8, A9). A1 reworded from binary "not extractable" to budget-relative "cost ≥ $X". |
-| §7.2 Per-assumption failure rates | New: probabilistic ROM estimates per assumption (v1 treated as binary). |
-| §7.3 RATCHET output degradation | New: degradation curve as substrate assumptions weaken. |
-| §8.1 Bootstrap anchoring | New: external transparency-log anchoring specification (Sigstore/Rekor or CT + witness signatures). |
-| §8.2 Per-primitive isolation reconciled with F-AV-11 | Explicit: substrate-level isolation does not prevent behavior-level evidence propagation; the two are complementary, not contradictory. |
-| §8.3 Fail-secure as protocol | v1 was "property"; v2 is signed decisions + S3-logged + grace-window τ_grace=60s + τ_max=300s + clock-source specification + sliding-window cumulative-degraded-time defense against grace-window-loop attack. |
-| §8.4 Cost-asymmetry inequality | Rewritten with explicit functional form, units, and policy parameters. v1 was a slogan; v2 is an analyzable inequality. |
-| F-AV-14 bound-signature | Precise specification: PQC signs `H(domain_sep ‖ alg_id ‖ pk_classical ‖ m ‖ σ_classical)`. Single-algorithm verification of deprecated scheme **forbidden** during migration window. |
-| §5 cross-references | Verified against actual section numbers in per-repo threat models (v1 had broken citations: C2 → §3.2 was wrong, S3 → §3.6 was wrong). |
-| §10 RATCHET interface | Acknowledged: matrix is documentation, not wire format. Added schema sketch for actual contract. |
-| §12 Meta-integrity | New: signing requirement on this document, 2-person-rule on edits, annual external adversarial review. |
-
-### A.5 Findings deferred to §11 / future versions
-
-- **Specific Q1 CAP-class choice** (linearizable vs RYW vs bounded-staleness) — proposed bounded-staleness; awaiting validation by distsys review.
-- **Specific R1 propagation bound** (T ≤ 60s? ≤ 30s?) — specification + measurement infrastructure pending.
-- **Activity-density measurement formulas for F-AV-DORMANT** — research-grade.
-- **Bond-market policy specification** (transferability, KYC tiers, secondary-market rules) — owned by Portal product layer.
-- **G2 succession protocol** — entire protocol specification pending.
-- **Cross-federation peering** (F-AV-CROSS) — entire FSD pending; deferred to v3.
-- **Threat-model wire-format schema** (per §10.2) — implementation pending.
-- **Transport-identity ↔ federation-key binding** (AV-42) — a mesh-transport peer can announce another peer's `key_id` at its own destination and intercept. Mitigated by the `FederationEnvelope` carrying the binding as a signature-covered field (Option C′). Full treatment lives in `THREAT_MODEL.md` §3.9; the cross-repo rollout is the CIRISVerify#28 waterfall. The federation-wide *authentication ≠ trust* invariant established there (`MISSION.md` §1.4) applies to every primitive in this document: verifying a primitive authenticates origin only — trust remains a separate, operator-controlled, default-deny axis.
-
-### A.6 What was NOT changed (and why)
-
-- The class taxonomy (5 classes) was kept despite reviewer pointing out it's not strictly disjoint. Bookkeeping rule added (§4.6) with primary-class tagging and explicit cross-class implications. Renaming F-AV-11/12/14 to Class 1 was considered and rejected (would break stable identifiers; cross-references throughout the doc).
-- F-AV stable identifiers were preserved (F-AV-1..F-AV-17 plus mnemonic-suffix new ones). Future versions may renumber for sequential cleanliness.
-- The methodology of cold-derive → project → enumerate was kept; v1 reviewer accepted this with the convergence acknowledgement now in §2.4.
-
----
-
-### A.7 v2 → v1.0 (published) changes
-
-v2 was reviewed by the same 4 reviewer roles in a second adversarial pass. The pass's net judgment: "v2 is materially more honest than v1, but documents the security posture rather than fixing it." v1.0 closes the most prominent gaps the second pass surfaced. Specifically:
-
-**A.7.1 New F-AVs added (7)** — all flagged as missing from v2's catalog:
-
-| F-AV | Class | Reason added |
-|------|-------|--------------|
-| F-AV-ONBOARD | 3 | Reviewer: "Pre-reputation window where new identities are most exploitable; RATCHET cannot evaluate before n_min ≥ 100 traces (L-05)." |
-| F-AV-REPUDIATE | 2 | Reviewer: "Peer denies signing they did sign; distinct from forgery; non-repudiation depends on time-of-signing + key-ownership-at-signing-time provenance." |
-| F-AV-FRONTRUN | 2 | Reviewer: "Read-side covered by F-AV-12; write-side ordering attacks absent." |
-| F-AV-ROLLBACK | 2 | Reviewer: "Coordinated minority on Q1 partition attempts to roll back accepted state; touched by F-AV-12 but not as coordinated attack." |
-| F-AV-RATCHET-DOS | 4 | Reviewer: "F-AV-16 DoSes substrate; RATCHET-as-evaluator treated as infinitely-available compute. ~8400 LOC Python is real infrastructure." |
-| F-AV-PRIVACY | 4/5 | Reviewer: "Federation directory readability is assumed adversary-public without modeling target-selection asymmetry that enables F-AV-BRIBE / F-AV-ECLIPSE." |
-| F-AV-SRC | 5 | Reviewer: "C3 attests 'this IS the official build' but no F-AV for 'the official build is hostile at source.' AGPL-3.0 source review is the only listed defense." |
-
-**A.7.2 Major specifications tightened**:
-
-| Topic | Change |
-|-------|--------|
-| §3.1 Per-primitive coverage | Replaced ✓/⚠/✗ with explicit Spec/Impl/Deployed tags. Implementation Status legend added at top of document. |
-| §7.2 Failure-rate ROM | **Numerology removed**. Replaced 10⁻⁵ to 10⁻¹ numerical ranges with ordinal tier categorization (TIER-LOW, MED, HIGH, CRITICAL) + named referents (specific CVE classes, real failure modes). Owner and update-trigger named. Joint-failure model added. |
-| §8.1 Bootstrap external anchoring | Witness diversity requirements specified: cloud-vendor diversity, jurisdictional diversity, organizational diversity, software-stack diversity. Disagreement resolution rule (≥ ⌈2N/3⌉ Byzantine threshold). Install-time chicken/egg solved via baked-in pin + periodic online verification. Sigstore/CT root-rotation handling specified. |
-| §8.3 Fail-secure protocol | **S3-when-S3-degraded** addressed via in-memory ring buffer with cryptographically-signed entries flushed on recovery. **Monotonic-clock-to-TPM-attested-time binding** added so monotonic intervals are externally verifiable. **Sliding window** specified with explicit values (W=600s, D_max=180s) and eviction policy. **Post-hoc verifiability** explicitly distinguished from post-hoc justifiability. |
-| §8.4 Empirical evidence framing | 100% Qwen 3.6 result reframed as one experiment in a portfolio. Caveats explicit: (a) one model family, (b) detection of known restrictive priors only, (c) non-adaptive attackers only, (d) within Accord constraint set. What the evidence DOES vs DOES NOT establish enumerated. |
-| §9.3 Marginal cost-asymmetry | **B(w) = "depends on use case" replaced with explicit benefit-extraction taxonomy**. 6 use cases enumerated (u_launder, u_influence, u_extract, u_info, u_censor, u_collapse) with B_u functions and structural defenses per case. The inequality is now falsifiable: a reviewer who finds a use case not on the list can challenge directly. |
-| F-AV-14 verifier obligations | Verifier obligations specified for hybrid / new-only / old-only modes (v2 only forbade old-only). Canonical-encoding rule for σ_classical (raw fixed-length, not DER). Cross-protocol attack acknowledgment (CIRIS protects against others, key-reuse forbidden by policy). Three-phase migration protocol. |
-| F-AV-DORMANT | Activity-density formula specified with sliding-window definition. Density-tier policy (Active/Light/Sparse/Dormant) with weight-multiplier mapping. v2 reviewer's $4,400/5yr cost estimate corrected to realistic $200–1,000 range under spot-instance + sleep modes. |
-| §10.2 Schema | Round-trip validation requirements specified. Schema accommodates all F-AV cost classes (quantitative_range / qualitative / out_of_band / out_of_scope) and all RATCHET-detector states (implemented / research_grade / out_of_band / none). All 31 F-AVs in §6 produce valid schema entries. |
-
-**A.7.3 v2 review findings still open in v1.0**:
-
-These were flagged by v2 reviewers but not closed in v1.0; tracked in §11:
-
-- **R1 timeliness contract** (specific T value): proposed; not specified.
-- **Q1 CAP-class choice** (linearizable vs RYW vs bounded-staleness): proposed bounded-staleness; not validated.
-- **Witness-set disagreement protocol details**: high-level rule specified; specific operational protocol pending.
-- **Per-trace freshness challenge protocol** (mitigation for F-AV-TIMESHIFT and F-AV-DORMANT): not specified.
-- **Recursive scrub-signing scale at 1M+ rows**: chain-length scaling not addressed.
-- **G2 succession protocol**: entire protocol specification pending.
-- **Cross-federation peering FSD**: deferred.
-
-These items are real. v1.0 is published with them open; the federation's continuous-research effort closes them in v1.x and v2.0.
-
-**A.7.4 What v1.0 explicitly does NOT claim**:
+## Appendix A: What this document does not claim
 
 - **Anti-Sybil resistance is proven**. It is a continuously-tuned policy posture under three named empirical bets (§1.2).
 - **The 100% Qwen 3.6 result generalizes**. It is one data point on one model family.
-- **All current attack surfaces are enumerated**. The F-AV catalog is the federation's best current map; novel attacks may surface in operational evidence and trigger v1.x updates.
+- **All current attack surfaces are enumerated**. The F-AV catalog is the federation's best current map; novel attacks may surface in operational evidence and trigger updates.
 - **All "Spec" items will be implemented on a fixed schedule**. Implementation is funding-bounded and priority-sorted; this document does not commit to delivery dates.
 - **The federation is currently secure against state-actor adversaries**. State-actor adversaries are explicitly out of scope for "opportunistic-attacker" cost analyses; high-resource adversary modeling is research-grade.
 
 ---
 
-*This document is iterative. v1.0 was produced from internal v1 + internal v2 + two rounds of 4-reviewer adversarial review. Future versions (v1.1, v1.2, v2.0) will be produced from operational evidence + ongoing adversarial review + implementation completion of currently-Spec items. Future readers can challenge any claim by tracing it to its first-causes derivation in §1–§2, pushing back on the empirical bets in §1.2 / §9.4, or filing a finding against the F-AV catalog in §6.*
+*This document is iterative. Any claim can be challenged by tracing it to its first-causes derivation in §1–§2, pushing back on the empirical bets in §1.2 / §9.4, or filing a finding against the F-AV catalog in §6.*

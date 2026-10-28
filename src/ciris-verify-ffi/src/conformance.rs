@@ -536,10 +536,10 @@ mod tests {
 mod bounding {
     use super::*;
 
-    /// **#268 P2.** `String::truncate` panics unless the index is a char
-    /// boundary. A localized hardware error can put a multibyte character
-    /// across the limit, so the old code could crash the caller from inside a
-    /// logging path — worse than the noise it replaced.
+    /// `String::truncate` panics unless the index is a char boundary. A
+    /// localized hardware error can put a multibyte character across the
+    /// limit, so a naive truncate could crash the caller from inside a logging
+    /// path.
     #[test]
     fn bounding_never_splits_a_character() {
         // 'é' spans bytes 199..201, so a naive truncate(200) panics here.

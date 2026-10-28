@@ -1,4 +1,4 @@
-//! Hardware-rooted symmetric key derivation (CIRISVerify#25, v2.5.0+).
+//! Hardware-rooted symmetric key derivation (CIRISVerify#25).
 //!
 //! Named-key HKDF-SHA256 derivation: load a seed from a hardware-backed
 //! [`SecureBlobStorage`] (TPM / Android Keystore / iOS Secure Enclave, or
@@ -6,19 +6,14 @@
 //!
 //! ## Why this lives in `ciris-verify-core`
 //!
-//! v2.4.0 shipped this capability only as a method on `ciris-verify-ffi`'s
-//! `CirisVerifyHandle`. But `ciris-verify-ffi` builds `cdylib` + `staticlib`
-//! only — no `rlib` — so no Rust crate can `use` it; the capability was
-//! reachable solely through the C ABI.
-//!
 //! CIRISPersist's `secrets-hw` (CIRISPersist#87) needs hardware-rooted
 //! symmetric derivation for the secrets-store master key, and persist
 //! links `ciris-verify-core` directly. The CIRIS design principle is
 //! "persist calls verify for every crypto op, never rolls its own" — so
 //! the derivation belongs in the rlib where Rust consumers reach it.
 //!
-//! `ciris-verify-ffi`'s `CirisVerifyHandle::derive_symmetric_key` now
-//! delegates here; the C ABI is unchanged.
+//! `ciris-verify-ffi`'s `CirisVerifyHandle::derive_symmetric_key`
+//! delegates here.
 
 use ciris_keyring::storage::SecureBlobStorage;
 use hkdf::Hkdf;

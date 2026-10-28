@@ -1,6 +1,6 @@
 //! Accord-holder **custody attestation** — the hardware-unforgeable evidence the
 //! CIRISServer admission gate verifies before admitting an accord holder
-//! (CIRISVerify#91; the CIRISServer#41 safe-mesh floor).
+//! (the CIRISServer safe-mesh floor).
 //!
 //! The accord kill-switch is only as trustworthy as the custody of its keys, so
 //! a holder is admitted **only** with proof its signing key lives on a genuine
@@ -30,7 +30,7 @@
 //!    touch=always** (slot-9c `.8`) → `hardware_class: YubiKey_5_FIPS`. Firmware
 //!    (`.3`) is recorded, not floored.
 //!
-//! ## ✓ Confirmed against a real key (#91, 2026-06-20)
+//! ## Confirmed against a real key
 //!
 //! Validated end-to-end against a physical **YubiKey 5 FIPS fw 5.7.4** (Ed25519
 //! slot-9c key, touch=always) via `examples/validate_yubikey_attestation`:

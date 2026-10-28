@@ -1,4 +1,4 @@
-//! X25519 (Curve25519) ECDH primitive (CIRISVerify#44, v4.4.0+).
+//! X25519 (Curve25519) ECDH primitive (CIRISVerify#44).
 //!
 //! Bytes-only public surface — consumers handle `[u8; 32]` keys
 //! without depending on the `x25519-dalek` types. That keeps the

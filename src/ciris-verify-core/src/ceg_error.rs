@@ -1,4 +1,4 @@
-//! CEG 0.2 §10.0.1 typed error envelope (v4.0.0-rc2+).
+//! CEG 0.2 §10.0.1 typed error envelope.
 //!
 //! Per CIRISRegistry CEG 0.2 §10.0.1, all CEG-conformant error
 //! responses use a single canonical envelope shape:

@@ -1,11 +1,11 @@
 # FSD-003: Federation Identity Codes (`fedcode`) & Identity Onboarding
 
-**Status**: Draft
+**Status**: Normative (reference implementation in `ciris_verify_core::fedcode`)
 **Author**: Eric Moore, CIRIS L3C
 **Created**: 2026-06-18
 **Owns**: `ciris_verify_core::fedcode`, `ciris_verify_core::federation_identity`
 **Consumed by**: CIRISServer, CIRISAgent (KMP client), CIRISRegistry, CIRISPersist
-**Grounds in**: CIRIS Constitution 0.1.5 (cited as **CC §x**)
+**Grounds in**: CIRIS Constitution (cited as **CC x**)
 
 ---
 
@@ -18,7 +18,7 @@ with the entity's kind** so any consumer applies the correct rules from the code
 alone. It generalizes the v1 `NodeCode` from "a node's peering business card"
 into the federation's universal identity/onboarding primitive.
 
-This FSD locks down three things that were previously implicit or ad-hoc:
+This FSD specifies three things:
 
 1. **The `key_id` format** — collision-free, verifiable, human-readable.
 2. **The `fedcode` wire format** — kind-tagged, byte-exact, cross-impl.
@@ -100,12 +100,8 @@ hint(group_key_id)   # 0x00 absent, else LP   (family/community only)
 
 ## 3A. `fedcode` wire format (v3 — embedded owned nodes)
 
-**Status:** normative, CIRISVerify#269. A strict **superset of v2**: everything
-above, unchanged, plus a trailing node list under a bumped `CIRIS-V3-` prefix.
-
-**Note the version number.** The proposal was titled "fedcode v2"; the wire
-format has been at v2 since the kind-tagged code shipped, so the node-carrying
-format is **v3**. Minting it as v2 would have collided with a live encoding.
+**Status:** normative. A strict **superset of v2**: everything above, unchanged,
+plus a trailing node list and PQC commitment under a bumped `CIRIS-V3-` prefix.
 
 ### 3A.1 Why it exists
 
@@ -135,16 +131,15 @@ code — see 3A.5 for why that shape has to exist.
    federation key, never the node's federation key.** Deriving a destination
    from a federation key yields `sha256(fed)[..16]`, an explicit-hash
    destination that categorically **cannot be announced**, so no peer can
-   self-learn a route to it. CIRISServer#335 is the production record of that
-   mistake: nodes primed the canonical at `1fc232535a…` while it served on
-   `81cabcf78a…`, every node reported `knows_peer=true`, and zero traces
-   arrived — after which the false rooting *prevented* recovery.
+   self-learn a route to it. A node primed with such an address reports the
+   peer as known while no traffic arrives, and the false rooting then prevents
+   it from ever learning the real address.
    **Enforced at BOTH encoder and decoder**, because a code minted by another
    implementation is exactly the case an encoder cannot police. A code whose
    embedded transport key equals the owner's pubkey MUST be rejected.
 2. **Only `kind = user` may embed nodes.** "The owner's nodes" is meaningless
    for a node, and a group's destinations are group-scoped material a code MUST
-   NOT carry at all (CC 5.4.6, ruled in CIRISConstitution#91). Enforced at
+   NOT carry at all (CC 5.4.6). Enforced at
    encoder and decoder.
 3. **`node_count` ≤ 16**, and the **total payload ≤ 1024 bytes** before base32.
    The count alone does not bound the code — 16 × 255-byte ids exceeds what a
@@ -155,14 +150,13 @@ code — see 3A.5 for why that shape has to exist.
 5. **Scope:** v3 carries lightnet facts only — federation-scope identity that
    already announces publicly and carries no anonymity claim.
 
-### 3A.5 PQC commitment (CIRISVerify#272)
+### 3A.5 PQC commitment
 
-**Status:** normative. A code names an Ed25519 key and nothing else, but
-CIRISPersist accepts `federation_keys` writes only at `algorithm: "hybrid"`
-(Ed25519 + ML-DSA-65). A code-admitted key therefore had **no PQC half to
-register**, the write could never be conformant, and
-`ContactResolution::ReadyFromCode` was unreachable — leaving first contact with
-no working path at all.
+**Status:** normative. A code names an Ed25519 key, but CIRISPersist accepts
+`federation_keys` writes only at `algorithm: "hybrid"` (Ed25519 + ML-DSA-65).
+Without a commitment a code-admitted key has **no PQC half to register**, the
+write cannot be conformant, and `ContactResolution::ReadyFromCode` is
+unreachable.
 
 The ML-DSA-65 public key is **1952 bytes**, which would take a code past 3 KB
 and end its life as something a person can type or read aloud. So the code
@@ -181,8 +175,8 @@ ml_dsa_65_pubkey_sha256 = sha256(raw ML-DSA-65 public key)
    admission gap affects every code, and a plain `user` code with no nodes is
    the shape most likely to be handed over at first contact. Such a code emits
    v3 with `node_count = 0`.
-3. **Presence-tagged and LAST**, so a v3 code minted before #272 — which ends
-   after the node list — still decodes, with the commitment absent.
+3. **Presence-tagged and LAST**, so a v3 code that ends after the node list
+   still decodes, with the commitment absent.
 4. **Rejected, never repaired:** the API form is exactly 64 **lowercase** hex
    characters. Normalizing case would let two spellings of one identity produce
    two different codes.
@@ -200,8 +194,7 @@ Verify exposes two surfaces, and the second is the one a host should use:
   a value exists **only** if the pull matched. A host that takes an
   `AdmittedHybridKey` as its registration input cannot express the unchecked
   path; with the free function alone, nothing structurally stops a host from
-  registering a pulled body it never checked, and that failure is silent
-  (CIRISVerify#274).
+  registering a pulled body it never checked, and that failure is silent.
 
 A code with **no** commitment fails closed in both: there is nothing to bind
 the pulled key to, so a v1/v2 code is not a hybrid registration path at all.
@@ -275,8 +268,7 @@ correctness does not depend on it. **10 base32 chars = 50 bits**; a deployment
 expecting >2³² identities under one label SHOULD raise
 `KEY_ID_FINGERPRINT_LEN`.
 
-This supersedes the interim `sha256(pubkey)`-hex default (an unfriendly
-full-hash) — `identity create` now takes `--label` and derives the `key_id`.
+`identity create` takes `--label` and derives the `key_id`.
 
 ---
 
@@ -330,18 +322,18 @@ signature by `U`.
 `FedKind`, `FedCode`, `encode`, `encode_qr`, `decode`, `derive_key_id`,
 `KEY_ID_FINGERPRINT_LEN`.
 
-**Shipping now:** the Rust API above; and `ciris_verify_create_federation_identity`
-(C FFI + Python) already returns the entity's `code` alongside the `key_id` +
+The Rust API above, and `ciris_verify_create_federation_identity`
+(C FFI + Python), which returns the entity's `code` alongside the `key_id` +
 CEG object, so the create flow is consumable end-to-end. `identity create
 --label <handle>` derives the `key_id`, seals the hybrid key (YubiKey Ed25519 +
 TPM/SE-sealed ML-DSA-65), emits the self-signed genesis `KeyRecord` to the CEG
 outbox, and prints the owner's **usercode** (to copy into a node config).
 
-**Fast-follow (consume surface):** standalone codec FFI — `ciris_verify_fedcode_encode`
+**Not yet exposed:** a standalone codec FFI — `ciris_verify_fedcode_encode`
 / `_decode` / `_derive_key_id` (JSON in/out) + the `ciris_verify` Python bindings —
 so a consumer that only needs to *decode* a scanned code (the KMP client's device
-list; a server reading a config usercode) reaches the same codec without the full
-create flow. Tracked on the cross-repo issues (§7).
+list; a server reading a config usercode) can reach the same codec without the full
+create flow.
 
 ---
 
@@ -349,15 +341,15 @@ create flow. Tracked on the cross-repo issues (§7).
 
 The codec is wire-shared. To keep "one codec":
 
-- **CIRISVerify** (this FSD): reference impl + FFI. **Done.**
-- **CIRISServer**: implement v2 in `nodecode.rs` (or consume verify's via FFI);
-  add usercode-in-config → self-register-pending-occurrence; the one-tap
-  `delegates_to` verify path. *(Issue.)*
-- **CIRISAgent**: implement v2 in `node_code_codec.py` (or consume verify's wheel);
-  the `agentcode` / `usercode` kinds; the pending-occurrence device list +
-  one-tap approval UI. *(Issue.)*
+- **CIRISVerify** (this FSD): reference impl + FFI.
+- **CIRISServer**: v2 in `nodecode.rs` (or verify's via FFI);
+  usercode-in-config → self-register-pending-occurrence; the one-tap
+  `delegates_to` verify path.
+- **CIRISAgent**: v2 in `node_code_codec.py` (or verify's wheel); the
+  `agentcode` / `usercode` kinds; the pending-occurrence device list +
+  one-tap approval UI.
 - **CIRISRegistry**: accept `label-fingerprint` `key_id`s; enforce global
-  uniqueness as a backstop. *(Tracked.)*
+  uniqueness as a backstop.
 
 **Conformance:** the §3.1 byte layout + the §4 `key_id` derivation are the
 contract; a second implementation is judged byte-for-byte against

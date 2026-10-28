@@ -1,19 +1,16 @@
 //! CC 5.3.4 — the **GenesisBundle**: the portable trust root a registry or
 //! canonical node serves at `/v1/trust-root/bundle` (alias `/v1/steward-key`),
-//! hybrid-authorized by the accord holders (CIRISVerify#176, #69,
-//! CIRISPersist#1141).
+//! hybrid-authorized by the accord holders.
 //!
 //! # One preimage, owned here
 //!
 //! The holders sign [`authorization_digest`]: SHA-256 over the JCS
-//! canonicalization of a **projection** of the bundle. Until this module that
-//! projection lived in CIRISPersist (`federation/genesis/bundle.rs`), mirrored
-//! by CIRISServer. Persist depends on verify, so a verify-side reader had either
-//! to copy it — a third signing preimage, the drift class behind v10.4.0 and
-//! v13.2.0 — or to own it. It is owned here, and persist and server delegate
-//! (CIRISPersist#1141), gated by a byte-identity test against the vectors in
-//! `tests/vectors/genesis_bundle/`, which were produced by **persist's own
-//! function** at `ee30310f`, not by this code.
+//! canonicalization of a **projection** of the bundle. This module is the one
+//! implementation of that projection; CIRISPersist and CIRISServer delegate to
+//! it (CIRISPersist#1141), so there is no second signing preimage to drift. It
+//! is gated by a byte-identity test against the vectors in
+//! `tests/vectors/genesis_bundle/`, which were produced independently of this
+//! code, by persist's implementation.
 //!
 //! The projection, exactly:
 //!
@@ -421,8 +418,8 @@ fn project_record(record: &KeyRecord) -> Result<Value, GenesisBundleError> {
 
 /// The 32 bytes every holder authorization signs. See the module docs for
 /// the projection; it is byte-identical to CIRISPersist's
-/// `authorization_digest` at `ee30310f`, asserted by vectors that persist's
-/// function produced.
+/// `authorization_digest`, asserted by vectors that persist's function
+/// produced.
 pub fn authorization_digest(bundle: &GenesisBundle) -> Result<[u8; 32], GenesisBundleError> {
     let mut attestations = bundle
         .rows
@@ -659,8 +656,8 @@ mod tests {
     const V2: &str = include_str!("../tests/vectors/genesis_bundle/v2_registry_live.json");
     const V4: &str = include_str!("../tests/vectors/genesis_bundle/v4_persist_v59_1_0.json");
 
-    /// Produced by CIRISPersist's own `authorization_digest` at `ee30310f`
-    /// (scratch example over these exact files), not by this module.
+    /// Produced by CIRISPersist's own `authorization_digest` over these exact
+    /// files, not by this module.
     const V2_DIGEST: &str = "787d0632ae8a645d2c52c6f65909724d8cb370399b14b4c7077786229dabe952";
     const V4_DIGEST: &str = "8e5f5a7c5af3ecad7f4e370b6b53b624683bd69729e39bcf4ee41b39077a198a";
 
@@ -677,7 +674,7 @@ mod tests {
     }
 
     /// Every vector's digest as CIRISPersist's own `authorization_digest`
-    /// computed it at `ee30310f`. The `v4_variant_*` files edit holder 0's
+    /// computes it. The `v4_variant_*` files edit holder 0's
     /// record where a raw-JSON projection and persist's typed one would
     /// differ: an `Option` written as `null`, `roles` absent, an instant with
     /// a `+00:00` offset, and an unknown member.

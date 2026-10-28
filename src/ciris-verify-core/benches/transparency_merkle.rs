@@ -1,4 +1,4 @@
-//! Transparency-log Merkle benchmarks (CIRISVerify#23 follow-up, v2.7.0).
+//! Transparency-log Merkle benchmarks (CIRISVerify#23 follow-up).
 //!
 //! Measures the v2.6.0 level-cache claim — the perf review asserted
 //! O(N)→O(log N) for inclusion/consistency proofs and O(N)→O(1) for

@@ -1,12 +1,12 @@
 //! **Presentation-surface identifier scope** — keeping the unlinkable slot
-//! reachable (CIRISConstitution#80 interim MUST).
+//! reachable (CC 1.13.3.4; CIRISConstitution#80).
 //!
 //! ## The rule this enforces
 //!
-//! CC ruled unlinkability **required as a property commitment, staged as an
-//! adoption path**: OR-of-N portability now, the unlinkable presentation slot
+//! CC makes unlinkability **a required property commitment, staged as an
+//! adoption path**: OR-of-N portability, the unlinkable presentation slot
 //! reserved, ZK-wrapped *unmodified* ML-DSA as the designated candidate. One
-//! interim MUST is carried now so the slot stays reachable:
+//! MUST applies so the slot stays reachable:
 //!
 //! > no presentation surface may bake a mandatory stable identifier across
 //! > verifiers into the wire — **the upgrade must remain a format addition,
@@ -152,7 +152,7 @@ pub fn must_be_omittable() -> Vec<&'static str> {
         .collect()
 }
 
-/// The CC#80 interim MUST, as a checkable predicate: **is the identity
+/// The CC#80 reachability MUST, as a checkable predicate: **is the identity
 /// separable from the presentation format?**
 ///
 /// True iff producing a new presentation format requires no change to identity
@@ -241,7 +241,7 @@ mod tests {
         }
     }
 
-    /// **The CC#80 interim MUST, exercised rather than asserted.**
+    /// **The CC#80 reachability MUST, exercised rather than asserted.**
     ///
     /// The identity must be reusable across presentation formats, so adding an
     /// unlinkable format later is a format addition and not a re-issuance

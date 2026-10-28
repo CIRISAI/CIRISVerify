@@ -1,20 +1,13 @@
-//! Plugin-backed TPM secure blob storage (CIRISVerify#130, stage 4).
+//! Plugin-backed TPM secure blob storage — the keyring's TPM storage tier.
 //!
-//! The runtime-`dlopen` TPM secure-blob storage (v8.0.0; the former link-time
-//! `TpmSecureBlobStorage` was deleted with `tss-esapi`, #141).
-//! Identical at-rest design — a random 32-byte **master** sealed *once*, then
-//! per-blob AES-256-GCM under `HKDF("CIRIS-TPM-blob-v2", master)` keyed by
-//! `key_id` — with one difference: the master is sealed/unsealed through the
-//! `ciris-tpm-plugin` dylib ([`crate::tpm_plugin`]) instead of link-bound
-//! `tss-esapi`. That removes `tss-esapi` from the keyring link graph, so this
-//! TPM-backed custody path works **on the wheel cdylib and musl targets** where
-//! the link-time backend can't build (CIRISVerify#125/#127).
+//! At-rest design: a random 32-byte **master** sealed *once*, then per-blob
+//! AES-256-GCM under `HKDF("CIRIS-TPM-blob-v2", master)` keyed by `key_id`. The
+//! master is sealed/unsealed through the runtime-`dlopen`ed `ciris-tpm-plugin`
+//! dylib ([`crate::tpm_plugin`]), so the keyring links no `tss-esapi` and this
+//! TPM-backed custody path works **on the wheel cdylib and musl targets**.
 //!
-//! The per-blob ciphertext format is byte-identical to the link-time backend;
-//! only the master's seal file differs (`{alias}.tpmplugin_seal`, sealed in the
-//! plugin's own format under its SRK). The two backends are never mixed for one
-//! deployment: [`super::create_platform_storage`] prefers the link backend when
-//! its seal file / feature are present, and falls to this one otherwise.
+//! The master's seal file is `{alias}.tpmplugin_seal`, sealed in the plugin's
+//! own format under its SRK.
 //!
 //! ## Re-open discipline (CIRISVerify#134)
 //!

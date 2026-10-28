@@ -1,6 +1,5 @@
 //! The constitutional halt latch: what a node does with a verified accord row
-//! (CIRISVerify#305; CIRISConstitution#146 as amended, CC 4.2.1.1 / 4.2.1.3
-//! rc7; model `formal/accord_halt/AccordHaltFuse.tla`).
+//! (CC 4.2.1.1 / 4.2.1.3; model `formal/accord_halt/AccordHaltFuse.tla`).
 //!
 //! A `constitutional` halt is an **agent pause**: it stops the effectful acts
 //! of AI agents, with their state preserved, and touches nothing else. The

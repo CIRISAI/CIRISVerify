@@ -1,29 +1,26 @@
 # FSD-004 — Accord Live-Quorum Operation & Recovery Under Decimation
 
-> **Superseded in part, 2026-10-05 (CIRISConstitution#146, entrenched CC 4.2, founder-ratified; verify 20.0.0).**
-> The live-quorum **fire** and **resume** paths described below are retired: a `constitutional` halt is now one
-> holder's self-contained, pre-signable row that fires on receipt — no proposal, no participation window, no vote,
-> no decision object, and **no server-issued nonce** — and resumption is a cosigned `lifecycle:active` row by a
-> strict majority of the standing roster. A one-holder halt lapses after `halt_fuse_secs` unless a majority
-> `lifecycle:confirmed` names it. The proposal/participation/decision objects remain for **roster changes only**,
-> with a **proposer-minted** nonce. `verify_fire_by_live_quorum` / `verify_resume_by_live_quorum` are deprecated;
-> see `humanity_accord::verify_invocation` and `accord_halt_latch::HaltLatch`. The CC `formal/accord_halt` model
-> shows why: the proposal path has a visible window in three steps and a stuck state in four.
+**Status:** Normative. Grounded in CC 4.2 (entrenched): CC 4.2.1 (invocation, halt fuse,
+resumption), CC 4.2.6 (`live-quorum`), CC 4.5.13 (`reverse-quorum`, the general form of which this
+is the constitutional instance). Implemented in `ciris_verify_core::accord_live_quorum` (roster
+changes and recovery), `humanity_accord` (invocations) and `accord_halt_latch` (the halt latch).
+Server-side authoritative recompute is CIRISServer's.
 
-**Status:** RATIFIED + EXPANDED (constitutional grounding landed and generalized) — **Phase 1 IMPLEMENTED in verify v8.2.0** (`ciris_verify_core::accord_live_quorum`, 1,764 lines, 32 tests). Phase 3 (server-side state/recompute) and the H7 CC cross-confirm remain downstream.
+**Builds on:** FSD-001 (protocol), FSD-005 (the accord), the growable M-of-N accord family and
+membership-change `supersedes` in `ciris_verify_core::accord_genesis`.
 
-> **Corrected 2026-09-25.** This line read *"not yet implemented"* for the whole span after v8.2.0 shipped the machinery. That is not a cosmetic slip: CIRISVerify#98 asks whether the accord can recover from catastrophic holder loss, and a reader who trusted this header would conclude it cannot — or would build it a second time. The repo-structure table in `CLAUDE.md` carried the same claim plus *"Not ratified"*, which CC 0.3 §4.2.6 had already falsified.
-Changing how the kill-switch quorum is computed is a §9 governance change; nothing
-here ships without (a) constitutional grounding in CEG §9 / the CIRIS Constitution —
-**DONE: ratified in [CC 0.3 §4.2.6 `live-quorum`](https://github.com/CIRISAI/CIRISRegistry/blob/main/FSD/CIRIS_Constitution/part_4_composition_governance.md)** (CIRISRegistry `c27d794`, issue #108; ratified by the founder under the CC 4.5.1 maturity gate) — and (b) an adversarial review on par with #91/#95. Phase 0 is therefore complete on the constitutional axis; Phases 1–3 (implementation) are unblocked. (Originally DRAFT 2026-06-21; rewritten to the live-quorum model 2026-06-21.)
+**Summary of the rules.**
 
-**Constitutional expansions since ratification (synced to CC 0.5, CIRISRegistry `19fb3d2`):**
-- **CC 0.4 (`2fb7a2c`, §4.2.1.3) — the bias gradient + the resumption direction.** §4.2.6 firing is the *easy* end of an explicit gradient **`fire ≤ roster-change ≤ standing`**: firing leans easiest (floor = 1, a missed fire is terminal) and **un-firing leans hardest**. CC 0.4 ratifies the resumption verb `accord:lifecycle:active` (the *opposite* of a fire — resuming from a CONSTITUTIONAL halt) and pins it to **no less than the roster-change threshold — strict majority of the live set `L`, never a lone signature**, with the §4.2.6 steward backstop when `|L|` is small. This refines this FSD's §3 "always lean toward firing": the no-asymmetry rule is for the *fire* direction; *resumption* is deliberately asymmetric the other way. **✅ Closed in verify v8.1.0** (was: *"Verify code gap — `humanity_accord::canonical_bytes` does not yet emit `resumes_halt_id`"*). CC 0.4 ratifies the v6.10.0 lifecycle:active layout with one addition — the mandatory `resumes_halt_id` field binding a resumption to the single halt it ends (anti-stockpile / anti-replay). `Invocation::resumes_halt_id` now rides the preimage, interposed after `invocation_id` **only** for `lifecycle:active` so the §4.2.1.1 invoke layout stays byte-identical, and `verify_invocation` **structurally rejects** a resumption missing the field or a non-lifecycle kind carrying one (`InvocationError::MalformedResumption`, before any signature check).
-- **CC 0.5 (`19fb3d2`, §4.5.13 `reverse-quorum`) — §4.2.6 generalized.** The live-quorum is no longer a one-off kill-switch rule; CC 0.5 ratifies it as the federation's **general governance shape** — *"presence is authority, absence forfeits it, a timer decides."* This FSD's accord live-quorum is now the **constitutional instance**; community-scope moderation is the **first community instance** (lone-survivor-fires ↔ lone-steward-acts; live-quorum-over-`L` ↔ live-majority-over-present-members; Enoch-Arden return ↔ merit re-auto-promotion). Same mechanism, two scopes. (CC 0.5's "stewardship reframe" also renamed the federation's `owner_bound` → `steward_bound` terminology throughout §4.5; the accord §4.2.6 surface is unchanged by it.)
+| Action | Who | Mechanism |
+|---|---|---|
+| **Halt** (`constitutional`) | **one** holder | a self-contained, pre-signable invocation row; pauses agents on receipt. No proposal, window, vote, decision object or server-issued nonce |
+| **Confirm a halt** (`lifecycle:confirmed`) | strict majority of the standing roster | names the halt (`confirms_halt_id`); a lone halt not confirmed lapses `halt_fuse_secs` after this node's receipt (default 86 400) |
+| **Resume** (`lifecycle:active`) | strict majority of the standing roster | names the halt it ends (`resumes_halt_id`); ends any halt, confirmed or not |
+| **Roster change** (add / remove / swap) | strict majority of the **live set** `L`, plus a 2-of-3 regional-steward co-sign when `\|L\| < 3` | `accord_proposal` → `accord_participation` (proof-of-life + vote) → `accord_decision`, with a proposer-minted nonce |
 
-**Tracks:** CIRISVerify#98. **Builds on:** FSD-001 (protocol), the v6.8.0 growable
-M-of-N accord family + membership-change `supersedes` (`ciris_verify_core::
-accord_genesis`), CEG §9.1/§9.2.
+The fuse counts from receipt, never from the signed `asserted_at`, so a pre-signed halt is not dead
+on arrival and a future-dated one cannot pause agents indefinitely. The per-kind thresholds live in
+one function, `InvocationKind::required_signatures`.
 
 ---
 
@@ -38,8 +35,9 @@ inoperable exactly when it matters most.
 
 This FSD respecifies the quorum so the accord **operates continuously as holders
 are lost and regained**, rather than treating "recovery" as a separate exceptional
-protocol. The mechanism is a **live quorum**: every decision is taken over the set
-of holders who actually show up, and *being reachable is how you participate*.
+protocol. Firing needs no quorum at all: one holder halts. Rebuilding the roster uses a
+**live quorum**: the decision is taken over the set of holders who actually show up,
+and *being reachable is how you participate*.
 
 ## 2. Threat model — adversarial-AGI first strike
 
@@ -47,7 +45,7 @@ The design target is the worst case the accord exists for: a misaligned
 superintelligence executes a **first strike against its own off-switch** — the
 human holders — before or while it acts against humanity.
 
-**Scale.** The accord is assumed to have **grown** (v6.8.0 growable M-of-N) to be
+**Scale.** The accord is assumed to have **grown** (growable M-of-N) to be
 robust — e.g. **N = 21 holders, standing quorum 11-of-21** — and the strike reduces
 the **reachable, key-capable** holders to **1 or 2**.
 
@@ -68,7 +66,7 @@ operable afterward. The adversary cannot forge a hybrid signature over a pinned 
 WiseBus); physical security of the holders; recovery of a dead holder's private
 *key* (gone — this is about the *roster*, not the key).
 
-## 3. Design principle — minimize the missed fire (one direction, no asymmetry)
+## 3. Design principle — minimize the missed fire
 
 The accord exists to prevent **one** terminal failure: a rogue AI survives because
 the humans **could not fire**. Among the error modes:
@@ -78,35 +76,31 @@ the humans **could not fire**. Among the error modes:
 - A **false fire** (an agent halted in error) is a **recoverable** governance
   nuisance — an agent can be re-licensed; humanity cannot be un-extincted.
 
-Therefore **every lever is set to minimize the probability of a missed fire.** This
-is a *single* optimization direction — there is no countervailing "make it harder"
-force to balance, because the thing a brake would protect against (a false fire, or
-a roster "coup") is either cheap-and-recoverable or is not actually mitigated by a
-brake (§8). Concretely:
+Therefore **every lever is set to minimize the probability of a missed fire.**
+Concretely (the bias gradient of CC 4.2.1.3, **fire ≤ roster-change ≤ standing**):
 
-- **Firing leans easiest of all.** In deep decimation a constitutional kill is
-  admissible on the smallest viable live set — down to a lone reachable survivor.
+- **Firing leans easiest of all.** One holder's `constitutional` row halts, at any
+  roster size, with no window.
 - **Reconstitution leans easy too**, not hard: a decimated-but-honest survivor set
   must be able to *rebuild a firing-capable roster*. Making reconstitution slow or
   high-bar would only help a suppressor (whose aim is to keep the switch
   un-fireable) — the exact opposite of the goal.
-- The bias gradient is: **fire ≤ roster-change ≤ (former) standing quorum**, all
-  taken over the *live* set, never over the absent standing roster.
+- **Un-firing leans hardest.** Confirming or ending a halt takes a strict majority of
+  the standing roster. A lone halt that no majority confirms lapses after the fuse, which
+  bounds the cost of a lone false or coerced fire without making firing harder.
 
-(An earlier draft of this FSD posited a "failure-direction asymmetry" — fire easy,
-reconstitution hard. That was wrong: it set a brake against a coup, but a coup's
-worst act is either a recoverable false fire or a suppression that requires
-majority capture *regardless* of reconstitution speed. The brake only handicapped
-the honest survivors. This rewrite removes it.)
+A brake on reconstitution would not protect against a coup: a coup's worst act is
+either a recoverable false fire or a suppression that requires majority capture
+*regardless* of reconstitution speed. It would only handicap the honest survivors.
 
-## 4. The mechanism — one live quorum
+## 4. The roster mechanism — one live quorum
 
-There is **no separate recovery protocol.** There is one mechanism — the live
+There is **no separate recovery protocol.** Roster changes use one mechanism — the live
 quorum — and "decimation" is simply the case where the live set is small.
 
 ### 4.1 The live set and the floating quorum
 
-Every accord decision (fire, roster change, or both) is a **proposal** that opens a
+Every roster change is a **proposal** that opens a
 bounded **participation window** `W`. Within `W`, each holder may respond with a
 **proof-of-life + vote** (§4.2). When `W` closes:
 
@@ -123,7 +117,7 @@ an emergency exception.
 ### 4.2 Proof-of-life *modifies the quorum and carries a vote* — it is not a veto
 
 A holder participates by signing a fresh **proof-of-life** over the proposal's
-server-issued nonce, **bundled with their vote** on the proposal. This does two
+nonce (minted by the proposer), **bundled with their vote** on the proposal. This does two
 things:
 
 1. **Modifies the quorum** — the signer enters `L`, so the live denominator (and
@@ -140,27 +134,16 @@ vote* — but the family can still act by its live majority (it is not hostage t
 single signature). The freshness nonce prevents a replayed signature from a truly-
 absent holder manufacturing a phantom participant.
 
-### 4.3 Per-action thresholds (the firing bias)
+### 4.3 Thresholds
 
-All thresholds are taken **over `L`**, never over the absent standing roster.
-
-| Action | Threshold over `L` | Rationale |
+| Action | Threshold | Rationale |
 |---|---|---|
-| **Fire** (CONSTITUTIONAL kill, §9.2.1) | **floor = 1** — a **single reachable survivor** may fire (Q1 resolved) | missed fire is terminal, false fire recoverable → lean easiest |
-| **Roster change** (add / remove / swap; the `supersedes`) | **strict majority of `L`** (`2·M > \|L\|`) | the live set governs its own membership |
-| **Standing-quorum acts** (non-emergency) | strict majority of the standing roster (unchanged) | normal operation when not decimated |
+| **Halt** (`constitutional`) | **1** holder, no window | missed fire is terminal, false fire recoverable |
+| **Confirm / resume** (`lifecycle:confirmed` / `lifecycle:active`) | strict majority of the standing roster | un-firing leans hardest |
+| **Roster change** (the `supersedes`) | **strict majority of `L`** (`2·M > \|L\|`) | the live set governs its own membership |
 
-**The fire floor is one (Q1 resolved).** A single reachable, key-capable holder
-can fire the constitutional kill. This is the deliberate maximum lean toward
-firing: in the limit of a first strike that leaves *one* survivor, that survivor
-can still pull the plug. The cost of the only thing this admits — a lone *coerced*
-key firing falsely — is a recoverable halt (governance re-licenses the agent),
-whereas the failure it prevents — the adversary reduces the holders below any
-higher floor and the switch goes dead — is terminal. The firing floor sitting
-**below** the roster-change threshold is the whole point: even a partially-captured
-live set's honest minority (down to one) can still fire (§8). **Firing has no
-challenge window** — it is immediate on a fresh survivor signature; the window
-(§9) applies only to roster changes.
+The firing threshold sitting **below** the roster-change threshold is the point: even a
+partially-captured roster's honest minority, down to one holder, can still fire (§8).
 
 ### 4.4 Steward floor when `L` is tiny
 
@@ -169,7 +152,7 @@ change** additionally requires a quorum of the regional **stewards** (us/eu/apac
 the §6 cross-attestation root the accord is already upstream-rooted in) to co-sign.
 This removes the pure self-attestation of the most capturable case (a lone or
 near-lone survivor reconstituting the roster) without inventing a new principal.
-**Firing is not gated this way** — firing leans easy in all states.
+**Firing is not gated this way**: one holder halts in all states.
 
 ### 4.5 Return and reinstatement (Enoch Arden)
 
@@ -233,11 +216,12 @@ Pi running JS8Call + the Reticulum gateway; ≈ $1k) + **EMP/Carrington hardenin
 (Faraday-stored spare transceiver + Pi + controller — because "satellites gone"
 plausibly implies a kinetic/cyber/EMP event) + spares and a secondary site. $50k
 comfortably funds a serious station *or* 2–3 redundant simpler ones for
-geographic + failure diversity. **Time without GPS:** the freshness nonce is
-server-issued and relayed in (it does not depend on GPS); HF time standards
-(WWV/WWVH/CHU) give coarse wall-clock if needed.
+geographic + failure diversity. **Time without GPS:** the proposal nonce is
+minted by the proposer and relayed in (it does not depend on GPS); HF time standards
+(WWV/WWVH/CHU) give coarse wall-clock if needed. A halt needs no round trip at all:
+it is a pre-signable row carried in by the same channel.
 
-> **Note (Q6, new):** the **relay/gateway backbone** — the set of always-listening
+> **Deployment note:** the **relay/gateway backbone** — the set of always-listening
 > HF↔RNS Transport Nodes that carry proof-of-life into the mesh — is itself
 > infrastructure an adversary will target. It must be **geographically distributed,
 > off-grid, and EMP-hardened**, and ideally co-located with the steward sites
@@ -267,13 +251,15 @@ server-issued and relayed in (it does not depend on GPS); HF time standards
   make honest nodes disagree on who is present — our §8 residual.
   ([BFT survey](https://arxiv.org/html/2407.19863v3))
 
-## 6. Protocol — CEG objects (sketch)
+## 6. Protocol — CEG objects
 
 All hybrid-signed (Ed25519 + ML-DSA-65, bound) over JCS canonical bytes (CEG §0.9),
 same discipline as `accord_genesis`.
 
-- **`accord_proposal`** — `{ family_key_id, prior_family_digest, action: <fire |
-  membership-change envelope | both>, nonce, window_until }`. The thing voted on.
+- **`accord_proposal`** — `{ family_key_id, prior_family_digest, action:
+  <membership-change envelope>, nonce, window_until }`. The thing voted on. The nonce is
+  proposer-minted. (`AccordAction::Fire` / `Resume` still parse so stored rows remain
+  readable; they are not a path to halt or resume.)
 - **`accord_participation`** — `{ family_key_id, refers_to: <proposal nonce/digest>,
   proof_of_life: true, vote: <yes|no|abstain>, signed_at, signature }`. The
   proof-of-life **+ vote** in one signed object; entering `L` and voting are the
@@ -284,26 +270,31 @@ same discipline as `accord_genesis`.
   proof-of-participation bundle stands in for the (now meaningless) standing-roster
   signature requirement.
 
-## 7. Verification logic (verify-side obligations)
+## 7. Verification logic
 
-New surface in `ciris_verify_core` (an `accord_recovery` / `accord_live_quorum`
-sibling of `accord_genesis`), all **fail-closed**:
+All **fail-closed**.
 
-1. `tally_live_quorum` — over the collected `accord_participation` objects: each
-   resolves to a **current roster member** in the pinned directory, each signature
-   verifies over the proposal nonce (freshness — no replay), dedup by member_id;
-   `L` = distinct valid participants; tally votes; compare to the §4.3 threshold for
-   the action.
-2. `verify_membership_change_by_live_quorum` — when the action is a roster change,
-   the resulting `supersedes` must pass **all** existing
-   `verify_accord_membership_change` invariants (entrenchment, strict-majority,
-   distinct-pubkey gate, anti-replay) — the **only** substitution is that the
-   authorizing quorum is the **live set `L`** (strict majority of `L`) rather than
-   the standing roster, plus the §4.4 steward backstop when `|L| < L_floor`.
-3. `verify_fire_by_live_quorum` — admits a `CONSTITUTIONAL` invocation at the low
-   firing floor over `L`; reuses `humanity_accord::Invocation`.
+1. `accord_live_quorum::tally_live_quorum` — over the collected `accord_participation`
+   objects: each resolves to a **current roster member** in the pinned directory, each
+   signature verifies over the proposal nonce (freshness — no replay), dedup by
+   member_id; `L` = distinct valid participants; tally votes.
+2. `accord_live_quorum::verify_membership_change_by_live_quorum` — the resulting
+   `supersedes` must pass **all** `verify_accord_membership_change` invariants
+   (entrenchment, strict-majority, distinct-pubkey gate, anti-replay); the authorizing
+   quorum is the strict majority of `L`, plus the §4.4 steward backstop when
+   `|L| < L_FLOOR` (3). `verify_recovery_supersede` and `decisions_equivocate` cover
+   recovery and conflicting decisions.
+3. `humanity_accord::verify_invocation` — verifies a `constitutional` / `notify` /
+   `drill` / `lifecycle:confirmed` / `lifecycle:active` row at
+   `InvocationKind::required_signatures`.
+4. `accord_halt_latch::HaltLatch` — the halt state machine (pause, idempotent second
+   halt that does not reset the fuse, confirm-before-lapse, resume-by-name, lapse),
+   fed only a `VerifiedInvocation` minted by `verify_for_latch`. Exposed on the FFI
+   (`ciris_verify_accord_invocation_verify` / `_latch_apply` / `_latch_status`) and the
+   wheel.
 
-The **authoritative** tally (as with invocation, FSD-001) is CIRISServer recomputing
+`verify_fire_by_live_quorum` and `verify_resume_by_live_quorum` are deprecated and are
+not a path to halt or resume. The **authoritative** tally is CIRISServer recomputing
 over pinned `federation_keys`; the local objects are advisory.
 
 ## 8. Security analysis — the residual is seize-and-suppress, not false-fire
@@ -314,13 +305,12 @@ include its captured/coerced members. The adversary still cannot *forge* a membe
 (signatures are over pinned keys) — it can only remove or coerce real ones. The
 consequences, by action:
 
-- **Fire.** A captured small `L` *firing falsely* is **cheap** (recoverable) — we do
-  not defend against it. A captured `L` *suppressing* a fire is **hard**: the firing
-  floor is low, so an honest minority that reaches *any* channel and enters `L` can
-  fire over the adversary's objection. Censorship would have to be **total and
-  sustained against every honest holder on every channel** — and proof-of-life is a
-  publishable signature, not a network round-trip. This is the case the design most
-  protects, and correctly so.
+- **Fire.** A lone *false* or coerced fire is **cheap** (recoverable): it pauses
+  agents, preserves state, and lapses after the fuse unless a majority confirms it.
+  *Suppressing* a fire is **hard**: any one honest holder whose pre-signed row reaches
+  *any* node fires. Censorship would have to be **total and sustained against every
+  honest holder on every channel**, and a halt row is a publishable signature, not a
+  network round-trip. This is the case the design most protects.
 - **Roster change.** A captured-`L` *reconstitution* is the real residual — the
   adversary shrinks `L` to its captured subset and votes itself a roster. Bounded
   by: (a) the **strict majority of `L`** — honest holders who reach any channel
@@ -333,8 +323,9 @@ consequences, by action:
 **Coercion / duress** is the irreducible hard part: a coerced living holder can be
 made to sign a proof-of-life-with-vote the adversary chooses. Proof-of-life proves
 *presence*, not *willingness*. This is bounded — not solved — by the steward floor,
-the live majority, and transparency, and is called out as an open problem (Q3); a
-duress canary is a candidate but out of scope here.
+the live majority, and transparency, and is a named, bounded residual. No duress
+canary is used: its own failure modes (forgotten under panic, leaked threat model)
+outweigh the gain.
 
 **What we do not claim:** unconditional recoverability under an omnipotent
 adversary. We claim that recovery is **possible** whenever honest survivors reach
@@ -343,67 +334,29 @@ a **false reconstitution** requires capturing a live majority *and* subverting t
 steward floor — a materially higher bar than the deadlock it replaces, with the
 honest case made *easy* rather than braked.
 
-## 9. Parameters to pin
+## 9. Parameters
 
-| Parameter | Meaning | Setting | Open |
-|---|---|---|---|
-| **fire floor** | min live participants to admit a `CONSTITUTIONAL` fire | **1** (a single reachable survivor) — **Q1 resolved** | — |
-| fire window | challenge window for a fire | **none** — immediate on a fresh survivor signature | — |
-| roster window `W` | participation window for a roster change | **72 h** baseline (extensible to 7 d under a declared severe-degradation state); anchored to the 24–72 h social-recovery norm, lengthened for HF store-and-forward relay latency (§4.6) | Q2 |
-| roster threshold | quorum for a roster change over `L` | strict majority of `\|L\|` | — |
-| `L_floor` | `\|L\|` below which a roster change needs the steward backstop | `3` (always for `1`) | Q2 |
-| steward quorum | M-of-N of the 3 regional stewards | `2-of-3` | — |
-| recursion floor | smallest roster a change may produce | ≥ 1, never to attacker-only | Q4 |
+| Parameter | Meaning | Setting |
+|---|---|---|
+| halt threshold | signatures for a `constitutional` halt | **1** |
+| fire window | challenge window for a halt | **none** |
+| `halt_fuse_secs` | time after receipt that an unconfirmed lone halt lapses | **86 400** (charter may override) |
+| confirm / resume threshold | `lifecycle:confirmed` / `lifecycle:active` | strict majority of the standing roster |
+| roster window `W` | participation window for a roster change | **72 h**, fixed (no extension, no scaling with `\|L\|`; a mid-crisis timing lever would itself be an attack surface) |
+| roster threshold | quorum for a roster change over `L` | strict majority of `\|L\|` |
+| `L_FLOOR` | `\|L\|` below which a roster change needs the steward backstop | `3` |
+| steward quorum | M-of-N of the 3 regional stewards (us/eu/apac) | `2-of-3`; the accord is never handed to the stewards outright |
+| recursion floor | smallest roster a change may produce | ≥ 1, never to attacker-only |
 
-The asymmetry in the table is deliberate and is the whole design: **firing is
-floor-1 and window-0** (a lone survivor fires *now*), while a **roster change** is
-strict-majority-of-`L` over a multi-day window — because a missed fire is terminal
-but a false reconstitution is the thing the steward floor + window + transparency
-exist to bound.
+72 h is long enough for HF store-and-forward (§4.6) to carry an honest proof-of-life in,
+and short enough to recover before the adversary consolidates.
 
-## 10. Open questions (must resolve before build)
+## 10. Deployment
 
-- **Q1 — Fire floor — RESOLVED: floor = 1.** A single reachable survivor may fire
-  (§4.3). A false fire is recoverable; a higher floor would let the adversary kill
-  the switch by reducing holders below it. Settled by the maintainer.
-- **Q2 — Roster-window calibration — RESOLVED: fixed `W = 72 h`, no extension.**
-  The window is a single, fixed 72 h — *no* severe-degradation stretch and *no*
-  scaling with `|L|`. One predictable rule with no mid-crisis "declare an
-  emergency to change the timing" lever (which would itself be an attack surface);
-  72 h is long enough for HF store-and-forward (§4.6) to carry an honest
-  proof-of-life in, short enough to recover before the adversary consolidates.
-  Settled by the maintainer; matches the CC §4.2.6 `W = 72 h` baseline.
-- **Q3 — Coercion / duress — RESOLVED: existing safeguards, no canary.** Proof-of-
-  life cannot detect a gun-to-the-head signature, and we do **not** add a duress
-  canary (its own failure modes — panic-forgotten, threat-model-leaked — outweigh
-  the gain). Coercion stays a **named, bounded residual**, mitigated by the steward
-  floor (Q4) + live majority + append-only transparency + post-hoc reversal, not
-  claimed "solved." Settled by the maintainer; matches the CC §4.2.6 "bounded, not
-  solved" framing.
-- **Q4 — Recursion termination / minimum viable accord — RESOLVED: steward-co-sign
-  below 3, not full custody.** *Firing* stays floor-of-1 (Q1). *Rebuilding* the
-  roster when `|L| < 3` additionally requires a **2-of-3 regional-steward co-sign**
-  (so a lone coerced survivor cannot quietly rebuild a captured accord) — but the
-  accord is **never handed to the stewards outright** (they are infrastructure, not
-  the human off-switch). Settled by the maintainer; matches the CC §4.2.6
-  `L_floor = 3` steward-backstop rule exactly.
-- **Q5 — Constitutional grounding — RESOLVED + EXPANDED.** Ratified in **CC 0.3 §4.2.6**
-  (CIRISRegistry `c27d794`, issue #108). The live quorum is grounded in CC §4.2 /
-  CEG §9; the *restores-not-seizes* proof (live quorum restores operability, cannot
-  forge or seize the accord beyond the §8 seize-and-suppress residual) is the
-  entrenchment-proof paragraph of §4.2.6. Ratified by the founder under the
-  CC 4.5.1 maturity gate (pre-maturity authority over the entrenched §4.2 surface).
-  **Expanded since:** CC 0.4 §4.2.1.3 (the `fire ≤ roster-change ≤ standing` bias
-  gradient + the resumption direction at the roster-change threshold) and CC 0.5
-  §4.5.13 (§4.2.6 ratified as the general `reverse-quorum` governance pattern) —
-  see the Status header. §4.2.6 itself reads (line ~210): *"The verify-side
-  construction is staged in CIRISVerify FSD-004; the constitutional grounding it
-  required (its Q5) is this section."* — i.e. this FSD and CC §4.2.6 cite each other.
-- **Q6 — HF↔RNS relay/gateway backbone (deployment).** The always-listening,
-  off-grid, EMP-hardened, geographically-distributed Transport Nodes that bridge HF
-  proof-of-life into the mesh (§4.6) are infrastructure the adversary will target —
-  the physical complement to the steward floor. Belongs in a deployment spec,
-  ideally co-located with the steward sites.
+The always-listening, off-grid, EMP-hardened, geographically-distributed HF↔RNS
+Transport Nodes that bridge proof-of-life into the mesh (§4.6) are infrastructure the
+adversary will target — the physical complement to the steward floor. They belong in a
+deployment spec, ideally co-located with the steward sites.
 
 ## 11. Relationship to existing modules
 
@@ -413,40 +366,9 @@ exist to bound.
   other gate (entrenchment, strict-majority, distinct-pubkey, anti-replay) is
   unchanged.
 - **Reuses** `threshold::verify_founder_quorum` for the live tally and the steward
-  backstop, and `humanity_accord::Invocation` for the fire.
+  backstop.
 - **Generalizes** `accord_quorum_from_family`: the threshold is now taken over the
   live set `L`, not the standing `members` — the standing roster defines *who may
   participate*, `L` defines *who did*.
-- **Does not** add a new §9.2.1 invocation verb; DECIMATION is a quorum-computation
-  rule over the existing `CONSTITUTIONAL` kind, not a new vocabulary entry.
-
-## 12. Implementation phases (when grounded + reviewed)
-
-1. **Phase 0 — ratify — COMPLETE.** Q1 (fire floor = 1), Q5 (constitutional
-   grounding — CC 0.3 §4.2.6), Q2 (fixed 72 h window), Q3 (existing safeguards, no
-   duress canary), Q4 (2-of-3 steward co-sign for rebuilds below `|L| = 3`, never
-   full steward custody) all resolved by the maintainer — each matching the CC
-   §4.2.6 default, so no new constitutional text is required. **The adversarial
-   review is DONE** — see [`FSD-004_ADVERSARIAL_REVIEW.md`](FSD-004_ADVERSARIAL_REVIEW.md)
-   (four independent red-team passes ≥ #91/#95 rigor). It found no design
-   rejections; its findings are **build obligations folded into Phases 1-3 below**
-   (the participation canonical-bytes preimage, server-clocked window membership,
-   the standing-roster anti-replay anchor, the equivocation gate, `N_min`/removal-
-   continuity, the resumption-threshold asymmetry, reversal expressibility). Q6
-   (the HF↔RNS relay backbone) is deployment, not verify code. **Phase 1 code is
-   now unblocked.**
-2. **Phase 1 — live-quorum tally + roster change.** `accord_proposal` /
-   `accord_participation` / `accord_decision` objects + `tally_live_quorum` +
-   `verify_membership_change_by_live_quorum`, reusing the membership-change core.
-   Adversarial review (≥ #91/#95 rigor).
-3. **Phase 2 — live-quorum fire.** The low-floor `CONSTITUTIONAL` fire over `L`,
-   gated on Q1's floor.
-4. **Phase 3 — server + ceremony.** CIRISServer authoritative recompute (#41/#61),
-   the holder participation flow, the steward backstop wiring.
-
----
-
-*Authored from the maintainer's live-quorum correction: proof-of-life **modifies
-the quorum and carries a vote** (it is not a veto), and the system **always leans
-toward firing** (there is no failure-direction asymmetry). Design of record for
-CIRISVerify#98.*
+- **Does not** add an invocation verb: decimation changes how the roster is rebuilt,
+  not the invocation vocabulary (CC 4.2.1.1).

@@ -1,4 +1,4 @@
-//! Runtime tree-walking verifier (CIRISVerify#9, v1.13.0+).
+//! Runtime tree-walking verifier (CIRISVerify#9).
 //!
 //! Public Rust + FFI + Python API for verifying a source tree on disk
 //! against its registered `file_manifest_json` in the registry. The

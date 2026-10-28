@@ -1,6 +1,6 @@
 # How CIRISVerify Works
 
-**Last Updated**: 2026-03-28 (v1.3.1)
+**Last Updated**: 2026-10-28 (v21.0.0)
 
 > **Disclaimer**: This is research software exploring approaches to AI agent verification and accountability. It is not a complete security solution. No software can provide absolute protection against determined adversaries. This documentation is provided for educational and research purposes to inform the broader AI alignment community. We make no warranties and accept no liability.
 
@@ -85,7 +85,7 @@ if desc.kind == StorageKind.SOFTWARE_FILE:
 
 **Hardware attestation:** Validates the execution environment via platform-specific secure hardware. Software-only environments are capped at COMMUNITY tier — like driving with a learner's permit.
 
-**Hardware vulnerability detection (v1.2.0+):** Even with hardware security, some SoCs have known vulnerabilities that compromise the trust chain. CIRISVerify detects these and caps attestation accordingly — like a recall notice on your car's brakes.
+**Hardware vulnerability detection:** Even with hardware security, some SoCs have known vulnerabilities that compromise the trust chain. CIRISVerify detects these and caps attestation accordingly — like a recall notice on your car's brakes.
 
 ### 3. Insurance — Accountability and Licensing (HITL)
 
@@ -97,9 +97,11 @@ If this is a licensed install, CIRISVerify identifies **who is responsible**:
 
 An unlicensed community agent is like an uninsured driver — it can still operate, but it cannot perform professional services requiring steward accountability.
 
-### 4. The DMV — Multi-Source Validation
+### 4. The DMV — Trust-Root Validation
 
-CIRISVerify validates against 3 independent sources (DNS US, DNS EU, HTTPS API). All 3 must agree. If they disagree, that's a security alert (possible attack) and the agent enters restricted mode. The license JWT is verified with dual signatures (Ed25519 + ML-DSA-65) — both must pass.
+The DMV's authority comes from the HUMANITY_ACCORD holders whose keys are baked into the binary. Each registry host serves a GenesisBundle; CIRISVerify verifies each one independently against those baked holders (a strict majority must have authorized it with hybrid Ed25519 + ML-DSA-65 signatures) and takes the highest verified version as the trust root (CC 5.3.4). One verified host is enough. Two verified bundles at the same version that differ are equivocation — a security alert, and the agent enters restricted mode.
+
+A licence is a cosigned `licensure:{authority}:v1` row (CC 4.4.3.8). CIRISVerify does not yet evaluate licensure rows, so every agent currently operates in community mode.
 
 ---
 
@@ -110,7 +112,7 @@ Every verification returns a `LicenseStatusResponse` containing:
 - **Mandatory disclosure** — Text that MUST be displayed to users
 - **Capability grants** — What the license allows (if licensed)
 - **Hardware attestation** — Proof of hardware-rooted verification
-- **Source validation** — Multi-source consensus results
+- **Source validation** — Per-host trust-root results and the selected root
 - **File integrity** — Result of Tripwire agent file check
 
 ---
@@ -119,17 +121,13 @@ Every verification returns a `LicenseStatusResponse` containing:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│                    Multi-Source Validation                    │
+│                    Trust-Root Hosts (HTTPS)                   │
 │                                                              │
-│  DNS US                    DNS EU                  HTTPS     │
-│  us.registry.              eu.registry.            api.      │
-│  ciris-services-1.ai       ciris-services-1.ai     registry. │
-│                                                    ciris-    │
-│                                                    services- │
-│                                                    1.ai      │
+│  api.registry.        us.registry.        eu.registry.       │
+│  ciris-services-1.ai  ciris-services-1.ai ciris-services-1.ai│
 │                                                              │
-│  All 3 queried in parallel. 2-of-3 must agree.              │
-│  Any source reporting REVOKED → immediate action.            │
+│  GET /v1/trust-root/bundle on each, queried in parallel.     │
+│  Each bundle verified against the baked accord holders.      │
 └──────────────────────────┬──────────────────────────────────┘
                            │
                            ▼
@@ -137,8 +135,8 @@ Every verification returns a `LicenseStatusResponse` containing:
 │              CIRISVerify Binary (Rust cdylib)                 │
 │                                                              │
 │  1. Binary integrity self-check                              │
-│  2. Multi-source validation (DNS US + DNS EU + HTTPS)        │
-│  3. License JWT verification (Ed25519 + ML-DSA-65)           │
+│  2. Trust-root validation (GenesisBundle, CC 5.3.4)          │
+│  3. Licence gate (community until licensure rows, CC 4.4.3.8)│
 │  4. Hardware attestation (TPM/SE/Keystore/Software)          │
 │  5. Build LicenseStatusResponse with mandatory disclosure    │
 │                                                              │
@@ -174,7 +172,7 @@ CIRISVerify includes a standalone CLI (`ciris-verify`) for running inspections m
 | `ciris-verify` | Show help | Read the DMV handbook |
 | `ciris-verify info` | Show system capabilities | Check what your car supports |
 | `ciris-verify self-check` | Verify binary integrity | Is this inspection station certified? |
-| `ciris-verify sources` | Check registry consensus | Cross-check 3 DMV databases |
+| `ciris-verify sources` | Verify each host's GenesisBundle | Check the DMV's charter |
 | `ciris-verify function-check` | Verify FFI functions | Check individual inspection equipment |
 | `ciris-verify agent-files` | Verify agent file integrity | Full vehicle inspection |
 | `ciris-verify audit-trail` | Verify audit log integrity | Review complete service history |
@@ -189,14 +187,14 @@ dimensions in `federation_provenance::dim` (FSD-002 §3.2):
 |-----------|-----------|-------------|-------------|
 | `attestation:self_verify` | Binary + functions match registry manifest | Is this a real inspection station? | `self-check` |
 | `attestation:hardware` | Hardware-rooted key valid | Genuine VIN-locked tools | (in attest flow) |
-| `attestation:registry_consensus` | 2-of-3 multi-source registry agreement | Check 3 independent DMV databases | `sources` |
-| `attestation:license_validity` | Registry-signed license verifies | Current driver's licence on file | (in attest flow) |
+| `attestation:registry_consensus` | A trust root was selected (a GenesisBundle verified against the baked accord holders) | The DMV's charter is genuine | `sources` |
+| `attestation:license_validity` | A licensure row is honoured (not emitted until the licensure gate exists) | Current driver's licence on file | (in attest flow) |
 | `attestation:agent_integrity` | Agent source-tree byte-equal vs manifest | Vehicle hasn't been modified since manufacture | `agent-files` |
 
 Each measurement is a `boolean-via-score` pass/fail with an attester.
 **Consumers compose tiers, ladders, verdicts from these data points;
-verify does not.** The L1-L5 ladder used historically was consumer-side
-framing; v3.7.0+ dropped the numbering from the wire shape.
+verify does not.** An L1-L5 ladder is consumer-side framing, not part of
+the wire shape.
 
 **Critical**: If `attestation:self_verify` fails, every other
 measurement is UNRELIABLE — a compromised inspection station could lie
@@ -211,7 +209,7 @@ to its own check first.
 # Show system info and capabilities
 ciris-verify info
 
-# Check multi-source registry consensus
+# Verify each trust-root host's GenesisBundle
 ciris-verify sources --timeout 15
 
 # Verify binary self-integrity
@@ -381,14 +379,14 @@ The `LicenseStatus` enum determines agent operating mode:
 | 200 | `UNLICENSED_COMMUNITY` | No license, verification succeeded | Community mode |
 | 201 | `UNLICENSED_COMMUNITY_OFFLINE` | No license, offline | Community mode |
 | 300 | `RESTRICTED_VERIFICATION_FAILED` | Verification failed | Restricted |
-| 301 | `RESTRICTED_SOURCES_DISAGREE` | Multi-source disagreement | Restricted |
-| 302 | `RESTRICTED_PARTIAL_AGREEMENT` | Only 2-of-3 sources agree | Restricted |
+| 301 | `RESTRICTED_SOURCES_DISAGREE` | Trust-root equivocation | Restricted |
+| 302 | `RESTRICTED_PARTIAL_AGREEMENT` | Root selected, some hosts failed or lag | Restricted |
 | 400 | `ERROR_BINARY_TAMPERED` | Binary integrity check failed | Error/degraded |
 | 401 | `ERROR_REVOKED` | License revoked | Error/degraded |
 | 402 | `ERROR_EXPIRED` | License expired | Error/degraded |
 | 403 | `ERROR_HARDWARE_MISMATCH` | Hardware changed since license | Error/degraded |
 | 404 | `ERROR_VERIFICATION_FAILED` | General verification failure | Error/degraded |
-| 405 | `ERROR_SOURCES_DISAGREE` | Sources conflict (possible attack) | Error/degraded |
+| 405 | `ERROR_SOURCES_DISAGREE` | Trust-root equivocation (possible attack) | Error/degraded |
 | 500 | `LOCKDOWN_INTEGRITY_FAILURE` | Critical integrity failure | Lockdown |
 | 501 | `LOCKDOWN_ATTACK_DETECTED` | Attack pattern detected | Lockdown |
 
@@ -491,25 +489,28 @@ These capability prefixes are allowed in ANY mode (community, licensed, restrict
 
 ---
 
-## Multi-Source Validation
+## Trust-Root Validation
 
-CIRISVerify queries three independent sources:
+CIRISVerify fetches `GET /v1/trust-root/bundle` from every configured host (registries also serve it at `/v1/steward-key`):
 
-| Source | Endpoint | Purpose |
-|--------|----------|---------|
-| DNS US | `us.registry.ciris-services-1.ai` | US-hosted DNS TXT records |
-| DNS EU | `eu.registry.ciris-services-1.ai` | EU-hosted DNS TXT records |
-| HTTPS | `api.registry.ciris-services-1.ai` | HTTPS API endpoint |
+| Host | Endpoint |
+|------|----------|
+| Primary | `https://api.registry.ciris-services-1.ai` |
+| US | `https://us.registry.ciris-services-1.ai` |
+| EU | `https://eu.registry.ciris-services-1.ai` |
 
-**Consensus rules:**
-- 3-of-3 agree → `ALL_SOURCES_AGREE` → Full confidence
-- 2-of-3 agree → `PARTIAL_AGREEMENT` → Proceed with caution
-- Sources disagree → `SOURCES_DISAGREE` → Security alert, restricted mode
-- 0 reachable → `NO_SOURCES_REACHABLE` → Use cache or degrade
+Each bundle is verified on its own against the accord holders baked into the binary: at least `max(carried M, strict majority of the baked roster)` distinct holders must have authorized it with hybrid signatures over the authorization digest (CC 5.3.4). Hosts add availability, not trust; DNS is not a source.
+
+**Selection rules:**
+- Highest verified `version` is the root; every host served it → `ALL_SOURCES_AGREE`
+- Root selected, some hosts failed or served a lower version → `PARTIAL_AGREEMENT`
+- Two verified bundles at the same version with different fingerprints → `SOURCES_DISAGREE` (equivocation; no root)
+- Hosts answered, none verified → `VALIDATION_ERROR` (no root)
+- No host reachable → `NO_SOURCES_REACHABLE` (no root, community mode)
 
 ---
 
-## Hardware Vulnerability Detection (v1.2.0+)
+## Hardware Vulnerability Detection
 
 Even with hardware-backed security, some devices have known silicon-level vulnerabilities that compromise the trust chain. CIRISVerify actively detects these and caps attestation to `SOFTWARE_ONLY` level — the same treatment as emulators.
 
@@ -593,7 +594,7 @@ Maximum tier = COMMUNITY (no professional license)
 
 ---
 
-## EVM Wallet Signing (v1.3.0+)
+## EVM Wallet Signing
 
 CIRISVerify can derive an EVM-compatible secp256k1 wallet from the agent's identity key. This enables agents to sign blockchain transactions, proving their identity on-chain without exposing the root Ed25519 key.
 

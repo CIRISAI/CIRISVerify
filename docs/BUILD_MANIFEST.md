@@ -1,18 +1,16 @@
-# BuildManifest Design Spec (v1.8)
+# BuildManifest Spec
 
-**Status:** Design (P2.1 of v1.8)
-**Driver issue:** #1 — Generalize substrate primitives for PoB federation peers
-**Builds on:** Existing `FunctionManifest` at `src/ciris-verify-core/src/security/function_integrity.rs:73`
+**Status:** Implemented (`ciris_verify_core::security::build_manifest`, `ciris-build-tool`).
+**Builds on:** `FunctionManifest` in `src/ciris-verify-core/src/security/function_integrity.rs`.
+**See also:** FSD-006 — the CC-native build-manifest Contribution (`provenance:build_manifest:{target}:v1`) and how a pipeline key gets standing.
 
 ## Why this exists
 
-CIRISVerify already validates function-level manifests for itself and the agent through `FunctionManifest` + `verify_manifest_signature` + `verify_self_against_manifest`. The math is right; the shape is hardcoded to one consumer (the agent's binary). PoB §2.3's score-as-pure-function only holds if every peer (lens, persist, registry, future primitives, and CIRISVerify itself) ships build-authentic, validated by the same machinery.
-
-This spec generalizes the existing per-artifact manifest into a primitive-discriminated shape so the same verifier handles every PoB peer.
+PoB §2.3's score-as-pure-function only holds if every peer (lens, persist, registry, future primitives, and CIRISVerify itself) ships build-authentic, validated by the same machinery. `BuildManifest` is the per-artifact manifest in a primitive-discriminated shape, so the same verifier handles every peer; `FunctionManifest` is its `Verify` case.
 
 ## What is NOT in scope
 
-- The catalog-style `BinaryManifest` at `registry.rs:348` (target → binary hash). That's a different artifact, kept as-is for v1.8. Generalization of that catalog is follow-up work.
+- The catalog-style `BinaryManifest` in `registry.rs` (target → binary hash). That's a different artifact.
 - New cryptographic primitives. Hybrid Ed25519 + ML-DSA-65 stays the only signing mode (PoB §1.4 precedent).
 - Replacement of CIRISRegistry. The registry still publishes manifests; we publish the validator.
 - PoB-domain naming inside CIRISVerify. We use `BuildPrimitive`, not `PoBPrimitive`.
@@ -77,7 +75,7 @@ pub struct BuildManifest {
     /// SHA-256 of the canonical extras representation.
     /// `null` if the primitive has no extras.
     /// For `BuildPrimitive::Verify`, this is the hash of the function
-    /// table (preserving v1.7 self-check semantics).
+    /// table (the `FunctionManifest` self-check semantics).
     pub manifest_hash: String,
 
     /// Primitive-specific extras. Opaque to CIRISVerify; the registered
@@ -96,7 +94,7 @@ pub struct BuildManifest {
 
 - `manifest_schema_version` — separate from `binary_version` and from `BuildPrimitive` evolution. Lets us add fields without forking the enum.
 - `build_id` vs `binary_version` — agent has both a Cargo version and a git SHA; persist has a `migration_set_hash` it treats as "build identity"; registry has a release tag. `build_id` is the primitive's own identity for the build; `binary_version` is the underlying compilation.
-- `manifest_hash` — preserves v1.7's `FunctionManifest::manifest_hash` semantics for the `Verify` case (it's the hash of the function table). For other primitives it's the hash of their extras canonical bytes.
+- `manifest_hash` — keeps `FunctionManifest::manifest_hash` semantics for the `Verify` case (it's the hash of the function table). For other primitives it's the hash of their extras canonical bytes.
 - `extras: Option<Value>` — opaque on the verifier side. Dispatch to a registered `ExtrasValidator` happens after parse + signature verify. **Not** typed in CIRISVerify — primitives ship their own typed extras crate and register a validator.
 
 ### `ManifestSignature`
@@ -164,18 +162,13 @@ Error cases use existing `VerifyError` variants where they exist; new variants:
 
 ### Trust roots
 
-CIRISVerify embeds its own steward key for `BuildPrimitive::Verify` (preserving v1.7 self-check). For all other primitives, the caller provides the trusted public key. CIRISVerify does **not** bundle trust anchors for primitives we don't author.
+CIRISVerify embeds its own manifest-signing key for `BuildPrimitive::Verify` (self-check). For all other primitives, the caller provides the trusted public key. CIRISVerify does **not** bundle trust anchors for primitives we don't author.
 
-How callers get the right key:
-- Agent looks up "lens steward key" in its registry-pinned trust list.
-- Lens looks up "persist steward key" similarly.
-- Registry-side bootstrap: each primitive's repo publishes its steward key; CIRISRegistry serves them through its existing public-key endpoint.
-
-This keeps CIRISVerify's scope clean: we provide validation, not trust-root distribution.
+For the CC-native Contribution, whether a pipeline key may attest builds is answered by the substrate (delegation or the accord role on the pipeline's key record), not by a pinned key list — see FSD-006 §5.
 
 ## Canonical bytes
 
-Match the v1.7 `FunctionManifest::canonical_bytes()` pattern: deterministic JSON, BTreeMap-ordered for the extras map (when extras is an object), signature field excluded.
+Match the `FunctionManifest::canonical_bytes()` pattern: deterministic JSON, BTreeMap-ordered for the extras map (when extras is an object), signature field excluded.
 
 ```rust
 #[derive(Serialize)]
@@ -205,9 +198,9 @@ struct CanonicalBuildManifest<'a> {
 ```rust
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct VerifyExtras {
-    /// Critical functions with their hashes (preserves v1.7 shape).
+    /// Critical functions with their hashes (the `FunctionManifest` shape).
     pub functions: BTreeMap<String, FunctionEntry>,
-    /// Metadata about offset computation (preserved from v1.7).
+    /// Metadata about offset computation (as in `FunctionManifest`).
     pub metadata: ManifestMetadata,
 }
 
@@ -236,7 +229,7 @@ impl ExtrasValidator for VerifyExtrasValidator {
 ### Compatibility shim
 
 ```rust
-/// Compatibility alias for v1.7 callers.
+/// Compatibility alias for `FunctionManifest` callers.
 ///
 /// New code should use `BuildManifest` + `verify_build_manifest`. The
 /// `FunctionManifest` shape is preserved by treating its `functions` and
@@ -400,16 +393,9 @@ Until the PoB §3.1 collapse, lens has its own primitive. After the collapse, le
 }
 ```
 
-## Acceptance bar
-
-1. `verify_build_manifest(BuildPrimitive::Verify, current_self_manifest, embedded_steward_key)` returns `Ok(...)` byte-identically to today's `verify_self_against_manifest`. Verified by parity tests (P2.7).
-2. `verify_build_manifest(BuildPrimitive::Persist, persist_signed_manifest, persist_steward_key)` returns `Ok(...)` against a real persist-signed manifest. Verified by P2.8d.
-3. `BuildPrimitive::Other("future-primitive")` works without code changes if a validator is registered.
-4. The `FunctionManifest` type alias means existing v1.7 callers keep compiling.
-
 ## CLI tools (`ciris-build-tool` crate)
 
-Two binaries ship in the v1.8 release for use in CI pipelines and
+Two binaries ship for use in CI pipelines and
 manual operator workflows:
 
 ### `ciris-build-sign`
@@ -466,15 +452,13 @@ match `--primitive`, where either signature fails, or where the
 registered `ExtrasValidator` for the primitive errors. Three failure
 modes empirically demonstrated in the lib tests (`tests::verify_*`).
 
-## What's left to design (during implementation)
+## Extras schema versioning
 
-- **Versioning of extras schemas.** A primitive may evolve its extras shape. Two options: bump `manifest_schema_version` (coarse), or have each primitive's extras carry its own schema version (fine). Recommendation: fine-grained per-primitive extras versioning. Each primitive's `ExtrasValidator` decides what versions it accepts.
-- **Trust-key rotation.** Out of scope for v1.8. Each primitive handles its own rotation through whatever mechanism it uses today.
-- **Registry-side schema.** Coordinate with CIRISRegistry team (their issue #1) on the wire format for build records. The on-disk JSON shape above IS the registry response for `GET /v1/verify/build-manifest/{primitive}/{build_id}/{target}`.
+Each primitive's extras carry their own schema version, and each primitive's `ExtrasValidator` decides what versions it accepts. The on-disk JSON shape above is the registry response for `GET /v1/verify/build-manifest/{primitive}/{build_id}/{target}`.
 
 ## Wire-format stability contract
 
-**Registry vendors a copy of `BuildManifest`**, not a `ciris-verify-core` dependency. The reason is a `rusqlite` ↔ `sqlx-sqlite` linker conflict on the registry side that prevents direct dependency. Their vendored copy in `rust-registry/src/build_manifest.rs` matches our v1.8.0 wire format byte-for-byte; their `ciris-crypto` dep gives them the verifier primitives directly.
+**Registry vendors a copy of `BuildManifest`**, not a `ciris-verify-core` dependency. The reason is a `rusqlite` ↔ `sqlx-sqlite` linker conflict on the registry side that prevents direct dependency. Their vendored copy in `rust-registry/src/build_manifest.rs` matches this wire format byte-for-byte; their `ciris-crypto` dep gives them the verifier primitives directly.
 
 **Implication**: when we change the `BuildManifest` wire format, the registry team needs to be told so they can update their vendored copy. Coordination protocol:
 
@@ -493,8 +477,7 @@ Tracked operationally via: every CIRISVerify minor-version bump triggers a check
 
 ## References
 
-- Existing v1.7 implementation: `src/ciris-verify-core/src/security/function_integrity.rs:73-336`
-- Self-check entry point: `src/ciris-verify-core/src/registry.rs:1482`
-- Umbrella issue: https://github.com/CIRISAI/CIRISVerify/issues/1
-- Registry coordination: https://github.com/CIRISAI/CIRISRegistry/issues/1
+- `src/ciris-verify-core/src/security/function_integrity.rs` (`FunctionManifest`, `verify_hybrid_signature`)
+- Self-check entry point: `src/ciris-verify-core/src/registry.rs`
+- FSD-006 (the CC-native Contribution and standing)
 - Driver FSD: `CIRISAgent/FSD/PROOF_OF_BENEFIT_FEDERATION.md` §1.4 (hybrid sig precedent), §2.3 (score-as-pure-function), §7 (non-goals)

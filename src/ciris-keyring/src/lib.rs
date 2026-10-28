@@ -80,17 +80,12 @@ pub mod pqc;
 /// (Ed25519) and optional PQC (ML-DSA-65) local signing identities from
 /// filesystem seeds and get back `Arc<dyn HardwareSigner>` +
 /// `Option<Arc<dyn PqcSigner>>`. Eliminates the duplicated seed-loading
-/// glue that CIRISEdge, CIRISPersist, and CIRISLensCore each wrote
-/// separately before this lands.
+/// glue that CIRISEdge, CIRISPersist, and CIRISLensCore would otherwise each
+/// write separately.
 ///
-/// **v2.4.0 rename:** previously named `steward_seed` /
-/// `load_steward_seed` / `StewardSeedConfig`. "Steward" in CIRIS means a
+/// Named `local_seed`, not `steward_seed`: "steward" in CIRIS means a
 /// bootstrap-trusted root identity (`bootstrap_stewards.json`); this
-/// loader actually loads a deployment's *local* signing identity.
-/// v2.4.0 corrects the vocabulary — hard rename, no shim. Downstream
-/// imports update from `ciris_keyring::{load_steward_seed,
-/// StewardSeedConfig}` to `ciris_keyring::{load_local_seed,
-/// LocalSeedConfig}`.
+/// loader loads a deployment's *local* signing identity.
 #[cfg(all(feature = "software", feature = "pqc-ml-dsa"))]
 pub mod local_seed;
 

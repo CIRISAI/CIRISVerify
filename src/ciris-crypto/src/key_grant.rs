@@ -1,5 +1,5 @@
 //! Key-grant wrap primitive — `x25519-aes256-gcm-hkdf-sha256`
-//! (CIRISVerify#44 / CIRISNodeCore MEDIA_SHARING.md §6.3, v4.4.0+).
+//! (CIRISVerify#44 / CIRISNodeCore MEDIA_SHARING.md §6.3).
 //!
 //! HPKE RFC 9180 base-mode-shaped wrap-and-unwrap of a 32-byte DEK
 //! for a recipient identified by an X25519 public key. Multimedia
@@ -55,7 +55,7 @@
 //! so long-term provenance stays PQC-secure even when the wrap
 //! itself is classical-only.
 //!
-//! ## `wrap_algorithm: v2` — X25519 + ML-KEM-768 hybrid (v4.10.0+)
+//! ## `wrap_algorithm: v2` — X25519 + ML-KEM-768 hybrid
 //!
 //! CEG 0.15 §10.5.3 makes `wrap_algorithm: v2 = x25519+ml-kem-768`
 //! (FIPS 203 hybrid) **MANDATORY** for the streaming epoch-DEK
@@ -112,12 +112,11 @@ pub const KEY_GRANT_V2_INFO: &[u8] = b"cewp-key-grant/v2";
 /// Primitives in derivation order: X25519 KEX-half · ML-KEM-768 KEM-half ·
 /// AES-256-GCM AEAD · HKDF-SHA256 KDF.
 ///
-/// # CC 5.1 ratified this as **snake_case** (CIRISVerify#234)
+/// # The CC 5.1 identifier is **snake_case**
 ///
-/// CIRISConstitution rc3 (CC 5.1, class rule at CC 3.3.2) ratifies
+/// CC 5.1 (class rule at CC 3.3.2) fixes
 /// `x25519_mlkem768_aes256_gcm_hkdf_sha256` as *the single wire identifier* for
-/// this construction, resolving CIRISConstitution#37. The previously-shipped
-/// hyphenated form is a **non-conformant alias**: it MUST be rejected, and MUST
+/// this construction. The hyphenated form is a **non-conformant alias**: it MUST be rejected, and MUST
 /// NOT be normalized before comparison — normalizing would re-admit the very
 /// ambiguity the single-identifier rule exists to remove.
 ///

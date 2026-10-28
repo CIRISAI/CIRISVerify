@@ -1,5 +1,5 @@
 //! **Which cohort scopes may emit a Reticulum announce** — CC 5.4.6
-//! `announce-suppress`, ratified against CIRISConstitution#91 (RC4).
+//! `announce-suppress`.
 //!
 //! A Reticulum announce is the broadcast that tells the network a destination
 //! exists and is reachable. Announcing a *group-scoped* destination leaks the
@@ -9,17 +9,13 @@
 //! [`ciris_crypto::scope_privacy`] instead — no announce, no per-resolution
 //! query.
 //!
-//! ## The ruling this encodes (CIRISConstitution#91)
+//! ## The rule: the prohibition binds the packet
 //!
-//! CIRISEdge asked whether the prohibition binds **the packet** or **the
-//! leak** — specifically, whether an announce *targeted via RNS native
-//! addressing, iterated over the roster set* escapes it, since such an
-//! announce reveals nothing to an outsider and so satisfies 5.4.6's stated
-//! rationale while reading against its flat text.
-//!
-//! **Ruled: the packet.** A directed announce *inherits* the prohibition
-//! rather than escaping it — the clause binds the **emission**, not the
-//! addressing mode. Three legs:
+//! An announce *targeted via RNS native addressing, iterated over the roster
+//! set*, reveals nothing to an outsider and so appears to satisfy 5.4.6's
+//! stated rationale. It does not escape the prohibition: a directed announce
+//! *inherits* it, because the clause binds the **emission**, not the
+//! addressing mode. Three reasons:
 //!
 //! 1. **The purposive gloss is rationale, not exception**, because no directed
 //!    announce on RNS transport can satisfy it: multi-hop path learning *is*
@@ -36,7 +32,7 @@
 //!
 //! ## Why this makes epoch rotation free
 //!
-//! The ruling surfaced a dilemma that only bites under the *leak* reading:
+//! A dilemma bites only under the *leak* reading:
 //! 5.4.6's derivation is epoch-bound, so either derived destinations rotate
 //! with the MLS epoch — and every Add/Remove emits a synchronized roster-wide
 //! re-announce **wave**, leaking cardinality, timing and membership churn — or
@@ -47,12 +43,12 @@
 //! Rotation costs nothing observable: members re-derive from the directory and
 //! the new epoch secret, and a removed member loses addressing at the next
 //! epoch. **The derivation being epoch-bound is a feature here and a defect
-//! under the alternative** — which is part of why the alternative lost.
+//! under the alternative.**
 //!
 //! ## What remains open
 //!
 //! Multi-hop *scoped* reach is an amendment-plane question, not a settled
-//! prohibition, and the ruling states its bar: **no outsider-observable
+//! prohibition, and CC 5.4.6 states its bar: **no outsider-observable
 //! emission, no outsider-retained path state, no epoch-correlated wave.** Any
 //! future proposal is measured against those three.
 //!
@@ -168,12 +164,11 @@ pub fn wire_may_announce(scope: &str) -> bool {
 }
 
 impl Classification for CohortScope {
-    /// **NORMATIVE** — tracks CC 5.4.6 as ratified against
-    /// CIRISConstitution#91. A consumer may gate on it; disagreement belongs
-    /// on the ratifying document, which is exactly the route #91 took.
+    /// **NORMATIVE** — tracks CC 5.4.6. A consumer may gate on it;
+    /// disagreement belongs on the ratifying document.
     fn gating() -> Gating {
         Gating::Normative {
-            authority: "CC 5.4.6 (ratified, CIRISConstitution#91)",
+            authority: "CC 5.4.6",
         }
     }
 }
@@ -212,7 +207,7 @@ mod tests {
         }
     }
 
-    /// **The #91 ruling itself.** The prohibition binds the emission, so a
+    /// **The CC 5.4.6 rule itself.** The prohibition binds the emission, so a
     /// directed announce inherits it — there is deliberately no addressing-mode
     /// parameter that could relax the answer. This test exists so that adding
     /// one is a visible act.
@@ -256,9 +251,6 @@ mod tests {
     fn the_rule_is_gateable_and_names_its_authority() {
         let g = CohortScope::gating();
         assert!(g.may_gate());
-        assert_eq!(
-            g.amendable_by(),
-            Some("CC 5.4.6 (ratified, CIRISConstitution#91)")
-        );
+        assert_eq!(g.amendable_by(), Some("CC 5.4.6"));
     }
 }

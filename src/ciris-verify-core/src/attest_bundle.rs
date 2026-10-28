@@ -1,5 +1,5 @@
 //! Measurement-shaped attestation bundle for downstream consumers
-//! (CIRISVerify#36, v3.6.0+).
+//! (CIRISVerify#36).
 //!
 //! [`AttestBundle`] regroups an already-composed
 //! [`FederationProvenance`] into named-field measurements. Each field

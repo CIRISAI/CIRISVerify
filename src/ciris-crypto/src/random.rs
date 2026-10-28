@@ -1,4 +1,4 @@
-//! Cryptographically secure RNG facade (CIRISVerify#7, v2.0.0+).
+//! Cryptographically secure RNG facade (CIRISVerify#7).
 //!
 //! Centralizes the federation's RNG policy in `ciris-crypto`. Consumers
 //! that need raw random bytes (nonces, salts, software-mode master-key

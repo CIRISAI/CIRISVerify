@@ -106,8 +106,7 @@ pub mod transit_kex;
 #[cfg(feature = "self-enc")]
 pub mod self_enc;
 
-// v6.3.0+ — scope-native privacy surface (CIRISVerify#82, CEWP
-// SCOPE_PRIVACY.md). First cut in the cross-cdylib lockstep cascade:
+// Scope-native privacy surface (CEWP SCOPE_PRIVACY.md):
 // XChaCha20-Poly1305 AEAD, HPKE mode_base over the X-Wing hybrid KEM,
 // and the §2.2/§2.4 record_id/symbol-key derivation helpers. HKDF-SHA3-256
 // and HMAC-SHA3-256 are added in-module to `kdf` / `hmac`.

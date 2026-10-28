@@ -24,7 +24,7 @@
 //! # Canonical home
 //!
 //! These shapes were first implemented standalone in CIRISEdge
-//! (`src/replication/storage_contention.rs`, v8.5.0), which re-derived the
+//! (`src/replication/storage_contention.rs`), which re-derived the
 //! preimage discipline + bound-hybrid crypto locally. That blocks non-edge
 //! consumers (CIRISPersist can't depend on edge) and forks the canonical bytes.
 //! This module is the single source of truth: CIRISPersist wraps it on the

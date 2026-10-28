@@ -1,5 +1,5 @@
 //! Operational-data admission FFI surface for the Python wheel
-//! (CIRISVerify#65, v5.1.0+).
+//! (CIRISVerify#65).
 //!
 //! Wraps [`ciris_verify_core::operational_admit`] — the CEG 1.0-RC2
 //! §5.6.8.13 admit-verification surface — so a wheel consumer can run

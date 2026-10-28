@@ -124,10 +124,9 @@ fn sha256_12(parts: &[&[u8]]) -> [u8; AV_NONCE_LEN] {
 /// The **retired** A/V inner nonce:
 /// `SHA-256( b"CIRIS-AV-INNER-V1" ‖ stream_id[32] ‖ epoch_be8 ‖ chunk_seq_be8 )[0..12]`.
 ///
-/// It was a second normative seal for what CC calls one wire. The steward ruled
-/// the realtime inner seal is the CC 5.3.3.1 STREAM nonce (CIRISConstitution#140,
-/// CC rc7 `7561d07`); use [`av_inner_nonce`]. Retained only so an existing
-/// artifact can be identified, never to seal.
+/// The realtime inner seal is the CC 5.3.3.1 STREAM nonce, one seal for live
+/// and stored streams; use [`av_inner_nonce`]. This construction is retained
+/// only so an existing artifact can be identified, never to seal.
 #[deprecated(
     since = "20.0.0",
     note = "the A/V inner seal is the CC 5.3.3.1 STREAM nonce (CIRISConstitution#140); use av_inner_nonce"

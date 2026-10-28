@@ -1,18 +1,15 @@
 //! `ciris-build-sign register` — atomically write all three registry
 //! tables (`builds` + `binary_manifests` + `function_manifests`) for a
-//! CIRIS primitive release. Closes CIRISVerify#6.
+//! CIRIS primitive release (CIRISVerify#6).
 //!
-//! ## Background
+//! ## Why
 //!
-//! CIRISAgent CI cut over from the legacy `register_agent_build.py`
-//! (which wrote all 3 tables) to `ciris-build-sign sign` +
-//! `curl POST /v1/verify/build-manifest` (which writes only
-//! `function_manifests`). Parent rows stopped being written for every
-//! release ≥ 2.7.8 — same gap reproduces in every primitive that adopts
-//! the new tooling. This module restores parent-row writes inside
-//! `ciris-build-sign` so all six onboarded primitives get the fix for free.
+//! `ciris-build-sign sign` + `POST /v1/verify/build-manifest` writes only
+//! `function_manifests`. This module writes the parent rows too, inside
+//! `ciris-build-sign`, so every onboarded primitive registers all three
+//! tables.
 //!
-//! ## Always-3 dispatch (v1.10.2+)
+//! ## Always-3 dispatch
 //!
 //! Every successful `register` invocation makes exactly **three POST
 //! classes** in dependency order:
@@ -23,11 +20,9 @@
 //!    `function_manifests` rows
 //!
 //! Total POSTs per invocation: `2 + target_count`. Logged as
-//! `[1/N] / [2/N] / [3/N] ...` so any future regression that drops a
-//! step is visible in the CI log. (v1.10.1 had a bug where releases
-//! detected as "file mode" silently skipped steps 2 and 3 — see
-//! CIRISVerify#8 / CIRISAgent#727. v1.10.2 makes the dispatcher mode-
-//! independent and adds an algebra invariant test to lock the contract.)
+//! `[1/N] / [2/N] / [3/N] ...` so a dropped step is visible in the CI log.
+//! The dispatcher is independent of content mode (file vs binary), and an
+//! algebra invariant test locks the contract (CIRISVerify#8).
 //!
 //! ## Content shape (file vs binary)
 //!

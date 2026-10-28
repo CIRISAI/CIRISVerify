@@ -1,22 +1,13 @@
-//! **May a consumer gate on this?** — the answer, stated in the type
-//! (CIRISVerify#238 follow-up).
+//! **May a consumer gate on this?** — the answer, stated in the type.
 //!
 //! ## Why this module exists
 //!
 //! Verify ships classifications (`ConsentDisposition`, `AndroidSecurityLevel`,
-//! `Purpose`, …) that other repos consume as **policy**. At least three do
-//! today. The failure this prevents actually happened:
-//!
-//! `ConsentClass` was described as *"a proposal from the measuring side, not a
-//! ruling"* — **in prose, in a different document**. CIRISPersist#569 read it as
-//! a ruling and derived an admission gate from it. It was neither malicious nor
-//! careless: nothing in the type said which it was, and the reader had no way to
-//! tell without finding the sentence.
-//!
-//! `is_consent_gated()` fixed that one case. This module is the **pattern**: any
-//! classification verify ships states, in the type itself, whether a consumer
-//! may gate on it — so the next consumer cannot repeat the mistake by reading
-//! the type correctly and the prose not at all.
+//! `Purpose`, …) that other repos consume as **policy**. If whether a
+//! classification is a ruling or a proposal is stated only in prose, in a
+//! different document, a consumer reading the type alone can derive an
+//! admission gate from a proposal. So any classification verify ships states,
+//! in the type itself, whether a consumer may gate on it.
 //!
 //! ## The four statuses
 //!
@@ -36,7 +27,7 @@
 //!
 //! ## Why `Normative` and `Structural` are separate (CIRISOntology#3)
 //!
-//! The arity ruling found that **"binding" is two words wearing one**.
+//! CIRISOntology#3's arity analysis shows that **"binding" is two words wearing one**.
 //! `binding_never_varies` covers the held classes (deontic, structural,
 //! testimonial), but `axiomatic_binds_by_varying` shows a class that is binding
 //! *and* varies — so a reader who infers "held" from "binding" is wrong, and a
@@ -64,7 +55,7 @@
 //! artifact and a [`Frame`](crate::classification::Frame).
 //!
 //! [`Arity::testimonial`](crate::classification::Arity::testimonial) therefore **refuses an undeclared frame** rather than
-//! defaulting one. Defaulting would be the exact failure the ruling names — an
+//! defaulting one. Defaulting would be the exact failure the arity analysis names — an
 //! unstated assumption about what survives, silently deciding the verdict. And
 //! the frame belongs to the *harness*, not the block:
 //! `self_declared_frame_undetermined` shows that letting each block declare its
@@ -77,15 +68,13 @@
 //! ## Discipline
 //!
 //! A `Proposal` is a promise to either get it ratified or withdraw it — the
-//! status is not a place to park an opinion indefinitely. `ConsentDisposition`
-//! spent one release as an unlabelled proposal, contradicted a ruling, and was
-//! caught by a downstream. That is the cost this module prices in.
+//! status is not a place to park an opinion indefinitely.
 
 /// Whether a consumer may gate on a classification verify ships — and, when it
 /// may, **on what grounds**.
 ///
 /// The [`Normative`](Self::Normative) / [`Structural`](Self::Structural) split
-/// implements CIRISOntology#3's arity ruling (`binding_never_varies` +
+/// implements CIRISOntology#3's arity analysis (`binding_never_varies` +
 /// `axiomatic_binds_by_varying`): "binding" is two words wearing one. See the
 /// module docs.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -174,7 +163,7 @@ impl Gating {
     /// ## Where this is applied
     ///
     /// Verify itself composes no verdict — traced: `AttestBundle` regroups
-    /// `AttestationEntry` items and `holonomic::aggregation` folds over `f64`
+    /// `AttestationEntry` items and `substrate::aggregation` folds over `f64`
     /// masses, so **no classification travels through verify's own composition
     /// paths** and there is no laundering path inside this crate. This is the
     /// algebra for **consumers** deriving over verify's outputs, which is where
@@ -266,7 +255,7 @@ pub trait Classification {
 /// testimonial classification is made against (CIRISOntology#3).
 ///
 /// The frame belongs to the *harness*, declared once and in the open. The
-/// ruling is explicit that pushing it into the blocks does not rescue it
+/// arity analysis is explicit that pushing it into the blocks does not rescue it
 /// (`self_declared_frame_undetermined`): let each block declare its own frame
 /// and the verdict still turns on which declaration rule was chosen, so the
 /// frame is a free parameter wherever it is put.
@@ -294,7 +283,7 @@ impl Frame {
 /// A testimonial classification was attempted without declaring its frame.
 ///
 /// **Refused, never defaulted.** Defaulting would pick a frame silently, and
-/// the ruling's negative result (`repairability_not_intrinsic`) is precisely
+/// the arity analysis's negative result (`repairability_not_intrinsic`) is precisely
 /// that the verdict flips with the frame — so a defaulted frame is an
 /// unstated assumption that determines the answer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -508,8 +497,7 @@ mod shipped_classifications {
 
     /// No classification ships as an unresolved [`Gating::Proposal`]. A
     /// proposal is a promise to get it ratified or withdraw it — not a place to
-    /// park an opinion. `ConsentDisposition` spent one release as an unlabelled
-    /// proposal, contradicted a ruling, and was caught by a downstream.
+    /// park an opinion.
     #[test]
     fn nothing_ships_as_an_unresolved_proposal() {
         use crate::presentation::IdentifierScope;
@@ -668,7 +656,7 @@ mod propagation {
     }
 }
 
-/// **Frame-relativity** — the arity ruling, exercised (CIRISOntology#3).
+/// **Frame-relativity** — the arity analysis, exercised (CIRISOntology#3).
 ///
 /// These mirror the Lean theorems rather than restating their conclusions, so
 /// a change that quietly reintroduces a defaulted frame fails here.

@@ -1,5 +1,5 @@
 //! ML-KEM-768 (FIPS 203 final) primitive — bytes-only public API
-//! (CIRISVerify#47, v4.6.0+).
+//! (CIRISVerify#47).
 //!
 //! Backend: `ml-kem` crate (RustCrypto, FIPS 203 final). This module
 //! wraps it in a bytes-only public surface — consumers handle
