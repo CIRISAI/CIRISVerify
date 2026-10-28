@@ -9,21 +9,17 @@
 //! ┌─────────────────────────────────────────────────────────────┐
 //! │                    LicenseEngine                             │
 //! │                                                              │
-//! │  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐      │
-//! │  │ DnsValidator │  │ HttpsClient  │  │ LicenseCache │      │
-//! │  │ (multi-src)  │  │ (cert pin)   │  │ (encrypted)  │      │
-//! │  └──────────────┘  └──────────────┘  └──────────────┘      │
-//! │                           │                                  │
-//! │                           ▼                                  │
 //! │  ┌──────────────────────────────────────────────────┐      │
-//! │  │              ConsensusValidator                   │      │
-//! │  │         (2-of-3 source agreement)                │      │
+//! │  │   TrustRootValidator  (CC 5.3.4)                  │      │
+//! │  │   each HTTPS host's GenesisBundle → verified      │      │
+//! │  │   against the baked accord holders → one root     │      │
+//! │  │   (highest version; equal-version split = fail)   │      │
 //! │  └──────────────────────────────────────────────────┘      │
 //! │                           │                                  │
 //! │                           ▼                                  │
 //! │  ┌──────────────────────────────────────────────────┐      │
-//! │  │              LicenseVerifier                      │      │
-//! │  │    (JWT parsing, dual signature verification)    │      │
+//! │  │   Licence gate — community until the licensure    │      │
+//! │  │   row path lands (`licensure:{authority}:v1`)     │      │
 //! │  └──────────────────────────────────────────────────┘      │
 //! │                           │                                  │
 //! │                           ▼                                  │
@@ -88,7 +84,6 @@ pub mod config;
 /// Device-attestation chain validation (#199) — Android Key Attestation to a
 /// pinned vendor root. Hardware is a trust signal, never a requirement.
 pub mod device_attestation;
-pub mod dns;
 pub mod doc_integrity;
 pub mod engine;
 pub mod error;
@@ -111,7 +106,6 @@ pub mod https;
 pub mod humanity_accord;
 pub mod infrastructure_community;
 pub mod jcs;
-pub mod jwt;
 pub mod keys;
 pub mod license;
 pub mod locale_merkle;
@@ -131,11 +125,9 @@ pub mod reconsider_dos;
 /// from 'tampered', cryptographically rather than by assertion.
 pub mod redactable;
 pub mod registry;
-pub mod revocation;
 pub mod security;
 pub mod self_at_login;
 pub mod skill_import;
-pub mod steward_key;
 pub mod subject_binding;
 /// CIRISVerify#202 — compile-time-fenced test-only trust-root / custody
 /// relaxation for the local mesh harness (never in a prod artifact).
@@ -168,7 +160,7 @@ pub use canonical_subject::{
     CANONICAL_SUBJECT_PREFIX,
 };
 pub use ceg_error::{CegError, CegErrorCode};
-pub use config::{TrustModel, VerifyConfig};
+pub use config::VerifyConfig;
 pub use engine::LicenseEngine;
 pub use error::VerifyError;
 pub use federation_envelope::{
@@ -187,7 +179,6 @@ pub use humanity_accord::{
     verify_invocation, Invocation, InvocationDedup, InvocationError, InvocationKind,
     INVOCATION_DOMAIN_PREFIX, LIFECYCLE_DOMAIN_PREFIX,
 };
-pub use jwt::{HybridJwt, HybridJwtParser, JwtError};
 pub use keys::{
     derive_symmetric_key, derive_transport_identity, DERIVED_KEY_LEN, TRANSPORT_SEED_LEN,
 };
@@ -208,7 +199,6 @@ pub use reconsider_dos::{
     DEFAULT_ACTOR_BUDGET, DEFAULT_BUDGET_WINDOW_MS, DEFAULT_EVENT_RATE_LIMIT,
     DEFAULT_HARASSMENT_CLUSTER_THRESHOLD,
 };
-pub use revocation::{RevocationChecker, RevocationStatus};
 pub use security::file_integrity::{
     check_available as check_available_agent_integrity, check_full as check_agent_integrity,
     check_spot as spot_check_agent_integrity, generate_manifest, load_manifest,
@@ -217,10 +207,6 @@ pub use security::file_integrity::{
 pub use security::{constant_time_eq, IntegrityChecker, IntegrityStatus};
 pub use skill_import::{
     verify_skill_import_manifest, SkillImportManifest, SourceType, SKILL_IMPORT_DOMAIN_V2,
-};
-pub use steward_key::{
-    verify_steward_key_response, CertValiditySelfAttest, ResponseSignature, Steward,
-    StewardKeyResponse, ThresholdPolicy, STEWARD_KEY_RESPONSE_DOMAIN_PREFIX,
 };
 pub use threshold::{
     verify_threshold_signatures, verify_threshold_signatures_with_policy, HybridPolicy,

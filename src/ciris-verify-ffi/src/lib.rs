@@ -71,6 +71,9 @@ mod wheel_scope_privacy;
 mod wheel_self_enc;
 mod wheel_skill_import;
 
+#[cfg(any(target_os = "android", target_os = "ios"))]
+mod mobile_trust_root;
+
 #[cfg(target_os = "android")]
 mod android_sync;
 
@@ -1482,43 +1485,26 @@ fn build_timeout_response(_request: &LicenseStatusRequest) -> LicenseStatusRespo
             timestamp: now,
         },
         validation: ValidationResults {
-            dns_us: SourceResult {
-                source: "us.registry.ciris-services-1.ai".to_string(),
-                reachable: false,
-                valid: false,
-                checked_at: now,
-                error: Some("Hard timeout: network stack blocked".to_string()),
-                error_category: Some("hard_timeout".to_string()),
-                error_details: Some(
-                    "FFI layer 15s timeout fired - network operations blocked indefinitely"
-                        .to_string(),
-                ),
-            },
-            dns_eu: SourceResult {
-                source: "eu.registry.ciris-services-1.ai".to_string(),
-                reachable: false,
-                valid: false,
-                checked_at: now,
-                error: Some("Hard timeout: network stack blocked".to_string()),
-                error_category: Some("hard_timeout".to_string()),
-                error_details: Some(
-                    "FFI layer 15s timeout fired - network operations blocked indefinitely"
-                        .to_string(),
-                ),
-            },
-            https: SourceResult {
-                source: "api.registry.ciris-services-1.ai".to_string(),
-                reachable: false,
-                valid: false,
-                checked_at: now,
-                error: Some("Hard timeout: network stack blocked".to_string()),
-                error_category: Some("hard_timeout".to_string()),
-                error_details: Some(
-                    "FFI layer 15s timeout fired - network operations blocked indefinitely"
-                        .to_string(),
-                ),
-            },
+            // The FFI hard timeout fired before any trust-root host answered.
+            sources: VerifyConfig::default()
+                .trust_root_endpoints()
+                .into_iter()
+                .map(|host| SourceResult {
+                    source: host,
+                    reachable: false,
+                    valid: false,
+                    checked_at: now,
+                    error: Some("Hard timeout: network stack blocked".to_string()),
+                    error_category: Some("hard_timeout".to_string()),
+                    error_details: Some(
+                        "FFI layer timeout fired - network operations blocked indefinitely"
+                            .to_string(),
+                    ),
+                    bundle_fingerprint: None,
+                })
+                .collect(),
             overall: ValidationStatus::NoSourcesReachable,
+            trust_root: None,
         },
         metadata: ResponseMetadata {
             protocol_version: "2.0.0".to_string(),
@@ -4242,7 +4228,7 @@ pub unsafe extern "C" fn ciris_verify_get_diagnostics(
 ///   "level": 5,
 ///   "checks_passed": 4,
 ///   "checks_total": 4,
-///   "sources": { "dns_us_valid": true, ... },
+///   "sources": { "sources": [ { "endpoint": "...", "verified": true } ], "trust_root": { ... } },
 ///   "file_integrity": { ... },
 ///   "audit_trail": { ... },
 ///   "diagnostics": "...",
@@ -4390,18 +4376,7 @@ unsafe fn run_attestation_inner(
                 file_integrity: None,
                 python_integrity: None,
                 module_integrity: None,
-                sources: ciris_verify_core::unified::SourceCheckResult {
-                    dns_us_reachable: false,
-                    dns_us_valid: false,
-                    dns_us_error: Some("timeout".to_string()),
-                    dns_eu_reachable: false,
-                    dns_eu_valid: false,
-                    dns_eu_error: Some("timeout".to_string()),
-                    https_reachable: false,
-                    https_valid: false,
-                    https_error: Some("timeout".to_string()),
-                    validation_status: "timeout".to_string(),
-                },
+                sources: ciris_verify_core::unified::SourceCheckResult::not_run("timeout"),
                 audit_trail: None,
                 checks_passed: 0,
                 checks_total: 0,
@@ -4615,10 +4590,7 @@ unsafe fn run_attestation_inner(
             .unwrap_or(false);
         // L2 requires: L1 + device attestation + hardware platform + hardware-backed key
         let l2_pass = l1_pass && da.verified && !running_in_vm && hardware_backed;
-        let sources_agreeing = u8::from(result.sources.dns_us_valid)
-            + u8::from(result.sources.dns_eu_valid)
-            + u8::from(result.sources.https_valid);
-        let l3_pass = l2_pass && sources_agreeing >= 2;
+        let l3_pass = l2_pass && result.sources.trust_root_verified();
         // L4: File integrity (MUST be checked and valid - if not checked, level caps at L3)
         // Prefer module_integrity (handles server-only exclusions), fall back to legacy
         let l4_pass = if result.module_integrity.is_some() {
@@ -4701,10 +4673,7 @@ unsafe fn run_attestation_inner(
                 .unwrap_or(false);
             // L2: Hardware environment detected (TPM + not VM + hardware-backed key)
             let l2_pass = l1_pass && has_tpm && !running_in_vm && hardware_backed;
-            let sources_agreeing = u8::from(result.sources.dns_us_valid)
-                + u8::from(result.sources.dns_eu_valid)
-                + u8::from(result.sources.https_valid);
-            let l3_pass = l2_pass && sources_agreeing >= 2;
+            let l3_pass = l2_pass && result.sources.trust_root_verified();
             // L4: File integrity (MUST be checked and valid)
             // Prefer module_integrity (handles server-only exclusions), fall back to legacy
             let l4_pass = if result.module_integrity.is_some() {
@@ -4765,11 +4734,11 @@ unsafe fn run_attestation_inner(
                 // TPM available - level calculation is complete, not pending
                 result.level_pending = false;
                 tracing::info!(
-                    "Desktop level calculated: L1={}, L2={} (TPM), L3={} (sources={}), level={}",
+                    "Desktop level calculated: L1={}, L2={} (TPM), L3={} (verified hosts={}), level={}",
                     l1_pass,
                     l2_pass,
                     l3_pass,
-                    sources_agreeing,
+                    result.sources.verified_count(),
                     result.level
                 );
             } else {
@@ -11219,15 +11188,21 @@ mod tests {
             "python_integrity": null,
             "module_integrity": null,
             "sources": {
-                "dns_us_reachable": true,
-                "dns_us_valid": true,
-                "dns_us_error": null,
-                "dns_eu_reachable": true,
-                "dns_eu_valid": true,
-                "dns_eu_error": null,
-                "https_reachable": true,
-                "https_valid": true,
-                "https_error": null,
+                "sources": [{
+                    "endpoint": "https://api.registry.ciris-services-1.ai",
+                    "reachable": true,
+                    "verified": true,
+                    "bundle_fingerprint": "sha256:00"
+                }],
+                "trust_root": {
+                    "version": 4,
+                    "family_key_id": "humanity-accord",
+                    "charter_root_key_id": "humanity-accord",
+                    "authorized_by": ["A1", "B1"],
+                    "threshold": 2,
+                    "bundle_fingerprint": "sha256:00",
+                    "serve_node_key_ids": ["ciris-canonical-1"]
+                },
                 "validation_status": "AllSourcesAgree"
             },
             "audit_trail": null,

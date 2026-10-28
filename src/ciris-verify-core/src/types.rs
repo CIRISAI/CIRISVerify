@@ -221,20 +221,56 @@ fn default_signature_mode() -> String {
     "HybridRequired".to_string()
 }
 
-/// Multi-source validation results.
+/// Trust-root validation results (CC 5.3.4).
+///
+/// One entry per trust-root host. Each host's GenesisBundle is verified on its
+/// own against the accord holders baked into this binary; a single verified
+/// host is enough, and extra hosts add availability, not trust. DNS is not a
+/// source.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationResults {
-    /// DNS US source result.
-    pub dns_us: SourceResult,
-
-    /// DNS EU source result.
-    pub dns_eu: SourceResult,
-
-    /// HTTPS endpoint result.
-    pub https: SourceResult,
+    /// One result per configured trust-root host, in configuration order.
+    pub sources: Vec<SourceResult>,
 
     /// Overall validation status.
     pub overall: ValidationStatus,
+
+    /// The selected trust root, when one was selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_root: Option<TrustRootSummary>,
+}
+
+/// The trust root a node selected: what its verified GenesisBundle says.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TrustRootSummary {
+    /// Bundle schema version.
+    pub version: u32,
+    /// The accord family (`humanity-accord`).
+    pub family_key_id: String,
+    /// The charter root, read off the verified `genesis-charter` row.
+    pub charter_root_key_id: String,
+    /// The baked holders whose authorization verified.
+    pub authorized_by: Vec<String>,
+    /// The threshold that was applied.
+    pub threshold: usize,
+    /// `sha256:<hex>` over JCS(bundle), recomputed.
+    pub bundle_fingerprint: String,
+    /// Key ids of the serve nodes the bundle confers.
+    pub serve_node_key_ids: Vec<String>,
+}
+
+impl From<&crate::genesis_bundle::VerifiedGenesisBundle> for TrustRootSummary {
+    fn from(v: &crate::genesis_bundle::VerifiedGenesisBundle) -> Self {
+        Self {
+            version: v.version,
+            family_key_id: v.family_key_id.clone(),
+            charter_root_key_id: v.charter_root_key_id.clone(),
+            authorized_by: v.authorized_by.clone(),
+            threshold: v.threshold,
+            bundle_fingerprint: v.bundle_fingerprint.clone(),
+            serve_node_key_ids: v.serve_nodes.iter().map(|n| n.key_id.clone()).collect(),
+        }
+    }
 }
 
 /// Result from a single validation source.
@@ -265,20 +301,25 @@ pub struct SourceResult {
     /// Contains sanitized error message without sensitive internals.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub error_details: Option<String>,
+
+    /// `sha256:<hex>` of the bundle this source served, when it verified.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_fingerprint: Option<String>,
 }
 
 /// Overall validation status.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ValidationStatus {
-    /// All 3 sources agree.
+    /// A trust root was selected and every host served it.
     AllSourcesAgree,
-    /// 2 of 3 sources agree (degraded).
+    /// A trust root was selected; some hosts were unreachable, refused, or
+    /// served an older (superseded) bundle.
     PartialAgreement,
-    /// Sources disagree (possible attack).
+    /// Two verified bundles at the same version (equivocation): no root.
     SourcesDisagree,
-    /// No sources reachable (offline).
+    /// No trust-root host reachable: no root.
     NoSourcesReachable,
-    /// Validation error.
+    /// Hosts answered but none served a bundle that verifies: no root.
     ValidationError,
 }
 

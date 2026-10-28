@@ -25,7 +25,7 @@ use crate::registry::{
 };
 use crate::security::file_integrity::{self, FileIntegrityResult};
 use crate::security::function_integrity::{self, FunctionManifest};
-use crate::validation::{ConsensusValidator, ValidationResult};
+use crate::validation::{TrustRootValidator, ValidationResult};
 
 // =============================================================================
 // MANIFEST CACHE — survives across FFI calls so intermittent network failures
@@ -503,45 +503,77 @@ impl From<FileIntegrityResult> for FileCheckSummary {
     }
 }
 
-/// Source validation check result.
+/// One trust-root host's result in a full attestation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrustRootSourceCheck {
+    /// The host's base URL.
+    pub endpoint: String,
+    /// Did the host answer?
+    pub reachable: bool,
+    /// Did it serve a GenesisBundle that verifies against the baked holders?
+    pub verified: bool,
+    /// `sha256:<hex>` of the verified bundle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bundle_fingerprint: Option<String>,
+    /// Failure message, if any.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
+}
+
+/// Trust-root validation result in a full attestation (CC 5.3.4).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceCheckResult {
-    /// DNS US reachable.
-    pub dns_us_reachable: bool,
-    /// DNS US valid.
-    pub dns_us_valid: bool,
-    /// DNS US error (if any).
-    pub dns_us_error: Option<String>,
-    /// DNS EU reachable.
-    pub dns_eu_reachable: bool,
-    /// DNS EU valid.
-    pub dns_eu_valid: bool,
-    /// DNS EU error (if any).
-    pub dns_eu_error: Option<String>,
-    /// HTTPS reachable.
-    pub https_reachable: bool,
-    /// HTTPS valid.
-    pub https_valid: bool,
-    /// HTTPS error (if any).
-    pub https_error: Option<String>,
+    /// One entry per configured trust-root host.
+    pub sources: Vec<TrustRootSourceCheck>,
+    /// The selected trust root, if one was selected.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trust_root: Option<crate::types::TrustRootSummary>,
     /// Overall validation status.
     pub validation_status: String,
+}
+
+impl SourceCheckResult {
+    /// A result for when validation could not run at all.
+    #[must_use]
+    pub fn not_run(status: &str) -> Self {
+        Self {
+            sources: Vec::new(),
+            trust_root: None,
+            validation_status: status.to_string(),
+        }
+    }
+
+    /// A trust root was selected (the L3 registry-consensus bar).
+    #[must_use]
+    pub fn trust_root_verified(&self) -> bool {
+        self.trust_root.is_some()
+    }
+
+    /// How many hosts served a bundle that verified.
+    #[must_use]
+    pub fn verified_count(&self) -> usize {
+        self.sources.iter().filter(|s| s.verified).count()
+    }
 }
 
 impl From<&ValidationResult> for SourceCheckResult {
     fn from(v: &ValidationResult) -> Self {
         Self {
-            dns_us_reachable: v.source_details.dns_us_reachable,
-            dns_us_valid: v.source_details.dns_us_reachable
-                && v.source_details.dns_us_error.is_none(),
-            dns_us_error: v.source_details.dns_us_error.clone(),
-            dns_eu_reachable: v.source_details.dns_eu_reachable,
-            dns_eu_valid: v.source_details.dns_eu_reachable
-                && v.source_details.dns_eu_error.is_none(),
-            dns_eu_error: v.source_details.dns_eu_error.clone(),
-            https_reachable: v.source_details.https_reachable,
-            https_valid: v.source_details.https_reachable && v.source_details.https_error.is_none(),
-            https_error: v.source_details.https_error.clone(),
+            sources: v
+                .sources
+                .iter()
+                .map(|s| TrustRootSourceCheck {
+                    endpoint: s.endpoint.clone(),
+                    reachable: s.reachable(),
+                    verified: s.verified().is_some(),
+                    bundle_fingerprint: s.verified().map(|b| b.bundle_fingerprint.clone()),
+                    error: s.error().map(str::to_string),
+                })
+                .collect(),
+            trust_root: v
+                .trust_root
+                .as_ref()
+                .map(crate::types::TrustRootSummary::from),
             validation_status: format!("{:?}", v.status),
         }
     }
@@ -554,8 +586,8 @@ pub struct UnifiedAttestationEngine {
     /// Configuration (reserved for future use).
     #[allow(dead_code)]
     config: VerifyConfig,
-    /// Consensus validator.
-    consensus_validator: ConsensusValidator,
+    /// Trust-root validator (CC 5.3.4).
+    trust_root_validator: TrustRootValidator,
     /// Resilient registry client with failover.
     registry_client: Option<ResilientRegistryClient>,
 }
@@ -654,12 +686,8 @@ async fn probe_single_endpoint(endpoint: String) -> bool {
 impl UnifiedAttestationEngine {
     /// Create a new unified attestation engine.
     pub fn new(config: VerifyConfig) -> Result<Self, VerifyError> {
-        let consensus_validator = ConsensusValidator::with_trust_model(
-            config.dns_us_host.clone(),
-            config.dns_eu_host.clone(),
-            config.https_endpoint.clone(),
-            config.https_endpoints.clone(),
-            config.trust_model.clone(),
+        let trust_root_validator = TrustRootValidator::new(
+            config.trust_root_endpoints(),
             config.timeout,
             config.cert_pin.clone(),
         );
@@ -678,7 +706,7 @@ impl UnifiedAttestationEngine {
 
         Ok(Self {
             config,
-            consensus_validator,
+            trust_root_validator,
             registry_client,
         })
     }
@@ -710,18 +738,7 @@ impl UnifiedAttestationEngine {
                     file_integrity: None,
                     python_integrity: None,
                     module_integrity: None,
-                    sources: SourceCheckResult {
-                        dns_us_reachable: false,
-                        dns_us_valid: false,
-                        dns_us_error: Some("timeout".to_string()),
-                        dns_eu_reachable: false,
-                        dns_eu_valid: false,
-                        dns_eu_error: Some("timeout".to_string()),
-                        https_reachable: false,
-                        https_valid: false,
-                        https_error: Some("timeout".to_string()),
-                        validation_status: "Timeout".to_string(),
-                    },
+                    sources: SourceCheckResult::not_run("Timeout"),
                     audit_trail: None,
                     checks_passed: 0,
                     checks_total: 0,
@@ -819,18 +836,7 @@ impl UnifiedAttestationEngine {
             file_integrity: None,
             python_integrity: None,
             module_integrity: None,
-            sources: SourceCheckResult {
-                dns_us_reachable: false,
-                dns_us_valid: false,
-                dns_us_error: Some("network_unavailable".to_string()),
-                dns_eu_reachable: false,
-                dns_eu_valid: false,
-                dns_eu_error: Some("network_unavailable".to_string()),
-                https_reachable: false,
-                https_valid: false,
-                https_error: Some("network_unavailable".to_string()),
-                validation_status: "NetworkUnavailable".to_string(),
-            },
+            sources: SourceCheckResult::not_run("NetworkUnavailable"),
             audit_trail: None,
             checks_passed: 0,
             checks_total: 0,
@@ -1022,16 +1028,19 @@ impl UnifiedAttestationEngine {
                     None
                 }
             },
-            // 4. Source validation (DNS + HTTPS consensus)
+            // 4. Trust-root validation (CC 5.3.4)
             async {
-                info!("VERIFY STEP 4/5 STARTING: Source validation (DNS US + EU + HTTPS)");
-                let result = self.consensus_validator.validate_steward_key().await;
-                let sources_ok = u8::from(result.source_details.dns_us_reachable)
-                    + u8::from(result.source_details.dns_eu_reachable)
-                    + u8::from(result.source_details.https_reachable);
+                info!("VERIFY STEP 4/5 STARTING: Trust-root validation (GenesisBundle)");
+                let result = self.trust_root_validator.validate_trust_root().await;
                 info!(
-                    "VERIFY STEP 4/5 COMPLETE: {}/3 sources reachable",
-                    sources_ok
+                    "VERIFY STEP 4/5 COMPLETE: {}/{} trust-root hosts reachable, root {}",
+                    result.reachable_count(),
+                    result.sources.len(),
+                    if result.has_trust_root() {
+                        "selected"
+                    } else {
+                        "NOT selected"
+                    }
                 );
                 result
             },
@@ -1324,64 +1333,42 @@ impl UnifiedAttestationEngine {
             }
         }
 
-        // Process source validation results
-        info!("VERIFY STEP 4/6 STARTING: Source validation analysis");
-        checks_total += 3; // DNS US, DNS EU, HTTPS
+        // Process trust-root validation results (one check: was a root selected)
+        info!("VERIFY STEP 4/6 STARTING: Trust-root validation analysis");
+        checks_total += 1;
         let sources = SourceCheckResult::from(&validation);
-        let sources_valid_count = u8::from(sources.dns_us_valid)
-            + u8::from(sources.dns_eu_valid)
-            + u8::from(sources.https_valid);
+        if sources.trust_root_verified() {
+            checks_passed += 1;
+        }
         info!(
-            "VERIFY STEP 4/6 COMPLETE: {}/3 sources valid (status={})",
-            sources_valid_count, sources.validation_status
+            "VERIFY STEP 4/6 COMPLETE: {}/{} hosts verified (status={})",
+            sources.verified_count(),
+            sources.sources.len(),
+            sources.validation_status
         );
 
-        if sources.dns_us_valid {
-            checks_passed += 1;
+        diagnostics.push_str("=== TRUST ROOT (CC 5.3.4) ===\n");
+        for src in &sources.sources {
+            diagnostics.push_str(&format!(
+                "  {}: {} (reachable={})\n",
+                src.endpoint,
+                if src.verified {
+                    "✓ verified"
+                } else {
+                    "✗ FAIL"
+                },
+                src.reachable
+            ));
+            if let Some(ref err) = src.error {
+                diagnostics.push_str(&format!("    └─ Error: {}\n", err));
+            }
         }
-        if sources.dns_eu_valid {
-            checks_passed += 1;
-        }
-        if sources.https_valid {
-            checks_passed += 1;
-        }
-
-        diagnostics.push_str("=== SOURCE VALIDATION ===\n");
-        diagnostics.push_str(&format!(
-            "  DNS US: {} (reachable={})\n",
-            if sources.dns_us_valid {
-                "✓ OK"
-            } else {
-                "✗ FAIL"
-            },
-            sources.dns_us_reachable
-        ));
-        if let Some(ref err) = sources.dns_us_error {
-            diagnostics.push_str(&format!("    └─ Error: {}\n", err));
-        }
-        diagnostics.push_str(&format!(
-            "  DNS EU: {} (reachable={})\n",
-            if sources.dns_eu_valid {
-                "✓ OK"
-            } else {
-                "✗ FAIL"
-            },
-            sources.dns_eu_reachable
-        ));
-        if let Some(ref err) = sources.dns_eu_error {
-            diagnostics.push_str(&format!("    └─ Error: {}\n", err));
-        }
-        diagnostics.push_str(&format!(
-            "  HTTPS:  {} (reachable={})\n",
-            if sources.https_valid {
-                "✓ OK"
-            } else {
-                "✗ FAIL"
-            },
-            sources.https_reachable
-        ));
-        if let Some(ref err) = sources.https_error {
-            diagnostics.push_str(&format!("    └─ Error: {}\n", err));
+        match &sources.trust_root {
+            Some(root) => diagnostics.push_str(&format!(
+                "  Root: {} v{} authorized by {:?} (threshold {})\n",
+                root.bundle_fingerprint, root.version, root.authorized_by, root.threshold
+            )),
+            None => diagnostics.push_str("  Root: none selected\n"),
         }
         diagnostics.push_str(&format!("  Status: {}\n\n", sources.validation_status));
 
@@ -2010,11 +1997,9 @@ impl UnifiedAttestationEngine {
         // At the engine level, L2 does NOT pass - it requires explicit device attestation.
         // The FFI layer will set l2_pass = l1_pass && da.verified when device attestation exists.
         let l2_pass = false;
-        // L3: Registry cross-validation (at least 2/3 sources must agree)
-        let sources_agreeing = u8::from(sources.dns_us_valid)
-            + u8::from(sources.dns_eu_valid)
-            + u8::from(sources.https_valid);
-        let l3_pass = l2_pass && sources_agreeing >= 2;
+        // L3: a trust root was selected — a GenesisBundle that verifies
+        // against the baked accord holders (CC 5.3.4).
+        let l3_pass = l2_pass && sources.trust_root_verified();
         // L4: File integrity (MUST be checked and valid - if not checked, level caps at L3)
         // Use module_integrity (unified) which properly handles server-only files.
         // Falls back to legacy file_integrity if module_integrity not available.
@@ -2784,13 +2769,11 @@ impl FullAttestationResult {
             }
         }
 
-        // L3 — registry consensus. 2-of-3 is the canonical bar.
-        let valid_sources = u8::from(self.sources.dns_us_valid)
-            + u8::from(self.sources.dns_eu_valid)
-            + u8::from(self.sources.https_valid);
+        // L3 — registry consensus: a trust root was selected (a GenesisBundle
+        // verified against the baked accord holders, CC 5.3.4).
         b = b.attestation(AttestationEntry::new(
             dim::REGISTRY_CONSENSUS,
-            if valid_sources >= 2 {
+            if self.sources.trust_root_verified() {
                 Score::PASS
             } else {
                 Score::FAIL
@@ -2831,33 +2814,33 @@ impl FullAttestationResult {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::types::ValidationStatus;
 
     #[test]
     fn test_source_check_result() {
-        use crate::validation::SourceDetails;
-
-        let validation = ValidationResult {
-            status: ValidationStatus::AllSourcesAgree,
-            consensus_key_classical: None,
-            consensus_key_pqc: None,
-            consensus_pqc_fingerprint: None,
-            consensus_revocation_revision: Some(1),
-            authoritative_source: None,
-            source_details: SourceDetails {
-                dns_us_reachable: true,
-                dns_eu_reachable: true,
-                https_reachable: true,
-                dns_us_error: None,
-                dns_eu_error: None,
-                https_error: None,
+        use crate::validation::{select_trust_root, SourceOutcome, SourceReport};
+        let root = crate::genesis_bundle::verify_genesis_bundle(
+            &serde_json::from_str(include_str!(
+                "../tests/vectors/genesis_bundle/v4_persist_v59_1_0.json"
+            ))
+            .unwrap(),
+        )
+        .unwrap();
+        let validation = select_trust_root(vec![
+            SourceReport {
+                endpoint: "https://a".into(),
+                outcome: SourceOutcome::Verified(Box::new(root)),
             },
-        };
-
+            SourceReport {
+                endpoint: "https://b".into(),
+                outcome: SourceOutcome::Unreachable("timeout".into()),
+            },
+        ]);
         let result = SourceCheckResult::from(&validation);
-        assert!(result.dns_us_valid);
-        assert!(result.dns_eu_valid);
-        assert!(result.https_valid);
+        assert!(result.trust_root_verified());
+        assert_eq!(result.verified_count(), 1);
+        assert_eq!(result.sources.len(), 2);
+        assert!(!result.sources[1].reachable);
+        assert_eq!(result.validation_status, "PartialAgreement");
     }
 
     #[test]
@@ -3346,21 +3329,8 @@ mod tests {
         assert!(result.level_pending);
         assert_eq!(result.registry_key_status, "network_unavailable");
         assert_eq!(result.sources.validation_status, "NetworkUnavailable");
-        assert_eq!(
-            result.sources.dns_us_error.as_deref(),
-            Some("network_unavailable")
-        );
-        assert_eq!(
-            result.sources.dns_eu_error.as_deref(),
-            Some("network_unavailable")
-        );
-        assert_eq!(
-            result.sources.https_error.as_deref(),
-            Some("network_unavailable")
-        );
-        assert!(!result.sources.dns_us_reachable);
-        assert!(!result.sources.dns_eu_reachable);
-        assert!(!result.sources.https_reachable);
+        assert!(result.sources.sources.is_empty());
+        assert!(!result.sources.trust_root_verified());
         assert_eq!(result.checks_passed, 0);
         assert_eq!(result.checks_total, 0);
         assert!(result.diagnostics.contains("Network unavailable"));

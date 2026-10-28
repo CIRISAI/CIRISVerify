@@ -1,429 +1,112 @@
-//! Property-based tests for multi-source validation.
+//! Property tests for trust-root selection (CC 5.3.4; ruling 2026-10-28).
 //!
-//! These tests verify the consensus algorithm properties and
-//! fail-secure behavior.
+//! Whatever mix of hosts answers, the selected root is the single verified
+//! bundle at the highest version, two verified bundles at that version are
+//! equivocation, and a host that is down or serves an unverifiable bundle
+//! never changes which root is selected.
 
-use proptest::prelude::*;
-use sha2::{Digest, Sha256};
-
-use ciris_verify_core::revocation::is_revision_stale;
+use ciris_verify_core::genesis_bundle::{verify_genesis_bundle, VerifiedGenesisBundle};
 use ciris_verify_core::types::ValidationStatus;
-use ciris_verify_core::validation::{ConsensusValidator, SourceData, SourceErrorDetails};
+use ciris_verify_core::validation::{select_trust_root, SourceOutcome, SourceReport};
+use proptest::prelude::*;
 
-/// Strategy for 32-byte keys.
-fn key_32_bytes() -> impl Strategy<Value = Vec<u8>> {
-    prop::collection::vec(any::<u8>(), 32)
+const V4: &str = include_str!("../vectors/genesis_bundle/v4_persist_v59_1_0.json");
+
+fn base() -> VerifiedGenesisBundle {
+    verify_genesis_bundle(&serde_json::from_str(V4).unwrap()).unwrap()
 }
 
-/// Strategy for revocation revision numbers (YYYYMMDDNN format).
-fn revision_strategy() -> impl Strategy<Value = u64> {
-    (2024u64..=2030, 1u64..=12, 1u64..=28, 0u64..=99)
-        .prop_map(|(y, m, d, n)| y * 1_000_000 + m * 10_000 + d * 100 + n)
+/// A host's report, from a generated tag: `None` = down, `Some(None)` =
+/// refused, `Some(Some((version, fp)))` = verified.
+fn report(
+    n: usize,
+    tag: Option<Option<(u32, u8)>>,
+    template: &VerifiedGenesisBundle,
+) -> SourceReport {
+    let outcome = match tag {
+        None => SourceOutcome::Unreachable("timeout".into()),
+        Some(None) => SourceOutcome::Refused("quorum not met".into()),
+        Some(Some((version, fp))) => {
+            let mut b = template.clone();
+            b.version = version;
+            // A fingerprint covers the whole bundle, version included.
+            b.bundle_fingerprint = format!("sha256:{version:02x}{fp:02x}");
+            SourceOutcome::Verified(Box::new(b))
+        },
+    };
+    SourceReport {
+        endpoint: format!("https://host-{n}"),
+        outcome,
+    }
 }
 
-/// Strategy for source data triplets.
-fn source_data_strategy() -> impl Strategy<Value = (Vec<u8>, Vec<u8>, u64)> {
-    (key_32_bytes(), key_32_bytes(), revision_strategy())
-}
-
-/// Generate a test public key (deterministic).
-fn test_public_key(id: &str) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(format!("test-pubkey-{}", id).as_bytes());
-    hasher.finalize().to_vec()
-}
-
-/// Generate a test PQC fingerprint.
-fn test_pqc_fingerprint(id: &str) -> Vec<u8> {
-    let mut hasher = Sha256::new();
-    hasher.update(format!("test-pqc-fp-{}", id).as_bytes());
-    hasher.finalize().to_vec()
+fn tag_strategy() -> impl Strategy<Value = Option<Option<(u32, u8)>>> {
+    prop_oneof![
+        Just(None),
+        Just(Some(None)),
+        (4u32..7, 0u8..3).prop_map(|v| Some(Some(v))),
+    ]
 }
 
 proptest! {
-    // Reduced from 256 to prevent CI timeout on slow runners
-    // Local testing can use PROPTEST_CASES=256 for more coverage
-    #![proptest_config(ProptestConfig {
-        cases: 64,
-        max_shrink_iters: 500,
-        ..ProptestConfig::default()
-    })]
-
-    // ========================================================================
-    // Consensus Algorithm Properties
-    // ========================================================================
-
-    /// Three identical sources always produce AllSourcesAgree.
     #[test]
-    fn consensus_identical_sources_agree(
-        (key, fp, rev) in source_data_strategy()
-    ) {
-        let source = SourceData {
-            steward_key_classical: key.clone(),
-            steward_key_pqc: None,
-            pqc_fingerprint: fp.clone(),
-            revocation_revision: rev,
-            timestamp: 1737936000,
-        };
+    fn selection_follows_the_cc_rule(tags in prop::collection::vec(tag_strategy(), 0..6)) {
+        let template = base();
+        let reports: Vec<SourceReport> =
+            tags.iter().enumerate().map(|(n, t)| report(n, *t, &template)).collect();
+        let verified: Vec<(u32, u8)> = tags.iter().filter_map(|t| t.flatten()).collect();
+        let result = select_trust_root(reports);
 
-        let result = ConsensusValidator::compute_consensus(
-            Some(source.clone()),
-            Some(source.clone()),
-            Some(source.clone()),
-            SourceErrorDetails::default(),
-        );
-
-        prop_assert_eq!(result.status, ValidationStatus::AllSourcesAgree);
-        prop_assert!(result.allows_licensed());
-        prop_assert!(!result.is_security_alert());
-    }
-
-    /// Two identical sources with one different produces PartialAgreement.
-    #[test]
-    fn consensus_two_of_three_agree(
-        (key1, fp, rev) in source_data_strategy(),
-        key2 in key_32_bytes()
-    ) {
-        // Ensure key2 is different
-        prop_assume!(key1 != key2);
-
-        let source1 = SourceData {
-            steward_key_classical: key1.clone(),
-            steward_key_pqc: None,
-            pqc_fingerprint: fp.clone(),
-            revocation_revision: rev,
-            timestamp: 1737936000,
-        };
-
-        let source2 = SourceData {
-            steward_key_classical: key2,
-            steward_key_pqc: None,
-            pqc_fingerprint: fp.clone(),
-            revocation_revision: rev,
-            timestamp: 1737936000,
-        };
-
-        let result = ConsensusValidator::compute_consensus(
-            Some(source1.clone()),
-            Some(source1.clone()),
-            Some(source2),
-            SourceErrorDetails::default(),
-        );
-
-        prop_assert_eq!(result.status, ValidationStatus::PartialAgreement);
-        prop_assert!(result.allows_licensed());
-    }
-
-    /// Three different keys produces SourcesDisagree (security alert).
-    #[test]
-    fn consensus_all_different_disagree(
-        key1 in key_32_bytes(),
-        key2 in key_32_bytes(),
-        key3 in key_32_bytes(),
-        fp in key_32_bytes(),
-        rev in revision_strategy()
-    ) {
-        // Ensure all keys are different
-        prop_assume!(key1 != key2 && key2 != key3 && key1 != key3);
-
-        let source1 = SourceData {
-            steward_key_classical: key1,
-            steward_key_pqc: None,
-            pqc_fingerprint: fp.clone(),
-            revocation_revision: rev,
-            timestamp: 1737936000,
-        };
-
-        let source2 = SourceData {
-            steward_key_classical: key2,
-            steward_key_pqc: None,
-            pqc_fingerprint: fp.clone(),
-            revocation_revision: rev,
-            timestamp: 1737936000,
-        };
-
-        let source3 = SourceData {
-            steward_key_classical: key3,
-            steward_key_pqc: None,
-            pqc_fingerprint: fp.clone(),
-            revocation_revision: rev,
-            timestamp: 1737936000,
-        };
-
-        let result = ConsensusValidator::compute_consensus(
-            Some(source1),
-            Some(source2),
-            Some(source3),
-            SourceErrorDetails::default(),
-        );
-
-        prop_assert_eq!(result.status, ValidationStatus::SourcesDisagree);
-        prop_assert!(!result.allows_licensed());
-        prop_assert!(result.is_security_alert());
-    }
-
-    /// No sources produces NoSourcesReachable.
-    #[test]
-    fn consensus_no_sources(_seed in any::<u64>()) {
-        let result = ConsensusValidator::compute_consensus(
-            None,
-            None,
-            None,
-            SourceErrorDetails::default(),
-        );
-
-        prop_assert_eq!(result.status, ValidationStatus::NoSourcesReachable);
-        prop_assert!(!result.allows_licensed());
-    }
-
-    /// Single source produces ValidationError (insufficient for consensus).
-    #[test]
-    fn consensus_single_source((key, fp, rev) in source_data_strategy()) {
-        let source = SourceData {
-            steward_key_classical: key,
-            steward_key_pqc: None,
-            pqc_fingerprint: fp,
-            revocation_revision: rev,
-            timestamp: 1737936000,
-        };
-
-        // Test each position
-        let result1 = ConsensusValidator::compute_consensus(
-            Some(source.clone()),
-            None,
-            None,
-            SourceErrorDetails::default(),
-        );
-        let result2 = ConsensusValidator::compute_consensus(
-            None,
-            Some(source.clone()),
-            None,
-            SourceErrorDetails::default(),
-        );
-        let result3 = ConsensusValidator::compute_consensus(
-            None,
-            None,
-            Some(source),
-            SourceErrorDetails::default(),
-        );
-
-        prop_assert_eq!(result1.status, ValidationStatus::ValidationError);
-        prop_assert_eq!(result2.status, ValidationStatus::ValidationError);
-        prop_assert_eq!(result3.status, ValidationStatus::ValidationError);
-    }
-
-    /// Two agreeing sources (one unavailable) produces PartialAgreement.
-    #[test]
-    fn consensus_two_available_agree((key, fp, rev) in source_data_strategy()) {
-        let source = SourceData {
-            steward_key_classical: key,
-            steward_key_pqc: None,
-            pqc_fingerprint: fp,
-            revocation_revision: rev,
-            timestamp: 1737936000,
-        };
-
-        // Test each combination of two
-        let result1 = ConsensusValidator::compute_consensus(
-            Some(source.clone()),
-            Some(source.clone()),
-            None,
-            SourceErrorDetails::default(),
-        );
-        let result2 = ConsensusValidator::compute_consensus(
-            Some(source.clone()),
-            None,
-            Some(source.clone()),
-            SourceErrorDetails::default(),
-        );
-        let result3 = ConsensusValidator::compute_consensus(
-            None,
-            Some(source.clone()),
-            Some(source),
-            SourceErrorDetails::default(),
-        );
-
-        prop_assert_eq!(result1.status, ValidationStatus::PartialAgreement);
-        prop_assert_eq!(result2.status, ValidationStatus::PartialAgreement);
-        prop_assert_eq!(result3.status, ValidationStatus::PartialAgreement);
-
-        // All should allow licensed operation
-        prop_assert!(result1.allows_licensed());
-        prop_assert!(result2.allows_licensed());
-        prop_assert!(result3.allows_licensed());
-    }
-
-    /// Revision tolerance: ±1 is acceptable.
-    #[test]
-    fn consensus_revision_tolerance(
-        (key, fp, base_rev) in source_data_strategy()
-    ) {
-        // Ensure we don't overflow
-        prop_assume!((1..u64::MAX).contains(&base_rev));
-
-        let source1 = SourceData {
-            steward_key_classical: key.clone(),
-            steward_key_pqc: None,
-            pqc_fingerprint: fp.clone(),
-            revocation_revision: base_rev,
-            timestamp: 1737936000,
-        };
-
-        let source2 = SourceData {
-            steward_key_classical: key.clone(),
-            steward_key_pqc: None,
-            pqc_fingerprint: fp.clone(),
-            revocation_revision: base_rev + 1, // One higher
-            timestamp: 1737936000,
-        };
-
-        let source3 = SourceData {
-            steward_key_classical: key,
-            steward_key_pqc: None,
-            pqc_fingerprint: fp,
-            revocation_revision: base_rev, // Same as source1
-            timestamp: 1737936000,
-        };
-
-        let result = ConsensusValidator::compute_consensus(
-            Some(source1),
-            Some(source2),
-            Some(source3),
-            SourceErrorDetails::default(),
-        );
-
-        // Should still agree despite ±1 revision difference
-        prop_assert_eq!(result.status, ValidationStatus::AllSourcesAgree);
-    }
-
-    // ========================================================================
-    // Revocation Properties
-    // ========================================================================
-
-    /// Revision staleness is strictly increasing.
-    #[test]
-    fn revision_stale_monotonic(
-        license_rev in revision_strategy(),
-        delta in 0u64..1000
-    ) {
-        let current_rev = license_rev.saturating_add(delta);
-
-        if delta == 0 {
-            // Same revision is not stale
-            prop_assert!(!is_revision_stale(license_rev, current_rev));
-        } else {
-            // Higher revision means potentially stale
-            prop_assert!(is_revision_stale(license_rev, current_rev));
+        match verified.iter().map(|v| v.0).max() {
+            None => {
+                prop_assert!(result.trust_root.is_none());
+                let any_reachable = tags.iter().any(Option::is_some);
+                prop_assert_eq!(
+                    result.status,
+                    if any_reachable { ValidationStatus::ValidationError }
+                    else { ValidationStatus::NoSourcesReachable }
+                );
+            },
+            Some(top) => {
+                let mut fps: Vec<u8> =
+                    verified.iter().filter(|v| v.0 == top).map(|v| v.1).collect();
+                fps.sort_unstable();
+                fps.dedup();
+                if fps.len() > 1 {
+                    prop_assert_eq!(result.status, ValidationStatus::SourcesDisagree);
+                    prop_assert!(result.trust_root.is_none());
+                } else {
+                    let root = result.trust_root.as_ref().unwrap();
+                    prop_assert_eq!(root.version, top);
+                    prop_assert_eq!(&root.bundle_fingerprint, &format!("sha256:{:02x}{:02x}", top, fps[0]));
+                    let all_same = tags.iter().all(|t| *t == Some(Some((top, fps[0]))));
+                    prop_assert_eq!(
+                        result.status,
+                        if all_same { ValidationStatus::AllSourcesAgree }
+                        else { ValidationStatus::PartialAgreement }
+                    );
+                }
+            },
         }
     }
 
-    /// Lower current revision is never stale.
+    /// Adding a host that is down or refused never changes the selected root.
     #[test]
-    fn revision_older_not_stale(
-        license_rev in 1000u64..10_000_000_000u64,
-        delta in 1u64..1000
+    fn a_failing_host_never_moves_the_root(
+        tags in prop::collection::vec(tag_strategy(), 1..5),
+        failing_refused in any::<bool>(),
     ) {
-        let older_current = license_rev.saturating_sub(delta);
-        prop_assert!(!is_revision_stale(license_rev, older_current));
+        let template = base();
+        let before = select_trust_root(
+            tags.iter().enumerate().map(|(n, t)| report(n, *t, &template)).collect(),
+        );
+        let mut more: Vec<SourceReport> =
+            tags.iter().enumerate().map(|(n, t)| report(n, *t, &template)).collect();
+        more.push(report(99, if failing_refused { Some(None) } else { None }, &template));
+        let after = select_trust_root(more);
+        prop_assert_eq!(
+            before.trust_root.map(|r| r.bundle_fingerprint),
+            after.trust_root.map(|r| r.bundle_fingerprint)
+        );
     }
-}
-
-// ============================================================================
-// Non-proptest Deterministic Tests
-// ============================================================================
-
-#[test]
-fn test_consensus_preserves_key_on_agreement() {
-    let key = test_public_key("consensus-key");
-    let fp = test_pqc_fingerprint("consensus-fp");
-    let rev = 2026012701u64;
-
-    let source = SourceData {
-        steward_key_classical: key.clone(),
-        steward_key_pqc: None,
-        pqc_fingerprint: fp.clone(),
-        revocation_revision: rev,
-        timestamp: 1737936000,
-    };
-
-    let result = ConsensusValidator::compute_consensus(
-        Some(source.clone()),
-        Some(source.clone()),
-        Some(source),
-        SourceErrorDetails::default(),
-    );
-
-    // Consensus should preserve the agreed-upon key
-    assert_eq!(result.consensus_key_classical, Some(key));
-    assert_eq!(result.consensus_pqc_fingerprint, Some(fp));
-    assert_eq!(result.consensus_revocation_revision, Some(rev));
-}
-
-#[test]
-fn test_consensus_disagreement_no_key() {
-    let key1 = test_public_key("key-1");
-    let key2 = test_public_key("key-2");
-    let key3 = test_public_key("key-3");
-    let fp = test_pqc_fingerprint("test");
-
-    let source1 = SourceData {
-        steward_key_classical: key1,
-        steward_key_pqc: None,
-        pqc_fingerprint: fp.clone(),
-        revocation_revision: 100,
-        timestamp: 1737936000,
-    };
-
-    let source2 = SourceData {
-        steward_key_classical: key2,
-        steward_key_pqc: None,
-        pqc_fingerprint: fp.clone(),
-        revocation_revision: 100,
-        timestamp: 1737936000,
-    };
-
-    let source3 = SourceData {
-        steward_key_classical: key3,
-        steward_key_pqc: None,
-        pqc_fingerprint: fp,
-        revocation_revision: 100,
-        timestamp: 1737936000,
-    };
-
-    let result = ConsensusValidator::compute_consensus(
-        Some(source1),
-        Some(source2),
-        Some(source3),
-        SourceErrorDetails::default(),
-    );
-
-    // Disagreement should NOT provide consensus key
-    assert!(result.consensus_key_classical.is_none());
-    assert!(result.consensus_pqc_fingerprint.is_none());
-}
-
-#[test]
-fn test_source_details_tracking() {
-    let key = test_public_key("test");
-    let fp = test_pqc_fingerprint("test");
-
-    let source = SourceData {
-        steward_key_classical: key,
-        steward_key_pqc: None,
-        pqc_fingerprint: fp,
-        revocation_revision: 100,
-        timestamp: 1737936000,
-    };
-
-    // Only dns_us and https available
-    let result = ConsensusValidator::compute_consensus(
-        Some(source.clone()),
-        None,
-        Some(source),
-        SourceErrorDetails::default(),
-    );
-
-    assert!(result.source_details.dns_us_reachable);
-    assert!(!result.source_details.dns_eu_reachable);
-    assert!(result.source_details.https_reachable);
 }

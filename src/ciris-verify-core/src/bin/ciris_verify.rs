@@ -7,13 +7,13 @@ use std::path::Path;
 use std::time::Duration;
 
 use ciris_verify_core::audit::{read_audit_from_jsonl, read_audit_from_sqlite, AuditVerifier};
-use ciris_verify_core::config::{TrustModel, VerifyConfig};
+use ciris_verify_core::config::VerifyConfig;
 use ciris_verify_core::registry::{compute_self_hash, current_target, RegistryClient};
 use ciris_verify_core::security::file_integrity::{
     check_full, check_spot, FileManifest as AgentFileManifest,
 };
 use ciris_verify_core::unified::{FullAttestationRequest, UnifiedAttestationEngine};
-use ciris_verify_core::validation::ConsensusValidator;
+use ciris_verify_core::validation::TrustRootValidator;
 use clap::{Args, Parser, Subcommand};
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -49,19 +49,11 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Commands {
-    /// Check DNS and HTTPS source validation (Level 3)
+    /// Fetch and verify the trust root from every trust-root host (Level 3, CC 5.3.4)
     Sources {
-        /// DNS US host
-        #[arg(long, default_value = "us.registry.ciris-services-1.ai")]
-        dns_us: String,
-
-        /// DNS EU host
-        #[arg(long, default_value = "eu.registry.ciris-services-1.ai")]
-        dns_eu: String,
-
-        /// HTTPS endpoint
-        #[arg(long, default_value = "https://api.registry.ciris-services-1.ai")]
-        https: String,
+        /// Trust-root host (repeatable). Defaults to the configured registries.
+        #[arg(long = "host")]
+        hosts: Vec<String>,
 
         /// Request timeout in seconds
         #[arg(long, default_value = "10")]
@@ -822,161 +814,98 @@ RESEARCH CONTEXT
     );
 }
 
-async fn run_source_check(dns_us: &str, dns_eu: &str, https: &str, timeout_secs: u64, json: bool) {
+async fn run_source_check(hosts: Vec<String>, timeout_secs: u64, json: bool) {
+    let hosts = if hosts.is_empty() {
+        VerifyConfig::default().trust_root_endpoints()
+    } else {
+        hosts
+    };
     if !json {
-        println!("\nCROSS-CHECK THREE DMV DATABASES (Level 3)");
-        println!("==========================================\n");
-        println!("Querying 3 independent registries. 2-of-3 must agree.\n");
-
-        println!("Sources:");
-        println!("  DNS US:  {}", dns_us);
-        println!("  DNS EU:  {}", dns_eu);
-        println!("  HTTPS:   {} (authoritative)", https);
-        println!("  Timeout: {}s", timeout_secs);
-        println!();
-        println!("Running validation...\n");
+        println!("\nTRUST ROOT (Level 3, CC 5.3.4)");
+        println!("==============================\n");
+        println!(
+            "Each host's GenesisBundle is verified against the accord holders baked \
+             into this binary.\nOne verified host is enough; equal-version bundles \
+             that differ are equivocation.\n"
+        );
+        for h in &hosts {
+            println!("  {}", h);
+        }
+        println!("  Timeout: {}s\n", timeout_secs);
     }
 
-    let validator = ConsensusValidator::with_trust_model(
-        dns_us.to_string(),
-        dns_eu.to_string(),
-        https.to_string(),
-        vec![], // No additional HTTPS endpoints
-        TrustModel::HttpsAuthoritative,
-        Duration::from_secs(timeout_secs),
-        None, // No cert pinning for now
-    );
-
-    let result = validator.validate_steward_key().await;
+    let validator = TrustRootValidator::new(hosts, Duration::from_secs(timeout_secs), None);
+    let result = validator.validate_trust_root().await;
 
     if json {
-        // JSON output
+        let sources: Vec<_> = result
+            .sources
+            .iter()
+            .map(|s| {
+                serde_json::json!({
+                    "endpoint": s.endpoint,
+                    "reachable": s.reachable(),
+                    "verified": s.verified().is_some(),
+                    "bundle_fingerprint": s.verified().map(|b| b.bundle_fingerprint.clone()),
+                    "error": s.error(),
+                })
+            })
+            .collect();
+        let root = result.trust_root.as_ref().map(|r| {
+            serde_json::json!({
+                "version": r.version,
+                "family_key_id": r.family_key_id,
+                "charter_root_key_id": r.charter_root_key_id,
+                "authorized_by": r.authorized_by,
+                "threshold": r.threshold,
+                "bundle_fingerprint": r.bundle_fingerprint,
+                "authorization_digest": r.authorization_digest,
+                "serve_nodes": r.serve_nodes.iter().map(|n| n.key_id.clone()).collect::<Vec<_>>(),
+            })
+        });
         let output = serde_json::json!({
             "status": format!("{:?}", result.status),
-            "allows_licensed": result.allows_licensed(),
             "is_security_alert": result.is_security_alert(),
-            "is_degraded": result.is_degraded(),
-            "authoritative_source": result.authoritative_source,
-            "sources": {
-                "dns_us": {
-                    "reachable": result.source_details.dns_us_reachable,
-                    "error": result.source_details.dns_us_error,
-                },
-                "dns_eu": {
-                    "reachable": result.source_details.dns_eu_reachable,
-                    "error": result.source_details.dns_eu_error,
-                },
-                "https": {
-                    "reachable": result.source_details.https_reachable,
-                    "error": result.source_details.https_error,
-                },
-            },
-            "consensus": {
-                "has_classical_key": result.consensus_key_classical.is_some(),
-                "has_pqc_fingerprint": result.consensus_pqc_fingerprint.is_some(),
-                "revocation_revision": result.consensus_revocation_revision,
-            }
+            "sources": sources,
+            "trust_root": root,
         });
-        println!("{}", serde_json::to_string_pretty(&output).unwrap());
-    } else {
-        // Human-readable output
-        println!("RESULTS");
-        println!("-------\n");
-
-        // Source status
-        let dns_us_status = if result.source_details.dns_us_reachable {
-            "\x1b[32mOK\x1b[0m"
-        } else {
-            "\x1b[31mFAIL\x1b[0m"
-        };
-        let dns_eu_status = if result.source_details.dns_eu_reachable {
-            "\x1b[32mOK\x1b[0m"
-        } else {
-            "\x1b[31mFAIL\x1b[0m"
-        };
-        let https_status = if result.source_details.https_reachable {
-            "\x1b[32mOK\x1b[0m"
-        } else {
-            "\x1b[31mFAIL\x1b[0m"
-        };
-
-        println!("Source Status:");
         println!(
-            "  DNS US:  {} {}",
-            dns_us_status,
-            result.source_details.dns_us_error.as_deref().unwrap_or("")
+            "{}",
+            serde_json::to_string_pretty(&output).unwrap_or_default()
         );
-        println!(
-            "  DNS EU:  {} {}",
-            dns_eu_status,
-            result.source_details.dns_eu_error.as_deref().unwrap_or("")
-        );
-        println!(
-            "  HTTPS:   {} {}",
-            https_status,
-            result.source_details.https_error.as_deref().unwrap_or("")
-        );
-        println!();
+        return;
+    }
 
-        // Overall status
-        let status_str = format!("{:?}", result.status);
-        let status_color = match result.status {
-            ciris_verify_core::types::ValidationStatus::AllSourcesAgree => "\x1b[32m", // Green
-            ciris_verify_core::types::ValidationStatus::PartialAgreement => "\x1b[33m", // Yellow
-            ciris_verify_core::types::ValidationStatus::SourcesDisagree => "\x1b[31m", // Red
-            ciris_verify_core::types::ValidationStatus::NoSourcesReachable => "\x1b[31m",
-            ciris_verify_core::types::ValidationStatus::ValidationError => "\x1b[31m",
-        };
-
-        println!("Validation Status: {}{}\x1b[0m", status_color, status_str);
-
-        if let Some(ref auth) = result.authoritative_source {
-            println!("Authoritative Source: {}", auth);
-        }
-
-        println!();
-
-        // Consensus data
-        if result.consensus_key_classical.is_some() {
-            println!("Consensus Data:");
-            println!(
-                "  Classical Key: Present ({} bytes)",
-                result
-                    .consensus_key_classical
-                    .as_ref()
-                    .map(|k| k.len())
-                    .unwrap_or(0)
-            );
-            println!(
-                "  PQC Fingerprint: {}",
-                if result.consensus_pqc_fingerprint.is_some() {
-                    "Present"
-                } else {
-                    "Not available"
-                }
-            );
-            if let Some(rev) = result.consensus_revocation_revision {
-                println!("  Revocation Revision: {}", rev);
-            }
-            println!();
-        }
-
-        // Summary
-        println!("Summary:");
-        if result.allows_licensed() {
-            println!("  \x1b[32m[PASS]\x1b[0m Source validation allows licensed operation");
-        } else {
-            println!("  \x1b[31m[FAIL]\x1b[0m Source validation does NOT allow licensed operation");
-        }
-
-        if result.is_security_alert() {
-            println!("  \x1b[31m[ALERT]\x1b[0m Security alert: sources disagree!");
-        }
-
-        if result.is_degraded() {
-            println!("  \x1b[33m[WARN]\x1b[0m Operating in degraded mode");
+    for s in &result.sources {
+        match s.verified() {
+            Some(b) => println!(
+                "  ✓ {}  {} (v{})",
+                s.endpoint, b.bundle_fingerprint, b.version
+            ),
+            None => println!(
+                "  ✗ {}  {}",
+                s.endpoint,
+                s.error().unwrap_or("no verified bundle")
+            ),
         }
     }
+    println!();
+    match &result.trust_root {
+        Some(r) => {
+            println!("Trust root: {} v{}", r.bundle_fingerprint, r.version);
+            println!(
+                "  Authorized by {} (threshold {})",
+                r.authorized_by.join(", "),
+                r.threshold
+            );
+            println!("  Charter root: {}", r.charter_root_key_id);
+            for n in &r.serve_nodes {
+                println!("  Serve node: {}", n.key_id);
+            }
+        },
+        None => println!("Trust root: NONE selected"),
+    }
+    println!("Status: {:?}", result.status);
 }
 
 async fn run_self_check(registry_url: &str, project: &str, json: bool) {
@@ -3739,16 +3668,11 @@ async fn main() {
     }
 
     match cli.command {
-        Some(Commands::Sources {
-            dns_us,
-            dns_eu,
-            https,
-            timeout,
-        }) => {
+        Some(Commands::Sources { hosts, timeout }) => {
             if !json_output {
                 print_banner();
             }
-            run_source_check(&dns_us, &dns_eu, &https, timeout, json_output).await;
+            run_source_check(hosts, timeout, json_output).await;
         },
         Some(Commands::Info) => {
             print_banner();
