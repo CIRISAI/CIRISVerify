@@ -20,7 +20,8 @@
 //!                 "cell": "ru_mental_health", "prefix": "8af424544249c1c6",
 //!                 "agent_version": "…", "rubric": { "id": "…", "version": "…",
 //!                 "sha256": "…" }, "judge": { "model": "…", "prompt_sha256": "…" },
-//!                 "capture_prefix": "8af424544249c1c6", "ci_provenance": { … },
+//!                 "capture_prefix": "8af424544249c1c6", "pass_ratio": 0.75,
+//!                 "ci_provenance": { … },
 //!                 "captured_at": "…", "manifest_hash": "…", "manifest_size": 5120 },
 //!   "evidence_refs": ["<manifest_hash>"],
 //!   "row": { "attestation_id": "…", "attestation_type": "scores",
@@ -94,6 +95,11 @@ pub const SAFETY_BATTERY_SUITE: &str = "safety_battery";
 /// the capture blob's SHA-256.
 pub const EVIDENCE_PREFIX_LEN: usize = 16;
 
+/// How far an interpretation's `score` may sit from `2·pass_ratio − 1`: the
+/// registry door's tolerance (CIRISRegistry#151), wide enough for the one-ulp
+/// difference between `(2p − t)/t` and `2·(p/t) − 1`.
+pub const SCORE_TOLERANCE: f64 = 1e-9;
+
 /// `{kind}`: what the blob is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EvidenceKind {
@@ -150,6 +156,19 @@ pub enum PassRatio {
 }
 
 impl PassRatio {
+    /// The ratio `r ∈ [0, 1]`, or `None` if out of range.
+    #[must_use]
+    #[allow(clippy::cast_precision_loss)]
+    pub fn ratio(self) -> Option<f64> {
+        match self {
+            Self::Counts { passed, total } if total > 0 && passed <= total => {
+                Some(passed as f64 / total as f64)
+            },
+            Self::Ratio(r) if r.is_finite() && (0.0..=1.0).contains(&r) => Some(r),
+            _ => None,
+        }
+    }
+
     /// The signed score `2·pass_ratio − 1`, or `None` if the ratio is out of
     /// range.
     #[must_use]
@@ -346,6 +365,12 @@ pub async fn sign_safety_evidence_contribution(
                 json!({ "model": judge_model, "prompt_sha256": judge_prompt_sha256 }),
             );
             ev.insert("capture_prefix".into(), json!(evidence.prefix));
+            // CIRISRegistry#151 FSD-004 §4.6: the door checks `score == 2·r − 1`
+            // against this and against the manifest's `verdicts_summary`.
+            ev.insert(
+                "pass_ratio".into(),
+                json!(pass_ratio.ratio().unwrap_or_default()),
+            );
             json!(score)
         },
     };
@@ -417,8 +442,9 @@ pub enum EvidenceRejection {
         /// The dimension in the envelope.
         found: String,
     },
-    /// The score is not `1` for a capture, or not in `[-1, 1]` for an
-    /// interpretation.
+    /// The score is not `1` for a capture (which carries no `pass_ratio`), or
+    /// for an interpretation is not `2·evidence.pass_ratio − 1` within
+    /// [`SCORE_TOLERANCE`].
     ScoreInvalid,
     /// The blob's length is not `evidence.manifest_size`.
     BlobSizeMismatch {
@@ -700,8 +726,17 @@ pub fn verify_safety_evidence_signature(
         .ok_or(EvidenceRejection::Malformed { field: "score" })?;
     let score_ok = match kind {
         #[allow(clippy::float_cmp)]
-        EvidenceKind::Capture => score == 1.0,
-        EvidenceKind::Interpret => score.is_finite() && (-1.0..=1.0).contains(&score),
+        EvidenceKind::Capture => score == 1.0 && ev.get("pass_ratio").is_none(),
+        EvidenceKind::Interpret => {
+            score.is_finite()
+                && (-1.0..=1.0).contains(&score)
+                && ev
+                    .get("pass_ratio")
+                    .and_then(Value::as_f64)
+                    .is_some_and(|r| {
+                        (0.0..=1.0).contains(&r) && (2.0 * r - 1.0 - score).abs() <= SCORE_TOLERANCE
+                    })
+        },
     };
     if !score_ok {
         return Err(EvidenceRejection::ScoreInvalid);
@@ -857,6 +892,7 @@ mod tests {
                 "kind",
                 "manifest_hash",
                 "manifest_size",
+                "pass_ratio",
                 "prefix",
                 "rubric",
                 "suite"
@@ -864,6 +900,7 @@ mod tests {
         );
         assert_eq!(env["asserted_at"], "2026-10-29T14:50:29.308Z");
         assert_eq!(env["evidence"]["capture_prefix"], "8af424544249c1c6");
+        assert_eq!(env["evidence"]["pass_ratio"], json!(0.75));
         assert_eq!(env["score"], json!(0.5));
         assert_eq!(env["evidence_refs"], json!([h]));
     }
@@ -886,6 +923,31 @@ mod tests {
         assert_eq!(PassRatio::Ratio(0.25).score(), Some(-0.5));
         assert_eq!(PassRatio::Ratio(1.5).score(), None);
         assert_eq!(PassRatio::Ratio(f64::NAN).score(), None);
+    }
+
+    /// An interpretation's score must agree with its signed `pass_ratio`.
+    #[tokio::test]
+    async fn interpretation_score_must_match_its_pass_ratio() {
+        let h = blob_hash();
+        let prov = provenance();
+        let (id, obj) = sign(&evidence(interpret(2, 3), "8af424544249c1c6", &h, &prov)).await;
+        let env = obj.unwrap().body["signed_envelope"].clone();
+        let member = id.directory_member().unwrap();
+        for (r, ok) in [
+            (json!(2.0 / 3.0), true),
+            (json!(0.5), false),
+            (Value::Null, false),
+        ] {
+            let mut e = env.clone();
+            if r.is_null() {
+                e["evidence"].as_object_mut().unwrap().remove("pass_ratio");
+            } else {
+                e["evidence"]["pass_ratio"] = r.clone();
+            }
+            let body = serde_json::to_value(id.sign_envelope_async(e).await.unwrap()).unwrap();
+            let got = verify_safety_evidence_signature(&body, &member);
+            assert_eq!(got.is_ok(), ok, "pass_ratio {r}: {got:?}");
+        }
     }
 
     #[tokio::test]
@@ -981,10 +1043,18 @@ mod tests {
             ("/evidence_refs", json!(["ee".repeat(32)])),
             ("/evidence/kind", json!("summary")),
             ("/evidence/suite", json!("other")),
+            ("/evidence/pass_ratio", json!(0.5)),
         ];
         for (ptr, value) in cases {
             let mut e = env.clone();
-            *e.pointer_mut(ptr).unwrap() = value;
+            // A member the capture lacks (`pass_ratio`) is inserted.
+            let (parent, leaf) = ptr.rsplit_once('/').unwrap();
+            let parent = if parent.is_empty() {
+                &mut e
+            } else {
+                e.pointer_mut(parent).unwrap()
+            };
+            parent[leaf] = value;
             let body = serde_json::to_value(id.sign_envelope_async(e).await.unwrap()).unwrap();
             assert!(
                 verify_safety_evidence_signature(&body, &member).is_err(),
