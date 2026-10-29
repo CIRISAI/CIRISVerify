@@ -241,7 +241,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: CIRISAI/CIRISConstitution
-          ref: b384bebe47c212c1c82726c15322b6a014cbc496 # rc6, FSD-006 rulings
+          ref: cd7a22b3472800a937b4976ef91b01d15d1fd0df # rc13, CC 3.1.5.5 safety-battery family (#322)
           path: .cc
       - name: CC registry tokens — every emitted family (matcher replay)
         env:
