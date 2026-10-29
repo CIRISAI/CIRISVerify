@@ -13,6 +13,21 @@
 //!     --ed25519-pub steward.ed25519.pub \
 //!     --mldsa-pub steward.mldsa65.pub
 //! ```
+//!
+//! Or, offline, a safety-battery evidence row (CIRISVerify#322) and its blob:
+//!
+//! ```text
+//! ciris-build-verify \
+//!     --evidence contribution.json \
+//!     --blob manifest.json \
+//!     --key-id agent-steward-2026 \
+//!     --ed25519-pub steward.ed25519.pub \
+//!     --mldsa-pub steward.mldsa65.pub
+//! ```
+//!
+//! That checks blob size and hash → row → signature → pinned key. The
+//! pipeline's `infra:attest` standing is the reader's walk over its own key
+//! directory, which an offline check cannot do; it is reported as unchecked.
 
 use std::fs;
 use std::path::PathBuf;
@@ -31,12 +46,30 @@ const VERSION: &str = env!("CARGO_PKG_VERSION");
 #[command(about = "Verify a CIRIS PoB BuildManifest with hybrid Ed25519 + ML-DSA-65 signatures")]
 struct Cli {
     /// Path to signed manifest JSON.
-    #[arg(short, long)]
-    manifest: PathBuf,
+    #[arg(
+        short,
+        long,
+        required_unless_present = "evidence",
+        conflicts_with = "evidence"
+    )]
+    manifest: Option<PathBuf>,
 
     /// Expected primitive (snake_case).
-    #[arg(long)]
-    primitive: String,
+    #[arg(long, required_unless_present = "evidence")]
+    primitive: Option<String>,
+
+    /// A safety-evidence contribution JSON (`ciris-build-sign evidence`
+    /// output) to verify instead of a manifest.
+    #[arg(long, requires_all = ["blob", "key_id"])]
+    evidence: Option<PathBuf>,
+
+    /// The blob the evidence row names.
+    #[arg(long, requires = "evidence")]
+    blob: Option<PathBuf>,
+
+    /// The pipeline key_id the pinned pubkeys belong to.
+    #[arg(long, requires = "evidence")]
+    key_id: Option<String>,
 
     /// Path to raw 32-byte Ed25519 public key.
     #[arg(long)]
@@ -67,10 +100,14 @@ fn main() -> Result<()> {
         .with_target(false)
         .init();
 
-    let primitive = parse_primitive(&cli.primitive);
+    if let Some(evidence) = &cli.evidence {
+        return verify_evidence(&cli, evidence);
+    }
 
-    let manifest_bytes = fs::read(&cli.manifest)
-        .with_context(|| format!("read manifest at {}", cli.manifest.display()))?;
+    let primitive = parse_primitive(cli.primitive.as_deref().unwrap_or_default());
+    let manifest_path = cli.manifest.as_ref().ok_or_else(|| anyhow!("--manifest"))?;
+    let manifest_bytes = fs::read(manifest_path)
+        .with_context(|| format!("read manifest at {}", manifest_path.display()))?;
 
     let ed_pub_bytes = read_key(&cli.ed25519_pub)?;
     let ed_pub = load_ed25519_pubkey(ed_pub_bytes)?;
@@ -120,5 +157,49 @@ fn main() -> Result<()> {
         eprintln!("OK: BuildManifest verified for {:?}", manifest.primitive);
     }
 
+    Ok(())
+}
+
+/// Verify a safety-evidence row against its blob and pinned keys, offline.
+fn verify_evidence(cli: &Cli, evidence: &std::path::Path) -> Result<()> {
+    use base64::{engine::general_purpose::STANDARD, Engine};
+    use ciris_verify_core::safety_evidence::verify_safety_evidence_signature;
+    use ciris_verify_core::threshold::ThresholdMember;
+
+    let contribution: serde_json::Value = serde_json::from_slice(
+        &fs::read(evidence).with_context(|| format!("read {}", evidence.display()))?,
+    )
+    .context("evidence contribution is not JSON")?;
+    let blob_path = cli.blob.as_ref().ok_or_else(|| anyhow!("--blob"))?;
+    let blob = fs::read(blob_path).with_context(|| format!("read {}", blob_path.display()))?;
+    let member = ThresholdMember {
+        member_id: cli.key_id.clone().ok_or_else(|| anyhow!("--key-id"))?,
+        ed25519_public_key_base64: STANDARD.encode(read_key(&cli.ed25519_pub)?),
+        mldsa65_public_key_base64: Some(STANDARD.encode(read_key(&cli.mldsa_pub)?)),
+        role: None,
+    };
+
+    let row = verify_safety_evidence_signature(&contribution, &member)
+        .map_err(|e| anyhow!("verification failed: {e}"))?;
+    row.check_blob(&blob)
+        .map_err(|e| anyhow!("verification failed: {e}"))?;
+
+    if cli.show {
+        println!("Verified safety evidence:");
+        println!("  dimension:      {}", row.dimension);
+        println!("  score:          {}", row.score);
+        println!("  attestation_id: {}", row.attestation_id);
+        println!("  asserted_at:    {}", row.asserted_at);
+        println!("  signed by:      {}", row.attested_by);
+        println!(
+            "  blob:           {} ({} bytes)",
+            row.manifest_hash, row.manifest_size
+        );
+    }
+    eprintln!(
+        "OK: {} verified against its blob and the pinned key; infra:attest standing \
+         not checked (the reader's walk)",
+        row.dimension
+    );
     Ok(())
 }

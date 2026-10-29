@@ -216,5 +216,38 @@ if grep -q 'refusal=None' <<< "$ABAD"; then
 fi
 echo "accord invocation kinds: ${#ACCORD_OK[@]} accepted, ${#ACCORD_BAD[@]} known-bad refused ✓"
 
+# CIRISVerify#322 — `ciris-build-sign evidence` signs rows on CIRISAgent's
+# `evidence:safety_battery:{kind}:{cell}:{prefix}` family (CC 3.1.5.5). The
+# template is read from `safety_battery_dimension` so the replay follows the
+# producer; each kind verify signs must resolve to that family, and the untailed
+# form must be refused.
+EV_TMPL=$(grep -oE '"evidence:\{SAFETY_BATTERY_SUITE\}:\{\}:\{cell\}:\{prefix\}:\{DIMENSION_VERSION\}"' \
+          src/ciris-verify-core/src/safety_evidence.rs || true)
+if [[ -z "$EV_TMPL" ]]; then
+  echo "FAIL: could not read the safety_battery_dimension template from safety_evidence.rs"
+  exit 1
+fi
+EV_OK=()
+for kind in capture interpret; do
+  EV_OK+=("evidence:safety_battery:${kind}:ru_mental_health:8af424544249c1c6:${VERSION}")
+done
+EV_BAD=("evidence:safety_battery:capture:ru_mental_health:8af424544249c1c6")
+EOUT=$(cd "$CC" && python3 "$MATCHER" "${EV_OK[@]}")
+echo "$EOUT"
+if grep -qv 'refusal=None' <<< "$EOUT" \
+   || [[ $(grep -c -- '-> evidence:safety_battery:{kind}:{cell}:{prefix} ' <<< "$EOUT") -ne ${#EV_OK[@]} ]]; then
+  echo
+  echo "FAIL: a safety-evidence dimension is refused or resolves to another family"
+  exit 1
+fi
+EBAD=$(cd "$CC" && python3 "$MATCHER" "${EV_BAD[@]}")
+if grep -q 'refusal=None' <<< "$EBAD"; then
+  echo
+  echo "FAIL: an untailed safety-evidence dimension was ACCEPTED — the check proves nothing:"
+  grep 'refusal=None' <<< "$EBAD"
+  exit 1
+fi
+echo "safety-battery evidence: ${#EV_OK[@]} accepted, ${#EV_BAD[@]} untailed refused ✓"
+
 echo
 echo "hardware_custody tokens: ${#DIMS[@]} accepted, ${#BAD[@]} known-bad forms still refused ✓"
