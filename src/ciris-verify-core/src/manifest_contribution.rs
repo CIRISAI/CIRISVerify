@@ -85,10 +85,10 @@ pub const MANIFEST_PUBLISH_SCOPE: &str = "infra:attest";
 pub const BUILD_MANIFEST_CONTRIBUTION_KIND: &str = "build_manifest_contribution";
 
 /// The `attestation_type` of a build-manifest Contribution.
-const ATTESTATION_TYPE_SCORES: &str = "scores";
+pub(crate) const ATTESTATION_TYPE_SCORES: &str = "scores";
 
 /// The `cohort_scope` a build-manifest Contribution is published at.
-const COHORT_SCOPE_FEDERATION: &str = "federation";
+pub(crate) const COHORT_SCOPE_FEDERATION: &str = "federation";
 
 /// The members persist's `RowMirror` admits (`deny_unknown_fields`). A row
 /// carrying anything else is refused there, so it is refused here too.
@@ -136,7 +136,7 @@ pub struct BuildAttestation<'a> {
 
 /// Is `s` exactly 64 lowercase hex chars — the one form a blob consumer will
 /// match as an evidence ref?
-fn is_bare_sha256_hex(s: &str) -> bool {
+pub(crate) fn is_bare_sha256_hex(s: &str) -> bool {
     s.len() == 64
         && s.bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
@@ -559,7 +559,7 @@ fn evidence_refs_bound_to(
 /// The signed `row` mirror, checked against what a build-manifest
 /// Contribution must say about itself. Returns `(attesting_key_id,
 /// attestation_id)`.
-fn row_mirror(env: &Value) -> Result<(&str, &str), ManifestRejection> {
+pub(crate) fn row_mirror(env: &Value) -> Result<(&str, &str), ManifestRejection> {
     let row = env
         .get("row")
         .and_then(Value::as_object)
@@ -602,7 +602,7 @@ fn row_mirror(env: &Value) -> Result<(&str, &str), ManifestRejection> {
 
 /// Verify a bound-hybrid signature over `envelope` at threshold 1 against a
 /// single pinned `member` (RequireHybrid — the federation-tier default).
-fn envelope_verifies(
+pub(crate) fn envelope_verifies(
     envelope: &Value,
     ed_sig: &str,
     mldsa_sig: Option<&str>,

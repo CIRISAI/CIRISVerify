@@ -68,8 +68,8 @@ clap = { version = "4.5", features = ["derive"] }
 # used by the `token` PKCS#11 PIN and the `fedcode`/identity software-key password.
 rpassword = "7"
 # QR rendering for fedcodes (terminal unicode + SVG only). `default-features =
-# false` drops the `image` render feature, whose `image@0.25` transitively needs
-# rustc 1.88 > our MSRV 1.86 — we only use the svg/unicode renderers.
+# false` drops the `image` render feature and its `image@0.25` dependency tree;
+# we only use the svg/unicode renderers.
 qrcode = { version = "0.14", default-features = false, features = ["svg"] }
 
 # Serialization
@@ -191,7 +191,7 @@ ureq = { version = "2.9", default-features = false, features = ["tls", "json"] }
 # libsqlite3 isn't guaranteed across vendor builds; Android's app-
 # sandbox convention is static linking. See the rationale comment
 # before the rusqlite workspace entry for the full story.
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 # Android system properties API (for emulator detection)
 android_system_properties = "0.1"
 
@@ -216,7 +216,7 @@ android_system_properties = "0.1"
 # system libsqlite3 on Windows by default (vcpkg/chocolatey paths
 # are fragile in CI).
 [target.'cfg(target_os = "windows")'.dependencies]
-rusqlite = { version = "0.31", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"] }
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_System_Threading",

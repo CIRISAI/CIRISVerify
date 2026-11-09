@@ -147,6 +147,95 @@ enum Cmd {
         emit_contribution: bool,
     },
 
+    /// Sign a safety-battery evidence row (CC 3.1.5.5, CIRISVerify#322): a
+    /// CEG `scores` Contribution on
+    /// `evidence:safety_battery:{kind}:{cell}:{prefix}:v1`, naming the blob
+    /// by hash in `evidence_refs`. Writes the signed contribution JSON
+    /// (`signed_envelope` + both signatures), the registry door's
+    /// `contribution`. Malformed segments are refused before signing.
+    Evidence {
+        /// `capture` or `interpret`.
+        #[arg(long)]
+        kind: String,
+
+        /// The cell, `{lang}_{domain}` (e.g. `ru_mental_health`).
+        #[arg(long)]
+        cell: String,
+
+        /// The capture blob's first 16 lowercase hex characters. For a
+        /// capture it must be this blob's own; defaults to that when omitted.
+        #[arg(long)]
+        prefix: Option<String>,
+
+        /// The blob the row names. Its SHA-256 and length are taken from it.
+        #[arg(long)]
+        blob: PathBuf,
+
+        /// Agent version under test.
+        #[arg(long)]
+        agent_version: String,
+
+        /// Rubric identifier.
+        #[arg(long)]
+        rubric_id: String,
+
+        /// Rubric version.
+        #[arg(long)]
+        rubric_version: String,
+
+        /// SHA-256 of the rubric text, bare lowercase hex.
+        #[arg(long)]
+        rubric_sha256: String,
+
+        /// JSON file holding the original CI run's provenance (opaque).
+        #[arg(long)]
+        ci_provenance: PathBuf,
+
+        /// When the bundle was captured, RFC 3339.
+        #[arg(long)]
+        captured_at: String,
+
+        /// Interpret: criteria passed (with --total).
+        #[arg(long, requires = "total", conflicts_with = "pass_ratio")]
+        passed: Option<u64>,
+
+        /// Interpret: criteria judged (with --passed).
+        #[arg(long, requires = "passed")]
+        total: Option<u64>,
+
+        /// Interpret: the pass ratio in [0, 1], when counts are not available.
+        #[arg(long)]
+        pass_ratio: Option<f64>,
+
+        /// Interpret: the judge model.
+        #[arg(long)]
+        judge_model: Option<String>,
+
+        /// Interpret: SHA-256 of the judge prompt, bare lowercase hex.
+        #[arg(long)]
+        judge_prompt_sha256: Option<String>,
+
+        /// The signed instant, RFC 3339. Defaults to now.
+        #[arg(long)]
+        asserted_at: Option<String>,
+
+        /// Path to raw 32-byte Ed25519 seed file.
+        #[arg(long)]
+        ed25519_seed: PathBuf,
+
+        /// Path to raw ML-DSA-65 secret seed file (32 bytes).
+        #[arg(long)]
+        mldsa_secret: PathBuf,
+
+        /// The pipeline key_id (e.g. `agent-steward-2026`).
+        #[arg(long)]
+        key_id: String,
+
+        /// Output path for the contribution JSON. If omitted, writes to stdout.
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+    },
+
     /// Generate a fresh Ed25519 + ML-DSA-65 keypair pair for testing
     /// or one-off CI bootstrap. Writes four files into --output-dir:
     ///   - ed25519.seed       (32 bytes, raw)
@@ -422,6 +511,128 @@ fn main() -> Result<()> {
                     binary_version: &binary_version,
                     signed_manifest: &signed,
                 })?;
+            }
+        },
+
+        Cmd::Evidence {
+            kind,
+            cell,
+            prefix,
+            blob,
+            agent_version,
+            rubric_id,
+            rubric_version,
+            rubric_sha256,
+            ci_provenance,
+            captured_at,
+            passed,
+            total,
+            pass_ratio,
+            judge_model,
+            judge_prompt_sha256,
+            asserted_at,
+            ed25519_seed,
+            mldsa_secret,
+            key_id,
+            output,
+        } => {
+            use ciris_verify_core::safety_evidence::{
+                sign_safety_evidence_contribution, EvidenceKind, EvidenceVerdict, PassRatio,
+                Rubric, SafetyEvidence,
+            };
+            use sha2::{Digest, Sha256};
+
+            let kind = EvidenceKind::parse(&kind)
+                .ok_or_else(|| anyhow::anyhow!("--kind must be capture or interpret"))?;
+            let blob_bytes =
+                fs::read(&blob).with_context(|| format!("read blob {}", blob.display()))?;
+            let manifest_hash = hex::encode(Sha256::digest(&blob_bytes));
+            let prefix = match (kind, prefix) {
+                (_, Some(p)) => p,
+                (EvidenceKind::Capture, None) => manifest_hash[..16].to_string(),
+                (EvidenceKind::Interpret, None) => anyhow::bail!(
+                    "--prefix is required for an interpret row (the prefix of the capture it judges)"
+                ),
+            };
+            let verdict = match kind {
+                EvidenceKind::Capture => {
+                    if passed.is_some() || pass_ratio.is_some() || judge_model.is_some() {
+                        anyhow::bail!("a capture row takes no pass ratio or judge");
+                    }
+                    EvidenceVerdict::Capture
+                },
+                EvidenceKind::Interpret => EvidenceVerdict::Interpret {
+                    pass_ratio: match (passed, total, pass_ratio) {
+                        (Some(passed), Some(total), None) => PassRatio::Counts { passed, total },
+                        (None, None, Some(r)) => PassRatio::Ratio(r),
+                        _ => anyhow::bail!(
+                            "an interpret row needs --passed and --total, or --pass-ratio"
+                        ),
+                    },
+                    judge_model: judge_model.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("--judge-model is required for interpret")
+                    })?,
+                    judge_prompt_sha256: judge_prompt_sha256.as_deref().ok_or_else(|| {
+                        anyhow::anyhow!("--judge-prompt-sha256 is required for interpret")
+                    })?,
+                },
+            };
+            let provenance: serde_json::Value = serde_json::from_slice(
+                &fs::read(&ci_provenance)
+                    .with_context(|| format!("read {}", ci_provenance.display()))?,
+            )
+            .context("--ci-provenance is not JSON")?;
+            let asserted_at = match asserted_at {
+                Some(t) => chrono::DateTime::parse_from_rfc3339(&t)
+                    .context("--asserted-at is not RFC 3339")?
+                    .with_timezone(&chrono::Utc),
+                None => chrono::Utc::now(),
+            };
+
+            let ed = ciris_crypto::Ed25519Signer::from_seed(&read_key(&ed25519_seed)?)
+                .map_err(|e| anyhow::anyhow!("pipeline Ed25519 seed: {e}"))?;
+            let mldsa = ciris_crypto::MlDsa65Signer::from_seed(&read_key(&mldsa_secret)?)
+                .map_err(|e| anyhow::anyhow!("pipeline ML-DSA-65 seed: {e}"))?;
+            let identity =
+                ciris_verify_core::self_at_login::HybridSigningIdentity::new(&key_id, ed, mldsa);
+
+            let evidence = SafetyEvidence {
+                verdict,
+                cell: &cell,
+                prefix: &prefix,
+                agent_version: &agent_version,
+                rubric: Rubric {
+                    id: &rubric_id,
+                    version: &rubric_version,
+                    sha256: &rubric_sha256,
+                },
+                ci_provenance: &provenance,
+                captured_at: &captured_at,
+                manifest_hash: &manifest_hash,
+                manifest_size: blob_bytes.len() as u64,
+            };
+            let obj = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|e| anyhow::anyhow!("runtime: {e}"))?
+                .block_on(sign_safety_evidence_contribution(
+                    &identity,
+                    &evidence,
+                    asserted_at,
+                ))
+                .map_err(|e| anyhow::anyhow!("sign safety evidence: {e}"))?;
+
+            let json = serde_json::to_string_pretty(&obj.body)?;
+            match output {
+                Some(p) => {
+                    fs::write(&p, json).with_context(|| format!("write {}", p.display()))?;
+                    eprintln!(
+                        "signed {} → {}",
+                        obj.body["signed_envelope"]["dimension"],
+                        p.display()
+                    );
+                },
+                None => println!("{json}"),
             }
         },
 

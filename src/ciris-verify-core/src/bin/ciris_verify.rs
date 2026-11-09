@@ -1808,7 +1808,7 @@ fn prompt_pin(_enabled: bool) -> Option<String> {
 /// Decode a lowercase/uppercase hex string (the `--key-id` form) to bytes.
 fn parse_hex(s: &str) -> Result<Vec<u8>, String> {
     let s = s.trim().trim_start_matches("0x");
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return Err("hex string must have an even number of digits".into());
     }
     (0..s.len())

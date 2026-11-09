@@ -11,9 +11,9 @@ members = [
 ]
 
 [workspace.package]
-version = "22.1.0"
+version = "22.2.0"
 edition = "2021"
-rust-version = "1.86"
+rust-version = "1.89"
 license = "AGPL-3.0-or-later"
 repository = "https://github.com/cirisai/ciris-verify"
 authors = ["CIRIS L3C <engineering@ciris.ai>"]
@@ -71,7 +71,7 @@ anyhow = "1.0"
 # Pre-4.3.0 workspace default was `bundled = true` for every target,
 # which propagated through `ciris-verify-core` into every desktop
 # wheel and silently overrode persist's v3.5.2 target-narrowed override.
-rusqlite = { version = "0.31" }
+rusqlite = { version = "0.41" }
 
 # Logging (Veilid-compatible)
 tracing = "0.1"

@@ -420,6 +420,29 @@ fn build_vectors() -> Value {
         &alice,
         &owner_code(&alice, FedKind::User).with_ml_dsa_65_pubkey_sha256(commitment.clone()),
     ));
+    for (o, kind, group) in [
+        (&agent, FedKind::Agent, None),
+        (&node_o, FedKind::Node, None),
+        (&family, FedKind::Family, Some(&family_group)),
+        (&community, FedKind::Community, Some(&community_group)),
+    ] {
+        let k = kind.as_str();
+        let mut fc = owner_code(o, kind).with_ml_dsa_65_pubkey_sha256(commitment.clone());
+        let mut desc = format!(
+            "v3 `{k}` code carrying the PQC commitment and no nodes (node_count = 0): the commitment applies to any kind (CC 2.6.8 PQC rule (b)); constraint 2 restricts only embedded nodes"
+        );
+        if let Some(g) = group {
+            fc = fc.with_group_key_id(g.key_id.clone());
+            desc.push_str("; carries the group's key_id");
+        }
+        desc.push('.');
+        valid.push(valid_from_encoder(
+            &format!("v3_{k}_commitment_only"),
+            &desc,
+            o,
+            &fc,
+        ));
+    }
     valid.push(valid_from_encoder(
         "v3_user_nodes_and_commitment",
         "v3 `user` code with hints, three owned nodes and the PQC commitment (tag 0x01 + 32 raw bytes, last).",
@@ -883,6 +906,62 @@ fn build_vectors() -> Value {
         ));
     }
 
+    {
+        let mut p = v2_hints_payload.clone();
+        for b in &mut p[2..34] {
+            *b = 0;
+        }
+        refusals.push(refused_payload(
+            "dec_key_id_hash_zeroed",
+            "The `v2_user_hints` payload with its sha256(key_id) zeroed, CRC recomputed: the hash does not match the display key_id.",
+            "CC 2.6.8 wire format (a decoder MUST verify sha256(key_id) against key_id)",
+            PREFIX_V2,
+            &p,
+        ));
+    }
+    {
+        // The display key_id swapped after minting (same length), the hash left
+        // as minted and the CRC recomputed: only the hash check catches it.
+        let mut p = v2_hints_payload.clone();
+        let id_at = 2 + 32 + 32 + 1;
+        assert_eq!(p[id_at], b'a');
+        p[id_at] = b'm';
+        refusals.push(refused_payload(
+            "dec_key_id_swapped",
+            "The `v2_user_hints` payload with the display key_id's first byte changed (`alice-…` to `mlice-…`), the minted sha256(key_id) kept and the CRC recomputed: refused.",
+            "CC 2.6.8 wire format (a decoder MUST verify sha256(key_id) against key_id)",
+            PREFIX_V2,
+            &p,
+        ));
+    }
+    {
+        // 1,025 bytes: the budget payload with one hint byte more, hand-built.
+        let (_, budget_payload, _) = unrender(&encode_qr(&budget_fc).unwrap());
+        let hint_len_at = 2 + 32 + 32 + 1 + alice.key_id.len();
+        let mut p = budget_payload.clone();
+        p[hint_len_at] += 1;
+        p.insert(hint_len_at + 1, b'x');
+        assert_eq!(p.len(), 1025);
+        refusals.push(refused_payload(
+            "dec_payload_1025",
+            "The `v3_user_payload_1024` payload with one more transport-hint byte (1,025 bytes), CRC recomputed: refused by the decoder as `enc_payload_1025` is by the encoder.",
+            "CC 2.6.8 constraint 3 (payload <= 1024 bytes before base32, enforced at encoder AND decoder)",
+            PREFIX_V3,
+            &p,
+        ));
+    }
+    {
+        // v2 payload with the group_key_id hint byte missing.
+        assert_eq!(*v2_hints_payload.last().unwrap(), 0x00);
+        refusals.push(refused_payload(
+            "dec_v2_missing_group_hint",
+            "The `v2_user_hints` payload ending after hint(alias), its 0x00 group_key_id hint byte removed, CRC recomputed: truncated.",
+            "CC 2.6.8 wire format (hint(group_key_id) is 0x00 when absent, never omitted)",
+            PREFIX_V2,
+            &v2_hints_payload[..v2_hints_payload.len() - 1],
+        ));
+    }
+
     // -- display normalisation ----------------------------------------------------------------------
     let mut normalisation = Vec::new();
     for (target_id, display, qr) in [
@@ -999,95 +1078,6 @@ fn build_vectors() -> Value {
         ]
     });
 
-    // -- the codec as shipped, where it departs from CC 2.6.8 ----------------------------------------
-    // These record what v22 `fedcode::decode` does today. They are NOT the
-    // conformant behaviour; each names the CC rule it departs from. A fix to
-    // the codec flips the assertion, and the regenerated file is the review.
-    let mut disagreements = Vec::new();
-    {
-        let mut p = v2_hints_payload.clone();
-        for b in &mut p[2..34] {
-            *b = 0;
-        }
-        let (display, qr, crc) = render(PREFIX_V2, &p);
-        let got = decode(&display).expect("the shipped decoder accepts an unverified key_id hash");
-        disagreements.push(json!({
-            "id": "dis_key_id_hash_not_verified",
-            "cc_rule": "CC 2.6.8 wire format: `sha256(key_id)` binds the display key_id into the payload; a decoder MUST verify it against key_id.",
-            "codec_as_shipped": "decode skips the 32-byte key_id hash and accepts a code whose hash is all zeros.",
-            "conformant_outcome": "refused (Malformed)",
-            "payload_hex": hex::encode(&p),
-            "crc16_ccitt_hex": format!("{crc:04x}"),
-            "code": display,
-            "code_qr": qr,
-            "shipped_outcome": { "decoded": fedcode_json(&got) },
-        }));
-    }
-    {
-        // 1,025 bytes: the budget payload with one hint byte more, hand-built.
-        let (_, budget_payload, _) = unrender(&encode_qr(&budget_fc).unwrap());
-        let hint_len_at = 2 + 32 + 32 + 1 + alice.key_id.len();
-        let mut p = budget_payload.clone();
-        p[hint_len_at] += 1;
-        p.insert(hint_len_at + 1, b'x');
-        assert_eq!(p.len(), 1025);
-        let (display, qr, crc) = render(PREFIX_V3, &p);
-        let got = decode(&display).expect("the shipped decoder has no payload-size bound");
-        disagreements.push(json!({
-            "id": "dis_payload_1025_accepted_on_decode",
-            "cc_rule": "CC 2.6.8 constraint 3: total payload <= 1024 bytes before base32, enforced at encoder AND decoder.",
-            "codec_as_shipped": "encode refuses 1,025 bytes (see `enc_payload_1025`); decode accepts them.",
-            "conformant_outcome": "refused (Malformed)",
-            "payload_len": p.len(),
-            "payload_hex": hex::encode(&p),
-            "crc16_ccitt_hex": format!("{crc:04x}"),
-            "code": display,
-            "code_qr": qr,
-            "shipped_outcome": { "decoded": fedcode_json(&got) },
-        }));
-    }
-    {
-        let fc =
-            owner_code(&agent, FedKind::Agent).with_ml_dsa_65_pubkey_sha256(commitment.clone());
-        let display =
-            encode(&fc).expect("the encoder emits a v3 agent code carrying only a commitment");
-        let qr = encode_qr(&fc).unwrap();
-        let (_, p, crc) = unrender(&qr);
-        let err = decode(&display).expect_err("the shipped decoder refuses every non-user v3 code");
-        disagreements.push(json!({
-            "id": "dis_non_user_commitment_only_refused_on_decode",
-            "cc_rule": "CC 2.6.8 PQC rule (b): the commitment applies to ANY kind of code; constraint 2 restricts only embedded nodes.",
-            "codec_as_shipped": "encode emits CIRIS-V3- for an `agent` code with a commitment and node_count = 0; decode refuses every v3 code whose kind is not `user` before reading node_count, so the code cannot be read back.",
-            "conformant_outcome": "decodes to the encoder input",
-            "owner": owner_json(&agent),
-            "encoder_input": fedcode_json(&fc),
-            "payload_hex": hex::encode(&p),
-            "crc16_ccitt_hex": format!("{crc:04x}"),
-            "code": display,
-            "code_qr": qr,
-            "shipped_outcome": { "error": error_kind(&err) },
-        }));
-    }
-    {
-        // v2 payload with the group_key_id hint byte missing.
-        let p = &v2_hints_payload[..v2_hints_payload.len() - 1];
-        assert_eq!(*v2_hints_payload.last().unwrap(), 0x00);
-        let (display, qr, crc) = render(PREFIX_V2, p);
-        let got =
-            decode(&display).expect("the shipped decoder tolerates a missing group_key_id hint");
-        disagreements.push(json!({
-            "id": "dis_v2_missing_group_hint_tolerated",
-            "cc_rule": "CC 2.6.8 v2 payload ends with hint(group_key_id); the byte is part of the layout.",
-            "codec_as_shipped": "decode reads the group_key_id hint only if bytes remain, so a v2 payload ending after hint(alias) decodes with group_key_id absent.",
-            "conformant_outcome": "refused (Malformed, truncated)",
-            "payload_hex": hex::encode(p),
-            "crc16_ccitt_hex": format!("{crc:04x}"),
-            "code": display,
-            "code_qr": qr,
-            "shipped_outcome": { "decoded": fedcode_json(&got) },
-        }));
-    }
-
     json!({
         "$schema_note": "Golden FedCode vectors generated by ciris-verify-core/tests/fedcode_vectors.rs from ciris_verify_core::fedcode (the CC 2.6.8 reference). Keys are sorted; regenerate with CIRIS_FEDCODE_VECTORS_REGENERATE=1. See README.md beside this file.",
         "spec": {
@@ -1115,8 +1105,8 @@ fn build_vectors() -> Value {
         "consumer_cases": consumer_cases,
         "admission": admission,
         "known_disagreements": {
-            "note": "What ciris_verify_core::fedcode v22 does where CC 2.6.8 asks for something else. Recorded, not endorsed: a port should implement the CC rule and may use these inputs as its own refusal cases. When the codec is fixed these entries change and the regenerated file is the review.",
-            "cases": disagreements,
+            "note": "Where ciris_verify_core::fedcode departs from CC 2.6.8. Empty: the four departures recorded in v22.1.0 (unverified sha256(key_id), encoder-only payload bound, unreadable non-user commitment-only v3, tolerated missing group_key_id hint) were fixed in CIRISVerify#331 and their inputs now sit in `refusals` and `valid`.",
+            "cases": Vec::<Value>::new(),
         },
     })
 }
@@ -1217,7 +1207,8 @@ fn fedcode_from_json(v: &Value) -> FedCode {
 /// from both renders to the recorded value, re-encodes to the recorded code,
 /// and its payload and CRC are what the file says; every refusal is refused
 /// with the recorded error kind; every normalisation form decodes to its
-/// target; the shipped disagreements still hold.
+/// target; any recorded disagreement still holds (none are recorded since
+/// CIRISVerify#331).
 #[test]
 fn committed_vectors_replay() {
     let file = load();

@@ -120,6 +120,7 @@ pub mod reconsider_dos;
 /// from 'tampered', cryptographically rather than by assertion.
 pub mod redactable;
 pub mod registry;
+pub mod safety_evidence;
 pub mod security;
 pub mod self_at_login;
 pub mod skill_import;
