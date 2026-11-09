@@ -1,0 +1,4 @@
+# The golden vectors are compared byte for byte against what the codec
+# produces; a CRLF checkout must not change them.
+*.json text eol=lf
+*.md text eol=lf
