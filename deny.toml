@@ -56,16 +56,6 @@ ignore = [
     # fix exists (patched = []; only 0.26.0-beta.1 is unaffected); revisit on the
     # hickory 0.26 stable bump (CIRISVerify#165), same as 0119.
     "RUSTSEC-2026-0118",
-    # time 0.3 stack-exhaustion via the RFC 2822 *string* parser (fixed in
-    # 0.3.47, which requires rustc 1.88; that exceeded the MSRV of 1.86). `time`
-    # is pulled only transitively by x509-parser (#91 accord custody attestation)
-    # for ASN.1 cert-validity times (GeneralizedTime/UTCTime) — a different code
-    # path. Neither x509-parser's validity handling nor any CIRISVerify code ever
-    # feeds input to time's RFC 2822 `parse`, so the vulnerable path is
-    # unreachable. The advisory itself notes "non-malicious input will never
-    # encounter this scenario." The MSRV is now 1.89 (#332, rusqlite
-    # 0.41), so time can move to >=0.3.47 and this ignore can be dropped.
-    "RUSTSEC-2026-0009",
 ]
 
 [licenses]

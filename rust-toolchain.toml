@@ -18,7 +18,7 @@
 # added to the action's → `E0463: can't find crate for core` on cross builds. Bump
 # BOTH (this file + every `@1.97.0` workflow ref) together.
 # The Win7 Tier-3 build-std lane still overrides to nightly + rust-src
-# per-job (CIRISVerify#67); MSRV (1.86) is enforced separately in CI.
+# per-job (CIRISVerify#67); MSRV (1.89) is enforced separately in CI.
 [toolchain]
 channel = "1.97.0"
 components = ["rustfmt", "clippy"]
