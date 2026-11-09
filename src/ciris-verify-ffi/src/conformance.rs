@@ -563,6 +563,6 @@ mod bounding {
     fn an_all_multibyte_string_still_bounds() {
         let s = "é".repeat(300); // 600 bytes
         let out = ConformanceReport::bound_utf8(&s, 201);
-        assert!(out.len() <= 201 && out.len() % 2 == 0);
+        assert!(out.len() <= 201 && out.len().is_multiple_of(2));
     }
 }

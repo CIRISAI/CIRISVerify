@@ -31,9 +31,10 @@ ignore = [
     # revisit on the hickory 0.26 bump (CIRISVerify#165). Mirrors deny.toml.
     "RUSTSEC-2026-0118",
     # time 0.3 stack-exhaustion via the RFC 2822 *string* parser (fixed in
-    # 0.3.47, which requires rustc 1.88 and would break MSRV 1.86). `time` is
+    # 0.3.47, which requires rustc 1.88; that exceeded the MSRV of 1.86). `time` is
     # pulled only transitively by x509-parser (#91 custody attestation) for
     # ASN.1 cert-validity times — never via time's RFC 2822 parse, so the
-    # vulnerable path is unreachable. Revisit if MSRV moves to >=1.88.
+    # vulnerable path is unreachable. The MSRV is now 1.89 (#332), so time can
+    # move to >=0.3.47 and this ignore can be dropped.
     "RUSTSEC-2026-0009",
 ]

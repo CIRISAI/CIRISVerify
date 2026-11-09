@@ -1349,7 +1349,7 @@ fn inclusion_path_from_levels(levels: &[Vec<[u8; 32]>], index: usize) -> Vec<(bo
     for level in &levels[..levels.len() - 1] {
         let sib = pos ^ 1;
         if sib < level.len() {
-            siblings.push((pos % 2 == 0, level[sib]));
+            siblings.push((pos.is_multiple_of(2), level[sib]));
         }
         pos >>= 1;
     }
@@ -1371,7 +1371,7 @@ fn range_root(levels: &[Vec<[u8; 32]>], start: usize, len: usize) -> [u8; 32] {
         return levels[0][start];
     }
     let leaf_count = levels.first().map_or(0, Vec::len);
-    if len.is_power_of_two() && start % len == 0 {
+    if len.is_power_of_two() && start.is_multiple_of(len) {
         let j = len.trailing_zeros() as usize;
         if start + len <= leaf_count && j < levels.len() {
             let p = start >> j;
