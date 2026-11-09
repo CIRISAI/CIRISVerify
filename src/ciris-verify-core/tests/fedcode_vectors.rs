@@ -1134,6 +1134,12 @@ fn render_json(v: &Value) -> String {
     serde_json::to_string_pretty(v).unwrap() + "\n"
 }
 
+/// Read the committed file with LF line endings whatever the checkout did to
+/// them (a Windows checkout with `core.autocrlf` rewrites text files to CRLF).
+fn read_lf(path: &std::path::Path) -> std::io::Result<String> {
+    std::fs::read_to_string(path).map(|t| t.replace("\r\n", "\n"))
+}
+
 // ---- tests ----------------------------------------------------------------------------------------------
 
 /// Emit-or-verify: the committed file must equal what the codec produces now.
@@ -1143,7 +1149,7 @@ fn vectors_match_the_codec() {
     let path = vectors_dir().join(VECTOR_FILE);
     let regenerate = std::env::var_os(REGENERATE_ENV).is_some();
     if path.exists() && !regenerate {
-        let on_disk = std::fs::read_to_string(&path).unwrap();
+        let on_disk = read_lf(&path).unwrap();
         assert!(
             on_disk == produced,
             "{} drifted from ciris_verify_core::fedcode. If the codec changed on purpose, \
@@ -1161,7 +1167,7 @@ fn load() -> Value {
     if !path.exists() {
         vectors_match_the_codec();
     }
-    serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap()
+    serde_json::from_str(&read_lf(&path).unwrap()).unwrap()
 }
 
 fn s<'a>(v: &'a Value, k: &str) -> &'a str {
@@ -1332,9 +1338,9 @@ fn committed_vectors_replay() {
 #[test]
 fn committed_file_is_canonical_json() {
     let path = vectors_dir().join(VECTOR_FILE);
-    let text = std::fs::read_to_string(&path).unwrap_or_else(|_| {
+    let text = read_lf(&path).unwrap_or_else(|_| {
         vectors_match_the_codec();
-        std::fs::read_to_string(&path).unwrap()
+        read_lf(&path).unwrap()
     });
     let parsed: Value = serde_json::from_str(&text).unwrap();
     assert_eq!(render_json(&parsed), text);
