@@ -140,8 +140,11 @@ code — see 3A.5 for why that shape has to exist.
 2. **Only `kind = user` may embed nodes.** "The owner's nodes" is meaningless
    for a node, and a group's destinations are group-scoped material a code MUST
    NOT carry at all (CC 5.4.6). Enforced at
-   encoder and decoder.
-3. **`node_count` ≤ 16**, and the **total payload ≤ 1024 bytes** before base32.
+   encoder and decoder. The decoder refuses a non-user v3 code only when
+   `node_count > 0`: a non-user code carrying only the PQC commitment
+   (`node_count = 0`, 3A.5) is valid and MUST round-trip.
+3. **`node_count` ≤ 16**, and the **total payload ≤ 1024 bytes** before base32,
+   enforced at encoder AND decoder.
    The count alone does not bound the code — 16 × 255-byte ids exceeds what a
    QR can render, defeating the hand-off the format exists for.
 4. **Empty is valid and is the default.** A code with no nodes MUST encode as
@@ -219,8 +222,12 @@ dash-separated chunks. QR form: the same, ungrouped. Decoders normalize
 (drop whitespace, uppercase, strip dashes) and accept the undashed prefix.
 
 All string fields ≤ 255 bytes. The `sha256(key_id)` field binds the display
-`key_id` into the CRC-protected payload (a corrupted/edited display key_id flips
-the CRC).
+`key_id` into the CRC-protected payload. The CRC alone does not protect it (a
+re-minted code with an edited `key_id` carries a fresh, valid CRC), so a
+decoder MUST recompute `sha256(key_id)` and compare it, in constant time, with
+the embedded hash, refusing a mismatch. `hint(group_key_id)` is part of the v2
+layout: `0x00` when absent, never omitted; a v2/v3 payload that ends after
+`hint(alias_hint)` is truncated and refused.
 
 ### 3.2 Reference implementation
 

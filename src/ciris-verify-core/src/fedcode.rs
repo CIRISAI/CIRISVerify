@@ -38,6 +38,7 @@
 
 use base64::Engine;
 use sha2::{Digest, Sha256};
+use subtle::ConstantTimeEq;
 
 /// Bumped binary-format version for the kind-tagged code.
 pub const FEDCODE_VERSION_V2: u8 = 0x02;
@@ -715,10 +716,18 @@ fn build_payload(fc: &FedCode) -> Result<Vec<u8>, FedCodeError> {
     Ok(out)
 }
 
-/// Decode a fedcode (v2) or a legacy v1 `NodeCode` (→ [`FedKind::Node`]).
+/// Decode a fedcode (v2/v3) or a legacy v1 `NodeCode` (→ [`FedKind::Node`]).
+///
+/// The decoder enforces the CC 2.6.8 constraints itself rather than trusting
+/// the minter: the embedded `sha256(key_id)` must match the display `key_id`
+/// (constant-time), the payload is at most 1,024 bytes, a v2/v3 payload
+/// carries its `group_key_id` hint byte, and only a `user` code may embed
+/// nodes (a non-user v3 code with `node_count = 0` — commitment only — is
+/// valid).
 ///
 /// # Errors
-/// [`FedCodeError`] on a bad prefix, base32, CRC, version, or truncation.
+/// [`FedCodeError`] on a bad prefix, base32, CRC, version, truncation, an
+/// over-budget payload, or a `key_id` that does not match its hash.
 pub fn decode(code: &str) -> Result<FedCode, FedCodeError> {
     let cleaned: String = code.chars().filter(|c| !c.is_whitespace()).collect();
     let cleaned = cleaned.to_ascii_uppercase();
@@ -738,6 +747,15 @@ pub fn decode(code: &str) -> Result<FedCode, FedCodeError> {
         )));
     }
     let (payload, crc_bytes) = raw.split_at(raw.len() - 2);
+    // CC 2.6.8 constraint 3: the budget binds the DECODER too, because a code
+    // minted by another implementation is exactly the case an encoder cannot
+    // police (CIRISVerify#331).
+    if payload.len() > MAX_PAYLOAD_BYTES {
+        return Err(FedCodeError::Malformed(format!(
+            "payload is {} bytes, over the {MAX_PAYLOAD_BYTES}-byte budget",
+            payload.len()
+        )));
+    }
     let declared = (u16::from(crc_bytes[0]) << 8) | u16::from(crc_bytes[1]);
     let computed = crc16_ccitt(payload);
     if declared != computed {
@@ -764,18 +782,30 @@ pub fn decode(code: &str) -> Result<FedCode, FedCodeError> {
     if payload.len() < offset + KEY_ID_HASH_LEN + PUBKEY_RAW_LEN + 1 {
         return Err(trunc());
     }
-    offset += KEY_ID_HASH_LEN; // key_id hash (integrity; key_id read below)
+    let key_id_hash = &payload[offset..offset + KEY_ID_HASH_LEN];
+    offset += KEY_ID_HASH_LEN;
     let pubkey_raw = &payload[offset..offset + PUBKEY_RAW_LEN];
     offset += PUBKEY_RAW_LEN;
 
     let (key_id, off) = read_length_prefixed(payload, offset)?;
     offset = off;
+    // CC 2.6.8: `sha256(key_id)` binds the display key_id into the payload and
+    // a decoder MUST verify it (CIRISVerify#331). The CRC alone does not: a
+    // re-minted code with a swapped key_id carries a fresh, valid CRC.
+    let recomputed = Sha256::digest(key_id.as_bytes());
+    if !bool::from(recomputed.as_slice().ct_eq(key_id_hash)) {
+        return Err(FedCodeError::Malformed(
+            "embedded sha256(key_id) does not match the display key_id".into(),
+        ));
+    }
     let (transport_hint, off) = read_hint(payload, offset)?;
     offset = off;
     let (alias_hint, off) = read_hint(payload, offset)?;
     offset = off;
-    // group_key_id exists from v2 onward; tolerate its absence (v1).
-    let group_key_id = if version >= FEDCODE_VERSION_V2 && offset < payload.len() {
+    // group_key_id is part of the v2/v3 layout: `0x00` when absent, never
+    // omitted, so a payload ending after hint(alias) is truncated
+    // (CIRISVerify#331). v1 has no such field.
+    let group_key_id = if version >= FEDCODE_VERSION_V2 {
         let (g, off) = read_hint(payload, offset)?;
         offset = off;
         g
@@ -785,21 +815,26 @@ pub fn decode(code: &str) -> Result<FedCode, FedCodeError> {
 
     // v3 tail: the owner's nodes (CIRISVerify#269). Absent on v1/v2.
     let owned_nodes = if version == FEDCODE_VERSION_V3 {
+        let count = usize::from(*payload.get(offset).ok_or_else(trunc)?);
+        offset += 1;
         // A scanned code is untrusted input, and a foreign implementation can
         // mint a CRC-valid v3 payload with any kind byte. The encoder forbids
         // non-user codes carrying nodes; the DECODER has to enforce the same
         // invariant, or a consumer receives attacker-supplied "owned nodes"
         // attributed to a group. Same reasoning as the transport-key refusal
         // below: the encoder cannot police codes it did not mint.
-        if kind != FedKind::User {
+        //
+        // Only a non-zero count is refused: the PQC commitment applies to any
+        // kind (CC 2.6.8 rule (b)), so an agent / node / family / community
+        // code carrying only the commitment is a valid v3 code
+        // (CIRISVerify#331).
+        if count > 0 && kind != FedKind::User {
             return Err(FedCodeError::Malformed(format!(
-                "v3 code carries owned nodes but kind is `{}`; only a `user` \
-                 code may embed nodes",
+                "v3 code carries {count} owned node(s) but kind is `{}`; only a \
+                 `user` code may embed nodes",
                 kind.as_str()
             )));
         }
-        let count = usize::from(*payload.get(offset).ok_or_else(trunc)?);
-        offset += 1;
         if count > MAX_OWNED_NODES {
             return Err(FedCodeError::Malformed(format!(
                 "at most {MAX_OWNED_NODES} owned nodes, got {count}"
@@ -1495,5 +1530,175 @@ mod admission_shape {
         let back = decode(&encode(&with_nodes).unwrap()).unwrap();
         assert_eq!(back, with_nodes);
         assert_eq!(back.owned_nodes.len(), 1);
+    }
+}
+
+/// The decoder enforces CC 2.6.8 on codes it did not mint (CIRISVerify#331).
+#[cfg(test)]
+mod decoder_conformance {
+    use super::*;
+
+    const COMMITMENT: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
+
+    fn pk(b: u8) -> String {
+        b64().encode([b; PUBKEY_RAW_LEN])
+    }
+
+    fn sample(kind: FedKind) -> FedCode {
+        let fc = FedCode::new(kind, "eric-moore-k7f3qd2pza", pk(9))
+            .with_transport_hint("https://node.example")
+            .with_alias_hint("Eric Moore");
+        if matches!(kind, FedKind::Family | FedKind::Community) {
+            fc.with_group_key_id("the-moores-fam-aa")
+        } else {
+            fc
+        }
+    }
+
+    /// Render a raw payload (CRC recomputed) under `prefix`.
+    fn render(prefix: &str, payload: &[u8]) -> String {
+        let crc = crc16_ccitt(payload);
+        let mut full = payload.to_vec();
+        full.push((crc >> 8) as u8);
+        full.push((crc & 0xFF) as u8);
+        format!("{prefix}{}", group(&b32_no_pad_encode(&full)))
+    }
+
+    fn assert_malformed(code: &str, needle: &str) {
+        match decode(code) {
+            Err(FedCodeError::Malformed(m)) => assert!(m.contains(needle), "{m}"),
+            other => panic!("expected Malformed containing {needle:?}, got {other:?}"),
+        }
+    }
+
+    fn v1_payload(hashed: &[u8], key_id: &[u8]) -> Vec<u8> {
+        let mut p = vec![FEDCODE_VERSION_V1];
+        p.extend_from_slice(&Sha256::digest(hashed));
+        p.extend_from_slice(&[0x33; PUBKEY_RAW_LEN]);
+        p.push(key_id.len() as u8);
+        p.extend_from_slice(key_id);
+        p.extend_from_slice(&[0x00, 0x00]);
+        p
+    }
+
+    // ---- sha256(key_id) is verified ----------------------------------------------------
+
+    #[test]
+    fn a_zeroed_key_id_hash_is_refused() {
+        let mut p = build_payload(&sample(FedKind::User)).unwrap();
+        p[2..2 + KEY_ID_HASH_LEN].fill(0);
+        assert_malformed(&render(PREFIX_V2, &p), "sha256(key_id)");
+    }
+
+    /// The case the hash exists for: the display key_id swapped after minting,
+    /// re-CRC'd so the checksum is no defence.
+    #[test]
+    fn a_swapped_display_key_id_is_refused() {
+        let fc = sample(FedKind::User);
+        let mut p = build_payload(&fc).unwrap();
+        let id_at = 2 + KEY_ID_HASH_LEN + PUBKEY_RAW_LEN + 1;
+        p[id_at] = b'x'; // "eric-…" → "xric-…", same length, hash untouched
+        assert_malformed(&render(PREFIX_V2, &p), "sha256(key_id)");
+        // The untouched payload still decodes.
+        let ok = render(PREFIX_V2, &build_payload(&fc).unwrap());
+        assert_eq!(decode(&ok).unwrap(), fc);
+    }
+
+    #[test]
+    fn a_v1_code_with_a_wrong_key_id_hash_is_refused() {
+        let p = v1_payload(b"some-other-id", b"lab-node-aaaa");
+        assert_malformed(&render(PREFIX_V1, &p), "sha256(key_id)");
+    }
+
+    // ---- the 1,024-byte bound binds the decoder ------------------------------------------
+
+    /// A v3 user code padded through its transport hint to exactly `len`
+    /// payload bytes, built by hand so the encoder's own bound is bypassed.
+    fn payload_of_len(len: usize) -> Vec<u8> {
+        let nodes: Vec<_> = (0..MAX_OWNED_NODES as u8)
+            .map(|i| OwnedNode::new(format!("node-{i:02}-aaaaaaaaaa"), pk(0x40 + i)))
+            .collect();
+        let base = sample(FedKind::User)
+            .with_transport_hint("x")
+            .with_owned_nodes(nodes)
+            .with_ml_dsa_65_pubkey_sha256(COMMITMENT);
+        let mut p = build_payload(&base).unwrap();
+        let extra = len - p.len();
+        let hint_len_at = 2 + KEY_ID_HASH_LEN + PUBKEY_RAW_LEN + 1 + base.key_id.len();
+        assert_eq!(p[hint_len_at], 1);
+        assert!(extra < MAX_FIELD_BYTES, "pad {extra} must fit one byte");
+        p[hint_len_at] += extra as u8;
+        for _ in 0..extra {
+            p.insert(hint_len_at + 1, b'x');
+        }
+        assert_eq!(p.len(), len);
+        p
+    }
+
+    #[test]
+    fn a_1024_byte_payload_decodes() {
+        let code = render(PREFIX_V3, &payload_of_len(MAX_PAYLOAD_BYTES));
+        assert_eq!(decode(&code).unwrap().owned_nodes.len(), MAX_OWNED_NODES);
+    }
+
+    #[test]
+    fn a_1025_byte_payload_is_refused_on_decode() {
+        let code = render(PREFIX_V3, &payload_of_len(MAX_PAYLOAD_BYTES + 1));
+        assert_malformed(&code, "budget");
+    }
+
+    // ---- a non-user commitment-only v3 code round-trips -------------------------------------
+
+    #[test]
+    fn a_non_user_code_carrying_only_the_commitment_round_trips() {
+        for kind in [
+            FedKind::Agent,
+            FedKind::Node,
+            FedKind::Family,
+            FedKind::Community,
+        ] {
+            let fc = sample(kind).with_ml_dsa_65_pubkey_sha256(COMMITMENT);
+            let code = encode(&fc).unwrap();
+            assert!(code.starts_with(PREFIX_V3), "{kind:?}");
+            assert_eq!(decode(&code).unwrap(), fc, "{kind:?}");
+            assert_eq!(decode(&encode_qr(&fc).unwrap()).unwrap(), fc, "{kind:?}");
+        }
+    }
+
+    /// node_count > 0 on a non-user code is still refused on decode.
+    #[test]
+    fn a_non_user_code_with_a_node_is_still_refused_on_decode() {
+        for kind in [
+            FedKind::Agent,
+            FedKind::Node,
+            FedKind::Family,
+            FedKind::Community,
+        ] {
+            let mut p = build_payload(&sample(kind)).unwrap();
+            p[0] = FEDCODE_VERSION_V3;
+            p.push(1);
+            p.push(4);
+            p.extend_from_slice(b"node");
+            p.extend_from_slice(&[0x22; PUBKEY_RAW_LEN]);
+            p.push(0x00);
+            assert_malformed(&render(PREFIX_V3, &p), "only a");
+        }
+    }
+
+    // ---- the v2 group_key_id hint byte is mandatory ------------------------------------------
+
+    #[test]
+    fn a_v2_payload_missing_its_group_hint_is_refused() {
+        let mut p = build_payload(&sample(FedKind::User)).unwrap();
+        assert_eq!(p.pop(), Some(0x00), "the absent group hint is 0x00");
+        assert_malformed(&render(PREFIX_V2, &p), "truncated");
+    }
+
+    #[test]
+    fn a_v1_code_has_no_group_hint_and_still_decodes() {
+        let p = v1_payload(b"lab-node-aaaa", b"lab-node-aaaa");
+        let fc = decode(&render(PREFIX_V1, &p)).unwrap();
+        assert_eq!(fc.kind, FedKind::Node);
+        assert_eq!(fc.group_key_id, None);
     }
 }

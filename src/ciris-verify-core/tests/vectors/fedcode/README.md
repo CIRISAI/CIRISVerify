@@ -20,29 +20,27 @@ it.
 | Section | Contents |
 |---|---|
 | `wire` | The constants a port needs: CRC, base32, prefixes, kind bytes, hint encoding, v3 tail, limits, `key_id` shape. |
-| `valid` | Twenty codes. Each carries the encoder input (or `construction` for the hand-built v1 and pre-commitment v3 codes), the payload bytes before base32 (hex), the CRC-16-CCITT, the dashed display code, the undashed QR code and the decoded value. Covers v1; v2 for the five kinds with and without hints; v3 with nodes, commitment only (`node_count = 0`), both; the 16-node bound; the 1,024-byte payload edge; the empty tail encoding as v2 byte for byte (`identical_to`). |
-| `refusals` | Thirty-seven inputs that must be refused, each with `stage` (`encode` or `decode`), the input, the CC constraint and the expected error kind (`Malformed`, `InvalidVersion`, or `ChecksumMismatch` with the declared and computed CRC). Covers bad commitment hex (upper-case, short, long, non-hex, empty), 17 nodes, 1,025 bytes, a transport key equal to the owner's pubkey, nodes on a non-user kind, over-long fields, CRC mismatch, unknown prefix, garbage and truncated bodies, unknown version and kind bytes, a bad commitment tag, a truncated commitment, non-UTF-8 and over-declared fields. |
+| `valid` | Twenty-four codes. Each carries the encoder input (or `construction` for the hand-built v1 and pre-commitment v3 codes), the payload bytes before base32 (hex), the CRC-16-CCITT, the dashed display code, the undashed QR code and the decoded value. Covers v1; v2 for the five kinds with and without hints; v3 with nodes, commitment only (`node_count = 0`) for every kind, both; the 16-node bound; the 1,024-byte payload edge; the empty tail encoding as v2 byte for byte (`identical_to`). |
+| `refusals` | Forty-one inputs that must be refused, each with `stage` (`encode` or `decode`), the input, the CC constraint and the expected error kind (`Malformed`, `InvalidVersion`, or `ChecksumMismatch` with the declared and computed CRC). Covers bad commitment hex (upper-case, short, long, non-hex, empty), 17 nodes, 1,025 bytes (at the encoder and the decoder), a transport key equal to the owner's pubkey, nodes on a non-user kind, over-long fields, CRC mismatch, unknown prefix, garbage and truncated bodies, unknown version and kind bytes, a bad commitment tag, a truncated commitment, non-UTF-8 and over-declared fields, a `sha256(key_id)` that does not match the display `key_id` (zeroed, or the id swapped), and a v2 payload missing its `group_key_id` hint byte. |
 | `normalisation` | Eighteen renderings (dashed, undashed, lower-case, undashed prefix, whitespace in and around the code) that decode to the same value as a named `valid` vector. |
 | `consumer_cases` | The v2-only decoder's refusal of `CIRIS-V3-` before any payload byte (CC 2.6.8 constraint 5). The crate exposes no v2-only path, so the inputs are given for the consumer's own test. |
 | `admission` | `AdmittedHybridKey::admit` against the stand-in: a matching pull admitted, a one-bit substitution refused, a code without a commitment refused. |
-| `known_disagreements` | Where the shipped decoder departs from CC 2.6.8 (see below). |
+| `known_disagreements` | Where the shipped codec departs from CC 2.6.8. Empty (see below). |
 
 ## Known disagreements
 
-Four entries record what `fedcode::decode` does today where CC 2.6.8 asks for
-something else. They are recorded, not endorsed: a port should implement the
-CC rule and may use these inputs as its own refusal cases.
+The section is kept, with an empty `cases` array, so a consumer's loader
+does not change shape. Version 22.1.0 recorded four departures there; all four
+were fixed in CIRISVerify#331 and their inputs moved:
 
-- The 32-byte `sha256(key_id)` is skipped on decode; CC says a decoder MUST
-  verify it against the display `key_id`.
-- The 1,024-byte payload bound is enforced at the encoder only; CC says
-  encoder AND decoder.
-- A non-user code carrying only the PQC commitment encodes as v3 but is refused
-  on decode; CC rule (b) says the commitment applies to any kind.
-- A v2 payload missing its `group_key_id` hint byte is tolerated.
-
-When the codec is fixed these entries change, and the regenerated file is the
-review.
+- `sha256(key_id)` is verified on decode (constant time): `dec_key_id_hash_zeroed`
+  and `dec_key_id_swapped` in `refusals`.
+- The 1,024-byte payload bound binds the decoder: `dec_payload_1025`.
+- A non-user code carrying only the PQC commitment reads back: the
+  `v3_{agent,node,family,community}_commitment_only` codes in `valid`. A
+  non-user v3 code is refused only when `node_count > 0`.
+- A v2 payload missing its `group_key_id` hint byte is refused:
+  `dec_v2_missing_group_hint`.
 
 ## Regenerating
 
@@ -59,4 +57,4 @@ base32 in the test are reimplemented rather than borrowed from the crate, so
 the payload bytes the file carries are an independent reading of the codec's
 output.
 
-Issue: CIRISVerify#329.
+Issues: CIRISVerify#329, CIRISVerify#331.
