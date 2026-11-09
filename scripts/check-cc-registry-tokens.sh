@@ -217,7 +217,8 @@ fi
 echo "accord invocation kinds: ${#ACCORD_OK[@]} accepted, ${#ACCORD_BAD[@]} known-bad refused ✓"
 
 # CIRISVerify#322 — `ciris-build-sign evidence` signs rows on CIRISAgent's
-# `evidence:safety_battery:{kind}:{cell}:{prefix}` family (CC 3.1.5.5). The
+# `evidence:safety_battery:{kind}:{cell}:{prefix}` family (CC 3.1.5.5; rc14+
+# registers it as `evidence:{suite}:{kind}:{cell}:{prefix}`, signed). The
 # template is read from `safety_battery_dimension` so the replay follows the
 # producer; each kind verify signs must resolve to that family, and the untailed
 # form must be refused.
@@ -235,7 +236,7 @@ EV_BAD=("evidence:safety_battery:capture:ru_mental_health:8af424544249c1c6")
 EOUT=$(cd "$CC" && python3 "$MATCHER" "${EV_OK[@]}")
 echo "$EOUT"
 if grep -qv 'refusal=None' <<< "$EOUT" \
-   || [[ $(grep -c -- '-> evidence:safety_battery:{kind}:{cell}:{prefix} ' <<< "$EOUT") -ne ${#EV_OK[@]} ]]; then
+   || [[ $(grep -cE -- '-> evidence:(\{suite\}|safety_battery):\{kind\}:\{cell\}:\{prefix\} ' <<< "$EOUT") -ne ${#EV_OK[@]} ]]; then
   echo
   echo "FAIL: a safety-evidence dimension is refused or resolves to another family"
   exit 1
