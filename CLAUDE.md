@@ -68,7 +68,7 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 
 ## Current Implementation Status
 
-*(Current release: **22.0.0** — see [Release history](#release-history) for this and every prior entry.)*
+*(Current release: **22.1.0** — see [Release history](#release-history) for this and every prior entry.)*
 
 | Crate | Status | Notes |
 |-------|--------|-------|
@@ -239,6 +239,7 @@ and concrete review-time examples.
 
 Newest first, **one release per line**, so adding a release is a one-line diff.
 
+- **22.1.0** — Golden FedCode vectors at `src/ciris-verify-core/tests/vectors/fedcode/fedcode_vectors.json` (CC 2.6.8, FSD-003): v1, v2 for the five kinds, v3 with nodes / commitment only / both, the 16-node and 1,024-byte bounds, the empty tail as v2 byte for byte, 37 refusals with error kinds, display normalisation, PQC admission; `tests/fedcode_vectors.rs` regenerates them (`CIRIS_FEDCODE_VECTORS_REGENERATE=1`) and fails on drift. The file's `known_disagreements` record four places `fedcode::decode` departs from CC 2.6.8 (unverified `sha256(key_id)`, no payload bound on decode, non-user commitment-only v3 refused, missing v2 group hint tolerated); codec unchanged. Client, agent and server pin the file. (#329)
 - **22.0.0** (BREAKING) — The substrate verifiers move from `ciris_verify_core::holonomic` to `ciris_verify_core::substrate` (CC 6.1); every item and submodule (`wholeness_witness`, `aggregation`, `fountain`, `alm`, `av_chunk`, `preimage`, `storage_contention`, `bootstrap`) is unchanged and there is no alias, so consumers replace the path prefix. The `announce_policy` normative authority string is now `"CC 5.4.6"`. Documentation describes the current state only: superseded design notes and point-in-time reports are removed (they remain in git history).
 - **21.0.0** (BREAKING) — Trust root is the CC 5.3.4 GenesisBundle: `genesis_bundle::verify_genesis_bundle` checks holder authorizations against the baked A1/B1/C1 roster, and `TrustRootValidator` selects the highest verified version. Removed: DNS sources, steward key, licence JWTs, revocation list; every deployment is community until licensure rows (CC 4.4.3.8) are evaluated. Wire: `ValidationResults` / `SourceCheckResult` reshaped, `GetStewardKey` → `GetTrustRoot`, `VerifyConfig` loses `dns_*` / `trust_model` / `dns_transport`. Keyring storage opens the tier a key already lives in (#311). `k256` / `p256` 0.14 (RUSTSEC-2026-0387, #316); RUSTSEC-2026-0346–0349, 0367–0369, 0381, 0382, 0385, 0386 fixed by upgrade. (#176, #69)
 - **20.2.0** — `ciris_crypto::transit_kex` (feature `transit-kex`): the CC 5.3.3.5 E1 A/V per-hop transit key, hybrid X25519 + ML-KEM-768 against the relay's `transit_kex_pubkeys`, bound to the RNS `link_id` and both `occurrence_key_id`s, one key per direction, keys per handshake, no classical fallback; `TransitHandshake::to_bytes` / `from_bytes` carry the suite identifier `transit_x25519_mlkem768_hkdf_sha256` (`TransitSuite`). No FFI. `quinn-proto` 0.11.19 (RUSTSEC-2026-0338/0339/0340/0341/0342). (#309)
