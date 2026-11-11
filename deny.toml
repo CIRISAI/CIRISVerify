@@ -22,40 +22,6 @@ unsound = "all"
 ignore = [
     # atty is pulled transitively via cbindgen build dep
     "RUSTSEC-2021-0145",
-    # rand 0.8/0.9 unsound only with a custom Logger that holds RngCore across
-    # thread-exit callbacks. We never install such a logger; the advisory is
-    # not exploitable by our code paths. Reassess if rand publishes a fix.
-    "RUSTSEC-2026-0097",
-    # rustls-webpki name constraint issues in rustls 0.21/webpki 0.101.
-    # hickory-resolver 0.24 pins rustls 0.21 internally. Upgrading to
-    # hickory-resolver 0.26 requires significant API changes.
-    # Low risk: requires attacker-controlled CA certs with specific name
-    # constraint configurations. We use bundled Mozilla CA certs only.
-    # TODO: Upgrade to hickory-resolver 0.26 when API migration is feasible.
-    "RUSTSEC-2026-0098",
-    "RUSTSEC-2026-0099",
-    # rustls-webpki CRL parsing panic (rustls-webpki 0.101/0.103).
-    # Same root cause as 0098/0099 — pinned by hickory-resolver 0.24.
-    # Reachable only when parsing malformed CRL from attacker-controlled CA.
-    # We use bundled Mozilla CA certs; CRL parsing not in our hot path.
-    "RUSTSEC-2026-0104",
-    # hickory-proto O(n²) name compression CPU exhaustion. Affects
-    # encode path for outgoing DNS messages with attacker-influenced
-    # name labels. We use hickory-resolver as an outbound client for
-    # registry validation only — query names come from a fixed
-    # configured allowlist (registry endpoint hostnames), never from
-    # attacker-controlled input. Fix path requires hickory-resolver 0.26
-    # which has API breaking changes; tracked alongside 0098/0099/0104.
-    "RUSTSEC-2026-0119",
-    # hickory-proto NSEC3 closest-encloser proof validation unbounded loop
-    # (DNSSEC DoS). Reachable ONLY via `DnssecDnsHandle` "when built with the
-    # dnssec-ring or dnssec-aws-lc-rs feature and configured to perform DNSSEC
-    # validation" (advisory text). We enable NEITHER — hickory-resolver 0.25 is
-    # built with features = ["https-ring", "tokio", "webpki-roots"] (DoH only, no
-    # DNSSEC), so the vulnerable code path is not compiled/reachable. No stable
-    # fix exists (patched = []; only 0.26.0-beta.1 is unaffected); revisit on the
-    # hickory 0.26 stable bump (CIRISVerify#165), same as 0119.
-    "RUSTSEC-2026-0118",
 ]
 
 [licenses]

@@ -20,7 +20,7 @@
 //! RustCrypto's GHASH lacks the hand-tuned CLMUL assembly. The switch
 //! to ring buys that 3–5× **at zero build cost**: ring is already a
 //! universal dependency in this workspace — `rustls` pulls it via
-//! `reqwest` and `hickory-resolver`, and `ciris-verify-ffi` builds it
+//! `reqwest`, and `ciris-verify-ffi` builds it
 //! explicitly for Android and iOS. Its assembly is already compiled,
 //! already cross-compiled to every target, already linked, and already
 //! trusted for every TLS handshake. Using it for AES-GCM adds no new
