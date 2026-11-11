@@ -5,29 +5,4 @@
 ignore = [
     # atty is pulled transitively via cbindgen build dep
     "RUSTSEC-2021-0145",
-    # rand 0.8/0.9 unsound only with a custom Logger that holds RngCore across
-    # thread-exit callbacks. We never install such a logger; the advisory is
-    # not exploitable by our code paths. Reassess if rand publishes a fix.
-    "RUSTSEC-2026-0097",
-    # rustls-webpki name constraint issues in rustls 0.21/webpki 0.101.
-    # hickory-resolver 0.24 pins rustls 0.21 internally. Upgrading to
-    # hickory-resolver 0.26 requires significant API changes.
-    # Low risk: requires attacker-controlled CA certs with specific name
-    # constraint configurations. We use bundled Mozilla CA certs only.
-    # TODO: Upgrade to hickory-resolver 0.26 when API migration is feasible.
-    "RUSTSEC-2026-0098",
-    "RUSTSEC-2026-0099",
-    # rustls-webpki CRL parsing panic (rustls-webpki 0.101/0.103).
-    # Same root cause as 0098/0099 — pinned by hickory-resolver 0.24.
-    "RUSTSEC-2026-0104",
-    # hickory-proto O(n²) name compression CPU exhaustion. We use
-    # hickory-resolver as an outbound client only; query names come
-    # from a configured allowlist, never attacker-controlled.
-    "RUSTSEC-2026-0119",
-    # hickory-proto NSEC3 unbounded-loop DNSSEC DoS. Reachable ONLY via
-    # DnssecDnsHandle when built with the dnssec-ring / dnssec-aws-lc-rs feature;
-    # we build hickory-resolver 0.25 DoH-only (https-ring/tokio/webpki-roots, NO
-    # dnssec), so the path is not compiled. No stable fix (only 0.26.0-beta.1);
-    # revisit on the hickory 0.26 bump (CIRISVerify#165). Mirrors deny.toml.
-    "RUSTSEC-2026-0118",
 ]
