@@ -231,7 +231,7 @@ and concrete review-time examples.
 - Always use constant-time cryptographic comparisons
 - Certificate pin `verify.ciris.ai` with 90-day rotation
 - Nonces must be 32+ bytes from cryptographic RNG
-- PQC signature must cover classical signature (binding)
+- Hybrid signatures must be bound so neither half verifies alone: in the current form the PQC signature covers the classical signature; in edition 2 (CC 2.6.1.8, #326) the ML-DSA-65-Ed25519 composite (draft-ietf-jose-pq-composite-sigs) binds both halves
 - Revocation revisions must be monotonically non-decreasing (anti-rollback)
 - Transparency log entries are append-only (never modify or delete)
 

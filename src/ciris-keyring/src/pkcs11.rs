@@ -186,6 +186,26 @@ mod real {
         }
     }
 
+    /// Map a `C_Sign (EdDSA)` failure to a keyring error.
+    ///
+    /// ykcs11 `CKM_EDDSA` is single-part with a bounded input, so a large
+    /// preimage returns `CKR_DATA_LEN_RANGE`; that case gets an actionable
+    /// message (CIRISVerify#113). Match the return-value variant, never the
+    /// `Display` text: cryptoki prints the spec's description ("The plaintext
+    /// input data … has a bad length"), not the code name.
+    fn eddsa_sign_error(e: &cryptoki::error::Error, preimage_len: usize) -> KeyringError {
+        use cryptoki::error::{Error, RvError};
+        if matches!(e, Error::Pkcs11(RvError::DataLenRange, _)) {
+            err(format!(
+                "C_Sign (EdDSA): preimage is {preimage_len} bytes — exceeds the token's \
+                 single-shot EdDSA input limit; keep the signed preimage small \
+                 (e.g. sign a hash-commitment, not inline certs)"
+            ))
+        } else {
+            err(format!("C_Sign (EdDSA): {e}"))
+        }
+    }
+
     /// A signer whose private key lives on a PKCS#11 token (YubiKey PIV).
     pub struct Pkcs11Signer {
         ctx: Pkcs11,
@@ -280,21 +300,7 @@ mod real {
                         priv_handle,
                         data,
                     )
-                    .map_err(|e| {
-                        // ykcs11 `CKM_EDDSA` is single-part with a bounded input; a
-                        // large preimage returns `CKR_DATA_LEN_RANGE`. Make that
-                        // actionable instead of a generic fault (CIRISVerify#113).
-                        if e.to_string().contains("DATA_LEN_RANGE") {
-                            err(format!(
-                                "C_Sign (EdDSA): preimage is {} bytes — exceeds the token's \
-                                 single-shot EdDSA input limit; keep the signed preimage small \
-                                 (e.g. sign a hash-commitment, not inline certs)",
-                                data.len()
-                            ))
-                        } else {
-                            err(format!("C_Sign (EdDSA): {e}"))
-                        }
-                    }),
+                    .map_err(|e| eddsa_sign_error(&e, data.len())),
                 // ECDSA P-256: CKM_ECDSA signs a pre-computed hash and returns
                 // raw r‖s — prehash with SHA-256 to match the P-256 verifier.
                 ClassicalAlgorithm::EcdsaP256 => {
@@ -618,6 +624,40 @@ mod real {
             }
         }
     }
+
+    #[cfg(test)]
+    mod sign_error_tests {
+        use super::eddsa_sign_error;
+        use crate::error::KeyringError;
+        use cryptoki::context::Function;
+        use cryptoki::error::{Error, RvError};
+
+        fn reason(e: KeyringError) -> String {
+            match e {
+                KeyringError::HardwareError { reason } => reason,
+                other => panic!("unexpected error kind: {other:?}"),
+            }
+        }
+
+        #[test]
+        fn data_len_range_is_actionable() {
+            let e = Error::Pkcs11(RvError::DataLenRange, Function::Sign);
+            // The old check matched on Display text; cryptoki never prints the
+            // code name, so that check could not fire (dye: this must stay false).
+            assert!(!e.to_string().contains("DATA_LEN_RANGE"));
+            let r = reason(eddsa_sign_error(&e, 8104));
+            assert!(r.contains("preimage is 8104 bytes"), "{r}");
+            assert!(r.contains("single-shot EdDSA input limit"), "{r}");
+        }
+
+        #[test]
+        fn other_errors_pass_through() {
+            let e = Error::Pkcs11(RvError::PinIncorrect, Function::Sign);
+            let r = reason(eddsa_sign_error(&e, 32));
+            assert!(r.starts_with("C_Sign (EdDSA): "), "{r}");
+            assert!(!r.contains("single-shot"), "{r}");
+        }
+    }
 }
 
 #[cfg(test)]
@@ -700,5 +740,64 @@ mod tests {
             },
             other => panic!("unexpected token algorithm: {other:?}"),
         }
+    }
+
+    /// **Live token probe: the single-shot `CKM_EDDSA` input cap.** Same
+    /// `CIRIS_PKCS11_*` variables as `pkcs11_live_sign_and_verify`, and an
+    /// Ed25519 key. Binary-searches the largest preimage the token signs in one
+    /// `C_Sign`, verifying each signature, and prints it. With touch=always,
+    /// expect about 14 touches.
+    ///
+    /// Run: `cargo test -p ciris-keyring --features pkcs11 -- --ignored pkcs11_live_eddsa_cap --nocapture`.
+    #[cfg(feature = "pkcs11")]
+    #[tokio::test]
+    #[ignore = "requires a physical PKCS#11 token; set CIRIS_PKCS11_* and pass --ignored"]
+    async fn pkcs11_live_eddsa_cap() {
+        use crate::types::ClassicalAlgorithm;
+        use ed25519_dalek::{Signature, Verifier, VerifyingKey};
+
+        let Ok(module) = std::env::var("CIRIS_PKCS11_MODULE") else {
+            eprintln!("skip: set CIRIS_PKCS11_MODULE (+ _PIN, _KEY_LABEL)");
+            return;
+        };
+        let cfg = Pkcs11Config {
+            module_path: module.into(),
+            user_pin: std::env::var("CIRIS_PKCS11_PIN").ok(),
+            key_label: std::env::var("CIRIS_PKCS11_KEY_LABEL").ok(),
+            key_id: None,
+            slot_index: std::env::var("CIRIS_PKCS11_SLOT")
+                .ok()
+                .and_then(|s| s.parse().ok())
+                .unwrap_or(0),
+        };
+        let signer = open_pkcs11_signer("user-live-cap", &cfg).expect("open token signer");
+        assert_eq!(
+            signer.algorithm(),
+            ClassicalAlgorithm::Ed25519,
+            "the cap probe needs an Ed25519 key"
+        );
+        let pubkey = signer.public_key().await.expect("read public key");
+        let vk = VerifyingKey::from_bytes(pubkey.as_slice().try_into().unwrap()).expect("pubkey");
+
+        // Invariant: `lo` signs, `hi` is refused. 8104 bytes was refused on a
+        // YubiKey 5 FIPS (2026-11-09).
+        let (mut lo, mut hi) = (1usize, 16 * 1024usize);
+        while hi - lo > 1 {
+            let mid = lo + (hi - lo) / 2;
+            let msg: Vec<u8> = (0..mid).map(|i| (i % 251) as u8).collect();
+            match signer.sign(&msg).await {
+                Ok(sig) => {
+                    vk.verify(&msg, &Signature::from_slice(&sig).unwrap())
+                        .expect("token signature MUST verify");
+                    println!("  {mid} bytes: signed");
+                    lo = mid;
+                },
+                Err(e) => {
+                    println!("  {mid} bytes: refused ({e})");
+                    hi = mid;
+                },
+            }
+        }
+        println!("single-shot CKM_EDDSA cap: {lo} bytes signs, {hi} bytes is refused");
     }
 }
