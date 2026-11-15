@@ -68,7 +68,12 @@ impl Node for Smoke {
 
     fn tick(budget_us: u32) -> u64 {
         let now = clock::monotonic_us();
-        log::metric("smoke.tick_budget_us", f64::from(budget_us));
+        log::metric(
+            "smoke.tick_budget_us",
+            log::MetricKind::Gauge,
+            f64::from(budget_us),
+            &[("node".to_owned(), "smoke".to_owned())],
+        );
         now + 1_000_000
     }
 

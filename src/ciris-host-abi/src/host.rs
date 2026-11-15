@@ -15,7 +15,9 @@
 //! carriers, no seal. Clock, random and log have no default, because the
 //! node cannot run without them and random has no weak fallback.
 
-use crate::types::{Carrier, ConnInfo, Custody, Durability, Errno};
+use crate::types::{
+    Carrier, ConnInfo, Custody, Durability, Errno, KeyKind, ListenOptions, MetricKind, NetInterface,
+};
 
 /// One opened volume (`ciris:node/storage.volume`).
 pub trait HostVolume {
@@ -78,6 +80,38 @@ pub trait HostStream {
     fn close(&self);
 }
 
+/// One unconnected datagram socket (`ciris:node/net.datagram`).
+pub trait HostDatagram {
+    /// `send-to`.
+    ///
+    /// # Errors
+    /// `would-block`, `invalid`, ...
+    fn send_to(&self, addr: &str, data: &[u8]) -> Result<(), Errno>;
+    /// `recv-from`: `(source address, datagram)`.
+    ///
+    /// # Errors
+    /// `would-block`, ...
+    fn recv_from(&self) -> Result<(String, Vec<u8>), Errno>;
+    /// `local-addr`.
+    fn local_addr(&self) -> Option<String>;
+    /// `max-datagram`.
+    fn max_datagram(&self) -> u32;
+    /// `multicast-join`.
+    ///
+    /// # Errors
+    /// Default: `unsupported`.
+    fn multicast_join(&self, _group: &str, _interface: Option<&str>) -> Result<(), Errno> {
+        Err(Errno::Unsupported)
+    }
+    /// `multicast-leave`.
+    ///
+    /// # Errors
+    /// Default: `unsupported`.
+    fn multicast_leave(&self, _group: &str, _interface: Option<&str>) -> Result<(), Errno> {
+        Err(Errno::Unsupported)
+    }
+}
+
 /// Everything the `node` world imports, for a native host.
 pub trait Host {
     /// `clock.monotonic-us`.
@@ -91,7 +125,14 @@ pub trait Host {
     fn log_record(&self, level: u8, target: &str, msg: &str);
 
     /// `log.metric`.
-    fn log_metric(&self, _name: &str, _value: f64) {}
+    fn log_metric(
+        &self,
+        _name: &str,
+        _kind: MetricKind,
+        _value: f64,
+        _labels: &[(String, String)],
+    ) {
+    }
     /// `storage.primary`. Default: a volume that answers `unsupported`.
     fn storage_primary(&self) -> Box<dyn HostVolume> {
         Box::new(NoVolume)
@@ -103,6 +144,30 @@ pub trait Host {
     /// `net.can-listen`. Default: false.
     fn net_can_listen(&self, _c: Carrier) -> bool {
         false
+    }
+    /// `net.can-datagram`. Default: false.
+    fn net_can_datagram(&self) -> bool {
+        false
+    }
+    /// `net.can-multicast`. Default: false.
+    fn net_can_multicast(&self) -> bool {
+        false
+    }
+    /// `net.interfaces`. Default: none.
+    fn net_interfaces(&self) -> Vec<NetInterface> {
+        Vec::new()
+    }
+    /// `net.bind`.
+    ///
+    /// # Errors
+    /// Default: `unsupported`.
+    fn net_bind(
+        &self,
+        _bind: Option<&str>,
+        _port: u16,
+        _token: u64,
+    ) -> Result<Box<dyn HostDatagram>, Errno> {
+        Err(Errno::Unsupported)
     }
     /// `net.dial`.
     ///
@@ -121,13 +186,7 @@ pub trait Host {
     ///
     /// # Errors
     /// Default: `unsupported`.
-    fn net_listen(
-        &self,
-        _c: Carrier,
-        _port: u16,
-        _subprotocols: &[String],
-        _token: u64,
-    ) -> Result<u32, Errno> {
+    fn net_listen(&self, _c: Carrier, _opts: &ListenOptions, _token: u64) -> Result<u32, Errno> {
         Err(Errno::Unsupported)
     }
     /// `net.accept`.
@@ -157,11 +216,25 @@ pub trait Host {
     fn seal_public_key(&self, _id: &str) -> Result<Vec<u8>, Errno> {
         Err(Errno::Unsupported)
     }
-    /// `seal.provision`.
+    /// `seal.generate`: generate key `id` of `kind` inside the seal; the
+    /// seed never reaches the node (§8.5).
     ///
     /// # Errors
     /// Default: `unsupported`.
-    fn seal_provision(&self, _id: &str, _material: &[u8], _token: u64) -> Result<(), Errno> {
+    fn seal_generate(&self, _id: &str, _kind: KeyKind, _token: u64) -> Result<(), Errno> {
+        Err(Errno::Unsupported)
+    }
+    /// `seal.kem-decap`.
+    ///
+    /// # Errors
+    /// Default: `unsupported`.
+    fn seal_kem_decap(
+        &self,
+        _id: &str,
+        _x25519_peer_pub: &[u8],
+        _mlkem_ct: &[u8],
+        _token: u64,
+    ) -> Result<(), Errno> {
         Err(Errno::Unsupported)
     }
     /// `seal.sign-classical`.
@@ -183,6 +256,22 @@ pub trait Host {
     /// # Errors
     /// Default: `unsupported`.
     fn seal_sign_composite(&self, _id: &str, _msg: &[u8], _token: u64) -> Result<(), Errno> {
+        Err(Errno::Unsupported)
+    }
+    /// `seal.wrap`: AEAD under a key derived from the seal root,
+    /// domain-separated by `label`.
+    ///
+    /// # Errors
+    /// Default: `unsupported`.
+    fn seal_wrap(&self, _label: &str, _plaintext: &[u8], _token: u64) -> Result<(), Errno> {
+        Err(Errno::Unsupported)
+    }
+    /// `seal.unwrap`; an authentication failure is reported through
+    /// `take` as `denied` or `invalid`.
+    ///
+    /// # Errors
+    /// Default: `unsupported`.
+    fn seal_unwrap(&self, _label: &str, _wrapped: &[u8], _token: u64) -> Result<(), Errno> {
         Err(Errno::Unsupported)
     }
     /// `seal.take`.
@@ -231,6 +320,7 @@ impl HostVolume for NoVolume {
     }
 }
 
-// `install` / `uninstall` on native; nothing on wasm32 (the boundary is `sys`).
+// `install` / `uninstall`: the thread's host on native; on wasm32 they exist
+// (so node-side test tooling compiles without a target cfg) and panic.
 #[allow(unused_imports)]
 pub use crate::sys::host_exports::*;

@@ -44,6 +44,12 @@ getrandom03 = { package = "getrandom", version = "0.3.4" }
 getrandom04 = { package = "getrandom", version = "0.4.2" }
 rand_core = { workspace = true, features = ["getrandom"] }
 
+# The test-only native `seal.wrap` / `unwrap` (tests/native_seam.rs):
+# HKDF-SHA256 + XChaCha20-Poly1305. Native only, so the wasm32 example
+# build never compiles it.
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+ciris-crypto = { path = "../ciris-crypto", default-features = false, features = ["std", "random", "kdf", "xchacha"] }
+
 [[bin]]
 name = "ciris-abi-gate"
 path = "src/bin/ciris-abi-gate.rs"

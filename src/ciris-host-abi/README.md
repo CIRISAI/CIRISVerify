@@ -39,7 +39,7 @@ struct MyNode;
 impl Node for MyNode {
     fn init() -> Result<(), String> { Ok(()) }
     fn tick(budget_us: u32) -> u64 { clock::monotonic_us() + 1_000 }
-    fn on_event(e: Event) { /* readable / writable / connected / failed / closed / sealed / lifecycle / timer */ }
+    fn on_event(e: Event) { /* readable / writable / connected / failed / listener-failed / closed / sealed / lifecycle / timer / clock-trusted */ }
     fn api(req: Vec<u8>, local: bool) -> Vec<u8> { req }
 }
 ciris_host_abi::export_node!(MyNode);
@@ -89,20 +89,78 @@ returns at once, and later events carry that token back. The same shape
 holds for `net` and `seal`:
 
 * `net.dial(carrier, target, subprotocols, token)` → `connected(token)` or
-  `failed(token)`; then `readable(token)`, `writable(token)`,
-  `closed({token, reason})`.
-* `net.listen(..., token)` → `readable(token)` means `accept` has a
-  connection; `accept(listener, token2)` gives it `token2`.
-* `seal.sign-composite(id, msg, token)` (and `provision`, `sign-classical`,
-  `sign-pqc`) → `ok` means accepted, `err` means it never started; then
-  `sealed(token)`; then `seal.take(token)` returns the signature once
-  (`would-block` before the event, `not-found` after it was taken).
+  `failed({token, reason})` (`reason`: `refused`, `unreachable`,
+  `timeout`, `name-not-resolved`, `denied`, `error`); then
+  `readable(token)`, `writable(token)`, `closed({token, reason})`.
+* `net.listen(carrier, opts, token)`, `opts = listen-options { bind,
+  port, subprotocols, ws-path }` (`bind`: an IP literal the host
+  interprets, none = all addresses; `ws-path`: the HTTP upgrade path, e.g.
+  `/rns`) → `readable(token)` means `accept` until it returns none;
+  `accept(listener, token2)` gives each connection `token2`. A listener
+  that fails later reports `listener-failed({token, reason})`. **TLS (wss)
+  certificates are host configuration.**
+* `net.bind(bind, port, token)` → a `datagram`; `readable(token)` /
+  `writable(token)` as for streams.
+* `seal.sign-composite(id, msg, token)` (and `generate`, `kem-decap`,
+  `wrap`, `unwrap`, `sign-classical`, `sign-pqc`) → `ok` means accepted, `err` means it never started; then
+  `sealed(token)`; then `seal.take(token)` returns the result once (the
+  signature, or for `generate` the 1984-byte public key; `would-block`
+  before the event, `not-found` after it was taken). **Many seal tokens
+  may be outstanding at once, and completions may arrive in any order**
+  (a backfill pipelines its signatures; `tests/native_seam.rs` runs three
+  in flight).
+
+### Readiness is edge-triggered
+
+* `readable(token)` fires when a connection goes from nothing to read to
+  something to read. The node must `recv` until `would-block` before it
+  can expect another `readable`.
+* `writable(token)` fires once after a `send` returned `would-block`, when
+  sending may succeed again.
+* On a listener, `readable(token)` means `accept` until it returns none.
+* A spurious event is allowed; it only means "try again". `ciris-rt`'s
+  adapters drain to `would-block` before parking.
+* **Receive backpressure.** The host buffers at most
+  `conn-info.recv-buffer` unread bytes per connection. At the cap it pauses
+  reading where the carrier can (TCP, WebSocketStream); where it cannot (a
+  browser `WebSocket`), it closes with `closed(error)`.
+* **Shutdown.** `closed(host-shutdown)` fires exactly once per open stream,
+  and all of them come before `lifecycle(shutdown)`.
+
+### Clock trust
+
+`clock.wall-ms` is none until the host trusts its time; `event.clock-trusted`
+fires once when it first becomes some. A node must not stamp signed rows
+(`created_at`, attestation times, consent windows) before that event.
+Transport and replication receive run on `monotonic-us`.
+
+### `log.metric`
+
+`metric(name, kind, value, labels)`, `kind` one of `counter` (value is the
+increment), `gauge` (the current reading), `histogram` (one observation);
+`labels` is a list of `(key, value)` pairs.
 
 A node-chosen token keeps one namespace per node, needs no host-side id
 allocation, and records and replays deterministically at the ABI boundary
 (§5.1).
 
 ### `net` (as Leviculum needs it)
+
+* `carrier.udp` as a `stream` is **connected datagrams** (`dial` fixes the
+  peer; message framing); a host may omit `udp` from `carriers()`. The
+  **unconnected** path is the `datagram` resource: `net.bind(bind, port,
+  token)` (port 0 = any), `send-to(addr, data)` (would-block, then
+  `writable`), `recv-from()` → `(addr, data)` (would-block, then
+  `readable`, edge-triggered), `local-addr()`, `max-datagram()`,
+  `multicast-join(group, interface)` / `multicast-leave`. Plus
+  `net.interfaces()` (`{name, addresses, link-local, up}`) for
+  AutoInterface, and the runtime answers `can-datagram()` /
+  `can-multicast()`, false on browser hosts. This is how the native node
+  keeps UDPInterface, AutoInterface and hole punching through the same
+  seam (option (a) of edge's review). Multicast join/leave are methods of
+  the socket (`[method]datagram.multicast-join`).
+* **Serial:** baud, flow control and KISS settings are host configuration,
+  keyed by the `target` path string given to `dial(serial, target, ...)`.
 
 * Framing is reported **per connection** in `stream.info()`: `stream` or
   `message`, since a WebSocket dial can negotiate either.
@@ -147,15 +205,98 @@ host; and §4.4's one-word `tier` enum is replaced by the per-half
 `tpm | tpm-measured | token-signature | webauthn-prf | platform-keystore | software`;
 `platform` is the CC `hardware_custody:{platform}` token, or none.
 
+## Seal provisioning and key agreement (§8.5)
+
+Seeds never pass through node memory. There is no node-facing
+`provision`:
+
+* a **new** key is made with `seal.generate(id, kind, token)`, `kind` one
+  of `composite`, `transit-kex`, `onion-hop`: the vault draws the seed from
+  `random`, the host seals it, and `take(token)` returns **only the public
+  key**:
+  * `composite`: 1984 bytes, `mldsaPK || ed25519PK`;
+  * `transit-kex` and `onion-hop`: 1216 bytes, `x25519PK(32) ||
+    mlkem768EK(1184)`. Transit-kex derives both from one 64-byte root seed
+    exactly as edge's `transit_kex_custody` does: x25519 =
+    `HKDF-SHA256(seed, salt="", info="ciris-transit-kex/v1/x25519", 32)`,
+    ML-KEM `d || z` = `HKDF-SHA256(seed, "", "ciris-transit-kex/v1/ml-kem-768", 64)`
+    through FIPS 203 deterministic keygen. Onion-hop follows edge's
+    `HopSecret::from_root_seed`: X-Wing seed =
+    `HKDF-SHA3-256(root, "", "ciris-onion-hop/v1/xwing-seed", 32)`, expanded
+    by X-Wing draft-06 (`SHAKE256(seed, 96)` = `d || z || x25519 scalar`).
+    (These labels are edge's; verify's `ciris_crypto::transit_kex` holds
+    the handshake KDF, not the seed derivation.)
+* `seal.kem-decap(id, x25519-peer-pub, mlkem-ct, token)` against a
+  transit-kex or onion-hop key: `take` returns **64 bytes,
+  `shared_x25519(32) || ss_mlkem768(32)`**, which is exactly the `ikm`
+  `ciris_crypto::transit_kex::respond` forms before its HKDF, so the node
+  runs `derive_transit_keys` itself (for onion-hop it applies its own
+  combiner to the same two parts). An all-zero X25519 secret is `invalid`.
+* `seal.public-key(id)` answers for every kind. **`not-found` means first
+  run**; on any other error a node must not regenerate an identity-class
+  key, because regenerating rotates a published pair under every peer.
+* an **existing** key is provisioned by the host through its seal root:
+  the host unwraps it under the root and installs it into the vault with
+  `signer.install(id, kind, seed)`. That is host-side only, never via the
+  node.
+
+**Which secrets live where.**
+
+* **Long-lived identity secrets** (composite, transit-kex, onion-hop) are
+  vault-only.
+* **Ephemeral session keys** (per-stream chunk keys, per-link E1 AEAD
+  keys, MLS epoch secrets, room/stream DEKs) may live in node memory. They
+  are derived, short-lived, **zeroized when done, and never in plaintext at
+  rest**: if persisted at all, only wrapped via `seal.wrap`.
+* **The RNS transport identity** (X25519 + Ed25519, used on every link and
+  announce) is node-held at use (reported SoftwareOnly at use) and wrapped
+  at rest (Eric's ruling, a decided D-item in the §8.5 scope), under a key
+  the host derives from its seal root at start-up: the same at-rest posture
+  as native's keyring-backed `TransportIdentityKeystore`. Its plaintext
+  never touches `storage`.
+
+`seal.wrap(label, plaintext, token)` / `seal.unwrap(label, wrapped, token)`
+are the pair, async like the rest (`sealed(token)`, then `take`):
+
+* an AEAD (AES-256-GCM or XChaCha20-Poly1305, the host's choice) under a
+  key the host derives from its seal root, domain-separated by `label`;
+* the wrapping key never enters node memory;
+* the label binds the ciphertext: a blob wrapped under one label does not
+  unwrap under another (`take` gives `denied` / `invalid`);
+* for node-held secrets such as the RNS transport identity and
+  leviculum's ratchet private keys, **never** for CIRIS composite seeds,
+  which go through `generate` and the vault;
+* **labels**: any number, each domain-separating its derived key
+  (`rns-transport-identity/v1`, `rns-ratchets/v1`, ...); at most **128
+  bytes** (`seal::WRAP_LABEL_MAX`), `invalid` beyond;
+* **nonces**: a fresh random nonce per wrap, carried in the wrapped bytes;
+  repeated wraps under one label are expected and two wraps of one
+  plaintext differ. The host **MUST NOT** use deterministic nonces. A
+  random 24-byte XChaCha20-Poly1305 nonce is safe with no counter; a
+  random 96-bit AES-256-GCM nonce under the per-label key must stay well
+  within 2^32 wraps per key;
+* **size**: plaintext up to **64 KiB** (`seal::WRAP_PLAINTEXT_MIN_MAX`)
+  must be accepted; larger may be `invalid`.
+
+`tests/native_seam.rs` has a **test-only** native implementation, using
+`ciris-crypto` as a dev-dependency: key = HKDF-SHA256(test root, salt
+`ciris-host-abi/test-wrap/v1`, info = label), **XChaCha20-Poly1305** with
+a random 24-byte nonce, wrapped format `nonce(24) || ciphertext || tag(16)`.
+Its tests cover: two labels do not cross-unwrap, two wraps of one plaintext
+differ and both unwrap, a 64 KiB round trip, a tampered blob refused, an
+over-long label refused.
+
 ## The vault world (§8.5)
 
 `world vault` is the separate signing instance: its own fixed linear
 memory, so seeds never enter the node's. It is **minimal on purpose**: it
-imports only `log`. It imports no `random` because composite signing is
-deterministic (FIPS 204 §3.4), and nothing else. It exports `signer`
-(`install`, `public-key`, `sign-classical`, `sign-pqc`, `sign-composite`,
-`forget`, `forget-all`), all synchronous: the host has already done any
-gesture or unwrap. Bindings are in `ciris_host_abi::bindings::vault`, and
+imports only `log` and `random`. `random` serves `signer.generate` (a fresh
+key needs fresh seeds); signing itself is deterministic (FIPS 204 §3.4).
+The vault therefore carries ML-DSA-65, Ed25519, X25519 and ML-KEM-768.
+It exports `signer` (`install(id, kind, seed)`, `generate(id, kind)`,
+`kem-decap`, `public-key`, `sign-classical`, `sign-pqc`, `sign-composite`,
+`forget`, `forget-all`),
+all synchronous: the host has already done any gesture or unwrap. Bindings are in `ciris_host_abi::bindings::vault`, and
 item 9 implements them with `export_vault!`. Gate a vault module with
 `--world vault`.
 
@@ -240,7 +381,9 @@ The smoke node calls `clock`, `random` and `log` and draws through
 `rand_core::OsRng` and getrandom 0.2, 0.3 and 0.4. Its imports are exactly
 five, all `ciris:node/*`: `clock.monotonic-us`, `clock.wall-ms`,
 `log.record`, `log.metric`, `random.fill`. The same check runs as
-`cargo test -p ciris-host-abi --test smoke_wasm -- --ignored`.
+`cargo test -p ciris-host-abi --test smoke_wasm -- --ignored`, which also
+builds and gates `ciris-rt`'s smoke node (spawn, sleep and random over the
+runtime; see `src/ciris-rt/README.md`).
 
 ## MSRV
 
@@ -256,10 +399,7 @@ wasm-encoder 0.244.0 (1.81). All were already in the workspace lock.
   (seed dwell; `signer.forget-all` is the hook), D12 (the crate lives in
   CIRISVerify for now, per Eric), D15 (the vault world exists; whether it
   is required is the decision).
-* `seal.provision` passes the seed through node memory, which §8.5 forbids
-  for seeds in use. It is kept from §4.4 for import/restore; a
-  `generate`-in-vault operation is the likely replacement (item 9).
 * `wit-bindgen` output under wasm2c (§4.2, "untested") is still untested;
   the smoke module runs under V8.
-* `ciris-rt` (item 2) owns the executor, timers and record/replay over this
-  ABI.
+* `ciris-rt` (item 2, `src/ciris-rt`) owns the executor, timers, async
+  net / seal adapters and record/replay over this ABI.

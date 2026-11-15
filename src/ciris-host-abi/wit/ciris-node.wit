@@ -122,6 +122,21 @@ interface types {
     software,
   }
 
+  /// What a sealed key is (`seal.generate`, `signer.generate`).
+  enum key-kind {
+    /// The CC 2.6.1.7 composite ML-DSA-65-Ed25519 signing key. Public key:
+    /// 1984 bytes, mldsaPK(1952) || ed25519PK(32).
+    composite,
+    /// The static transit-KEX pair (CC 3.3.6.2 / 5.3.3.10 E1) published in
+    /// `transit_kex_pubkeys`. Public key: 1216 bytes,
+    /// x25519PK(32) || mlkem768EK(1184).
+    transit-kex,
+    /// The onion hop key, published in `onion_hop_pubkeys`, independent of
+    /// the transit pair. Public key: 1216 bytes,
+    /// x25519PK(32) || mlkem768EK(1184).
+    onion-hop,
+  }
+
   /// Per-half custody truth for one key (§8.1(1)). A node MUST NOT reduce
   /// this to one word for a hybrid key.
   record custody {
@@ -149,6 +164,10 @@ interface clock {
   monotonic-us: func() -> u64;
   /// Unix time in milliseconds, or none until the host has a trusted
   /// time (an EFI RTC is not trusted without roughtime or peer time).
+  /// `event.clock-trusted` fires once when this first becomes `some`.
+  /// A node MUST NOT stamp signed rows (created_at, attestation times,
+  /// consent windows) before that event; transport and replication
+  /// receive run on `monotonic-us` and need no wall clock.
   wall-ms: func() -> option<s64>;
 }
 
@@ -185,9 +204,41 @@ interface storage {
   primary: func() -> volume;
 }
 
+/// Readiness is EDGE-TRIGGERED on every host:
+///   * `event.readable(token)` fires when a connection (or a datagram
+///     socket) goes from nothing to read to something to read. The node MUST
+///     `recv` / `recv-from` until `would-block` (or `closed`) before it can
+///     expect another `readable`.
+///   * `event.writable(token)` fires once after a `send` / `send-to`
+///     returned `would-block`, when sending may succeed again.
+///   * On a listener, `event.readable(token)` means: `accept` until it
+///     returns none. No further `readable` comes for connections that were
+///     already pending when it fired.
+/// A host MAY deliver a spurious `readable` / `writable`; the node treats
+/// each as "try again", never as a promise that the next call succeeds.
+///
+/// Receive backpressure: the host buffers at most `conn-info.recv-buffer`
+/// bytes of unread data per connection. At the cap it pauses reading where
+/// the carrier can (TCP, WebSocketStream) and resumes as the node drains.
+/// Where the carrier cannot pause (a browser `WebSocket`), the host closes
+/// the connection with `closed({token, error})` instead of buffering
+/// without bound.
+///
+/// Shutdown ordering: `closed({token, host-shutdown})` fires exactly once
+/// per open stream, and all of them are delivered before
+/// `lifecycle(shutdown)`.
 interface net {
   use types.{errno};
 
+  /// The connection-shaped carriers. `udp` here is CONNECTED datagrams
+  /// only: `dial` fixes the peer and the stream uses message framing; a
+  /// host that cannot offer that omits `udp` from `carriers()`. Unconnected
+  /// UDP (send-to / recv-from, broadcast, multicast) is the `datagram`
+  /// resource below.
+  ///
+  /// `serial`: baud rate, flow control and KISS settings are HOST
+  /// CONFIGURATION, keyed by the `target` path string given to `dial`
+  /// (e.g. "/dev/ttyUSB0"); the node names the port, never its settings.
   enum carrier { tcp, udp, ws, webtransport, webrtc, serial, ble, http-fetch }
 
   /// How a connection delimits data. Reported per connection, not per
@@ -222,13 +273,17 @@ interface net {
     peer: option<string>,
     /// The host's estimate of the link bitrate, bits per second.
     bitrate-hint: option<u64>,
+    /// The most unread bytes the host buffers for this connection (see
+    /// "Receive backpressure" above).
+    recv-buffer: u32,
   }
 
   /// Why a connection closed; carried by `event.closed`.
   enum close-reason {
     /// The peer closed it.
     peer-close,
-    /// A transport error closed it.
+    /// A transport error closed it (including a receive-buffer overflow
+    /// on a carrier that cannot pause).
     error,
     /// The host is shutting the node down.
     host-shutdown,
@@ -240,8 +295,62 @@ interface net {
     reason: close-reason,
   }
 
+  /// Why a dial or a listener failed; carried by `event.failed` and
+  /// `event.listener-failed`.
+  enum fail-reason {
+    /// The peer actively refused the connection.
+    refused,
+    /// No route to the target (network or host unreachable).
+    unreachable,
+    /// The attempt timed out.
+    timeout,
+    /// The target name did not resolve.
+    name-not-resolved,
+    /// The host's policy, or the person, denied the connection.
+    denied,
+    /// Any other failure.
+    error,
+  }
+
+  /// The payload of `event.failed` and `event.listener-failed`.
+  record fail-info {
+    token: u64,
+    reason: fail-reason,
+  }
+
+  /// What to listen on.
+  record listen-options {
+    /// An IP literal the host interprets ("0.0.0.0", "::1",
+    /// "192.0.2.4"); none means all addresses.
+    bind: option<string>,
+    port: u16,
+    /// What the node accepts, in preference order; the host negotiates and
+    /// reports the result on `info`. Required empty for carriers without
+    /// subprotocols.
+    subprotocols: list<string>,
+    /// For `ws`: the HTTP upgrade path (e.g. "/rns"); none means any path.
+    /// TLS (wss) certificates are HOST CONFIGURATION, never named here.
+    ws-path: option<string>,
+  }
+
+  /// One network interface, for Reticulum's AutoInterface.
+  record net-interface {
+    name: string,
+    /// IP literals, without port.
+    addresses: list<string>,
+    /// Whether the interface carries an IPv6 link-local address.
+    link-local: bool,
+    up: bool,
+  }
+
   carriers: func() -> list<carrier>;    // runtime answer, never a cfg
   can-listen: func(c: carrier) -> bool; // false for all browser carriers (D1)
+  /// Whether `bind` (unconnected UDP) is offered. False on browser hosts.
+  can-datagram: func() -> bool;
+  /// Whether `datagram.multicast-join` is offered. False on browser hosts.
+  can-multicast: func() -> bool;
+  /// The host's network interfaces (empty when it will not say).
+  interfaces: func() -> list<net-interface>;
 
   /// One connection. Its events carry the token given to `dial` or
   /// `accept`.
@@ -255,25 +364,53 @@ interface net {
     send: func(data: list<u8>) -> result<u32, errno>;
     /// Non-blocking. Stream framing: up to `max` bytes. Message framing:
     /// exactly one whole message, and `invalid` if `max` is smaller than
-    /// it. `would-block` when nothing is ready; `event.readable` follows.
+    /// it. `would-block` when nothing is ready; `event.readable` follows
+    /// (edge-triggered: only after a `recv` has returned `would-block`).
     /// `closed` once the peer has closed and everything was read.
     recv: func(max: u32) -> result<list<u8>, errno>;
     close: func();
   }
 
+  /// An unconnected datagram socket (UDP): Reticulum's UDPInterface,
+  /// AutoInterface discovery, and direct-link hole punching. Its
+  /// `readable` / `writable` events carry the token given to `bind`.
+  resource datagram {
+    /// Non-blocking send of one whole datagram to `addr` ("host:port", an
+    /// IP literal with port). `would-block`, then `event.writable`.
+    /// `invalid` for a datagram larger than `max-datagram`.
+    send-to: func(addr: string, data: list<u8>) -> result<_, errno>;
+    /// Non-blocking receive of one datagram and its source address.
+    /// `would-block`, then `event.readable` (edge-triggered).
+    recv-from: func() -> result<tuple<string, list<u8>>, errno>;
+    /// The bound address ("host:port"), when the host knows it.
+    local-addr: func() -> option<string>;
+    /// The largest datagram `send-to` accepts.
+    max-datagram: func() -> u32;
+    /// Join multicast `group` (an IP literal), on `interface` (a
+    /// `net-interface.name`) or the host's default. `unsupported` unless
+    /// `can-multicast`.
+    multicast-join: func(group: string, %interface: option<string>) -> result<_, errno>;
+    /// Leave multicast `group`.
+    multicast-leave: func(group: string, %interface: option<string>) -> result<_, errno>;
+  }
+
   /// Start a connection. `subprotocols` is the ordered WebSocket
   /// subprotocol offer (e.g. ["rns.hdlc", "rns.raw"]); other carriers
-  /// require it empty. `event.connected(token)` or `event.failed(token)`
-  /// follows.
+  /// require it empty. `event.connected(token)` or
+  /// `event.failed({token, reason})` follows.
   dial: func(c: carrier, target: string, subprotocols: list<string>, token: u64) -> result<%stream, errno>;
-  /// Listen. `subprotocols` is what the node accepts, in preference
-  /// order; the host negotiates and reports the result on `info`.
-  /// `event.readable(token)` means `accept` will return a connection.
-  listen: func(c: carrier, port: u16, subprotocols: list<string>, token: u64) -> result<u32, errno>;
+  /// Listen. `event.readable(token)` means: `accept` until it returns
+  /// none. A listener that fails after this returned ok reports
+  /// `event.listener-failed({token, reason})`.
+  listen: func(c: carrier, opts: listen-options, token: u64) -> result<u32, errno>;
   /// Take one pending connection, if any. Its events carry `token`.
   accept: func(listener: u32, token: u64) -> result<option<%stream>, errno>;
   /// Stop listening.
   unlisten: func(listener: u32);
+  /// Bind an unconnected datagram socket on `port` (0 = any) at the IP
+  /// literal `bind` (none = all addresses). `unsupported` unless
+  /// `can-datagram`.
+  bind: func(bind: option<string>, port: u16, token: u64) -> result<datagram, errno>;
 }
 
 /// The hybrid seal (§8).
@@ -293,23 +430,81 @@ interface net {
 /// per key on one host), and §4.4's single-word `tier` enum is replaced
 /// by the per-half `custody` record that §8.1(1) requires.
 ///
+/// Seeds never pass through node memory (§8.5, normative). A key is
+/// either generated inside the seal (`generate`), or provisioned by the
+/// HOST through its own seal root (the host unwraps under the root and
+/// installs into the vault with `signer.install`); there is no
+/// node-facing call that carries private material.
+///
+/// Which secrets live where (§8.5 scope):
+///   * Long-lived identity secrets (composite, transit-kex, onion-hop) are
+///     vault-only. The node names them by `id` and never holds them.
+///   * Ephemeral session keys (per-stream chunk keys, per-link E1 AEAD
+///     keys, MLS epoch secrets, room/stream DEKs) may live in node memory.
+///     They are derived, short-lived, zeroized when done, and never in
+///     plaintext at rest: if persisted at all, only wrapped via
+///     `seal.wrap`.
+///   * The RNS transport identity (X25519 + Ed25519, used on every link
+///     and announce) is node-held at use (reported SoftwareOnly at use)
+///     and wrapped at rest via `wrap` / `unwrap` below, under a key the
+///     host derives from its seal root at start-up (the same at-rest
+///     posture as native's keyring-backed `TransportIdentityKeystore`).
+///     Its plaintext never touches `storage`.
+///
+/// First run versus failure: `public-key(id)` returning `not-found` means
+/// the key does not exist yet (first run), and the node calls `generate`.
+/// On ANY other error a node MUST NOT regenerate an identity-class key
+/// (composite, transit-kex, onion-hop): regenerating rotates a published
+/// pair under every peer. It refuses to start instead.
+///
 /// Asynchronous on every host (a passkey may need a gesture, a session
 /// re-wrap needs an async WebCrypto step). Each operation that touches
 /// private material takes a node-chosen `token` and returns at once:
 /// `ok` means accepted, an `err` means it never started. Completion is
 /// `event.sealed(token)`; the node then calls `take(token)` once for the
-/// result.
+/// result. MANY tokens may be outstanding at once (a backfill pipelines
+/// its signatures), and completions may arrive in any order.
 interface seal {
-  use types.{errno, custody};
+  use types.{errno, custody, key-kind};
 
   /// Per-half custody of key `id`. Synchronous; reads no secret.
   describe: func(id: string) -> result<custody, errno>;
-  /// The 1984-byte composite public key (mldsaPK || ed25519PK) of `id`.
+  /// The public key of `id`, for every `key-kind` (lengths there).
   /// Synchronous; the host keeps public keys outside the seal.
+  /// `not-found` means first run (see above).
   public-key: func(id: string) -> result<list<u8>, errno>;
-  /// Seal `material` (the 64-byte composite private key,
-  /// mldsaSeed || ed25519Seed) under `id`.
-  provision: func(id: string, material: list<u8>, token: u64) -> result<_, errno>;
+  /// Generate a new key `id` of `kind` inside the seal: the vault draws
+  /// the seed from `random` and the host seals it at once. `take(token)`
+  /// then returns ONLY the public key (lengths in `key-kind`). The seed
+  /// never enters node memory (§8.5). Derivation from the drawn seed:
+  ///   * composite: the 64-byte composite private key
+  ///     mldsaSeed(32) || ed25519Seed(32), as `ciris_crypto::composite`.
+  ///   * transit-kex: one 64-byte root seed;
+  ///     x25519 private = HKDF-SHA256(seed, salt = "", info =
+  ///     "ciris-transit-kex/v1/x25519", 32); the ML-KEM-768 `d || z` =
+  ///     HKDF-SHA256(seed, salt = "", info =
+  ///     "ciris-transit-kex/v1/ml-kem-768", 64), through FIPS 203
+  ///     deterministic keygen (edge `transit_kex_custody`).
+  ///   * onion-hop: one 64-byte root seed; the X-Wing seed =
+  ///     HKDF-SHA3-256(root, salt = "", info =
+  ///     "ciris-onion-hop/v1/xwing-seed", 32), expanded as X-Wing draft-06
+  ///     (SHAKE256(seed, 96) = ML-KEM `d || z`(64) || x25519 scalar(32))
+  ///     (edge `onion::HopSecret::from_root_seed`). The public key is still
+  ///     given x25519PK || mlkem768EK.
+  /// `invalid` if `id` already exists: generate never overwrites.
+  generate: func(id: string, kind: key-kind, token: u64) -> result<_, errno>;
+  /// Key agreement against a transit-kex or onion-hop key `id`. The vault
+  /// computes the X25519 shared secret with `x25519-peer-pub` (32 bytes)
+  /// and the ML-KEM-768 decapsulation of `mlkem-ct` (1088 bytes), and
+  /// `take(token)` returns the 64 bytes
+  ///   shared_x25519(32) || ss_mlkem768(32)
+  /// which is exactly the `ikm` `ciris_crypto::transit_kex::respond` forms
+  /// before its HKDF, so the node runs `derive_transit_keys` itself (for
+  /// onion-hop the node applies its own combiner to the same two parts).
+  /// The private keys never leave the vault. An all-zero X25519 shared
+  /// secret (a low-order peer key) is refused with `invalid`; `invalid`
+  /// too for a composite `id` or wrong input lengths.
+  kem-decap: func(id: string, x25519-peer-pub: list<u8>, mlkem-ct: list<u8>, token: u64) -> result<_, errno>;
   /// Ed25519 over `msg` as it is (64 bytes). Kept for non-composite
   /// consumers; forward-model signatures use `sign-composite`.
   sign-classical: func(id: string, msg: list<u8>, token: u64) -> result<_, errno>;
@@ -318,8 +513,42 @@ interface seal {
   sign-pqc: func(id: string, ctx: list<u8>, msg: list<u8>, token: u64) -> result<_, errno>;
   /// The CC 2.6.1.7 composite over `msg` (3373 bytes out).
   sign-composite: func(id: string, msg: list<u8>, token: u64) -> result<_, errno>;
-  /// The result of the completed operation `token`: the signature, or
-  /// empty for `provision`. `would-block` before `event.sealed(token)`;
+  /// AEAD-wrap a node-held secret for storage. The host seals `plaintext`
+  /// with an AEAD (AES-256-GCM or XChaCha20-Poly1305, the host's choice)
+  /// under a key it derives from its seal root, domain-separated by
+  /// `label`. The wrapping key never enters node memory. `label` binds the
+  /// ciphertext: a blob wrapped under one label does not unwrap under
+  /// another. `take(token)` returns the wrapped bytes, which the node
+  /// writes to `storage`.
+  ///
+  /// Labels: any number, each domain-separating its derived key (e.g.
+  /// "rns-transport-identity/v1", "rns-ratchets/v1"). A label is at most
+  /// 128 bytes of UTF-8; a longer one is `invalid` (at the call).
+  ///
+  /// Nonces: a FRESH RANDOM nonce per wrap, carried inside the wrapped
+  /// bytes. Repeated wraps under one label are expected (ratchets rotate),
+  /// and two wraps of the same plaintext give different blobs. The host
+  /// MUST NOT use deterministic nonces. With XChaCha20-Poly1305 a random
+  /// 24-byte nonce is safe without a counter; with AES-256-GCM a random
+  /// 96-bit nonce under the per-label key must stay well within the usual
+  /// 2^32 wraps per key.
+  ///
+  /// Size: plaintext up to 65536 bytes (64 KiB) MUST be accepted; a host
+  /// MAY refuse a larger one with `invalid`.
+  ///
+  /// Intended for node-held secrets such as the Reticulum transport
+  /// identity, ratchet keys, or an ephemeral session key that must be
+  /// persisted. NEVER for long-lived identity seeds (composite,
+  /// transit-kex, onion-hop): those are made by `generate` and live in the
+  /// seal / vault.
+  wrap: func(label: string, plaintext: list<u8>, token: u64) -> result<_, errno>;
+  /// Reverse `wrap`. `take(token)` returns the plaintext, or `denied` /
+  /// `invalid` when authentication fails (wrong label, tampered blob, or
+  /// a different seal root).
+  unwrap: func(label: string, wrapped: list<u8>, token: u64) -> result<_, errno>;
+  /// The result of the completed operation `token`: the signature, the
+  /// public key for `generate`, the 64-byte ikm for `kem-decap`, the
+  /// wrapped bytes for `wrap`, or the plaintext for `unwrap`. `would-block` before `event.sealed(token)`;
   /// `not-found` for an unknown or already-taken token.
   take: func(token: u64) -> result<list<u8>, errno>;
 }
@@ -330,9 +559,21 @@ interface wake {
 }
 
 interface log {
+  /// What a metric sample means.
+  enum metric-kind {
+    /// A monotonically increasing count; `value` is the increment.
+    counter,
+    /// A value that goes up and down; `value` is the current reading.
+    gauge,
+    /// One observation of a distribution.
+    histogram,
+  }
+
   /// `level`: 0 error, 1 warn, 2 info, 3 debug, 4 trace.
   %record: func(level: u8, target: string, msg: string);
-  metric: func(name: string, value: f64);
+  /// One sample of the series `name` with `labels` (key, value) pairs
+  /// (e.g. [("plane", "replication"), ("peer-class", "seat")]).
+  metric: func(name: string, kind: metric-kind, value: f64, labels: list<tuple<string, string>>);
 }
 
 world node {
@@ -340,11 +581,17 @@ world node {
   import seal;  import wake;   import log;
 
   use types.{phase};
-  use net.{close-info};
+  use net.{close-info, fail-info};
 
+  /// `readable` / `writable` are edge-triggered (see `net`).
+  /// `listener-failed`: a listener failed after `listen` returned ok.
+  /// `clock-trusted`: fired once, when `clock.wall-ms` first becomes some.
+  /// `closed(host-shutdown)` fires once per open stream before
+  /// `lifecycle(shutdown)`.
   variant event {
-    readable(u64), writable(u64), connected(u64), failed(u64),
-    closed(close-info), sealed(u64), lifecycle(phase), timer,
+    readable(u64), writable(u64), connected(u64), failed(fail-info),
+    listener-failed(fail-info), closed(close-info), sealed(u64),
+    lifecycle(phase), timer, clock-trusted,
   }
   export init: func() -> result<_, string>;
   export tick: func(budget-us: u32) -> u64;   // returns next deadline
@@ -356,12 +603,27 @@ world node {
 /// done any gesture or unwrap before calling in. Parses nothing beyond
 /// these arguments.
 interface signer {
-  use types.{errno};
+  use types.{errno, key-kind};
 
-  /// Load the 64-byte composite private key (mldsaSeed || ed25519Seed)
-  /// for `id` into vault memory for one signing burst.
-  install: func(id: string, seed: list<u8>) -> result<_, errno>;
-  /// The 1984-byte composite public key of an installed `id`.
+  /// Load the 64-byte seed of key `id` of `kind` into vault memory (for
+  /// composite, mldsaSeed || ed25519Seed; for transit-kex and onion-hop,
+  /// the root seed, derived as `seal.generate` states). HOST-SIDE only:
+  /// the host unwraps the seed under its seal root and installs it here;
+  /// it never passes through the node. This is also how an EXISTING key
+  /// is provisioned (import, migration): by the host through its seal
+  /// root, with no node-facing call.
+  install: func(id: string, kind: key-kind, seed: list<u8>) -> result<_, errno>;
+  /// Generate a new key `id` of `kind` from the vault's own `random` and
+  /// return its public key, derived exactly as `seal.generate` states.
+  /// The host seals the seed out of the vault under its root (outside
+  /// this interface); the seed never enters node memory. Backs
+  /// `seal.generate`.
+  generate: func(id: string, kind: key-kind) -> result<list<u8>, errno>;
+  /// Key agreement for an installed transit-kex / onion-hop `id`: returns
+  /// shared_x25519(32) || ss_mlkem768(32), as `seal.kem-decap` states.
+  /// Backs `seal.kem-decap`.
+  kem-decap: func(id: string, x25519-peer-pub: list<u8>, mlkem-ct: list<u8>) -> result<list<u8>, errno>;
+  /// The public key of an installed `id`, for every `key-kind`.
   public-key: func(id: string) -> result<list<u8>, errno>;
   sign-classical: func(id: string, msg: list<u8>) -> result<list<u8>, errno>;
   sign-pqc: func(id: string, ctx: list<u8>, msg: list<u8>) -> result<list<u8>, errno>;
@@ -374,9 +636,11 @@ interface signer {
 
 /// The separate vault instance (§8.5): its own fixed-size linear memory,
 /// so seeds never enter the node's. MINIMAL by design: it imports only
-/// `log`. It imports no `random`, because composite signing is
-/// deterministic (FIPS 204 §3.4), and no storage, network or seal.
+/// `log` and `random`. `random` is for `signer.generate` (a fresh key needs
+/// fresh seeds); signing itself is deterministic (FIPS 204 §3.4). No
+/// storage, network or seal.
 world vault {
   import log;
+  import random;
   export signer;
 }

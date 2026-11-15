@@ -1,9 +1,35 @@
 //! wasm32: the wrappers are the wit-bindgen import stubs.
 
 use crate::bindings::ciris::node::{clock, log, net, random, seal, storage, wake};
-use crate::types::{Carrier, ConnInfo, Custody, Durability, Errno};
+use crate::types::{
+    Carrier, ConnInfo, Custody, Durability, Errno, KeyKind, ListenOptions, MetricKind, NetInterface,
+};
 
-pub mod host_exports {}
+/// On wasm32 the host implements the imports outside the module, so there
+/// is no seam to install into. These exist so node-side tooling (tests,
+/// `ciris-rt`'s replay) compiles on every target without a target `cfg`;
+/// calling them is a bug and panics.
+pub mod host_exports {
+    use std::rc::Rc;
+
+    use crate::host::Host;
+
+    /// Not available on wasm32: the host implements the imports.
+    ///
+    /// # Panics
+    /// Always.
+    pub fn install(_host: impl Host + 'static) -> Option<Rc<dyn Host>> {
+        panic!("ciris-host-abi: host::install is native-only; on wasm32 the host implements the ciris:node imports")
+    }
+
+    /// Not available on wasm32.
+    ///
+    /// # Panics
+    /// Always.
+    pub fn uninstall() -> Option<Rc<dyn Host>> {
+        panic!("ciris-host-abi: host::uninstall is native-only")
+    }
+}
 
 pub fn monotonic_us() -> u64 {
     clock::monotonic_us()
@@ -113,6 +139,50 @@ impl Stream {
     }
 }
 
+/// One unconnected datagram socket (`ciris:node/net.datagram`).
+pub struct Datagram(net::Datagram);
+
+impl Datagram {
+    /// Non-blocking send of one datagram to `addr`.
+    ///
+    /// # Errors
+    /// `would-block`, `invalid`, ...
+    pub fn send_to(&self, addr: &str, data: &[u8]) -> Result<(), Errno> {
+        self.0.send_to(addr, data)
+    }
+    /// Non-blocking receive: `(source address, datagram)`.
+    ///
+    /// # Errors
+    /// `would-block`, ...
+    pub fn recv_from(&self) -> Result<(String, Vec<u8>), Errno> {
+        self.0.recv_from()
+    }
+    /// The bound address, when the host knows it.
+    #[must_use]
+    pub fn local_addr(&self) -> Option<String> {
+        self.0.local_addr()
+    }
+    /// The largest datagram `send_to` accepts.
+    #[must_use]
+    pub fn max_datagram(&self) -> u32 {
+        self.0.max_datagram()
+    }
+    /// Join multicast `group`.
+    ///
+    /// # Errors
+    /// `unsupported` unless `net::can_multicast`.
+    pub fn multicast_join(&self, group: &str, interface: Option<&str>) -> Result<(), Errno> {
+        self.0.multicast_join(group, interface)
+    }
+    /// Leave multicast `group`.
+    ///
+    /// # Errors
+    /// The host's failure.
+    pub fn multicast_leave(&self, group: &str, interface: Option<&str>) -> Result<(), Errno> {
+        self.0.multicast_leave(group, interface)
+    }
+}
+
 pub fn net_carriers() -> Vec<Carrier> {
     net::carriers()
 }
@@ -127,13 +197,20 @@ pub fn net_dial(
 ) -> Result<Stream, Errno> {
     net::dial(c, target, subprotocols, token).map(Stream)
 }
-pub fn net_listen(
-    c: Carrier,
-    port: u16,
-    subprotocols: &[String],
-    token: u64,
-) -> Result<u32, Errno> {
-    net::listen(c, port, subprotocols, token)
+pub fn net_listen(c: Carrier, opts: &ListenOptions, token: u64) -> Result<u32, Errno> {
+    net::listen(c, opts, token)
+}
+pub fn net_can_datagram() -> bool {
+    net::can_datagram()
+}
+pub fn net_can_multicast() -> bool {
+    net::can_multicast()
+}
+pub fn net_interfaces() -> Vec<NetInterface> {
+    net::interfaces()
+}
+pub fn net_bind(bind: Option<&str>, port: u16, token: u64) -> Result<Datagram, Errno> {
+    net::bind(bind, port, token).map(Datagram)
 }
 pub fn net_accept(listener: u32, token: u64) -> Result<Option<Stream>, Errno> {
     net::accept(listener, token).map(|s| s.map(Stream))
@@ -148,8 +225,16 @@ pub fn seal_describe(id: &str) -> Result<Custody, Errno> {
 pub fn seal_public_key(id: &str) -> Result<Vec<u8>, Errno> {
     seal::public_key(id)
 }
-pub fn seal_provision(id: &str, material: &[u8], token: u64) -> Result<(), Errno> {
-    seal::provision(id, material, token)
+pub fn seal_generate(id: &str, kind: KeyKind, token: u64) -> Result<(), Errno> {
+    seal::generate(id, kind, token)
+}
+pub fn seal_kem_decap(
+    id: &str,
+    x25519_peer_pub: &[u8],
+    mlkem_ct: &[u8],
+    token: u64,
+) -> Result<(), Errno> {
+    seal::kem_decap(id, x25519_peer_pub, mlkem_ct, token)
 }
 pub fn seal_sign_classical(id: &str, msg: &[u8], token: u64) -> Result<(), Errno> {
     seal::sign_classical(id, msg, token)
@@ -159,6 +244,12 @@ pub fn seal_sign_pqc(id: &str, ctx: &[u8], msg: &[u8], token: u64) -> Result<(),
 }
 pub fn seal_sign_composite(id: &str, msg: &[u8], token: u64) -> Result<(), Errno> {
     seal::sign_composite(id, msg, token)
+}
+pub fn seal_wrap(label: &str, plaintext: &[u8], token: u64) -> Result<(), Errno> {
+    seal::wrap(label, plaintext, token)
+}
+pub fn seal_unwrap(label: &str, wrapped: &[u8], token: u64) -> Result<(), Errno> {
+    seal::unwrap(label, wrapped, token)
 }
 pub fn seal_take(token: u64) -> Result<Vec<u8>, Errno> {
     seal::take(token)
@@ -174,8 +265,8 @@ pub fn wake_keep_alive(reason: &str, on: bool) {
 pub fn log_record(level: u8, target: &str, msg: &str) {
     log::record(level, target, msg);
 }
-pub fn log_metric(name: &str, value: f64) {
-    log::metric(name, value);
+pub fn log_metric(name: &str, kind: MetricKind, value: f64, labels: &[(String, String)]) {
+    log::metric(name, kind, value, labels);
 }
 
 /// wasm32: export `$ty: Node` as the `node` world's exports.

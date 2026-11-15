@@ -3,8 +3,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::host::{Host, HostStream, HostVolume};
-use crate::types::{Carrier, ConnInfo, Custody, Durability, Errno};
+use crate::host::{Host, HostDatagram, HostStream, HostVolume};
+use crate::types::{
+    Carrier, ConnInfo, Custody, Durability, Errno, KeyKind, ListenOptions, MetricKind, NetInterface,
+};
 
 thread_local! {
     static HOST: RefCell<Option<Rc<dyn Host>>> = const { RefCell::new(None) };
@@ -140,6 +142,50 @@ impl Stream {
     }
 }
 
+/// One unconnected datagram socket (`ciris:node/net.datagram`).
+pub struct Datagram(Box<dyn HostDatagram>);
+
+impl Datagram {
+    /// Non-blocking send of one datagram to `addr`.
+    ///
+    /// # Errors
+    /// `would-block`, `invalid`, ...
+    pub fn send_to(&self, addr: &str, data: &[u8]) -> Result<(), Errno> {
+        self.0.send_to(addr, data)
+    }
+    /// Non-blocking receive: `(source address, datagram)`.
+    ///
+    /// # Errors
+    /// `would-block`, ...
+    pub fn recv_from(&self) -> Result<(String, Vec<u8>), Errno> {
+        self.0.recv_from()
+    }
+    /// The bound address, when the host knows it.
+    #[must_use]
+    pub fn local_addr(&self) -> Option<String> {
+        self.0.local_addr()
+    }
+    /// The largest datagram `send_to` accepts.
+    #[must_use]
+    pub fn max_datagram(&self) -> u32 {
+        self.0.max_datagram()
+    }
+    /// Join multicast `group`.
+    ///
+    /// # Errors
+    /// `unsupported` unless `net::can_multicast`.
+    pub fn multicast_join(&self, group: &str, interface: Option<&str>) -> Result<(), Errno> {
+        self.0.multicast_join(group, interface)
+    }
+    /// Leave multicast `group`.
+    ///
+    /// # Errors
+    /// The host's failure.
+    pub fn multicast_leave(&self, group: &str, interface: Option<&str>) -> Result<(), Errno> {
+        self.0.multicast_leave(group, interface)
+    }
+}
+
 pub fn net_carriers() -> Vec<Carrier> {
     host().net_carriers()
 }
@@ -154,13 +200,20 @@ pub fn net_dial(
 ) -> Result<Stream, Errno> {
     host().net_dial(c, target, subprotocols, token).map(Stream)
 }
-pub fn net_listen(
-    c: Carrier,
-    port: u16,
-    subprotocols: &[String],
-    token: u64,
-) -> Result<u32, Errno> {
-    host().net_listen(c, port, subprotocols, token)
+pub fn net_listen(c: Carrier, opts: &ListenOptions, token: u64) -> Result<u32, Errno> {
+    host().net_listen(c, opts, token)
+}
+pub fn net_can_datagram() -> bool {
+    host().net_can_datagram()
+}
+pub fn net_can_multicast() -> bool {
+    host().net_can_multicast()
+}
+pub fn net_interfaces() -> Vec<NetInterface> {
+    host().net_interfaces()
+}
+pub fn net_bind(bind: Option<&str>, port: u16, token: u64) -> Result<Datagram, Errno> {
+    host().net_bind(bind, port, token).map(Datagram)
 }
 pub fn net_accept(listener: u32, token: u64) -> Result<Option<Stream>, Errno> {
     host().net_accept(listener, token).map(|s| s.map(Stream))
@@ -175,8 +228,16 @@ pub fn seal_describe(id: &str) -> Result<Custody, Errno> {
 pub fn seal_public_key(id: &str) -> Result<Vec<u8>, Errno> {
     host().seal_public_key(id)
 }
-pub fn seal_provision(id: &str, material: &[u8], token: u64) -> Result<(), Errno> {
-    host().seal_provision(id, material, token)
+pub fn seal_generate(id: &str, kind: KeyKind, token: u64) -> Result<(), Errno> {
+    host().seal_generate(id, kind, token)
+}
+pub fn seal_kem_decap(
+    id: &str,
+    x25519_peer_pub: &[u8],
+    mlkem_ct: &[u8],
+    token: u64,
+) -> Result<(), Errno> {
+    host().seal_kem_decap(id, x25519_peer_pub, mlkem_ct, token)
 }
 pub fn seal_sign_classical(id: &str, msg: &[u8], token: u64) -> Result<(), Errno> {
     host().seal_sign_classical(id, msg, token)
@@ -186,6 +247,12 @@ pub fn seal_sign_pqc(id: &str, ctx: &[u8], msg: &[u8], token: u64) -> Result<(),
 }
 pub fn seal_sign_composite(id: &str, msg: &[u8], token: u64) -> Result<(), Errno> {
     host().seal_sign_composite(id, msg, token)
+}
+pub fn seal_wrap(label: &str, plaintext: &[u8], token: u64) -> Result<(), Errno> {
+    host().seal_wrap(label, plaintext, token)
+}
+pub fn seal_unwrap(label: &str, wrapped: &[u8], token: u64) -> Result<(), Errno> {
+    host().seal_unwrap(label, wrapped, token)
 }
 pub fn seal_take(token: u64) -> Result<Vec<u8>, Errno> {
     host().seal_take(token)
@@ -201,8 +268,8 @@ pub fn wake_keep_alive(reason: &str, on: bool) {
 pub fn log_record(level: u8, target: &str, msg: &str) {
     host().log_record(level, target, msg);
 }
-pub fn log_metric(name: &str, value: f64) {
-    host().log_metric(name, value);
+pub fn log_metric(name: &str, kind: MetricKind, value: f64, labels: &[(String, String)]) {
+    host().log_metric(name, kind, value, labels);
 }
 
 /// Native: nothing to export; a native host calls the [`crate::Node`]

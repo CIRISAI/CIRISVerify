@@ -58,11 +58,31 @@ fn only_good_passes() {
             ("ciris:node/storage@0.1.0", "[resource-drop]volume"),
             ("ciris:node/net@0.1.0", "[method]stream.info"),
             ("ciris:node/seal@0.1.0", "sign-composite"),
+            ("ciris:node/seal@0.1.0", "generate"),
+            ("ciris:node/seal@0.1.0", "kem-decap"),
+            ("ciris:node/seal@0.1.0", "wrap"),
+            ("ciris:node/seal@0.1.0", "unwrap"),
+            ("ciris:node/net@0.1.0", "bind"),
+            ("ciris:node/net@0.1.0", "can-datagram"),
+            ("ciris:node/net@0.1.0", "can-multicast"),
+            ("ciris:node/net@0.1.0", "interfaces"),
+            ("ciris:node/net@0.1.0", "[method]datagram.send-to"),
+            ("ciris:node/net@0.1.0", "[method]datagram.recv-from"),
+            ("ciris:node/net@0.1.0", "[method]datagram.multicast-join"),
+            ("ciris:node/net@0.1.0", "[resource-drop]datagram"),
         ],
         None,
     );
     let report = node().gate(&wasm).unwrap();
     assert!(report.passed(), "{:?}", report.offenders);
+}
+
+#[test]
+fn provision_is_gone() {
+    // Seeds never pass through node memory (§8.5): no node-facing provision.
+    let wasm = module(&[("ciris:node/seal@0.1.0", "provision")], None);
+    let report = node().gate(&wasm).unwrap();
+    assert_eq!(report.offenders[0].1, Offence::FieldNotDeclared);
 }
 
 #[test]
@@ -118,13 +138,13 @@ fn allowlist_is_derived_per_world() {
     let vault = Allowlist::from_wit_str(ciris_host_abi::WIT, "vault").unwrap();
     assert_eq!(
         vault.modules().collect::<Vec<_>>(),
-        ["ciris:node/log@0.1.0"]
+        ["ciris:node/log@0.1.0", "ciris:node/random@0.1.0"]
     );
+    // The vault imports random (for `signer.generate`), but no net or seal.
     let wasm = module(&[("ciris:node/random@0.1.0", "fill")], None);
-    assert!(
-        !vault.gate(&wasm).unwrap().passed(),
-        "the vault imports no random"
-    );
+    assert!(vault.gate(&wasm).unwrap().passed());
+    let wasm = module(&[("ciris:node/net@0.1.0", "carriers")], None);
+    assert!(!vault.gate(&wasm).unwrap().passed(), "the vault has no net");
 }
 
 #[test]

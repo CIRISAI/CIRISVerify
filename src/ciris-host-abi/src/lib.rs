@@ -31,11 +31,13 @@ pub const WIT: &str = include_str!("../wit/ciris-node.wit");
 
 /// The types the interfaces exchange, re-exported from [`bindings`].
 pub mod types {
+    pub use crate::bindings::ciris::node::log::MetricKind;
     pub use crate::bindings::ciris::node::net::{
-        Carrier, CloseInfo, CloseReason, ConnInfo, Framing,
+        Carrier, CloseInfo, CloseReason, ConnInfo, FailInfo, FailReason, Framing, ListenOptions,
+        NetInterface,
     };
     pub use crate::bindings::ciris::node::types::{
-        AtRest, AtUse, Custody, Durability, Errno, Phase, SealRoot,
+        AtRest, AtUse, Custody, Durability, Errno, KeyKind, Phase, SealRoot,
     };
     pub use crate::bindings::Event;
 }
@@ -118,9 +120,11 @@ pub mod storage {
 }
 
 /// `ciris:node/net`. Non-blocking; progress is reported as events.
+/// Readiness is edge-triggered: drain to `would-block` before waiting for
+/// the next `readable` / `writable`.
 pub mod net {
-    pub use crate::sys::Stream;
-    use crate::types::{Carrier, Errno};
+    pub use crate::sys::{Datagram, Stream};
+    use crate::types::{Carrier, Errno, ListenOptions, NetInterface};
 
     /// The carriers this host offers (a runtime answer, never a `cfg`).
     #[must_use]
@@ -132,7 +136,32 @@ pub mod net {
     pub fn can_listen(c: Carrier) -> bool {
         crate::sys::net_can_listen(c)
     }
-    /// Start a connection; `connected(token)` or `failed(token)` follows.
+    /// Whether this host offers unconnected datagram sockets ([`bind`]).
+    #[must_use]
+    pub fn can_datagram() -> bool {
+        crate::sys::net_can_datagram()
+    }
+    /// Whether this host offers [`Datagram::multicast_join`].
+    #[must_use]
+    pub fn can_multicast() -> bool {
+        crate::sys::net_can_multicast()
+    }
+    /// The host's network interfaces (empty when it will not say).
+    #[must_use]
+    pub fn interfaces() -> Vec<NetInterface> {
+        crate::sys::net_interfaces()
+    }
+    /// Bind an unconnected datagram socket on `port` (0 = any) at the IP
+    /// literal `bind` (`None` = all addresses). Its `readable` / `writable`
+    /// events carry `token`.
+    ///
+    /// # Errors
+    /// `unsupported` unless [`can_datagram`]; the host's refusal.
+    pub fn bind(bind: Option<&str>, port: u16, token: u64) -> Result<Datagram, Errno> {
+        crate::sys::net_bind(bind, port, token)
+    }
+    /// Start a connection; `connected(token)` or `failed({token, reason})`
+    /// follows.
     ///
     /// # Errors
     /// The host's refusal; no event follows.
@@ -144,19 +173,17 @@ pub mod net {
     ) -> Result<Stream, Errno> {
         crate::sys::net_dial(c, target, subprotocols, token)
     }
-    /// Listen; `readable(token)` means [`accept`] has a connection.
+    /// Listen as `opts` says. `readable(token)` is edge-triggered:
+    /// [`accept`] until it returns `None`. A later failure is
+    /// `Event::ListenerFailed`.
     ///
     /// # Errors
     /// The host's refusal.
-    pub fn listen(
-        c: Carrier,
-        port: u16,
-        subprotocols: &[String],
-        token: u64,
-    ) -> Result<u32, Errno> {
-        crate::sys::net_listen(c, port, subprotocols, token)
+    pub fn listen(c: Carrier, opts: &ListenOptions, token: u64) -> Result<u32, Errno> {
+        crate::sys::net_listen(c, opts, token)
     }
     /// Take one pending connection, whose events will carry `token`.
+    /// Call until it returns `None` after each listener `readable`.
     ///
     /// # Errors
     /// The host's refusal.
@@ -171,13 +198,33 @@ pub mod net {
 
 /// `ciris:node/seal` (§8). Signing is asynchronous: start with a token,
 /// wait for `Event::Sealed(token)`, then [`take`](seal::take).
+///
+/// Seeds never pass through node memory (§8.5): keys are generated inside
+/// the seal ([`generate`](seal::generate)) or provisioned by the host
+/// through its own seal root. This covers keys held through `seal` (the
+/// CIRIS composite identity and signing keys). The Reticulum transport
+/// identity (X25519 + Ed25519) is held by the node in node memory while
+/// in use (reported SoftwareOnly at use) and is stored only wrapped, via
+/// [`wrap`](seal::wrap) / [`unwrap`](seal::unwrap), under a key the host
+/// derives from its seal root. Its plaintext never touches `storage`.
 pub mod seal {
-    use crate::types::{Custody, Errno};
+    use crate::types::{Custody, Errno, KeyKind};
 
     /// Composite public key length (mldsaPK || ed25519PK).
     pub const PUBLIC_KEY_LEN: usize = 1952 + 32;
+    /// Transit-KEX / onion-hop public key length (x25519PK || mlkem768EK).
+    pub const KEX_PUBLIC_KEY_LEN: usize = 32 + 1184;
+    /// ML-KEM-768 ciphertext length `kem_decap` takes.
+    pub const MLKEM768_CIPHERTEXT_LEN: usize = 1088;
+    /// `kem_decap` output: shared_x25519(32) || ss_mlkem768(32).
+    pub const KEM_IKM_LEN: usize = 64;
     /// Composite signature length (mldsaSig || ed25519Sig).
     pub const COMPOSITE_SIGNATURE_LEN: usize = 3309 + 64;
+    /// Longest `wrap` / `unwrap` label, in bytes; longer is `invalid`.
+    pub const WRAP_LABEL_MAX: usize = 128;
+    /// Plaintext size every host MUST accept for `wrap` (64 KiB); larger
+    /// MAY be `invalid`.
+    pub const WRAP_PLAINTEXT_MIN_MAX: usize = 64 * 1024;
     /// The FIPS 204 context ML-DSA-65 signs under inside the composite.
     pub const COMPOSITE_LABEL: &[u8; 30] = b"COMPSIG-MLDSA65-Ed25519-SHA512";
 
@@ -195,12 +242,29 @@ pub mod seal {
     pub fn public_key(id: &str) -> Result<Vec<u8>, Errno> {
         crate::sys::seal_public_key(id)
     }
-    /// Start sealing `material` (the 64-byte composite private key) as `id`.
+    /// Start generating key `id` of `kind` inside the seal; after
+    /// `Sealed(token)`, [`take`] returns only its public key. Call only
+    /// after [`public_key`] answered `not-found` (first run); never
+    /// regenerate an identity-class key on any other error.
     ///
     /// # Errors
     /// The operation never started.
-    pub fn provision(id: &str, material: &[u8], token: u64) -> Result<(), Errno> {
-        crate::sys::seal_provision(id, material, token)
+    pub fn generate(id: &str, kind: KeyKind, token: u64) -> Result<(), Errno> {
+        crate::sys::seal_generate(id, kind, token)
+    }
+    /// Start key agreement against transit-kex / onion-hop key `id`; after
+    /// `Sealed(token)`, [`take`] returns `shared_x25519 || ss_mlkem768`
+    /// (64 bytes), the `ikm` of `ciris_crypto::transit_kex::respond`.
+    ///
+    /// # Errors
+    /// The operation never started.
+    pub fn kem_decap(
+        id: &str,
+        x25519_peer_pub: &[u8],
+        mlkem_ct: &[u8],
+        token: u64,
+    ) -> Result<(), Errno> {
+        crate::sys::seal_kem_decap(id, x25519_peer_pub, mlkem_ct, token)
     }
     /// Start an Ed25519 signature over `msg` as it is.
     ///
@@ -222,6 +286,29 @@ pub mod seal {
     /// The operation never started.
     pub fn sign_composite(id: &str, msg: &[u8], token: u64) -> Result<(), Errno> {
         crate::sys::seal_sign_composite(id, msg, token)
+    }
+    /// Start AEAD-wrapping a node-held secret under a host key derived from
+    /// the seal root and domain-separated by `label`; after
+    /// `Sealed(token)`, [`take`] returns the wrapped bytes. Never for CIRIS
+    /// composite seeds (those are [`generate`]d in the seal).
+    ///
+    /// `label` is at most [`WRAP_LABEL_MAX`] bytes; plaintext up to
+    /// [`WRAP_PLAINTEXT_MIN_MAX`] bytes is always accepted. Every wrap uses
+    /// a fresh random nonce, so two wraps of one plaintext differ.
+    ///
+    /// # Errors
+    /// The operation never started.
+    pub fn wrap(label: &str, plaintext: &[u8], token: u64) -> Result<(), Errno> {
+        crate::sys::seal_wrap(label, plaintext, token)
+    }
+    /// Start unwrapping a [`wrap`]ped blob under the same `label`; after
+    /// `Sealed(token)`, [`take`] returns the plaintext, or `denied` /
+    /// `invalid` on an authentication failure.
+    ///
+    /// # Errors
+    /// The operation never started.
+    pub fn unwrap(label: &str, wrapped: &[u8], token: u64) -> Result<(), Errno> {
+        crate::sys::seal_unwrap(label, wrapped, token)
     }
     /// The result of the completed operation `token`.
     ///
@@ -247,6 +334,7 @@ pub mod wake {
 
 /// `ciris:node/log`.
 pub mod log {
+    pub use crate::types::MetricKind;
     /// Log levels as the WIT numbers them.
     #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
     #[repr(u8)]
@@ -266,9 +354,9 @@ pub mod log {
     pub fn record(level: Level, target: &str, msg: &str) {
         crate::sys::log_record(level as u8, target, msg);
     }
-    /// Report one metric sample.
-    pub fn metric(name: &str, value: f64) {
-        crate::sys::log_metric(name, value);
+    /// Report one sample of series `name` with `(key, value)` labels.
+    pub fn metric(name: &str, kind: MetricKind, value: f64, labels: &[(String, String)]) {
+        crate::sys::log_metric(name, kind, value, labels);
     }
 }
 

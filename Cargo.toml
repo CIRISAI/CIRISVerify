@@ -9,6 +9,7 @@ members = [
     "src/ciris-manifest-tool",
     "src/ciris-build-tool",
     "src/ciris-host-abi",
+    "src/ciris-rt",
 ]
 
 [workspace.package]

@@ -725,6 +725,7 @@ dependencies = [
 name = "ciris-host-abi"
 version = "23.0.0"
 dependencies = [
+ "ciris-crypto",
  "getrandom 0.2.17",
  "getrandom 0.3.4",
  "getrandom 0.4.2",
@@ -792,6 +793,20 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ciris-rt"
+version = "23.0.0"
+dependencies = [
+ "ciris-host-abi",
+ "futures-channel",
+ "futures-io",
+ "hex",
+ "pin-project-lite",
+ "serde_json",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]

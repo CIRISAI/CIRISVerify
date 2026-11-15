@@ -1,0 +1,40 @@
+[package]
+name = "ciris-rt"
+description = "Single-threaded cooperative executor, timers, async net/seal adapters and record/replay for the CIRIS WASM node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+
+[features]
+default = ["replay"]
+# The ABI-boundary recorder and replayer (FSD §5.1, §11.4): JSON lines.
+# Native tooling; a node module may build with default-features = false.
+replay = ["dep:serde_json", "dep:hex"]
+
+[dependencies]
+# The only way to the host (FSD §4.1): ciris-rt has no target cfg.
+ciris-host-abi = { path = "../ciris-host-abi" }
+# `AsyncRead` / `AsyncWrite` for stream connections.
+futures-io = { version = "0.3.32", default-features = false, features = ["std"] }
+pin-project-lite = "0.2.17"
+zeroize = { workspace = true }
+serde_json = { workspace = true, optional = true }
+hex = { workspace = true, optional = true }
+
+[dev-dependencies]
+# Channels are not ciris-rt's: these prove the common ones run under it.
+futures-channel = { version = "0.3.32", default-features = false, features = ["std", "alloc"] }
+tokio = { version = "1.54.1", default-features = false, features = ["sync"] }
+
+[[test]]
+name = "it"
+path = "tests/it/main.rs"
+
+[[example]]
+name = "rt-smoke-node"
+path = "examples/rt_smoke_node.rs"
+crate-type = ["cdylib"]
