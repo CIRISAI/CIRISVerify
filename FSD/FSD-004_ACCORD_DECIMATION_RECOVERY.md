@@ -45,6 +45,9 @@ CIRISVerify#302) replaces all of that:
   H7 steward restore and is removed.
 - **Pre-committed recovery keys** (new). A holder who lost signing-key material rotates their own
   seat under a recovery key committed in the charter (§4.6, `verify_holder_recovery`).
+- **No minimum roster size.** CC 4.2.6 states none: a roster change may leave one member, and a
+  shrunken roster freezes but can still fire. The verify-side `N_min = 2` (H5) and
+  `LiveQuorumError::RosterTooSmall` are removed.
 - **A fire is never a proposal.** `AccordAction` is `roster_change` only; `fire` / `resume` no
   longer parse, and `verify_fire_by_live_quorum` / `verify_resume_by_live_quorum` are removed.
 
@@ -190,10 +193,32 @@ the threshold, the charter — concludes nothing, and so does one whose recovery
 not hash to the commitment in force.
 
 In verify, the recovery version carries the next commitment on the holder's seat as
-`recovery_commitment`, and its `supersedes` names the standing members, the standing
-`consensus_protocol` and `recovery_of: <holder_key_id>`
-(`accord_live_quorum::build_holder_recovery`). `recovery_commitment_in_force` reads the
-seat's commitment, else the charter's.
+`recovery_commitment`, its `supersedes` names the standing members, the standing
+`consensus_protocol` and `recovery_of: <holder_key_id>`, and its `prev_head_digest` names
+the standing version (`accord_live_quorum::build_holder_recovery`). Every roster version
+names its predecessor by `prev_head_digest`, the SHA-256 of the predecessor's signed bytes
+(CC 3.2 T6; `roster_version_digest`), empty at genesis; `build_membership_change` emits it
+too. Four rulings on CC 4.2.6 apply:
+
+- **(a) The commitment in force is found by walking the lineage.** A later roster version
+  need not repeat a seat's `recovery_commitment`. Where the holder's current key was seated
+  by a recovery, the charter entry is the commitment that recovery *spent*, so falling back
+  to it would be wrong. `recovery_commitment_in_force(charter, lineage, holder_key_id)`
+  takes the admitted roster versions oldest first (genesis to standing head), checks every
+  `prev_head_digest` link, and walks back from the head while the key stays seated. The
+  version that newly seated the key supplies the answer: if it is a recovery version, its
+  seat's `recovery_commitment`; if it is an ordinary roster change or genesis, the
+  charter's `recovery_commitments` entry. An incomplete lineage (empty, not starting at
+  genesis, a missing or wrong link) fails closed with `LineageIncomplete`; it never falls
+  back to the charter. `verify_holder_recovery` resolves the commitment itself from
+  `charter` and `lineage`, so a caller cannot pass the spent one.
+- **(b) No minimum roster size**, on recoveries and on ordinary roster changes (above).
+- **(c) A recovery whose next commitment equals the commitment it spends concludes
+  nothing** (`RecoveryReusesCommitment`).
+- **(d) A recovery naming the signing key already seated concludes nothing**
+  (`RecoveryReusesSigningKey`), whether built (`build_holder_recovery`) or presented.
+
+A recovery version that changes anything else concludes nothing, as above.
 
 When more than half the holders are lost the roster freezes: each survivor can still
 fire, but no majority remains to confirm, so every halt is a lone one that lapses at its
@@ -316,15 +341,17 @@ All **fail-closed**.
    `accord_genesis::validate_membership_change_structure` (entrenchment, strict-majority
    `quorum:M/N`, distinct-pubkey gate, anti-replay anchor); the proposal binds the new
    envelope and the standing head; signers resolve only among the members at the
-   standing head; the new roster has ≥ 2 members. `authorized = 2·yes > N_standing`
+   standing head; no minimum roster size applies. `authorized = 2·yes > N_standing`
    (`roster_change_carries`), reported with `standing_count`.
-3. `accord_live_quorum::verify_holder_recovery(standing, recovery, holder_key_id,
-   commitment_in_force, recovery_key, signatures, directory)` — structure as in (2);
-   only the holder's seat changes (key and `recovery_commitment`), every other seat and
-   every other record member identical, `supersedes` names the standing head and the
-   seat; a well-formed next commitment is installed; the recovery key hashes to the
-   commitment in force (constant time); exactly one signature, by the recovery key,
-   hybrid, over the recovery version's JCS bytes.
+3. `accord_live_quorum::verify_holder_recovery(charter, lineage, recovery, holder_key_id,
+   recovery_key, signatures, directory)` — structure as in (2) against the head of
+   `lineage`; only the holder's seat changes (key and `recovery_commitment`), every other
+   seat and every other record member identical, `supersedes` names the standing head and
+   the seat, `prev_head_digest` names the standing version; the seat names a new signing
+   key (d); a well-formed next commitment is installed; the commitment in force is
+   resolved by `recovery_commitment_in_force` over `lineage` (a); the next commitment
+   differs from it (c); the recovery key hashes to it (constant time); exactly one
+   signature, by the recovery key, hybrid, over the recovery version's JCS bytes.
 4. `accord_live_quorum::decisions_equivocate` — two decisions off one standing head
    into different rosters are a fork (CC 3.2 T6).
 5. `humanity_accord::verify_invocation` — verifies a `constitutional` / `notify` /
@@ -372,7 +399,7 @@ cannot replace anyone, and a new accord is formed by instantiation.
 | roster window `W` | participation window for a roster change | **72 h** (CC 2.6.7); under a declared severe-degradation state `window_until` MAY reach 7 d |
 | roster threshold | yes-votes for a roster change | `2·yes > N_standing` |
 | recovery | authority for a holder's own seat rotation | the committed recovery key alone |
-| `N_min` | smallest roster a change may produce | 2 (verify-side, H5) |
+| `N_min` | smallest roster a change may produce | **none** (CC 4.2.6 states no minimum) |
 
 ## 10. Deployment
 

@@ -162,7 +162,10 @@ no floor on N and no continuity check: an adversary supersedes 21→2 (or 21→1
 which `2·M>N` passes) by dropping censored honest holders as "not live," yielding
 a tiny adversary roster that — because **fire is floor-1 and never steward-gated**
 — now owns the kill-switch outright.
-**Obligation:** enforce `N_min > 1` (reject a `1/1` rebuild — mirror the existing
+**Superseded (CC 4.2.6 rc19):** CC 4.2.6 states no minimum roster size, and a roster change
+needs yes-votes from a strict majority of the *standing* roster, so the shrink-to-seize path
+below is closed by the threshold, not by a floor; verify no longer enforces `N_min`.
+**Original obligation:** enforce `N_min > 1` (reject a `1/1` rebuild — mirror the existing
 "no `M==1` escape hatch"); **removal of a standing member requires that member to
 be in `L` and vote their own removal, OR the full standing-roster strict majority**
 — never the live-set majority alone. (Resolves FSD-004 Q4's "never to attacker-only"

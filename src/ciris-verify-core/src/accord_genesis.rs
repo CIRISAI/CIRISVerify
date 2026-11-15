@@ -830,6 +830,11 @@ fn family_envelope(family_genesis: &SignedCegObject) -> Result<&Value, AccordGen
 ///   member count ([`accord_consensus_protocol`]); `Some(s)` ⇒ a caller-pinned
 ///   policy (still validated strict-majority at verify, so no split-brain `1/2`).
 ///
+/// The envelope names its predecessor as `prev_head_digest`, the lowercase-hex
+/// SHA-256 of `prior_envelope`'s signed bytes (CC 3.2 T6), so the roster
+/// versions form a chain a reader can walk back
+/// ([`crate::accord_live_quorum::recovery_commitment_in_force`]).
+///
 /// The returned envelope is co-signed by the **prior** roster (each on their own
 /// token, via [`co_sign_accord_family`]) and assembled with
 /// [`verify_membership_change`] — the *existing* members authorize who
@@ -866,7 +871,7 @@ pub fn build_membership_change(
     let cp = consensus_protocol
         .map(str::to_string)
         .unwrap_or_else(|| accord_consensus_protocol(new_member_key_ids.len()));
-    json!({
+    let mut out = json!({
         "family_key_id": group_key_id,
         "family_name": group_name,
         "members": members,
@@ -876,7 +881,14 @@ pub fn build_membership_change(
             "prior_member_key_ids": prior_members,
             "prior_consensus_protocol": prior_cp,
         },
-    })
+    });
+    // A prior that does not canonicalize names no predecessor; a lineage walk
+    // over the result then fails closed.
+    if let Ok(bytes) = accord_family_signing_bytes(prior_envelope) {
+        out["prev_head_digest"] =
+            Value::from(hex::encode(<sha2::Sha256 as sha2::Digest>::digest(&bytes)));
+    }
+    out
 }
 
 /// Verify a **general** membership change (CIRISVerify#104) — the role-agnostic,

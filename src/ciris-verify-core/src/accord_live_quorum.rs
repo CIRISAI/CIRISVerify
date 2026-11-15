@@ -22,7 +22,13 @@
 //! - **Holder recovery** ([`verify_holder_recovery`](crate::accord_live_quorum::verify_holder_recovery)): a new version of the
 //!   roster record signed under one holder's pre-committed recovery key alone,
 //!   changing only that holder's own seat (its signing key and its next
-//!   recovery commitment). It needs no quorum.
+//!   recovery commitment). It needs no quorum. The commitment it must match is
+//!   the one **in force** ([`recovery_commitment_in_force`](crate::accord_live_quorum::recovery_commitment_in_force)), read by
+//!   walking the roster lineage back by `prev_head_digest` to the latest
+//!   recovery that seated the holder's current key, else the charter.
+//!
+//! There is no minimum roster size (CC 4.2.6 states none): a roster change may
+//! leave one member, and a shrunken roster freezes but can still fire.
 //!
 //! There is no steward backstop, no restore and no contest (CC 4.2.6 rc19: "No
 //! second roster", "There is no restore and no contest"). The domain labels
@@ -73,6 +79,10 @@ pub const SEAT_RECOVERY_COMMITMENT_FIELD: &str = "recovery_commitment";
 pub const CHARTER_RECOVERY_COMMITMENTS_FIELD: &str = "recovery_commitments";
 /// The `supersedes` member naming the seat a recovery version rotates.
 pub const SUPERSEDES_RECOVERY_OF_FIELD: &str = "recovery_of";
+/// The roster-record member naming the digest of the version it succeeds
+/// ([`roster_version_digest`] of the predecessor); absent or empty at genesis
+/// (CC 3.2 T6).
+pub const PREV_HEAD_DIGEST_FIELD: &str = "prev_head_digest";
 
 /// The action an `AccordProposal` opens.
 ///
@@ -319,11 +329,6 @@ pub enum LiveQuorumError {
         /// `prior_family_digest` the proposal carried.
         got: String,
     },
-    /// The proposed roster has fewer than 2 members (H5, `N_min > 1`).
-    RosterTooSmall {
-        /// The proposed roster size.
-        size: usize,
-    },
     /// A recovery names a holder who has no seat at the standing roster head.
     HolderNotSeated {
         /// The holder key id the recovery names.
@@ -344,6 +349,31 @@ pub enum LiveQuorumError {
     /// The presented recovery key's record does not hash to the commitment in
     /// force for the holder (CC 4.2.6: the recovery concludes nothing).
     RecoveryCommitmentMismatch,
+    /// No recovery commitment is in force for the holder: no recovery seated
+    /// their current key and the charter carries no entry for them. Their
+    /// recovery is a roster change.
+    NoCommitmentInForce {
+        /// The holder key id.
+        holder_key_id: String,
+    },
+    /// The roster lineage is incomplete: it is empty, does not start at a
+    /// genesis version, or a version's `prev_head_digest` does not name the
+    /// version before it. Fails closed; the charter is never consulted instead.
+    LineageIncomplete {
+        /// Index of the version whose link is missing or wrong.
+        index: usize,
+        /// What is wrong.
+        detail: String,
+    },
+    /// A recovery's next commitment equals the commitment it spends
+    /// (CC 4.2.6: the recovery concludes nothing).
+    RecoveryReusesCommitment,
+    /// A recovery names the signing key already seated (CC 4.2.6: the
+    /// recovery concludes nothing).
+    RecoveryReusesSigningKey {
+        /// The key id already seated.
+        key_id: String,
+    },
     /// A recovery version is not signed under the recovery key alone.
     RecoveryNotSoleSigner {
         /// The `member_id`s on the presented signatures.
@@ -391,9 +421,6 @@ impl std::fmt::Display for LiveQuorumError {
                 f,
                 "proposal prior_family_digest {got} != standing envelope digest {expected} (C3)"
             ),
-            Self::RosterTooSmall { size } => {
-                write!(f, "proposed roster has {size} members; N_min is 2 (H5)")
-            },
             Self::HolderNotSeated { holder_key_id } => write!(
                 f,
                 "recovery names {holder_key_id}, who holds no seat at the standing head"
@@ -408,6 +435,21 @@ impl std::fmt::Display for LiveQuorumError {
             Self::RecoveryCommitmentMismatch => write!(
                 f,
                 "recovery key does not hash to the commitment in force (CC 4.2.6)"
+            ),
+            Self::NoCommitmentInForce { holder_key_id } => write!(
+                f,
+                "no recovery commitment is in force for {holder_key_id} (CC 4.2.6)"
+            ),
+            Self::LineageIncomplete { index, detail } => {
+                write!(f, "roster lineage incomplete at version {index}: {detail}")
+            },
+            Self::RecoveryReusesCommitment => write!(
+                f,
+                "recovery's next commitment equals the one it spends (CC 4.2.6)"
+            ),
+            Self::RecoveryReusesSigningKey { key_id } => write!(
+                f,
+                "recovery names {key_id}, the signing key already seated (CC 4.2.6)"
             ),
             Self::RecoveryNotSoleSigner { signers } => write!(
                 f,
@@ -513,10 +555,21 @@ pub struct RosterChangeVerdict {
     pub standing_count: usize,
 }
 
-fn envelope_digest(env: &Value) -> Result<String, LiveQuorumError> {
+/// The digest of a roster version (CC 3.2 T6): lowercase-hex SHA-256 of its
+/// signed bytes ([`crate::accord_genesis::accord_family_signing_bytes`]). The
+/// successor names it as [`PREV_HEAD_DIGEST_FIELD`]; an `accord_proposal`
+/// names the standing head's as `prior_family_digest`.
+///
+/// # Errors
+/// [`LiveQuorumError::Structure`] on a canonicalization fault.
+pub fn roster_version_digest(env: &Value) -> Result<String, LiveQuorumError> {
     let bytes = crate::accord_genesis::accord_family_signing_bytes(env)
         .map_err(|e| LiveQuorumError::Structure(e.to_string()))?;
     Ok(hex::encode(Sha256::digest(&bytes)))
+}
+
+fn envelope_digest(env: &Value) -> Result<String, LiveQuorumError> {
+    roster_version_digest(env)
 }
 
 fn member_ids(env: &Value) -> Result<Vec<String>, LiveQuorumError> {
@@ -535,8 +588,10 @@ fn member_ids(env: &Value) -> Result<Vec<String>, LiveQuorumError> {
 /// 2. the proposal binds the change: `payload_sha256 ==` the new envelope
 ///    digest and `prior_family_digest ==` the standing envelope digest (C3);
 /// 3. the tally, with signers resolved only among the members at the standing
-///    head (`prior_envelope`) through `directory`;
-/// 4. **`N_min`**: the new roster has ≥ 2 members (H5).
+///    head (`prior_envelope`) through `directory`.
+///
+/// There is no minimum roster size (CC 4.2.6 states none): a change may leave
+/// a single member. A shrunken roster freezes but can still fire.
 ///
 /// Then the decision: **`2·yes > N_standing`**, where `N_standing` is the
 /// number of members at the standing head — the whole roster, however many
@@ -548,7 +603,7 @@ fn member_ids(env: &Value) -> Result<Vec<String>, LiveQuorumError> {
 ///
 /// # Errors
 /// [`LiveQuorumError`] for a structural or binding violation, a bad
-/// participation, or an undersized roster. Whether the change carries is
+/// participation. Whether the change carries is
 /// [`RosterChangeVerdict::authorized`].
 pub fn verify_membership_change_by_live_quorum(
     proposal: &AccordProposal,
@@ -590,14 +645,6 @@ pub fn verify_membership_change_by_live_quorum(
         .cloned()
         .collect();
     let tally = tally_live_quorum(proposal, participations, &standing)?;
-
-    // 4. N_min (H5).
-    let new_ids = member_ids(new_envelope)?;
-    if new_ids.len() < 2 {
-        return Err(LiveQuorumError::RosterTooSmall {
-            size: new_ids.len(),
-        });
-    }
 
     let standing_count = prior_ids.len();
     Ok(RosterChangeVerdict {
@@ -691,45 +738,130 @@ fn seat_of<'a>(env: &'a Value, key_id: &str) -> Option<(usize, &'a Value)> {
         .find(|(_, m)| m.get("key_id").and_then(Value::as_str) == Some(key_id))
 }
 
-/// The recovery commitment **in force** for `holder_key_id` (CC 4.2.6): the
-/// one named by the latest recovery version that seated their current key —
-/// carried on their seat at the standing head as
-/// [`SEAT_RECOVERY_COMMITMENT_FIELD`] — or, if they have never recovered, their
-/// entry in the charter's [`CHARTER_RECOVERY_COMMITMENTS_FIELD`]. `None` when
-/// neither exists: that holder cannot self-rotate, and their recovery is a
-/// roster change.
-#[must_use]
+fn prev_head_digest(env: &Value) -> Option<&str> {
+    env.get(PREV_HEAD_DIGEST_FIELD)
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+}
+
+fn is_recovery_version(env: &Value) -> bool {
+    env.get("supersedes")
+        .and_then(|s| s.get(SUPERSEDES_RECOVERY_OF_FIELD))
+        .and_then(Value::as_str)
+        .is_some()
+}
+
+/// Check that `lineage` is a complete chain: non-empty, starting at a genesis
+/// version (no [`PREV_HEAD_DIGEST_FIELD`], or an empty one), every later
+/// version naming the digest of the one before it.
+fn check_lineage(lineage: &[Value]) -> Result<(), LiveQuorumError> {
+    let broken = |index: usize, detail: &str| LiveQuorumError::LineageIncomplete {
+        index,
+        detail: detail.to_string(),
+    };
+    let first = lineage.first().ok_or_else(|| broken(0, "empty lineage"))?;
+    if first.get(PREV_HEAD_DIGEST_FIELD).is_some_and(|v| v != "") {
+        return Err(broken(0, "the first version is not a genesis version"));
+    }
+    for (i, pair) in lineage.windows(2).enumerate() {
+        let index = i + 1;
+        let named = prev_head_digest(&pair[1])
+            .ok_or_else(|| broken(index, "the version names no predecessor"))?;
+        let actual = roster_version_digest(&pair[0])?;
+        if !crate::security::constant_time_eq(named.as_bytes(), actual.as_bytes()) {
+            return Err(broken(
+                index,
+                "prev_head_digest does not name the preceding version",
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// The recovery commitment **in force** for `holder_key_id` (CC 4.2.6): "the
+/// one named by the latest recovery version that seated their current key, or,
+/// if they have never recovered, their entry in the charter's
+/// `recovery_commitments`".
+///
+/// `lineage` is the accord's roster versions **oldest first**: the genesis
+/// version, then each successor in order, ending at the standing head. Each
+/// version after the first names its predecessor by [`PREV_HEAD_DIGEST_FIELD`]
+/// ([`roster_version_digest`]). The caller supplies versions it has already
+/// admitted; this function checks only the chain, not their signatures.
+///
+/// The walk starts at the head and steps back while `holder_key_id` stays
+/// seated. A version that newly seats the key and is a recovery version
+/// (`supersedes.recovery_of`) supplies its seat's
+/// [`SEAT_RECOVERY_COMMITMENT_FIELD`]. A version that newly seats it by an
+/// ordinary roster change, or the genesis version, means no recovery seated
+/// this key: the charter's [`CHARTER_RECOVERY_COMMITMENTS_FIELD`] entry is in
+/// force. A later version need not repeat the seat's commitment.
+///
+/// Returns `Ok(None)` when the holder holds no seat at the head, or no
+/// recovery seated their key and the charter has no entry: that holder cannot
+/// self-rotate, and their recovery is a roster change.
+///
+/// # Errors
+/// [`LiveQuorumError::LineageIncomplete`] when the chain is empty, does not
+/// start at genesis, or a link is missing or wrong: it never falls back to the
+/// charter. [`LiveQuorumError::Structure`] when the recovery version that
+/// seated the key carries no commitment, or on a canonicalization fault.
 pub fn recovery_commitment_in_force(
     charter: &Value,
-    standing_envelope: &Value,
+    lineage: &[Value],
     holder_key_id: &str,
-) -> Option<String> {
-    let (_, seat) = seat_of(standing_envelope, holder_key_id)?;
-    if let Some(c) = seat
-        .get(SEAT_RECOVERY_COMMITMENT_FIELD)
-        .and_then(Value::as_str)
-    {
-        return Some(c.to_string());
+) -> Result<Option<String>, LiveQuorumError> {
+    check_lineage(lineage)?;
+    let charter_entry = || {
+        charter
+            .get(CHARTER_RECOVERY_COMMITMENTS_FIELD)
+            .and_then(|c| c.get(holder_key_id))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    };
+    let head = lineage.len() - 1;
+    if seat_of(&lineage[head], holder_key_id).is_none() {
+        return Ok(None);
     }
-    charter
-        .get(CHARTER_RECOVERY_COMMITMENTS_FIELD)?
-        .get(holder_key_id)?
-        .as_str()
-        .map(str::to_string)
+    for i in (1..=head).rev() {
+        if seat_of(&lineage[i - 1], holder_key_id).is_some() {
+            continue; // seated before this version too: keep walking back.
+        }
+        // Version `i` seated the holder's current key.
+        if !is_recovery_version(&lineage[i]) {
+            return Ok(charter_entry());
+        }
+        let (_, seat) = seat_of(&lineage[i], holder_key_id)
+            .ok_or_else(|| LiveQuorumError::Structure("missing seat".to_string()))?;
+        return seat
+            .get(SEAT_RECOVERY_COMMITMENT_FIELD)
+            .and_then(Value::as_str)
+            .map(|c| Some(c.to_string()))
+            .ok_or_else(|| {
+                LiveQuorumError::Structure(format!(
+                    "the recovery version that seated {holder_key_id} carries no {SEAT_RECOVERY_COMMITMENT_FIELD}"
+                ))
+            });
+    }
+    // Seated at genesis: never recovered.
+    Ok(charter_entry())
 }
 
 /// Build a holder's **recovery version** of `standing_envelope`: the same
 /// record with only `holder_key_id`'s seat changed — its signing key becomes
 /// `new_signing_key_id` and its next recovery commitment `next_commitment` —
-/// and a `supersedes` naming the standing members, the standing threshold and
-/// the seat it rotates. The holder signs the JCS bytes
+/// a `supersedes` naming the standing members, the standing threshold and
+/// the seat it rotates, and a [`PREV_HEAD_DIGEST_FIELD`] naming the standing
+/// version. The holder signs the JCS bytes
 /// ([`crate::accord_genesis::accord_family_signing_bytes`]) under their
 /// recovery key alone.
 ///
 /// # Errors
 /// [`LiveQuorumError::HolderNotSeated`] if the holder has no seat;
 /// [`LiveQuorumError::MalformedCommitment`] for a bad `next_commitment`;
-/// [`LiveQuorumError::Structure`] for a malformed envelope.
+/// [`LiveQuorumError::RecoveryReusesSigningKey`] when `new_signing_key_id` is
+/// the key already seated; [`LiveQuorumError::Structure`] for a malformed
+/// envelope.
 pub fn build_holder_recovery(
     standing_envelope: &Value,
     holder_key_id: &str,
@@ -737,7 +869,13 @@ pub fn build_holder_recovery(
     next_commitment: &str,
 ) -> Result<Value, LiveQuorumError> {
     check_commitment_form(next_commitment)?;
+    if new_signing_key_id == holder_key_id {
+        return Err(LiveQuorumError::RecoveryReusesSigningKey {
+            key_id: holder_key_id.to_string(),
+        });
+    }
     let prior_ids = member_ids(standing_envelope)?;
+    let standing_digest = roster_version_digest(standing_envelope)?;
     let (index, _) = seat_of(standing_envelope, holder_key_id).ok_or_else(|| {
         LiveQuorumError::HolderNotSeated {
             holder_key_id: holder_key_id.to_string(),
@@ -770,6 +908,10 @@ pub fn build_holder_recovery(
             SUPERSEDES_RECOVERY_OF_FIELD: holder_key_id,
         }),
     );
+    obj.insert(
+        PREV_HEAD_DIGEST_FIELD.to_string(),
+        Value::from(standing_digest),
+    );
     Ok(out)
 }
 
@@ -791,8 +933,9 @@ fn outside(detail: impl Into<String>) -> LiveQuorumError {
 }
 
 /// Check that `recovery` differs from `standing` only in the seat at `index`
-/// (its `key_id` and [`SEAT_RECOVERY_COMMITMENT_FIELD`]) and in a `supersedes`
-/// that names the standing head and `holder_key_id`.
+/// (its `key_id` and [`SEAT_RECOVERY_COMMITMENT_FIELD`]), in a `supersedes`
+/// that names the standing head and `holder_key_id`, and in a
+/// [`PREV_HEAD_DIGEST_FIELD`] naming the standing version.
 fn check_only_own_seat(
     standing: &Value,
     recovery: &Value,
@@ -804,10 +947,15 @@ fn check_only_own_seat(
     let new_obj = recovery.as_object().ok_or_else(not_object)?;
 
     // The family, the threshold, the entrenchment flag: everything but the
-    // seats and the supersedes pointer is unchanged, and nothing is added.
+    // seats and the two predecessor pointers is unchanged, and nothing is added.
     let rest = |o: &serde_json::Map<String, Value>| -> Vec<(String, Value)> {
         o.iter()
-            .filter(|(k, _)| k.as_str() != "members" && k.as_str() != "supersedes")
+            .filter(|(k, _)| {
+                !matches!(
+                    k.as_str(),
+                    "members" | "supersedes" | PREV_HEAD_DIGEST_FIELD
+                )
+            })
             .map(|(k, v)| (k.clone(), v.clone()))
             .collect()
     };
@@ -857,6 +1005,11 @@ fn check_only_own_seat(
             "`supersedes` does not name the standing head and this holder's seat",
         ));
     }
+    if prev_head_digest(recovery) != Some(roster_version_digest(standing)?.as_str()) {
+        return Err(outside(
+            "`prev_head_digest` does not name the standing version",
+        ));
+    }
     Ok(())
 }
 
@@ -864,39 +1017,58 @@ fn check_only_own_seat(
 /// keys"): a new version of the accord's roster record, signed under the
 /// holder's recovery key alone, that changes **only** that holder's own seat.
 ///
+/// `lineage` is the accord's admitted roster versions oldest first, ending at
+/// the standing head the recovery succeeds (see
+/// [`recovery_commitment_in_force`]); `charter` carries
+/// [`CHARTER_RECOVERY_COMMITMENTS_FIELD`].
+///
 /// Every check is fail-closed; a failure means the recovery concludes nothing.
-/// 1. `recovery_envelope` is a structurally valid supersede of
-///    `standing_envelope` ([`crate::accord_genesis::validate_membership_change_structure`]:
+/// 1. `recovery_envelope` is a structurally valid supersede of the standing
+///    head ([`crate::accord_genesis::validate_membership_change_structure`]:
 ///    the new signing key resolves in `directory` to a distinct pubkey, the
 ///    anchor names the standing members, entrenchment is kept).
 /// 2. **Only the holder's own seat changes.** Every top-level member other
-///    than `members` and `supersedes` (the family, the threshold, the
-///    entrenchment flag) is unchanged; every other seat is byte-identical and
-///    in place; the holder's seat changes only `key_id` and
+///    than `members`, `supersedes` and [`PREV_HEAD_DIGEST_FIELD`] (the family,
+///    the threshold, the entrenchment flag) is unchanged; every other seat is
+///    byte-identical and in place; the holder's seat changes only `key_id` and
 ///    [`SEAT_RECOVERY_COMMITMENT_FIELD`]; `supersedes` names the standing
-///    members, the standing threshold and, as
-///    [`SUPERSEDES_RECOVERY_OF_FIELD`], this holder.
-/// 3. **The next commitment is installed**: the seat carries a well-formed
+///    members, the standing threshold and, as [`SUPERSEDES_RECOVERY_OF_FIELD`],
+///    this holder; `prev_head_digest` names the standing version.
+/// 3. **A new signing key**: the seat names a key other than `holder_key_id`
+///    ([`LiveQuorumError::RecoveryReusesSigningKey`]).
+/// 4. **The next commitment is installed**: the seat carries a well-formed
 ///    [`SEAT_RECOVERY_COMMITMENT_FIELD`].
-/// 4. **The recovery key matches the commitment in force**:
-///    `recovery_key.commitment() == commitment_in_force` (constant time). The
-///    caller resolves `commitment_in_force` with
-///    [`recovery_commitment_in_force`].
-/// 5. **Signed by the recovery key alone**: exactly one signature, by
+/// 5. **The commitment in force** is resolved by walking `lineage`
+///    ([`recovery_commitment_in_force`]); an incomplete lineage fails closed and
+///    no commitment in force is [`LiveQuorumError::NoCommitmentInForce`].
+/// 6. **A new commitment**: the next commitment differs from the one in force
+///    ([`LiveQuorumError::RecoveryReusesCommitment`]).
+/// 7. **The recovery key matches the commitment in force**:
+///    `recovery_key.commitment() == in force` (constant time).
+/// 8. **Signed by the recovery key alone**: exactly one signature, by
 ///    `recovery_key.key_id`, a hybrid signature over the JCS bytes of
 ///    `recovery_envelope`. No quorum is consulted.
+///
+/// No minimum roster size applies (CC 4.2.6 states none).
 ///
 /// # Errors
 /// [`LiveQuorumError`] naming the first failed check.
 pub fn verify_holder_recovery(
-    standing_envelope: &Value,
+    charter: &Value,
+    lineage: &[Value],
     recovery_envelope: &Value,
     holder_key_id: &str,
-    commitment_in_force: &str,
     recovery_key: &RecoveryKeyRecord,
     recovery_signatures: &[ThresholdSignature],
     directory: &[ThresholdMember],
 ) -> Result<RecoveryVerdict, LiveQuorumError> {
+    let standing_envelope = lineage
+        .last()
+        .ok_or_else(|| LiveQuorumError::LineageIncomplete {
+            index: 0,
+            detail: "empty lineage".to_string(),
+        })?;
+
     // 1. Structure.
     crate::accord_genesis::validate_membership_change_structure(
         standing_envelope,
@@ -913,7 +1085,7 @@ pub fn verify_holder_recovery(
     })?;
     check_only_own_seat(standing_envelope, recovery_envelope, index, holder_key_id)?;
 
-    // 3. The next commitment is installed.
+    // 3. A new signing key.
     let new_seat = recovery_envelope
         .get("members")
         .and_then(Value::as_array)
@@ -924,6 +1096,13 @@ pub fn verify_holder_recovery(
         .and_then(Value::as_str)
         .ok_or_else(|| LiveQuorumError::Structure("seat has no `key_id`".to_string()))?
         .to_string();
+    if new_signing_key_id == holder_key_id {
+        return Err(LiveQuorumError::RecoveryReusesSigningKey {
+            key_id: new_signing_key_id,
+        });
+    }
+
+    // 4. The next commitment is installed.
     let next_commitment = new_seat
         .get(SEAT_RECOVERY_COMMITMENT_FIELD)
         .and_then(Value::as_str)
@@ -931,14 +1110,27 @@ pub fn verify_holder_recovery(
         .to_string();
     check_commitment_form(&next_commitment)?;
 
-    // 4. The recovery key hashes to the commitment in force.
-    check_commitment_form(commitment_in_force)?;
+    // 5. The commitment in force, by the lineage.
+    let in_force =
+        recovery_commitment_in_force(charter, lineage, holder_key_id)?.ok_or_else(|| {
+            LiveQuorumError::NoCommitmentInForce {
+                holder_key_id: holder_key_id.to_string(),
+            }
+        })?;
+    check_commitment_form(&in_force)?;
+
+    // 6. The next commitment is not the one being spent.
+    if crate::security::constant_time_eq(next_commitment.as_bytes(), in_force.as_bytes()) {
+        return Err(LiveQuorumError::RecoveryReusesCommitment);
+    }
+
+    // 7. The recovery key hashes to the commitment in force.
     let presented = recovery_key.commitment()?;
-    if !crate::security::constant_time_eq(presented.as_bytes(), commitment_in_force.as_bytes()) {
+    if !crate::security::constant_time_eq(presented.as_bytes(), in_force.as_bytes()) {
         return Err(LiveQuorumError::RecoveryCommitmentMismatch);
     }
 
-    // 5. Signed under the recovery key alone.
+    // 8. Signed under the recovery key alone.
     if recovery_signatures.len() != 1 || recovery_signatures[0].member_id != recovery_key.key_id {
         return Err(LiveQuorumError::RecoveryNotSoleSigner {
             signers: recovery_signatures
@@ -1434,7 +1626,8 @@ mod tests {
     }
 
     #[test]
-    fn shrink_to_one_member_is_rejected_n_min() {
+    fn a_roster_change_to_one_member_is_not_refused_for_size() {
+        // CC 4.2.6 states no minimum: A1,B1,C1 → A1 carries on 3 yes of 3.
         let (hs, dir) = holders(&["A1", "B1", "C1"]);
         let prior = family_envelope(&["A1", "B1", "C1"]);
         let new = change(&prior, &["A1"]);
@@ -1443,10 +1636,20 @@ mod tests {
             .iter()
             .map(|h| participate(h, &prop, Vote::Yes))
             .collect();
-        assert!(matches!(
-            verify_membership_change_by_live_quorum(&prop, &parts, &prior, &new, &dir),
-            Err(LiveQuorumError::RosterTooSmall { size: 1 })
-        ));
+        let v = verify_membership_change_by_live_quorum(&prop, &parts, &prior, &new, &dir).unwrap();
+        assert!(v.authorized);
+        assert_eq!(v.standing_count, 3);
+
+        // And 2 → 1, the smallest step.
+        let prior = family_envelope(&["A1", "B1"]);
+        let new = change(&prior, &["B1"]);
+        let prop = roster_proposal(&prior, &new);
+        let parts: Vec<_> = hs[..2]
+            .iter()
+            .map(|h| participate(h, &prop, Vote::Yes))
+            .collect();
+        let v = verify_membership_change_by_live_quorum(&prop, &parts, &prior, &new, &dir).unwrap();
+        assert!(v.authorized);
     }
 
     #[test]
@@ -1594,12 +1797,11 @@ mod tests {
         key: &RecoveryKeyRecord,
         sigs: &[ThresholdSignature],
     ) -> Result<RecoveryVerdict, LiveQuorumError> {
-        let in_force = recovery_commitment_in_force(&f.charter, &f.standing, "A1").unwrap();
         verify_holder_recovery(
-            &f.standing,
+            &f.charter,
+            std::slice::from_ref(&f.standing),
             recovery,
             "A1",
-            &in_force,
             key,
             sigs,
             &f.directory,
@@ -1630,7 +1832,9 @@ mod tests {
         assert_eq!(v.next_commitment, f.next_commitment);
         // The next commitment is now the one in force for the rotated seat.
         assert_eq!(
-            recovery_commitment_in_force(&f.charter, &rec, "A1n").as_deref(),
+            recovery_commitment_in_force(&f.charter, &[f.standing.clone(), rec], "A1n")
+                .unwrap()
+                .as_deref(),
             Some(f.next_commitment.as_str())
         );
     }
@@ -1752,14 +1956,31 @@ mod tests {
     #[test]
     fn a_holder_without_a_commitment_cannot_self_rotate() {
         let f = recovery_fixture();
+        let lineage = std::slice::from_ref(&f.standing);
         assert_eq!(
-            recovery_commitment_in_force(&json!({}), &f.standing, "A1"),
+            recovery_commitment_in_force(&json!({}), lineage, "A1").unwrap(),
             None
         );
         assert_eq!(
-            recovery_commitment_in_force(&f.charter, &f.standing, "Z9"),
+            recovery_commitment_in_force(&f.charter, lineage, "Z9").unwrap(),
             None,
             "no seat, no commitment"
+        );
+        let rec = build_holder_recovery(&f.standing, "A1", "A1n", &f.next_commitment).unwrap();
+        let sig = sign_env(&f.recovery_a, &rec);
+        assert_eq!(
+            verify_holder_recovery(
+                &json!({}),
+                lineage,
+                &rec,
+                "A1",
+                &f.recovery_a.record(),
+                &[sig],
+                &f.directory,
+            ),
+            Err(LiveQuorumError::NoCommitmentInForce {
+                holder_key_id: "A1".to_string()
+            })
         );
     }
 
@@ -1773,6 +1994,198 @@ mod tests {
         assert!(matches!(
             build_holder_recovery(&f.standing, "A1", "A1n", &"F".repeat(64)),
             Err(LiveQuorumError::MalformedCommitment { .. })
+        ));
+    }
+
+    /// genesis A1,B1,C1 → A1 recovers (A1 → A1n, next RA2) → an ordinary roster
+    /// change adds D1 and drops the seat commitments → A1n recovers again.
+    struct TwoRecoveries {
+        charter: Value,
+        lineage: Vec<Value>,
+        directory: Vec<ThresholdMember>,
+        recovery_a: Holder,
+        recovery_a2: Holder,
+        next2: String,
+        second: Value,
+    }
+
+    fn two_recoveries() -> TwoRecoveries {
+        let f = recovery_fixture();
+        let recovery_a2 = Holder::new("RA2");
+        let next1 = recovery_a2.record().commitment().unwrap();
+        let mut directory = f.directory.clone();
+        let d1 = Holder::new("D1");
+        let a1nn = Holder::new("A1nn");
+        directory.push(d1.member());
+        directory.push(a1nn.member());
+
+        let v0 = f.standing.clone();
+        let v1 = build_holder_recovery(&v0, "A1", "A1n", &next1).unwrap();
+        verify_holder_recovery(
+            &f.charter,
+            std::slice::from_ref(&v0),
+            &v1,
+            "A1",
+            &f.recovery_a.record(),
+            &[sign_env(&f.recovery_a, &v1)],
+            &directory,
+        )
+        .unwrap();
+        let v2 = change(&v1, &["A1n", "B1", "C1", "D1"]);
+        assert!(
+            v2["members"][0]
+                .get(SEAT_RECOVERY_COMMITMENT_FIELD)
+                .is_none(),
+            "the ordinary change does not repeat the seat commitment"
+        );
+        let next2 = Holder::new("RA3").record().commitment().unwrap();
+        let second = build_holder_recovery(&v2, "A1n", "A1nn", &next2).unwrap();
+        TwoRecoveries {
+            charter: f.charter,
+            lineage: vec![v0, v1, v2],
+            directory,
+            recovery_a: f.recovery_a,
+            recovery_a2,
+            next2,
+            second,
+        }
+    }
+
+    fn verify_second(
+        t: &TwoRecoveries,
+        lineage: &[Value],
+        key: &Holder,
+    ) -> Result<RecoveryVerdict, LiveQuorumError> {
+        verify_holder_recovery(
+            &t.charter,
+            lineage,
+            &t.second,
+            "A1n",
+            &key.record(),
+            &[sign_env(key, &t.second)],
+            &t.directory,
+        )
+    }
+
+    #[test]
+    fn a_second_recovery_spends_the_first_recoverys_commitment() {
+        let t = two_recoveries();
+        // In force: RA2's commitment from the first recovery, not the charter's.
+        let in_force = recovery_commitment_in_force(&t.charter, &t.lineage, "A1n")
+            .unwrap()
+            .unwrap();
+        assert_eq!(in_force, t.recovery_a2.record().commitment().unwrap());
+        assert_ne!(
+            Some(in_force.as_str()),
+            t.charter[CHARTER_RECOVERY_COMMITMENTS_FIELD]["A1"].as_str()
+        );
+
+        let v = verify_second(&t, &t.lineage, &t.recovery_a2).unwrap();
+        assert_eq!(v.new_signing_key_id, "A1nn");
+        assert_eq!(v.next_commitment, t.next2);
+
+        // The charter's (spent) recovery key is refused.
+        assert_eq!(
+            verify_second(&t, &t.lineage, &t.recovery_a),
+            Err(LiveQuorumError::RecoveryCommitmentMismatch)
+        );
+    }
+
+    #[test]
+    fn a_key_seated_by_an_ordinary_change_reads_the_charter() {
+        let t = two_recoveries();
+        // D1 was seated by the ordinary change at v2: no recovery seated it.
+        let charter = json!({ CHARTER_RECOVERY_COMMITMENTS_FIELD: { "D1": "d".repeat(64) } });
+        assert_eq!(
+            recovery_commitment_in_force(&charter, &t.lineage, "D1").unwrap(),
+            Some("d".repeat(64))
+        );
+        // B1, seated at genesis and never recovered, reads the charter too.
+        assert_eq!(
+            recovery_commitment_in_force(&t.charter, &t.lineage, "B1").unwrap(),
+            t.charter[CHARTER_RECOVERY_COMMITMENTS_FIELD]["B1"]
+                .as_str()
+                .map(str::to_string)
+        );
+    }
+
+    #[test]
+    fn an_incomplete_lineage_fails_closed() {
+        let t = two_recoveries();
+        let lineage_err = |lineage: &[Value]| {
+            assert!(matches!(
+                recovery_commitment_in_force(&t.charter, lineage, "A1n"),
+                Err(LiveQuorumError::LineageIncomplete { .. })
+            ));
+            assert!(matches!(
+                verify_second(&t, lineage, &t.recovery_a2),
+                Err(LiveQuorumError::LineageIncomplete { .. })
+            ));
+            // Never the charter instead.
+            assert!(matches!(
+                verify_second(&t, lineage, &t.recovery_a),
+                Err(LiveQuorumError::LineageIncomplete { .. })
+            ));
+        };
+        // The first recovery is missing: v2 does not name v0.
+        lineage_err(&[t.lineage[0].clone(), t.lineage[2].clone()]);
+        // The lineage starts after genesis.
+        lineage_err(&t.lineage[1..]);
+        // A version (the first recovery) with no predecessor link.
+        let mut unlinked = t.lineage.clone();
+        unlinked[1]
+            .as_object_mut()
+            .unwrap()
+            .remove(PREV_HEAD_DIGEST_FIELD);
+        lineage_err(&unlinked);
+        assert!(matches!(
+            recovery_commitment_in_force(&t.charter, &[], "A1"),
+            Err(LiveQuorumError::LineageIncomplete { index: 0, .. })
+        ));
+    }
+
+    #[test]
+    fn a_recovery_reusing_the_commitment_it_spends_concludes_nothing() {
+        let f = recovery_fixture();
+        let spent = f.recovery_a.record().commitment().unwrap();
+        let rec = build_holder_recovery(&f.standing, "A1", "A1n", &spent).unwrap();
+        let sig = sign_env(&f.recovery_a, &rec);
+        assert_eq!(
+            verify_a(&f, &rec, &f.recovery_a.record(), &[sig]),
+            Err(LiveQuorumError::RecoveryReusesCommitment)
+        );
+    }
+
+    #[test]
+    fn a_recovery_naming_the_seated_key_concludes_nothing() {
+        let f = recovery_fixture();
+        assert_eq!(
+            build_holder_recovery(&f.standing, "A1", "A1", &f.next_commitment),
+            Err(LiveQuorumError::RecoveryReusesSigningKey {
+                key_id: "A1".to_string()
+            })
+        );
+        // Hand-built: only the commitment rotates, the key stays A1.
+        let mut rec = build_holder_recovery(&f.standing, "A1", "A1n", &f.next_commitment).unwrap();
+        rec["members"][0]["key_id"] = json!("A1");
+        let sig = sign_env(&f.recovery_a, &rec);
+        assert_eq!(
+            verify_a(&f, &rec, &f.recovery_a.record(), &[sig]),
+            Err(LiveQuorumError::RecoveryReusesSigningKey {
+                key_id: "A1".to_string()
+            })
+        );
+    }
+
+    #[test]
+    fn a_recovery_must_name_the_standing_version() {
+        let f = recovery_fixture();
+        let mut rec = build_holder_recovery(&f.standing, "A1", "A1n", &f.next_commitment).unwrap();
+        rec[PREV_HEAD_DIGEST_FIELD] = json!("0".repeat(64));
+        let sig = sign_env(&f.recovery_a, &rec);
+        assert!(matches!(
+            verify_a(&f, &rec, &f.recovery_a.record(), &[sig]),
+            Err(LiveQuorumError::RecoveryOutsideOwnSeat { .. })
         ));
     }
 }
