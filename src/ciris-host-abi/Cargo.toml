@@ -1,0 +1,58 @@
+[package]
+name = "ciris-host-abi"
+description = "The ciris:node host ABI (WIT, guest bindings, import-allowlist gate, target-cfg lint) for the CIRIS WASM node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+readme = "README.md"
+include = ["src/**/*", "wit/**/*", "examples/**/*", "tests/**/*", "README.md"]
+
+[features]
+default = []
+# On wasm32, provide getrandom's custom backend wired to
+# `ciris:node/random.fill`, for getrandom 0.2 (`custom` feature) and for
+# getrandom 0.3 / 0.4 (the shared `__getrandom_v03_custom` symbol). The
+# module build MUST also pass `--cfg getrandom_backend="custom"` (README).
+# No effect on native targets, which use the OS.
+getrandom-backend = ["dep:getrandom02", "dep:getrandom04"]
+
+[dependencies]
+# Guest bindings for a CORE module (FSD §4.2). No `async` feature: it is
+# not needed and would compile in the component-model async runtime.
+wit-bindgen = { version = "0.51.0", default-features = false, features = ["macros", "realloc", "std"] }
+zeroize = { workspace = true }
+
+# The only place in a node build that selects on target (FSD §4.1.2).
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+getrandom02 = { package = "getrandom", version = "0.2.17", features = ["custom"], optional = true }
+getrandom04 = { package = "getrandom", version = "0.4.2", optional = true }
+
+# Host-side tools (the gate and the lint); never built into a module.
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+wasmparser = { version = "0.244.0", default-features = false, features = ["std", "validate", "features"] }
+wit-parser = { version = "0.244.0", default-features = false }
+proc-macro2 = { version = "1.0.106", default-features = false, features = ["span-locations"] }
+
+[dev-dependencies]
+wasm-encoder = { version = "0.244.0", default-features = false }
+# The smoke module draws through every getrandom generation in the lock.
+getrandom02 = { package = "getrandom", version = "0.2.17" }
+getrandom03 = { package = "getrandom", version = "0.3.4" }
+getrandom04 = { package = "getrandom", version = "0.4.2" }
+rand_core = { workspace = true, features = ["getrandom"] }
+
+[[bin]]
+name = "ciris-abi-gate"
+path = "src/bin/ciris-abi-gate.rs"
+
+[[bin]]
+name = "ciris-cfg-lint"
+path = "src/bin/ciris-cfg-lint.rs"
+
+[[example]]
+name = "smoke-node"
+path = "examples/smoke_node.rs"
+crate-type = ["cdylib"]

@@ -1,0 +1,382 @@
+// ciris:node — the host interface of the CIRIS WASM node (CIRISServer
+// FSD/WASM_NODE.md §4). This file is NORMATIVE: the node module's import
+// section may name only the `ciris:node/*` interfaces its world imports
+// (§4.1.1), and the import gate (`ciris-abi-gate`) derives its allowlist
+// from this file.
+//
+// Lowering: a CORE wasm module under the canonical ABI, via wit-bindgen
+// (§4.2). Not a component.
+//
+// Conventions that hold across every interface:
+//   * Differences between hosts are runtime answers (`carriers`,
+//     `can-listen`, `durability`, `describe`), never compile-time branches
+//     (§4.1.2).
+//   * No ambient authority (§4.1.3): no paths, environment, sockets or
+//     processes. Storage is a volume the host opened; files are named
+//     inside it.
+//   * Storage is synchronous. Network, seal and timers complete as events
+//     delivered through the node's `on-event` export (§5.1). Every
+//     asynchronous operation takes a `token: u64` chosen by the node, and
+//     the event that reports progress carries that token back.
+//   * Every source of non-determinism is an import, so a run can be
+//     recorded at this boundary and replayed byte for byte (§5.1).
+
+package ciris:node@0.1.0;
+
+/// Types shared by several interfaces. Holds no functions, so it never
+/// appears in a module's import section.
+interface types {
+  /// Failures the host reports. `would-block` is not an error in the
+  /// usual sense: it means "try again after the matching event".
+  enum errno {
+    /// The operation cannot make progress now; wait for its event.
+    would-block,
+    /// The connection, listener or volume is closed.
+    closed,
+    /// The peer or the host refused the operation.
+    refused,
+    /// The named file, key, listener or token does not exist.
+    not-found,
+    /// The volume or the host's quota is full.
+    no-space,
+    /// The host, or the person (a declined gesture), denied it.
+    denied,
+    /// The arguments are malformed or out of range.
+    invalid,
+    /// This host does not offer the capability.
+    unsupported,
+    /// The host's I/O failed.
+    io,
+  }
+
+  /// What the host promises about data written to a volume (§6).
+  enum durability {
+    /// Survives restart and power loss once `sync` returns.
+    persisted,
+    /// Usually survives restart; the host makes no promise.
+    best-effort,
+    /// The host or the user agent may delete it at any time (browser
+    /// storage without persistence granted, §6.5).
+    evictable,
+  }
+
+  /// Host lifecycle transitions, delivered as `event.lifecycle`.
+  enum phase {
+    /// Visible / interactive (browser tab focused, app in front).
+    foreground,
+    /// Running but not interactive; the host may throttle ticks.
+    background,
+    /// The host is about to stop ticking; persist what matters now.
+    suspend,
+    /// Ticking resumes after a suspend. Monotonic time may have jumped.
+    resume,
+    /// The host is stopping the node. No further ticks follow.
+    shutdown,
+  }
+
+  /// Where one half of a hybrid key is used (§8.1(1), §8.2 rows
+  /// "at use").
+  enum at-use {
+    /// The private key never leaves hardware; hardware signs.
+    hardware,
+    /// Unsealed into the separate vault instance (§8.5) and signed there.
+    vault,
+    /// Unsealed into host process memory and signed in software.
+    software,
+  }
+
+  /// How one half of a hybrid key is held when not in use (§8.2 rows
+  /// "at rest").
+  enum at-rest {
+    /// The private key lives in hardware and is never exported.
+    hardware,
+    /// Sealed under a secret that hardware holds (TPM sealed object,
+    /// WebAuthn PRF, platform keystore).
+    sealed,
+    /// Wrapped under a key derived from a separate token's signature
+    /// (`usb_wrapped_mldsa65`: needs the token and the USB medium).
+    wrapped,
+    /// Sealed under a software-derived key; no hardware binding
+    /// (CIRISVerify#325's "software, sealed" floor).
+    software-sealed,
+    /// Not persisted (in-memory only) or held without protection.
+    unprotected,
+  }
+
+  /// What the seal (the at-rest protection) is rooted in (§8.2 row
+  /// "Seal root").
+  enum seal-root {
+    /// A TPM 2.0 sealed object (native TPM).
+    tpm,
+    /// A TPM 2.0 sealed object under a PCR / PolicyAuthorize policy, so
+    /// unsealing also requires the measured code (EFI, §8.4).
+    tpm-measured,
+    /// A deterministic signature by a hardware token, through HKDF
+    /// (YubiKey PIV).
+    token-signature,
+    /// WebAuthn PRF (`hmac-secret`) through HKDF (browser, §8.3).
+    webauthn-prf,
+    /// A platform keystore (Secure Enclave, Android Keystore).
+    platform-keystore,
+    /// A software-derived key; no hardware.
+    software,
+  }
+
+  /// Per-half custody truth for one key (§8.1(1)). A node MUST NOT reduce
+  /// this to one word for a hybrid key.
+  record custody {
+    /// The classical (Ed25519) half, at use.
+    classical-at-use: at-use,
+    /// The classical (Ed25519) half, at rest.
+    classical-at-rest: at-rest,
+    /// The post-quantum (ML-DSA-65) half, at use.
+    pqc-at-use: at-use,
+    /// The post-quantum (ML-DSA-65) half, at rest.
+    pqc-at-rest: at-rest,
+    /// What the at-rest protection is rooted in.
+    seal-root: seal-root,
+    /// The CC `hardware_custody:{platform}` token (the closed 13-token
+    /// vocabulary, `HardwareType::as_platform`) the host measured, or
+    /// none when no registered token applies. Hardware is a signal: the
+    /// host omits rather than over-claims.
+    platform: option<string>,
+  }
+}
+
+interface clock {
+  /// Microseconds since an arbitrary origin. Never goes back. No promise
+  /// that it advances across a suspend.
+  monotonic-us: func() -> u64;
+  /// Unix time in milliseconds, or none until the host has a trusted
+  /// time (an EFI RTC is not trusted without roughtime or peer time).
+  wall-ms: func() -> option<s64>;
+}
+
+interface random {
+  /// Exactly `len` bytes from a CSPRNG. The host traps rather than
+  /// return fewer or weaker bytes; there is no weak fallback.
+  fill: func(len: u32) -> list<u8>;
+}
+
+/// SYNCHRONOUS on every host (§6).
+interface storage {
+  use types.{errno, durability};
+
+  /// A store the host opened for the node. Files are small integers
+  /// returned by `open`, scoped to the volume.
+  resource volume {
+    read: func(file: u32, offset: u64, len: u32) -> result<list<u8>, errno>;
+    write: func(file: u32, offset: u64, data: list<u8>) -> result<_, errno>;
+    sync: func(file: u32) -> result<_, errno>;
+    truncate: func(file: u32, size: u64) -> result<_, errno>;
+    size: func(file: u32) -> result<u64, errno>;
+    open: func(name: string, create: bool) -> result<u32, errno>;
+    delete: func(name: string) -> result<_, errno>;
+    /// Free space, when the host knows it; drives `disk_pressure`.
+    free-bytes: func() -> option<u64>;
+    /// What the host promises about data on this volume. (§4.4 has an
+    /// interface-level `durability: func() -> durability`; WIT refuses a
+    /// function and a type of one name in one interface, so it is a
+    /// method of the volume it describes.)
+    durability: func() -> durability;
+  }
+
+  /// The volume the host opened for this node.
+  primary: func() -> volume;
+}
+
+interface net {
+  use types.{errno};
+
+  enum carrier { tcp, udp, ws, webtransport, webrtc, serial, ble, http-fetch }
+
+  /// How a connection delimits data. Reported per connection, not per
+  /// carrier: a WebSocket dial can negotiate either.
+  enum framing {
+    /// An ordered byte stream; `send` may accept a prefix.
+    %stream,
+    /// Discrete messages; `send` takes a whole message or nothing.
+    message,
+  }
+
+  /// What the host knows about one connection. Fields the host cannot
+  /// know before `connected` read as their empty value until then.
+  record conn-info {
+    carrier: carrier,
+    framing: framing,
+    /// Largest message `send` accepts, for message framing (WebTransport
+    /// datagrams are about 1200 bytes; sets Reticulum `hw_mtu`). None for
+    /// stream framing.
+    max-message: option<u32>,
+    /// Whether delivered data is reliable and ordered.
+    reliable: bool,
+    /// The negotiated WebSocket subprotocol; none means the carrier's
+    /// default (no subprotocol).
+    subprotocol: option<string>,
+    /// On an accepted connection, the subprotocols the client requested,
+    /// in its order. Empty on a dialled connection.
+    peer-subprotocols: list<string>,
+    /// The peer's address as the host reports it, opaque to the node
+    /// (e.g. "203.0.113.7:4242", "[2001:db8::1]:4242", a BLE address).
+    /// None when the host does not know it.
+    peer: option<string>,
+    /// The host's estimate of the link bitrate, bits per second.
+    bitrate-hint: option<u64>,
+  }
+
+  /// Why a connection closed; carried by `event.closed`.
+  enum close-reason {
+    /// The peer closed it.
+    peer-close,
+    /// A transport error closed it.
+    error,
+    /// The host is shutting the node down.
+    host-shutdown,
+  }
+
+  /// The payload of `event.closed`.
+  record close-info {
+    token: u64,
+    reason: close-reason,
+  }
+
+  carriers: func() -> list<carrier>;    // runtime answer, never a cfg
+  can-listen: func(c: carrier) -> bool; // false for all browser carriers (D1)
+
+  /// One connection. Its events carry the token given to `dial` or
+  /// `accept`.
+  resource %stream {
+    info: func() -> conn-info;
+    /// Non-blocking. Stream framing: the number of bytes accepted (a
+    /// prefix, possibly short). Message framing: 1 when the whole message
+    /// was accepted; a message is never split. `would-block` when nothing
+    /// was accepted; `event.writable` follows when it may succeed.
+    /// `invalid` for a message larger than `max-message`.
+    send: func(data: list<u8>) -> result<u32, errno>;
+    /// Non-blocking. Stream framing: up to `max` bytes. Message framing:
+    /// exactly one whole message, and `invalid` if `max` is smaller than
+    /// it. `would-block` when nothing is ready; `event.readable` follows.
+    /// `closed` once the peer has closed and everything was read.
+    recv: func(max: u32) -> result<list<u8>, errno>;
+    close: func();
+  }
+
+  /// Start a connection. `subprotocols` is the ordered WebSocket
+  /// subprotocol offer (e.g. ["rns.hdlc", "rns.raw"]); other carriers
+  /// require it empty. `event.connected(token)` or `event.failed(token)`
+  /// follows.
+  dial: func(c: carrier, target: string, subprotocols: list<string>, token: u64) -> result<%stream, errno>;
+  /// Listen. `subprotocols` is what the node accepts, in preference
+  /// order; the host negotiates and reports the result on `info`.
+  /// `event.readable(token)` means `accept` will return a connection.
+  listen: func(c: carrier, port: u16, subprotocols: list<string>, token: u64) -> result<u32, errno>;
+  /// Take one pending connection, if any. Its events carry `token`.
+  accept: func(listener: u32, token: u64) -> result<option<%stream>, errno>;
+  /// Stop listening.
+  unlisten: func(listener: u32);
+}
+
+/// The hybrid seal (§8).
+///
+/// DELIBERATE DEVIATION from §4.4's context-free `sign-pqc`: every
+/// forward-model signature is the CC 2.6.1.7 composite ML-DSA-65-Ed25519
+/// (CIRISVerify#326, `ciris_crypto::composite`), in which ML-DSA-65 signs
+///   M' = "CompositeAlgorithmSignatures2025" || "COMPSIG-MLDSA65-Ed25519-SHA512"
+///        || 0x00 || SHA-512(msg)
+/// with the label `COMPSIG-MLDSA65-Ed25519-SHA512` as its FIPS 204 context
+/// string, and Ed25519 signs M' as it is. A context-free `sign-pqc` cannot
+/// produce that, so `sign-pqc` takes `ctx`, and `sign-composite` returns
+/// the 3373-byte composite (mldsaSig || ed25519Sig) with the host or vault
+/// computing M' exactly as `ciris_crypto::composite` does.
+///
+/// Also deviating from §4.4: `describe` takes a key id (custody differs
+/// per key on one host), and §4.4's single-word `tier` enum is replaced
+/// by the per-half `custody` record that §8.1(1) requires.
+///
+/// Asynchronous on every host (a passkey may need a gesture, a session
+/// re-wrap needs an async WebCrypto step). Each operation that touches
+/// private material takes a node-chosen `token` and returns at once:
+/// `ok` means accepted, an `err` means it never started. Completion is
+/// `event.sealed(token)`; the node then calls `take(token)` once for the
+/// result.
+interface seal {
+  use types.{errno, custody};
+
+  /// Per-half custody of key `id`. Synchronous; reads no secret.
+  describe: func(id: string) -> result<custody, errno>;
+  /// The 1984-byte composite public key (mldsaPK || ed25519PK) of `id`.
+  /// Synchronous; the host keeps public keys outside the seal.
+  public-key: func(id: string) -> result<list<u8>, errno>;
+  /// Seal `material` (the 64-byte composite private key,
+  /// mldsaSeed || ed25519Seed) under `id`.
+  provision: func(id: string, material: list<u8>, token: u64) -> result<_, errno>;
+  /// Ed25519 over `msg` as it is (64 bytes). Kept for non-composite
+  /// consumers; forward-model signatures use `sign-composite`.
+  sign-classical: func(id: string, msg: list<u8>, token: u64) -> result<_, errno>;
+  /// ML-DSA-65 over `msg` with FIPS 204 context `ctx` (at most 255
+  /// bytes; 3309 bytes out).
+  sign-pqc: func(id: string, ctx: list<u8>, msg: list<u8>, token: u64) -> result<_, errno>;
+  /// The CC 2.6.1.7 composite over `msg` (3373 bytes out).
+  sign-composite: func(id: string, msg: list<u8>, token: u64) -> result<_, errno>;
+  /// The result of the completed operation `token`: the signature, or
+  /// empty for `provision`. `would-block` before `event.sealed(token)`;
+  /// `not-found` for an unknown or already-taken token.
+  take: func(token: u64) -> result<list<u8>, errno>;
+}
+
+interface wake {
+  next-deadline: func(us: u64);         // tick me by then (monotonic-us)
+  keep-alive: func(reason: string, on: bool);  // advisory
+}
+
+interface log {
+  /// `level`: 0 error, 1 warn, 2 info, 3 debug, 4 trace.
+  %record: func(level: u8, target: string, msg: string);
+  metric: func(name: string, value: f64);
+}
+
+world node {
+  import clock; import random; import storage; import net;
+  import seal;  import wake;   import log;
+
+  use types.{phase};
+  use net.{close-info};
+
+  variant event {
+    readable(u64), writable(u64), connected(u64), failed(u64),
+    closed(close-info), sealed(u64), lifecycle(phase), timer,
+  }
+  export init: func() -> result<_, string>;
+  export tick: func(budget-us: u32) -> u64;   // returns next deadline
+  export on-event: func(e: event);
+  export api: func(req: list<u8>, local: bool) -> list<u8>;  // in-process /v1
+}
+
+/// The vault's own interface (§8.5). Synchronous: the host has already
+/// done any gesture or unwrap before calling in. Parses nothing beyond
+/// these arguments.
+interface signer {
+  use types.{errno};
+
+  /// Load the 64-byte composite private key (mldsaSeed || ed25519Seed)
+  /// for `id` into vault memory for one signing burst.
+  install: func(id: string, seed: list<u8>) -> result<_, errno>;
+  /// The 1984-byte composite public key of an installed `id`.
+  public-key: func(id: string) -> result<list<u8>, errno>;
+  sign-classical: func(id: string, msg: list<u8>) -> result<list<u8>, errno>;
+  sign-pqc: func(id: string, ctx: list<u8>, msg: list<u8>) -> result<list<u8>, errno>;
+  sign-composite: func(id: string, msg: list<u8>) -> result<list<u8>, errno>;
+  /// Zeroize `id`'s seeds.
+  forget: func(id: string);
+  /// Zeroize every seed (the idle timer, D10).
+  forget-all: func();
+}
+
+/// The separate vault instance (§8.5): its own fixed-size linear memory,
+/// so seeds never enter the node's. MINIMAL by design: it imports only
+/// `log`. It imports no `random`, because composite signing is
+/// deterministic (FIPS 204 §3.4), and no storage, network or seal.
+world vault {
+  import log;
+  export signer;
+}
