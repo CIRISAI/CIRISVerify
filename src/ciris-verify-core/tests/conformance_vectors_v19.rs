@@ -93,7 +93,7 @@ fn check_merkle(rel: &str) {
         .iter()
         .map(|h| hex::decode(h.as_str().unwrap()).unwrap())
         .collect();
-    let got = hex::encode(compute_merkle_root(&leaves));
+    let got = hex::encode(compute_merkle_root(&leaves).unwrap());
     assert_eq!(got, s(&v, "expected_root_hex"), "merkle vector {rel}");
 }
 
@@ -112,6 +112,26 @@ fn merkle_root_three_leaves_odd_dup() {
 #[test]
 fn merkle_root_lex_sort_invariance() {
     check_merkle("merkle_root/lex_sort_invariance.json");
+}
+/// CC 6.1.1 (CIRISVerify#314): a repeated leaf is refused before hashing.
+/// This refusal row is authored by CIRISVerify, not vendored from Edge.
+#[test]
+fn merkle_root_duplicate_leaf_refused() {
+    let v = vector("merkle_root/duplicate_leaf_refused.json");
+    let leaves: Vec<Vec<u8>> = v["leaves_hex"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|h| hex::decode(h.as_str().unwrap()).unwrap())
+        .collect();
+    let err = compute_merkle_root(&leaves).unwrap_err();
+    assert_eq!(
+        err,
+        ciris_verify_core::substrate::HolonomicError::Invariant {
+            reason: "duplicate_leaf"
+        }
+    );
+    assert_eq!(s(&v, "expected_refusal"), "duplicate_leaf");
 }
 
 // ---- §19.1 WholenessWitness canonical preimage -------------------------

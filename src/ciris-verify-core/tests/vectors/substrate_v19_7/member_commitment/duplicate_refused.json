@@ -1,0 +1,11 @@
+{
+  "description": "CC 6.1.1: the source-id list is sorted AND unique; a repeated member_id is refused before hashing (federation_malformed_row / aggregate_source_duplicate). Without it {a,b,c,c} shares {a,b,c}'s root.",
+  "expected_refusal": "aggregate_source_duplicate",
+  "source_member_ids": [
+    "a",
+    "b",
+    "c",
+    "c"
+  ],
+  "vector_id": "member_commitment/duplicate_refused"
+}

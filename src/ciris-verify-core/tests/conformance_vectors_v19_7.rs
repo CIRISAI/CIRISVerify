@@ -76,7 +76,7 @@ fn emit_member_commitment(rel: &str, members: &[&str]) {
             "vector_id": rel.trim_end_matches(".json"),
             "description": "member_commitment = §19.1 WholenessWitness Merkle over SHA-256(utf8(member_id)), lexicographic.",
             "source_member_ids": members,
-            "expected_commitment_hex": hex::encode(member_commitment(&m)),
+            "expected_commitment_hex": hex::encode(member_commitment(&m).unwrap()),
         }),
     );
 }
@@ -95,6 +95,32 @@ fn member_commitment_three_unsorted() {
     emit_member_commitment("member_commitment/three_unsorted.json", &["m3", "m1", "m2"]);
 }
 
+/// CC 6.1.1 / CC 6.1.2.2 (CIRISVerify#314): a repeated member id is refused
+/// before hashing. Without the refusal `{a,b,c,c}` shares `{a,b,c}`'s root
+/// under odd-node duplication.
+#[test]
+fn member_commitment_duplicate_refused() {
+    use ciris_verify_core::substrate::aggregation::AGGREGATE_SOURCE_DUPLICATE;
+    use ciris_verify_core::substrate::HolonomicError;
+    let members = ["a", "b", "c", "c"];
+    let err = member_commitment(&ids(&members)).unwrap_err();
+    assert_eq!(
+        err,
+        HolonomicError::Invariant {
+            reason: AGGREGATE_SOURCE_DUPLICATE
+        }
+    );
+    emit_or_verify(
+        "member_commitment/duplicate_refused.json",
+        json!({
+            "vector_id": "member_commitment/duplicate_refused",
+            "description": "CC 6.1.1: the source-id list is sorted AND unique; a repeated member_id is refused before hashing (federation_malformed_row / aggregate_source_duplicate). Without it {a,b,c,c} shares {a,b,c}'s root.",
+            "source_member_ids": members,
+            "expected_refusal": AGGREGATE_SOURCE_DUPLICATE,
+        }),
+    );
+}
+
 // ---- §19.7.2 descend order (unordered ids → lexicographic list) ---------
 
 #[test]
@@ -108,11 +134,14 @@ fn descend_order_lexicographic() {
             "description": "descend returns the lexicographic member-id order member_commitment commits to.",
             "input_member_ids": input,
             "expected_ordered_ids": out,
-            "expected_commitment_hex": hex::encode(member_commitment(&out)),
+            "expected_commitment_hex": hex::encode(member_commitment(&out).unwrap()),
         }),
     );
     // Descent-integrity: the ordered list re-derives the commitment.
-    assert_eq!(member_commitment(&out), member_commitment(&ids(&input)));
+    assert_eq!(
+        member_commitment(&out).unwrap(),
+        member_commitment(&ids(&input)).unwrap()
+    );
 }
 
 // ---- §19.7.1 AggregationMetaV1 canonical preimage ----------------------
@@ -127,7 +156,7 @@ fn aggregation_meta_canonical_bytes() {
         tier: 2,
         aggregation_algorithm_id: "raptorq-pyramid-v1".into(),
         source_count: members.len() as u32,
-        member_commitment: member_commitment(&members),
+        member_commitment: member_commitment(&members).unwrap(),
         noise_floor_descriptor: "mean+stddev".into(),
         // v1: n_eff is a neutral, un-signed placeholder — NOT in the v1 preimage,
         // so `expected_canonical_bytes_hex` is byte-identical to the pre-#167 golden.
@@ -167,7 +196,7 @@ fn aggregation_meta_v2_canonical_bytes_with_n_eff() {
         tier: 2,
         aggregation_algorithm_id: "raptorq-pyramid-v1".into(),
         source_count: members.len() as u32,
-        member_commitment: member_commitment(&members),
+        member_commitment: member_commitment(&members).unwrap(),
         noise_floor_descriptor: "mean+stddev".into(),
         // A v2 tier carries a signed effective-source-count in the preimage.
         n_eff: 3,
@@ -216,7 +245,7 @@ fn aggregation_meta_v3_canonical_bytes_multiplicity_and_mass() {
         .zip([1_000_000u64, 500_000, 250_000])
         .collect();
 
-    // CIRISVerify#236 / CC 6.1.2.1.2 (rc3): `n_eff` is **derived from these
+    // CIRISVerify#236 / CC 6.1.2.3: `n_eff` is **derived from these
     // masses**, never authored. The pre-#236 vector hardcoded `n_eff: 3` beside
     // an independent mass literal, so the published fixture asserted a value its
     // own masses do not produce — inverse-Simpson of (1.0, 0.5, 0.25) is 2.33,
@@ -225,8 +254,8 @@ fn aggregation_meta_v3_canonical_bytes_multiplicity_and_mass() {
     //
     // Deriving it here is the fix at the source: there is now ONE mass literal,
     // and every mass-dependent field descends from it.
-    let mass_f64: Vec<f64> = masses.iter().map(|(_, v)| *v as f64).collect();
-    let derived_n_eff = effective_source_count(&mass_f64);
+    let committed: Vec<u64> = masses.iter().map(|(_, v)| *v).collect();
+    let derived_n_eff = effective_source_count(&committed).unwrap();
 
     let m = AggregationMetaV1 {
         version: 3,
@@ -235,11 +264,11 @@ fn aggregation_meta_v3_canonical_bytes_multiplicity_and_mass() {
         tier: 2,
         aggregation_algorithm_id: "raptorq-pyramid-v1".into(),
         source_count: member_ids.len() as u32,
-        member_commitment: member_commitment(&member_ids),
+        member_commitment: member_commitment(&member_ids).unwrap(),
         noise_floor_descriptor: "mean+stddev".into(),
         n_eff: derived_n_eff,
         max_source_multiplicity: 1,
-        mass_commitment: mass_commitment(&masses),
+        mass_commitment: mass_commitment(&masses).unwrap(),
     };
     // v3 = v2 layout + u32(max_source_multiplicity) + mass_commitment[32] = +36 bytes.
     let mut v2 = m.clone();
@@ -297,11 +326,10 @@ fn aggregation_meta_v3_vector_is_internally_reproducible() {
     let published_n_eff = v["n_eff"].as_u64().unwrap() as u32;
 
     // 1. n_eff derives from the published masses.
-    let mass_f64: Vec<f64> = published_masses.iter().map(|m| *m as f64).collect();
     assert_eq!(
-        effective_source_count(&mass_f64),
+        effective_source_count(&published_masses).unwrap(),
         published_n_eff,
-        "n_eff must be DERIVED from the published masses, never authored          (CC 6.1.2.1.2 rc3 makes it derivable; #236)"
+        "n_eff must be DERIVED from the published masses, never authored (CC 6.1.2.3; #236)"
     );
 
     // 2. mass_commitment derives from the published (member_id, mass) pairs.
@@ -316,9 +344,65 @@ fn aggregation_meta_v3_vector_is_internally_reproducible() {
         .zip(published_masses.iter().copied())
         .collect();
     assert_eq!(
-        hex::encode(mass_commitment(&pairs)),
+        hex::encode(mass_commitment(&pairs).unwrap()),
         v["mass_commitment_hex"].as_str().unwrap(),
         "mass_commitment must derive from the published members + masses"
+    );
+}
+
+// ---- CC 6.1.2.3 integer mass_to_fixed + n_eff (CIRISVerify#317) --------
+
+/// CC 6.1.2.3: `mass_to_fixed(w, W) = (2·w·10⁶ + W) div (2·W)` (nearest, ties
+/// up; `w = 0` or `W = 0` commits as 0) and `n_eff = floor((Σm)²/Σm²)` over the
+/// committed masses. The fold rows carry content masses `w`, the committed
+/// `m`, and the `n_eff` derived from `m`; the `(2, 1)` fold is the case where
+/// the old f64 round-to-nearest (1.8 → 2) and the integer floor (→ 1) differ.
+#[test]
+fn mass_to_fixed_and_n_eff_integer_rule() {
+    use ciris_verify_core::substrate::aggregation::{effective_source_count, mass_to_fixed};
+    let cases: Vec<Value> = [
+        (1u64, 1u64, "whole fold"),
+        (1, 3, "one third rounds down"),
+        (2, 3, "two thirds rounds up"),
+        (1, 2_000_000, "exact tie 0.5 rounds up"),
+        (3, 2_000_000, "exact tie 1.5 rounds up"),
+        (1, 2_000_001, "just below the tie rounds down"),
+        (0, 5, "w = 0 commits as 0"),
+        (0, 0, "W = 0 commits as 0"),
+    ]
+    .iter()
+    .map(|&(w, total, note)| {
+        json!({ "w": w, "W": total, "expected_mass_fixed": mass_to_fixed(w, total), "note": note })
+    })
+    .collect();
+    let folds: Vec<Value> = [
+        (vec![2u64, 1], "floor differs from round: 1.8 -> 1"),
+        (vec![5, 5, 5, 5], "balanced fold: n_eff == N"),
+        (vec![1, 1, 1_999_998], "tie members commit as 1"),
+        (vec![], "empty fold: n_eff = 0"),
+        (vec![0, 0, 0], "all-zero fold: n_eff = 0"),
+    ]
+    .iter()
+    .map(|(w, note)| {
+        let total: u64 = w.iter().sum();
+        let m: Vec<u64> = w.iter().map(|&wi| mass_to_fixed(wi, total)).collect();
+        json!({
+            "content_masses": w,
+            "W": total,
+            "member_masses_fixed": m,
+            "expected_n_eff": effective_source_count(&m).unwrap(),
+            "note": note,
+        })
+    })
+    .collect();
+    emit_or_verify(
+        "aggregation_meta/mass_to_fixed_n_eff.json",
+        json!({
+            "vector_id": "aggregation_meta/mass_to_fixed_n_eff",
+            "description": "CC 6.1.2.3 integer rule: mass_to_fixed(w, W) = (2*w*10^6 + W) div (2*W) as u64, nearest with ties up, 0 when w = 0 or W = 0; n_eff = floor((sum m)^2 / sum m^2) over committed m > 0, 0 for an empty or all-zero fold.",
+            "mass_to_fixed": cases,
+            "folds": folds,
+        }),
     );
 }
 
