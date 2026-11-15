@@ -2206,6 +2206,26 @@ mod tests {
     }
 
     #[test]
+    fn a_one_member_roster_acts_on_its_own_strict_majority() {
+        // Eric 2026-11-15: the strict majority of the standing roster is the
+        // whole rule; no two-member minimum. A one-member roster's 1 yes of 1
+        // carries a change, here growing it back to two.
+        let (hs, dir) = holders(&["A1", "B1"]);
+        let standing = family(&["A1"]);
+        let change = adding(&["B1"]);
+        let prop = roster_proposal(&standing, &change);
+        let v = verify_change(&prop, &yes_from(&hs[..1], &prop), &standing, &change, &dir).unwrap();
+        assert!(v.authorized);
+        assert_eq!(v.standing_count, 1);
+        assert!(roster_change_carries(1, 1));
+        assert_eq!(crate::accord_genesis::strict_majority(1), 1);
+        assert_eq!(
+            crate::humanity_accord::InvocationKind::LifecycleActive.required_signatures(1),
+            Some(1)
+        );
+    }
+
+    #[test]
     fn roster_anchor_and_payload_must_bind() {
         let (hs, dir) = holders(&["A1", "B1", "C1", "D1"]);
         let standing = family(&["A1", "B1", "C1"]);

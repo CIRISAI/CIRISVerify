@@ -39,15 +39,6 @@ pub const STREAM_ID_LEN: usize = 32;
 /// AES-GCM nonce width (96-bit / 12 bytes).
 pub const AV_NONCE_LEN: usize = 12;
 
-/// Inner-seal nonce domain separator of the **retired** A/V inner nonce.
-///
-/// Kept so a historical artifact is recognisable; nothing seals with it. The
-/// inner seal is the CC 5.3.3.1 STREAM nonce ([`av_inner_nonce`]).
-#[deprecated(
-    since = "20.0.0",
-    note = "the A/V inner seal is the CC 5.3.3.1 STREAM nonce (CIRISConstitution#140); use av_inner_nonce"
-)]
-pub const AV_INNER_DOMAIN: &[u8] = b"CIRIS-AV-INNER-V1";
 /// Outer-seal (per-RNS-Link transit) nonce domain separator.
 pub const AV_OUTER_DOMAIN: &[u8] = b"CIRIS-AV-OUTER-V1";
 
@@ -122,31 +113,6 @@ fn sha256_12(parts: &[&[u8]]) -> [u8; AV_NONCE_LEN] {
     let mut out = [0u8; AV_NONCE_LEN];
     out.copy_from_slice(&full[..AV_NONCE_LEN]);
     out
-}
-
-/// The **retired** A/V inner nonce:
-/// `SHA-256( b"CIRIS-AV-INNER-V1" ‖ stream_id[32] ‖ epoch_be8 ‖ chunk_seq_be8 )[0..12]`.
-///
-/// The realtime inner seal is the CC 5.3.3.1 STREAM nonce, one seal for live
-/// and stored streams; use [`av_inner_nonce`]. This construction is retained
-/// only so an existing artifact can be identified, never to seal.
-#[deprecated(
-    since = "20.0.0",
-    note = "the A/V inner seal is the CC 5.3.3.1 STREAM nonce (CIRISConstitution#140); use av_inner_nonce"
-)]
-#[must_use]
-#[allow(deprecated)]
-pub fn inner_nonce(
-    stream_id: &[u8; STREAM_ID_LEN],
-    epoch: u64,
-    chunk_seq: u64,
-) -> [u8; AV_NONCE_LEN] {
-    sha256_12(&[
-        AV_INNER_DOMAIN,
-        stream_id,
-        &epoch.to_be_bytes(),
-        &chunk_seq.to_be_bytes(),
-    ])
 }
 
 /// The STREAM `stream_id` of an A/V stream: `av-` followed by the lowercase
@@ -239,23 +205,6 @@ mod tests {
             "the bare-hex spelling is not the stream id"
         );
         assert_eq!(av_inner_nonce(&dek, &sid, 1, 0, true).unwrap()[11], 0x01);
-    }
-
-    /// The KAT inverted: the retired construction must not be what seals.
-    #[test]
-    #[allow(deprecated)]
-    fn the_retired_inner_nonce_is_not_the_seal() {
-        let sid = [0x11u8; 32];
-        let retired = inner_nonce(&sid, 1, 0);
-        let mut h = Sha256::new();
-        h.update(b"CIRIS-AV-INNER-V1");
-        h.update(sid);
-        h.update(1u64.to_be_bytes());
-        h.update(0u64.to_be_bytes());
-        assert_eq!(&retired[..], &h.finalize()[..12], "still identifiable");
-        for dek in [[0x42u8; 32], [0u8; 32]] {
-            assert_ne!(av_inner_nonce(&dek, &sid, 1, 0, false).unwrap(), retired);
-        }
     }
 
     #[test]
