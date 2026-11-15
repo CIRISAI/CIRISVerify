@@ -834,7 +834,7 @@ async fn run_source_check(hosts: Vec<String>, timeout_secs: u64, json: bool) {
         println!("  Timeout: {}s\n", timeout_secs);
     }
 
-    let validator = TrustRootValidator::new(hosts, Duration::from_secs(timeout_secs), None);
+    let validator = TrustRootValidator::new(hosts, Duration::from_secs(timeout_secs));
     let result = validator.validate_trust_root().await;
 
     if json {
@@ -956,93 +956,94 @@ async fn run_self_check(registry_url: &str, project: &str, json: bool) {
             } else {
                 println!("\x1b[31m[ERROR]\x1b[0m Registry client error: {}", e);
                 println!();
-                println!("IMPORTANT: Binary self-verification requires the registry to");
-                println!("implement: GET /v1/verify/binary-manifest/{{version}}");
+                println!("IMPORTANT: Binary self-verification reads the signed build claim");
+                println!("from: GET /v1/builds/{{version}}?target={{target}}");
                 println!();
                 println!("TRUST BOUNDARY NOTE:");
-                println!("  Self-verification protects against tampered binaries but NOT");
-                println!("  against a compromised registry. Initial provisioning via a");
-                println!("  trusted distribution channel (Google Play, Apple App Store,");
-                println!("  PyPI, package managers) is crucial for establishing the");
-                println!("  initial trust chain.");
+                println!("  The build claim is signed by the pipeline and blessed by the");
+                println!("  accord holders baked into this binary, so a registry can withhold");
+                println!("  it but not forge it. A binary that was itself replaced can lie");
+                println!("  about everything: install from a trusted distribution channel.");
             }
             return;
         },
     };
 
-    match client.get_binary_manifest(project, VERSION).await {
-        Ok(manifest) => match manifest.binaries.get(target) {
-            Some(expected_hash) => {
-                let expected = expected_hash
-                    .strip_prefix("sha256:")
-                    .unwrap_or(expected_hash);
+    match client.get_signed_build(project, VERSION, target).await {
+        Ok(claim) => {
+            match ciris_verify_core::signed_build::verify_signed_build_baked(&claim, target) {
+                Ok(verified) => {
+                    let expected = verified.binary_hash.clone();
+                    let matches =
+                        ciris_verify_core::signed_build::binary_hash_matches(&verified, &self_hash);
 
-                let matches = self_hash.eq_ignore_ascii_case(expected);
-
-                if json {
-                    let output = serde_json::json!({
-                        "status": if matches { "pass" } else { "fail" },
-                        "target": target,
-                        "version": VERSION,
-                        "actual_hash": self_hash,
-                        "expected_hash": expected,
-                        "matches": matches
-                    });
-                    println!("{}", serde_json::to_string_pretty(&output).unwrap());
-                } else if matches {
-                    println!("\x1b[32m[PASS]\x1b[0m Binary hash matches registry");
-                    println!();
-                    println!("Hash matches the registry manifest for this version/platform.");
-                    println!("This suggests (but does not guarantee) the binary is unmodified.");
-                } else {
-                    println!("\x1b[31m[FAIL]\x1b[0m Inspection station NOT certified!");
-                    println!();
-                    println!("  Expected: {}", expected);
-                    println!("  Actual:   {}", self_hash);
-                    println!();
-                    println!("WARNING: This binary may have been tampered with.");
-                    println!("All inspection results from this station are SUSPECT.");
-                }
-            },
-            None => {
-                if json {
-                    println!(
-                        r#"{{"status":"error","message":"No hash for target '{}' in manifest"}}"#,
-                        target
-                    );
-                } else {
-                    println!(
-                        "\x1b[33m[WARN]\x1b[0m No binary hash for target '{}' in manifest",
-                        target
-                    );
-                    println!();
-                    println!("Available targets in manifest:");
-                    for t in manifest.binaries.keys() {
-                        println!("  - {}", t);
+                    if json {
+                        let output = serde_json::json!({
+                            "status": if matches { "pass" } else { "fail" },
+                            "target": target,
+                            "version": VERSION,
+                            "actual_hash": self_hash,
+                            "expected_hash": expected,
+                            "matches": matches,
+                            "build_manifest_hash": verified.manifest_hash,
+                            "build_manifest_ref": verified.attestation_id,
+                        });
+                        println!("{}", serde_json::to_string_pretty(&output).unwrap());
+                    } else if matches {
+                        println!(
+                            "\x1b[32m[PASS]\x1b[0m Binary hash matches the signed build claim"
+                        );
+                        println!();
+                        println!("The pipeline-signed manifest Contribution for this version and");
+                        println!("platform verified, and names this binary's hash.");
+                        println!("  Manifest: {}", verified.manifest_hash);
+                        println!("  Row:      {}", verified.attestation_id);
+                    } else {
+                        println!("\x1b[31m[FAIL]\x1b[0m Inspection station NOT certified!");
+                        println!();
+                        println!("  Expected: {}", expected);
+                        println!("  Actual:   {}", self_hash);
+                        println!();
+                        println!("WARNING: This binary may have been tampered with.");
+                        println!("All inspection results from this station are SUSPECT.");
                     }
-                }
-            },
+                },
+                Err(_) => {
+                    if json {
+                        println!(
+                            r#"{{"status":"error","message":"No verified build claim for target '{}'"}}"#,
+                            target
+                        );
+                    } else {
+                        println!(
+                            "\x1b[31m[FAIL]\x1b[0m No verified build claim for target '{}'",
+                            target
+                        );
+                    }
+                },
+            }
         },
         Err(e) => {
             if json {
                 println!(r#"{{"status":"error","message":"{}"}}"#, e);
             } else {
                 println!(
-                    "\x1b[33m[WARN]\x1b[0m Could not fetch binary manifest: {}",
+                    "\x1b[33m[WARN]\x1b[0m Could not fetch the signed build claim: {}",
                     e
                 );
                 println!();
-                println!("The registry may not have implemented the binary manifest route yet.");
-                println!("Route required: GET /v1/verify/binary-manifest/{}", VERSION);
+                println!("The registry may not serve the signed build claim for this version.");
+                println!(
+                    "Route required: GET /v1/builds/{}?target={}",
+                    VERSION, target
+                );
                 println!();
                 println!("Your binary hash (for manual verification):");
                 println!("  {}", self_hash);
                 println!();
                 println!("TRUST BOUNDARY NOTE:");
-                println!("  Binary self-verification does NOT protect against a compromised");
-                println!("  registry (an attacker could update both binary and manifest).");
-                println!("  The Level 3 multi-source cross-validation (2/3 agreement across");
-                println!("  geographically distributed sources) mitigates registry compromise.");
+                println!("  The build claim is pipeline-signed and accord-blessed, so a");
+                println!("  registry can withhold it but not forge it.");
                 println!();
                 println!("  Initial provisioning via a trusted distribution channel is crucial:");
                 println!("  - Android: Google Play Store");
@@ -1668,8 +1669,13 @@ async fn run_list_manifests(version: &str, registry_url: &str, project: &str, js
     let target = current_target();
 
     // Check binary manifest
-    let binary_status = match client.get_binary_manifest(project, version).await {
-        Ok(m) => format!("Available ({} targets)", m.binaries.len()),
+    let binary_status = match client.get_signed_build(project, version, target).await {
+        Ok(claim) => {
+            match ciris_verify_core::signed_build::verify_signed_build_baked(&claim, target) {
+                Ok(_) => "Available (signed claim verifies)".to_string(),
+                Err(_) => "Served, but does not verify".to_string(),
+            }
+        },
         Err(_) => "Not found".to_string(),
     };
 
@@ -1726,7 +1732,7 @@ async fn run_list_manifests(version: &str, registry_url: &str, project: &str, js
 
         println!();
         println!("Registry Routes:");
-        println!("  Binary:   GET /v1/verify/binary-manifest/{}", version);
+        println!("  Binary:   GET /v1/builds/{}?target={}", version, target);
         println!("  File:     GET /v1/builds/{}", version);
         println!(
             "  Function: GET /v1/verify/function-manifest/{}/{}",

@@ -73,7 +73,7 @@ unsafe fn emit_bytes(bytes: &[u8], result_out: *mut *mut u8, result_len_out: *mu
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct BlessingIn {
+pub(crate) struct BlessingIn {
     pipeline_key_id: String,
     /// `delegation` | `family_quorum` (persist's capability walk) |
     /// `accord_role` (persist's `is_infra_attest_effective`).
@@ -90,7 +90,7 @@ impl BlessingIn {
     /// Fail-closed: an unknown standing, or a grant field present where it
     /// cannot apply (or absent where it must), is a malformed request rather
     /// than a guessed blessing.
-    fn into_blessing(self) -> Option<PipelineBlessing> {
+    pub(crate) fn into_blessing(self) -> Option<PipelineBlessing> {
         let plane = match self.standing.as_str() {
             "delegation" => Some(WalkPlane::Delegation),
             "family_quorum" => Some(WalkPlane::FamilyQuorum),
@@ -124,7 +124,7 @@ struct ManifestRequest {
 
 /// The verified facts — every member of [`VerifiedManifest`], by name.
 #[derive(Serialize)]
-struct Facts {
+pub(crate) struct Facts {
     attested_by: String,
     standing: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]

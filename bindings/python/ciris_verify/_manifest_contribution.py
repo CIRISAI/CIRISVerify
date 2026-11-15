@@ -19,6 +19,13 @@ function checks only that the blessing names the pipeline that signed.
 
 **Fail-closed:** a rejection is a successful call returning ``verified: False``
 with a ``reason``, never an exception. Only a malformed request raises.
+
+23.0.0 adds the signed build claim verifier and the presenter path
+(CIRISVerify#315): :func:`verify_signed_build` (Contribution + pipeline key
+record + manifest bytes, standing checked against the accord roster baked into
+the library), and :func:`build_attestation_bundle_envelope` /
+:func:`assemble_build_attestation_bundle` / :func:`verify_build_attestation_bundle`
+for an occurrence presenting the build it runs.
 """
 
 from __future__ import annotations
@@ -30,7 +37,21 @@ import threading as _threading
 from pathlib import Path
 from typing import Any, Optional
 
-__all__ = ["verify_build_manifest_contribution"]
+__all__ = [
+    "verify_build_manifest_contribution",
+    "verify_signed_build",
+    "build_attestation_bundle_envelope",
+    "assemble_build_attestation_bundle",
+    "verify_build_attestation_bundle",
+]
+
+_SYMBOLS = (
+    "ciris_verify_build_manifest_contribution",
+    "ciris_verify_signed_build_verify",
+    "ciris_verify_build_attestation_bundle_envelope",
+    "ciris_verify_build_attestation_bundle_assemble",
+    "ciris_verify_build_attestation_bundle_verify",
+)
 
 _lib: Optional[ctypes.CDLL] = None
 _lib_lock = _threading.Lock()
@@ -78,7 +99,8 @@ def _load_lib() -> ctypes.CDLL:
                 continue
             try:
                 lib = ctypes.CDLL(path)
-                _wire(lib.ciris_verify_build_manifest_contribution)
+                for symbol in _SYMBOLS:
+                    _wire(getattr(lib, symbol))
             except (OSError, AttributeError) as exc:
                 last_err = exc
                 continue
@@ -89,7 +111,7 @@ def _load_lib() -> ctypes.CDLL:
     raise RuntimeError(
         "manifest-contribution FFI symbol not available — could not load the "
         f"CIRISVerify shared library (last error: {last_err}). The library "
-        "must be built with the wheel (>= v6.2.0)."
+        "must be built with the wheel (>= v23.0.0)."
     )
 
 
@@ -160,3 +182,120 @@ def verify_build_manifest_contribution(
             "blessing": blessing,
         },
     )
+
+
+def verify_signed_build(signed_build: dict, target: str) -> dict:
+    """Verify a pipeline-signed build claim for ``target`` (CC 3.1.2.1).
+
+    Args:
+        signed_build: ``{"contribution": {"signed_envelope", "ed25519_signature_base64",
+            "mldsa65_signature_base64"}, "pipeline_record": {...KeyRecord...},
+            "manifest_base64": "..."}``. The pipeline's standing is its key
+            record's accord co-scrub, checked against the roster baked into
+            the library (strict majority, hybrid, ``roles: ["infra:attest"]``).
+        target: the target the build must be for.
+
+    Returns:
+        ``{"verified": True, "attestation_id", "manifest_hash", "binary_hash",
+        "target", ...}`` (the members :func:`verify_build_manifest_contribution`
+        returns), or ``{"verified": False, "reason": "..."}``. ``manifest_hash``
+        and ``attestation_id`` are the ``build_manifest_hash`` /
+        ``build_manifest_ref`` an occurrence row carries (CC 3.3.6).
+    """
+    return _call(
+        "ciris_verify_signed_build_verify",
+        {"signed_build": signed_build, "target": target},
+    )
+
+
+def build_attestation_bundle_envelope(
+    presents: str,
+    presenter_key_id: str,
+    manifest_contribution: Any,
+    inclusion_proof: Optional[dict] = None,
+    asserted_at: Optional[str] = None,
+) -> dict:
+    """The presenter's unsigned build-attestation envelope (CIRISVerify#315).
+
+    Args:
+        presents: ``"attestation:self_verify"`` or ``"attestation:agent_integrity"``.
+        presenter_key_id: the presenting occurrence's federation key_id.
+        manifest_contribution: the pipeline's ``build_manifest_contribution``
+            object for the build the presenter runs.
+        inclusion_proof: optional RFC 6962 inclusion proof for the manifest.
+        asserted_at: RFC 3339; defaults to now.
+
+    Returns:
+        ``{"envelope": {...}, "signing_bytes_base64": "..."}``. Sign the bytes
+        bound-hybrid (Ed25519, then ML-DSA-65 over ``bytes || ed25519_sig``)
+        with the presenter's key and pass the result to
+        :func:`assemble_build_attestation_bundle`.
+    """
+    req: dict = {
+        "presents": presents,
+        "presenter_key_id": presenter_key_id,
+        "manifest_contribution": manifest_contribution,
+    }
+    if inclusion_proof is not None:
+        req["inclusion_proof"] = inclusion_proof
+    if asserted_at is not None:
+        req["asserted_at"] = asserted_at
+    return _call("ciris_verify_build_attestation_bundle_envelope", req)
+
+
+def assemble_build_attestation_bundle(
+    envelope: dict,
+    ed25519_signature_base64: str,
+    mldsa65_signature_base64: str,
+    manifest_contribution: Any,
+    inclusion_proof: Optional[dict] = None,
+) -> dict:
+    """Attach the evidence to a presenter-signed envelope.
+
+    Returns the ``build_attestation_bundle`` object. Nothing is verified here;
+    :func:`verify_build_attestation_bundle` is the check.
+    """
+    req: dict = {
+        "signed": {
+            "signed_envelope": envelope,
+            "ed25519_signature_base64": ed25519_signature_base64,
+            "mldsa65_signature_base64": mldsa65_signature_base64,
+        },
+        "manifest_contribution": manifest_contribution,
+    }
+    if inclusion_proof is not None:
+        req["inclusion_proof"] = inclusion_proof
+    return _call("ciris_verify_build_attestation_bundle_assemble", req)
+
+
+def verify_build_attestation_bundle(
+    bundle: Any,
+    presenter_member: dict,
+    pipeline_member: Optional[dict] = None,
+    blessing: Optional[dict] = None,
+    pipeline_record: Optional[dict] = None,
+    attester: Optional[str] = None,
+) -> dict:
+    """Verify a build-attestation bundle and return the verified build.
+
+    Standing comes from EITHER ``pipeline_member`` + ``blessing`` (your
+    directory's answer, as for :func:`verify_build_manifest_contribution`) OR
+    ``pipeline_record`` (the pipeline's key record, whose accord co-scrub is
+    checked against the baked roster). Passing both, or neither, raises
+    ValueError.
+
+    Returns:
+        ``{"verified": True, "presenter_key_id", "presents", "transparency",
+        "build": {"manifest_hash", "attestation_id", ...},
+        "attestation_entries": [...]}`` or ``{"verified": False, "reason"}``.
+    """
+    req: dict = {"bundle": bundle, "presenter_member": presenter_member}
+    if pipeline_member is not None:
+        req["pipeline_member"] = pipeline_member
+    if blessing is not None:
+        req["blessing"] = blessing
+    if pipeline_record is not None:
+        req["pipeline_record"] = pipeline_record
+    if attester is not None:
+        req["attester"] = attester
+    return _call("ciris_verify_build_attestation_bundle_verify", req)

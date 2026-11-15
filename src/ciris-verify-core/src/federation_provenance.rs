@@ -496,6 +496,16 @@ pub struct AttestationEntry {
     /// consumer trace the attestation back to its origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
+    /// Blob digests the attestation cites (CC 3.1.2.1): for a build
+    /// attestation, the manifest blob's SHA-256, lowercase hex. Omitted when
+    /// empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<String>,
+    /// The row this attestation cites (CC 3.1.2.1): for a build attestation,
+    /// the `attestation_id` of the `provenance:build_manifest:{target}`
+    /// Contribution it checked against. Omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub references_attestation_id: Option<String>,
 }
 
 /// Score sentinels — semantic constants for the three legitimate
@@ -523,6 +533,8 @@ impl AttestationEntry {
             score,
             attester: attester.into(),
             source_ref: None,
+            evidence_refs: Vec::new(),
+            references_attestation_id: None,
         }
     }
 
@@ -560,6 +572,20 @@ impl AttestationEntry {
     #[must_use]
     pub fn with_source_ref(mut self, source_ref: impl Into<String>) -> Self {
         self.source_ref = Some(source_ref.into());
+        self
+    }
+
+    /// Name the build this attestation checked: the manifest blob's digest in
+    /// `evidence_refs` and the manifest Contribution's row in
+    /// `references_attestation_id` (CC 3.1.2.1, CC 3.3.6).
+    #[must_use]
+    pub fn citing_build(
+        mut self,
+        manifest_hash: impl Into<String>,
+        manifest_attestation_id: impl Into<String>,
+    ) -> Self {
+        self.evidence_refs = vec![manifest_hash.into()];
+        self.references_attestation_id = Some(manifest_attestation_id.into());
         self
     }
 

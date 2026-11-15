@@ -23,8 +23,8 @@ CIRISVerify faces the same challenge. Before it can verify agent software, licen
 ## How It Works (Simple Version)
 
 1. **Hash Yourself**: CIRISVerify computes a SHA-256 fingerprint of its own binary
-2. **Check the Manifest**: Fetches the official fingerprint from the registry
-3. **Compare**: If they match, the binary is authentic
+2. **Check the Signed Claim**: Fetches the pipeline-signed build Contribution for this version and target (`GET /v1/builds/{version}?target=`) and the manifest bytes it cites (`GET /v1/builds/manifest/{hash}`), and verifies both (23.0.0; `signed_build::verify_signed_build`). The pipeline counts only if a strict majority of the baked accord roster co-scrubbed `infra:attest` onto its key record. The unsigned `/v1/verify/binary-manifest` JSON and the code samples below that read it are no longer used.
+3. **Compare**: If the running hash equals the signed `binary_hash`, the binary is authentic
 
 The challenge? Finding "yourself" when you're a shared library loaded into another process.
 

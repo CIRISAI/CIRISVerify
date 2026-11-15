@@ -774,7 +774,7 @@ class WiseBus:
 | Rollback to an older trust root | Highest verified version is selected |
 | Replay of a revoked object | Quorum-signed `federation_revocations` rows |
 | Emulator/debugger interception | Platform integrity checks |
-| Binary modification | Self-integrity verification |
+| Binary modification | Self-integrity verification against the pipeline-signed, accord-blessed build claim (CC 3.1.2.1) |
 | Key extraction from binary | Keys stored in hardware, never in binary |
 
 ### Security Assumptions
@@ -831,10 +831,20 @@ This binding ensures an attacker cannot strip one signature while preserving the
 
 #### 3. Transport Security
 
-TLS protects availability and privacy of the bundle fetch, not its authority: a
-bundle is accepted only if it verifies against the baked accord holders, so a host
-presenting a different certificate can at most withhold a root. `VerifyConfig.cert_pin`
-accepts a `sha256:` certificate fingerprint for a host.
+TLS protects availability and privacy of a fetch, not its authority. No
+certificate is pinned; TLS verifies against the bundled web-PKI roots. Authority
+rides on content signatures only:
+
+- a GenesisBundle is accepted only if it verifies against the baked accord holders
+  (§5);
+- Level 1 accepts a build only through its pipeline-signed
+  `provenance:build_manifest:{target}:v1` Contribution (CC 3.1.2.1), whose pipeline
+  key record a strict majority of the baked accord roster co-scrubbed with
+  `roles: ["infra:attest"]` (CC 4.2.1), and whose manifest blob matches the signed
+  `manifest_size` and then `manifest_hash`.
+
+So a host presenting a different certificate can withhold an object but not forge
+one.
 
 #### 4. Constant-Time Cryptographic Operations
 

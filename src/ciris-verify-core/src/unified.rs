@@ -19,12 +19,13 @@ use tracing::{debug, error, info, instrument, warn};
 use crate::audit::{AuditEntry, AuditVerificationResult, AuditVerifier};
 use crate::config::VerifyConfig;
 use crate::error::VerifyError;
+use crate::manifest_contribution::VerifiedManifest;
 use crate::registry::{
-    compute_self_hash, current_target, BinaryManifest, BuildRecord, ResilientRegistryClient,
-    FALLBACK_REGISTRY_URLS,
+    compute_self_hash, current_target, BuildRecord, ResilientRegistryClient, FALLBACK_REGISTRY_URLS,
 };
 use crate::security::file_integrity::{self, FileIntegrityResult};
 use crate::security::function_integrity::{self, FunctionManifest};
+use crate::signed_build::SignedBuild;
 use crate::validation::{TrustRootValidator, ValidationResult};
 
 // =============================================================================
@@ -34,9 +35,12 @@ use crate::validation::{TrustRootValidator, ValidationResult};
 
 /// Cached manifests from a previous successful registry fetch.
 struct ManifestCache {
-    binary: Option<BinaryManifest>,
+    /// The signed L1 build claim. Re-verified on every use, cached or not.
+    binary: Option<SignedBuild>,
     function: Option<FunctionManifest>,
-    build: Option<BuildRecord>,
+    /// The agent build record, and the signed build it was found to be
+    /// (`None` when no verified Contribution names it).
+    build: Option<(BuildRecord, Option<VerifiedManifest>)>,
     /// Baseline integrity snapshot from first successful attestation.
     /// Used to detect degradation: if a check was passing and now fails,
     /// something was tampered with (not a network issue).
@@ -186,8 +190,16 @@ pub struct SelfVerificationResult {
     pub target: String,
     /// Computed binary hash (SHA-256).
     pub binary_hash: String,
-    /// Expected binary hash from registry.
+    /// Expected binary hash, from the verified signed build claim.
     pub expected_hash: Option<String>,
+    /// SHA-256 of the manifest blob of the verified build claim (CC 3.3.6
+    /// `build_manifest_hash`). `None` when no claim verified.
+    #[serde(default)]
+    pub build_manifest_hash: Option<String>,
+    /// `attestation_id` of the verified `provenance:build_manifest:{target}`
+    /// row (CC 3.3.6 `build_manifest_ref`). `None` when no claim verified.
+    #[serde(default)]
+    pub build_manifest_ref: Option<String>,
     /// Number of functions verified.
     pub functions_checked: usize,
     /// Number of functions passed.
@@ -388,6 +400,13 @@ pub struct ModuleIntegrityResult {
     pub summary: ModuleIntegritySummary,
     /// Registry manifest version.
     pub manifest_version: Option<String>,
+    /// SHA-256 of the manifest blob the checked file map is, when a verified
+    /// pipeline-signed Contribution names it (CIRISVerify#315).
+    #[serde(default)]
+    pub build_manifest_hash: Option<String>,
+    /// `attestation_id` of that `provenance:build_manifest:{target}` row.
+    #[serde(default)]
+    pub build_manifest_ref: Option<String>,
     /// Error if verification failed.
     pub error: Option<String>,
 }
@@ -686,11 +705,8 @@ async fn probe_single_endpoint(endpoint: String) -> bool {
 impl UnifiedAttestationEngine {
     /// Create a new unified attestation engine.
     pub fn new(config: VerifyConfig) -> Result<Self, VerifyError> {
-        let trust_root_validator = TrustRootValidator::new(
-            config.trust_root_endpoints(),
-            config.timeout,
-            config.cert_pin.clone(),
-        );
+        let trust_root_validator =
+            TrustRootValidator::new(config.trust_root_endpoints(), config.timeout);
 
         // Use resilient client with fallback endpoints. Project is per-call
         // (v1.12.0+) — this single client serves both the engine's own
@@ -945,19 +961,16 @@ impl UnifiedAttestationEngine {
             validation,
             key_verification_result,
         ) = tokio::join!(
-            // 1. Binary manifest (verify version) - for self-verification
+            // 1. Signed build claim (verify version + target) - for self-verification
             async {
-                info!("VERIFY STEP 1/5 STARTING: Binary manifest fetch");
+                info!("VERIFY STEP 1/5 STARTING: Signed build claim fetch");
                 if let Some(ref client) = self.registry_client {
                     match client
-                        .get_binary_manifest(engine_project, verify_version)
+                        .get_signed_build(engine_project, verify_version, target)
                         .await
                     {
                         Ok(m) => {
-                            info!(
-                                "VERIFY STEP 1/5 COMPLETE: OK ({} targets)",
-                                m.binaries.len()
-                            );
+                            info!("VERIFY STEP 1/5 COMPLETE: OK (claim fetched, unverified)");
                             Some(m)
                         },
                         Err(e) => {
@@ -1008,11 +1021,32 @@ impl UnifiedAttestationEngine {
                     if let Some(ref client) = self.registry_client {
                         match client.get_build_by_version(agent_project, version).await {
                             Ok(b) => {
+                                // CIRISVerify#315: name the build Level 5 checks
+                                // when a verified Contribution says what it is.
+                                let named = if b.contribution.is_some() {
+                                    let hash = b
+                                        .file_manifest_hash
+                                        .strip_prefix("sha256:")
+                                        .unwrap_or(&b.file_manifest_hash)
+                                        .to_string();
+                                    match client.get_manifest_blob(&hash).await {
+                                        Ok(blob) => crate::signed_build::name_agent_build(
+                                            &b,
+                                            &blob,
+                                            &crate::accord_genesis::baked_accord_roster(),
+                                            chrono::Utc::now(),
+                                        ),
+                                        Err(_) => None,
+                                    }
+                                } else {
+                                    None
+                                };
                                 info!(
-                                    "VERIFY STEP 3/5 COMPLETE: OK ({} files)",
-                                    b.file_manifest_json.files().len()
+                                    "VERIFY STEP 3/5 COMPLETE: OK ({} files, build {})",
+                                    b.file_manifest_json.files().len(),
+                                    if named.is_some() { "named" } else { "unnamed" }
                                 );
-                                Some(b)
+                                Some((b, named))
                             },
                             Err(e) => {
                                 warn!("VERIFY STEP 3/5 COMPLETE: FAILED ({})", e);
@@ -1106,15 +1140,14 @@ impl UnifiedAttestationEngine {
             let binary = binary_manifest_fresh.or_else(|| {
                 if let Some(ref cached) = cache.binary {
                     warn!(
-                        "VERIFY MANIFEST_CACHE FALLBACK: Using cached binary manifest \
-                         (version={}, generated_at={}) — registry unreachable",
-                        cached.version, cached.generated_at
+                        "VERIFY MANIFEST_CACHE FALLBACK: Using cached signed build claim \
+                         (re-verified before use) — registry unreachable"
                     );
                     Some(cached.clone())
                 } else {
                     error!(
-                        "VERIFY MANIFEST_CACHE MISS: No cached binary manifest available \
-                         and registry unreachable — L1 binary check will be skipped"
+                        "VERIFY MANIFEST_CACHE MISS: No cached signed build claim available \
+                         and registry unreachable — L1 binary check fails"
                     );
                     None
                 }
@@ -1140,8 +1173,8 @@ impl UnifiedAttestationEngine {
                     warn!(
                         "VERIFY MANIFEST_CACHE FALLBACK: Using cached build record \
                          (version={}, {} files) — registry unreachable",
-                        cached.version,
-                        cached.file_manifest_json.files().len()
+                        cached.0.version,
+                        cached.0.file_manifest_json.files().len()
                     );
                     Some(cached.clone())
                 } else {
@@ -1154,6 +1187,10 @@ impl UnifiedAttestationEngine {
             });
 
             (binary, function, build)
+        };
+        let (agent_build_result, agent_build_named) = match agent_build_result {
+            Some((b, named)) => (Some(b), named),
+            None => (None, None),
         };
 
         hb.set_phase("phase 2/2: local verification (integrity + binary self-check)");
@@ -1245,6 +1282,13 @@ impl UnifiedAttestationEngine {
                     &[],
                 )
                 .await;
+            let result = result.map(|mut r| {
+                if let Some(named) = &agent_build_named {
+                    r.build_manifest_hash = Some(named.manifest_hash.clone());
+                    r.build_manifest_ref = Some(named.attestation_id.clone());
+                }
+                r
+            });
             match &result {
                 Ok(r) => info!(
                     "VERIFY STEP 3/6 COMPLETE: {} ({}/{} verified)",
@@ -2163,7 +2207,7 @@ impl UnifiedAttestationEngine {
     /// This is the fast path used after Phase 1 parallel fetch.
     async fn run_self_verification_with_manifests(
         &self,
-        binary_manifest: Option<&BinaryManifest>,
+        signed_build: Option<&SignedBuild>,
         function_manifest: Option<&FunctionManifest>,
     ) -> SelfVerificationResult {
         let version = env!("CARGO_PKG_VERSION");
@@ -2182,6 +2226,8 @@ impl UnifiedAttestationEngine {
                     target: target.to_string(),
                     binary_hash: String::new(),
                     expected_hash: None,
+                    build_manifest_hash: None,
+                    build_manifest_ref: None,
                     functions_checked: 0,
                     functions_passed: 0,
                     registry_reachable: false,
@@ -2197,29 +2243,32 @@ impl UnifiedAttestationEngine {
             &binary_hash[..std::cmp::min(16, binary_hash.len())]
         );
 
-        // Binary hash verification using pre-fetched manifest
-        let (binary_valid, expected_hash, available_targets) =
-            if let Some(manifest) = binary_manifest {
-                let available_targets: Vec<String> = manifest.binaries.keys().cloned().collect();
-                if let Some(expected) = manifest.binaries.get(target) {
-                    let expected_clean = expected.strip_prefix("sha256:").unwrap_or(expected);
-                    let matches = binary_hash == expected_clean;
-                    info!(
-                        "Binary check (pre-fetched): target={}, matches={}",
-                        target, matches
-                    );
-                    (matches, Some(expected_clean.to_string()), available_targets)
-                } else {
-                    warn!(
-                        "Binary check (pre-fetched): no hash for target={}, available={:?}",
-                        target, available_targets
-                    );
-                    (false, None, available_targets)
-                }
-            } else {
-                warn!("Binary check (pre-fetched): no manifest available");
-                (false, None, vec![])
-            };
+        // Binary hash verification against the signed build claim (CC 3.1.2.1):
+        // ceremony-plane standing, the pipeline's signature, the target, the
+        // blob's size and hash, then the running binary's hash. Any failure is
+        // one opaque outcome: no verified claim.
+        let verified = signed_build.and_then(|b| {
+            crate::signed_build::verify_signed_build_baked(b, target)
+                .map_err(|e| warn!("Binary check: signed build claim refused: {}", e))
+                .ok()
+        });
+        let (binary_valid, expected_hash) = match &verified {
+            Some(v) => {
+                let matches = crate::signed_build::binary_hash_matches(v, &binary_hash);
+                info!(
+                    "Binary check (signed claim): target={}, matches={}",
+                    target, matches
+                );
+                (matches, Some(v.binary_hash.clone()))
+            },
+            None => {
+                warn!(
+                    "Binary check: no verified build claim for target={}",
+                    target
+                );
+                (false, None)
+            },
+        };
 
         // Function integrity verification using pre-fetched manifest
         let (functions_valid, functions_checked, functions_passed) =
@@ -2248,10 +2297,7 @@ impl UnifiedAttestationEngine {
             let mut errors = Vec::new();
             if !binary_valid {
                 if expected_hash.is_none() {
-                    errors.push(format!(
-                        "Binary hash not in registry for target '{}'. Available: {:?}",
-                        target, available_targets
-                    ));
+                    errors.push(format!("No verified build claim for target '{}'", target));
                 } else {
                     errors.push("Binary hash mismatch".to_string());
                 }
@@ -2277,9 +2323,11 @@ impl UnifiedAttestationEngine {
             target: target.to_string(),
             binary_hash,
             expected_hash,
+            build_manifest_hash: verified.as_ref().map(|v| v.manifest_hash.clone()),
+            build_manifest_ref: verified.as_ref().map(|v| v.attestation_id.clone()),
             functions_checked,
             functions_passed,
-            registry_reachable: binary_manifest.is_some() || function_manifest.is_some(),
+            registry_reachable: signed_build.is_some() || function_manifest.is_some(),
             error,
         }
     }
@@ -2567,6 +2615,8 @@ impl UnifiedAttestationEngine {
             excluded,
             summary,
             manifest_version: Some(build.version.clone()),
+            build_manifest_hash: None,
+            build_manifest_ref: None,
             error: if valid {
                 None
             } else {
@@ -2701,12 +2751,18 @@ impl FullAttestationResult {
         let mut b = FederationProvenance::builder();
 
         // L1 — self-verification ("who watches the watchmen").
+        // Names the build it checked (CC 3.1.2.1 / 3.3.6) when a signed claim
+        // verified.
         if let Some(sv) = &self.self_verification {
-            b = b.attestation(AttestationEntry::new(
+            let mut e = AttestationEntry::new(
                 dim::SELF_VERIFY,
                 if sv.valid { Score::PASS } else { Score::FAIL },
                 attester,
-            ));
+            );
+            if let (Some(h), Some(r)) = (&sv.build_manifest_hash, &sv.build_manifest_ref) {
+                e = e.citing_build(h.clone(), r.clone());
+            }
+            b = b.attestation(e);
         }
 
         // L2 — hardware attestation. The combined check requires the
@@ -2781,12 +2837,19 @@ impl FullAttestationResult {
         // pre-date the unified result; callers still on those won't
         // emit an L5 entry through this conversion until they migrate
         // — which v1.7.0+ consumers already have.)
+        // CIRISVerify#315: names the build it checked (`evidence_refs` =
+        // manifest_hash, `references_attestation_id` = the manifest
+        // Contribution's row) when a verified Contribution names it.
         if let Some(mi) = &self.module_integrity {
-            b = b.attestation(AttestationEntry::new(
+            let mut e = AttestationEntry::new(
                 dim::AGENT_INTEGRITY,
                 if mi.valid { Score::PASS } else { Score::FAIL },
                 attester,
-            ));
+            );
+            if let (Some(h), Some(r)) = (&mi.build_manifest_hash, &mi.build_manifest_ref) {
+                e = e.citing_build(h.clone(), r.clone());
+            }
+            b = b.attestation(e);
         }
 
         // Transparency-log inclusion — the audit-trail proof verifies.
@@ -3329,6 +3392,108 @@ mod tests {
         assert_eq!(result.checks_passed, 0);
         assert_eq!(result.checks_total, 0);
         assert!(result.diagnostics.contains("Network unavailable"));
+    }
+
+    /// Level 1 fails, opaquely, on a missing claim and on a claim whose
+    /// pipeline the baked roster never blessed.
+    #[tokio::test]
+    async fn level_1_fails_without_a_verified_signed_claim() {
+        let engine = UnifiedAttestationEngine::new(VerifyConfig::default()).expect("engine ok");
+        let sv = engine
+            .run_self_verification_with_manifests(None, None)
+            .await;
+        assert!(!sv.binary_valid && !sv.valid);
+        assert!(sv.expected_hash.is_none() && sv.build_manifest_hash.is_none());
+
+        // A well-formed claim co-scrubbed by holders who are not the baked
+        // accord roster: unverifiable here, so Level 1 fails.
+        let f = crate::signed_build::test_fixtures::fixture_with(
+            &[0, 1],
+            &[crate::manifest_contribution::MANIFEST_PUBLISH_SCOPE],
+            current_target(),
+            crate::signed_build::test_fixtures::MANIFEST,
+        )
+        .await;
+        let sv = engine
+            .run_self_verification_with_manifests(Some(&f.build), None)
+            .await;
+        assert!(!sv.binary_valid);
+        assert!(sv.expected_hash.is_none());
+        assert!(sv.build_manifest_ref.is_none());
+        let err = sv.error.unwrap_or_default();
+        assert!(err.contains("No verified build claim"), "{err}");
+        assert!(!err.contains("standing"), "no per-check detail: {err}");
+    }
+
+    /// CIRISVerify#315 ask 1: the ladder entries name the build they checked.
+    #[test]
+    fn ladder_entries_cite_the_build_they_checked() {
+        let engine = UnifiedAttestationEngine::new(VerifyConfig::default()).expect("engine ok");
+        let sv = SelfVerificationResult {
+            binary_valid: true,
+            functions_valid: true,
+            valid: true,
+            binary_version: "23.0.0".into(),
+            target: "x86_64-unknown-linux-gnu".into(),
+            binary_hash: "ab".repeat(32),
+            expected_hash: Some("ab".repeat(32)),
+            build_manifest_hash: Some("cd".repeat(32)),
+            build_manifest_ref: Some("row-verify".into()),
+            functions_checked: 1,
+            functions_passed: 1,
+            registry_reachable: true,
+            error: None,
+        };
+        let mut result = engine.network_unavailable_result(Duration::from_millis(1), Some(sv));
+        result.module_integrity = Some(ModuleIntegrityResult {
+            valid: true,
+            manifest_file_count: 0,
+            filesystem_verified: vec![],
+            agent_verified: vec![],
+            cross_validated: vec![],
+            disk_agent_mismatch: BTreeMap::new(),
+            registry_mismatch: BTreeMap::new(),
+            missing: vec![],
+            unexpected: vec![],
+            excluded: vec![],
+            summary: ModuleIntegritySummary {
+                total_manifest: 0,
+                verified: 0,
+                failed: 0,
+                missing: 0,
+                excluded: 0,
+                cross_validated: 0,
+            },
+            manifest_version: None,
+            build_manifest_hash: Some("ef".repeat(32)),
+            build_manifest_ref: Some("row-agent".into()),
+            error: None,
+        });
+        let prov = result.to_federation_provenance("ciris-verify");
+        let json = serde_json::to_value(&prov).unwrap();
+        let entries = json["attestations_consumed"]
+            .as_array()
+            .or_else(|| json["attestations"].as_array())
+            .cloned()
+            .unwrap_or_default();
+        let find = |d: &str| {
+            entries
+                .iter()
+                .find(|e| e["dimension"] == d)
+                .cloned()
+                .unwrap_or_else(|| panic!("no {d} in {json}"))
+        };
+        let sv = find(crate::federation_provenance::dim::SELF_VERIFY);
+        assert_eq!(sv["evidence_refs"], serde_json::json!(["cd".repeat(32)]));
+        assert_eq!(sv["references_attestation_id"], "row-verify");
+        let ai = find(crate::federation_provenance::dim::AGENT_INTEGRITY);
+        assert_eq!(ai["evidence_refs"], serde_json::json!(["ef".repeat(32)]));
+        assert_eq!(ai["references_attestation_id"], "row-agent");
+
+        // An entry with no verified build names none.
+        result.module_integrity.as_mut().unwrap().build_manifest_ref = None;
+        let json = serde_json::to_value(result.to_federation_provenance("v")).unwrap();
+        assert!(!json.to_string().contains("row-agent"));
     }
 
     /// CIRISVerify#60: `boundary_degraded` round-trips through JSON (the

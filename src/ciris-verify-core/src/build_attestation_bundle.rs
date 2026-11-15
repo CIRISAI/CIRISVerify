@@ -10,8 +10,8 @@
 //!   who is *presenting* it.
 //! - [`crate::transport_binding`] binds **key K → transport identity T**. It says
 //!   nothing about what code K runs.
-//! - [`crate::registry::verify_self_against_manifest`] compares the running
-//!   binary to a manifest — but it is a **local `bool`**, not a transmissible
+//! - [`crate::signed_build::binary_hash_matches`] compares the running
+//!   binary to a signed build claim — but it is a **local `bool`**, not a transmissible
 //!   artifact. A peer cannot consume it.
 //!
 //! So a peer could verify *"this build is approved"* and *"this key owns that
@@ -178,6 +178,27 @@ pub async fn produce_build_attestation_bundle(
     inputs: &BundleInputs<'_>,
     asserted_at: chrono::DateTime<chrono::Utc>,
 ) -> Result<SignedCegObject, VerifyError> {
+    let envelope = build_attestation_bundle_envelope(presenter.key_id(), inputs, asserted_at)?;
+    let signed = presenter.sign_envelope_async(envelope).await?;
+    assemble_build_attestation_bundle(&signed, inputs)
+}
+
+/// The presenter's **unsigned** bundle envelope, for a presenter whose key
+/// signs outside this process (CIRISVerify#315: the agent signs with its own
+/// federation key). Sign `JCS(envelope)` bound-hybrid (Ed25519, then ML-DSA-65
+/// over `bytes || ed25519_sig`) and pass the result to
+/// [`assemble_build_attestation_bundle`]. [`produce_build_attestation_bundle`]
+/// is exactly these two steps around an in-process signer.
+///
+/// # Errors
+///
+/// [`VerifyError`] on a malformed manifest contribution, a canonicalization
+/// fault, or a tripped RNG latch.
+pub fn build_attestation_bundle_envelope(
+    presenter_key_id: &str,
+    inputs: &BundleInputs<'_>,
+    asserted_at: chrono::DateTime<chrono::Utc>,
+) -> Result<Value, VerifyError> {
     let manifest_env = inputs
         .manifest_contribution
         .body
@@ -199,7 +220,6 @@ pub async fn produce_build_attestation_bundle(
     let manifest_hash = read(manifest_env, &["build", "manifest_hash"])?;
 
     let asserted_at = crate::manifest_contribution::render_signed_instant(asserted_at);
-    let presenter_key_id = presenter.key_id();
     let mut envelope = json!({
         "asserted_at": asserted_at,
         "dimension": inputs.presents.dimension(),
@@ -226,10 +246,38 @@ pub async fn produce_build_attestation_bundle(
     if let Some(proof) = inputs.inclusion {
         envelope["transparency_root_sha256"] = json!(hex::encode(proof.root));
     }
+    Ok(envelope)
+}
 
-    let signed = presenter.sign_envelope_async(envelope).await?;
+/// Attach the hash-bound evidence to a presenter-signed bundle envelope (from
+/// [`build_attestation_bundle_envelope`]) and wrap it as the outbox object.
+/// Nothing is checked here; [`verify_build_attestation_bundle`] is the check.
+///
+/// # Errors
+///
+/// [`VerifyError`] if the envelope names no presenter or a value does not
+/// serialize.
+pub fn assemble_build_attestation_bundle(
+    signed: &crate::self_at_login::SignedEnvelope,
+    inputs: &BundleInputs<'_>,
+) -> Result<SignedCegObject, VerifyError> {
+    let presenter_key_id = signed
+        .signed_envelope
+        .get("row")
+        .and_then(|r| r.get("attesting_key_id"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| VerifyError::IntegrityError {
+            message: "bundle envelope names no row.attesting_key_id".into(),
+        })?
+        .to_string();
+    let asserted_at = signed
+        .signed_envelope
+        .get("asserted_at")
+        .and_then(Value::as_str)
+        .unwrap_or_default()
+        .to_string();
     let mut body: Value =
-        serde_json::to_value(&signed).map_err(|e| VerifyError::IntegrityError {
+        serde_json::to_value(signed).map_err(|e| VerifyError::IntegrityError {
             message: format!("serialize bundle envelope: {e}"),
         })?;
 
@@ -566,7 +614,11 @@ impl BundleVerdict {
         // pipeline's `provenance:build_manifest` dimension, which belongs to
         // the pipeline's own Contribution (FSD-006 Q6).
         let mut entries = vec![AttestationEntry::pass(self.presents.dimension(), attester)
-            .with_source_ref(self.build.manifest_hash.clone())];
+            .with_source_ref(self.build.manifest_hash.clone())
+            .citing_build(
+                self.build.manifest_hash.clone(),
+                self.build.attestation_id.clone(),
+            )];
 
         // The transparency leg is reported only when it was actually exercised;
         // absence is not a failure on the SW-friendly path.

@@ -69,7 +69,13 @@ from ._self_enc import (
 from ._federation_identity import create_federation_identity
 from ._evm_tx import keccak256, checksum_address
 from ._raw_verify import verify_ed25519, verify_p256
-from ._manifest_contribution import verify_build_manifest_contribution
+from ._manifest_contribution import (
+    assemble_build_attestation_bundle,
+    build_attestation_bundle_envelope,
+    verify_build_attestation_bundle,
+    verify_build_manifest_contribution,
+    verify_signed_build,
+)
 from ._accord_invocation import accord_latch_apply, accord_latch_status, verify_accord_invocation
 from ._accord_custody import verify_accord_custody_attestation
 from ._test_anchor import test_anchor_compiled_in
@@ -198,6 +204,10 @@ __all__ = [
     "self_enc_respond",
     "create_federation_identity",
     "verify_build_manifest_contribution",
+    "verify_signed_build",
+    "build_attestation_bundle_envelope",
+    "assemble_build_attestation_bundle",
+    "verify_build_attestation_bundle",
     "verify_accord_invocation",
     "accord_latch_apply",
     "accord_latch_status",

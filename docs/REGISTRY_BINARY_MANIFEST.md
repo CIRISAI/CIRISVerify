@@ -1,5 +1,12 @@
 # Registry Binary Manifest Implementation
 
+> **Superseded in CIRISVerify 23.0.0.** Level 1 no longer reads
+> `GET /v1/verify/binary-manifest/{version}`. It reads the pipeline-signed
+> `provenance:build_manifest:{target}:v1` Contribution and its pipeline key record
+> from `GET /v1/builds/{version}?target={target}` and the manifest bytes from
+> `GET /v1/builds/manifest/{manifest_hash}` (CC 3.1.2.1), and verifies them
+> itself. What follows is kept for the registry's legacy route only.
+
 ## Overview
 
 CIRISVerify v0.5.2 introduces **Level 2 Binary Self-Verification** - the ability for the CIRISVerify binary to verify its own integrity against a registry-hosted manifest. This closes the "who watches the watchmen" attack vector where a compromised verifier could report false results.

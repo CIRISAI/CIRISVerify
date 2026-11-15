@@ -46,21 +46,6 @@ pub struct HttpsClient {
     agent: ureq::Agent,
     /// Base URL for the API.
     base_url: String,
-    /// SHA-256 fingerprint of expected certificate (for pinning).
-    /// Future: Will be used for actual certificate pinning validation.
-    #[allow(dead_code)]
-    cert_fingerprint: Option<Vec<u8>>,
-}
-
-fn parse_pin(cert_pin: Option<&str>) -> Result<Option<Vec<u8>>, VerifyError> {
-    cert_pin
-        .map(|pin| {
-            let hex = pin.strip_prefix("sha256:").unwrap_or(pin);
-            hex::decode(hex).map_err(|e| VerifyError::HttpsError {
-                message: format!("Invalid certificate fingerprint: {}", e),
-            })
-        })
-        .transpose()
 }
 
 /// Take the `bundle` member out of a trust-root response.
@@ -85,11 +70,7 @@ pub fn bundle_from_response(url: &str, body: Value) -> Result<Value, VerifyError
 impl HttpsClient {
     /// Create a new HTTPS client (desktop).
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    pub fn new(
-        base_url: &str,
-        timeout: Duration,
-        cert_pin: Option<&str>,
-    ) -> Result<Self, VerifyError> {
+    pub fn new(base_url: &str, timeout: Duration) -> Result<Self, VerifyError> {
         // Aggressive timeouts so an unreachable host fails fast (emulators can
         // hang a TCP connect indefinitely).
         let connect_timeout = Duration::from_secs(3);
@@ -111,22 +92,16 @@ impl HttpsClient {
         Ok(Self {
             client,
             base_url: base_url.trim_end_matches('/').to_string(),
-            cert_fingerprint: parse_pin(cert_pin)?,
         })
     }
 
     /// Create a new HTTPS client (mobile - blocking ureq).
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    pub fn new(
-        base_url: &str,
-        timeout: Duration,
-        cert_pin: Option<&str>,
-    ) -> Result<Self, VerifyError> {
+    pub fn new(base_url: &str, timeout: Duration) -> Result<Self, VerifyError> {
         info!("HttpsClient: using mobile blocking HTTP (ureq)");
         Ok(Self {
             agent: mobile_http::create_tls_agent(timeout)?,
             base_url: base_url.trim_end_matches('/').to_string(),
-            cert_fingerprint: parse_pin(cert_pin)?,
         })
     }
 
@@ -223,12 +198,8 @@ impl HttpsClient {
 
 /// Fetch the (unverified) GenesisBundle from one trust-root host.
 #[instrument(skip_all, fields(endpoint = %endpoint))]
-pub async fn query_trust_root(
-    endpoint: &str,
-    timeout: Duration,
-    cert_pin: Option<&str>,
-) -> Result<Value, VerifyError> {
-    HttpsClient::new(endpoint, timeout, cert_pin)?
+pub async fn query_trust_root(endpoint: &str, timeout: Duration) -> Result<Value, VerifyError> {
+    HttpsClient::new(endpoint, timeout)?
         .get_trust_root_bundle()
         .await
 }
@@ -239,22 +210,9 @@ mod tests {
 
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
     #[test]
-    fn test_client_with_cert_pin() {
-        let fingerprint = "0000000000000000000000000000000000000000000000000000000000000000";
-        let client = HttpsClient::new(
-            "https://verify.ciris.ai/",
-            Duration::from_secs(30),
-            Some(fingerprint),
-        )
-        .unwrap();
-        assert_eq!(client.cert_fingerprint.unwrap().len(), 32);
+    fn client_trims_the_base_url() {
+        let client = HttpsClient::new("https://verify.ciris.ai/", Duration::from_secs(30)).unwrap();
         assert_eq!(client.base_url, "https://verify.ciris.ai");
-        assert!(HttpsClient::new(
-            "https://verify.ciris.ai",
-            Duration::from_secs(30),
-            Some("zz")
-        )
-        .is_err());
     }
 
     #[test]

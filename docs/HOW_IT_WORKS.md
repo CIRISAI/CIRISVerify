@@ -237,24 +237,17 @@ ciris-verify sources --format json
 
 CIRISRegistry hosts three types of manifests — think of them as official DMV records:
 
-### 1. Binary Manifest — "Is This a Real Inspection Station?"
+### 1. Signed Build Claim — "Is This a Real Inspection Station?"
 
-SHA-256 fingerprints of CIRISVerify binaries for each platform. Used to verify the verifier itself.
+The build pipeline signs one claim per target: a `scores` Contribution on
+`provenance:build_manifest:{target}:v1` naming the binary's SHA-256 and the
+manifest bytes (CC 3.1.2.1). Level 1 verifies it (the pipeline key record must
+carry a strict-majority accord co-scrub of `infra:attest`, CC 4.2.1), checks the
+manifest bytes' size and hash against it, and compares the running binary's hash.
+The registry's own fields are ignored.
 
-**Route**: `GET /v1/verify/binary-manifest/{version}`
-
-```json
-{
-  "version": "1.0.8",
-  "binaries": {
-    "x86_64-unknown-linux-gnu": "sha256:63d2d68b...",
-    "aarch64-apple-darwin": "sha256:9b457096...",
-    "android-arm64-v8a": "sha256:b0b104a8...",
-    "aarch64-apple-ios": "sha256:bcf0bfc0..."
-  },
-  "generated_at": "2026-02-28T00:00:00Z"
-}
-```
+**Routes**: `GET /v1/builds/{version}?target={target}` (the Contribution and the
+pipeline key record), then `GET /v1/builds/manifest/{manifest_hash}` (the bytes).
 
 ### 2. File Manifest
 

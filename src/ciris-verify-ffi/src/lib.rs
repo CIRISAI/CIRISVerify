@@ -57,6 +57,7 @@ mod constructor;
 // `wheel_guard!` panic catch (sibling modules cannot see the
 // crate-root `ffi_guard!` macro without `#[macro_export]`).
 mod wheel_accord_custody;
+mod wheel_build_attestation;
 mod wheel_canonical_subject;
 mod wheel_epoch_key;
 mod wheel_hybrid_kex;
@@ -118,7 +119,11 @@ pub extern "C" fn ciris_verify_ffi_link_anchor() -> usize {
     acc ^= ciris_verify_attest_bundle_from_attestation as usize;
     acc ^= ciris_verify_audit_trail as usize;
     acc ^= ciris_verify_await_key_registration as usize;
+    acc ^= wheel_build_attestation::ciris_verify_build_attestation_bundle_assemble as usize;
+    acc ^= wheel_build_attestation::ciris_verify_build_attestation_bundle_envelope as usize;
+    acc ^= wheel_build_attestation::ciris_verify_build_attestation_bundle_verify as usize;
     acc ^= wheel_manifest_contribution::ciris_verify_build_manifest_contribution as usize;
+    acc ^= wheel_build_attestation::ciris_verify_signed_build_verify as usize;
     acc ^= ciris_verify_check_agent_integrity as usize;
     acc ^= ciris_verify_check_agent_integrity_available as usize;
     acc ^= ciris_verify_check_capability as usize;
@@ -4834,8 +4839,11 @@ unsafe fn run_attestation_inner(
 /// # Arguments
 ///
 /// * `handle` - Handle from `ciris_verify_init`
-/// * `binary_manifest_json` - JSON-encoded BinaryManifest
-/// * `binary_manifest_len` - Length of binary manifest JSON
+/// * `signed_build_json` - JSON-encoded `SignedBuild` (23.0.0): the
+///   pipeline-signed build Contribution, the pipeline key record and the
+///   manifest bytes. It must verify for this binary's target, or nothing is
+///   cached (`SignatureInvalid`).
+/// * `signed_build_len` - Length of the signed build JSON
 /// * `function_manifest_json` - JSON-encoded FunctionManifest (can be null)
 /// * `function_manifest_len` - Length of function manifest JSON (0 if null)
 /// * `build_record_json` - JSON-encoded BuildRecord (can be null)
@@ -4848,12 +4856,12 @@ unsafe fn run_attestation_inner(
 /// # Safety
 ///
 /// - `handle` must be a valid handle from `ciris_verify_init`
-/// - `binary_manifest_json` must be valid for `binary_manifest_len` bytes
+/// - `signed_build_json` must be valid for `signed_build_len` bytes
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_save_manifest_cache(
     handle: *mut CirisVerifyHandle,
-    binary_manifest_json: *const u8,
-    binary_manifest_len: usize,
+    signed_build_json: *const u8,
+    signed_build_len: usize,
     function_manifest_json: *const u8,
     function_manifest_len: usize,
     build_record_json: *const u8,
@@ -4862,8 +4870,8 @@ pub unsafe extern "C" fn ciris_verify_save_manifest_cache(
     ffi_guard!("ciris_verify_save_manifest_cache", {
         save_manifest_cache_inner(
             handle,
-            binary_manifest_json,
-            binary_manifest_len,
+            signed_build_json,
+            signed_build_len,
             function_manifest_json,
             function_manifest_len,
             build_record_json,
@@ -4875,20 +4883,20 @@ pub unsafe extern "C" fn ciris_verify_save_manifest_cache(
 /// Inner implementation of save_manifest_cache.
 unsafe fn save_manifest_cache_inner(
     handle: *mut CirisVerifyHandle,
-    binary_manifest_json: *const u8,
-    binary_manifest_len: usize,
+    signed_build_json: *const u8,
+    signed_build_len: usize,
     function_manifest_json: *const u8,
     function_manifest_len: usize,
     build_record_json: *const u8,
     build_record_len: usize,
 ) -> i32 {
     use ciris_verify_core::manifest_cache::SignedManifestCache;
-    use ciris_verify_core::registry::BinaryManifest;
     use ciris_verify_core::security::function_integrity::FunctionManifest;
+    use ciris_verify_core::signed_build::SignedBuild;
 
     tracing::info!("ciris_verify_save_manifest_cache: starting");
 
-    if handle.is_null() || binary_manifest_json.is_null() {
+    if handle.is_null() || signed_build_json.is_null() {
         tracing::error!("ciris_verify_save_manifest_cache: null arguments");
         return CirisVerifyError::InvalidArgument as i32;
     }
@@ -4911,28 +4919,28 @@ unsafe fn save_manifest_cache_inner(
     };
     let fingerprint = ciris_verify_core::compute_ed25519_fingerprint(&public_key);
 
-    // Parse binary manifest (required)
-    let binary_slice = std::slice::from_raw_parts(binary_manifest_json, binary_manifest_len);
-    let binary_str = match std::str::from_utf8(binary_slice) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::error!(
-                "ciris_verify_save_manifest_cache: invalid binary manifest UTF-8: {}",
-                e
-            );
-            return CirisVerifyError::InvalidArgument as i32;
-        },
-    };
-    let binary_manifest: BinaryManifest = match serde_json::from_str(binary_str) {
+    // Parse the signed build claim (required)
+    let build_slice = std::slice::from_raw_parts(signed_build_json, signed_build_len);
+    let signed_build: SignedBuild = match serde_json::from_slice(build_slice) {
         Ok(m) => m,
         Err(e) => {
             tracing::error!(
-                "ciris_verify_save_manifest_cache: invalid binary manifest JSON: {}",
+                "ciris_verify_save_manifest_cache: invalid signed build JSON: {}",
                 e
             );
             return CirisVerifyError::SerializationError as i32;
         },
     };
+    // Never sign a cache over a claim that does not verify here.
+    if ciris_verify_core::signed_build::verify_signed_build_baked(
+        &signed_build,
+        ciris_verify_core::current_target(),
+    )
+    .is_err()
+    {
+        tracing::error!("ciris_verify_save_manifest_cache: signed build claim does not verify");
+        return CirisVerifyError::SignatureInvalid as i32;
+    }
 
     // Parse function manifest (optional)
     let function_manifest: Option<FunctionManifest> = if !function_manifest_json.is_null()
@@ -4991,7 +4999,7 @@ unsafe fn save_manifest_cache_inner(
 
     // Create unsigned cache
     let mut cache = SignedManifestCache::new(
-        binary_manifest,
+        signed_build,
         function_manifest,
         build_record.as_ref(),
         fingerprint,
@@ -5021,7 +5029,6 @@ unsafe fn save_manifest_cache_inner(
 
     tracing::info!(
         cache_dir = %cache_dir.display(),
-        binaries = cache.binary_manifest.binaries.len(),
         has_functions = cache.function_manifest.is_some(),
         has_build = cache.build_record.is_some(),
         "ciris_verify_save_manifest_cache: saved signed manifest cache"
@@ -5045,7 +5052,8 @@ unsafe fn save_manifest_cache_inner(
 ///
 /// ```json
 /// {
-///   "binary_manifest": { "version": "1.0.0", "binaries": {...} },
+///   "signed_build": { "contribution": {...}, "pipeline_record": {...},
+///                     "manifest_base64": "..." },
 ///   "function_manifest": { ... },
 ///   "build_record": { "version": "...", "files": {...} },
 ///   "cached_at": 1234567890,
@@ -5117,7 +5125,6 @@ unsafe fn load_manifest_cache_inner(
                 cached_at = cache.cached_at,
                 verify_version = %cache.verify_version,
                 target = %cache.target,
-                binaries = cache.binary_manifest.binaries.len(),
                 "ciris_verify_load_manifest_cache: loaded valid cache"
             );
 
@@ -5156,6 +5163,10 @@ unsafe fn load_manifest_cache_inner(
             tracing::error!(
                 "ciris_verify_load_manifest_cache: SIGNATURE INVALID - possible tampering!"
             );
+            CirisVerifyError::SignatureInvalid as i32
+        },
+        CacheLoadResult::InvalidBuildClaim => {
+            tracing::error!("ciris_verify_load_manifest_cache: cached build claim does not verify");
             CirisVerifyError::SignatureInvalid as i32
         },
         CacheLoadResult::VersionMismatch { cached, current } => {

@@ -26,6 +26,17 @@
 //!
 //! If internet access is permanently lost, the agent can still reach L1
 //! (self-verification) using the cached manifest.
+//!
+//! ## What is cached for L1 is the signed claim (23.0.0)
+//!
+//! The L1 entry is a [`SignedBuild`]: the pipeline-signed
+//! `provenance:build_manifest:{target}` Contribution, the pipeline's
+//! accord-co-scrubbed key record, and the manifest bytes. The device signature
+//! proves only that this device wrote the cache; it is not what makes the
+//! build trustworthy. [`load_and_verify`] re-verifies the claim itself
+//! ([`crate::signed_build::verify_signed_build`]) on every load, so a cache
+//! written by a compromised process, or one carrying a claim that no longer
+//! verifies, is refused.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -35,8 +46,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tracing::{debug, error, info, warn};
 
-use crate::registry::{BinaryManifest, BuildRecord};
+use crate::registry::BuildRecord;
 use crate::security::function_integrity::FunctionManifest;
+use crate::signed_build::SignedBuild;
+use crate::threshold::ThresholdMember;
 
 /// Filename for the signed manifest cache.
 const MANIFEST_CACHE_FILENAME: &str = "manifest_cache.signed";
@@ -44,8 +57,8 @@ const MANIFEST_CACHE_FILENAME: &str = "manifest_cache.signed";
 /// Signed manifest cache containing all manifests needed for offline L1 verification.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SignedManifestCache {
-    /// Binary manifest (target triple → SHA-256 hash).
-    pub binary_manifest: BinaryManifest,
+    /// The signed L1 build claim for this binary's version and target.
+    pub signed_build: SignedBuild,
     /// Function manifest for integrity verification.
     pub function_manifest: Option<FunctionManifest>,
     /// Agent build record for file integrity (optional).
@@ -101,7 +114,7 @@ impl From<&BuildRecord> for BuildRecordCache {
 /// Data to be signed (excludes signature field).
 #[derive(Debug, Serialize)]
 struct ManifestDataToSign<'a> {
-    binary_manifest: &'a BinaryManifest,
+    signed_build: &'a SignedBuild,
     function_manifest: &'a Option<FunctionManifest>,
     build_record: &'a Option<BuildRecordCache>,
     cached_at: i64,
@@ -135,7 +148,7 @@ impl SignedManifestCache {
     ///
     /// Call `sign()` to add the hardware signature before saving.
     pub fn new(
-        binary_manifest: BinaryManifest,
+        signed_build: SignedBuild,
         function_manifest: Option<FunctionManifest>,
         build_record: Option<&BuildRecord>,
         public_key_fingerprint: String,
@@ -146,7 +159,7 @@ impl SignedManifestCache {
             .unwrap_or(0);
 
         Self {
-            binary_manifest,
+            signed_build,
             function_manifest,
             build_record: build_record.map(BuildRecordCache::from),
             cached_at: now,
@@ -160,7 +173,7 @@ impl SignedManifestCache {
     /// Compute the SHA-256 hash of the data to be signed.
     pub fn compute_signing_hash(&self) -> [u8; 32] {
         let data = ManifestDataToSign {
-            binary_manifest: &self.binary_manifest,
+            signed_build: &self.signed_build,
             function_manifest: &self.function_manifest,
             build_record: &self.build_record,
             cached_at: self.cached_at,
@@ -172,7 +185,7 @@ impl SignedManifestCache {
         // Canonical JSON serialization for deterministic hashing
         let json = serde_json::to_string(&data).unwrap_or_default();
         let mut hasher = Sha256::new();
-        hasher.update(b"ciris-manifest-cache-v1:");
+        hasher.update(b"ciris-manifest-cache-v2:");
         hasher.update(json.as_bytes());
         hasher.finalize().into()
     }
@@ -257,7 +270,6 @@ impl SignedManifestCache {
             path = %path.display(),
             version = %self.verify_version,
             target = %self.target,
-            binaries = self.binary_manifest.binaries.len(),
             functions = self.function_manifest.as_ref().map(|f| f.functions.len()).unwrap_or(0),
             "Saved signed manifest cache"
         );
@@ -327,6 +339,9 @@ pub enum CacheLoadResult {
     },
     /// No cache file exists.
     NotFound,
+    /// The device signature is good but the build claim inside does not
+    /// verify (or is for another target). Opaque on purpose.
+    InvalidBuildClaim,
     /// IO or parse error.
     Error(String),
 }
@@ -341,6 +356,21 @@ pub enum CacheLoadResult {
 /// * `CacheLoadResult::Valid` if cache is valid and signature verified
 /// * Other variants indicate various failure modes
 pub fn load_and_verify(cache_dir: &Path, public_key: &[u8]) -> CacheLoadResult {
+    load_and_verify_with(
+        cache_dir,
+        public_key,
+        &crate::accord_genesis::baked_accord_roster(),
+        chrono::Utc::now(),
+    )
+}
+
+/// [`load_and_verify`] against an explicit accord roster and instant.
+pub fn load_and_verify_with(
+    cache_dir: &Path,
+    public_key: &[u8],
+    roster: &[ThresholdMember],
+    now: chrono::DateTime<chrono::Utc>,
+) -> CacheLoadResult {
     let cache = match SignedManifestCache::load(cache_dir) {
         Ok(c) => c,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -383,11 +413,17 @@ pub fn load_and_verify(cache_dir: &Path, public_key: &[u8]) -> CacheLoadResult {
         return CacheLoadResult::InvalidSignature;
     }
 
+    if crate::signed_build::verify_signed_build(&cache.signed_build, current_target, roster, now)
+        .is_err()
+    {
+        error!("Manifest cache build claim does not verify");
+        return CacheLoadResult::InvalidBuildClaim;
+    }
+
     info!(
         cached_at = cache.cached_at,
         verify_version = %cache.verify_version,
         target = %cache.target,
-        binaries = cache.binary_manifest.binaries.len(),
         "Loaded verified manifest cache for offline L1"
     );
 
@@ -399,24 +435,91 @@ mod tests {
     use super::*;
     use ed25519_dalek::{Signer, SigningKey};
     use rand::rngs::OsRng;
-    use std::collections::HashMap;
 
-    fn create_test_binary_manifest() -> BinaryManifest {
-        let mut binaries = HashMap::new();
-        binaries.insert(
-            "x86_64-unknown-linux-gnu".to_string(),
-            "sha256:abc123".to_string(),
-        );
-        BinaryManifest {
-            version: "1.0.0".to_string(),
-            binaries,
-            generated_at: "2024-01-01T00:00:00Z".to_string(),
+    /// A signed build claim for this binary's target, and the roster that
+    /// blesses its pipeline.
+    fn test_build_and_roster() -> (SignedBuild, Vec<ThresholdMember>) {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .unwrap();
+        let f = rt.block_on(crate::signed_build::test_fixtures::fixture_with(
+            &[0, 1],
+            &[crate::manifest_contribution::MANIFEST_PUBLISH_SCOPE],
+            crate::registry::current_target(),
+            crate::signed_build::test_fixtures::MANIFEST,
+        ));
+        (f.build, f.roster)
+    }
+
+    fn test_signed_build() -> SignedBuild {
+        test_build_and_roster().0
+    }
+
+    fn signed_cache(signing_key: &SigningKey, build: SignedBuild) -> SignedManifestCache {
+        let public_key = signing_key.verifying_key().as_bytes().to_vec();
+        let mut cache =
+            SignedManifestCache::new(build, None, None, compute_fingerprint(&public_key));
+        let hash = cache.compute_signing_hash();
+        cache.set_signature(signing_key.sign(&hash).to_bytes().to_vec());
+        cache
+    }
+
+    #[test]
+    fn cache_round_trip_reverifies_the_signed_claim() {
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let public_key = signing_key.verifying_key().as_bytes().to_vec();
+        let (build, roster) = test_build_and_roster();
+        let cache = signed_cache(&signing_key, build.clone());
+        let temp_dir = tempfile::tempdir().unwrap();
+        cache.save(temp_dir.path()).unwrap();
+
+        match load_and_verify_with(temp_dir.path(), &public_key, &roster, chrono::Utc::now()) {
+            CacheLoadResult::Valid(loaded) => {
+                assert_eq!(loaded.signed_build, build);
+                let v = crate::signed_build::verify_signed_build(
+                    &loaded.signed_build,
+                    crate::registry::current_target(),
+                    &roster,
+                    chrono::Utc::now(),
+                )
+                .unwrap();
+                assert!(crate::signed_build::binary_hash_matches(
+                    &v,
+                    &"ab".repeat(32)
+                ));
+            },
+            other => panic!("Expected Valid, got {:?}", other),
         }
     }
 
     #[test]
+    fn a_device_signed_cache_with_a_bad_claim_is_refused() {
+        // The device signature covers the claim, so a cache this device signed
+        // over a claim that does not verify is refused on the claim.
+        let signing_key = SigningKey::generate(&mut OsRng);
+        let public_key = signing_key.verifying_key().as_bytes().to_vec();
+        let (mut build, roster) = test_build_and_roster();
+        build.manifest_base64 = "dGFtcGVyZWQ=".to_string();
+        let cache = signed_cache(&signing_key, build);
+        let temp_dir = tempfile::tempdir().unwrap();
+        cache.save(temp_dir.path()).unwrap();
+        assert!(matches!(
+            load_and_verify_with(temp_dir.path(), &public_key, &roster, chrono::Utc::now()),
+            CacheLoadResult::InvalidBuildClaim
+        ));
+        // And against a roster that never blessed the pipeline.
+        let (good, _) = test_build_and_roster();
+        let cache = signed_cache(&signing_key, good);
+        cache.save(temp_dir.path()).unwrap();
+        assert!(matches!(
+            load_and_verify_with(temp_dir.path(), &public_key, &roster, chrono::Utc::now()),
+            CacheLoadResult::InvalidBuildClaim
+        ));
+    }
+
+    #[test]
     fn test_signing_hash_deterministic() {
-        let manifest = create_test_binary_manifest();
+        let manifest = test_signed_build();
         let fingerprint = "test_fingerprint".to_string();
 
         let cache1 = SignedManifestCache::new(manifest.clone(), None, None, fingerprint.clone());
@@ -434,7 +537,7 @@ mod tests {
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let manifest = create_test_binary_manifest();
+        let manifest = test_signed_build();
         let mut cache = SignedManifestCache::new(manifest, None, None, fingerprint);
 
         // Sign
@@ -452,7 +555,7 @@ mod tests {
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let manifest = create_test_binary_manifest();
+        let manifest = test_signed_build();
         let mut cache = SignedManifestCache::new(manifest, None, None, fingerprint);
 
         // Sign
@@ -473,7 +576,7 @@ mod tests {
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let manifest = create_test_binary_manifest();
+        let manifest = test_signed_build();
         let mut cache = SignedManifestCache::new(manifest, None, None, fingerprint);
 
         // Sign with correct key
@@ -495,7 +598,7 @@ mod tests {
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let manifest = create_test_binary_manifest();
+        let manifest = test_signed_build();
         let mut cache = SignedManifestCache::new(manifest, None, None, fingerprint);
 
         // Sign
@@ -512,10 +615,7 @@ mod tests {
 
         // Verify
         assert!(loaded.verify_signature(&public_key));
-        assert_eq!(
-            loaded.binary_manifest.version,
-            cache.binary_manifest.version
-        );
+        assert_eq!(loaded.signed_build, cache.signed_build);
     }
 
     #[test]
@@ -524,16 +624,7 @@ mod tests {
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let mut binaries = HashMap::new();
-        binaries.insert(
-            crate::registry::current_target().to_string(),
-            "sha256:test".to_string(),
-        );
-        let manifest = BinaryManifest {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            binaries,
-            generated_at: String::new(),
-        };
+        let (manifest, roster) = test_build_and_roster();
 
         let mut cache = SignedManifestCache::new(manifest, None, None, fingerprint);
 
@@ -544,7 +635,7 @@ mod tests {
         let temp_dir = tempfile::tempdir().unwrap();
         cache.save(temp_dir.path()).unwrap();
 
-        match load_and_verify(temp_dir.path(), &public_key) {
+        match load_and_verify_with(temp_dir.path(), &public_key, &roster, chrono::Utc::now()) {
             CacheLoadResult::Valid(loaded) => {
                 assert_eq!(loaded.verify_version, env!("CARGO_PKG_VERSION"));
             },
@@ -564,12 +655,12 @@ mod tests {
     }
 
     #[test]
-    fn test_tampered_binary_manifest_fails() {
+    fn test_tampered_signed_build_fails() {
         let signing_key = SigningKey::generate(&mut OsRng);
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let manifest = create_test_binary_manifest();
+        let manifest = test_signed_build();
         let mut cache = SignedManifestCache::new(manifest, None, None, fingerprint);
 
         // Sign the original
@@ -580,11 +671,8 @@ mod tests {
         // Verify original works
         assert!(cache.verify_signature(&public_key));
 
-        // Tamper with binary manifest
-        cache.binary_manifest.binaries.insert(
-            "attacker-target".to_string(),
-            "sha256:malicious_hash".to_string(),
-        );
+        // Tamper with the cached claim
+        cache.signed_build.manifest_base64 = "bWFsaWNpb3Vz".to_string();
 
         // Should now fail
         assert!(!cache.verify_signature(&public_key));
@@ -596,7 +684,7 @@ mod tests {
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let manifest = create_test_binary_manifest();
+        let manifest = test_signed_build();
         let mut cache = SignedManifestCache::new(manifest, None, None, fingerprint);
 
         let hash = cache.compute_signing_hash();
@@ -615,7 +703,7 @@ mod tests {
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let manifest = create_test_binary_manifest();
+        let manifest = test_signed_build();
         let mut cache = SignedManifestCache::new(manifest, None, None, fingerprint);
 
         // Set invalid signature length (should be 64 bytes)
@@ -630,7 +718,7 @@ mod tests {
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let manifest = create_test_binary_manifest();
+        let manifest = test_signed_build();
         let cache = SignedManifestCache::new(manifest, None, None, fingerprint);
 
         // Empty signature (default)
@@ -639,7 +727,7 @@ mod tests {
 
     #[test]
     fn test_save_unsigned_fails() {
-        let manifest = create_test_binary_manifest();
+        let manifest = test_signed_build();
         let cache = SignedManifestCache::new(manifest, None, None, "fingerprint".to_string());
 
         let temp_dir = tempfile::tempdir().unwrap();
@@ -696,7 +784,7 @@ mod tests {
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let manifest = create_test_binary_manifest();
+        let manifest = test_signed_build();
         let mut cache = SignedManifestCache::new(manifest, None, None, fingerprint);
 
         let hash = cache.compute_signing_hash();
@@ -715,7 +803,7 @@ mod tests {
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let binary_manifest = create_test_binary_manifest();
+        let signed_build = test_signed_build();
 
         // Create a build record cache directly
         let build_cache = BuildRecordCache {
@@ -728,7 +816,7 @@ mod tests {
         };
 
         let mut cache = SignedManifestCache {
-            binary_manifest,
+            signed_build,
             function_manifest: None,
             build_record: Some(build_cache),
             cached_at: 12345,
@@ -757,16 +845,7 @@ mod tests {
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let mut binaries = HashMap::new();
-        binaries.insert(
-            crate::registry::current_target().to_string(),
-            "sha256:test".to_string(),
-        );
-        let manifest = BinaryManifest {
-            version: env!("CARGO_PKG_VERSION").to_string(),
-            binaries,
-            generated_at: String::new(),
-        };
+        let manifest = test_signed_build();
 
         let mut cache = SignedManifestCache::new(manifest, None, None, fingerprint);
 
@@ -794,7 +873,7 @@ mod tests {
         let public_key = signing_key.verifying_key().as_bytes().to_vec();
         let fingerprint = compute_fingerprint(&public_key);
 
-        let manifest = create_test_binary_manifest();
+        let manifest = test_signed_build();
         let mut cache = SignedManifestCache::new(manifest, None, None, fingerprint.clone());
 
         let hash = cache.compute_signing_hash();
@@ -806,9 +885,9 @@ mod tests {
 
         // Test each field tampering
         let test_cases = vec![
-            ("binary_manifest.version", {
+            ("signed_build.manifest_base64", {
                 let mut c = cache.clone();
-                c.binary_manifest.version = "tampered".to_string();
+                c.signed_build.manifest_base64 = "dGFtcGVyZWQ=".to_string();
                 c
             }),
             ("target", {

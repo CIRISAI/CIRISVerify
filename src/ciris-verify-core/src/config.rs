@@ -13,8 +13,6 @@ pub struct VerifyConfig {
     /// host's GenesisBundle is verified on its own against the baked accord
     /// holders; extra hosts add availability, not trust. DNS is not a source.
     pub https_endpoints: Vec<String>,
-    /// Certificate fingerprint for pinning.
-    pub cert_pin: Option<String>,
     /// Request timeout.
     pub timeout: Duration,
     /// Cache TTL.
@@ -55,7 +53,6 @@ impl Default for VerifyConfig {
                 "https://us.registry.ciris-services-1.ai".into(),
                 "https://eu.registry.ciris-services-1.ai".into(),
             ],
-            cert_pin: None,
             timeout: Duration::from_secs(10), // Must be < Python's 30s timeout
             cache_ttl: Duration::from_secs(300),
             offline_grace: Duration::from_secs(72 * 60 * 60), // 72 hours

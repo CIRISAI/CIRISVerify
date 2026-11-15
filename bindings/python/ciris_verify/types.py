@@ -449,7 +449,7 @@ class BinaryIntegrityStatus(BaseModel):
     version: str = Field(..., description="CIRISVerify binary version")
     target: str = Field(..., description="Target platform (e.g., x86_64-unknown-linux-gnu)")
     actual_hash: Optional[str] = Field(default=None, description="Computed hash of running binary")
-    expected_hash: Optional[str] = Field(default=None, description="Expected hash from registry")
+    expected_hash: Optional[str] = Field(default=None, description="Expected hash, from the verified signed build claim")
     matches: bool = Field(default=False, description="Whether hashes match")
     error: Optional[str] = Field(default=None, description="Error message if verification failed")
     verified_at: int = Field(default=0, description="Unix timestamp of verification")

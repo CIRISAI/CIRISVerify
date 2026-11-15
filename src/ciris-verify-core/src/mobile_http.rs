@@ -73,6 +73,52 @@ where
     run_blocking(move || get_json::<T>(&agent, &url)).await
 }
 
+/// [`get_bytes`] for async callers — runs off the runtime thread (#212).
+///
+/// # Errors
+/// Propagates [`get_bytes`]'s errors.
+pub async fn get_bytes_async(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, VerifyError> {
+    let agent = agent.clone();
+    let url = url.to_string();
+    run_blocking(move || get_bytes(&agent, &url)).await
+}
+
+/// GET request returning the raw body, with [`get_json`]'s status mapping.
+/// The body is capped at 1 MiB, the largest manifest a node admits.
+///
+/// # Errors
+/// [`VerifyError::NotFound`] on 404, [`VerifyError::RateLimited`] on 429,
+/// [`VerifyError::HttpsError`] otherwise.
+pub fn get_bytes(agent: &ureq::Agent, url: &str) -> Result<Vec<u8>, VerifyError> {
+    use std::io::Read;
+    const MAX_BODY: u64 = 1024 * 1024;
+    info!("Mobile HTTP GET (bytes): {}", url);
+    let response = match agent.get(url).call() {
+        Ok(r) => r,
+        Err(ureq::Error::Status(code, resp)) => {
+            let retry_after = resp
+                .header("Retry-After")
+                .and_then(crate::registry::parse_retry_after);
+            return Err(map_mobile_status(code, url, retry_after));
+        },
+        Err(e) => {
+            warn!("Mobile HTTP GET failed: {} - {}", url, e);
+            return Err(VerifyError::HttpsError {
+                message: format!("Request failed: {}", e),
+            });
+        },
+    };
+    let mut out = Vec::new();
+    response
+        .into_reader()
+        .take(MAX_BODY + 1)
+        .read_to_end(&mut out)
+        .map_err(|e| VerifyError::HttpsError {
+            message: format!("Read body from {url} failed: {e}"),
+        })?;
+    Ok(out)
+}
+
 /// [`post_json`] for async callers — runs off the runtime thread (#212).
 ///
 /// The body is serialized before the hop so the caller keeps its borrow.
