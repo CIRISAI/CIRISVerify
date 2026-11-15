@@ -58,6 +58,7 @@ from ._jcs import jcs_canonicalize
 from ._rns_dest_hash import rns_destination_hash
 from . import _scope_privacy as scope_privacy
 from ._epoch_key import derive_epoch_key, derive_epoch_stream_nonce
+from ._stream_dek import STREAM_DEK_LABEL, av_stream_id, stream_dek
 from ._self_enc import (
     EncryptionPubkeys,
     SelfEncKeys,
@@ -68,7 +69,12 @@ from ._self_enc import (
 from ._federation_identity import create_federation_identity
 from ._evm_tx import keccak256, checksum_address
 from ._raw_verify import verify_ed25519, verify_p256
-from ._manifest_contribution import verify_build_manifest_contribution
+from ._manifest_contribution import (
+    assemble_build_attestation_bundle,
+    build_attestation_bundle_envelope,
+    verify_build_attestation_bundle,
+    verify_build_manifest_contribution,
+)
 from ._accord_invocation import accord_latch_apply, accord_latch_status, verify_accord_invocation
 from ._accord_custody import verify_accord_custody_attestation
 from ._test_anchor import test_anchor_compiled_in
@@ -172,7 +178,7 @@ def get_library_version() -> str:
     return __version__
 
 
-__version__ = "22.2.1"
+__version__ = "23.0.0"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
@@ -188,11 +194,17 @@ __all__ = [
     "derive_self_enc",
     "derive_epoch_key",
     "derive_epoch_stream_nonce",
+    "STREAM_DEK_LABEL",
+    "av_stream_id",
+    "stream_dek",
     "EncryptionPubkeys",
     "self_enc_pubkeys",
     "self_enc_respond",
     "create_federation_identity",
     "verify_build_manifest_contribution",
+    "build_attestation_bundle_envelope",
+    "assemble_build_attestation_bundle",
+    "verify_build_attestation_bundle",
     "verify_accord_invocation",
     "accord_latch_apply",
     "accord_latch_status",

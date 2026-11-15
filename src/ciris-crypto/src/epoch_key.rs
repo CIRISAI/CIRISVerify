@@ -35,6 +35,8 @@
 //! CIRISConformance goldens it byte-for-byte (CC 5.1 `CLM-epoch-keying`);
 //! CIRISPersist#432 consumes it. Any change is a wire-format break.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use hkdf::Hkdf;
 use sha2::Sha256;
 

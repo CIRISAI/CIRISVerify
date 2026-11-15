@@ -68,6 +68,9 @@
 //! substrate sees a quorum role-withdrawal, so only the substrate can say a
 //! withdrawn pipeline no longer verifies.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use chrono::{DateTime, Timelike, Utc};
 use serde_json::{json, Value};
 
@@ -127,7 +130,7 @@ pub struct BuildAttestation<'a> {
     /// upper-case value would produce a ref that exists and **never
     /// matches** — so the producer refuses it rather than emit it.
     pub manifest_hash: &'a str,
-    /// The manifest blob's length in bytes. CC 5.3.2.5: a descriptor citing a
+    /// The manifest blob's length in bytes. CC 5.3.2.11: a descriptor citing a
     /// blob from `evidence_refs` carries its size, and a fetcher checks size
     /// **before** the full SHA, so an oversized or truncated body is refused
     /// without hashing it. `build` is that descriptor (CC 3.1.2.1).
@@ -410,7 +413,7 @@ pub struct VerifiedManifest {
     pub binary_version: String,
     /// SHA-256 of the canonical file manifest, hex.
     pub manifest_hash: String,
-    /// The manifest blob's declared length in bytes (CC 5.3.2.5). A fetcher
+    /// The manifest blob's declared length in bytes (CC 5.3.2.11). A fetcher
     /// MUST refuse a body of any other length before hashing it.
     pub manifest_size: u64,
     /// The blob(s) this Contribution references (CIRISVerify#281); always
@@ -468,8 +471,8 @@ pub enum ManifestRejection {
     },
 }
 
-impl std::fmt::Display for ManifestRejection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ManifestRejection {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::WrongKind { kind } => {
                 write!(f, "not a build-manifest contribution: kind {kind:?}")
@@ -512,7 +515,7 @@ impl std::fmt::Display for ManifestRejection {
     }
 }
 
-impl std::error::Error for ManifestRejection {}
+impl core::error::Error for ManifestRejection {}
 
 fn str_field<'a>(v: &'a Value, field: &'static str) -> Result<&'a str, ManifestRejection> {
     v.get(field)
@@ -616,7 +619,7 @@ pub(crate) fn envelope_verifies(
         ed25519_signature_base64: ed_sig.to_string(),
         mldsa65_signature_base64: mldsa_sig.map(str::to_string),
     };
-    verify_threshold_signatures(&bytes, std::slice::from_ref(member), &[sig], 1) == Ok(1)
+    verify_threshold_signatures(&bytes, core::slice::from_ref(member), &[sig], 1) == Ok(1)
 }
 
 /// Verify a build-manifest Contribution and return its facts.
@@ -723,7 +726,7 @@ pub fn verify_build_manifest_contribution(
         manifest_hash: manifest_hash.to_string(),
         manifest_size: build.get("manifest_size").and_then(Value::as_u64).ok_or(
             ManifestRejection::Malformed {
-                field: "build.manifest_size (absent or not a u64 — CC 5.3.2.5)",
+                field: "build.manifest_size (absent or not a u64 — CC 5.3.2.11)",
             },
         )?,
         evidence_refs,
@@ -960,7 +963,7 @@ mod tests {
         }
     }
 
-    /// CC 5.3.2.5: the descriptor carries the blob's size; without it a
+    /// CC 5.3.2.11: the descriptor carries the blob's size; without it a
     /// fetcher can only fall back to the global cap.
     #[tokio::test]
     async fn a_build_without_a_declared_size_is_refused() {

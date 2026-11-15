@@ -65,6 +65,9 @@
 //! verification primitives only. Same discipline as
 //! [`crate::federation_keyset`].
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::threshold::{Role, ThresholdMember};
 use serde::{Deserialize, Serialize};
 
@@ -278,8 +281,8 @@ pub enum EntrenchmentViolation {
     EntrenchmentLifted,
 }
 
-impl std::fmt::Display for EntrenchmentViolation {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for EntrenchmentViolation {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::ConsensusProtocolChanged { old, new } => write!(
                 f,
@@ -297,7 +300,7 @@ impl std::fmt::Display for EntrenchmentViolation {
     }
 }
 
-impl std::error::Error for EntrenchmentViolation {}
+impl core::error::Error for EntrenchmentViolation {}
 
 /// Verify that a proposed `supersedes` rotation preserves CEG 0.11
 /// entrenchment invariants over an old community.

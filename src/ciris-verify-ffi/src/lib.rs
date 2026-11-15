@@ -57,6 +57,7 @@ mod constructor;
 // `wheel_guard!` panic catch (sibling modules cannot see the
 // crate-root `ffi_guard!` macro without `#[macro_export]`).
 mod wheel_accord_custody;
+mod wheel_build_attestation;
 mod wheel_canonical_subject;
 mod wheel_epoch_key;
 mod wheel_hybrid_kex;
@@ -70,6 +71,7 @@ mod wheel_rns_dest_hash;
 mod wheel_scope_privacy;
 mod wheel_self_enc;
 mod wheel_skill_import;
+mod wheel_stream_dek;
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 mod mobile_trust_root;
@@ -117,6 +119,9 @@ pub extern "C" fn ciris_verify_ffi_link_anchor() -> usize {
     acc ^= ciris_verify_attest_bundle_from_attestation as usize;
     acc ^= ciris_verify_audit_trail as usize;
     acc ^= ciris_verify_await_key_registration as usize;
+    acc ^= wheel_build_attestation::ciris_verify_build_attestation_bundle_assemble as usize;
+    acc ^= wheel_build_attestation::ciris_verify_build_attestation_bundle_envelope as usize;
+    acc ^= wheel_build_attestation::ciris_verify_build_attestation_bundle_verify as usize;
     acc ^= wheel_manifest_contribution::ciris_verify_build_manifest_contribution as usize;
     acc ^= ciris_verify_check_agent_integrity as usize;
     acc ^= ciris_verify_check_agent_integrity_available as usize;
@@ -180,6 +185,7 @@ pub extern "C" fn ciris_verify_ffi_link_anchor() -> usize {
     acc ^= ciris_verify_sth_cosignature_consistency_proof as usize;
     acc ^= ciris_verify_store_named_key as usize;
     acc ^= wheel_canonical_subject::ciris_verify_canonical_subject as usize;
+    acc ^= wheel_stream_dek::ciris_verify_stream_dek_derive as usize;
     acc ^= ciris_verify_test_anchor_compiled_in as usize;
     acc ^= ciris_verify_tree as usize;
     acc ^= ciris_verify_verify_integrity_token as usize;

@@ -18,7 +18,9 @@
 //! classical" discipline applies: each submitted signature carries an
 //! Ed25519 half and an ML-DSA-65 half. The PQC half covers
 //! `bytes ‖ classical_sig` — the bound-signature rule shared with
-//! `FederationEnvelope`, `WitnessSignature`, and `ProvenanceLink`.
+//! `FederationEnvelope` and `ProvenanceLink`. (Transparency-log STHs and
+//! witness cosignatures are the CC 2.6.1.7 composite instead; see
+//! [`crate::transparency`].)
 //!
 //! **Both halves are MANDATORY at federation-tier (the default,
 //! [`HybridPolicy::RequireHybrid`], CEG 1.0-RC7 §10.1.5.1.1).** A
@@ -59,6 +61,9 @@
 //! `Result<usize, ThresholdError>`: `Ok(count)` on success
 //! (`count >= threshold`); `Err` on a parameter error or insufficient
 //! count.
+
+#[allow(unused_imports)]
+use crate::prelude::*;
 
 use base64::Engine;
 use ciris_crypto::{ClassicalVerifier, Ed25519Verifier, MlDsa65Verifier, PqcVerifier};
@@ -182,8 +187,8 @@ pub enum ThresholdError {
     },
 }
 
-impl std::fmt::Display for ThresholdError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ThresholdError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::ZeroThreshold => write!(f, "threshold of 0 is never accepted"),
             Self::ThresholdExceedsMembers { threshold, members } => write!(
@@ -289,7 +294,7 @@ impl QuorumPolicy {
     }
 }
 
-impl std::error::Error for ThresholdError {}
+impl core::error::Error for ThresholdError {}
 
 /// Whether the PQC (ML-DSA-65) half is REQUIRED for a signature to count.
 ///
@@ -985,7 +990,7 @@ mod tests {
                 )
                 .is_err(),
                 "local tier must refuse a small-order-key forgery over {:?}",
-                std::str::from_utf8(payload).unwrap()
+                core::str::from_utf8(payload).unwrap()
             );
             assert!(
                 verify_threshold_signatures(payload, &members, &sigs, 1).is_err(),

@@ -28,6 +28,8 @@ CIRISVerify faces the same challenge. Before it can verify agent software, licen
 
 The challenge? Finding "yourself" when you're a shared library loaded into another process.
 
+**Known limitation (until edition 2).** The binary manifest is plain JSON fetched over TLS with the bundled web-PKI roots. It is not signed and no certificate is pinned, so whoever controls the registry host, or can present a web-PKI certificate for it, can serve a manifest that names a replaced binary. The edition-2 signed build record (CBOR/COSE, CC 2.6.1.9), published after the re-genesis, closes this; Level 1 will verify that record instead.
+
 ---
 
 ## Platform-Specific Detection

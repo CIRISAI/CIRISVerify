@@ -35,6 +35,9 @@
 //! wrong digest length, extra/missing segments, and surrounding whitespace.
 //! Fail-closed: anything not provably the pinned form is refused.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use sha2::{Digest, Sha256};
 
 /// The subject tag prefix, including the algorithm and its trailing colon.
@@ -101,8 +104,8 @@ pub enum SubjectError {
     },
 }
 
-impl std::fmt::Display for SubjectError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for SubjectError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NotTagged { kind } => match kind {
                 SubjectKind::BareHex => write!(
@@ -128,7 +131,7 @@ impl std::fmt::Display for SubjectError {
     }
 }
 
-impl std::error::Error for SubjectError {}
+impl core::error::Error for SubjectError {}
 
 /// Is `s` exactly 64 lowercase-hex characters (the ambiguous bare-hex shape)?
 fn is_bare_sha256_hex(s: &str) -> bool {

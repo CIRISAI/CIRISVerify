@@ -64,6 +64,8 @@
 //! failure. This module doesn't error on adversary inputs; it
 //! produces a different session key, by design.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CryptoError;

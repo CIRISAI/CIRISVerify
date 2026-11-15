@@ -433,7 +433,7 @@ jobs:
       - name: Test ciris-crypto with full crypto feature set
         run: |
           cargo nextest run -p ciris-crypto --profile ci \
-            --features ecdsa-p256,ed25519,secp256k1,random,aes-gcm,kdf,hmac,pqc-ml-dsa,x25519,ml-kem,hybrid-kex,key-grant,xchacha,hpke,scope-privacy,transit-kex
+            --features ecdsa-p256,ed25519,secp256k1,random,aes-gcm,kdf,hmac,pqc-ml-dsa,x25519,ml-kem,hybrid-kex,key-grant,xchacha,hpke,scope-privacy,transit-kex,xwing,composite
         env:
           PROPTEST_CASES: 64
       # CIRISVerify#202: the test-anchor tests are feature-gated, so `nextest run
@@ -448,6 +448,47 @@ jobs:
       # config so a future edit that only works under cfg(test) is caught here.
       - name: Build ciris-verify-core with test-support (downstream config)
         run: cargo build -p ciris-verify-core --features test-support
+      # CIRISVerify#325: the pure and std tiers without the host half (no
+      # keyring, HTTP, TLS or SQLite). The no_std targets are checked in
+      # `pure-half`; this runs the tests that need no host.
+      - name: Test ciris-verify-core without host
+        run: cargo nextest run -p ciris-verify-core --profile ci --no-default-features --features std,pqc
+        env:
+          PROPTEST_CASES: 64
+
+  # CIRISVerify#325 / CIRISServer#870: the pure half of ciris-verify-core and
+  # ciris-crypto is `#![no_std]` + `alloc` (no clock, no RNG, no I/O). These
+  # targets ship no `std`, so a `std` use that slips into a pure module fails
+  # here. Checked on the release toolchain and on the pure half's MSRV (1.89,
+  # held apart from persist and edge for firmware toolchains). The `std`-only
+  # (no `host`) build is checked natively so the feature split stays honest.
+  pure-half:
+    name: Pure half (no_std ${{ matrix.toolchain }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        toolchain: ["1.97.0", "1.89"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ matrix.toolchain }}
+          targets: wasm32-unknown-unknown,x86_64-unknown-uefi,aarch64-unknown-uefi
+      - name: ciris-crypto, no_std
+        run: |
+          for t in wasm32-unknown-unknown x86_64-unknown-uefi aarch64-unknown-uefi; do
+            cargo +${{ matrix.toolchain }} check -p ciris-crypto --no-default-features \
+              --features ed25519,ecdsa-p256,pqc-ml-dsa,stream-dek,xwing,composite --target "$t"
+          done
+      - name: ciris-verify-core, no_std
+        run: |
+          for t in wasm32-unknown-unknown x86_64-unknown-uefi aarch64-unknown-uefi; do
+            cargo +${{ matrix.toolchain }} check -p ciris-verify-core --no-default-features \
+              --features pqc --target "$t"
+          done
+      - name: ciris-verify-core, std without host
+        run: cargo +${{ matrix.toolchain }} check -p ciris-verify-core --no-default-features --features std,pqc
 
   # ==========================================================================
   # Build Matrix - Native Platforms

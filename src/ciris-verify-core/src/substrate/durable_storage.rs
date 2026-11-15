@@ -1,37 +1,40 @@
-//! §19.3 Fountain storage + swarm rarity (CEG 1.0-RC11).
+//! Durable storage: per-item replication and swarm rarity (CC 6.1.5; §19.3).
 //!
-//! Content is RaptorQ-coded into source + repair symbols; peers retain symbols
-//! and coordinate rarest-first so content survives churn. This module owns the
-//! verifier-side invariants — the ones an adversary would exploit to force-evict
-//! or to keep revoked content alive:
+//! Durability is a per-item choice the owner makes on publish: an item marked
+//! durable carries a target holder count, and the swarm replicates its sealed
+//! chunks to that count across live nodes, rarest chunk first. Nodes hold and
+//! forward sealed bytes; they never encode or decode stored content. This
+//! module owns the verifier-side invariants — the ones an adversary would
+//! exploit to force-evict or to keep revoked content alive:
 //!
 //! - **N5 (retention respects revocation — fail-secure).** A withdrawn/revoked
 //!   `content_id` is evict-eligible **regardless of rarity**; an active
 //!   `withdraws` / `consent:state:revoked` overrides the max-rarity "keep"
 //!   signal; unknown consent state defaults to *not retained as rare*
-//!   ([`retention_decision`]). "Reconstitute from any fragment" must never
-//!   resurrect deleted content.
-//! - **N6 (possession-bound claims).** An unverified `FountainHoldingClaim` MUST
+//!   ([`retention_decision`]). Recovery from any holder must never resurrect
+//!   deleted content.
+//! - **N6 (possession-bound claims).** An unverified [`HoldingClaim`] MUST
 //!   NOT lower another peer's retention priority — else rarity is a forgeable
 //!   force-evict channel. [`holding_claim_counts_toward_rarity`] gates this.
 //! - **N7 (symbol integrity).** Reconstruction MUST verify each symbol against
 //!   the manifest's signed per-symbol SHA-256 ([`verify_symbol`]) so a
-//!   swarm-sourced symbol cannot poison a decode.
+//!   swarm-sourced symbol cannot poison a recovery.
 //! - **SR-2/3.** Anonymous-tier content is exempt from swarm-mandatory retention
 //!   (LRU-only) — no holding claim, no rarest-first biasing (a caller concern).
 //!
-//! The `FountainHoldingClaim` / `FountainCompressRequest` **signed preimages**
+//! The [`HoldingClaim`] / [`CompressRequest`] **signed preimages**
 //! are PIN-NORMATIVE (`symbol_ids` sorted ascending before signing); the exact
 //! field set is byte-frozen by the §19.6 vectors (CIRISEdge#143). The holding
 //! claim is a **specialization of `holds_bytes:sha256:*`** ([§10.1.2]) and MUST
 //! NOT create a second who-holds-what directory; it inherits the §10.1.4
 //! `cohort_scope: self | family` suppression.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use sha2::{Digest, Sha256};
 
-use super::preimage::{
-    BoundHybridSig, HolonomicError, Preimage, DOMAIN_COMPRESS_REQUEST, DOMAIN_HOLDING_CLAIM,
-};
+use super::preimage::{HolonomicError, Preimage, DOMAIN_COMPRESS_REQUEST, DOMAIN_HOLDING_CLAIM};
 
 /// Consent state of a content id, as resolved by the caller from the
 /// `withdraws` / `consent:state:*` records (§3.2.3).
@@ -91,11 +94,11 @@ pub fn verify_symbol(symbol_bytes: &[u8], manifest_symbol_sha256: &[u8; 32]) -> 
     ciris_crypto::constant_time_eq(&got, manifest_symbol_sha256)
 }
 
-/// A `FountainHoldingClaim` as parsed off the wire (the fields the §19.3 signed
+/// A holding claim as parsed off the wire (the fields the §19.3 signed
 /// preimage covers). `symbol_ids` are sorted ascending before signing/verify.
 /// Byte layout byte-frozen by the Edge v4.1.2 §19.6 vectors.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FountainHoldingClaim {
+pub struct HoldingClaim {
     /// The holder peer's id.
     pub peer_id: String,
     /// Content id this claim is about (the `holds_bytes:sha256:*` key — carried
@@ -109,7 +112,7 @@ pub struct FountainHoldingClaim {
     pub claim_version: u32,
 }
 
-impl FountainHoldingClaim {
+impl HoldingClaim {
     /// Build the §19.3 canonical signing preimage (byte-frozen by Edge v4.1.2).
     /// Layout, after the [`DOMAIN_HOLDING_CLAIM`] separator:
     /// `u64-lp(peer_id) ‖ u64-lp(content_id) ‖ u64(symbol_count) ‖
@@ -131,11 +134,11 @@ impl FountainHoldingClaim {
     }
 }
 
-/// A `FountainCompressRequest` (§19.3) — a peer asking the swarm to evict a
+/// A compress request (§19.3) — a peer asking the swarm to evict a
 /// symbol range for a content id by a deadline. Byte layout byte-frozen by the
 /// Edge v4.1.2 §19.6 vectors.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct FountainCompressRequest {
+pub struct CompressRequest {
     /// The requesting peer's id.
     pub peer_id: String,
     /// Content id the request targets.
@@ -150,7 +153,7 @@ pub struct FountainCompressRequest {
     pub request_version: u32,
 }
 
-impl FountainCompressRequest {
+impl CompressRequest {
     /// Build the §19.3 canonical signing preimage. Layout, after the
     /// [`DOMAIN_COMPRESS_REQUEST`] separator:
     /// `u64-lp(peer_id) ‖ u64-lp(content_id) ‖ u32(evicting_range_low) ‖
@@ -168,8 +171,9 @@ impl FountainCompressRequest {
     }
 }
 
-/// Verify a `FountainHoldingClaim`'s bound-hybrid signature (PQC-mandatory,
-/// §19.0). Returns the verified claim's content id / symbol set for the holder
+/// Verify a [`HoldingClaim`]'s composite ML-DSA-65-Ed25519 signature
+/// (CC 2.6.1.7, PQC-mandatory, §19.0; `sig` is 3373 bytes and
+/// `composite_pubkey` 1984 bytes). Returns the verified claim's content id / symbol set for the holder
 /// directory on success. **N5/N6 are separate gates** — a verified *signature*
 /// does not by itself license retention or rarity-counting.
 ///
@@ -177,19 +181,18 @@ impl FountainCompressRequest {
 ///
 /// [`HolonomicError`] from the signature gate.
 pub fn verify_holding_claim(
-    claim: &FountainHoldingClaim,
-    sig: &BoundHybridSig<'_>,
-    ed25519_pubkey: &[u8],
-    mldsa65_pubkey: &[u8],
+    claim: &HoldingClaim,
+    sig: &[u8],
+    composite_pubkey: &[u8],
 ) -> Result<(), HolonomicError> {
     let preimage = claim.signing_preimage();
-    super::preimage::verify_bound_hybrid(&preimage, sig, ed25519_pubkey, mldsa65_pubkey)
+    super::preimage::verify_composite(&preimage, sig, composite_pubkey)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ciris_crypto::{ClassicalSigner, Ed25519Signer, MlDsa65Signer, PqcSigner};
+    use ciris_crypto::composite::{CompositeSigningKey, MLDSA65_SIG_LEN};
 
     #[test]
     fn n5_withdrawn_is_evict_eligible_even_if_rare() {
@@ -215,7 +218,7 @@ mod tests {
 
     #[test]
     fn n7_symbol_integrity() {
-        let sym = b"raptorq-symbol-bytes";
+        let sym = b"sealed-chunk-bytes";
         let digest: [u8; 32] = Sha256::digest(sym).into();
         assert!(verify_symbol(sym, &digest));
         let mut bad = digest;
@@ -225,14 +228,14 @@ mod tests {
 
     #[test]
     fn holding_claim_preimage_is_symbol_order_independent() {
-        let c1 = FountainHoldingClaim {
+        let c1 = HoldingClaim {
             peer_id: "p".into(),
             content_id: "c".into(),
             symbol_ids: vec![3, 1, 2],
             observed_at_unix_ms: 100,
             claim_version: 1,
         };
-        let c2 = FountainHoldingClaim {
+        let c2 = HoldingClaim {
             peer_id: "p".into(),
             content_id: "c".into(),
             symbol_ids: vec![1, 2, 3],
@@ -244,9 +247,9 @@ mod tests {
 
     #[test]
     fn holding_claim_round_trips_and_is_pqc_mandatory() {
-        let ed = Ed25519Signer::random().unwrap();
-        let mldsa = MlDsa65Signer::new().unwrap();
-        let claim = FountainHoldingClaim {
+        let k = CompositeSigningKey::from_seeds(&[1; 32], &[2; 32]);
+        let other = CompositeSigningKey::from_seeds(&[3; 32], &[4; 32]);
+        let claim = HoldingClaim {
             peer_id: "holder-1".into(),
             content_id: "content-xyz".into(),
             symbol_ids: vec![5, 1, 9, 2],
@@ -254,36 +257,29 @@ mod tests {
             claim_version: 1,
         };
         let pre = claim.signing_preimage();
-        let ed_sig = ed.sign(&pre).unwrap();
-        let mut bound = pre.clone();
-        bound.extend_from_slice(&ed_sig);
-        let pqc_sig = mldsa.sign(&bound).unwrap();
-
-        let good = BoundHybridSig {
-            ed25519: &ed_sig,
-            mldsa65: Some(&pqc_sig),
-        };
-        assert!(verify_holding_claim(
-            &claim,
-            &good,
-            &ed.public_key().unwrap(),
-            &mldsa.public_key().unwrap()
-        )
-        .is_ok());
-
-        // PQC-mandatory: classical-only is rejected.
-        let classical_only = BoundHybridSig {
-            ed25519: &ed_sig,
-            mldsa65: None,
-        };
+        let sig = k.sign(&pre).unwrap();
+        let pk = k.public_key().as_bytes();
+        assert!(verify_holding_claim(&claim, &sig, pk).is_ok());
+        // Wrong length (a bare Ed25519 signature, the old classical-only shape).
         assert_eq!(
-            verify_holding_claim(
-                &claim,
-                &classical_only,
-                &ed.public_key().unwrap(),
-                &mldsa.public_key().unwrap()
-            ),
-            Err(HolonomicError::PqcHalfMissingOrInvalid)
+            verify_holding_claim(&claim, &sig[MLDSA65_SIG_LEN..], pk),
+            Err(HolonomicError::MalformedKeyOrSignature)
+        );
+        // A flipped byte in the ML-DSA region and in the Ed25519 region.
+        for i in [0, MLDSA65_SIG_LEN] {
+            let mut bad = sig.clone();
+            bad[i] ^= 1;
+            assert_eq!(
+                verify_holding_claim(&claim, &bad, pk),
+                Err(HolonomicError::SignatureInvalid),
+                "byte {i}"
+            );
+        }
+        // A signature under a different key.
+        let foreign = other.sign(&pre).unwrap();
+        assert_eq!(
+            verify_holding_claim(&claim, &foreign, pk),
+            Err(HolonomicError::SignatureInvalid)
         );
     }
 }

@@ -4,7 +4,7 @@
 //! large enough that random nonces never collide in practice. This is the
 //! scope-native-privacy cipher (CEWP SCOPE_PRIVACY.md):
 //!
-//! - §2.4 `symbol_envelope` — each RaptorQ symbol fragment is sealed under a
+//! - §2.4 `symbol_envelope` — each stored chunk is sealed once under a
 //!   per-symbol `symbol_key` ([`crate::scope_privacy::derive_symbol_key`]).
 //! - §3.1 uniform AEAD framing — every outbound envelope (real or synthetic
 //!   cover) is XChaCha20-Poly1305-framed so the two are wire-indistinguishable.
@@ -15,6 +15,8 @@
 //! safe for effectively unbounded message counts, which is exactly why the
 //! extended-nonce variant is the right fit for the per-symbol fan-out.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     XChaCha20Poly1305, XNonce,

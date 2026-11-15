@@ -1,5 +1,8 @@
 //! Error types for verification operations.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use thiserror::Error;
 
 /// Errors that can occur during verification.
@@ -172,6 +175,7 @@ pub enum VerifyError {
     CryptoError(#[from] ciris_crypto::CryptoError),
 
     /// Keyring error.
+    #[cfg(feature = "host")]
     #[error("Keyring error: {0}")]
     KeyringError(#[from] ciris_keyring::KeyringError),
 }

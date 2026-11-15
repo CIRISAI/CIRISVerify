@@ -3,6 +3,8 @@
 //! This module provides ECDSA P-256 (secp256r1) signing and verification,
 //! the primary classical algorithm for hardware-bound signatures.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use p256::ecdsa::{
     signature::{Signer, Verifier},
     Signature, SigningKey, VerifyingKey,
@@ -14,6 +16,7 @@ use crate::types::ClassicalAlgorithm;
 
 /// Fill key material: the RNG facade (health-latched) when built with
 /// `random`, the OS RNG otherwise.
+#[cfg(feature = "std")]
 fn fill_key_bytes(buf: &mut [u8]) -> Result<(), CryptoError> {
     #[cfg(feature = "random")]
     {
@@ -53,6 +56,7 @@ impl P256Signer {
     ///
     /// `CryptoError::RngHealthCheckFailed` if the RNG health latch is
     /// `Failed` (fail-secure; no key generated).
+    #[cfg(feature = "std")]
     pub fn random() -> Result<Self, CryptoError> {
         #[cfg(feature = "random")]
         {

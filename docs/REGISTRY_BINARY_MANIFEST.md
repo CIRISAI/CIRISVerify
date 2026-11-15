@@ -1,5 +1,7 @@
 # Registry Binary Manifest Implementation
 
+> **Known limitation (until edition 2).** The binary manifest is plain JSON fetched over TLS with the bundled web-PKI roots. It is not signed and no certificate is pinned, so whoever controls the registry host, or can present a web-PKI certificate for it, can serve a manifest that names a replaced binary. The edition-2 signed build record (CBOR/COSE, CC 2.6.1.9), published after the re-genesis, closes this; Level 1 will verify that record instead.
+
 ## Overview
 
 CIRISVerify v0.5.2 introduces **Level 2 Binary Self-Verification** - the ability for the CIRISVerify binary to verify its own integrity against a registry-hosted manifest. This closes the "who watches the watchmen" attack vector where a compromised verifier could report false results.
@@ -136,13 +138,15 @@ Level 3 (Registry)   → validated by       → Level 2 (This Binary)
 ### What Self-Verification Does NOT Protect Against
 
 - **Fully compromised registry**: An attacker controlling the registry could update both the binary distribution and the manifest simultaneously.
+- **A forged manifest response**: the manifest is unsigned and the TLS certificate is not pinned, so an attacker who can present a web-PKI certificate for the registry host can serve any manifest.
 - **Compromised initial provisioning**: A malicious app store listing.
 
 ### Mitigations
 
-- Level 3 multi-source cross-validation
 - Trusted app store provisioning
-- (Future) Manifest signing key pinning with rotation detection
+- The edition-2 signed build record (CBOR/COSE, CC 2.6.1.9), published after the re-genesis; Level 1 will verify it instead of this manifest
+
+Level 3 does not cover this: it verifies the GenesisBundle trust root, not the binary manifest.
 
 ## Error Responses
 

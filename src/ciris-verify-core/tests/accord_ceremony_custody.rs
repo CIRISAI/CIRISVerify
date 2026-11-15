@@ -18,6 +18,7 @@
 //! CI failing this test means the audit trail no longer verifies — a loud,
 //! non-silent signal. Anyone can reproduce it: `cargo test -p ciris-verify-core
 //! --test accord_ceremony_custody`.
+#![cfg(feature = "host")]
 
 use base64::Engine;
 use ciris_verify_core::accord_custody_attestation::verify_accord_custody_attestation;

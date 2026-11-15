@@ -15,26 +15,27 @@
 //!
 //! Both are substrate-framing objects — no 1+4 change. Their signing preimage
 //! uses the **CC 6.1.3 binary discipline** ([`Preimage`] — length-prefixed,
-//! big-endian, 16-byte domain-separated — **NOT** JCS) and a **bound-hybrid**
-//! signature: `Ed25519(preimage)` plus `ML-DSA-65(preimage ‖ ed25519_sig)`
-//! ([`verify_bound_hybrid`]). A verifier MUST reject a shape lacking a valid
-//! ML-DSA-65 half at ingest and before persistence (CC 5.3.2.4.3.1 store-path —
+//! big-endian, 16-byte domain-separated — **NOT** JCS) and one composite
+//! ML-DSA-65-Ed25519 signature (CC 2.6.1.7, [`verify_composite`]): both halves
+//! sign the composite message representative of the preimage and neither
+//! verifies alone. A verifier MUST reject a shape whose composite signature
+//! does not verify at ingest and before persistence (CC 5.3.2.8 store-path —
 //! both are federation-tier). Same gate every §19 object rides.
 //!
 //! # Canonical home
 //!
 //! These shapes were first implemented standalone in CIRISEdge
 //! (`src/replication/storage_contention.rs`), which re-derived the
-//! preimage discipline + bound-hybrid crypto locally. That blocks non-edge
+//! preimage discipline + signature crypto locally. That blocks non-edge
 //! consumers (CIRISPersist can't depend on edge) and forks the canonical bytes.
 //! This module is the single source of truth: CIRISPersist wraps it on the
 //! Python wheel (CIRISPersist#356), CIRISEdge drops its local copy, and
 //! CIRISConformance drives the #57 freeze-gate vectors against it.
 
-use super::preimage::{
-    verify_bound_hybrid, BoundHybridSig, HolonomicError, Preimage, DOMAIN_CORPUS_WANT,
-    DOMAIN_STORAGE_BUDGET,
-};
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use super::preimage::{verify_composite, Preimage, DOMAIN_CORPUS_WANT, DOMAIN_STORAGE_BUDGET};
 
 /// Wire version pinned into both preimages (`version = 1`).
 pub const SHAPE_VERSION: u32 = 1;
@@ -46,7 +47,7 @@ pub const SHAPE_VERSION: u32 = 1;
 pub const SUPPRESSED_SCOPES: [&str; 2] = ["self", "family"];
 
 /// Why a §Q shape failed structural validation (pre-signature). A verifier MUST
-/// reject on any of these before consulting the bound-hybrid signature.
+/// reject on any of these before consulting the composite signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum StorageContentionError {
@@ -89,7 +90,7 @@ impl core::fmt::Display for StorageContentionError {
     }
 }
 
-impl std::error::Error for StorageContentionError {}
+impl core::error::Error for StorageContentionError {}
 
 /// `true` iff `it` yields strictly-ascending (sorted, no duplicates) items.
 fn is_sorted_dedup<'a, I: Iterator<Item = &'a str>>(mut it: I) -> bool {
@@ -139,7 +140,7 @@ pub struct StorageBudgetV1 {
 }
 
 impl StorageBudgetV1 {
-    /// The exact bytes the bound-hybrid signature covers (CC 6.1.3 binary
+    /// The exact bytes the composite signature covers (CC 6.1.3 binary
     /// discipline — length-prefixed, big-endian, domain-separated):
     ///
     /// ```text
@@ -234,7 +235,7 @@ pub struct CorpusWantV1 {
 }
 
 impl CorpusWantV1 {
-    /// The exact bytes the bound-hybrid signature covers (CC 6.1.3):
+    /// The exact bytes the composite signature covers (CC 6.1.3):
     ///
     /// ```text
     /// b"CIRIS-WANT-HAVE\0" ‖ u32_be(version=1)
@@ -282,108 +283,71 @@ impl CorpusWantV1 {
     }
 }
 
-/// Outcome of verifying a §Q shape at ingest — structure + bound-hybrid signature.
+/// Outcome of verifying a §Q shape at ingest — structure + composite signature.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StorageContentionVerification {
-    /// Structure valid AND both signature halves verified — admissible.
-    HybridVerified,
+    /// Structure valid AND the composite signature verified — admissible.
+    Verified,
     /// Structural validation failed (the carried reason).
     Invalid(StorageContentionError),
-    /// Structure valid but the bound-hybrid signature failed (bad/absent
-    /// classical or ML-DSA-65 half).
+    /// Structure valid but the composite signature failed (wrong length,
+    /// undecodable key, or did not verify; which half failed is not said).
     SignatureFailed,
 }
 
-/// Verify a [`StorageBudgetV1`] at ingest: structure first, then the bound-hybrid
-/// signature over its CC 6.1.3 preimage (PQC-mandatory — a missing/invalid
-/// ML-DSA-65 half is rejected). Pass only [`StorageContentionVerification::HybridVerified`].
+/// Verify a [`StorageBudgetV1`] at ingest: structure first, then the composite
+/// ML-DSA-65-Ed25519 signature (CC 2.6.1.7; `sig` 3373 bytes,
+/// `composite_pubkey` 1984 bytes) over its CC 6.1.3 preimage (PQC-mandatory). Pass only [`StorageContentionVerification::Verified`].
 #[must_use]
 pub fn verify_storage_budget_v1(
     budget: &StorageBudgetV1,
-    sig_ed25519: &[u8],
-    sig_ml_dsa_65: &[u8],
-    ed25519_pubkey: &[u8],
-    ml_dsa_65_pubkey: &[u8],
+    sig: &[u8],
+    composite_pubkey: &[u8],
 ) -> StorageContentionVerification {
     if let Err(e) = budget.validate() {
         return StorageContentionVerification::Invalid(e);
     }
-    verify_shape_sig(
-        &budget.signing_preimage(),
-        sig_ed25519,
-        sig_ml_dsa_65,
-        ed25519_pubkey,
-        ml_dsa_65_pubkey,
-    )
+    verify_shape_sig(&budget.signing_preimage(), sig, composite_pubkey)
 }
 
-/// Verify a [`CorpusWantV1`] at ingest (structure + bound-hybrid signature).
+/// Verify a [`CorpusWantV1`] at ingest (structure + composite signature, as
+/// [`verify_storage_budget_v1`]).
 #[must_use]
 pub fn verify_corpus_want_v1(
     want: &CorpusWantV1,
-    sig_ed25519: &[u8],
-    sig_ml_dsa_65: &[u8],
-    ed25519_pubkey: &[u8],
-    ml_dsa_65_pubkey: &[u8],
+    sig: &[u8],
+    composite_pubkey: &[u8],
 ) -> StorageContentionVerification {
     if let Err(e) = want.validate() {
         return StorageContentionVerification::Invalid(e);
     }
-    verify_shape_sig(
-        &want.signing_preimage(),
-        sig_ed25519,
-        sig_ml_dsa_65,
-        ed25519_pubkey,
-        ml_dsa_65_pubkey,
-    )
+    verify_shape_sig(&want.signing_preimage(), sig, composite_pubkey)
 }
 
-/// Shared bound-hybrid verify over a §Q preimage.
+/// Shared composite verify over a §Q preimage. Every failure collapses to
+/// [`StorageContentionVerification::SignatureFailed`].
 fn verify_shape_sig(
     preimage: &[u8],
-    sig_ed25519: &[u8],
-    sig_ml_dsa_65: &[u8],
-    ed25519_pubkey: &[u8],
-    ml_dsa_65_pubkey: &[u8],
+    sig: &[u8],
+    composite_pubkey: &[u8],
 ) -> StorageContentionVerification {
-    let sig = BoundHybridSig {
-        ed25519: sig_ed25519,
-        mldsa65: Some(sig_ml_dsa_65),
-    };
-    match verify_bound_hybrid(preimage, &sig, ed25519_pubkey, ml_dsa_65_pubkey) {
-        Ok(()) => StorageContentionVerification::HybridVerified,
-        Err(HolonomicError::ClassicalSignatureInvalid)
-        | Err(HolonomicError::PqcHalfMissingOrInvalid)
-        | Err(HolonomicError::MalformedKeyOrSignature)
-        | Err(HolonomicError::Invariant { .. }) => StorageContentionVerification::SignatureFailed,
+    match verify_composite(preimage, sig, composite_pubkey) {
+        Ok(()) => StorageContentionVerification::Verified,
+        Err(_) => StorageContentionVerification::SignatureFailed,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ciris_crypto::{ClassicalSigner, Ed25519Signer, MlDsa65Signer, PqcSigner};
+    use ciris_crypto::composite::{CompositeSigningKey, MLDSA65_SIG_LEN};
 
-    struct Id {
-        ed: Ed25519Signer,
-        pqc: MlDsa65Signer,
+    fn id() -> CompositeSigningKey {
+        CompositeSigningKey::from_seeds(&[1; 32], &[2; 32])
     }
 
-    fn id() -> Id {
-        Id {
-            ed: Ed25519Signer::random().unwrap(),
-            pqc: MlDsa65Signer::new().unwrap(),
-        }
-    }
-
-    /// Bound-hybrid sign a preimage the producer way: Ed25519 over preimage,
-    /// ML-DSA-65 over `preimage ‖ ed25519_sig`.
-    fn bound_sign(id: &Id, preimage: &[u8]) -> (Vec<u8>, Vec<u8>) {
-        let ed_sig = id.ed.sign(preimage).unwrap();
-        let mut bound = preimage.to_vec();
-        bound.extend_from_slice(&ed_sig);
-        let pqc_sig = id.pqc.sign(&bound).unwrap();
-        (ed_sig, pqc_sig)
+    fn other() -> CompositeSigningKey {
+        CompositeSigningKey::from_seeds(&[3; 32], &[4; 32])
     }
 
     fn budget() -> StorageBudgetV1 {
@@ -419,36 +383,42 @@ mod tests {
     }
 
     #[test]
-    fn storage_budget_hybrid_round_trip_admits() {
+    fn storage_budget_composite_round_trip_admits() {
         let id = id();
         let b = budget();
-        let (ed, pqc) = bound_sign(&id, &b.signing_preimage());
+        let sig = id.sign(&b.signing_preimage()).unwrap();
         assert_eq!(
-            verify_storage_budget_v1(
-                &b,
-                &ed,
-                &pqc,
-                &id.ed.public_key().unwrap(),
-                &id.pqc.public_key().unwrap()
-            ),
-            StorageContentionVerification::HybridVerified
+            verify_storage_budget_v1(&b, &sig, id.public_key().as_bytes()),
+            StorageContentionVerification::Verified
         );
     }
 
     #[test]
-    fn storage_budget_missing_pqc_rejected() {
+    fn storage_budget_bad_composite_rejected() {
         let id = id();
         let b = budget();
-        let (ed, _pqc) = bound_sign(&id, &b.signing_preimage());
-        // Empty PQC half → SignatureFailed (PQC-mandatory, CC 6.1.3).
+        let pre = b.signing_preimage();
+        let sig = id.sign(&pre).unwrap();
+        let pk = id.public_key().as_bytes();
+        // Wrong length: the bare Ed25519 half (the old classical-only shape).
         assert_eq!(
-            verify_storage_budget_v1(
-                &b,
-                &ed,
-                &[],
-                &id.ed.public_key().unwrap(),
-                &id.pqc.public_key().unwrap()
-            ),
+            verify_storage_budget_v1(&b, &sig[MLDSA65_SIG_LEN..], pk),
+            StorageContentionVerification::SignatureFailed
+        );
+        // A flipped byte in the ML-DSA region and in the Ed25519 region.
+        for i in [0, MLDSA65_SIG_LEN] {
+            let mut bad = sig.clone();
+            bad[i] ^= 1;
+            assert_eq!(
+                verify_storage_budget_v1(&b, &bad, pk),
+                StorageContentionVerification::SignatureFailed,
+                "byte {i}"
+            );
+        }
+        // A signature under a different key.
+        let foreign = other().sign(&pre).unwrap();
+        assert_eq!(
+            verify_storage_budget_v1(&b, &foreign, pk),
             StorageContentionVerification::SignatureFailed
         );
     }
@@ -457,17 +427,11 @@ mod tests {
     fn storage_budget_tamper_breaks_signature() {
         let id = id();
         let b = budget();
-        let (ed, pqc) = bound_sign(&id, &b.signing_preimage());
+        let sig = id.sign(&b.signing_preimage()).unwrap();
         let mut tampered = b.clone();
         tampered.revision = 99; // preimage diverges from what was signed
         assert_eq!(
-            verify_storage_budget_v1(
-                &tampered,
-                &ed,
-                &pqc,
-                &id.ed.public_key().unwrap(),
-                &id.pqc.public_key().unwrap()
-            ),
+            verify_storage_budget_v1(&tampered, &sig, id.public_key().as_bytes()),
             StorageContentionVerification::SignatureFailed
         );
     }
@@ -512,16 +476,16 @@ mod tests {
     fn corpus_want_round_trip_and_admits() {
         let id = id();
         let w = want();
-        let (ed, pqc) = bound_sign(&id, &w.signing_preimage());
+        let sig = id.sign(&w.signing_preimage()).unwrap();
+        let pk = id.public_key().as_bytes();
         assert_eq!(
-            verify_corpus_want_v1(
-                &w,
-                &ed,
-                &pqc,
-                &id.ed.public_key().unwrap(),
-                &id.pqc.public_key().unwrap()
-            ),
-            StorageContentionVerification::HybridVerified
+            verify_corpus_want_v1(&w, &sig, pk),
+            StorageContentionVerification::Verified
+        );
+        let foreign = other().sign(&w.signing_preimage()).unwrap();
+        assert_eq!(
+            verify_corpus_want_v1(&w, &foreign, pk),
+            StorageContentionVerification::SignatureFailed
         );
         assert!(w.admits("cid-a", 4_096));
         assert!(!w.admits("cid-a", 4_097)); // over size cap

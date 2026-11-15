@@ -1,0 +1,123 @@
+{
+  "description": "CC 6.1.2.3 integer rule: mass_to_fixed(w, W) = (2*w*10^6 + W) div (2*W) as u64, nearest with ties up, 0 when w = 0 or W = 0; n_eff = floor((sum m)^2 / sum m^2) over committed m > 0, 0 for an empty or all-zero fold.",
+  "folds": [
+    {
+      "W": 3,
+      "content_masses": [
+        2,
+        1
+      ],
+      "expected_n_eff": 1,
+      "member_masses_fixed": [
+        666667,
+        333333
+      ],
+      "note": "floor differs from round: 1.8 -> 1"
+    },
+    {
+      "W": 20,
+      "content_masses": [
+        5,
+        5,
+        5,
+        5
+      ],
+      "expected_n_eff": 4,
+      "member_masses_fixed": [
+        250000,
+        250000,
+        250000,
+        250000
+      ],
+      "note": "balanced fold: n_eff == N"
+    },
+    {
+      "W": 2000000,
+      "content_masses": [
+        1,
+        1,
+        1999998
+      ],
+      "expected_n_eff": 1,
+      "member_masses_fixed": [
+        1,
+        1,
+        999999
+      ],
+      "note": "tie members commit as 1"
+    },
+    {
+      "W": 0,
+      "content_masses": [],
+      "expected_n_eff": 0,
+      "member_masses_fixed": [],
+      "note": "empty fold: n_eff = 0"
+    },
+    {
+      "W": 0,
+      "content_masses": [
+        0,
+        0,
+        0
+      ],
+      "expected_n_eff": 0,
+      "member_masses_fixed": [
+        0,
+        0,
+        0
+      ],
+      "note": "all-zero fold: n_eff = 0"
+    }
+  ],
+  "mass_to_fixed": [
+    {
+      "W": 1,
+      "expected_mass_fixed": 1000000,
+      "note": "whole fold",
+      "w": 1
+    },
+    {
+      "W": 3,
+      "expected_mass_fixed": 333333,
+      "note": "one third rounds down",
+      "w": 1
+    },
+    {
+      "W": 3,
+      "expected_mass_fixed": 666667,
+      "note": "two thirds rounds up",
+      "w": 2
+    },
+    {
+      "W": 2000000,
+      "expected_mass_fixed": 1,
+      "note": "exact tie 0.5 rounds up",
+      "w": 1
+    },
+    {
+      "W": 2000000,
+      "expected_mass_fixed": 2,
+      "note": "exact tie 1.5 rounds up",
+      "w": 3
+    },
+    {
+      "W": 2000001,
+      "expected_mass_fixed": 0,
+      "note": "just below the tie rounds down",
+      "w": 1
+    },
+    {
+      "W": 5,
+      "expected_mass_fixed": 0,
+      "note": "w = 0 commits as 0",
+      "w": 0
+    },
+    {
+      "W": 0,
+      "expected_mass_fixed": 0,
+      "note": "W = 0 commits as 0",
+      "w": 0
+    }
+  ],
+  "vector_id": "aggregation_meta/mass_to_fixed_n_eff"
+}

@@ -1,5 +1,7 @@
 //! Cryptographic error types.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use thiserror::Error;
 
 use crate::types::{ClassicalAlgorithm, PqcAlgorithm};
@@ -134,6 +136,14 @@ pub enum CryptoError {
         /// `"seal_base"` or `"open_base"`.
         operation: &'static str,
         /// Underlying reason.
+        reason: String,
+    },
+
+    /// A KEM ciphertext of the wrong length (X-Wing: 1120 bytes,
+    /// CIRISVerify#324).
+    #[error("Invalid ciphertext: {reason}")]
+    InvalidCiphertext {
+        /// Reason the ciphertext is invalid.
         reason: String,
     },
 

@@ -53,7 +53,10 @@
 //! refusal to admit a peer. Same rule as
 //! [`crate::device_attestation`].
 
-use std::collections::BTreeMap;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
 
 /// `$pkix-ta-type` — how a trust anchor's bytes are encoded (CoTS §
 /// `trust-anchor`). Values are the draft's, and are wire-significant.
@@ -426,6 +429,8 @@ impl TrustAnchorStore {
 /// bake is *validated*, not pasted.
 pub mod baked {
     use super::{environments, single, ConciseTaStore, Purpose, TrustAnchorStore};
+    #[allow(unused_imports)]
+    use crate::prelude::*;
 
     /// **Yubico Attestation Root 1.**
     ///
@@ -515,8 +520,8 @@ pub mod baked {
         },
     }
 
-    impl std::fmt::Display for BakedRootError {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    impl core::fmt::Display for BakedRootError {
+        fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
             match self {
                 Self::MalformedPem { which } => write!(f, "baked root {which}: malformed PEM"),
                 Self::FingerprintMismatch {
@@ -531,7 +536,7 @@ pub mod baked {
         }
     }
 
-    impl std::error::Error for BakedRootError {}
+    impl core::error::Error for BakedRootError {}
 
     /// Decode the first `CERTIFICATE` block of a PEM document to DER.
     ///
@@ -1041,6 +1046,8 @@ pub mod baked {
 /// a new constant here plus anchors in the store — not a new pinned-root
 /// parameter threaded through another call site.
 pub mod environments {
+    #[allow(unused_imports)]
+    use crate::prelude::*;
     /// YubiKey PIV attestation (CIRISVerify#91) — the Yubico Attestation Root.
     pub const YUBIKEY_PIV: &str = "yubikey-piv";
     /// Android Keystore key attestation (CIRISVerify#199) — the Google
@@ -1679,7 +1686,7 @@ mod provenance_tier {
         );
         assert_eq!(nuvoton, 17);
 
-        let vendors: std::collections::BTreeSet<_> =
+        let vendors: alloc::collections::BTreeSet<_> =
             baked::TPM_VENDOR_ROOTS.iter().map(|r| r.vendor).collect();
         assert_eq!(vendors.len(), 8, "8 vendors represented");
     }
@@ -1725,7 +1732,7 @@ mod provenance_tier {
     fn tpm_roots_are_unreachable_from_other_environments() {
         use sha2::{Digest, Sha256};
         let s = baked::default_store();
-        let tpm: std::collections::BTreeSet<String> = baked::tpm_vendor_roots()
+        let tpm: alloc::collections::BTreeSet<String> = baked::tpm_vendor_roots()
             .iter()
             .map(|d| hex::encode(Sha256::digest(d)))
             .collect();

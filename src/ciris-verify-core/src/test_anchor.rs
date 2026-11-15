@@ -33,6 +33,9 @@
 //! operator error — a `test-anchor` build accidentally run with prod config —
 //! but it is a second line of defense, *not* the wall.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 /// Environment variables that, if they name a production-like value, mean we are
 /// certainly NOT in a test context — the anti-production tripwire.
 #[cfg(feature = "test-anchor")]

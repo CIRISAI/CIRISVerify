@@ -37,10 +37,10 @@ the serving node.**
 | # | Stage | Manifest instance | General public-blob form | Owner | CC | State |
 |---|---|---|---|---|---|---|
 | 1 | Bytes | the canonical file manifest (JSON) | article body, media, package | producer | 3.1.2.1 | ✅ |
-| 2 | Address | `manifest_hash` = sha256(bytes), bare lowercase hex | `content_sha256` | producer | 5.3.2.5 | ✅ |
+| 2 | Address | `manifest_hash` = sha256(bytes), bare lowercase hex | `content_sha256` | producer | 5.3.2.11 | ✅ |
 | 3 | Claim | `scores` on `provenance:build_manifest:{target}:v1`, `evidence_refs: [manifest_hash]` | `scores` on `encyclopedia:article:{…}:v1`, `evidence_refs: [sha]` | producer | 2.1, 3.1.7 R3 | ✅ |
-| 4 | Sign | bound-hybrid over JCS(envelope); **row mirror + `asserted_at` inside the bytes** | same | Verify (`sign_build_manifest_contribution`) | 2.6.1, 5.3.2.4.2 | ✅ |
-| 5 | Admit | `put_attestation`: R3, row↔column binding, instant binding, hybrid; pipeline key registered on the admitting node; `attestation_id` a UUID; `asserted_at` not future-dated. No admission gate checks standing | same door | Persist | 5.3.2.4.3.1 | ✅ |
+| 4 | Sign | bound-hybrid over JCS(envelope); **row mirror + `asserted_at` inside the bytes** | same | Verify (`sign_build_manifest_contribution`) | 2.6.1, 5.3.2.6 | ✅ |
+| 5 | Admit | `put_attestation`: R3, row↔column binding, instant binding, hybrid; pipeline key registered on the admitting node; `attestation_id` a UUID; `asserted_at` not future-dated. No admission gate checks standing | same door | Persist | 5.3.2.8 | ✅ |
 | 6 | Store bytes | `put_blob_signing(sha, bytes, …, author_key_id)`: `author` is whose content it is; the holder claim is the **serving node's**, signed by it | same | Persist (via submit door) | 3.1.9.1 | ✅ holder is the serving node; body ≤ 1 MiB; holder row carries `size` |
 | 7 | Announce holder | `holds_bytes:sha256:{prefix}` auto-emitted | same | Persist | 3.1.9.1, 5.3.2.1 | ✅ |
 | 8 | Replicate | claim + holder rows via anti-entropy | same | Persist / Edge | 5.3.2.3 | ⚠️ **conditional**: crosses only if (a) the consent grant covers `provenance:` (persist projects a non-root author's row as Cohort), (b) both owners accept a common root, else edge withholds it as "Attributed but not Rooted", (c) the pipeline's key record and grant replicate too |
@@ -48,8 +48,8 @@ the serving node.**
 | 9a | Grant producer | `ciris-verify delegate` mints the blessing | the root's conferral for any content family | Verify (`sign_delegation_grant`) | 3.2 T2 | ❌ **not counted by the walk** — §8 |
 | 10 | Discover | `holds_bytes` directory → `list_holders` (persist) / `resolve_holders` (edge) | same | Persist / Edge | 5.3.2 | ✅ |
 | 11 | Fetch | `ContentFetch`, ≤2 holders in parallel, `ContentMiss` → `withdraws` | same | Edge | 5.3.2.1 | ⚠️ `ContentMiss`→`withdraws` is implemented; edge does not enforce the ≤2-holder cap, and its chunked path is an adaptive multi-peer scheduler. Edge declines commons blobs unless the operator consents and the holder is allow-listed, so only registry-conferred nodes hold manifest bytes and **an agent reads them over HTTP from a registry node, not over the swarm** |
-| 12 | Check | **size first**, then full SHA, before any consumer sees a byte | same | consumer | 5.3.2.5 | ✅ `build.manifest_size`; registry submit door refuses `manifest_size_mismatch` before hashing |
-| 13 | Consume | agent loader / L4 file integrity; render tier from sniffed bytes | renderer, render tier | consumer | 5.3.2.6 | ⚠️ the read door returns the claim + `standing` (§6); Verify has no agent-side consumer of it |
+| 12 | Check | **size first**, then full SHA, before any consumer sees a byte | same | consumer | 5.3.2.11 | ✅ `build.manifest_size`; registry submit door refuses `manifest_size_mismatch` before hashing |
+| 13 | Consume | agent loader / L4 file integrity; render tier from sniffed bytes | renderer, render tier | consumer | 5.3.2.12 | ⚠️ the read door returns the claim + `standing` (§6); Verify has no agent-side consumer of it |
 | 14 | Present | presenter bundle: node K's trust-ladder attestation citing M's claim | citing an article in a downstream claim | Verify (`build_attestation_bundle`) | 3.1.2.1 | ✅ §7 |
 | 15 | Retire | `supersedes` (rebuild, rotation) · `withdraws` (bad build, compromise) · quorum role withdrawal | `supersedes` revision chain, takedown | producer / root | 2.3, 2.4.1.1, 3.2 T2, 4.5.3 | ✅ §5 |
 
@@ -93,9 +93,9 @@ members as Verify's `SignedEnvelope` and Registry's `SignedContribution`.
 - **No `on_behalf_of` / `delegation_ref`.** Standing is not a claim the producer makes about
   itself (§5).
 - **Family:** `provenance:build_manifest:{target}:v1` only (CC 3.1.2.1). `agent_files:build:{target}`
-  is the canonical attester's separate "an agent may load this" claim (CC 4.4.3.7) over the same
+  is the canonical attester's separate "an agent may load this" claim (CC 4.4.3.33) over the same
   bytes; a pipeline never emits it.
-- **Size:** `build.manifest_size` (u64 bytes) is required (CC 5.3.2.5).
+- **Size:** `build.manifest_size` (u64 bytes) is required (CC 5.3.2.11).
 - **Cohort:** `federation`; `global` is not in the closed cohort set.
 - **Digests:** `binary_hash` and `manifest_hash` are both bare lowercase hex (CC 2.6.3).
 
@@ -165,7 +165,7 @@ reader asks the substrate, never a field the producer wrote about itself.
 
 `GET /v1/builds/{version}` returns `contribution` (the stored `SignedContribution`), `standing
 {scope, root_key_id, grant_attestation_id, walked_by}` and `manifest_size`. A reader re-verifies the
-signature and shape locally and checks size + full SHA of the manifest bytes (CC 5.3.2.5) before
+signature and shape locally and checks size + full SHA of the manifest bytes (CC 5.3.2.11) before
 file integrity consumes them; standing comes from the serving node's walk, and the response says
 whose walk it was. CC 5.3.4: nothing a serving install signs on its own account is a root. The same
 rule applies to every public blob read: **return the claim with the bytes.**

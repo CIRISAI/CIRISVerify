@@ -15,10 +15,19 @@ Deliberately a *source-level* resolver, not a doc check, for the same reason
 ``check-ffi-link-anchor.sh`` is: it runs in every configuration, including ones
 where the cited item is behind a ``#[cfg]`` that this build does not enable.
 
+It also pins each cited item's **source span** (CIRISVerify#233 follow-up): the
+``span_sha256`` column is the SHA-256 of the item's own text, from its
+declaration keyword to its closing ``}`` or ``;`` (doc comments and attributes
+above it excluded; CRLF read as LF). A symbol whose body changes under an
+unchanged name is then a failure too: the claim it backs must be re-read, and
+the new hash recorded with ``--update-hashes`` in the same commit, so the change
+shows in review.
+
 Usage::
 
-    python3 tools/check_evidence.py            # verify
-    python3 tools/check_evidence.py --list     # print resolved rows
+    python3 tools/check_evidence.py                 # verify
+    python3 tools/check_evidence.py --list          # print resolved rows
+    python3 tools/check_evidence.py --update-hashes # re-record span_sha256
 
 Exit 0 = every citation resolves; 1 = at least one does not.
 """
@@ -26,12 +35,13 @@ Exit 0 = every citation resolves; 1 = at least one does not.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import re
 import sys
 from pathlib import Path
 
 #: The required first non-comment line of the manifest (CIRISVerify#250).
-HEADER = "decimal_id\tclaim_id\trepo\tpath#symbol\tcrate@version"
+HEADER = "decimal_id\tclaim_id\trepo\tpath#symbol\tcrate@version\tspan_sha256"
 
 REPO = Path(__file__).resolve().parent.parent
 MANIFEST = REPO / "evidence" / "cc_impl.tsv"
@@ -60,9 +70,133 @@ def declares(text: str, symbol: str) -> bool:
     return bool(re.search(rf"\b({ITEM_KINDS})\s+{re.escape(symbol)}\b", text))
 
 
+# --- source spans ------------------------------------------------------------
+
+#: Kinds whose item ends at the closing brace of their body; the rest end at a
+#: top-level `;` (a `const`'s block initializer is not its end).
+BRACE_BODIED = {"fn", "struct", "enum", "trait", "mod", "union", "impl", "macro_rules!"}
+
+
+def _code_mask(text: str) -> list[bool]:
+    """True where `text[i]` is code: not in a comment, string or char literal."""
+    n = len(text)
+    code = [True] * n
+    i = 0
+    while i < n:
+        c = text[i]
+        if text.startswith("//", i):
+            j = text.find("\n", i)
+            j = n if j < 0 else j
+            for k in range(i, j):
+                code[k] = False
+            i = j
+        elif text.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if text.startswith("/*", j):
+                    depth, j = depth + 1, j + 2
+                elif text.startswith("*/", j):
+                    depth, j = depth - 1, j + 2
+                else:
+                    j += 1
+            for k in range(i, j):
+                code[k] = False
+            i = j
+        elif re.match(r'b?r#*"', text[i : i + 64]) and (i == 0 or not (text[i - 1].isalnum() or text[i - 1] == "_")):
+            m = re.match(r'b?r(#*)"', text[i:])
+            close = '"' + m.group(1)
+            j = text.find(close, i + m.end())
+            j = n if j < 0 else j + len(close)
+            for k in range(i, j):
+                code[k] = False
+            i = j
+        elif c == '"':
+            j = i + 1
+            while j < n and text[j] != '"':
+                j += 2 if text[j] == "\\" else 1
+            j = min(j + 1, n)
+            for k in range(i, j):
+                code[k] = False
+            i = j
+        elif c == "'":
+            # A char literal ('x', '\n', '\u{..}') rather than a lifetime ('a).
+            m = re.match(r"'(\\(u\{[0-9a-fA-F]+\}|x[0-9a-fA-F]{2}|.)|[^\\'])'", text[i : i + 16])
+            if m:
+                for k in range(i, i + m.end()):
+                    code[k] = False
+                i += m.end()
+            else:
+                i += 1
+        else:
+            i += 1
+    return code
+
+
+def _item_end(text: str, code: list[bool], start: int, kind: str) -> int:
+    """Index one past the end of the item whose declaration starts at `start`."""
+    depth = 0
+    for j in range(start, len(text)):
+        if not code[j]:
+            continue
+        ch = text[j]
+        if ch in "({[":
+            depth += 1
+        elif ch in ")}]":
+            depth -= 1
+            if depth == 0 and ch == "}" and kind in BRACE_BODIED:
+                return j + 1
+        elif ch == ";" and depth == 0:
+            return j + 1
+    raise ValueError("item never closes")
+
+
+def _decls(text: str, code: list[bool], kind_re: str, name: str, lo: int = 0, hi: int | None = None):
+    hi = len(text) if hi is None else hi
+    pat = re.compile(rf"\b({kind_re})\s+{re.escape(name)}\b")
+    for m in pat.finditer(text, lo, hi):
+        # `'static T` is a lifetime, not a `static` item.
+        if code[m.start()] and (m.start() == 0 or text[m.start() - 1] != "'"):
+            yield m.start(), m.group(1)
+
+
+def span_of(text: str, symbol: str) -> str:
+    """The cited item's source text. Raises ValueError if not exactly one."""
+    text = text.replace("\r\n", "\n")
+    code = _code_mask(text)
+    if "::" in symbol:
+        owner, _, member = symbol.rpartition("::")
+        owner = owner.split("::")[-1]
+        hits = []
+        blocks = re.compile(rf"\b(impl\b[^;{{]*?\b{re.escape(owner)}\b[^;{{]*|trait\s+{re.escape(owner)}\b[^;{{]*)\{{")
+        for b in blocks.finditer(text):
+            if not code[b.start()]:
+                continue
+            kind = "trait" if b.group(0).lstrip().startswith("trait") else "impl"
+            end = _item_end(text, code, b.start(), kind)
+            hits += [(s, k) for s, k in _decls(text, code, ITEM_KINDS, member, b.start() + 1, end)]
+        if not hits:
+            # A type-level constant or alias: fall back to the bare member.
+            hits = list(_decls(text, code, ITEM_KINDS, member))
+    else:
+        hits = list(_decls(text, code, ITEM_KINDS, symbol))
+    if len(hits) != 1:
+        raise ValueError(f"{len(hits)} declarations of {symbol}; cite it unambiguously (Owner::member)")
+    start, kind = hits[0]
+    return text[start : _item_end(text, code, start, kind)]
+
+
+def span_sha256(text: str, symbol: str) -> str:
+    return hashlib.sha256(span_of(text, symbol).encode("utf-8")).hexdigest()
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--list", action="store_true", help="print each resolved row")
+    ap.add_argument(
+        "--update-hashes",
+        action="store_true",
+        help="re-record every span_sha256 (after re-reading the claims whose spans changed)",
+    )
     ap.add_argument(
         "--self-test",
         action="store_true",
@@ -71,7 +205,35 @@ def main() -> int:
     args = ap.parse_args()
     if args.self_test:
         return self_test()
+    if args.update_hashes:
+        return _update_hashes()
     return _check(list_rows=args.list)
+
+
+def _update_hashes() -> int:
+    """Rewrite the span_sha256 column in place; print each row that changed."""
+    out, changed = [], 0
+    seen_header = False
+    for raw in MANIFEST.read_text().splitlines():
+        if not raw.strip() or raw.startswith("#"):
+            out.append(raw)
+            continue
+        if not seen_header:
+            seen_header = True
+            out.append(HEADER)
+            continue
+        fields = raw.split("\t")
+        fields += [""] * (6 - len(fields))
+        path_str, _, symbol = fields[3].partition("#")
+        new = span_sha256((REPO / path_str).read_text(errors="ignore"), symbol) if symbol else ""
+        if new != fields[5]:
+            changed += 1
+            print(f"  span changed: CC {fields[0]} ({fields[1]}) {fields[3]}")
+        fields[5] = new
+        out.append("\t".join(fields[:6]))
+    MANIFEST.write_text("\n".join(out) + "\n")
+    print(f"evidence: {changed} span hash(es) re-recorded")
+    return 0
 
 
 def _check(list_rows: bool) -> int:
@@ -109,15 +271,32 @@ def _check(list_rows: bool) -> int:
             continue
 
         decimal, clm, _repo, ref = fields[0], fields[1], fields[2], fields[3]
+        pinned = fields[5] if len(fields) > 5 else ""
         path_str, _, symbol = ref.partition("#")
         path = REPO / path_str
 
         if not path.exists():
             failures.append(f"CC {decimal} ({clm}): file not found — {path_str}")
             continue
-        if symbol and not declares(path.read_text(errors="ignore"), symbol):
+        text = path.read_text(errors="ignore")
+        if symbol and not declares(text, symbol):
             failures.append(f"CC {decimal} ({clm}): symbol not declared — {ref}")
             continue
+        if symbol:
+            try:
+                actual = span_sha256(text, symbol)
+            except ValueError as e:
+                failures.append(f"CC {decimal} ({clm}): {e} — {ref}")
+                continue
+            if not re.fullmatch(r"[0-9a-f]{64}", pinned):
+                failures.append(f"CC {decimal} ({clm}): no span_sha256 recorded — {ref}")
+                continue
+            if actual != pinned:
+                failures.append(
+                    f"CC {decimal} ({clm}): the cited item's source changed under its name — {ref}\n"
+                    f"    re-read the claim; if it still holds, record the new span with --update-hashes"
+                )
+                continue
 
         resolved += 1
         if decimal == "UNASSIGNED":
@@ -145,13 +324,55 @@ def _check(list_rows: bool) -> int:
 
     if failures:
         print(
-            "\nA cited symbol moved or was renamed. Update evidence/cc_impl.tsv in the "
-            "same commit — a constitutional citation must not rot silently "
-            "(CIRISVerify#233).",
+            "\nA cited symbol moved, was renamed, or its source changed. Update "
+            "evidence/cc_impl.tsv in the same commit — a constitutional citation must "
+            "not rot silently (CIRISVerify#233).",
             file=sys.stderr,
         )
         return 1
     return 0
+
+
+def _with_hash(row: str, value: str) -> str:
+    f = row.split("\t")
+    f += [""] * (6 - len(f))
+    f[5] = value
+    return "\t".join(f[:6])
+
+
+def _span_self_test() -> int:
+    """The span extractor on the shapes it must get right."""
+    src = (
+        "/// doc { not code\n"
+        "#[inline]\n"
+        "pub fn a(x: &str) -> u8 { let s = \"}\"; let c = '}'; let r = r#\"}\"#; /* } */ 1 } // }\n"
+        "pub const B: u8 = { 2 };\n"
+        "pub struct T(u8);\n"
+        "pub struct U { f: u8 }\n"
+        "impl U { pub fn a(&self) -> u8 { 3 } }\n"
+        "fn life<'a>(x: &'a u8) -> &'a u8 { x }\n"
+        "fn lookup() -> Option<&'static U> { None }\n"
+    )
+    want = {
+        "B": "const B: u8 = { 2 };",
+        "T": "struct T(u8);",
+        "U": "struct U { f: u8 }",
+        "U::a": "fn a(&self) -> u8 { 3 }",
+        "life": "fn life<'a>(x: &'a u8) -> &'a u8 { x }",
+    }
+    failed = 0
+    for sym, exp in want.items():
+        got = span_of(src, sym)
+        ok = got == exp
+        failed += not ok
+        print(f"  {'ok  ' if ok else 'FAIL'} span {sym}: {got!r}")
+    try:
+        span_of(src, "a")  # a free fn and U::a: ambiguous by bare name
+        print("  FAIL span a: ambiguity not refused")
+        failed += 1
+    except ValueError:
+        print("  ok   span a: ambiguous bare name refused")
+    return failed
 
 
 def self_test() -> int:
@@ -183,11 +404,21 @@ def self_test() -> int:
             ),
             True,
         ),
+        (
+            "a span hash that does not match the source",
+            "\n".join([HEADER, *(_with_hash(r, "0" * 64) for r in data_rows[:1])]),
+            True,
+        ),
+        (
+            "a row with no span hash",
+            "\n".join([HEADER, *(_with_hash(r, "") for r in data_rows[:1])]),
+            True,
+        ),
         ("the real manifest", real, False),
     ]
 
     original = MANIFEST
-    failed = 0
+    failed = _span_self_test()
     try:
         for name, body, must_fail in cases:
             with tempfile.NamedTemporaryFile("w", suffix=".tsv", delete=False) as fh:
@@ -202,7 +433,7 @@ def self_test() -> int:
     finally:
         MANIFEST = original
 
-    print(f"self-test: {len(cases) - failed}/{len(cases)} passed")
+    print(f"self-test: {'all passed' if not failed else f'{failed} failed'}")
     return 1 if failed else 0
 
 

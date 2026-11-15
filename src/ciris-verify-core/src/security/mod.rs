@@ -20,18 +20,26 @@
 //! }
 //! ```
 
+#[cfg(feature = "host")]
 mod anti_tamper;
 pub mod build_manifest;
+#[cfg(feature = "host")]
 pub mod file_integrity;
 pub mod function_integrity;
+#[cfg(feature = "host")]
 mod platform;
+#[cfg(feature = "host")]
 pub mod wheel;
 
 // Re-export from the main security module
+#[cfg(feature = "host")]
 use sha2::{Digest, Sha256};
+#[cfg(feature = "host")]
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[cfg(feature = "host")]
 pub use anti_tamper::{detect_hooks, is_debugger_attached};
+#[cfg(feature = "host")]
 pub use platform::{is_device_compromised, is_emulator, is_suspicious_emulator};
 
 /// Opaque integrity status.
@@ -40,6 +48,7 @@ pub use platform::{is_device_compromised, is_emulator, is_suspicious_emulator};
 /// which specific checks failed. Only a single pass/fail and generic
 /// failure category are provided.
 #[derive(Debug, Clone, Default)]
+#[cfg(feature = "host")]
 pub struct IntegrityStatus {
     /// Single pass/fail result.
     pub integrity_valid: bool,
@@ -53,6 +62,7 @@ pub struct IntegrityStatus {
 /// Comprehensive integrity checker.
 ///
 /// Performs all security checks and returns an opaque result.
+#[cfg(feature = "host")]
 pub struct IntegrityChecker {
     /// Expected binary hash (embedded at build time).
     expected_hash: Option<[u8; 32]>,
@@ -61,6 +71,7 @@ pub struct IntegrityChecker {
     skip_in_debug: bool,
 }
 
+#[cfg(feature = "host")]
 impl IntegrityChecker {
     /// Create a new integrity checker.
     ///
@@ -162,6 +173,7 @@ impl IntegrityChecker {
     }
 }
 
+#[cfg(feature = "host")]
 impl Default for IntegrityChecker {
     fn default() -> Self {
         Self::new()
@@ -172,9 +184,22 @@ impl Default for IntegrityChecker {
 ///
 /// Returns `None` if the binary cannot be read (which is itself
 /// an integrity failure).
+#[cfg(feature = "host")]
 fn compute_self_hash() -> Option<[u8; 32]> {
-    // Get path to current executable
-    let exe_path = std::env::current_exe().ok()?;
+    // The file holding this crate's code, found by address (CIRISVerify#210);
+    // current_exe() is the last resort and names the host when verify is a
+    // library.
+    let exe_path = match crate::registry::self_module_path() {
+        Some(p) => p,
+        None => {
+            let exe = std::env::current_exe().ok()?;
+            tracing::warn!(
+                fallback = %exe.display(),
+                "integrity self-hash: module holding CIRISVerify code not found; hashing current_exe()"
+            );
+            exe
+        },
+    };
 
     // Read binary contents
     let binary_data = std::fs::read(&exe_path).ok()?;
@@ -225,6 +250,7 @@ pub fn constant_time_select(condition: bool, a: u8, b: u8) -> u8 {
 }
 
 /// Get current Unix timestamp.
+#[cfg(feature = "host")]
 fn current_timestamp() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -270,6 +296,7 @@ mod tests {
         assert_eq!(constant_time_select(false, 10, 20), 20);
     }
 
+    #[cfg(feature = "host")]
     #[test]
     fn test_integrity_checker_debug_mode() {
         let checker = IntegrityChecker::new();
@@ -280,6 +307,7 @@ mod tests {
         assert!(status.integrity_valid);
     }
 
+    #[cfg(feature = "host")]
     #[test]
     fn test_integrity_status_default() {
         let status = IntegrityStatus::default();

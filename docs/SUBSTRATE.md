@@ -12,8 +12,9 @@ where the conformance vectors are *authored*.
 
 ## What the substrate provides
 
-- **Graceful degradation** — any subset of RaptorQ fountain symbols decodes at
-  proportional fidelity.
+- **Durable storage** — an item the owner marks durable is replicated as sealed
+  chunks to its target holder count, rarest chunk first, and recovers from any
+  holder (CC 6.1.5); nodes never encode or decode stored content.
 - **Graceful reconstitution** — a witnessed, trust-anchored corpus re-establishes
   from any sufficient fragment.
 
@@ -26,20 +27,23 @@ here*.
 Every substrate object is **transport/substrate framing — NOT an attestation**: it
 never instantiates an `attestation_type` and never enters JCS. It signs a **binary,
 length-prefixed, big-endian, domain-separated preimage** (`substrate::Preimage`).
-**PQC-mandatory at the gate** (`verify_bound_hybrid`): every object carries the bound
-hybrid pair — Ed25519 over the preimage, ML-DSA-65 over `preimage ‖ ed25519_sig` — and
-a missing/invalid ML-DSA-65 half is rejected **at ingest and before persistence**
-(substrate objects are federation-tier). A verdict is recomputed at the gate; a
+**PQC-mandatory at the gate** (`verify_composite`): every object carries one composite
+ML-DSA-65-Ed25519 signature (CC 2.6.1.7) over the preimage — 3373 bytes,
+`mldsaSig ‖ ed25519Sig`, checked against the signer's 1984-byte composite public key
+`mldsaPK ‖ ed25519PK`. Both halves sign the composite message representative of the
+preimage, so neither verifies alone, and a signature that does not verify is rejected
+**at ingest and before persistence** without saying which half failed (substrate
+objects are federation-tier). A verdict is recomputed at the gate; a
 wire-carried `verified` flag is forgeable and is never trusted.
 
 ## Module map
 
 | Module | Surface | Verifier-side invariants enforced |
 |--------|---------|-----------------------------------|
-| `substrate::preimage` | framing + PQC gate | `verify_bound_hybrid` — **PQC-mandatory**, no classical-only, no in-band `verified` flag |
+| `substrate::preimage` | framing + PQC gate | `verify_composite` — **PQC-mandatory** composite signature, no classical-only, no in-band `verified` flag |
 | `substrate::wholeness_witness` | wholeness witness (CC 6.1.1; CEG §19.1) | lexicographic-leaf Merkle (distinct from the RFC 6962 transparency log; no prefix byte); verify-at-ingest; **equivocation** (two signed roots for the same `(peer, epoch, ns-set)` → non-repudiable, surfaced never reconciled); anonymous/`self` namespace guard; the divergence detector **triggers** quorum-merge and never replaces anti-rollback (it cannot resurrect a revoked key) |
 | `substrate::bootstrap` | recursive trust (CEG §19.2) | **trust ≠ membership** (the verdict type cannot express "admitted"); ≤5-hop, cycle-reject, 0.5×root_trust weight cap; `membership_blocked_without_owner_binding` (owner-binding + consensus for non-infra; founder-quorum for infra) |
-| `substrate::fountain` | replication (CC 6.1.5; CEG §19.3) | retention respects revocation (revoked → descent below floor regardless of rarity); possession-bound (unverified claims can't force-evict); per-symbol integrity; `symbol_ids` sorted |
+| `substrate::durable_storage` | durable storage: per-item replication and swarm rarity (CC 6.1.5; CEG §19.3) | retention respects revocation (revoked → descent below floor regardless of rarity); possession-bound (unverified claims can't force-evict); per-symbol integrity; `symbol_ids` sorted |
 | `substrate::alm` | ALM relay tree (CEG §19.4) | capacity authenticity (verify `SignedRelayCapacity` *before* scoring); bounded capacity score (anti-eclipse); deterministic integer-only snapshot canonicalizer; one signing preimage shared with CIRISEdge, pinned by a golden vector |
 | `substrate::av_chunk` | realtime A/V framing (CC 5.3.3) | `SealedAvChunk` header parse; the outer nonce; the inner nonce is the CC 5.3.3.1 STREAM nonce (`av_inner_nonce` → `ciris_crypto::stream_seal::stream_nonce`) |
 | `substrate::aggregation` | **noise floor / aggregation pyramid** (CC 6.1.2; CEG §19.7) | `AggregationMetaV1` PQC-mandatory ingest gate; `member_commitment` descent integrity (reuses the wholeness-witness Merkle verbatim); signed `n_eff` dominance gate; content-similarity multiplicity gate and `mass_commitment` (v3); `EjectionVerdict` tier-aware retirement (revoked → hard-delete, never tier-shed) |
@@ -78,7 +82,7 @@ Verify verifies the aggregation-tier metadata that tags that pyramid:
 
 | Threat | Blocked by |
 |--------|-----------|
-| Forge a substrate object after a future Ed25519 break | PQC-mandatory `verify_bound_hybrid` |
+| Forge a substrate object after a future Ed25519 break | PQC-mandatory `verify_composite` |
 | Trust a forged "I verified this" flag | verdict recomputed at the gate; in-band `verified` is non-wire |
 | Split-view / state divergence between peers | wholeness-witness Merkle + equivocation detection |
 | Resurrect a revoked key via "reconstitute from any fragment" | the witness *triggers* quorum-merge, never decides it; anti-rollback preserved |
@@ -95,9 +99,10 @@ Verify verifies the aggregation-tier metadata that tags that pyramid:
 
 The vector family is the cross-impl byte-equality proof for these shapes:
 
-- **Witness / bootstrap / fountain / A/V** — vectors in `tests/vectors/substrate_v19/`,
-  checked by `tests/conformance_vectors_v19.rs`, reproduced byte-for-byte by both
-  CIRISEdge and CIRISVerify.
+- **Witness / bootstrap / holding claim + compress request / A/V** — vectors in
+  `tests/vectors/substrate_v19/`, checked by `tests/conformance_vectors_v19.rs`,
+  reproduced byte-for-byte by both CIRISEdge and CIRISVerify. The holding-claim and
+  compress-request vector directories keep their vendored `fountain_*` names.
 - **ALM relay capacity** — `relay_capacity/canonical_bytes.json`, derived from the
   layout independently of the Rust builder.
 - **Aggregation pyramid** — authored by CIRISVerify (`tests/vectors/substrate_v19_7/`,
@@ -112,7 +117,7 @@ A wire-shape drift in either implementation fails the conformance suite.
 ```
 CIRISConstitution — CC 6.1 (normative); CEG §19 carries the wire labels
        │
-CIRISEdge      — producer: emits the substrate objects (RaptorQ codec, ALM planner,
+CIRISEdge      — producer: emits the substrate objects (chunk replication, ALM planner,
        │          aggregation operator); reproduces the vectors
 CIRISVerify    — verifier: this module. Enforces the guardrails; authors the
        │          aggregation vectors

@@ -1,5 +1,8 @@
 //! License types and status definitions.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 /// License status returned by verification.

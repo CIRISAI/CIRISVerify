@@ -1,0 +1,11 @@
+{
+  "vector_id": "merkle_root/duplicate_leaf_refused",
+  "description": "CC 6.1.1: the leaf list MUST be deduplicated as well as sorted; a list with a repeated leaf is refused before hashing. Without the refusal [l0,l1,l2,l2] shares three_leaves_odd_dup's root under odd-node duplication. Authored by CIRISVerify (#314), not vendored from Edge.",
+  "leaves_hex": [
+    "0000000000000000",
+    "0101010101010101",
+    "0202020202020202",
+    "0202020202020202"
+  ],
+  "expected_refusal": "duplicate_leaf"
+}

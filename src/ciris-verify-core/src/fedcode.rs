@@ -36,6 +36,9 @@
 //! recomputes the suffix from the pubkey). The label is cosmetic; the
 //! fingerprint is the cryptographic anchor.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -223,11 +226,15 @@ pub struct FedCode {
     /// v1/v2 directory path, and **encodes byte-identically to a v2 code**, so
     /// nothing already issued changes. Only a non-empty list emits v3.
     ///
-    /// Scope boundary: these are **lightnet** facts — federation-scope
-    /// identity that already announces publicly and carries no anonymity
-    /// claim. A code MUST NOT carry group-scoped material, whose destinations
-    /// are derived from `cached directory + per-group HKDF` and may not be
-    /// emitted at all (CC 5.4.6).
+    /// Scope boundary (CC 2.6.8): a code carries transport destinations and
+    /// nothing of a group — an announced node's, or an unannounced node's
+    /// handed by the owner's own hand, which is how an unannounced person is
+    /// reached at all (CC 5.4.6). Either carries no anonymity claim: the
+    /// holder of the code learns only what the owner chose to hand, and nobody
+    /// else can find the node. A code never carries an anonymous-tier identity
+    /// (a different thing from an unannounced one) or group-scoped material,
+    /// whose destinations are derived from `cached directory + per-group HKDF`
+    /// and may not be emitted at all (CC 5.4.6).
     pub owned_nodes: Vec<OwnedNode>,
     /// `sha256(ml_dsa_65_pubkey)`, lowercase hex — the **commitment** to the
     /// post-quantum half of this identity (CIRISVerify#272).
@@ -354,8 +361,8 @@ pub enum FedCodeError {
     },
 }
 
-impl std::fmt::Display for FedCodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for FedCodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             FedCodeError::InvalidVersion(m) => write!(f, "unsupported fedcode version: {m}"),
             FedCodeError::Malformed(m) => write!(f, "malformed fedcode: {m}"),
@@ -367,7 +374,7 @@ impl std::fmt::Display for FedCodeError {
     }
 }
 
-impl std::error::Error for FedCodeError {}
+impl core::error::Error for FedCodeError {}
 
 /// Derive a collision-free, verifiable `key_id` = `"<label>-<fingerprint>"`.
 ///
@@ -983,7 +990,7 @@ fn read_length_prefixed(buf: &[u8], offset: usize) -> Result<(String, usize), Fe
             "declared field length {length} exceeds buffer"
         )));
     }
-    let value = std::str::from_utf8(&buf[start..end])
+    let value = core::str::from_utf8(&buf[start..end])
         .map_err(|e| FedCodeError::Malformed(format!("field not UTF-8: {e}")))?
         .to_string();
     Ok((value, end))

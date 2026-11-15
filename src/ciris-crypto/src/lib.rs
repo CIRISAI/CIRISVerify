@@ -27,8 +27,22 @@
 //!
 //! This enables crypto agility and clear algorithm identification.
 
+#![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 #![warn(clippy::all)]
+
+#[macro_use]
+extern crate alloc;
+
+/// The `alloc` names every module uses, so the crate reads the same with and
+/// without `std` (CIRISVerify#325).
+#[allow(unused_imports)]
+mod prelude {
+    pub(crate) use alloc::borrow::ToOwned;
+    pub(crate) use alloc::boxed::Box;
+    pub(crate) use alloc::string::{String, ToString};
+    pub(crate) use alloc::vec::Vec;
+}
 
 mod error;
 mod hybrid;
@@ -63,6 +77,10 @@ pub mod epoch_key;
 /// non-optional.
 pub mod stream_seal;
 
+// CC 5.1 per-stream call DEK under the MLS group exporter (CIRISVerify#308).
+#[cfg(feature = "stream-dek")]
+pub mod stream_dek;
+
 #[cfg(feature = "kdf")]
 pub mod kdf;
 
@@ -96,7 +114,7 @@ pub mod ml_kem;
 #[cfg(feature = "hybrid-kex")]
 pub mod hybrid_kex;
 
-// v20.2.0+ — CC 5.3.3.5 E1 A/V per-hop transit key: hybrid KEX against a
+// v20.2.0+ — CC 5.3.3.10 E1 A/V per-hop transit key: hybrid KEX against a
 // relay's published transit pair, two per-direction keys (CIRISVerify#309).
 #[cfg(feature = "transit-kex")]
 pub mod transit_kex;
@@ -112,9 +130,15 @@ pub mod self_enc;
 // and HMAC-SHA3-256 are added in-module to `kdf` / `hmac`.
 #[cfg(feature = "xchacha")]
 pub mod xchacha;
+#[cfg(feature = "xwing")]
+pub mod xwing;
 
 #[cfg(feature = "hpke")]
 pub mod hpke;
+
+// Composite ML-DSA-65 with Ed25519, the edition-2 signature (CC 2.6.1.7, #326).
+#[cfg(feature = "composite")]
+pub mod composite;
 
 #[cfg(feature = "scope-privacy")]
 pub mod scope_privacy;

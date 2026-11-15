@@ -213,6 +213,12 @@ jobs:
                                                     --agent-project ciris-agent \
                                                     --project ciris-verify 2>&1)
           echo "$OUT"
+          # A 429 means we could not run this gate, not that it failed (13.3.1):
+          # same rule as the tree-verifier step below.
+          if echo "$OUT" | grep -qE "STEP 3/5 COMPLETE: FAILED \(Registry rate-limited"; then
+            echo "::warning::SKIP: registry rate-limited the runner; cross-project gate inconclusive, not passed"
+            exit 0
+          fi
           echo "$OUT" | grep -E "VERIFY STEP 3/5 COMPLETE: OK"
           echo "$OUT" | grep -E "Agent build record fetch \(project=ciris-agent\)"
 

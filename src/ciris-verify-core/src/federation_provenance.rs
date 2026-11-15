@@ -78,6 +78,9 @@
 //! [`FederationProvenance::policy`] for auditability, but the
 //! verdict itself is not verify's to declare.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 /// Verify-owned canonical dimension strings (FSD-002 §3.2). Stable
@@ -87,6 +90,8 @@ use serde::{Deserialize, Serialize};
 /// ones are `&'static str` constants.
 pub mod dim {
     use crate::classification::{Arity, Frame, UndeclaredFrame};
+    #[allow(unused_imports)]
+    use crate::prelude::*;
 
     /// Self-verification — the running CIRISVerify binary attests
     /// itself against its function manifest ("who watches the
@@ -496,6 +501,16 @@ pub struct AttestationEntry {
     /// consumer trace the attestation back to its origin.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
+    /// Blob digests the attestation cites (CC 3.1.2.1): for a build
+    /// attestation, the manifest blob's SHA-256, lowercase hex. Omitted when
+    /// empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub evidence_refs: Vec<String>,
+    /// The row this attestation cites (CC 3.1.2.1): for a build attestation,
+    /// the `attestation_id` of the `provenance:build_manifest:{target}`
+    /// Contribution it checked against. Omitted when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub references_attestation_id: Option<String>,
 }
 
 /// Score sentinels — semantic constants for the three legitimate
@@ -523,6 +538,8 @@ impl AttestationEntry {
             score,
             attester: attester.into(),
             source_ref: None,
+            evidence_refs: Vec::new(),
+            references_attestation_id: None,
         }
     }
 
@@ -560,6 +577,20 @@ impl AttestationEntry {
     #[must_use]
     pub fn with_source_ref(mut self, source_ref: impl Into<String>) -> Self {
         self.source_ref = Some(source_ref.into());
+        self
+    }
+
+    /// Name the build this attestation checked: the manifest blob's digest in
+    /// `evidence_refs` and the manifest Contribution's row in
+    /// `references_attestation_id` (CC 3.1.2.1, CC 3.3.6).
+    #[must_use]
+    pub fn citing_build(
+        mut self,
+        manifest_hash: impl Into<String>,
+        manifest_attestation_id: impl Into<String>,
+    ) -> Self {
+        self.evidence_refs = vec![manifest_hash.into()];
+        self.references_attestation_id = Some(manifest_attestation_id.into());
         self
     }
 
@@ -794,6 +825,7 @@ mod tests {
         assert!(i.score.is_nan());
     }
 
+    #[cfg(feature = "host")]
     #[test]
     fn parameterized_dimensions_format_correctly() {
         assert_eq!(dim::provenance_slsa(3), "provenance:slsa:3:v1");

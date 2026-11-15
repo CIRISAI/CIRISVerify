@@ -68,6 +68,9 @@
 //! [`PipelineBlessing`] and checks it names the pipeline that signed. An
 //! offline check (`ciris-build-verify --evidence`) stops at the signature.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use chrono::{DateTime, Utc};
 use serde_json::{json, Map, Value};
 use sha2::{Digest, Sha256};
@@ -234,7 +237,7 @@ pub struct SafetyEvidence<'a> {
     pub captured_at: &'a str,
     /// SHA-256 of the blob, bare lowercase hex; emitted as `evidence_refs[0]`.
     pub manifest_hash: &'a str,
-    /// The blob's length in bytes (CC 5.3.2.5).
+    /// The blob's length in bytes (CC 5.3.2.11).
     pub manifest_size: u64,
 }
 
@@ -464,8 +467,8 @@ pub enum EvidenceRejection {
     },
 }
 
-impl std::fmt::Display for EvidenceRejection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for EvidenceRejection {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Malformed { field } => write!(f, "malformed safety evidence: {field}"),
             Self::PipelineKeyMismatch { envelope, member } => write!(
@@ -503,7 +506,7 @@ impl std::fmt::Display for EvidenceRejection {
     }
 }
 
-impl std::error::Error for EvidenceRejection {}
+impl core::error::Error for EvidenceRejection {}
 
 impl From<ManifestRejection> for EvidenceRejection {
     fn from(r: ManifestRejection) -> Self {
@@ -575,7 +578,7 @@ impl SignedSafetyEvidence {
         })
     }
 
-    /// Check a fetched blob against the row: length first (CC 5.3.2.5), then
+    /// Check a fetched blob against the row: length first (CC 5.3.2.11), then
     /// SHA-256 in constant time.
     ///
     /// # Errors
@@ -716,7 +719,7 @@ pub fn verify_safety_evidence_signature(
         ev.get("manifest_size")
             .and_then(Value::as_u64)
             .ok_or(EvidenceRejection::Malformed {
-                field: "evidence.manifest_size (absent or not a u64 — CC 5.3.2.5)",
+                field: "evidence.manifest_size (absent or not a u64 — CC 5.3.2.11)",
             })?;
 
     // --- 4. The score. ---

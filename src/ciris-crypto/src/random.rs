@@ -34,6 +34,8 @@
 //! `SecRandomCopyBytes` (Apple's CSPRNG), on Windows uses
 //! `BCryptGenRandom`. All blocking paths.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use rand_core::{OsRng, RngCore};
 
 use crate::error::CryptoError;

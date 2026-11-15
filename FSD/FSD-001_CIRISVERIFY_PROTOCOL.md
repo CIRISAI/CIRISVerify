@@ -301,7 +301,7 @@ message LicenseStatusResponse {
 enum LicenseStatus {
   LICENSE_STATUS_UNSPECIFIED = 0;
 
-  // Licensed statuses (reserved for the licensure gate, CC 4.4.3.8)
+  // Licensed statuses (reserved for the licensure gate, CC 4.4.3.34)
   LICENSED_PROFESSIONAL = 1;      // Professional licence
   LICENSED_COMMUNITY_PLUS = 2;    // Enhanced community (some features)
 
@@ -627,7 +627,7 @@ message ResponseMetadata {
 
 ## Mandatory Disclosure Strings
 
-The following disclosure strings are baked into the binary and cannot be modified. The licensed, revoked and expired strings apply only once the licensure gate (CC 4.4.3.8) exists:
+The following disclosure strings are baked into the binary and cannot be modified. The licensed, revoked and expired strings apply only once the licensure gate (CC 4.4.3.34) exists:
 
 ```
 LICENSED_PROFESSIONAL:
@@ -689,7 +689,7 @@ selection are specified in §5. Defaults: `https://api.registry.ciris-services-1
 Hosts add availability, not trust: a host can withhold a bundle but cannot forge
 one, because only the baked accord holders can authorize it. DNS is not a source.
 
-## Licensure (CC 4.4.3.8)
+## Licensure (CC 4.4.3.34)
 
 A licence is a cosigned `licensure:{authority}:v1` row about the deployment's key,
 honoured when its authority is in the reader's trust set. This module does not yet
@@ -774,7 +774,7 @@ class WiseBus:
 | Rollback to an older trust root | Highest verified version is selected |
 | Replay of a revoked object | Quorum-signed `federation_revocations` rows |
 | Emulator/debugger interception | Platform integrity checks |
-| Binary modification | Self-integrity verification |
+| Binary modification | Self-integrity verification against the registry binary manifest (unsigned, unpinned until the edition-2 signed build record) |
 | Key extraction from binary | Keys stored in hardware, never in binary |
 
 ### Security Assumptions
@@ -831,10 +831,16 @@ This binding ensures an attacker cannot strip one signature while preserving the
 
 #### 3. Transport Security
 
-TLS protects availability and privacy of the bundle fetch, not its authority: a
-bundle is accepted only if it verifies against the baked accord holders, so a host
-presenting a different certificate can at most withhold a root. `VerifyConfig.cert_pin`
-accepts a `sha256:` certificate fingerprint for a host.
+TLS protects availability and privacy of a fetch, not its authority. No
+certificate is pinned; TLS verifies against the bundled web-PKI roots. The trust
+root's authority rides on content signatures: a GenesisBundle is accepted only if
+it verifies against the baked accord holders (§5). So a host presenting a
+different certificate can withhold a trust root but not forge one.
+
+**Known limitation.** Level 1's binary manifest and Level 5's build record are plain
+registry JSON: not signed, not pinned. A host that can present a web-PKI certificate
+for the registry can serve a manifest naming a replaced binary. The edition-2 signed
+build record (CBOR/COSE, CC 2.6.1.9), published after the re-genesis, closes this.
 
 #### 4. Constant-Time Cryptographic Operations
 
@@ -996,7 +1002,7 @@ The protocol supports algorithm agility via the `PQCAlgorithm` enum. Future NIST
 
 ### Revocation
 - Revocation is a quorum-signed `federation_revocations` row.
-- Revocation policy for licences is the licensing authority's, expressed through its licensure rows (CC 4.4.3.8).
+- Revocation policy for licences is the licensing authority's, expressed through its licensure rows (CC 4.4.3.34).
 
 ### Disputes
 - Arbitration process defined in license agreement

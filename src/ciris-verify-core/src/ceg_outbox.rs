@@ -35,11 +35,16 @@
 //! headers. A **self-signed** object (a `KeyRecord`, whose `scrub_*` signature
 //! is inside `body`) leaves `signatures` `None`.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+#[cfg(feature = "std")]
 use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
+#[cfg(feature = "std")]
 use crate::error::VerifyError;
 
 /// Env var that overrides the `ciris/` root.
@@ -58,6 +63,7 @@ pub(crate) static CIRIS_HOME_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex:
 /// The platform `ciris/` root: `$CIRIS_HOME` if set, else desktop `~/ciris`,
 /// mobile `<Documents>/ciris`.
 #[must_use]
+#[cfg(feature = "std")]
 pub fn ciris_root() -> PathBuf {
     if let Some(dir) = std::env::var_os(CIRIS_HOME_ENV) {
         if !dir.is_empty() {
@@ -72,6 +78,7 @@ pub fn ciris_root() -> PathBuf {
     }
 }
 
+#[cfg(feature = "std")]
 fn home_dir() -> PathBuf {
     std::env::var_os("HOME")
         .or_else(|| std::env::var_os("USERPROFILE"))
@@ -81,28 +88,33 @@ fn home_dir() -> PathBuf {
 
 /// `<root>/ceg/outbox` — producers WRITE signed CEG objects here.
 #[must_use]
+#[cfg(feature = "std")]
 pub fn ceg_outbox() -> PathBuf {
     ciris_root().join("ceg").join("outbox")
 }
 
 /// `<root>/ceg/sent` — CIRISServer moves objects here after a successful relay.
 #[must_use]
+#[cfg(feature = "std")]
 pub fn ceg_sent() -> PathBuf {
     ciris_root().join("ceg").join("sent")
 }
 
 /// `<root>/keys` — local key material (e.g. the software ML-DSA-65 seed half).
 #[must_use]
+#[cfg(feature = "std")]
 pub fn keys_dir() -> PathBuf {
     ciris_root().join("keys")
 }
 
 /// The outbox path for one object: `<outbox>/<kind>/<id>.json`.
 #[must_use]
+#[cfg(feature = "std")]
 pub fn object_path(kind: &str, id: &str) -> PathBuf {
     object_path_under(&ceg_outbox(), kind, id)
 }
 
+#[cfg(feature = "std")]
 fn object_path_under(outbox: &std::path::Path, kind: &str, id: &str) -> PathBuf {
     outbox
         .join(sanitize(kind))
@@ -192,6 +204,7 @@ impl SignedCegObject {
     /// # Errors
     ///
     /// [`VerifyError::IntegrityError`] on a serialization or filesystem fault.
+    #[cfg(feature = "std")]
     pub fn write_to_outbox(&self, id: &str) -> Result<PathBuf, VerifyError> {
         let path = object_path(&self.kind, id);
         if let Some(parent) = path.parent() {
@@ -205,6 +218,7 @@ impl SignedCegObject {
     }
 }
 
+#[cfg(feature = "std")]
 fn io_err(e: std::io::Error) -> VerifyError {
     VerifyError::IntegrityError {
         message: format!("CEG outbox io: {e}"),

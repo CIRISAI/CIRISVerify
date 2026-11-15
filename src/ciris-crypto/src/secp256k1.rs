@@ -31,6 +31,8 @@
 //! let signature = sign_message(&secret_key, &message_hash);
 //! ```
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use hkdf::Hkdf;
 use sha2::Sha256;
 use sha3::{Digest, Keccak256};

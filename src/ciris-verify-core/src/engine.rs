@@ -87,11 +87,8 @@ impl LicenseEngine {
             key_alias = %config.key_alias,
             "LicenseEngine: starting initialization"
         );
-        let trust_root_validator = TrustRootValidator::new(
-            config.trust_root_endpoints(),
-            config.timeout,
-            config.cert_pin.clone(),
-        );
+        let trust_root_validator =
+            TrustRootValidator::new(config.trust_root_endpoints(), config.timeout);
 
         // Initialize license cache with persistent storage
         info!(
@@ -177,11 +174,8 @@ impl LicenseEngine {
         config: VerifyConfig,
         hw_signer: Arc<dyn HardwareSigner>,
     ) -> Result<Self, VerifyError> {
-        let trust_root_validator = TrustRootValidator::new(
-            config.trust_root_endpoints(),
-            config.timeout,
-            config.cert_pin.clone(),
-        );
+        let trust_root_validator =
+            TrustRootValidator::new(config.trust_root_endpoints(), config.timeout);
 
         let cache = LicenseCache::new(
             &config.key_alias,

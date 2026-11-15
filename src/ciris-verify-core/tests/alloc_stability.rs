@@ -17,6 +17,7 @@
 //! precisely because it needs its own process-wide `#[global_allocator]`
 //! — installing one in the shared `it` binary would distort every other
 //! test and cross-contaminate the counter from parallel test threads.
+#![cfg(feature = "host")]
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicI64, Ordering};

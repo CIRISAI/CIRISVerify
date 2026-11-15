@@ -29,6 +29,9 @@
 //! non-reserved dimension. Reserved-prefix attestations follow
 //! the separate §7 rule (handled elsewhere).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 use crate::federation_provenance::AttestationEntry;

@@ -51,6 +51,9 @@
 //! leaf to reach the next power of 2 — RFC 6962 convention. Verify
 //! reconstruction must apply the same discipline.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -352,7 +355,7 @@ fn decode_hex32(s: &str, field: &str) -> Result<[u8; 32], VerifyError> {
 fn hex_encode(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        use std::fmt::Write;
+        use core::fmt::Write;
         let _ = write!(s, "{b:02x}");
     }
     s

@@ -21,7 +21,7 @@ clap.workspace = true
 
 
 # Core types
-ciris-verify-core.workspace = true
+ciris-verify-core = { workspace = true, features = ["std", "host", "pqc"] }
 
 serde_json.workspace = true
 

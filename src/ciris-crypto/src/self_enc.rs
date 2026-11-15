@@ -37,6 +37,8 @@
 //! pubkey_ml_kem_768_base64` expect (CIRISPersist V069). The private halves
 //! never leave the enclave.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use hkdf::Hkdf;
 use sha2::Sha256;
 

@@ -18,6 +18,9 @@
 //! but CIRISVerify still functions without it. A compromised Google account
 //! or Play Integrity service doesn't compromise the core verification.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 /// Nonce response from registry.
@@ -173,7 +176,7 @@ impl IntegrityVerifyResponse {
 }
 
 /// Result type for Play Integrity operations.
-pub type Result<T> = std::result::Result<T, PlayIntegrityError>;
+pub type Result<T> = core::result::Result<T, PlayIntegrityError>;
 
 /// Play Integrity errors.
 #[derive(Debug, Clone)]
@@ -191,8 +194,8 @@ pub enum PlayIntegrityError {
     VerificationFailed(String),
 }
 
-impl std::fmt::Display for PlayIntegrityError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for PlayIntegrityError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NetworkError(msg) => write!(f, "network error: {}", msg),
             Self::RegistryError(msg) => write!(f, "registry error: {}", msg),
@@ -203,7 +206,7 @@ impl std::fmt::Display for PlayIntegrityError {
     }
 }
 
-impl std::error::Error for PlayIntegrityError {}
+impl core::error::Error for PlayIntegrityError {}
 
 #[cfg(test)]
 mod tests {

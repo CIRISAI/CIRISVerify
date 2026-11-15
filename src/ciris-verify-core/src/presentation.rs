@@ -39,6 +39,9 @@
 //! least. So the scope of an identifier is a **safety** property, not a privacy
 //! nicety.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 /// How widely an identifier on a presentation surface correlates.
 ///
 /// This is **[`Gating::Measurement`](crate::classification::Gating::Measurement)**:

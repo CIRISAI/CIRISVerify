@@ -686,11 +686,8 @@ async fn probe_single_endpoint(endpoint: String) -> bool {
 impl UnifiedAttestationEngine {
     /// Create a new unified attestation engine.
     pub fn new(config: VerifyConfig) -> Result<Self, VerifyError> {
-        let trust_root_validator = TrustRootValidator::new(
-            config.trust_root_endpoints(),
-            config.timeout,
-            config.cert_pin.clone(),
-        );
+        let trust_root_validator =
+            TrustRootValidator::new(config.trust_root_endpoints(), config.timeout);
 
         // Use resilient client with fallback endpoints. Project is per-call
         // (v1.12.0+) — this single client serves both the engine's own

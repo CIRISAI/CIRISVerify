@@ -224,8 +224,10 @@ shapes are internal.
 Google's RFC 6962 log, and the reference implementation of the idea.
 
 Verify's `transparency` is RFC 6962-correct (`0x00` leaf / `0x01` node domain
-separation, inclusion and consistency proofs) with **hybrid-signed tree heads**,
-which is ahead of Trillian's classical STH signing. `hash_leaf` / `hash_node`
+separation, inclusion and consistency proofs) with tree heads and witness
+cosignatures signed under the **composite ML-DSA-65-Ed25519** signature
+(CC 2.6.1.7; neither half verifies alone), which is ahead of Trillian's
+classical STH signing. `hash_leaf` / `hash_node`
 are public precisely so downstream stores do not reimplement them.
 
 **Where verify loses:** Trillian is a sharded, database-backed production

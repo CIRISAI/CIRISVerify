@@ -13,6 +13,8 @@
 //! - ciphertext:                       1088 B
 //! - shared secret:                      32 B
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use ml_kem::{
     kem::{Decapsulate, Encapsulate, Kem, KeyExport, KeyInit},
     MlKem768,

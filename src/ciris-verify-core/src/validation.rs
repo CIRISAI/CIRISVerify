@@ -30,7 +30,6 @@ use crate::types::ValidationStatus;
 pub struct TrustRootValidator {
     endpoints: Vec<String>,
     timeout: Duration,
-    cert_pin: Option<String>,
     /// Last reported posture, so an alert fires on a **transition** rather
     /// than once per verification cycle (CIRISVerify#223, CIRIS Logging
     /// Standard #265). `0` = not yet observed.
@@ -262,11 +261,10 @@ pub fn source_report_from_response(
 impl TrustRootValidator {
     /// A validator over `endpoints` (base URLs, queried in parallel).
     #[must_use]
-    pub fn new(endpoints: Vec<String>, timeout: Duration, cert_pin: Option<String>) -> Self {
+    pub fn new(endpoints: Vec<String>, timeout: Duration) -> Self {
         Self {
             endpoints,
             timeout,
-            cert_pin,
             last_posture: std::sync::atomic::AtomicU8::new(0),
         }
     }
@@ -283,11 +281,8 @@ impl TrustRootValidator {
         let fetches = self.endpoints.iter().map(|ep| {
             let ep = ep.clone();
             let timeout = self.timeout;
-            let pin = self.cert_pin.clone();
             async move {
-                let fetched =
-                    tokio::time::timeout(timeout, query_trust_root(&ep, timeout, pin.as_deref()))
-                        .await;
+                let fetched = tokio::time::timeout(timeout, query_trust_root(&ep, timeout)).await;
                 let outcome = match fetched {
                     Err(_) => SourceOutcome::Unreachable("timeout".to_string()),
                     Ok(Err(e)) => outcome_of_fetch_error(e),
@@ -524,7 +519,7 @@ mod tests {
 
     #[test]
     fn posture_is_reported_on_transitions_not_every_cycle() {
-        let v = TrustRootValidator::new(vec![], Duration::from_secs(1), None);
+        let v = TrustRootValidator::new(vec![], Duration::from_secs(1));
         let healthy = select_trust_root(vec![verified("a", root())]);
         assert!(v.report_posture(&healthy));
         for _ in 0..50 {

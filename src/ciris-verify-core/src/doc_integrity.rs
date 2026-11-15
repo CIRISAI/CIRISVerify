@@ -41,6 +41,9 @@
 //! needs; the threshold path is a later composition, not a schema change
 //! here.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::error::VerifyError;
 use base64::Engine;
 use ciris_crypto::{

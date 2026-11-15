@@ -101,7 +101,7 @@ An unlicensed community agent is like an uninsured driver — it can still opera
 
 The DMV's authority comes from the HUMANITY_ACCORD holders whose keys are baked into the binary. Each registry host serves a GenesisBundle; CIRISVerify verifies each one independently against those baked holders (a strict majority must have authorized it with hybrid Ed25519 + ML-DSA-65 signatures) and takes the highest verified version as the trust root (CC 5.3.4). One verified host is enough. Two verified bundles at the same version that differ are equivocation — a security alert, and the agent enters restricted mode.
 
-A licence is a cosigned `licensure:{authority}:v1` row (CC 4.4.3.8). CIRISVerify does not yet evaluate licensure rows, so every agent currently operates in community mode.
+A licence is a cosigned `licensure:{authority}:v1` row (CC 4.4.3.34). CIRISVerify does not yet evaluate licensure rows, so every agent currently operates in community mode.
 
 ---
 
@@ -136,7 +136,7 @@ Every verification returns a `LicenseStatusResponse` containing:
 │                                                              │
 │  1. Binary integrity self-check                              │
 │  2. Trust-root validation (GenesisBundle, CC 5.3.4)          │
-│  3. Licence gate (community until licensure rows, CC 4.4.3.8)│
+│  3. Licence gate (community until licensure rows, CC 4.4.3.34)│
 │  4. Hardware attestation (TPM/SE/Keystore/Software)          │
 │  5. Build LicenseStatusResponse with mandatory disclosure    │
 │                                                              │
@@ -239,7 +239,9 @@ CIRISRegistry hosts three types of manifests — think of them as official DMV r
 
 ### 1. Binary Manifest — "Is This a Real Inspection Station?"
 
-SHA-256 fingerprints of CIRISVerify binaries for each platform. Used to verify the verifier itself.
+SHA-256 fingerprints of CIRISVerify binaries for each platform. Used to verify the verifier itself (Level 1).
+
+**Known limitation (until edition 2).** The binary manifest is plain JSON fetched over TLS with the bundled web-PKI roots. It is not signed and no certificate is pinned, so whoever controls the registry host, or can present a web-PKI certificate for it, can serve a manifest that names a replaced binary. The edition-2 signed build record (CBOR/COSE, CC 2.6.1.9), published after the re-genesis, closes this; Level 1 will verify that record instead.
 
 **Route**: `GET /v1/verify/binary-manifest/{version}`
 

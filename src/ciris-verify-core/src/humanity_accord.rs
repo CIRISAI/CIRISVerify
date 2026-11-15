@@ -55,7 +55,10 @@
 //! )
 //! ```
 
-use std::collections::BTreeMap;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -328,8 +331,8 @@ pub enum InvocationError {
     Threshold(String),
 }
 
-impl std::fmt::Display for InvocationError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for InvocationError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::QuorumNotMet { valid, required } => {
                 write!(
@@ -369,7 +372,7 @@ impl std::fmt::Display for InvocationError {
     }
 }
 
-impl std::error::Error for InvocationError {}
+impl core::error::Error for InvocationError {}
 
 /// Verify an invocation: distinct holder hybrid signatures over the CC 4.2.1.1
 /// / 4.2.1.3 canonical bytes, at the threshold its kind requires

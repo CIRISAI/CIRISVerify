@@ -7,6 +7,8 @@
 //! 3. Verification requires BOTH signatures to pass
 
 use crate::error::CryptoError;
+#[allow(unused_imports)]
+use crate::prelude::*;
 use crate::types::{
     ClassicalAlgorithm, CryptoKind, HybridSignature, PqcAlgorithm, SignatureMode,
     TaggedClassicalSignature, TaggedPqcSignature, CRYPTO_KIND_CIRIS_V1,

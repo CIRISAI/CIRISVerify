@@ -26,6 +26,9 @@
 //! the consumer's recovery posture differs (resign vs renegotiate
 //! transport vs reject + ban).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::VerifyError;
@@ -192,8 +195,8 @@ impl CegError {
     }
 }
 
-impl std::fmt::Display for CegError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for CegError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "{} ({}): {}",
@@ -204,7 +207,7 @@ impl std::fmt::Display for CegError {
     }
 }
 
-impl std::error::Error for CegError {}
+impl core::error::Error for CegError {}
 
 /// Map a verify-internal [`VerifyError`] into the [`CegError`] wire
 /// envelope. The mapping recognizes the §0.5 / §0.6 marker substrings

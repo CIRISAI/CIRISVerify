@@ -23,6 +23,9 @@
 //! ```
 //! A v3.7.0 chunk round-trips as `codec_id = 0xFF` + `ChunkLayer{0,0,0}`.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use sha2::{Digest, Sha256};
 
 /// The fixed `stream_id`+`epoch`+`chunk_seq` header length (stable since v3.7.0).
@@ -36,15 +39,6 @@ pub const STREAM_ID_LEN: usize = 32;
 /// AES-GCM nonce width (96-bit / 12 bytes).
 pub const AV_NONCE_LEN: usize = 12;
 
-/// Inner-seal nonce domain separator of the **retired** A/V inner nonce.
-///
-/// Kept so a historical artifact is recognisable; nothing seals with it. The
-/// inner seal is the CC 5.3.3.1 STREAM nonce ([`av_inner_nonce`]).
-#[deprecated(
-    since = "20.0.0",
-    note = "the A/V inner seal is the CC 5.3.3.1 STREAM nonce (CIRISConstitution#140); use av_inner_nonce"
-)]
-pub const AV_INNER_DOMAIN: &[u8] = b"CIRIS-AV-INNER-V1";
 /// Outer-seal (per-RNS-Link transit) nonce domain separator.
 pub const AV_OUTER_DOMAIN: &[u8] = b"CIRIS-AV-OUTER-V1";
 
@@ -121,38 +115,19 @@ fn sha256_12(parts: &[&[u8]]) -> [u8; AV_NONCE_LEN] {
     out
 }
 
-/// The **retired** A/V inner nonce:
-/// `SHA-256( b"CIRIS-AV-INNER-V1" ‖ stream_id[32] ‖ epoch_be8 ‖ chunk_seq_be8 )[0..12]`.
-///
-/// The realtime inner seal is the CC 5.3.3.1 STREAM nonce, one seal for live
-/// and stored streams; use [`av_inner_nonce`]. This construction is retained
-/// only so an existing artifact can be identified, never to seal.
-#[deprecated(
-    since = "20.0.0",
-    note = "the A/V inner seal is the CC 5.3.3.1 STREAM nonce (CIRISConstitution#140); use av_inner_nonce"
-)]
-#[must_use]
-#[allow(deprecated)]
-pub fn inner_nonce(
-    stream_id: &[u8; STREAM_ID_LEN],
-    epoch: u64,
-    chunk_seq: u64,
-) -> [u8; AV_NONCE_LEN] {
-    sha256_12(&[
-        AV_INNER_DOMAIN,
-        stream_id,
-        &epoch.to_be_bytes(),
-        &chunk_seq.to_be_bytes(),
-    ])
-}
-
-/// The STREAM `stream_id` of an A/V stream: the lowercase hex of the header's
-/// 32 bytes (64 ASCII chars). CIRISEdge names a kept call's persist recording by
-/// this same string, so a live stream and its stored segments share one
-/// `stream_id` and one seal (CIRISVerify#303).
+/// The STREAM `stream_id` of an A/V stream: `av-` followed by the lowercase
+/// hex of the header's 32 bytes, 67 ASCII characters (rc20 CC 5.3.3.1). This is
+/// the one spelling: CIRISEdge names the live stream and persist's chunk door
+/// names its stored segments by it, so both share one `stream_id`, one seal and
+/// one DEK (`ciris_crypto::stream_dek`). Bare 64-hex is the store's inline-blob
+/// log id (CIRISPersist#953), never a stream id. 23.0.0 changed this from bare
+/// hex: a hard cut, with no second spelling accepted.
 #[must_use]
 pub fn av_stream_id(stream_id: &[u8; STREAM_ID_LEN]) -> String {
-    hex::encode(stream_id)
+    let mut s = String::with_capacity(3 + 2 * STREAM_ID_LEN);
+    s.push_str("av-");
+    s.push_str(&hex::encode(stream_id));
+    s
 }
 
 /// The **inner** (end-to-end, epoch-DEK) AES-GCM nonce for an A/V chunk: the
@@ -207,38 +182,29 @@ mod tests {
 
     // ---- KATs: the nonce derivations are byte-pinned (RC10 / §19.6 vectors).
 
-    /// The inner seal is the STREAM nonce over the header's hex `stream_id`,
-    /// byte-for-byte (CIRISConstitution#140). Golden derived independently in
-    /// Python: DEK `[0x42;32]`, `stream_id` `[0x11;32]`, epoch 1, seq 0.
+    /// The inner seal is the STREAM nonce over `av-{hex}` of the header's
+    /// `stream_id`, byte-for-byte (CIRISConstitution#140, rc20 CC 5.3.3.1).
+    /// Golden derived independently in Python (a from-scratch RFC 5869 HKDF that
+    /// also reproduces the pre-23.0.0 bare-hex golden `03d118a1cbe035…`):
+    /// DEK `[0x42;32]`, `stream_id` `[0x11;32]`, epoch 1, seq 0.
     #[test]
     fn av_inner_nonce_is_the_cc_5_3_3_1_stream_nonce() {
         let dek = [0x42u8; 32];
         let sid = [0x11u8; 32];
-        assert_eq!(av_stream_id(&sid), "11".repeat(32));
+        let spelled = format!("av-{}", "11".repeat(32));
+        assert_eq!(av_stream_id(&sid), spelled);
         let n = av_inner_nonce(&dek, &sid, 1, 0, false).unwrap();
-        assert_eq!(hex::encode(n), "03d118a1cbe0350000000000");
+        assert_eq!(hex::encode(n), "0a1620441296170000000000");
         assert_eq!(
             n,
-            ciris_crypto::stream_seal::stream_nonce(&dek, &"11".repeat(32), 1, 0, false)
+            ciris_crypto::stream_seal::stream_nonce(&dek, &spelled, 1, 0, false)
+        );
+        assert_ne!(
+            n,
+            ciris_crypto::stream_seal::stream_nonce(&dek, &"11".repeat(32), 1, 0, false),
+            "the bare-hex spelling is not the stream id"
         );
         assert_eq!(av_inner_nonce(&dek, &sid, 1, 0, true).unwrap()[11], 0x01);
-    }
-
-    /// The KAT inverted: the retired construction must not be what seals.
-    #[test]
-    #[allow(deprecated)]
-    fn the_retired_inner_nonce_is_not_the_seal() {
-        let sid = [0x11u8; 32];
-        let retired = inner_nonce(&sid, 1, 0);
-        let mut h = Sha256::new();
-        h.update(b"CIRIS-AV-INNER-V1");
-        h.update(sid);
-        h.update(1u64.to_be_bytes());
-        h.update(0u64.to_be_bytes());
-        assert_eq!(&retired[..], &h.finalize()[..12], "still identifiable");
-        for dek in [[0x42u8; 32], [0u8; 32]] {
-            assert_ne!(av_inner_nonce(&dek, &sid, 1, 0, false).unwrap(), retired);
-        }
     }
 
     #[test]

@@ -33,16 +33,19 @@
 //! ## Authority (N3 / N4)
 //!
 //! A WholenessWitness is federation-tier: hybrid PQC verified **at ingest and
-//! before persistence** ([`crate::substrate::verify_bound_hybrid`]);
+//! before persistence** ([`crate::substrate::verify_composite`]);
 //! [`compare_witnesses`] MUST NOT run on an unverified witness. Two
 //! validly-signed witnesses from the same `(peer_id, epoch_id,
 //! claim_namespace_set)` with **different** `merkle_root` are **non-repudiable
 //! equivocation** ([`Equivocation`]) — retained and surfaced as a `hard_case:*`,
 //! never silently reconciled.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use sha2::{Digest, Sha256};
 
-use super::preimage::WW_EMPTY_SENTINEL;
+use super::preimage::{HolonomicError, WW_EMPTY_SENTINEL};
 
 /// A 32-byte SHA-256 Merkle node/root.
 pub type Hash = [u8; 32];
@@ -66,14 +69,28 @@ fn sha256(parts: &[&[u8]]) -> Hash {
 /// WW-2 (anonymous/`self` exclusion) is the **caller's** leaf-walk precondition
 /// — this function hashes exactly the leaves it is given. [`verify_witness`]
 /// guards the namespace-set side.
-#[must_use]
-pub fn compute_merkle_root(leaf_bytes: &[Vec<u8>]) -> Hash {
+///
+/// CC 6.1.1: "The leaf list MUST be deduplicated as well as sorted (the
+/// CC 2.6.1.2 set rule, sorted AND unique), and a list with a repeated leaf is
+/// refused before hashing." Under odd-node duplication `[a,b,c]` and
+/// `[a,b,c,c]` would otherwise share a root (CIRISVerify#314).
+///
+/// # Errors
+///
+/// [`HolonomicError::Invariant`] with reason `"duplicate_leaf"` when two
+/// leaves are byte-identical. Nothing is hashed.
+pub fn compute_merkle_root(leaf_bytes: &[Vec<u8>]) -> Result<Hash, HolonomicError> {
     if leaf_bytes.is_empty() {
-        return sha256(&[WW_EMPTY_SENTINEL]);
+        return Ok(sha256(&[WW_EMPTY_SENTINEL]));
     }
     // Lexicographic over raw leaf bytes (set-semantics), then hash each leaf.
     let mut sorted: Vec<&Vec<u8>> = leaf_bytes.iter().collect();
     sorted.sort_unstable();
+    if sorted.windows(2).any(|w| w[0] == w[1]) {
+        return Err(HolonomicError::Invariant {
+            reason: "duplicate_leaf",
+        });
+    }
     let mut level: Vec<Hash> = sorted.iter().map(|b| sha256(&[b.as_slice()])).collect();
 
     while level.len() > 1 {
@@ -92,11 +109,11 @@ pub fn compute_merkle_root(leaf_bytes: &[Vec<u8>]) -> Hash {
         }
         level = next;
     }
-    level[0]
+    Ok(level[0])
 }
 
 /// A WholenessWitness as parsed off the wire (its signed scalar members plus
-/// the bound-hybrid signature halves). The exact signed-preimage field layout is
+/// the composite signature). The exact signed-preimage field layout is
 /// pinned by §19.1 and frozen by the §19.6 vectors (CIRISEdge#143); this struct
 /// carries what the invariant checks need.
 ///
@@ -176,20 +193,18 @@ const FORBIDDEN_NAMESPACE_MARKERS: &[&str] = &["anonymous", "self"];
 ///
 /// # Errors
 ///
-/// Propagates [`HolonomicError`](super::preimage::HolonomicError) from the
+/// Propagates [`HolonomicError`] from the
 /// signature gate; returns
-/// [`HolonomicError::Invariant`](super::preimage::HolonomicError::Invariant) for an empty/forbidden namespace set
-/// (`"ww_namespace"`) or a leaf/root mismatch (`"ww_root_mismatch"`).
+/// [`HolonomicError::Invariant`] for an empty/forbidden namespace set
+/// (`"ww_namespace"`), a leaf/root mismatch (`"ww_root_mismatch"`), or a
+/// disclosed leaf list with a repeated leaf (`"duplicate_leaf"`, CC 6.1.1).
 pub fn verify_witness(
     witness: &WholenessWitness,
     witness_preimage: &[u8],
-    sig: &super::preimage::BoundHybridSig<'_>,
-    ed25519_pubkey: &[u8],
-    mldsa65_pubkey: &[u8],
+    sig: &[u8],
+    composite_pubkey: &[u8],
     leaves: Option<&[Vec<u8>]>,
-) -> Result<(), super::preimage::HolonomicError> {
-    use super::preimage::HolonomicError;
-
+) -> Result<(), HolonomicError> {
     // WW-2 / WW-1: a witness must scope at least one namespace and MUST NOT name
     // an anonymous-tier or self namespace.
     if witness.claim_namespaces.is_empty() {
@@ -209,12 +224,13 @@ pub fn verify_witness(
         }
     }
 
-    // N3: hybrid PQC verified at the gate (before any compare / persist).
-    super::preimage::verify_bound_hybrid(witness_preimage, sig, ed25519_pubkey, mldsa65_pubkey)?;
+    // N3: composite PQC signature verified at the gate (before any compare /
+    // persist).
+    super::preimage::verify_composite(witness_preimage, sig, composite_pubkey)?;
 
     // If the leaves were disclosed, the signed root must match a recompute.
     if let Some(leaves) = leaves {
-        if compute_merkle_root(leaves) != witness.merkle_root {
+        if compute_merkle_root(leaves)? != witness.merkle_root {
             return Err(HolonomicError::Invariant {
                 reason: "ww_root_mismatch",
             });
@@ -264,7 +280,7 @@ pub enum WitnessComparison {
 /// - all agree → [`WitnessComparison::Consistent`].
 #[must_use]
 pub fn compare_witnesses(verified: &[WholenessWitness]) -> WitnessComparison {
-    use std::collections::BTreeMap;
+    use alloc::collections::BTreeMap;
 
     // Group roots by equivocation identity.
     let mut by_identity: BTreeMap<(String, u64, Vec<String>), Vec<Hash>> = BTreeMap::new();
@@ -276,7 +292,7 @@ pub fn compare_witnesses(verified: &[WholenessWitness]) -> WitnessComparison {
     }
 
     let mut equivocations = Vec::new();
-    let mut distinct_roots_seen = std::collections::BTreeSet::new();
+    let mut distinct_roots_seen = alloc::collections::BTreeSet::new();
     for ((peer_id, epoch_id, ns), mut roots) in by_identity {
         roots.sort_unstable();
         roots.dedup();
@@ -315,21 +331,24 @@ mod tests {
 
     #[test]
     fn empty_tree_is_sentinel_hash() {
-        assert_eq!(compute_merkle_root(&[]), sha256(&[WW_EMPTY_SENTINEL]));
+        assert_eq!(
+            compute_merkle_root(&[]).unwrap(),
+            sha256(&[WW_EMPTY_SENTINEL])
+        );
     }
 
     #[test]
     fn single_leaf_root_is_leaf_hash() {
-        let root = compute_merkle_root(&[leaf(b"a")]);
+        let root = compute_merkle_root(&[leaf(b"a")]).unwrap();
         assert_eq!(root, sha256(&[b"a"]));
     }
 
     #[test]
     fn root_is_order_independent_lexicographic() {
         // The whole point of WW-1: input order MUST NOT change the root.
-        let r1 = compute_merkle_root(&[leaf(b"c"), leaf(b"a"), leaf(b"b")]);
-        let r2 = compute_merkle_root(&[leaf(b"a"), leaf(b"b"), leaf(b"c")]);
-        let r3 = compute_merkle_root(&[leaf(b"b"), leaf(b"c"), leaf(b"a")]);
+        let r1 = compute_merkle_root(&[leaf(b"c"), leaf(b"a"), leaf(b"b")]).unwrap();
+        let r2 = compute_merkle_root(&[leaf(b"a"), leaf(b"b"), leaf(b"c")]).unwrap();
+        let r3 = compute_merkle_root(&[leaf(b"b"), leaf(b"c"), leaf(b"a")]).unwrap();
         assert_eq!(r1, r2);
         assert_eq!(r2, r3);
     }
@@ -345,9 +364,25 @@ mod tests {
         let n1 = sha256(&[&hc, &hc]); // odd → duplicated
         let expected = sha256(&[&n0, &n1]);
         assert_eq!(
-            compute_merkle_root(&[leaf(b"a"), leaf(b"b"), leaf(b"c")]),
+            compute_merkle_root(&[leaf(b"a"), leaf(b"b"), leaf(b"c")]).unwrap(),
             expected
         );
+    }
+
+    #[test]
+    fn repeated_leaf_is_refused_before_hashing() {
+        // CC 6.1.1 / CIRISVerify#314: [a,b,c,c] would share [a,b,c]'s root
+        // under odd-node duplication, so the repeated leaf is refused.
+        let err =
+            compute_merkle_root(&[leaf(b"a"), leaf(b"b"), leaf(b"c"), leaf(b"c")]).unwrap_err();
+        assert_eq!(
+            err,
+            HolonomicError::Invariant {
+                reason: "duplicate_leaf"
+            }
+        );
+        // Order does not hide a repeat.
+        assert!(compute_merkle_root(&[leaf(b"c"), leaf(b"a"), leaf(b"c")]).is_err());
     }
 
     #[test]
@@ -355,7 +390,7 @@ mod tests {
         let ha = sha256(&[b"a"]);
         let hb = sha256(&[b"b"]);
         assert_eq!(
-            compute_merkle_root(&[leaf(b"b"), leaf(b"a")]),
+            compute_merkle_root(&[leaf(b"b"), leaf(b"a")]).unwrap(),
             sha256(&[&ha, &hb])
         );
     }
@@ -374,7 +409,7 @@ mod tests {
 
     #[test]
     fn consistent_when_all_roots_agree() {
-        let r = compute_merkle_root(&[leaf(b"x")]);
+        let r = compute_merkle_root(&[leaf(b"x")]).unwrap();
         let set = vec![
             ww("peer-a", 1, &["scores:medical"], r),
             ww("peer-b", 1, &["scores:medical"], r),
@@ -384,8 +419,8 @@ mod tests {
 
     #[test]
     fn divergent_across_peers_hands_to_quorum_merge() {
-        let r1 = compute_merkle_root(&[leaf(b"x")]);
-        let r2 = compute_merkle_root(&[leaf(b"y")]);
+        let r1 = compute_merkle_root(&[leaf(b"x")]).unwrap();
+        let r2 = compute_merkle_root(&[leaf(b"y")]).unwrap();
         let set = vec![
             ww("peer-a", 1, &["scores:medical"], r1),
             ww("peer-b", 1, &["scores:medical"], r2),
@@ -395,8 +430,8 @@ mod tests {
 
     #[test]
     fn equivocation_detected_for_one_peer_two_roots() {
-        let r1 = compute_merkle_root(&[leaf(b"x")]);
-        let r2 = compute_merkle_root(&[leaf(b"y")]);
+        let r1 = compute_merkle_root(&[leaf(b"x")]).unwrap();
+        let r2 = compute_merkle_root(&[leaf(b"y")]).unwrap();
         // Same (peer, epoch, namespace set), two roots — namespace order varied
         // to prove the key is set-normalized.
         let set = vec![
@@ -416,16 +451,44 @@ mod tests {
     #[test]
     fn verify_witness_rejects_self_namespace() {
         let w = ww("peer-a", 1, &["cohort_scope:self:notes"], [0u8; 32]);
-        let sig = super::super::preimage::BoundHybridSig {
-            ed25519: &[0u8; 64],
-            mldsa65: Some(&[0u8; 8]),
-        };
-        let err = verify_witness(&w, b"pre", &sig, &[0u8; 32], &[0u8; 8], None).unwrap_err();
+        let err = verify_witness(&w, b"pre", &[0u8; 8], &[0u8; 8], None).unwrap_err();
         assert!(matches!(
             err,
             super::super::preimage::HolonomicError::Invariant {
                 reason: "ww_namespace"
             }
         ));
+    }
+
+    #[test]
+    fn verify_witness_round_trips_composite_and_rejects_bad_sigs() {
+        use super::super::preimage::HolonomicError;
+        use ciris_crypto::composite::{CompositeSigningKey, MLDSA65_SIG_LEN};
+        let k = CompositeSigningKey::from_seeds(&[3; 32], &[4; 32]);
+        let other = CompositeSigningKey::from_seeds(&[5; 32], &[6; 32]);
+        let leaves = vec![leaf(b"x"), leaf(b"y")];
+        let root = compute_merkle_root(&leaves).unwrap();
+        let w = ww("peer-a", 1, &["scores:medical"], root);
+        let pre = w.canonical_preimage();
+        let sig = k.sign(&pre).unwrap();
+        let pk = k.public_key().as_bytes();
+        assert!(verify_witness(&w, &pre, &sig, pk, Some(&leaves)).is_ok());
+        assert_eq!(
+            verify_witness(&w, &pre, &sig[MLDSA65_SIG_LEN..], pk, None),
+            Err(HolonomicError::MalformedKeyOrSignature)
+        );
+        for i in [0, MLDSA65_SIG_LEN] {
+            let mut bad = sig.clone();
+            bad[i] ^= 1;
+            assert_eq!(
+                verify_witness(&w, &pre, &bad, pk, None),
+                Err(HolonomicError::SignatureInvalid)
+            );
+        }
+        let foreign = other.sign(&pre).unwrap();
+        assert_eq!(
+            verify_witness(&w, &pre, &foreign, pk, None),
+            Err(HolonomicError::SignatureInvalid)
+        );
     }
 }

@@ -9,6 +9,8 @@
 //! the verification path — naive `==` on MAC bytes is a timing
 //! side-channel.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use ::hmac::{Hmac, Mac};
 use sha2::Sha256;
 use sha3::Sha3_256;
