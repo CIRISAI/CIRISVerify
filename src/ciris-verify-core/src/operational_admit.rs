@@ -391,7 +391,7 @@ fn grant_is_anchored(
 /// (those with `role: Founder`) each produced a valid bound hybrid
 /// signature over the identical canonical bytes.
 ///
-/// **Determinism precondition (§0.9.2.1 rule 1):** all M stewards must
+/// **Determinism precondition (CC 2.6.1.2 rule 1):** all M stewards must
 /// sign byte-identical JCS bytes, so set-semantics arrays
 /// (`capabilities_granted` / `capabilities_denied` /
 /// `geographic_restrictions` / `allowed_identity_templates`) MUST
@@ -418,16 +418,32 @@ pub fn verify_partner_record_quorum(
     })
 }
 
+/// The CC 2.6.1.2 refusal token for a set-kind array that is out of order or
+/// carries a duplicate element.
+pub const FEDERATION_SET_SEMANTICS_UNSORTED: &str = "federation_set_semantics_unsorted";
+
 /// Producer-side guard: confirm the named members of `value` are arrays
-/// whose string elements are in non-decreasing lexicographic order
-/// (set-semantics, §0.9.2.1 rule 1). Returns the first offending field
-/// as an error so a mis-ordered multi-signer `partner_record` is caught
-/// *before* M stewards sign divergent bytes — far better than a silent
-/// quorum collapse at admission.
+/// whose string elements are **strictly** increasing in lexicographic order —
+/// sorted AND unique (set-semantics, CC 2.6.1.2 rule 1). Returns the first
+/// offending field as an error so a mis-ordered multi-signer `partner_record`
+/// is caught *before* M stewards sign divergent bytes — far better than a
+/// silent quorum collapse at admission.
 ///
-/// A named field that is absent or not an array is skipped (the §0.9.2
+/// CC 2.6.1.2: "A substrate that finds a set-kind array out of order refuses
+/// the row with **`federation_set_semantics_unsorted`**, naming the member, and
+/// never re-sorts it (re-sorting would move signed bytes). **A set-kind array
+/// is sorted AND unique:** a duplicate element is refused under the same
+/// token." (CIRISVerify#312.) The array is never re-sorted or deduplicated.
+///
+/// A named field that is absent or not an array is skipped (the CC 2.6.1.1
 /// omit-vs-materialize discipline: this never injects or reorders, it
 /// only inspects). Non-string array elements are likewise skipped.
+///
+/// # Errors
+///
+/// [`VerifyError::IntegrityError`] whose message carries
+/// [`FEDERATION_SET_SEMANTICS_UNSORTED`], the member name, and whether the
+/// offending adjacent pair was out of order or a duplicate.
 pub fn check_set_semantics_sorted(value: &Value, fields: &[&str]) -> Result<(), VerifyError> {
     let Some(obj) = value.as_object() else {
         return Ok(());
@@ -440,11 +456,18 @@ pub fn check_set_semantics_sorted(value: &Value, fields: &[&str]) -> Result<(), 
         if strs.len() != arr.len() {
             continue; // not a pure string array; not ours to judge
         }
-        if strs.windows(2).any(|w| w[0] > w[1]) {
+        if let Some((i, w)) = strs.windows(2).enumerate().find(|(_, w)| w[0] >= w[1]) {
+            let what = if w[0] == w[1] {
+                "carries a duplicate element"
+            } else {
+                "is not lexicographically sorted"
+            };
             return Err(VerifyError::IntegrityError {
                 message: format!(
-                    "set-semantics array `{field}` is not lexicographically sorted \
-                     (§0.9.2.1 rule 1) — multi-signer JCS bytes would diverge"
+                    "{FEDERATION_SET_SEMANTICS_UNSORTED}: set-semantics array `{field}` {what} \
+                     at index {} (CC 2.6.1.2 rule 1: sorted AND unique) — multi-signer JCS \
+                     bytes would diverge",
+                    i + 1
                 ),
             });
         }
@@ -1030,6 +1053,37 @@ mod tests {
             },
             other => panic!("unexpected error: {other:?}"),
         }
+    }
+
+    #[test]
+    fn duplicate_element_is_refused_under_the_same_token() {
+        // CIRISVerify#312 / CC 2.6.1.2: sorted AND unique.
+        let pr = json!({
+            "capabilities_granted": ["billing.read", "identity.read", "identity.read"],
+        });
+        let err = check_set_semantics_sorted(&pr, &["capabilities_granted"]).unwrap_err();
+        match err {
+            VerifyError::IntegrityError { message } => {
+                assert!(message.contains(FEDERATION_SET_SEMANTICS_UNSORTED));
+                assert!(message.contains("capabilities_granted"));
+                assert!(message.contains("duplicate"), "{message}");
+            },
+            other => panic!("unexpected error: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unsorted_error_names_the_token_and_the_cause() {
+        let pr = json!({ "capabilities_granted": ["b", "a"] });
+        let err = check_set_semantics_sorted(&pr, &["capabilities_granted"]).unwrap_err();
+        let VerifyError::IntegrityError { message } = err else {
+            panic!("unexpected error");
+        };
+        assert!(message.contains(FEDERATION_SET_SEMANTICS_UNSORTED));
+        assert!(
+            message.contains("not lexicographically sorted"),
+            "{message}"
+        );
     }
 
     #[test]
