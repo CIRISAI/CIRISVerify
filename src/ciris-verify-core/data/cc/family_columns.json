@@ -1,0 +1,987 @@
+{
+ "_source": {
+  "file": "manifests/family_model.json",
+  "sha256": "daa803a680e49d6013fcd41435c4e5d2a725d52b36db568d3523e365c848757e"
+ },
+ "families": {
+  "accord:*": {
+   "authorship": "leaf=lifecycle:{kind} => counted ; authored",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "accord:human_dignity": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "accord:invoke:constitutional:{halt_id}": {
+   "authorship": "authored",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "accord:invoke:drill:{drill_id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "accord:invoke:notify:{notify_id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "accord:lifecycle": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "accord:lifecycle:{kind}": {
+   "authorship": "counted",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "activity_tier:{period}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "age_assurance:{level}:{band}:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "age_self_declared:band:{band}:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "agent_files:{kind}:{platform_or_target}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "approach:{goal_id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "archive_release:{basis}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "attestation:agent_integrity": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "attestation:hardware_rooted": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "attestation:license_validity": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "attestation:registry_consensus": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "attestation:self_verify": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "audio:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "audit_chain:hash_continuity": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "autonomy:{aspect}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "ballot:moderator": {
+   "authorship": "authored",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "ballot:moderator_acceptance": {
+   "authorship": "authored",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "ballot:tally:{poll_id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "benchmark:he300:{category}:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "beneficence:{aspect}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "blog:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "bond_posted:{currency}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "build:registered:{target}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "capacity:composite": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "capacity:relay_delivery": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "capacity:{factor}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "capacity_assurance:reversible_excluded:{domain}:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "capacity_assurance:reversible_pending:{domain}:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "capacity_assurance:{level}:{domain}:{band}:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "census:composite:{class}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "census:expected_active": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "census:member:partial": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "census:member:share": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "census:partial:{class}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "census:share:{class}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "cert_validity:{authority}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "chat:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "coherence_standing:{cohort}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "collection:{kind}": {
+   "authorship": null,
+   "authorship_source": "gap",
+   "second_signers": []
+  },
+  "commitment_fulfillment:{prior_contribution_id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "community:listing": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "config:{scope}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "conscience:coherence": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "conscience:entropy": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "conscience:epistemic_humility": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "conscience:optimization_veto": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "consent:community_trust": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "consent:decay:{stage}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "consent:deletion_complete": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "consent:deletion_sla:{days}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "consent:partnership_accept": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "consent:partnership_grant": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "consent:replication:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "consent:scope:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "consent:state:{stance}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "consent:stream:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "consent:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "content_class:{class}": {
+   "authorship": "authored",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "content_rating:{scheme}:{rating}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "corpus_health:n_eff_measurable": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "cosign:{state}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "credits:{domain}:{language}:{subject}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "custody:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "cw_class:{class}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "deferral:request": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "deferral:response:{outcome}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "delivery:{class}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "delivery_receipt:{stream_id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "detection:correlated_action:{axis}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "detection:distributive:access:{resource_type}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "detection:hash_chain_integrity": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "detection:intra_agent_consistency": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "detection:{detector}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "device:label": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "dma:csdma:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "dma:dsdma:{domain}:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "dma:idma:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "dma:pdma:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "duty:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "encyclopedia:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "event:attendance": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "event:lifecycle:{state}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "event:rsvp_count": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "evidence:{suite}:{kind}:{cell}:{prefix}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "expertise:{domain}:{language}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "federation_directory:replication_lag": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "fidelity:explainability_sla:{tier}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "fidelity:{aspect}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "file:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "film:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "goal:{scale}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "group:roster": {
+   "authorship": "counted",
+   "authorship_source": "cc-table",
+   "second_signers": [
+    {
+     "member": "gap",
+     "role": "listed_member"
+    }
+   ]
+  },
+  "hard_case:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "hardware_custody:{platform}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "health:liveness:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "identity:canonical_binding:{canonical_hash}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "identity:occurrence": {
+   "authorship": "authored",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "identity:occurrence_revocation": {
+   "authorship": "identity=user => counted ; authored",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "identity_amendment": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "identity_continuity:relational_anchor": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "image:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "integrity:{aspect}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "judge_model:verdict:{model_id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "justice:{aspect}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "key:record": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": [
+    {
+     "member": "gap",
+     "role": "predecessor_key"
+    },
+    {
+     "member": "gap",
+     "role": "anchor"
+    }
+   ]
+  },
+  "key:revocation": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "key_boundary:{scope}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "key_grant:{axis}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "lawful_order:release": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "ledger:checkpoint:{unit}:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": [
+    {
+     "member": "gap",
+     "role": "witness"
+    }
+   ]
+  },
+  "ledger:head:{unit}:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "ledger:promotion:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "licensure:{authority_id}": {
+   "authorship": null,
+   "authorship_source": "gap",
+   "second_signers": []
+  },
+  "lineage_witness:{stage}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "locality:decision:{scale}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "manifold_conformity:{cohort}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "membership:{stage}": {
+   "authorship": "leaf=widening|removal => counted ; authored",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "mesh_config:{key}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "method:{approach_id}:{substrate_rung}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "model_3d:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "moderation:{allegation_type}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "moderation_track_record:{community_key_id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "multilateral_participation:{forum}:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "need:{domain}:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "news:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "non_maleficence:{aspect}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "objection:{state}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "observation:access_assumption": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "observation:reachability": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "ownership:{relation}:{target_kind}:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": [
+    {
+     "member": "sub",
+     "role": "bound_node"
+    }
+   ]
+  },
+  "partner_role:{role}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "peer_reachability:{network}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "preserve_request": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "preserve_response": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "progress_measure:{method_id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "prohibited:{category}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "provenance:build_manifest:{target}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "provenance:build_manifest:{target}:locale:{lang_code}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "provenance:skill_import:{source}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "provenance:slsa:{level}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "quarantine:{state}": {
+   "authorship": "group=affiliations & seats=one => counted ; authored",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "ratchet:flag:coordinated_voting_cluster": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "ratchet:flag:counter_rii:{layer}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "ratchet:flag:density_anomaly": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "ratchet:flag:expertise_attestation_anomaly": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "ratchet:flag:harassment_pattern": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "ratchet:flag:out_of_distribution_voting": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "reconsideration:{grounds}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "regime:{artifact}:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "rendezvous:route": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "retirement:{state}": {
+   "authorship": "leaf=custodian_minted => counted ; authored",
+   "authorship_source": "cc-table",
+   "second_signers": [
+    {
+     "member": "gap",
+     "role": "custodian",
+     "when": "leaf=retired|custodian_minted"
+    }
+   ]
+  },
+  "revocation:{entity_type}:{reason}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "rollback_detected:{revision_field}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "seed_holder_voting_alignment:{cell}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "self:delegates_to": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": [
+    {
+     "member": "sub",
+     "role": "delegate"
+    },
+    {
+     "member": "gap",
+     "role": "delegate_owner"
+    }
+   ]
+  },
+  "self:delegates_to:agent_occurrence": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": [
+    {
+     "member": "sub",
+     "role": "delegate"
+    },
+    {
+     "member": "gap",
+     "role": "delegate_owner"
+    }
+   ]
+  },
+  "session:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "settlement:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "slashing:{outcome}": {
+   "authorship": "group=affiliations & seats=one => counted ; authored",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "system:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "takedown_notice:{basis}": {
+   "authorship": "leaf=steward_purge => counted ; group=affiliations & seats=one => counted ; authored",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "testimonial_witness:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "topical_relation:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "trace:{form}:{version}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "trace_summary:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "transparency_log:consistency": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "transparency_log:cosigned:{tree_size}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "transparency_log:inclusion": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "transport:canonical_rebind": {
+   "authorship": "counted",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "transport:{kind}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "trust:{job}:{version}": {
+   "authorship": null,
+   "authorship_source": "gap",
+   "second_signers": [
+    {
+     "member": "sub",
+     "role": "delegate",
+     "when": "leaf=confers"
+    },
+    {
+     "member": "gap",
+     "role": "delegate_owner",
+     "when": "leaf=confers"
+    }
+   ]
+  },
+  "truth_grounding:{subject}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "video:*": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "vote:{contribution_id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "wa_adjudication:{state}": {
+   "authorship": "leaf=abandonment|seizure|successor => counted ; authored",
+   "authorship_source": "cc-table",
+   "second_signers": []
+  },
+  "watchlist:{id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "weighted_aggregate:{contribution_id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  },
+  "witness_diversity:{contribution_id}": {
+   "authorship": "authored",
+   "authorship_source": "generic",
+   "second_signers": []
+  }
+ }
+}

@@ -45,6 +45,98 @@ impl FamilyModel for BTreeMap<String, FamilyRule> {
     }
 }
 
+/// The family-model columns vendored from CC (`authorship`, `second_signers`;
+/// CIRISConstitution rc20 a15ce94), extracted to `data/cc/family_columns.json`.
+pub const FAMILY_COLUMNS_JSON: &str = include_str!("../../data/cc/family_columns.json");
+/// The CC commit the columns come from.
+pub const FAMILY_MODEL_CC_COMMIT: &str = "a15ce94";
+
+/// What the vendored model says of one family.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VendoredRule {
+    /// A plain `authored` / `counted` cell.
+    Known(FamilyRule),
+    /// Registered, but the caller must decide: a `gap` cell, or a per-leaf
+    /// selector (no reference evaluator yet; CC will publish
+    /// `tools/cc_family_select.py`).
+    CallerMustSupply,
+}
+
+fn vendored() -> &'static BTreeMap<String, VendoredRule> {
+    static V: once_cell::race::OnceBox<BTreeMap<String, VendoredRule>> =
+        once_cell::race::OnceBox::new();
+    V.get_or_init(|| {
+        let j: serde_json::Value =
+            serde_json::from_str(FAMILY_COLUMNS_JSON).expect("vendored family columns parse");
+        let mut out = BTreeMap::new();
+        for (prefix, f) in j["families"].as_object().expect("families") {
+            let roles = f["second_signers"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                // A `gap` member cannot be admitted; a `when`-conditioned role
+                // waits on the selector evaluator.
+                .filter(|r| r.get("when").is_none())
+                .filter_map(|r| {
+                    let role = r["role"].as_str()?.to_owned();
+                    match r["member"].as_str()? {
+                        "gap" => None,
+                        "sub" => Some((role, RoleParty::Sub)),
+                        m => Some((role, RoleParty::Member(m.to_owned()))),
+                    }
+                })
+                .collect();
+            let rule = match f["authorship"].as_str() {
+                Some("authored") => VendoredRule::Known(FamilyRule {
+                    authored: true,
+                    roles,
+                    scores_dimension: false,
+                }),
+                Some("counted") => VendoredRule::Known(FamilyRule {
+                    authored: false,
+                    roles,
+                    scores_dimension: false,
+                }),
+                _ => VendoredRule::CallerMustSupply,
+            };
+            out.insert(crate::namespace_match::family_id(prefix), rule);
+        }
+        Box::new(out)
+    })
+}
+
+/// The vendored model's answer for a family id, if CC's model lists it.
+#[must_use]
+pub fn vendored_rule(family_id: &str) -> Option<VendoredRule> {
+    vendored().get(family_id).cloned()
+}
+
+/// CC's vendored family model as a [`FamilyModel`]: plain cells only.
+/// `scores_dimension` is false here (a `dimension` that is present is still
+/// resolved against -70002 by the row reader).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct VendoredFamilyModel;
+
+impl FamilyModel for VendoredFamilyModel {
+    fn rule(&self, family_id: &str) -> Option<FamilyRule> {
+        match vendored_rule(family_id)? {
+            VendoredRule::Known(r) => Some(r),
+            VendoredRule::CallerMustSupply => None,
+        }
+    }
+}
+
+/// The caller's model first, then CC's vendored one.
+pub struct WithVendored<'a>(pub &'a dyn FamilyModel);
+
+impl FamilyModel for WithVendored<'_> {
+    fn rule(&self, family_id: &str) -> Option<FamilyRule> {
+        self.0
+            .rule(family_id)
+            .or_else(|| VendoredFamilyModel.rule(family_id))
+    }
+}
+
 /// Why a Valid statement fails its family's rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
@@ -57,6 +149,10 @@ pub enum FamilyFault {
     IssNotInRole,
     /// A family that scores a dimension carries none.
     DimensionMissing,
+    /// The family is registered but no model decides its authorship: CC's
+    /// cell is a `gap` or a selector the vendored model does not evaluate,
+    /// and the caller's model does not cover it.
+    AuthorshipUndetermined,
 }
 
 /// A row read under its family's rules.
@@ -125,7 +221,11 @@ pub fn verify_row_in_family(
         Verdict::Waiting { missing } => FamilyVerdict::Waiting(missing),
         Verdict::Valid(row) => {
             let Some(rule) = model.rule(&row.family) else {
-                return FamilyVerdict::FamilyInvalid(FamilyFault::UnregisteredFamily);
+                let fault = match vendored_rule(&row.family) {
+                    Some(VendoredRule::CallerMustSupply) => FamilyFault::AuthorshipUndetermined,
+                    _ => FamilyFault::UnregisteredFamily,
+                };
+                return FamilyVerdict::FamilyInvalid(fault);
             };
             match check_family(&row, &rule) {
                 Ok(role) => FamilyVerdict::Valid { row, role },
@@ -188,6 +288,42 @@ mod tests {
             .map(|k| (thumbprint(k.public_key()), k.public_key().clone()))
             .collect();
         verify_row_in_family(&st, &d, &model())
+    }
+
+    #[test]
+    fn vendored_model_cells() {
+        // Plain cells.
+        assert!(matches!(
+            vendored_rule("key:record"),
+            Some(VendoredRule::Known(FamilyRule { authored: true, .. }))
+        ));
+        assert!(matches!(
+            vendored_rule("group:roster"),
+            Some(VendoredRule::Known(FamilyRule {
+                authored: false,
+                ..
+            }))
+        ));
+        // A selector and a gap: the caller decides.
+        assert_eq!(
+            vendored_rule("accord:."),
+            Some(VendoredRule::CallerMustSupply)
+        );
+        assert_eq!(
+            vendored_rule("licensure:.authority_id"),
+            Some(VendoredRule::CallerMustSupply)
+        );
+        // Roles: `sub` admitted, `gap` dropped.
+        let Some(VendoredRule::Known(d)) = vendored_rule("self:delegates_to") else {
+            panic!()
+        };
+        assert_eq!(d.roles, vec![("delegate".to_owned(), RoleParty::Sub)]);
+        // key:record's two roles are both gap.
+        let Some(VendoredRule::Known(k)) = vendored_rule("key:record") else {
+            panic!()
+        };
+        assert!(k.roles.is_empty());
+        assert!(vendored_rule("nobody:fam").is_none());
     }
 
     #[test]

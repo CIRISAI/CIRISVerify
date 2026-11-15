@@ -397,6 +397,23 @@ references = [
     {"id": "identity_ref_sha512", "cbor_hex": enc(A.iss.replace("sha-256", "sha-512")).hex(), "form": "neither"},
     {"id": "bare_hex", "cbor_hex": enc(_d.hex()).hex(), "form": "neither"},
 ]
+
+# ---- Family rules under CC's vendored model (rc20 a15ce94 authorship / second_signers) ----
+family_vendored = [
+    fam("v_delegate_is_sub", "self:delegates_to: the delegate (CWT sub) signs the author's payload.", B, B.iss,
+        "self:delegates_to", _ap, "valid:role:delegate"),
+    fam("v_delegate_not_sub", "self:delegates_to: a signer other than the author who is not the sub.", B, C.iss,
+        "self:delegates_to", _ap, "family_invalid:iss_not_in_role"),
+    fam("v_gap_role_not_admitted", "key:record's predecessor_key / anchor members are gap: no second signer is admitted.", B, "s",
+        "key:record", _ap, "family_invalid:iss_not_in_role"),
+    fam("v_author_signs", "key:record is authored; its author signs.", A, "s", "key:record", _ap, "valid"),
+    fam("v_counted", "group:roster is counted: no author.", A, "s", "group:roster", {"asserted_at": T0}, "valid"),
+    fam("v_counted_with_author", "group:roster with an author.", A, "s", "group:roster", _ap, "family_invalid:author_column"),
+    fam("v_selector_undetermined", "accord:* has a per-leaf selector: the caller must decide.", A, "s", "accord:.", _ap,
+        "family_invalid:authorship_undetermined"),
+    fam("v_gap_undetermined", "licensure:{authority_id} is a gap: the caller must decide.", A, "s", "licensure:.authority_id", _ap,
+        "family_invalid:authorship_undetermined"),
+]
 assert len({r["id"] for r in refusals}) == len(refusals)
 out = {
     "$schema_note": (
@@ -415,6 +432,7 @@ out = {
     "family": family,
     "objects": objects,
     "references": references,
+    "family_vendored": family_vendored,
 }
 json.dump(out, sys.stdout, indent=2, sort_keys=True)
 print()

@@ -14,7 +14,8 @@ use ciris_crypto::composite::{CompositePublicKey, CompositeSigningKey};
 use ciris_verify_core::cde;
 use ciris_verify_core::edition2::earlier;
 use ciris_verify_core::edition2::family::{
-    verify_row_in_family, FamilyFault, FamilyRule, FamilyVerdict, RoleParty,
+    verify_row_in_family, FamilyFault, FamilyModel, FamilyRule, FamilyVerdict, RoleParty,
+    VendoredFamilyModel,
 };
 use ciris_verify_core::edition2::keys::{check_key_record, KeyRecordDirectory};
 use ciris_verify_core::edition2::{
@@ -286,31 +287,7 @@ fn family_cases() {
             )
         })
         .collect();
-    for c in f["family"].as_array().unwrap() {
-        let id = c["id"].as_str().unwrap();
-        let held = c["held_key_seeds"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|n| n.as_u64().unwrap() as u8);
-        let got = match verify_row_in_family(&hx(&c["statement_hex"]), &dir(held), &model) {
-            FamilyVerdict::Valid { role: None, .. } => "valid".to_owned(),
-            FamilyVerdict::Valid { role: Some(r), .. } => format!("valid:role:{r}"),
-            FamilyVerdict::FamilyInvalid(fault) => format!(
-                "family_invalid:{}",
-                match fault {
-                    FamilyFault::UnregisteredFamily => "unregistered_family",
-                    FamilyFault::AuthorColumn => "author_column",
-                    FamilyFault::IssNotInRole => "iss_not_in_role",
-                    FamilyFault::DimensionMissing => "dimension_missing",
-                    _ => "other",
-                }
-            ),
-            FamilyVerdict::Invalid(i) => label(&Verdict::Invalid(i)),
-            other => format!("{other:?}"),
-        };
-        assert_eq!(got, c["expect"].as_str().unwrap(), "{id}");
-    }
+    run_family_cases(&f["family"], &model);
 }
 
 #[test]
@@ -370,4 +347,39 @@ fn references_by_form() {
             _ => assert_eq!(got, None, "{id}"),
         }
     }
+}
+
+fn run_family_cases(cases: &J, model: &dyn FamilyModel) {
+    for c in cases.as_array().unwrap() {
+        let id = c["id"].as_str().unwrap();
+        let held = c["held_key_seeds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|n| n.as_u64().unwrap() as u8);
+        let got = match verify_row_in_family(&hx(&c["statement_hex"]), &dir(held), model) {
+            FamilyVerdict::Valid { role: None, .. } => "valid".to_owned(),
+            FamilyVerdict::Valid { role: Some(r), .. } => format!("valid:role:{r}"),
+            FamilyVerdict::FamilyInvalid(fault) => format!(
+                "family_invalid:{}",
+                match fault {
+                    FamilyFault::UnregisteredFamily => "unregistered_family",
+                    FamilyFault::AuthorColumn => "author_column",
+                    FamilyFault::IssNotInRole => "iss_not_in_role",
+                    FamilyFault::DimensionMissing => "dimension_missing",
+                    FamilyFault::AuthorshipUndetermined => "authorship_undetermined",
+                    _ => "other",
+                }
+            ),
+            FamilyVerdict::Invalid(i) => label(&Verdict::Invalid(i)),
+            other => format!("{other:?}"),
+        };
+        assert_eq!(got, c["expect"].as_str().unwrap(), "{id}");
+    }
+}
+
+#[test]
+fn family_cases_under_the_vendored_model() {
+    let f: J = serde_json::from_str(FILE).unwrap();
+    run_family_cases(&f["family_vendored"], &VendoredFamilyModel);
 }
