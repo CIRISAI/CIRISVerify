@@ -422,6 +422,11 @@ pub fn verify_partner_record_quorum(
 /// carries a duplicate element.
 pub const FEDERATION_SET_SEMANTICS_UNSORTED: &str = "federation_set_semantics_unsorted";
 
+/// Compare two strings in UTF-16 code-unit order (RFC 8785 §3.2.3, CC 2.6.1.2).
+fn utf16_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+    a.encode_utf16().cmp(b.encode_utf16())
+}
+
 /// Producer-side guard: confirm the named members of `value` are arrays
 /// whose string elements are **strictly** increasing in lexicographic order —
 /// sorted AND unique (set-semantics, CC 2.6.1.2 rule 1). Returns the first
@@ -456,7 +461,15 @@ pub fn check_set_semantics_sorted(value: &Value, fields: &[&str]) -> Result<(), 
         if strs.len() != arr.len() {
             continue; // not a pure string array; not ours to judge
         }
-        if let Some((i, w)) = strs.windows(2).enumerate().find(|(_, w)| w[0] >= w[1]) {
+        // CC 2.6.1.2: sorted "by their JCS string form (UTF-16 code-unit order,
+        // ascending)". Rust's `str` order is UTF-8 byte (code point) order, which
+        // differs from UTF-16 order between U+E000..U+FFFF and supplementary
+        // characters, so compare code units explicitly.
+        if let Some((i, w)) = strs
+            .windows(2)
+            .enumerate()
+            .find(|(_, w)| utf16_cmp(w[0], w[1]) != std::cmp::Ordering::Less)
+        {
             let what = if w[0] == w[1] {
                 "carries a duplicate element"
             } else {
@@ -1084,6 +1097,16 @@ mod tests {
             message.contains("not lexicographically sorted"),
             "{message}"
         );
+    }
+
+    #[test]
+    fn set_order_is_utf16_code_units_not_utf8_bytes() {
+        // U+FF5E (one unit, 0xFF5E) vs U+1F600 (surrogates 0xD83D 0xDE00).
+        // UTF-16 order: "\u{1F600}" < "\u{FF5E}"; UTF-8 byte order is the reverse.
+        let utf16_sorted = json!({ "capabilities_granted": ["\u{1F600}", "\u{FF5E}"] });
+        assert!(check_set_semantics_sorted(&utf16_sorted, &["capabilities_granted"]).is_ok());
+        let utf8_sorted = json!({ "capabilities_granted": ["\u{FF5E}", "\u{1F600}"] });
+        assert!(check_set_semantics_sorted(&utf8_sorted, &["capabilities_granted"]).is_err());
     }
 
     #[test]
