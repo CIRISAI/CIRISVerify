@@ -22,6 +22,11 @@
 //!
 //! Pure: no clock, no randomness, no I/O.
 
+pub mod disclosure;
+pub mod earlier;
+pub mod family;
+pub mod keys;
+
 use crate::cde::{self, Value};
 use crate::prelude::*;
 use ciris_crypto::composite::{CompositePublicKey, COSE_ALG, SIGNATURE_LEN};
@@ -108,6 +113,24 @@ pub enum Invalid {
     KidMismatch,
     /// The composite signature does not verify.
     BadSignature,
+    /// The signer's key record is Invalid, or the key is not in force.
+    KeyNotValid,
+    /// A disclosure opens no digest the payload carries, opens one already
+    /// opened, or repeats a member its map already holds.
+    DisclosureUnmatched,
+    /// A redaction digest appears twice.
+    DuplicateDigest,
+    /// Header -70002 names no family the CC namespace registry registers.
+    UnregisteredFamily,
+    /// `dimension` resolves to a family other than header -70002.
+    DimensionFamily,
+    /// The CC matcher refuses `dimension`; the manifest's token.
+    DimensionRefused {
+        /// `_meta.case_rule.refusal_tokens` value.
+        token: &'static str,
+    },
+    /// `dimension` is open vocabulary: no registered family claims it.
+    DimensionUnregistered,
 }
 
 /// The answer for one statement.
@@ -119,9 +142,40 @@ pub enum Verdict {
     Invalid(Invalid),
     /// The structure holds but the signer's key is not held.
     Waiting {
-        /// The `kid`s the reader would need.
-        missing: Vec<Digest32>,
+        /// The keys the reader would need, deepest first.
+        missing: Vec<MissingKey>,
     },
+}
+
+/// A key a Waiting statement needs.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
+pub enum MissingKey {
+    /// A composite key, by its thumbprint.
+    Kid(Digest32),
+    /// The ML-DSA-65 half of a key held in part, by the SHA-256 commitment
+    /// the reader holds for it (an earlier-form key known by its FedCode
+    /// commitment, CC 2.6.8).
+    MlDsaHalf {
+        /// The thumbprint the statement names.
+        kid: Digest32,
+        /// SHA-256 of the missing ML-DSA-65 public key.
+        commitment: Digest32,
+    },
+}
+
+/// What a reader knows of the key under a `kid`.
+#[derive(Debug, Clone)]
+#[non_exhaustive]
+pub enum KeyLookup {
+    /// The key is held and in force.
+    Held(Box<CompositePublicKey>),
+    /// Nothing is known of it.
+    NotHeld,
+    /// Its key record, or a half of it, waits on other keys.
+    Waiting(Vec<MissingKey>),
+    /// Its key record is Invalid, or the key is not in force for this statement.
+    Invalid,
 }
 
 /// What a valid row statement says, for the family-level rules a caller applies.
@@ -147,17 +201,23 @@ pub struct VerifiedRow {
     pub asserted_at: u64,
     /// The decoded payload.
     pub payload: Value,
+    /// The disclosures presented beside the statement, each opened against
+    /// a digest the payload (or an earlier disclosure) carries.
+    pub disclosures: Vec<disclosure::Disclosed>,
 }
 
 /// The keys a reader holds, by thumbprint.
 pub trait KeyDirectory {
-    /// The composite key whose RFC 9679 thumbprint is `kid`, if held.
-    fn key(&self, kid: &Digest32) -> Option<CompositePublicKey>;
+    /// What is known of the key whose RFC 9679 thumbprint is `kid`, for a
+    /// statement asserted at `asserted_at` (POSIX ms).
+    fn lookup(&self, kid: &Digest32, asserted_at: u64) -> KeyLookup;
 }
 
 impl KeyDirectory for BTreeMap<Digest32, CompositePublicKey> {
-    fn key(&self, kid: &Digest32) -> Option<CompositePublicKey> {
-        self.get(kid).cloned()
+    fn lookup(&self, kid: &Digest32, _asserted_at: u64) -> KeyLookup {
+        self.get(kid)
+            .cloned()
+            .map_or(KeyLookup::NotHeld, |k| KeyLookup::Held(Box::new(k)))
     }
 }
 
@@ -492,22 +552,6 @@ fn check_envelope(p: &Value) -> Result<(Option<String>, u64), Invalid> {
     Ok((author, asserted_at))
 }
 
-fn check_disclosure(b: &Value) -> Result<(), Invalid> {
-    let bytes = b.as_bytes().ok_or(malformed("sd_claims"))?;
-    let d = cde::decode(bytes).map_err(|error| Invalid::NotDeterministic {
-        part: "sd_claims",
-        error,
-    })?;
-    match d.as_array() {
-        Some([salt, value]) | Some([salt, value, Value::Text(_)])
-            if salt.as_bytes().map(<[u8]>::len) == Some(16) =>
-        {
-            check_ceg_value(value, false)
-        },
-        _ => Err(malformed("sd-disclosure")),
-    }
-}
-
 /// Read and verify one edition-2 row statement.
 #[must_use]
 pub fn verify_row_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Verdict {
@@ -597,11 +641,11 @@ fn read_row_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Verdict, 
     for (k, v) in um {
         match k.as_i64() {
             Some(H_SD_CLAIMS) => {
-                let a = v
+                let _ = v
                     .as_array()
                     .filter(|a| !a.is_empty())
                     .ok_or(malformed("sd_claims"))?;
-                a.iter().try_for_each(check_disclosure)?;
+                // Shapes and digests are checked by `disclosure::open` below.
             },
             Some(_) => {},
             None => {
@@ -629,9 +673,44 @@ fn read_row_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Verdict, 
         }
     }
 
+    // The family is registered, and a `dimension` resolves to it (CC 3.1.7,
+    // the one matcher; compared byte for byte with -70002).
+    if !crate::namespace_match::is_registered_family_id(&family) {
+        return Err(Invalid::UnregisteredFamily);
+    }
+    if let Some(d) = payload.get_text("dimension") {
+        let d = d.as_text().ok_or(malformed("dimension"))?;
+        match crate::namespace_match::resolve(d) {
+            Ok(crate::namespace_match::Resolved::Family { family_id, .. })
+                if family_id == family => {},
+            Ok(crate::namespace_match::Resolved::Family { .. }) => {
+                return Err(Invalid::DimensionFamily)
+            },
+            Ok(_) => return Err(Invalid::DimensionUnregistered),
+            Err(r) => return Err(Invalid::DimensionRefused { token: r.token }),
+        }
+    }
+
+    // Every disclosure presented must open a digest the payload carries.
+    // Checked on every statement, so a repeated digest is refused even when
+    // nothing is disclosed.
+    let sd_claims: &[Value] = um
+        .iter()
+        .find(|(k, _)| k.as_i64() == Some(H_SD_CLAIMS))
+        .and_then(|(_, v)| v.as_array())
+        .unwrap_or(&[]);
+    let disclosures = disclosure::open(&payload, sd_claims)?;
+
     // Key, then signature.
-    let Some(pk) = keys.key(&kid) else {
-        return Ok(Verdict::Waiting { missing: vec![kid] });
+    let pk = match keys.lookup(&kid, asserted_at) {
+        KeyLookup::Held(pk) => pk,
+        KeyLookup::NotHeld => {
+            return Ok(Verdict::Waiting {
+                missing: vec![MissingKey::Kid(kid)],
+            })
+        },
+        KeyLookup::Waiting(missing) => return Ok(Verdict::Waiting { missing }),
+        KeyLookup::Invalid => return Err(Invalid::KeyNotValid),
     };
     if !bool::from(thumbprint(&pk).ct_eq(&kid)) {
         return Err(Invalid::KidMismatch);
@@ -649,6 +728,191 @@ fn read_row_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Verdict, 
         family,
         author,
         asserted_at,
+        payload,
+        disclosures,
+    })))
+}
+
+/// What a reference names, by its form (the kernel's `Obj::from_reference`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReferenceForm {
+    /// `[-16, digest]`: a row (or object) id.
+    Row(Digest32),
+    /// An identity reference: a key.
+    Key(String),
+}
+
+/// Type a reference by its form: a `hash-digest` is a row, an `identity-ref`
+/// a key, anything else neither.
+#[must_use]
+pub fn classify_reference(v: &Value) -> Option<ReferenceForm> {
+    match v {
+        Value::Text(t) if is_identity_ref(t) => Some(ReferenceForm::Key(t.clone())),
+        Value::Array(a) => match a.as_slice() {
+            [alg, d] if alg.as_i64() == Some(HASH_ALG_SHA256) => d
+                .as_bytes()
+                .and_then(|b| <[u8; 32]>::try_from(b).ok())
+                .map(ReferenceForm::Row),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The `typ`s of the signed objects that are not rows (CC 2.6.1, closed).
+/// `ceg-boot-manifest/2`'s payload rule waits on its owner.
+pub const OBJECT_TYPS: [&str; 3] = [
+    "ceg-genesis-bundle/2",
+    "ceg-revocation-snapshot/2",
+    "ceg-boot-manifest/2",
+];
+
+/// A valid non-row object statement: header, key and signature checked;
+/// the payload rule of its `typ` is the caller's (genesis bundle and
+/// revocation snapshot readers build on this).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedObject {
+    /// The object id: SHA-256 over `["CEG-object/2", typ, author / null, payload]`.
+    pub object_id: Digest32,
+    /// The statement id.
+    pub statement_id: Digest32,
+    /// The `typ`.
+    pub typ: String,
+    /// The signer's kid.
+    pub kid: Digest32,
+    /// The CWT `iss`.
+    pub iss: String,
+    /// The CWT `iat`, where the object states an instant.
+    pub iat: Option<u64>,
+    /// The payload's `author`, where it has one.
+    pub author: Option<String>,
+    /// The decoded payload.
+    pub payload: Value,
+}
+
+/// The object id of a non-row signed object.
+#[must_use]
+pub fn object_id(typ: &str, author: Option<&str>, payload: &[u8]) -> Digest32 {
+    sha256_cde(&Value::Array(vec![
+        Value::Text("CEG-object/2".into()),
+        Value::Text(typ.into()),
+        author.map_or(Value::Null, |a| Value::Text(a.into())),
+        Value::Bytes(payload.to_vec()),
+    ]))
+}
+
+/// The answer for one non-row object statement.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ObjectVerdict {
+    /// Header, key and signature hold.
+    Valid(Box<VerifiedObject>),
+    /// A rule fails.
+    Invalid(Invalid),
+    /// The signer's key is not held.
+    Waiting {
+        /// The keys the reader would need.
+        missing: Vec<MissingKey>,
+    },
+}
+
+/// Read and verify one non-row object statement (`ceg-object-statement`):
+/// protected exactly `{1: alg, 4: kid, 15: {1: iss, ?6: iat, -70003: 2}, 16: typ}`,
+/// no `cty` and never -70001/-70002, a closed `typ`, a deterministic payload.
+#[must_use]
+pub fn verify_object_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> ObjectVerdict {
+    match read_object_statement(bytes, keys) {
+        Ok(v) => v,
+        Err(i) => ObjectVerdict::Invalid(i),
+    }
+}
+
+fn read_object_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<ObjectVerdict, Invalid> {
+    let nd = |part| move |error| Invalid::NotDeterministic { part, error };
+    let top = cde::decode(bytes).map_err(nd("statement"))?;
+    let Value::Tag(TAG_COSE_SIGN1, inner) = top else {
+        return Err(Invalid::NotCoseSign1);
+    };
+    let [prot_b, unprot, payload_b, sig] = inner.as_array().ok_or(Invalid::NotCoseSign1)? else {
+        return Err(Invalid::NotCoseSign1);
+    };
+    let prot_bytes = prot_b.as_bytes().ok_or(malformed("protected"))?;
+    let payload_bytes = payload_b.as_bytes().ok_or(malformed("payload"))?;
+    let sig = sig
+        .as_bytes()
+        .filter(|s| s.len() == SIGNATURE_LEN)
+        .ok_or(malformed("signature"))?;
+    let prot = cde::decode(prot_bytes).map_err(nd("protected"))?;
+    let pm = prot.as_map().ok_or(malformed("protected"))?;
+    // -70001 / -70002 (and cty) are refused here by the closed label set.
+    check_labels(pm, &[H_ALG, H_KID, H_CWT, H_TYP], &[], "protected")?;
+    if prot.get_int(H_ALG).and_then(Value::as_i64) != Some(COSE_ALG) {
+        return Err(malformed("alg"));
+    }
+    let typ = prot
+        .get_int(H_TYP)
+        .and_then(Value::as_text)
+        .filter(|t| OBJECT_TYPS.contains(t))
+        .ok_or(malformed("typ"))?
+        .to_owned();
+    let kid = digest32(prot.get_int(H_KID).expect("checked"), "kid")?;
+    let cwt = prot.get_int(H_CWT).expect("checked");
+    let cm = cwt.as_map().ok_or(malformed("object-claims"))?;
+    check_labels(cm, &[C_ISS, C_EDITION], &[C_IAT], "object-claims")?;
+    let iss = cwt
+        .get_int(C_ISS)
+        .and_then(Value::as_text)
+        .filter(|s| is_identity_ref(s))
+        .ok_or(malformed("iss"))?
+        .to_owned();
+    if cwt.get_int(C_EDITION).and_then(Value::as_u64) != Some(EDITION) {
+        return Err(malformed("edition"));
+    }
+    let iat = match cwt.get_int(C_IAT) {
+        None => None,
+        Some(v) => Some(v.as_u64().ok_or(malformed("iat"))?),
+    };
+    let um = unprot.as_map().ok_or(malformed("unprotected"))?;
+    if um.iter().any(|(k, _)| k.as_i64().is_none()) {
+        return Err(Invalid::UnexpectedMember {
+            within: "unprotected",
+        });
+    }
+    let payload = cde::decode(payload_bytes).map_err(nd("payload"))?;
+    let author = match payload.get_text("author") {
+        None => None,
+        Some(a) => Some(
+            a.as_text()
+                .filter(|s| is_identity_ref(s))
+                .ok_or(malformed("author"))?
+                .to_owned(),
+        ),
+    };
+    if let Some(r) = payload.get_text("refs") {
+        check_refs(r)?;
+    }
+    let pk = match keys.lookup(&kid, iat.map_or(0, |s| s.saturating_mul(1000))) {
+        KeyLookup::Held(pk) => pk,
+        KeyLookup::NotHeld => {
+            return Ok(ObjectVerdict::Waiting {
+                missing: vec![MissingKey::Kid(kid)],
+            })
+        },
+        KeyLookup::Waiting(missing) => return Ok(ObjectVerdict::Waiting { missing }),
+        KeyLookup::Invalid => return Err(Invalid::KeyNotValid),
+    };
+    if !bool::from(thumbprint(&pk).ct_eq(&kid)) {
+        return Err(Invalid::KidMismatch);
+    }
+    pk.verify(&sig_structure(prot_bytes, payload_bytes), sig)
+        .map_err(|_| Invalid::BadSignature)?;
+    Ok(ObjectVerdict::Valid(Box::new(VerifiedObject {
+        object_id: object_id(&typ, author.as_deref(), payload_bytes),
+        statement_id: statement_id(prot_bytes, payload_bytes),
+        typ,
+        kid,
+        iss,
+        iat,
+        author,
         payload,
     })))
 }
@@ -748,14 +1012,22 @@ mod tests {
             (t("author"), t(author)),
             (t("asserted_at"), Value::Uint(1_763_200_000_123)),
             (t("score"), Value::int(750_000)),
-            (t("dimension"), t("evidence:safety_battery:x:y:z:v1")),
+            (t("dimension"), t("evidence:safety_battery:capture:a:b:v1")),
         ])
     }
 
     fn signed(k: &CompositeSigningKey, p: &Value) -> (Vec<u8>, String) {
         let iss = identity_ref(&thumbprint(k.public_key()));
-        let b =
-            sign_row_statement(k, &iss, "subject", "scores", "evidence:.suite", p, vec![]).unwrap();
+        let b = sign_row_statement(
+            k,
+            &iss,
+            "subject",
+            "scores",
+            "evidence:.suite:.kind:.cell:.prefix",
+            p,
+            vec![],
+        )
+        .unwrap();
         (b, iss)
     }
 
@@ -803,7 +1075,7 @@ mod tests {
             v.row_id,
             row_id(
                 "scores",
-                "evidence:.suite",
+                "evidence:.suite:.kind:.cell:.prefix",
                 "subject",
                 Some(&author),
                 &cde::encode(&p)
@@ -826,18 +1098,36 @@ mod tests {
         assert_eq!(
             verify_row_statement(&b, &dir(&[])),
             Verdict::Waiting {
-                missing: vec![thumbprint(k.public_key())]
+                missing: vec![MissingKey::Kid(thumbprint(k.public_key()))]
             }
         );
         // A structural fault is Invalid whatever keys are held, never Waiting.
         let iss = identity_ref(&thumbprint(k.public_key()));
         let p = Value::Map(vec![(t("asserted_at"), Value::Uint(5))]);
-        let odd = sign_row_statement(&k, &iss, "s", "endorses", "a", &p, vec![]).unwrap();
+        let odd = sign_row_statement(
+            &k,
+            &iss,
+            "s",
+            "endorses",
+            "evidence:.suite:.kind:.cell:.prefix",
+            &p,
+            vec![],
+        )
+        .unwrap();
         assert_eq!(
             verify_row_statement(&odd, &dir(&[])),
             Verdict::Invalid(Invalid::Malformed { member: "row-type" })
         );
-        let no_time = sign_row_statement(&k, &iss, "s", "scores", "a", &p, vec![]).unwrap();
+        let no_time = sign_row_statement(
+            &k,
+            &iss,
+            "s",
+            "scores",
+            "evidence:.suite:.kind:.cell:.prefix",
+            &p,
+            vec![],
+        )
+        .unwrap();
         assert!(matches!(
             verify_row_statement(&no_time, &dir(&[])),
             Verdict::Waiting { .. }
@@ -874,7 +1164,16 @@ mod tests {
             (t("asserted_at"), Value::Uint(10_999)),
             (t("valid_until"), Value::Uint(20_500)),
         ]);
-        let b = sign_row_statement(&k, &iss, "s", "scores", "a", &p, vec![]).unwrap();
+        let b = sign_row_statement(
+            &k,
+            &iss,
+            "s",
+            "scores",
+            "evidence:.suite:.kind:.cell:.prefix",
+            &p,
+            vec![],
+        )
+        .unwrap();
         assert!(matches!(
             verify_row_statement(&b, &dir(&[&k])),
             Verdict::Valid(_)
@@ -907,7 +1206,16 @@ mod tests {
         mut edit: impl FnMut(&mut Vec<(Value, Value)>),
     ) -> Vec<u8> {
         let iss = identity_ref(&thumbprint(k.public_key()));
-        let good = sign_row_statement(k, &iss, "s", "scores", "a", p, vec![]).unwrap();
+        let good = sign_row_statement(
+            k,
+            &iss,
+            "s",
+            "scores",
+            "evidence:.suite:.kind:.cell:.prefix",
+            p,
+            vec![],
+        )
+        .unwrap();
         let Value::Tag(_, inner) = cde::decode(&good).unwrap() else {
             panic!()
         };
@@ -943,7 +1251,16 @@ mod tests {
         let b = row_ref(&[2; 32]);
         let mk = |refs: Value| {
             let p = Value::Map(vec![(t("asserted_at"), Value::Uint(1)), (t("refs"), refs)]);
-            let s = sign_row_statement(&k, &iss, "s", "supersedes", "a", &p, vec![]).unwrap();
+            let s = sign_row_statement(
+                &k,
+                &iss,
+                "s",
+                "supersedes",
+                "evidence:.suite:.kind:.cell:.prefix",
+                &p,
+                vec![],
+            )
+            .unwrap();
             verify_row_statement(&s, &dir(&[&k]))
         };
         assert!(matches!(
@@ -1001,7 +1318,16 @@ mod tests {
         let iss = identity_ref(&thumbprint(k.public_key()));
         let mk = |extra: (Value, Value)| {
             let p = Value::Map(vec![(t("asserted_at"), Value::Uint(1)), extra]);
-            let s = sign_row_statement(&k, &iss, "s", "scores", "a", &p, vec![]).unwrap();
+            let s = sign_row_statement(
+                &k,
+                &iss,
+                "s",
+                "scores",
+                "evidence:.suite:.kind:.cell:.prefix",
+                &p,
+                vec![],
+            )
+            .unwrap();
             verify_row_statement(&s, &dir(&[&k]))
         };
         for (name, v) in [
