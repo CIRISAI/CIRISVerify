@@ -18,7 +18,7 @@ membership-change `supersedes` in `ciris_verify_core::accord_genesis`.
 | **Confirm a halt** (`lifecycle:confirmed`) | strict majority of the standing roster | names the halt (`confirms_halt_id`); a lone halt not confirmed lapses `halt_fuse_secs` after this node's receipt (default 86 400) |
 | **Resume** (`lifecycle:active`) | strict majority of the standing roster | names the halt it ends (`resumes_halt_id`); ends any halt, confirmed or not |
 | **Roster change** (add / remove / swap) | strict majority of the **standing roster** in yes-votes, `2·yes > N_standing` | `accord_proposal` → `accord_participation` (proof-of-life + vote) within `W` → `accord_decision`, with a proposer-minted nonce. Absence neither blocks nor helps |
-| **Holder recovery** | the holder alone, under their pre-committed recovery key | a new roster version changing only that holder's seat (signing key + next recovery commitment); no quorum |
+| **Holder recovery** | the holder alone, under their pre-committed recovery key | a new roster version changing only that holder's seat (its signing key), carried by a recovery statement naming the next recovery commitment; no quorum |
 
 The fuse counts from receipt, never from the signed `asserted_at`, so a pre-signed halt is not dead
 on arrival and a future-dated one cannot pause agents indefinitely. The per-kind thresholds live in
@@ -185,38 +185,72 @@ record nor a holder's key record carries `valid_until`.
 
 A **recovery** is a new version of the accord's roster record, **signed under the
 recovery key alone**, changing **only** the rotating holder's own seat: the signing key
-it names and that holder's **next** recovery commitment, which rides in the recovery
-version (pre-rotation). The charter is not re-scrubbed. The commitment **in force** for
+it names. The holder's **next** recovery commitment rides in the recovery statement that
+carries the version (pre-rotation). The charter is not re-scrubbed. The commitment **in force** for
 a holder is the one named by the latest recovery version that seated their current key,
 else their charter entry. A recovery version that changes anything else — another seat,
 the threshold, the charter — concludes nothing, and so does one whose recovery key does
 not hash to the commitment in force.
 
-In verify, the recovery version carries the next commitment on the holder's seat as
-`recovery_commitment`, its `supersedes` names the standing members, the standing
-`consensus_protocol` and `recovery_of: <holder_key_id>`, and its `prev_head_digest` names
-the standing version (`accord_live_quorum::build_holder_recovery`). Every roster version
-names its predecessor by `prev_head_digest`, the SHA-256 of the predecessor's signed bytes
-(CC 3.2 T6; `roster_version_digest`), empty at genesis; `build_membership_change` emits it
-too. Four rulings on CC 4.2.6 apply:
+**The link is `persist_row_hash`** (CC 3.2 T6, annex 8.11 in rc20). A roster version is
+CIRISPersist's `Family` record (`accord_live_quorum::FamilyRecord`), and every version
+names its predecessor by `prev_head_digest` = the predecessor's **`persist_row_hash`**,
+empty (absent) at genesis. `persist_row_hash` is persist's row identity, enforced at every
+persist door (`accord_roster_change_unbound`, `accord_recovery_statement_unbound`):
+lowercase-hex SHA-256 over the stored record's serde value without `persist_row_hash` and
+`consent_role`, every instant truncated to microseconds, written in persist's Python
+`json.dumps(sort_keys=True, separators=(",", ":"), ensure_ascii=True)` form
+(`ciris_verify_core::persist_canonical`). It is **not** the SHA-256 of the record's JCS
+bytes: the two differ on any non-ASCII character, on key order above U+FFFF and on
+sub-microsecond instants. `roster_version_digest` returns it, and an `accord_proposal`'s
+`prior_family_digest` is the standing head's.
+
+The change that carries a version is persist's shape, and its signers sign its JCS bytes:
+
+- a **roster change** (`accord_genesis::build_membership_change` /
+  `verify_membership_change`) is `{kind: "ciris.accord_roster_change.v1", family_key_id,
+  prior_persist_row_hash, next_persist_row_hash, changes: [{remove, add: [{key_id,
+  role}], decision}]}`, each change naming the digest of the authorized decision whose
+  `payload_sha256` is the change's `seat_change_digest`; the offered version keeps every
+  member but the seats, the `charter_digest` it names and the head link; a strict majority
+  of the standing roster cosigns;
+- a **recovery** (`accord_live_quorum::build_holder_recovery` / `verify_holder_recovery`)
+  is the statement `{kind: "ciris.accord_recovery.v1", family_key_id,
+  prior_persist_row_hash, next_persist_row_hash, old_holder_key_id, new_holder_key_id,
+  recovery_key_id, next_recovery_commitment}`, signed by the recovery key alone over
+  persist's `ceg_produce_canonicalize(statement)`, which is verify's `jcs::canonicalize`;
+  the offered version swaps the old seat for `{new key, joined_at, the seat's role}`.
+
+`prior_persist_row_hash` and the offered `prev_head_digest` are the standing version's
+`persist_row_hash`, `next_persist_row_hash` the offered version's. The persist vector
+`src/ciris-verify-core/tests/vectors/accord_lineage/accord_lineage_v1.json` (persist commit
+`e943482e`) pins the hash, both envelopes and their bytes. Four rulings on CC 4.2.6 apply:
 
 - **(a) The commitment in force is found by walking the lineage.** A later roster version
   need not repeat a seat's `recovery_commitment`. Where the holder's current key was seated
   by a recovery, the charter entry is the commitment that recovery *spent*, so falling back
   to it would be wrong. `recovery_commitment_in_force(charter, lineage, holder_key_id)`
-  takes the admitted roster versions oldest first (genesis to standing head), checks every
-  `prev_head_digest` link, and walks back from the head while the key stays seated. The
-  version that newly seated the key supplies the answer: if it is a recovery version, its
-  seat's `recovery_commitment`; if it is an ordinary roster change or genesis, the
-  charter's `recovery_commitments` entry. An incomplete lineage (empty, not starting at
-  genesis, a missing or wrong link) fails closed with `LineageIncomplete`; it never falls
-  back to the charter. `verify_holder_recovery` resolves the commitment itself from
+  takes the stored roster versions oldest first (genesis to standing head), each with the
+  change envelope that admitted it, and checks every link: each version's
+  `prev_head_digest` is its predecessor's `persist_row_hash`, its envelope's
+  `prior_persist_row_hash` / `next_persist_row_hash` bind the same pair, and each stored
+  `persist_row_hash` recomputes. It walks back from the head while the key stays seated. The
+  version that newly seated the key supplies the answer: if a recovery statement seated
+  it, that statement's `next_recovery_commitment`; if an ordinary roster change or genesis
+  did, the charter's `recovery_commitments` entry. An incomplete lineage (empty, not
+  starting at genesis, a missing or wrong link, a version without its envelope) fails
+  closed with `LineageIncomplete`; it never falls back to the charter. `verify_holder_recovery` resolves the commitment itself from
   `charter` and `lineage`, so a caller cannot pass the spent one.
 - **(b) No minimum roster size**, on recoveries and on ordinary roster changes (above).
 - **(c) A recovery whose next commitment equals the commitment it spends concludes
   nothing** (`RecoveryReusesCommitment`).
 - **(d) A recovery naming the signing key already seated concludes nothing**
   (`RecoveryReusesSigningKey`), whether built (`build_holder_recovery`) or presented.
+
+As at persist's door, a recovery key that already rotated a seat in the lineage is spent
+(`RecoveryKeySpent`). Persist also bounds a recovery's commitment to the charter in force
+when it was made (a version naming a new charter commits every seat afresh); verify's walk
+does not, and reads the recovery's commitment until the key is reseated.
 
 A recovery version that changes anything else concludes nothing, as above.
 
@@ -317,16 +351,19 @@ All hybrid-signed (Ed25519 + ML-DSA-65, bound). None exists on the fire path.
 
 - **`accord_proposal`** — `{ family_key_id, action: roster_change, nonce,
   window_until, prior_family_digest, payload_sha256 }`, line-format preimage under
-  `ciris.accord_proposal.v1`. `payload_sha256` is the digest of the proposed
-  membership-change envelope; `prior_family_digest` the digest of the standing head.
+  `ciris.accord_proposal.v1`. `payload_sha256` is the `seat_change_digest` of the
+  proposed seat change; `prior_family_digest` the standing head's `persist_row_hash`.
   The nonce is proposer-minted.
 - **`accord_participation`** — `{ family_key_id, proposal_digest, member_id,
   proof_of_life: true, vote: <yes|no|abstain>, window_until, signed_at, signature }`
   under `ciris.accord_participation.v1`. Entering `L` and voting are the same act.
 - **`accord_decision`** — the proposal, the participations collected in `W`, the tally
   and whether it carried. No steward attestation.
-- **Recovery version** — the roster envelope (JCS) with one seat rotated, signed by the
-  holder's recovery key alone (§4.6). It is a roster version, not a fourth object.
+- **Roster change envelope** — `ciris.accord_roster_change.v1` (§4.6), cosigned over its
+  JCS bytes by a strict majority of the standing roster; it carries the new roster version.
+- **Recovery statement** — `ciris.accord_recovery.v1` (§4.6), signed over its JCS bytes by
+  the holder's recovery key alone; it carries a roster version with one seat rotated. Both
+  carry roster versions; neither is a fourth object.
 
 ## 7. Verification logic
 
@@ -337,27 +374,35 @@ All **fail-closed**.
    canonical bytes bound to the proposal digest, a member counts once; `L` = distinct
    valid participants; votes tallied.
 2. `accord_live_quorum::verify_membership_change_by_live_quorum(proposal,
-   participations, prior_envelope, new_envelope, directory)` — the `supersedes` passes
-   `accord_genesis::validate_membership_change_structure` (entrenchment, strict-majority
-   `quorum:M/N`, distinct-pubkey gate, anti-replay anchor); the proposal binds the new
-   envelope and the standing head; signers resolve only among the members at the
-   standing head; no minimum roster size applies. `authorized = 2·yes > N_standing`
-   (`roster_change_carries`), reported with `standing_count`.
-3. `accord_live_quorum::verify_holder_recovery(charter, lineage, recovery, holder_key_id,
-   recovery_key, signatures, directory)` — structure as in (2) against the head of
-   `lineage`; only the holder's seat changes (key and `recovery_commitment`), every other
-   seat and every other record member identical, `supersedes` names the standing head and
-   the seat, `prev_head_digest` names the standing version; the seat names a new signing
-   key (d); a well-formed next commitment is installed; the commitment in force is
-   resolved by `recovery_commitment_in_force` over `lineage` (a); the next commitment
-   differs from it (c); the recovery key hashes to it (constant time); exactly one
-   signature, by the recovery key, hybrid, over the recovery version's JCS bytes.
-4. `accord_live_quorum::decisions_equivocate` — two decisions off one standing head
+   participations, standing, change, directory)` — the proposal binds the seat change
+   (`payload_sha256 = seat_change_digest`) and the standing head (`prior_family_digest =`
+   its `persist_row_hash`); the change applies to the standing roster; signers resolve
+   only among the members at the standing head; no minimum roster size applies.
+   `authorized = 2·yes > N_standing` (`roster_change_carries`), reported with
+   `standing_count`.
+3. `accord_genesis::verify_membership_change(standing, offered, change_envelope,
+   quorum_signatures, decisions, directory, now)` — persist's roster-change door: the
+   envelope binds the family, the standing head and the offered version by
+   `persist_row_hash`; the offered record changes only the seats, the charter it names and
+   the head link; each change is covered by a distinct authorized, closed decision on the
+   standing head binding exactly it, and applied in order they give the offered roster;
+   a strict majority of the standing roster cosigned the envelope's JCS bytes; the offered
+   roster resolves to distinct pubkeys. Returns the seated keys.
+4. `accord_live_quorum::verify_holder_recovery(charter, lineage, offered, statement,
+   recovery_key, signatures, directory)` — the statement binds the family, the head of
+   `lineage` and the offered version by `persist_row_hash`; the old key is seated, the new
+   key is a different, unseated, registered key with its own pubkey (d); the offered record
+   is the standing one with only that seat swapped; a well-formed next commitment; the
+   commitment in force is resolved by `recovery_commitment_in_force` over `lineage` (a);
+   the next commitment differs from it (c); the recovery key hashes to it (constant time)
+   and is unspent; exactly one signature, by the recovery key, hybrid, over the
+   statement's JCS bytes.
+5. `accord_live_quorum::decisions_equivocate` — two decisions off one standing head
    into different rosters are a fork (CC 3.2 T6).
-5. `humanity_accord::verify_invocation` — verifies a `constitutional` / `notify` /
+6. `humanity_accord::verify_invocation` — verifies a `constitutional` / `notify` /
    `drill` / `lifecycle:confirmed` / `lifecycle:active` row at
    `InvocationKind::required_signatures`.
-6. `accord_halt_latch::HaltLatch` — the halt state machine (pause, idempotent second
+7. `accord_halt_latch::HaltLatch` — the halt state machine (pause, idempotent second
    halt that does not reset the fuse, confirm-before-lapse, resume-by-name, lapse),
    fed only a `VerifiedInvocation` minted by `verify_for_latch`. Exposed on the FFI
    (`ciris_verify_accord_invocation_verify` / `_latch_apply` / `_latch_status`) and the
@@ -409,9 +454,13 @@ spec. Each holder's recovery key is held offline and apart from the signing key.
 
 ## 11. Relationship to existing modules
 
-- **Reuses** `accord_genesis::validate_membership_change_structure` and all its
-  invariants for both the roster change and the recovery; only the authorization
-  differs (standing-roster yes-votes, or the recovery key, instead of cosignatures).
+- **Records are CIRISPersist's.** The roster version is persist's `Family`
+  (`accord_live_quorum::FamilyRecord`), its identity `persist_row_hash`
+  (`persist_canonical`), and the roster-change envelope and recovery statement are
+  persist's shapes (§4.6). `accord_genesis::validate_membership_change_structure`, the
+  `supersedes`-envelope builders `build_accord_membership_change` /
+  `verify_accord_membership_change` and the seat `recovery_commitment` /
+  `supersedes.recovery_of` members are removed in 23.0.0.
 - **Does not** add an invocation verb: decimation is a quorum-computation rule over
   the existing `CONSTITUTIONAL` kind (CC 4.2.6).
 - **Removed in 23.0.0:** `verify_fire_by_live_quorum`, `FireVerdict`,

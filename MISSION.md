@@ -275,8 +275,9 @@ verification half, in three layers, each anchored:
   trust or admits a verdict.
 - **Roster** — `src/ciris-verify-core/src/accord_genesis.rs`: the growable
   **M-of-N** family (`accord_consensus_protocol`/`strict_majority`), the
-  membership-change `supersedes` (`verify_accord_membership_change` and the
-  general `verify_membership_change`, #95/#104), **roster = `family.members`**
+  roster change in CIRISPersist's shape (`build_membership_change` /
+  `verify_membership_change` over `FamilyRecord` versions linked by
+  `persist_row_hash`, CC 3.2 T6), **roster = `family.members`**
   (`accord_roster_from_family` — one-seat-per-human, #96), and the **no-TOFU
   pinned recognition root** `humanity_accord_genesis()` (#107).
 - **Invocation** — `src/ciris-verify-core/src/humanity_accord.rs`
@@ -422,9 +423,9 @@ discipline is enforced by known-answer tests (NIST GCM vectors in
   mandate as logic, on the threshold primitive:
   - `accord_custody_attestation.rs` — hardware-unforgeable holder custody
     (#91, real-hardware-validated); fail-closed `CustodyError`.
-  - `accord_genesis.rs` — growable M-of-N family genesis + the entrenchment-
-    preserving membership-change `supersedes` (accord-specific and the general
-    `build/verify_membership_change`, #95/#104), `roster = family.members`
+  - `accord_genesis.rs` — growable M-of-N family genesis + the roster change
+    in CIRISPersist's shape (`build/verify_membership_change`, linked by
+    `persist_row_hash`), `roster = family.members`
     one-seat-per-human (#96), and the no-TOFU pinned `humanity_accord_genesis()`
     recognition root (#107).
   - `humanity_accord.rs` — `verify_invocation` over the 2/3 quorum, the closed

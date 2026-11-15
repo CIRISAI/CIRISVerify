@@ -29,9 +29,10 @@ quorum is a **strict majority** of the live member count — `quorum:2/3` at the
 3-holder genesis, `quorum:3/5` once grown to five, etc. The threshold is read off
 the family object's `consensus_protocol`, not hardcoded; a member is added (grow)
 or a primary swapped for a spare via a **`supersedes`** signed by the *current*
-roster's strict-majority quorum (verify: `build_accord_membership_change` /
-`verify_accord_membership_change`, §10). Strict majority can never be weakened —
-the entrenchment gate enforces `2·M > N` across every change.
+roster's strict-majority quorum (verify: `accord_genesis::build_membership_change` /
+`verify_membership_change`, §10). A roster change carries on yes-cosigns from a
+strict majority of the **standing** roster (`2·yes > N_standing`, CC 4.2.6) and keeps
+the entrenched `consensus_protocol` unchanged.
 
 ## 1. The load-bearing hardware reality (read this first)
 
@@ -348,30 +349,34 @@ authorize who joins/leaves; an incoming/spare key never authorizes its own
 admission). Tooled in CIRISVerify:
 
 ```text
-# Coordinator builds the new-roster envelope superseding the prior family genesis.
-accord_genesis::build_accord_membership_change(&prior_family_genesis, &new_member_key_ids)
-  → new envelope (consensus_protocol auto-set to strict-majority quorum:M/N for the new count,
-    + a `supersedes` block binding it to the exact prior member set)
+# The roster records are CIRISPersist's `Family` versions (accord_live_quorum::FamilyRecord);
+# each names its predecessor's persist_row_hash as prev_head_digest (CC 3.2 T6, annex 8.11).
+# Coordinator drafts the change against the STORED standing head, naming the authorized
+# accord decision for each seat change and the re-scrubbed charter:
+accord_genesis::build_membership_change(&standing, &[DecidedSeatChange { change, decision }],
+    &charter_digest, joined_at)
+  → RosterChangeDraft { next, change_envelope (ciris.accord_roster_change.v1, with
+    prior_persist_row_hash / next_persist_row_hash), signing_bytes, record_bytes }
 
-# Each CURRENT holder co-signs the new envelope on their own token (no one signs another's key):
-accord_genesis::co_sign_accord_family(&current_holder, &new_envelope)
+# Each CURRENT holder co-signs the change envelope on their own token:
+accord_genesis::co_sign_accord_family(&current_holder, &draft.change_envelope)
 
-# Coordinator assembles + verifies: requires the PRIOR roster's strict-majority quorum,
-# preserves entrenchment (2·M > N, entrenched flag, same family_key_id), binds to prior state.
-accord_genesis::verify_accord_membership_change(&prior_family_genesis, &new_envelope,
-    &prior_quorum_signatures, &prior_directory, created_at)  → new family genesis
+# Verify, as persist's door does: bound to the standing head and the offered version,
+# only the seats change, every seat change covered by an authorized closed decision,
+# a strict majority of the STANDING roster cosigned, one key per seat.
+accord_genesis::verify_membership_change(&standing, &draft.next, &draft.change_envelope,
+    &quorum_signatures, &decisions, &directory, now)  → the seated key ids
 ```
 
 - **Spare-swap:** new roster = prior with one person's `…1` replaced by their
   `…2` (e.g. `A1` → `A2`). The spare is pre-attested (§8 / §5.1), so this is a
   roster `supersedes`, not a fresh provisioning. Roster size unchanged.
-- **Grow:** new roster adds a holder (`…→ A1,B1,C1,D1,E1`); the quorum auto-moves
-  to the new strict majority (`quorum:2/3 → quorum:3/5`). Authorized by the *prior*
-  2/3, not the new 3/5.
-- **Invariant:** `verify_accord_membership_change` refuses anything that lifts the
-  entrenchment flag, changes `family_key_id`, drops below strict majority, or
-  whose `supersedes.prior_member_key_ids` doesn't match the real prior roster
-  (anti-replay).
+- **Grow:** new roster adds a holder (`…→ A1,B1,C1,D1,E1`), authorized by a strict
+  majority of the *standing* roster; the next change counts against the grown one.
+- **Invariant:** `verify_membership_change` refuses a change that touches anything
+  but the seats, the charter it names and the head link (entrenchment,
+  `consensus_protocol`, name, founding), that names another standing head or
+  version (anti-replay), or whose seats no authorized decision covers.
 
 ## 11. What's tooled vs. manual
 
