@@ -32,7 +32,10 @@
 //! for any 32-byte-key, 12-byte-nonce AEAD). The suite's own vectors, for
 //! AES-256-GCM, are in `tests/vectors/xwing/hpke_xwing_aes256gcm.json`.
 //!
-//! The pre-23.0.0 suite is [`legacy_x25519mlkem768`], open-only.
+//! 23.0.0 is a hard cut: the pre-23.0.0 suite (an X25519 + ML-KEM-768 hybrid
+//! with an HKDF-SHA256 combiner under the private label
+//! `HPKE-xwing-hkdf-sha256-aes256gcm-v1`, which was not X-Wing) is removed, and
+//! nothing seals or opens it.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
@@ -44,9 +47,6 @@ use zeroize::Zeroizing;
 
 use crate::error::CryptoError;
 use crate::xwing::{XWingPublicKey, XWingSecretKey, XWING_CIPHERTEXT_LEN};
-
-#[path = "hpke_legacy.rs"]
-pub mod legacy_x25519mlkem768;
 
 /// HPKE KEM id of X-Wing.
 pub const KEM_ID_XWING: u16 = 0x647a;
@@ -423,19 +423,5 @@ mod tests {
         let b = seal_base_with_rng(&pk, b"i", b"a", b"p", &mut rng).unwrap();
         assert_ne!(a.encapsulation, b.encapsulation);
         assert_ne!(a.ciphertext, b.ciphertext);
-    }
-
-    #[test]
-    fn legacy_suite_does_not_open_new_wraps() {
-        // Different KEM, different suite_id: the two suites never cross.
-        assert_ne!(
-            HPKE_SUITE_ID.as_slice(),
-            legacy_x25519mlkem768::LEGACY_SUITE_LABEL
-        );
-        assert_eq!(
-            legacy_x25519mlkem768::LEGACY_SUITE_LABEL,
-            b"HPKE-xwing-hkdf-sha256-aes256gcm-v1",
-            "the legacy label is KDF input and never changes"
-        );
     }
 }

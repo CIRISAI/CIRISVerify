@@ -85,8 +85,8 @@ bench-liboqs = ["dep:oqs"]
 # crypto surface — the first cut in the cross-cdylib lockstep cascade.
 #  - `xchacha`       — XChaCha20-Poly1305 AEAD (24-byte nonce), the §2.4
 #                      symbol-envelope + §3.1 uniform-framing cipher.
-#  - `hpke`          — RFC 9180 mode_base over the X-Wing hybrid KEM
-#                      (`hybrid-kex`), the §3.3 Welcome-wrap KEM. AES-256-GCM
+#  - `hpke`          — RFC 9180 mode_base over draft X-Wing (`xwing`, KEM
+#                      0x647a; v23.0.0, #324), the §3.3 Welcome-wrap KEM. AES-256-GCM
 #                      AEAD via `aes-gcm`. Sender-auth is a caller-side
 #                      ML-DSA-65 signature over the encap (existing
 #                      `pqc-ml-dsa` re-export) — X-Wing has no AuthEncap.
@@ -98,7 +98,7 @@ bench-liboqs = ["dep:oqs"]
 # `encapsulate()` / `generate()` over the health-latched RNG.
 xwing = ["dep:x-wing", "dep:zeroize"]
 xchacha = ["std", "dep:chacha20poly1305"]
-hpke = ["hybrid-kex", "aes-gcm", "kdf", "xwing"]
+hpke = ["xwing", "aes-gcm", "random"]
 scope-privacy = ["kdf", "hmac"]
 
 [dependencies]
