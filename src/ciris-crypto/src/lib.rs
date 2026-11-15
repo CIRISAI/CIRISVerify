@@ -63,6 +63,10 @@ pub mod epoch_key;
 /// non-optional.
 pub mod stream_seal;
 
+// CC 5.1 per-stream call DEK under the MLS group exporter (CIRISVerify#308).
+#[cfg(feature = "stream-dek")]
+pub mod stream_dek;
+
 #[cfg(feature = "kdf")]
 pub mod kdf;
 

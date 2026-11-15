@@ -70,6 +70,7 @@ mod wheel_rns_dest_hash;
 mod wheel_scope_privacy;
 mod wheel_self_enc;
 mod wheel_skill_import;
+mod wheel_stream_dek;
 
 #[cfg(any(target_os = "android", target_os = "ios"))]
 mod mobile_trust_root;
@@ -180,6 +181,7 @@ pub extern "C" fn ciris_verify_ffi_link_anchor() -> usize {
     acc ^= ciris_verify_sth_cosignature_consistency_proof as usize;
     acc ^= ciris_verify_store_named_key as usize;
     acc ^= wheel_canonical_subject::ciris_verify_canonical_subject as usize;
+    acc ^= wheel_stream_dek::ciris_verify_stream_dek_derive as usize;
     acc ^= ciris_verify_test_anchor_compiled_in as usize;
     acc ^= ciris_verify_tree as usize;
     acc ^= ciris_verify_verify_integrity_token as usize;

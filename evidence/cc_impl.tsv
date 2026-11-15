@@ -81,3 +81,4 @@ decimal_id	claim_id	repo	path#symbol	crate@version
 5.3.4	CLM-multi-steward	CIRISVerify	src/ciris-verify-core/src/genesis_bundle.rs#verify_genesis_bundle	ciris-verify-core@v21.0.0
 5.3.4	CLM-multi-steward	CIRISVerify	src/ciris-verify-core/src/genesis_bundle.rs#authorization_digest	ciris-verify-core@v21.0.0
 5.3.4	CLM-multi-steward	CIRISVerify	src/ciris-verify-core/src/validation.rs#select_trust_root	ciris-verify-core@v21.0.0
+5.1	CLM-stream-dek-per-stream	CIRISVerify	src/ciris-crypto/src/stream_dek.rs#stream_dek	ciris-crypto@v23.0.0

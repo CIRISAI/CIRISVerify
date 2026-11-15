@@ -43,6 +43,10 @@ hybrid-kex = ["x25519", "ml-kem", "kdf", "random"]
 # v20.2.0+ (CIRISVerify#309, CC 5.3.3.5 E1): the A/V per-hop transit key —
 # hybrid KEX against the relay's published transit pair, one key per direction.
 transit-kex = ["hybrid-kex", "dep:zeroize"]
+# v23.0.0+ (CIRISVerify#308, CC 5.1): the per-stream call DEK under the MLS
+# group exporter. HKDF is non-optional; the feature pulls in `zeroize` for the
+# returned `Zeroizing` DEK.
+stream-dek = ["dep:zeroize"]
 # v8.x+ (CIRISVerify#151): deterministic self content-encryption keypair
 # derivation (X25519 + ML-KEM-768) from the Ed25519 base seed, mirroring the
 # secp256k1 wallet pattern. HKDF is already a non-optional dep. `random` mirrors

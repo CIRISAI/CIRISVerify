@@ -1,0 +1,111 @@
+{
+  "$schema_note": "CC 5.1 (rc19) per-stream call DEK known answers (CIRISVerify#308). DEK = HKDF-SHA256(ikm = exporter_secret, salt = empty, info = b\"ciris-stream-dek/v1\" || utf8(stream_id) || u64_be(epoch), L = 32), where exporter_secret = MLS-Exporter(\"ciris-stream-dek/v1\", \"\", 32). Generated independently of the Rust code by a from-scratch RFC 5869 HKDF over Python hmac/hashlib (self-checked against RFC 5869 A.1 and A.3); see README.md beside this file.",
+  "label": "ciris-stream-dek/v1",
+  "refusals": [
+    {
+      "description": "A bare 64-hex id is persist's inline-blob log id (CIRISPersist#953), not an A/V stream id.",
+      "id": "bare_hex",
+      "stream_id": "c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d8"
+    },
+    {
+      "description": "Hex must be lowercase.",
+      "id": "uppercase_hex",
+      "stream_id": "av-C7ADFC999AFBC7643B24EAB3B57CA66540315D345E52BBB33CFA1D5DFB9C18D8"
+    },
+    {
+      "description": "63 hex digits.",
+      "id": "short_hex",
+      "stream_id": "av-c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d"
+    },
+    {
+      "description": "65 hex digits.",
+      "id": "long_hex",
+      "stream_id": "av-c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d80"
+    },
+    {
+      "description": "A non-hex digit.",
+      "id": "non_hex",
+      "stream_id": "av-c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18dg"
+    },
+    {
+      "description": "The prefix is exactly av-.",
+      "id": "wrong_prefix",
+      "stream_id": "AV-c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d8"
+    },
+    {
+      "description": "Empty stream_id.",
+      "id": "empty",
+      "stream_id": ""
+    },
+    {
+      "description": "The prefix with no id.",
+      "id": "prefix_only",
+      "stream_id": "av-"
+    }
+  ],
+  "valid": [
+    {
+      "dek_hex": "cf6aa74dcccfda58ec2c5ae8e943133c8b4dba4a73ed67b20650ed3301a205c5",
+      "description": "Epoch 0.",
+      "epoch": 0,
+      "exporter_secret_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "id": "epoch_zero",
+      "info_hex": "63697269732d73747265616d2d64656b2f763161762d623937633934313962323561393237333531373465633864343464363665666136643262663735386430393933346266373132396336613865373761326334620000000000000000",
+      "stream_id": "av-b97c9419b25a92735174ec8d44d66efa6d2bf758d09934bf7129c6a8e77a2c4b"
+    },
+    {
+      "dek_hex": "465b62f6e511a52c5233a7132c1abab871161b43e88f63aa9b0ad33693f4c9a2",
+      "description": "Same stream as epoch_zero, epoch rolled to 1: a different DEK.",
+      "epoch": 1,
+      "exporter_secret_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "id": "rolled_epoch",
+      "info_hex": "63697269732d73747265616d2d64656b2f763161762d623937633934313962323561393237333531373465633864343464363665666136643262663735386430393933346266373132396336613865373761326334620000000000000001",
+      "stream_id": "av-b97c9419b25a92735174ec8d44d66efa6d2bf758d09934bf7129c6a8e77a2c4b"
+    },
+    {
+      "dek_hex": "d8fa739b15cf662f9b3e20edd3ec45940beed4064be652d7b40b3fafff1eaa18",
+      "description": "Stream A at epoch 7.",
+      "epoch": 7,
+      "exporter_secret_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "id": "two_streams_same_epoch_a",
+      "info_hex": "63697269732d73747265616d2d64656b2f763161762d623937633934313962323561393237333531373465633864343464363665666136643262663735386430393933346266373132396336613865373761326334620000000000000007",
+      "stream_id": "av-b97c9419b25a92735174ec8d44d66efa6d2bf758d09934bf7129c6a8e77a2c4b"
+    },
+    {
+      "dek_hex": "21ad34ef979b3506418d3eebea4c538210f31c78113b86184db4e9e1f9725abb",
+      "description": "Stream B at epoch 7 under the same exporter secret: differs from stream A.",
+      "epoch": 7,
+      "exporter_secret_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "id": "two_streams_same_epoch_b",
+      "info_hex": "63697269732d73747265616d2d64656b2f763161762d323363663336333439396631373531656538346432643530343533386536333565313430613566386138623838646437393664623062346134306233323965370000000000000007",
+      "stream_id": "av-23cf363499f1751ee84d2d504538e635e140a5f8a8b88dd796db0b4a40b329e7"
+    },
+    {
+      "dek_hex": "faab53b77e26902b1e77d5b595fa285f2667cd4bbfd6102976661190cbae94a9",
+      "description": "The CC 5.3.3.7 known-answer stream_id at its epoch 5.",
+      "epoch": 5,
+      "exporter_secret_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "id": "cc_5_3_3_7_stream_id",
+      "info_hex": "63697269732d73747265616d2d64656b2f763161762d633761646663393939616662633736343362323465616233623537636136363534303331356433343565353262626233336366613164356466623963313864380000000000000005",
+      "stream_id": "av-c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d8"
+    },
+    {
+      "dek_hex": "2fab5021f27e6631854cd762252a04851862c8cf61321ab1b0806a1202a359b8",
+      "description": "Same stream and epoch as rolled_epoch under another exporter secret.",
+      "epoch": 1,
+      "exporter_secret_hex": "0000000000000000000000000000000000000000000000000000000000000000",
+      "id": "other_exporter_secret",
+      "info_hex": "63697269732d73747265616d2d64656b2f763161762d623937633934313962323561393237333531373465633864343464363665666136643262663735386430393933346266373132396336613865373761326334620000000000000001",
+      "stream_id": "av-b97c9419b25a92735174ec8d44d66efa6d2bf758d09934bf7129c6a8e77a2c4b"
+    },
+    {
+      "dek_hex": "da58c7fbe1515c05c6df6dba868eb446ab9c0e16f36bce7c9eb06f4c3d290784",
+      "description": "Epoch u64::MAX: epoch_be8 is ff x 8.",
+      "epoch": 18446744073709551615,
+      "exporter_secret_hex": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+      "id": "max_epoch",
+      "info_hex": "63697269732d73747265616d2d64656b2f763161762d32336366333633343939663137353165653834643264353034353338653633356531343061356638613862383864643739366462306234613430623332396537ffffffffffffffff",
+      "stream_id": "av-23cf363499f1751ee84d2d504538e635e140a5f8a8b88dd796db0b4a40b329e7"
+    }
+  ]
+}
