@@ -951,9 +951,10 @@ pub fn verify_membership_change(
 
 /// The **structural** invariants of a membership change — everything except the
 /// authorization (who signed). Factored out of [`verify_membership_change`] so the
-/// live-quorum path ([`crate::accord_live_quorum`]) reuses the *exact same*
-/// structure checks while authorizing over the live set `L` instead of the prior
-/// roster's quorum (CIRISVerify#98 / FSD-004 C3).
+/// accord's participation-window roster change and holder recovery
+/// ([`crate::accord_live_quorum`]) reuse the *exact same* structure checks while
+/// authorizing by yes-votes against the standing roster, or by the holder's
+/// recovery key, instead of cosignatures (CC 4.2.6; FSD-004 C3).
 ///
 /// Validates: the new envelope is well-formed + lists **distinct** members at a
 /// strict-majority `quorum:M/N` (`2·M > N`); the new roster resolves in

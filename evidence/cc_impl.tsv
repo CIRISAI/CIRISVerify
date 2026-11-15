@@ -19,6 +19,7 @@ decimal_id	claim_id	repo	path#symbol	crate@version
 4.2.1.3	CLM-lifecycle	CIRISVerify	src/ciris-verify-core/src/humanity_accord.rs#verify_invocation	ciris-verify-core@v12.5.0
 4.2.2	CLM-hardware-class	CIRISVerify	src/ciris-keyring/src/hw_token.rs#hardware_class_table	ciris-keyring@v10.1.1
 4.2.6	CLM-accord-livequorum	CIRISVerify	src/ciris-verify-core/src/accord_live_quorum.rs#verify_membership_change_by_live_quorum	ciris-verify-core@v12.5.0
+4.2.6	CLM-accord-livequorum	CIRISVerify	src/ciris-verify-core/src/accord_live_quorum.rs#verify_holder_recovery	ciris-verify-core@v23.0.0
 4.4.3.4.3	CLM-cohort	CIRISVerify	src/ciris-verify-core/src/self_at_login.rs#perform_self_at_login	ciris-verify-core@v12.5.0
 4.4.3.4.3.1	CLM-canonicalization-signing	CIRISVerify	src/ciris-verify-core/src/self_at_login.rs#sign_partnership_grant	ciris-verify-core@v12.5.0
 5.3.1	CLM-witness	CIRISVerify	src/ciris-verify-core/src/transparency.rs#SignedTreeHead::cosign	ciris-verify-core@v12.5.0
