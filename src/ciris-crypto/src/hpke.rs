@@ -1,624 +1,441 @@
-//! HPKE mode_base (RFC 9180 §5.1.1) over the X-Wing hybrid KEM
-//! (CIRISVerify#82).
+//! HPKE `mode_base` (RFC 9180 §5.1.1) over X-Wing: the MLS Welcome wrap
+//! (CC 5.4.4, CIRISVerify#324).
 //!
-//! The single-shot public-key encryption primitive for the scope-native
-//! privacy MLS Welcome wrap (CEWP SCOPE_PRIVACY.md §3.3): an MLS Welcome is
-//! sealed under the invitee's static X-Wing public key. **mode_base only** —
-//! X-Wing structurally has no AuthEncap (draft-connolly-cfrg-xwing-kem;
-//! confirmed draft-ietf-hpke-pq §7.2), so authenticated-KEM modes are
-//! unavailable. Sender authentication is provided out-of-band by an ML-DSA-65
-//! signature over the encapsulation (see the module example) — *not* by the
-//! KEM. Both halves of ciphersuite 0x004D are exercised: X-Wing for
-//! confidentiality, ML-DSA-65 for sender auth.
+//! An MLS Welcome is sealed to the invitee's static X-Wing key. The suite is
+//! RFC 9180's own, with nothing private in it:
 //!
-//! ## KEM
+//! | | id | |
+//! |---|---|---|
+//! | KEM | `0x647a` | X-Wing, draft-connolly-cfrg-xwing-kem-11 ([`crate::xwing`]); the id draft-ietf-hpke-pq lists |
+//! | KDF | `0x0001` | HKDF-SHA256 |
+//! | AEAD | `0x0002` | AES-256-GCM |
 //!
-//! The KEM is the existing [`crate::hybrid_kex`] X-Wing (X25519 + ML-KEM-768,
-//! HKDF-SHA256-bound). [`crate::hybrid_kex::initiate_hybrid`] *is* HPKE
-//! `Encap` (returns the [`HybridHandshakeMsg`] encapsulation + the shared
-//! secret); [`crate::hybrid_kex::respond_hybrid_with_public`] *is* `Decap`.
-//! On top of the KEM shared secret this module runs the RFC 9180 §5.1
-//! `KeySchedule` (HKDF-SHA256, `mode_base`) to derive the AEAD key + base
-//! nonce, then seals with AES-256-GCM.
+//! `suite_id = "HPKE" ‖ I2OSP(0x647a, 2) ‖ I2OSP(0x0001, 2) ‖ I2OSP(0x0002, 2)`
+//! ([`HPKE_SUITE_ID`]). X-Wing's HPKE binding (draft §5.6) makes `Encap` its
+//! `Encapsulate` and `Decap` its `Decapsulate`: the X-Wing shared secret *is*
+//! HPKE's `shared_secret`, and `enc` is the 1120-byte `ct_M ‖ ct_X`. The key
+//! schedule is RFC 9180 §5.1 (`mode = 0x00`, empty `psk` / `psk_id`), and a
+//! single-shot seal uses `seq = 0`, so the AEAD nonce is `base_nonce`.
 //!
-//! ## Key schedule (RFC 9180 §4 / §5.1, mode_base)
+//! **The invitee's key** is an [`XWingSecretKey`] made from its 32-byte seed by
+//! X-Wing §5.2. HPKE `DeriveKeyPair` is not used: it applies a labelled
+//! SHAKE256 and would derive a different key from the same input (CC ruling on
+//! #324).
 //!
-//! The `hybrid_kex` shared secret is treated as HPKE's KEM `shared_secret`
-//! (it is already KEM-bound — black-boxed here). With KDF = HKDF-SHA256
-//! (`Nh = 32`) and AEAD = AES-256-GCM (`Nk = 32`, `Nn = 12`):
+//! **`mode_auth` does not exist** for X-Wing (no `AuthEncap`). The sender is
+//! authenticated by the inviter's hybrid signature over the encapsulation
+//! (CC 5.4.4): [`encap_signing_bytes`] returns the bytes that signature covers.
 //!
-//! ```text
-//! LabeledExtract(salt, label, ikm)
-//!     = HKDF-Extract(salt, "HPKE-v1" ++ suite_id ++ label ++ ikm)        -> PRK (Nh)
-//! LabeledExpand(prk, label, info, L)
-//!     = HKDF-Expand(prk, I2OSP(L,2) ++ "HPKE-v1" ++ suite_id ++ label ++ info, L)
+//! **Known answers.** `tests::hpke_pq_vector_0x647a_*` reproduce the
+//! draft-ietf-hpke-pq vector for KEM `0x647a` + HKDF-SHA256 (with that vector's
+//! ChaCha20-Poly1305 AEAD id in its `suite_id`; the key schedule is the same
+//! for any 32-byte-key, 12-byte-nonce AEAD). The suite's own vectors, for
+//! AES-256-GCM, are in `tests/vectors/xwing/hpke_xwing_aes256gcm.json`.
 //!
-//! mode_base = 0x00, psk = "", psk_id = "":
-//!     psk_id_hash          = LabeledExtract("", "psk_id_hash", psk_id)
-//!     info_hash            = LabeledExtract("", "info_hash", info)
-//!     key_schedule_context = 0x00 ++ psk_id_hash ++ info_hash
-//!     secret               = LabeledExtract(shared_secret, "secret", psk)
-//!     key                  = LabeledExpand(secret, "key", ksc, Nk=32)
-//!     base_nonce           = LabeledExpand(secret, "base_nonce", ksc, Nn=12)
-//! ```
-//!
-//! Single-shot ⇒ `seq = 0` ⇒ the per-message nonce is exactly `base_nonce`.
-//! `suite_id` is [`HPKE_SUITE_ID`] used consistently as the suite-id bytes in
-//! every Labeled* call. NB this is *not* the canonical RFC 9180
-//! `"HPKE" ‖ I2OSP(kem,2) ‖ I2OSP(kdf,2) ‖ I2OSP(aead,2)` byte form — X-Wing
-//! has no IANA KEM-id, so a private-use ASCII suite-id string is pinned here
-//! and flagged for cross-impl confirmation (see the const).
-//!
-//! ## AEAD + AAD
-//!
-//! [`crate::aes_gcm`] hardcodes an empty AAD, but HPKE binds the caller's
-//! `aad` into every `Seal`/`Open` (RFC 9180 §5.2). So this module runs its
-//! own `ring::aead` AES-256-GCM seal/open (mirroring `aes_gcm.rs`'s ring
-//! usage) and passes the real `aad` via `Aad::from(aad)`. The key-schedule
-//! `info` and the per-message `aad` are therefore bound at their correct,
-//! distinct layers (info → key derivation, aad → AEAD).
-//!
-//! ## Sender authentication (caller-composed)
-//!
-//! ```ignore
-//! let sealed = hpke::seal_base(&invitee_pub, info, aad, welcome)?;
-//! let sig = MlDsa65Signer::from_seed(&inviter_seed)?
-//!     .sign(&hpke::encap_signing_bytes(&sealed.encapsulation));   // sign the encap
-//! // transmit (sealed, sig, inviter_pk); recipient verifies sig BEFORE open_base.
-//! ```
+//! The pre-23.0.0 suite is [`legacy_x25519mlkem768`], open-only.
 
 #[allow(unused_imports)]
 use crate::prelude::*;
 use hkdf::Hkdf;
+use rand_core::CryptoRngCore;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use sha2::Sha256;
+use zeroize::Zeroizing;
 
 use crate::error::CryptoError;
-use crate::hybrid_kex::{self, HybridHandshakeMsg};
+use crate::xwing::{XWingPublicKey, XWingSecretKey, XWING_CIPHERTEXT_LEN};
 
-/// HPKE suite identifier for this construction (RFC 9180 §5.1 `suite_id`).
-/// `"HPKE"` ‖ KEM-id ‖ KDF-id ‖ AEAD-id. The KEM-id is a private-use value
-/// for X-Wing (no IANA KEM-id is allocated); KDF = HKDF-SHA256 (0x0001),
-/// AEAD = AES-256-GCM (0x0002). **Cross-impl flag:** pinned here, flagged for
-/// CEWP/CIRISEdge cross-confirmation before the wire value is frozen.
-pub const HPKE_SUITE_ID: &[u8] = b"HPKE-xwing-hkdf-sha256-aes256gcm-v1";
+#[path = "hpke_legacy.rs"]
+pub mod legacy_x25519mlkem768;
 
-/// RFC 9180 §4 version label, prefixed onto every Labeled* invocation.
+/// HPKE KEM id of X-Wing.
+pub const KEM_ID_XWING: u16 = 0x647a;
+/// HPKE KDF id of HKDF-SHA256.
+pub const KDF_ID_HKDF_SHA256: u16 = 0x0001;
+/// HPKE AEAD id of AES-256-GCM.
+pub const AEAD_ID_AES_256_GCM: u16 = 0x0002;
+
+/// RFC 9180 §5.1 `suite_id` of this suite:
+/// `"HPKE" ‖ I2OSP(0x647a, 2) ‖ I2OSP(0x0001, 2) ‖ I2OSP(0x0002, 2)`.
+pub const HPKE_SUITE_ID: [u8; 10] = suite_id(KEM_ID_XWING, KDF_ID_HKDF_SHA256, AEAD_ID_AES_256_GCM);
+
+const fn suite_id(kem: u16, kdf: u16, aead: u16) -> [u8; 10] {
+    let k = kem.to_be_bytes();
+    let d = kdf.to_be_bytes();
+    let a = aead.to_be_bytes();
+    [b'H', b'P', b'K', b'E', k[0], k[1], d[0], d[1], a[0], a[1]]
+}
+
+/// RFC 9180 §4 version label.
 const HPKE_V1: &[u8] = b"HPKE-v1";
-
-/// AEAD key length (`Nk`) for AES-256-GCM.
+/// AES-256-GCM key length (`Nk`).
 const NK: usize = 32;
-/// AEAD nonce length (`Nn`) for AES-256-GCM.
+/// AES-256-GCM nonce length (`Nn`).
 const NN: usize = 12;
+/// HKDF-SHA256 output length (`Nh`).
+const NH: usize = 32;
 
-/// An invitee's static X-Wing public key (the HPKE recipient key `pkR`).
-#[derive(Debug, Clone)]
-pub struct XWingRecipientPublic {
-    /// Long-term X25519 public key (32 bytes).
-    pub x25519_pub: [u8; 32],
-    /// Long-term ML-KEM-768 public key.
-    pub mlkem768_pub: Vec<u8>,
-}
-
-/// An invitee's static X-Wing secret key (`skR`). Carries the ML-KEM public
-/// half too — `respond_hybrid_with_public` binds it into the shared-secret
-/// salt, so Decap needs it.
-#[derive(Debug, Clone)]
-pub struct XWingRecipientSecret {
-    /// Long-term X25519 secret key (32 bytes).
-    pub x25519_priv: [u8; 32],
-    /// Long-term ML-KEM-768 secret key.
-    pub mlkem768_priv: Vec<u8>,
-    /// Long-term ML-KEM-768 public key (for salt binding).
-    pub mlkem768_pub: Vec<u8>,
-}
-
-/// The output of [`seal_base`]: the KEM encapsulation + the AEAD ciphertext.
-#[derive(Debug, Clone)]
+/// The output of [`seal_base`]: `enc` and the AEAD `ciphertext ‖ tag`.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HpkeSealed {
-    /// The X-Wing encapsulation (`enc`) — the ephemeral X25519 pubkey +
-    /// ML-KEM-768 ciphertext.
-    pub encapsulation: HybridHandshakeMsg,
-    /// AES-256-GCM `ciphertext || tag`.
+    /// The X-Wing encapsulation `enc = ct_M ‖ ct_X` (1120 bytes).
+    pub encapsulation: Vec<u8>,
+    /// AES-256-GCM `ciphertext ‖ tag`.
     pub ciphertext: Vec<u8>,
 }
 
-/// RFC 9180 §4 `LabeledExtract`:
-/// `HKDF-Extract(salt, "HPKE-v1" ‖ suite_id ‖ label ‖ ikm)` → PRK (`Nh = 32`).
-fn labeled_extract(salt: &[u8], label: &[u8], ikm: &[u8]) -> [u8; 32] {
-    let mut labeled_ikm =
-        Vec::with_capacity(HPKE_V1.len() + HPKE_SUITE_ID.len() + label.len() + ikm.len());
+fn err(operation: &'static str, reason: &str) -> CryptoError {
+    CryptoError::Hpke {
+        operation,
+        reason: reason.to_string(),
+    }
+}
+
+/// `LabeledExtract(salt, label, ikm)` (RFC 9180 §4).
+fn labeled_extract(suite: &[u8], salt: &[u8], label: &[u8], ikm: &[u8]) -> Zeroizing<[u8; NH]> {
+    let mut labeled_ikm = Zeroizing::new(Vec::with_capacity(
+        HPKE_V1.len() + suite.len() + label.len() + ikm.len(),
+    ));
     labeled_ikm.extend_from_slice(HPKE_V1);
-    labeled_ikm.extend_from_slice(HPKE_SUITE_ID);
+    labeled_ikm.extend_from_slice(suite);
     labeled_ikm.extend_from_slice(label);
     labeled_ikm.extend_from_slice(ikm);
-    let salt_opt = if salt.is_empty() { None } else { Some(salt) };
-    let (prk, _hk) = Hkdf::<Sha256>::extract(salt_opt, &labeled_ikm);
-    let mut out = [0u8; 32];
+    let (prk, _) = Hkdf::<Sha256>::extract(Some(salt), &labeled_ikm);
+    let mut out = Zeroizing::new([0u8; NH]);
     out.copy_from_slice(&prk);
     out
 }
 
-/// RFC 9180 §4 `LabeledExpand`:
-/// `HKDF-Expand(prk, I2OSP(L,2) ‖ "HPKE-v1" ‖ suite_id ‖ label ‖ info, L)`.
-///
-/// `L` must fit in two bytes and `L <= 255 * Nh = 8160` (HKDF-Expand cap).
-/// Both call sites here use `L = 32` and `L = 12`, well within range; an
-/// expand failure is mapped through the caller's `operation` tag.
+/// `LabeledExpand(prk, label, info, L)` (RFC 9180 §4), `L` ≤ 255·Nh.
 fn labeled_expand(
-    prk: &[u8; 32],
+    suite: &[u8],
+    prk: &[u8; NH],
     label: &[u8],
     info: &[u8],
-    l: usize,
-    operation: &'static str,
-) -> Result<Vec<u8>, CryptoError> {
-    let l_u16 = u16::try_from(l).map_err(|_| CryptoError::Hpke {
-        operation,
-        reason: "labeled_expand length overflows u16".to_string(),
-    })?;
+    out: &mut [u8],
+) -> Result<(), CryptoError> {
+    let l = u16::try_from(out.len()).map_err(|_| err("key_schedule", "length overflows u16"))?;
     let mut labeled_info =
-        Vec::with_capacity(2 + HPKE_V1.len() + HPKE_SUITE_ID.len() + label.len() + info.len());
-    labeled_info.extend_from_slice(&l_u16.to_be_bytes());
+        Vec::with_capacity(2 + HPKE_V1.len() + suite.len() + label.len() + info.len());
+    labeled_info.extend_from_slice(&l.to_be_bytes());
     labeled_info.extend_from_slice(HPKE_V1);
-    labeled_info.extend_from_slice(HPKE_SUITE_ID);
+    labeled_info.extend_from_slice(suite);
     labeled_info.extend_from_slice(label);
     labeled_info.extend_from_slice(info);
-
-    let hk = Hkdf::<Sha256>::from_prk(prk).map_err(|_| CryptoError::Hpke {
-        operation,
-        reason: "HKDF from_prk failed".to_string(),
-    })?;
-    let mut out = vec![0u8; l];
-    hk.expand(&labeled_info, &mut out)
-        .map_err(|_| CryptoError::Hpke {
-            operation,
-            reason: "HKDF-Expand failed".to_string(),
-        })?;
-    Ok(out)
+    Hkdf::<Sha256>::from_prk(prk)
+        .map_err(|_| err("key_schedule", "PRK length"))?
+        .expand(&labeled_info, out)
+        .map_err(|_| err("key_schedule", "HKDF-Expand failed"))
 }
 
-/// RFC 9180 §5.1 `KeyScheduleS`/`KeyScheduleR` for `mode_base`
-/// (`mode = 0x00`, `psk = ""`, `psk_id = ""`). Both sender and recipient run
-/// the identical schedule over the shared KEM secret, so one function serves
-/// `seal` and `open`. Returns `(key[Nk], base_nonce[Nn])`. Single-shot ⇒
-/// `seq = 0` ⇒ the message nonce is `base_nonce` verbatim.
+/// The RFC 9180 §5.1 key schedule for `mode_base`.
+struct Context {
+    key: Zeroizing<[u8; NK]>,
+    base_nonce: [u8; NN],
+    #[cfg_attr(not(test), allow(dead_code))]
+    exporter_secret: Zeroizing<[u8; NH]>,
+}
+
 fn key_schedule_base(
-    shared_secret: &[u8; 32],
+    suite: &[u8],
+    shared_secret: &[u8],
     info: &[u8],
-    operation: &'static str,
-) -> Result<([u8; NK], [u8; NN]), CryptoError> {
-    // mode_base: psk and psk_id are both empty.
-    let psk_id_hash = labeled_extract(&[], b"psk_id_hash", &[]);
-    let info_hash = labeled_extract(&[], b"info_hash", info);
-
-    // key_schedule_context = mode(0x00) ‖ psk_id_hash ‖ info_hash
-    let mut key_schedule_context = Vec::with_capacity(1 + 32 + 32);
-    key_schedule_context.push(0x00);
-    key_schedule_context.extend_from_slice(&psk_id_hash);
-    key_schedule_context.extend_from_slice(&info_hash);
-
-    // secret = LabeledExtract(shared_secret, "secret", psk="")
-    let secret = labeled_extract(shared_secret, b"secret", &[]);
-
-    let key = labeled_expand(&secret, b"key", &key_schedule_context, NK, operation)?;
-    let base_nonce = labeled_expand(&secret, b"base_nonce", &key_schedule_context, NN, operation)?;
-
-    let mut key_arr = [0u8; NK];
-    key_arr.copy_from_slice(&key);
-    let mut nonce_arr = [0u8; NN];
-    nonce_arr.copy_from_slice(&base_nonce);
-    Ok((key_arr, nonce_arr))
+) -> Result<Context, CryptoError> {
+    let psk_id_hash = labeled_extract(suite, &[], b"psk_id_hash", &[]);
+    let info_hash = labeled_extract(suite, &[], b"info_hash", info);
+    let mut ctx = Vec::with_capacity(1 + 2 * NH);
+    ctx.push(0x00);
+    ctx.extend_from_slice(psk_id_hash.as_ref());
+    ctx.extend_from_slice(info_hash.as_ref());
+    let secret = labeled_extract(suite, shared_secret, b"secret", &[]);
+    let mut key = Zeroizing::new([0u8; NK]);
+    labeled_expand(suite, &secret, b"key", &ctx, key.as_mut())?;
+    let mut base_nonce = [0u8; NN];
+    labeled_expand(suite, &secret, b"base_nonce", &ctx, &mut base_nonce)?;
+    let mut exporter_secret = Zeroizing::new([0u8; NH]);
+    labeled_expand(suite, &secret, b"exp", &ctx, exporter_secret.as_mut())?;
+    Ok(Context {
+        key,
+        base_nonce,
+        exporter_secret,
+    })
 }
 
-/// AES-256-GCM seal honoring a real `aad` — the AEAD half of HPKE `Seal`.
-///
-/// `crate::aes_gcm` hardcodes empty AAD, so HPKE (which must bind the
-/// caller's `aad`, RFC 9180 §5.2) runs its own `ring::aead` here, mirroring
-/// `aes_gcm.rs`'s `LessSafeKey` usage but passing `Aad::from(aad)`. Returns
-/// `ciphertext || tag` (16-byte tag appended).
-fn aead_seal(
-    key: &[u8; NK],
-    nonce: &[u8; NN],
-    aad: &[u8],
-    plaintext: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
-    let unbound = UnboundKey::new(&AES_256_GCM, key).map_err(|_| CryptoError::Hpke {
-        operation: "seal_base",
-        reason: "AES-256-GCM key init failed".to_string(),
-    })?;
-    let cipher = LessSafeKey::new(unbound);
-    let mut in_out = plaintext.to_vec();
-    cipher
-        .seal_in_place_append_tag(
-            Nonce::assume_unique_for_key(*nonce),
-            Aad::from(aad),
-            &mut in_out,
-        )
-        .map_err(|_| CryptoError::Hpke {
-            operation: "seal_base",
-            reason: "AES-256-GCM seal failed".to_string(),
-        })?;
-    Ok(in_out)
+fn aead_key(key: &[u8; NK], operation: &'static str) -> Result<LessSafeKey, CryptoError> {
+    UnboundKey::new(&AES_256_GCM, key)
+        .map(LessSafeKey::new)
+        .map_err(|_| err(operation, "AES-256-GCM key init failed"))
 }
 
-/// AES-256-GCM open honoring a real `aad` — the AEAD half of HPKE `Open`.
-/// Opaque on failure: tag mismatch (tampered ct, wrong key, wrong nonce,
-/// wrong aad) and a too-short ciphertext all collapse to one error.
-fn aead_open(
-    key: &[u8; NK],
-    nonce: &[u8; NN],
-    aad: &[u8],
-    ciphertext: &[u8],
-) -> Result<Vec<u8>, CryptoError> {
-    let unbound = UnboundKey::new(&AES_256_GCM, key).map_err(|_| CryptoError::Hpke {
-        operation: "open_base",
-        reason: "AEAD open failed".to_string(),
-    })?;
-    let cipher = LessSafeKey::new(unbound);
-    let mut in_out = ciphertext.to_vec();
-    let plaintext_len = cipher
-        .open_in_place(
-            Nonce::assume_unique_for_key(*nonce),
-            Aad::from(aad),
-            &mut in_out,
-        )
-        .map_err(|_| CryptoError::Hpke {
-            operation: "open_base",
-            reason: "AEAD open failed".to_string(),
-        })?
-        .len();
-    in_out.truncate(plaintext_len);
-    Ok(in_out)
-}
-
-/// HPKE `SealBase` (RFC 9180 §6.1): encrypt `plaintext` to `recipient` under
-/// application `info` + `aad`.
-///
-/// # Errors
-///
-/// [`CryptoError::Hpke`] `{ operation: "seal_base", .. }` on a KEM or AEAD fault.
-pub fn seal_base(
-    recipient: &XWingRecipientPublic,
+fn seal_with_shared_secret(
+    shared_secret: &[u8],
+    encapsulation: Vec<u8>,
     info: &[u8],
     aad: &[u8],
     plaintext: &[u8],
 ) -> Result<HpkeSealed, CryptoError> {
-    // Encap: hybrid_kex::initiate_hybrid returns (encapsulation, shared_secret).
-    let (encapsulation, shared_secret) =
-        hybrid_kex::initiate_hybrid(&recipient.x25519_pub, &recipient.mlkem768_pub).map_err(
-            |e| CryptoError::Hpke {
-                operation: "seal_base",
-                reason: format!("KEM encap failed: {e}"),
-            },
-        )?;
-
-    let (key, base_nonce) = key_schedule_base(&shared_secret, info, "seal_base")?;
-    // Single-shot ⇒ seq = 0 ⇒ message nonce = base_nonce.
-    let ciphertext = aead_seal(&key, &base_nonce, aad, plaintext)?;
-
+    let ctx = key_schedule_base(&HPKE_SUITE_ID, shared_secret, info)?;
+    let mut in_out = plaintext.to_vec();
+    aead_key(&ctx.key, "seal_base")?
+        .seal_in_place_append_tag(
+            Nonce::assume_unique_for_key(ctx.base_nonce),
+            Aad::from(aad),
+            &mut in_out,
+        )
+        .map_err(|_| err("seal_base", "AES-256-GCM seal failed"))?;
     Ok(HpkeSealed {
         encapsulation,
-        ciphertext,
+        ciphertext: in_out,
     })
 }
 
-/// HPKE `OpenBase` (RFC 9180 §6.1): decrypt `sealed` for `recipient` under the
-/// same `info` + `aad`.
+/// `SealBase(pkR, info, aad, pt)` (RFC 9180 §6.1) with the encapsulation's
+/// randomness from `rng`.
 ///
 /// # Errors
+/// [`CryptoError::Hpke`] on an AEAD fault.
+pub fn seal_base_with_rng(
+    recipient: &XWingPublicKey,
+    info: &[u8],
+    aad: &[u8],
+    plaintext: &[u8],
+    rng: &mut impl CryptoRngCore,
+) -> Result<HpkeSealed, CryptoError> {
+    let (enc, ss) = recipient.encapsulate_with_rng(rng);
+    seal_with_shared_secret(ss.as_ref(), enc.to_vec(), info, aad, plaintext)
+}
+
+/// `SealBase(pkR, info, aad, pt)` with randomness from the health-latched RNG.
 ///
-/// [`CryptoError::Hpke`] `{ operation: "open_base", .. }` on a Decap or AEAD
-/// fault (opaque — tampering vs. wrong-key are not distinguished).
+/// # Errors
+/// [`CryptoError::RngHealthCheckFailed`] if the RNG latch has failed;
+/// [`CryptoError::Hpke`] on an AEAD fault.
+pub fn seal_base(
+    recipient: &XWingPublicKey,
+    info: &[u8],
+    aad: &[u8],
+    plaintext: &[u8],
+) -> Result<HpkeSealed, CryptoError> {
+    let (enc, ss) = recipient.encapsulate()?;
+    seal_with_shared_secret(ss.as_ref(), enc.to_vec(), info, aad, plaintext)
+}
+
+/// `OpenBase(enc, skR, info, aad, ct)` (RFC 9180 §6.1).
+///
+/// # Errors
+/// [`CryptoError::Hpke`] `{ operation: "open_base" }`, opaque: a wrong key, a
+/// tampered `enc` or ciphertext, a different `info` or `aad`, and a malformed
+/// `enc` are not distinguished.
 pub fn open_base(
-    recipient: &XWingRecipientSecret,
+    recipient: &XWingSecretKey,
     sealed: &HpkeSealed,
     info: &[u8],
     aad: &[u8],
 ) -> Result<Vec<u8>, CryptoError> {
-    // Decap: hybrid_kex::respond_hybrid_with_public recomputes the shared
-    // secret. A wrong recipient key / tampered encapsulation diverges the
-    // shared secret (the KEM doesn't error), which then fails the AEAD tag —
-    // opaque, as required.
-    let shared_secret = hybrid_kex::respond_hybrid_with_public(
-        &recipient.x25519_priv,
-        &recipient.mlkem768_priv,
-        &recipient.mlkem768_pub,
-        &sealed.encapsulation,
-    )
-    .map_err(|_| CryptoError::Hpke {
-        operation: "open_base",
-        reason: "AEAD open failed".to_string(),
-    })?;
-
-    let (key, base_nonce) = key_schedule_base(&shared_secret, info, "open_base")?;
-    aead_open(&key, &base_nonce, aad, &sealed.ciphertext)
+    let opaque = || err("open_base", "AEAD open failed");
+    let ss = recipient
+        .decapsulate(&sealed.encapsulation)
+        .map_err(|_| opaque())?;
+    let ctx = key_schedule_base(&HPKE_SUITE_ID, ss.as_ref(), info)?;
+    let mut in_out = sealed.ciphertext.clone();
+    let len = aead_key(&ctx.key, "open_base")?
+        .open_in_place(
+            Nonce::assume_unique_for_key(ctx.base_nonce),
+            Aad::from(aad),
+            &mut in_out,
+        )
+        .map_err(|_| opaque())?
+        .len();
+    in_out.truncate(len);
+    Ok(in_out)
 }
 
-/// The canonical bytes an ML-DSA-65 sender-auth signature covers — the
-/// serialized X-Wing encapsulation. Pinned encoding so producer + verifier
-/// agree:
+/// The bytes the inviter's hybrid signature covers (CC 5.4.4): the
+/// encapsulation `enc = ct_M ‖ ct_X`, all 1120 bytes, as sent.
 ///
-/// ```text
-/// x25519_ephemeral_pub (32 B) ‖ I2OSP(len(mlkem768_ciphertext), 4) ‖ mlkem768_ciphertext
-/// ```
+/// The X-Wing ciphertext has a fixed length and one encoding, so it is signed
+/// as is, with no framing. (CC restates `encap_signing_bytes` over the X-Wing
+/// ciphertext in rc20; this follows the ruling sent to verify on #324.)
 ///
-/// The `algorithm` string is intentionally **excluded** — only the wire key
-/// material is covered, so the signature binds the actual encapsulated DH +
-/// KEM ciphertext the recipient will decapsulate, independent of label drift.
-/// The 4-byte big-endian length prefix makes the encoding unambiguous
-/// (length-delimited, no separator collision).
-#[must_use]
-pub fn encap_signing_bytes(encapsulation: &HybridHandshakeMsg) -> Vec<u8> {
-    let ct = &encapsulation.mlkem768_ciphertext;
-    // Invariant: the ML-KEM-768 ciphertext is a fixed 1088 B, so the u32
-    // length prefix is always exact — the `unwrap_or(u32::MAX)` clamp below is
-    // unreachable, not a silent truncation. Asserted in debug builds.
-    debug_assert!(
-        ct.len() <= u32::MAX as usize,
-        "ML-KEM ciphertext length fits u32"
-    );
-    let mut out = Vec::with_capacity(32 + 4 + ct.len());
-    out.extend_from_slice(&encapsulation.x25519_ephemeral_pub);
-    // Length-prefix the variable-length ML-KEM ciphertext (u32 big-endian).
-    // ct.len() is the ML-KEM-768 ciphertext (1088 B), well within u32.
-    let len = u32::try_from(ct.len()).unwrap_or(u32::MAX);
-    out.extend_from_slice(&len.to_be_bytes());
-    out.extend_from_slice(ct);
-    out
+/// # Errors
+/// [`CryptoError::InvalidCiphertext`] if `sealed.encapsulation` is not 1120
+/// bytes: a signature is never made or checked over a malformed `enc`.
+pub fn encap_signing_bytes(sealed: &HpkeSealed) -> Result<Vec<u8>, CryptoError> {
+    if sealed.encapsulation.len() != XWING_CIPHERTEXT_LEN {
+        return Err(CryptoError::InvalidCiphertext {
+            reason: format!(
+                "X-Wing encapsulation must be {XWING_CIPHERTEXT_LEN} bytes, got {}",
+                sealed.encapsulation.len()
+            ),
+        });
+    }
+    Ok(sealed.encapsulation.clone())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{ml_kem, x25519};
+    use rand_core::SeedableRng;
 
-    /// Build a fresh X-Wing recipient keypair (public + secret halves).
-    fn fresh_recipient() -> (XWingRecipientPublic, XWingRecipientSecret) {
-        let (x_sk, x_pk) = x25519::generate_ephemeral_keypair().unwrap();
-        let (mlkem_sk, mlkem_pk) = ml_kem::generate_keypair().unwrap();
-        let public = XWingRecipientPublic {
-            x25519_pub: x_pk,
-            mlkem768_pub: mlkem_pk.clone(),
-        };
-        let secret = XWingRecipientSecret {
-            x25519_priv: x_sk,
-            mlkem768_priv: mlkem_sk,
-            mlkem768_pub: mlkem_pk,
-        };
-        (public, secret)
+    fn h(s: &str) -> Vec<u8> {
+        hex::decode(s).unwrap()
     }
 
-    /// Headline correctness: seal → open recovers the plaintext.
     #[test]
-    fn round_trip_recovers_plaintext() {
-        let (pk, sk) = fresh_recipient();
-        let info = b"ciris-mls-welcome-v1";
-        let aad = b"group-id-42";
-        let pt = b"the sealed MLS Welcome message";
-        let sealed = seal_base(&pk, info, aad, pt).unwrap();
-        let opened = open_base(&sk, &sealed, info, aad).unwrap();
-        assert_eq!(opened, pt);
+    fn suite_id_is_rfc_9180_form() {
+        assert_eq!(HPKE_SUITE_ID, *b"HPKE\x64\x7a\x00\x01\x00\x02");
     }
 
-    /// Empty plaintext / info / aad all round-trip (boundary case).
+    /// draft-ietf-hpke-pq test vector for KEM 0x647a, KDF HKDF-SHA256, AEAD
+    /// ChaCha20-Poly1305 (0x0003), from hpkewg/hpke-pq `test-vectors.json`.
+    /// Checks X-Wing as the HPKE KEM (pk from skRm, Encap with ikmE as the
+    /// 64-byte randomness, Decap) and the key schedule (key, base_nonce,
+    /// exporter_secret) under that vector's own suite_id.
     #[test]
-    fn round_trip_empty_inputs() {
-        let (pk, sk) = fresh_recipient();
-        let sealed = seal_base(&pk, b"", b"", b"").unwrap();
-        // Empty plaintext ⇒ ciphertext is just the 16-byte tag.
-        assert_eq!(sealed.ciphertext.len(), 16);
-        assert_eq!(open_base(&sk, &sealed, b"", b"").unwrap(), b"");
+    fn hpke_pq_vector_0x647a_kem_and_key_schedule() {
+        let v: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/vectors/xwing/hpke_pq_0x647a_hkdf_sha256_chacha20poly1305.json"
+        ))
+        .unwrap();
+        let s = |k: &str| h(v[k].as_str().unwrap());
+        let sk = XWingSecretKey::from_seed(s("skRm").try_into().unwrap());
+        assert_eq!(sk.public_key().as_bytes().to_vec(), s("pkRm"), "pkRm");
+        let pk = XWingPublicKey::from_bytes(&s("pkRm")).unwrap();
+        let (enc, ss) = pk.encapsulate_derand(&s("ikmE").try_into().unwrap());
+        assert_eq!(enc.to_vec(), s("enc"), "enc");
+        assert_eq!(ss.to_vec(), s("shared_secret"), "shared_secret");
+        assert_eq!(sk.decapsulate(&enc).unwrap().to_vec(), s("shared_secret"));
+
+        let suite = suite_id(0x647a, 0x0001, 0x0003);
+        assert_eq!(suite.to_vec(), s("suite_id"));
+        let ctx = key_schedule_base(&suite, &s("shared_secret"), &s("info")).unwrap();
+        assert_eq!(ctx.key.to_vec(), s("key"), "key");
+        assert_eq!(ctx.base_nonce.to_vec(), s("base_nonce"), "base_nonce");
+        assert_eq!(
+            ctx.exporter_secret.to_vec(),
+            s("exporter_secret"),
+            "exporter_secret"
+        );
     }
 
-    /// Wrong recipient secret key → open fails (opaque). The KEM yields a
-    /// divergent shared secret which fails the AEAD tag.
+    /// The suite's own known answers (AES-256-GCM), generated by an
+    /// independent Python RFC 9180 key schedule over the X-Wing shared secret
+    /// from the vector above.
     #[test]
-    fn wrong_recipient_key_fails_open() {
-        let (pk, _sk) = fresh_recipient();
-        let (_pk2, wrong_sk) = fresh_recipient();
-        let sealed = seal_base(&pk, b"info", b"aad", b"secret").unwrap();
-        let err = open_base(&wrong_sk, &sealed, b"info", b"aad").unwrap_err();
-        match err {
-            CryptoError::Hpke { operation, .. } => assert_eq!(operation, "open_base"),
-            other => panic!("expected Hpke open_base err, got {other:?}"),
+    fn suite_known_answers() {
+        let all: Vec<serde_json::Value> = serde_json::from_str(include_str!(
+            "../tests/vectors/xwing/hpke_xwing_aes256gcm.json"
+        ))
+        .unwrap();
+        assert!(!all.is_empty());
+        for v in &all {
+            let s = |k: &str| h(v[k].as_str().unwrap());
+            assert_eq!(s("suite_id"), HPKE_SUITE_ID.to_vec());
+            let sk = XWingSecretKey::from_seed(s("skRm").try_into().unwrap());
+            let pk = sk.public_key();
+            let (enc, ss) = pk.encapsulate_derand(&s("ikmE").try_into().unwrap());
+            assert_eq!(ss.to_vec(), s("shared_secret"));
+            let ctx = key_schedule_base(&HPKE_SUITE_ID, ss.as_ref(), &s("info")).unwrap();
+            assert_eq!(ctx.key.to_vec(), s("key"));
+            assert_eq!(ctx.base_nonce.to_vec(), s("base_nonce"));
+            assert_eq!(ctx.exporter_secret.to_vec(), s("exporter_secret"));
+            let sealed =
+                seal_with_shared_secret(ss.as_ref(), enc.to_vec(), &s("info"), &s("aad"), &s("pt"))
+                    .unwrap();
+            assert_eq!(sealed.ciphertext, s("ct"), "ct");
+            assert_eq!(
+                encap_signing_bytes(&sealed).unwrap(),
+                s("enc"),
+                "signed bytes are enc"
+            );
+            assert_eq!(
+                open_base(&sk, &sealed, &s("info"), &s("aad")).unwrap(),
+                s("pt")
+            );
         }
     }
 
-    /// Tampered AEAD ciphertext → open fails.
-    #[test]
-    fn tampered_ciphertext_fails_open() {
-        let (pk, sk) = fresh_recipient();
-        let mut sealed = seal_base(&pk, b"info", b"aad", b"secret payload").unwrap();
-        sealed.ciphertext[0] ^= 0x01;
-        assert!(open_base(&sk, &sealed, b"info", b"aad").is_err());
+    fn fixture() -> (XWingSecretKey, XWingPublicKey, rand_chacha::ChaCha20Rng) {
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([5; 32]);
+        let sk = XWingSecretKey::generate_with_rng(&mut rng);
+        let pk = sk.public_key();
+        (sk, pk, rng)
     }
 
-    /// Tampered AEAD tag (last byte) → open fails.
     #[test]
-    fn tampered_tag_fails_open() {
-        let (pk, sk) = fresh_recipient();
-        let mut sealed = seal_base(&pk, b"info", b"aad", b"secret payload").unwrap();
-        let last = sealed.ciphertext.len() - 1;
-        sealed.ciphertext[last] ^= 0x01;
-        assert!(open_base(&sk, &sealed, b"info", b"aad").is_err());
-    }
-
-    /// Tampered encapsulation (flip a byte of the ML-KEM ciphertext) → the
-    /// recovered shared secret diverges → open fails.
-    #[test]
-    fn tampered_encapsulation_mlkem_fails_open() {
-        let (pk, sk) = fresh_recipient();
-        let mut sealed = seal_base(&pk, b"info", b"aad", b"secret").unwrap();
-        sealed.encapsulation.mlkem768_ciphertext[0] ^= 0x01;
-        assert!(open_base(&sk, &sealed, b"info", b"aad").is_err());
-    }
-
-    /// Tampered encapsulation (swap the ephemeral X25519 pubkey) → diverged
-    /// shared secret → open fails.
-    #[test]
-    fn tampered_encapsulation_ephemeral_fails_open() {
-        let (pk, sk) = fresh_recipient();
-        let mut sealed = seal_base(&pk, b"info", b"aad", b"secret").unwrap();
-        let (_, attacker_eph) = x25519::generate_ephemeral_keypair().unwrap();
-        sealed.encapsulation.x25519_ephemeral_pub = attacker_eph;
-        assert!(open_base(&sk, &sealed, b"info", b"aad").is_err());
-    }
-
-    /// Different `info` at open → wrong key-schedule key → open fails.
-    #[test]
-    fn different_info_fails_open() {
-        let (pk, sk) = fresh_recipient();
-        let sealed = seal_base(&pk, b"info-A", b"aad", b"secret").unwrap();
-        assert!(open_base(&sk, &sealed, b"info-B", b"aad").is_err());
-    }
-
-    /// Different `aad` at open → AEAD tag mismatch → open fails.
-    #[test]
-    fn different_aad_fails_open() {
-        let (pk, sk) = fresh_recipient();
-        let sealed = seal_base(&pk, b"info", b"aad-A", b"secret").unwrap();
-        assert!(open_base(&sk, &sealed, b"info", b"aad-B").is_err());
-    }
-
-    /// `encap_signing_bytes` is deterministic for a fixed encapsulation.
-    #[test]
-    fn encap_signing_bytes_deterministic() {
-        let (pk, _sk) = fresh_recipient();
-        let sealed = seal_base(&pk, b"info", b"aad", b"secret").unwrap();
-        let a = encap_signing_bytes(&sealed.encapsulation);
-        let b = encap_signing_bytes(&sealed.encapsulation);
-        assert_eq!(a, b);
-        // Encoding: 32-byte eph pub + 4-byte len prefix + ciphertext.
-        assert_eq!(
-            a.len(),
-            32 + 4 + sealed.encapsulation.mlkem768_ciphertext.len()
+    fn round_trip_and_every_tamper_fails_opaquely() {
+        let (sk, pk, mut rng) = fixture();
+        let (info, aad, pt) = (
+            b"ciris-mls-welcome".as_slice(),
+            b"group-42".as_slice(),
+            b"welcome".as_slice(),
         );
-        // First 32 bytes are the ephemeral X25519 pubkey verbatim.
-        assert_eq!(a[..32], sealed.encapsulation.x25519_ephemeral_pub);
-        // Next 4 bytes are the big-endian ML-KEM ciphertext length.
-        let ct_len = sealed.encapsulation.mlkem768_ciphertext.len() as u32;
-        assert_eq!(a[32..36], ct_len.to_be_bytes());
+        let sealed = seal_base_with_rng(&pk, info, aad, pt, &mut rng).unwrap();
+        assert_eq!(sealed.encapsulation.len(), 1120);
+        assert_eq!(open_base(&sk, &sealed, info, aad).unwrap(), pt);
+        assert_eq!(
+            open_base(
+                &sk,
+                &seal_base_with_rng(&pk, b"", b"", b"", &mut rng).unwrap(),
+                b"",
+                b""
+            )
+            .unwrap(),
+            b""
+        );
+
+        let expect_opaque = |r: Result<Vec<u8>, CryptoError>| match r {
+            Err(CryptoError::Hpke {
+                operation: "open_base",
+                reason,
+            }) => assert_eq!(reason, "AEAD open failed"),
+            other => panic!("expected opaque open failure, got {other:?}"),
+        };
+        expect_opaque(open_base(
+            &XWingSecretKey::from_seed([1; 32]),
+            &sealed,
+            info,
+            aad,
+        ));
+        expect_opaque(open_base(&sk, &sealed, b"other", aad));
+        expect_opaque(open_base(&sk, &sealed, info, b"other"));
+        for i in [0, 1087, 1088, 1119] {
+            let mut t = sealed.clone();
+            t.encapsulation[i] ^= 1;
+            expect_opaque(open_base(&sk, &t, info, aad));
+        }
+        let mut t = sealed.clone();
+        t.encapsulation.pop();
+        expect_opaque(open_base(&sk, &t, info, aad));
+        assert!(encap_signing_bytes(&t).is_err());
+        let mut t = sealed.clone();
+        *t.ciphertext.last_mut().unwrap() ^= 1;
+        expect_opaque(open_base(&sk, &t, info, aad));
+        let mut t = sealed;
+        t.ciphertext.truncate(10);
+        expect_opaque(open_base(&sk, &t, info, aad));
     }
 
-    /// `encap_signing_bytes` is sensitive to any change in the encapsulation.
-    #[test]
-    fn encap_signing_bytes_sensitivity() {
-        let (pk, _sk) = fresh_recipient();
-        let sealed = seal_base(&pk, b"info", b"aad", b"secret").unwrap();
-        let base = encap_signing_bytes(&sealed.encapsulation);
-
-        let mut e1 = sealed.encapsulation.clone();
-        e1.x25519_ephemeral_pub[0] ^= 0x01;
-        assert_ne!(base, encap_signing_bytes(&e1));
-
-        let mut e2 = sealed.encapsulation.clone();
-        e2.mlkem768_ciphertext[0] ^= 0x01;
-        assert_ne!(base, encap_signing_bytes(&e2));
-
-        // The algorithm string is intentionally NOT covered.
-        let mut e3 = sealed.encapsulation.clone();
-        e3.algorithm = "tampered-alg".to_string();
-        assert_eq!(base, encap_signing_bytes(&e3));
-    }
-
-    /// Two seals to the same recipient use fresh ephemeral KEM material, so
-    /// their encapsulations (and ciphertexts) differ — sanity that nothing is
-    /// pinned to a static nonce.
     #[test]
     fn fresh_seals_differ() {
-        let (pk, _sk) = fresh_recipient();
-        let a = seal_base(&pk, b"info", b"aad", b"secret").unwrap();
-        let b = seal_base(&pk, b"info", b"aad", b"secret").unwrap();
+        let (_, pk, mut rng) = fixture();
+        let a = seal_base_with_rng(&pk, b"i", b"a", b"p", &mut rng).unwrap();
+        let b = seal_base_with_rng(&pk, b"i", b"a", b"p", &mut rng).unwrap();
+        assert_ne!(a.encapsulation, b.encapsulation);
+        assert_ne!(a.ciphertext, b.ciphertext);
+    }
+
+    #[test]
+    fn legacy_suite_does_not_open_new_wraps() {
+        // Different KEM, different suite_id: the two suites never cross.
         assert_ne!(
-            a.encapsulation.x25519_ephemeral_pub,
-            b.encapsulation.x25519_ephemeral_pub
-        );
-    }
-
-    /// Key-schedule drift-lock KAT — INDEPENDENT cross-check. The expected
-    /// `key` + `base_nonce` were produced by an independent Python
-    /// reimplementation of the exact RFC 9180 §4 labeled `mode_base` schedule
-    /// using `HPKE_SUITE_ID` (not self-derived from this Rust). A mismatch
-    /// means a real schedule discrepancy between the two impls. Because the
-    /// canonical RFC 9180 vectors are keyed to the standard DHKEM suite-ids,
-    /// this X-Wing private-use `suite_id` has no published IETF vector; this
-    /// Python↔Rust agreement is the next best cross-impl lock until CEWP
-    /// freezes `HPKE_SUITE_ID` and publishes an official vector.
-    #[test]
-    fn key_schedule_kat_independent_python() {
-        let shared_secret = [0x01u8; 32];
-        let info = b"ciris-scope-privacy-welcome-v1";
-        let expected_key: [u8; 32] =
-            hex_to_array("3fc2a490a4e65ec73b4445abc29b60674410dfd5b5383bd5df02e6468369660f");
-        let expected_base_nonce: [u8; 12] = hex_to_array("1c53f938fbd16dc53825c59f");
-
-        let (key, base_nonce) = key_schedule_base(&shared_secret, info, "seal_base").unwrap();
-        assert_eq!(
-            key, expected_key,
-            "key-schedule `key` diverged from the independent Python KAT"
+            HPKE_SUITE_ID.as_slice(),
+            legacy_x25519mlkem768::LEGACY_SUITE_LABEL
         );
         assert_eq!(
-            base_nonce, expected_base_nonce,
-            "key-schedule `base_nonce` diverged from the independent Python KAT"
+            legacy_x25519mlkem768::LEGACY_SUITE_LABEL,
+            b"HPKE-xwing-hkdf-sha256-aes256gcm-v1",
+            "the legacy label is KDF input and never changes"
         );
-    }
-
-    /// Hex string → fixed-length array (test helper for the KAT).
-    fn hex_to_array<const N: usize>(s: &str) -> [u8; N] {
-        let bytes = hex::decode(s).expect("valid hex");
-        assert_eq!(bytes.len(), N, "hex length mismatch");
-        let mut out = [0u8; N];
-        out.copy_from_slice(&bytes);
-        out
-    }
-
-    /// Internal-consistency lock on the RFC 9180 §4 key schedule: the same
-    /// `shared_secret` + `info` derives a stable, deterministic `(key,
-    /// base_nonce)`, and any change to `shared_secret` or `info` changes the
-    /// derivation. No published RFC 9180 base-mode key-schedule intermediate
-    /// vector was used (the canonical RFC 9180 test vectors are keyed to the
-    /// DHKEM suite-ids, not this X-Wing private-use suite_id), so this is an
-    /// internal-consistency check, not a cross-impl KAT. **Cross-impl flag:**
-    /// the schedule should be re-locked against a CEWP-published vector once
-    /// `HPKE_SUITE_ID` is frozen.
-    #[test]
-    fn key_schedule_internal_consistency() {
-        let ss = [0x11u8; 32];
-        let (k1, n1) = key_schedule_base(&ss, b"info", "seal_base").unwrap();
-        let (k2, n2) = key_schedule_base(&ss, b"info", "seal_base").unwrap();
-        assert_eq!(k1, k2);
-        assert_eq!(n1, n2);
-
-        // Different info → different key + nonce.
-        let (k3, n3) = key_schedule_base(&ss, b"other-info", "seal_base").unwrap();
-        assert!(k1 != k3 || n1 != n3);
-
-        // Different shared secret → different key + nonce.
-        let ss2 = [0x22u8; 32];
-        let (k4, n4) = key_schedule_base(&ss2, b"info", "seal_base").unwrap();
-        assert!(k1 != k4 || n1 != n4);
-
-        // Shapes.
-        assert_eq!(k1.len(), 32);
-        assert_eq!(n1.len(), 12);
-    }
-
-    /// `labeled_extract` / `labeled_expand` are themselves deterministic and
-    /// label-separated — a direct check on the §4 primitives underneath the
-    /// schedule.
-    #[test]
-    fn labeled_primitives_label_separation() {
-        let prk_a = labeled_extract(&[], b"psk_id_hash", &[]);
-        let prk_b = labeled_extract(&[], b"info_hash", &[]);
-        // Different labels over identical (salt, ikm) → different PRK.
-        assert_ne!(prk_a, prk_b);
-
-        let prk = labeled_extract(b"ss", b"secret", &[]);
-        let key = labeled_expand(&prk, b"key", b"ctx", NK, "seal_base").unwrap();
-        let nonce = labeled_expand(&prk, b"base_nonce", b"ctx", NN, "seal_base").unwrap();
-        assert_eq!(key.len(), NK);
-        assert_eq!(nonce.len(), NN);
-        // Different expand label → different output prefix.
-        assert_ne!(key[..NN], nonce[..]);
     }
 }

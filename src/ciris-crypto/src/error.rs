@@ -139,6 +139,14 @@ pub enum CryptoError {
         reason: String,
     },
 
+    /// A KEM ciphertext of the wrong length (X-Wing: 1120 bytes,
+    /// CIRISVerify#324).
+    #[error("Invalid ciphertext: {reason}")]
+    InvalidCiphertext {
+        /// Reason the ciphertext is invalid.
+        reason: String,
+    },
+
     /// The startup RNG health-check (SP 800-90B repetition-count +
     /// adaptive-proportion) failed; the OS entropy source is producing
     /// detectably non-random output. Fail-secure: every `random::fill`

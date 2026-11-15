@@ -93,8 +93,12 @@ bench-liboqs = ["dep:oqs"]
 #  - `scope-privacy` — §2.2 MLS-exporter helpers + §2.4 record_id / symbol-key
 #                      derivation (HMAC-SHA3-256 + HKDF-SHA3-256, both added to
 #                      `hmac` / `kdf`) + the §3.4 witness cover-leaf PRF.
+# v23.0.0+ (CIRISVerify#324): X-Wing, draft-connolly-cfrg-xwing-kem-11 (the
+# SHA3-256 combiner), via RustCrypto `x-wing`. no_std; `random` adds
+# `encapsulate()` / `generate()` over the health-latched RNG.
+xwing = ["dep:x-wing", "dep:zeroize"]
 xchacha = ["std", "dep:chacha20poly1305"]
-hpke = ["hybrid-kex", "aes-gcm", "kdf"]
+hpke = ["hybrid-kex", "aes-gcm", "kdf", "xwing"]
 scope-privacy = ["kdf", "hmac"]
 
 [dependencies]
@@ -151,6 +155,10 @@ ring = { version = "0.17", optional = true }
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"], optional = true }
 hmac = { version = "0.12", optional = true }
 
+# v23.0.0+ (CIRISVerify#324): draft X-Wing KEM. Shares `ml-kem` 0.3 with
+# `ml-kem` above.
+x-wing = { version = "0.1.1", optional = true, default-features = false, features = ["zeroize"] }
+
 # v6.3.0+ (CIRISVerify#82): XChaCha20-Poly1305 AEAD for the scope-native
 # privacy surface. Same crate + version already vendored by
 # ciris-verify-core's offline cache (cache.rs), so no new lockfile entry.
@@ -171,6 +179,7 @@ pretty_assertions = { workspace = true }
 criterion = { workspace = true }
 # v4.4.0: key-grant tests round-trip the KeyGrantWrap struct through JSON.
 serde_json = "1"
+rand_chacha = "0.3"
 
 [[bench]]
 name = "federation_crypto"

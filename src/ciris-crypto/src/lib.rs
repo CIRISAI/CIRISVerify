@@ -130,6 +130,8 @@ pub mod self_enc;
 // and HMAC-SHA3-256 are added in-module to `kdf` / `hmac`.
 #[cfg(feature = "xchacha")]
 pub mod xchacha;
+#[cfg(feature = "xwing")]
+pub mod xwing;
 
 #[cfg(feature = "hpke")]
 pub mod hpke;
