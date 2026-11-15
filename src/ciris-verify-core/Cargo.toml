@@ -82,6 +82,10 @@ serde_json.workspace = true
 # crate's `ryu-js` backend rather than being hand-rolled. Behavior is
 # locked by RFC 8785 Appendix B KAT vectors in `jcs::tests`.
 serde_jcs = "0.2"
+# `persist_canonical::format_f64`: the float token CIRISPersist writes into a
+# `persist_row_hash` preimage is zmij's (serde_json's formatter); pinned
+# directly so a serde_json upgrade cannot move it unnoticed.
+zmij = "1"
 
 # Error handling
 thiserror.workspace = true

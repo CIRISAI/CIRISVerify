@@ -830,6 +830,7 @@ dependencies = [
  "x509-parser",
  "zeroize",
  "zip",
+ "zmij",
 ]
 
 [[package]]

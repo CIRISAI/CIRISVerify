@@ -110,6 +110,8 @@ pub mod manifest_contribution;
 pub mod mobile_http;
 pub mod operational_admit;
 pub mod parallel_race;
+/// CIRISPersist's row identity `persist_row_hash` (CC 3.2 T6, annex 8.11).
+pub mod persist_canonical;
 pub mod play_integrity;
 /// Presentation-surface identifier scope (CIRISConstitution#80) — keeps the
 /// reserved unlinkable-presentation slot reachable.
