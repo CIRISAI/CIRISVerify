@@ -150,8 +150,13 @@ code — see 3A.5 for why that shape has to exist.
 4. **Empty is valid and is the default.** A code with no nodes MUST encode as
    **v2, byte-identically**, so nothing already issued moves. Only a non-empty
    list emits `CIRIS-V3-`.
-5. **Scope:** v3 carries lightnet facts only — federation-scope identity that
-   already announces publicly and carries no anonymity claim.
+5. **Scope (CC 2.6.8):** a code carries transport destinations and nothing of
+   a group — an announced node's, or an unannounced node's handed by the
+   owner's own hand, which is how an unannounced person is reached at all
+   (CC 5.4.6). Either carries no anonymity claim, since the holder of the code
+   learns only what the owner chose to hand and nobody else can find the node.
+   What a code never carries is an anonymous-tier identity (a different thing
+   from an unannounced one) or group-scoped material.
 
 ### 3A.5 PQC commitment
 

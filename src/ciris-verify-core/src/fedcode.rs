@@ -223,11 +223,15 @@ pub struct FedCode {
     /// v1/v2 directory path, and **encodes byte-identically to a v2 code**, so
     /// nothing already issued changes. Only a non-empty list emits v3.
     ///
-    /// Scope boundary: these are **lightnet** facts — federation-scope
-    /// identity that already announces publicly and carries no anonymity
-    /// claim. A code MUST NOT carry group-scoped material, whose destinations
-    /// are derived from `cached directory + per-group HKDF` and may not be
-    /// emitted at all (CC 5.4.6).
+    /// Scope boundary (CC 2.6.8): a code carries transport destinations and
+    /// nothing of a group — an announced node's, or an unannounced node's
+    /// handed by the owner's own hand, which is how an unannounced person is
+    /// reached at all (CC 5.4.6). Either carries no anonymity claim: the
+    /// holder of the code learns only what the owner chose to hand, and nobody
+    /// else can find the node. A code never carries an anonymous-tier identity
+    /// (a different thing from an unannounced one) or group-scoped material,
+    /// whose destinations are derived from `cached directory + per-group HKDF`
+    /// and may not be emitted at all (CC 5.4.6).
     pub owned_nodes: Vec<OwnedNode>,
     /// `sha256(ml_dsa_65_pubkey)`, lowercase hex — the **commitment** to the
     /// post-quantum half of this identity (CIRISVerify#272).
