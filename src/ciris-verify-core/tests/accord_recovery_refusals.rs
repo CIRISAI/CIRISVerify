@@ -301,7 +301,10 @@ fn the_file_is_current_and_every_case_is_refused() {
     if std::env::var_os("CIRIS_ACCORD_REFUSALS_REGENERATE").is_some() {
         std::fs::write(&path, &text).unwrap();
     }
-    let on_disk = std::fs::read_to_string(&path).expect("refusal vector file present");
+    // A Windows checkout may carry CRLF (no .gitattributes); compare LF.
+    let on_disk = std::fs::read_to_string(&path)
+        .expect("refusal vector file present")
+        .replace("\r\n", "\n");
     assert_eq!(
         on_disk, text,
         "{FILE} has drifted; regenerate with CIRIS_ACCORD_REFUSALS_REGENERATE=1"
