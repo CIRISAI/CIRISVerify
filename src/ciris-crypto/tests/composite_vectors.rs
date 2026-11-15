@@ -74,3 +74,31 @@ fn jose_06_cose_example() {
     wrong_ctx.extend_from_slice(&sig[MLDSA65_SIG_LEN..]);
     assert!(sk.public_key().verify(&m, &wrong_ctx).is_err());
 }
+
+/// The CC 5.3.3.1 StreamKeyBinding under one composite signature, from the
+/// section's known-answer inputs (`gen_stream_key_binding.py`, independent).
+#[test]
+fn stream_key_binding_composite() {
+    let v: Value = serde_json::from_str(include_str!(
+        "vectors/composite/stream_key_binding_composite_v1.json"
+    ))
+    .unwrap();
+    let sk = CompositeSigningKey::from_seeds(&[0x54; 32], &[0x01; 32]);
+    assert_eq!(
+        sk.public_key().as_bytes().as_slice(),
+        h(&v, "publisher_composite_public_key_hex")
+    );
+    let msg = h(&v, "signing_bytes_hex");
+    let mut expect_msg = b"ciris-edge:av-stream-key:v1".to_vec();
+    expect_msg.extend_from_slice(&h(&v, "body_hex"));
+    assert_eq!(msg, expect_msg);
+    let sig = h(&v, "signature_hex");
+    sk.public_key().verify(&msg, &sig).unwrap();
+    // Deterministic signing: verify's signer gives the same bytes.
+    assert_eq!(sk.sign(&msg).unwrap(), sig);
+    let enc = h(&v, "encoding_hex");
+    let body = h(&v, "body_hex");
+    assert_eq!(&enc[..body.len()], body.as_slice());
+    assert_eq!(&enc[body.len()..body.len() + 2], &3373u16.to_be_bytes());
+    assert_eq!(&enc[body.len() + 2..], sig.as_slice());
+}
