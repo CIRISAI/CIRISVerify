@@ -68,7 +68,7 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 
 ## Current Implementation Status
 
-*(Current release: **22.2.0** — see [Release history](#release-history) for this and every prior entry.)*
+*(Current release: **22.2.1** — see [Release history](#release-history) for this and every prior entry.)*
 
 | Crate | Status | Notes |
 |-------|--------|-------|
@@ -79,7 +79,7 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 | `bindings/python` | Released | ciris-verify on PyPI with platform wheels, wallet signing, named key storage, `jcs_canonicalize`, `resolve_role_authority`, `verify_partner_record_quorum`, `verify_delegation_scope_split`, `verify_accord_custody_attestation`, `verify_accord_invocation` / `accord_latch_apply` / `accord_latch_status`, `rns_destination_hash`, `scope_privacy` namespace, `derive_epoch_key` / `derive_epoch_stream_nonce`, `canonical_subject` / `canonical_subject_from_triple` / `parse_canonical_subject`, `derive_self_enc` / `self_enc_pubkeys` / `self_enc_respond`, `keccak256` / `checksum_address` / `CIRISVerify.sign_evm_transaction_fields`, `verify_ed25519` / `verify_p256`, `test_anchor_compiled_in`; `SourceDetails` carries `sources` / `trust_root` |
 | `bindings/swift` | Released | CIRISVerify.swift wrapper + bridging header, XCFramework build script |
 
-**Trust root**: the CC 5.3.4 **GenesisBundle** (charter, accord-holder roster, serve nodes and their transit destinations), fetched over HTTPS from every configured host and verified by `genesis_bundle::verify_genesis_bundle` against the A1/B1/C1 holders baked into this binary (never the bundle's own `holders`). Threshold is `max(carried M, strict majority of the baked roster)`, hybrid on every counted authorization, v4 only. `select_trust_root` takes the highest verified version; two verified bundles at one version with different fingerprints select nothing (CC 3.2 T8(ii)). One verified host suffices. There is no DNS source and no single steward key.
+**Trust root**: the CC 5.3.4 **GenesisBundle** (charter, accord-holder roster, serve nodes and their transit destinations), fetched over HTTPS from every configured host and verified by `genesis_bundle::verify_genesis_bundle` against the A1/B1/C1 holders baked into this binary (never the bundle's own `holders`). Threshold is `max(carried M, strict majority of the baked roster)`, hybrid on every counted authorization, v4 only. `select_trust_root` selects the one verified bundle fingerprint; two or more distinct verified bundles select nothing (CC 3.2 T8(ii)). `version` is the format version (only 4 verifies), not a sequence, and bundles carry no `prev`, so a successor bundle is not followed while any host serves its predecessor (fails closed; chain-following is edition 2, #338). One verified host suffices. There is no DNS source and no single steward key.
 
 **Licensing**: a licence is a cosigned `licensure:{authority}:v1` row honoured through the reader's own trust set (CC 4.4.3.8). Verify does not yet evaluate those rows, so **every deployment is community**. Revocation is persist's `federation_revocations` quorum rows.
 
@@ -175,7 +175,7 @@ This project extends Veilid's `keyring-manager` pattern. To maintain compatibili
 │  HTTPS trust-root hosts (api / us / eu registry, serve nodes) each      │
 │  serve the holder-authorized GenesisBundle                              │
 │  Every bundle verified against the accord holders baked into the binary │
-│  Highest verified version selected; one verified host suffices          │
+│  One distinct verified bundle selected; one verified host suffices      │
 │  Two verified bundles at one version, different fingerprints → none     │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
@@ -239,6 +239,7 @@ and concrete review-time examples.
 
 Newest first, **one release per line**, so adding a release is a one-line diff.
 
+- **22.2.1** (SECURITY) — Drops `hickory-resolver` (no code used it since the DNS trust-root source was removed), clearing RUSTSEC-2026-0487/0489/0490/0491 (hickory-proto 0.25.2) for every consumer; `rustix` 1.1.6 (RUSTSEC-2026-0486), `quinn-udp` 0.5.16 (RUSTSEC-2026-0538). Advisory ignores 0097, 0098, 0099, 0104, 0118 and 0119 are removed as no longer encountered. PKCS#11 `C_Sign (EdDSA)` over-size inputs are recognised by `RvError::DataLenRange`, so the #113 message fires (#334).
 - **22.2.0** (SECURITY) — FedCode decoders enforce CC 2.6.8 (#331): `sha256(key_id)` is checked against the display id in constant time, the 1,024-byte payload bound applies on decode, a non-user v3 carrying only the PQC commitment decodes (refused only with `node_count > 0`), and a v2/v3 payload missing its group hint byte is refused; **`tests/vectors/fedcode/fedcode_vectors.json` is regenerated** (`known_disagreements` empty, four cases into `refusals`, four into `valid`), so the client, agent and server re-pin it. `safety_evidence` + `ciris-build-sign evidence` / `ciris-build-verify --evidence` sign and verify `evidence:safety_battery:{kind}:{cell}:{prefix}:v1` rows (CC 3.1.5.5; capture 1, interpret `2·pass_ratio − 1` with `evidence.pass_ratio`) (#322). rusqlite 0.41 / bundled SQLite 3.54.1 (RUSTSEC-2026-0459, #332), `time` 0.3.55 (RUSTSEC-2026-0009 ignore dropped); **MSRV 1.86 → 1.89**. CI pins CC rc16.
 - **22.1.0** — Golden FedCode vectors at `src/ciris-verify-core/tests/vectors/fedcode/fedcode_vectors.json` (CC 2.6.8, FSD-003): v1, v2 for the five kinds, v3 with nodes / commitment only / both, the 16-node and 1,024-byte bounds, the empty tail as v2 byte for byte, 37 refusals with error kinds, display normalisation, PQC admission; `tests/fedcode_vectors.rs` regenerates them (`CIRIS_FEDCODE_VECTORS_REGENERATE=1`) and fails on drift. The file's `known_disagreements` record four places `fedcode::decode` departs from CC 2.6.8 (unverified `sha256(key_id)`, no payload bound on decode, non-user commitment-only v3 refused, missing v2 group hint tolerated); codec unchanged. Client, agent and server pin the file. (#329)
 - **22.0.0** (BREAKING) — The substrate verifiers move from `ciris_verify_core::holonomic` to `ciris_verify_core::substrate` (CC 6.1); every item and submodule (`wholeness_witness`, `aggregation`, `fountain`, `alm`, `av_chunk`, `preimage`, `storage_contention`, `bootstrap`) is unchanged and there is no alias, so consumers replace the path prefix. The `announce_policy` normative authority string is now `"CC 5.4.6"`. Documentation describes the current state only: superseded design notes and point-in-time reports are removed (they remain in git history).

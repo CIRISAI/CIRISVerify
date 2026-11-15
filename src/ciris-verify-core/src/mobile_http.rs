@@ -108,8 +108,7 @@ pub async fn check_status_async(agent: &ureq::Agent, url: &str) -> Result<bool, 
 
 /// Create a TLS-enabled ureq agent with bundled Mozilla CA certificates.
 pub fn create_tls_agent(timeout: Duration) -> Result<ureq::Agent, VerifyError> {
-    // rustls (0.23) + webpki-roots (0.26) come from the common [dependencies]
-    // (unified after the hickory 0.25 bump, CIRISVerify#165).
+    // rustls (0.23) + webpki-roots (0.26) come from the common [dependencies].
     let root_store =
         rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
 

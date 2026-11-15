@@ -117,7 +117,7 @@ zeroize = { version = "1", optional = true }
 # v2.8.0+ (CIRISVerify#26): AES-256-GCM is `ring`, not RustCrypto
 # `aes-gcm`. ring's hand-tuned AES-NI + CLMUL is 3–5× faster (~1 GiB/s →
 # ~3–5 GiB/s) and adds zero build cost: ring is already a universal
-# dependency here — rustls pulls it via reqwest + hickory-resolver on
+# dependency here — rustls pulls it via reqwest on
 # every target we ship. See the `aes_gcm` module docs for the full
 # rationale.
 ring = { version = "0.17", optional = true }
