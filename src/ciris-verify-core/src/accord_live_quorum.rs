@@ -395,6 +395,13 @@ pub enum LiveQuorumError {
         /// The key id already seated.
         key_id: String,
     },
+    /// A recovery seats its own recovery key as the new signing key, by id or
+    /// by public key (CC 4.2.6: the recovery concludes nothing). The recovery
+    /// key is spent by this recovery; it never becomes a seat.
+    RecoveryKeyAsSigningKey {
+        /// The recovery key's id.
+        key_id: String,
+    },
     /// A recovery version is not signed under the recovery key alone.
     RecoveryNotSoleSigner {
         /// The `member_id`s on the presented signatures.
@@ -506,6 +513,10 @@ impl core::fmt::Display for LiveQuorumError {
             Self::RecoveryReusesSigningKey { key_id } => write!(
                 f,
                 "recovery names {key_id}, the signing key already seated (CC 4.2.6)"
+            ),
+            Self::RecoveryKeyAsSigningKey { key_id } => write!(
+                f,
+                "recovery seats its own recovery key {key_id} as the new signing key (CC 4.2.6)"
             ),
             Self::RecoveryNotSoleSigner { signers } => write!(
                 f,
@@ -1326,6 +1337,7 @@ pub struct HolderRecoveryDraft {
 /// [`LiveQuorumError::HolderNotSeated`] if the old key holds no seat;
 /// [`LiveQuorumError::RecoverySeatTaken`] if the new key already does;
 /// [`LiveQuorumError::RecoveryReusesSigningKey`] when the new key is the old;
+/// [`LiveQuorumError::RecoveryKeyAsSigningKey`] when it is the recovery key;
 /// [`LiveQuorumError::MalformedCommitment`] for a bad next commitment;
 /// [`LiveQuorumError::RowHashMismatch`] when `standing`'s stored hash does not
 /// recompute.
@@ -1337,6 +1349,11 @@ pub fn build_holder_recovery(
     if req.new_holder_key_id == req.old_holder_key_id {
         return Err(LiveQuorumError::RecoveryReusesSigningKey {
             key_id: req.old_holder_key_id.clone(),
+        });
+    }
+    if req.new_holder_key_id == req.recovery_key_id {
+        return Err(LiveQuorumError::RecoveryKeyAsSigningKey {
+            key_id: req.recovery_key_id.clone(),
         });
     }
     let (index, seat) =
@@ -1416,9 +1433,10 @@ fn unbound(detail: impl Into<String>) -> LiveQuorumError {
 ///    the offered `prev_head_digest` = the standing version's
 ///    `persist_row_hash`, `next_persist_row_hash` = the offered version's.
 /// 2. **The seat**: `old_holder_key_id` holds a seat at the standing head; the
-///    new key is not the old ([`LiveQuorumError::RecoveryReusesSigningKey`]),
-///    holds no seat and resolves in `directory` to a pubkey no other standing
-///    seat carries.
+///    new key is not the old ([`LiveQuorumError::RecoveryReusesSigningKey`])
+///    nor the recovery key itself, by id or by public key
+///    ([`LiveQuorumError::RecoveryKeyAsSigningKey`]), holds no seat and
+///    resolves in `directory` to a pubkey no other standing seat carries.
 /// 3. **Only the holder's own seat changes**: the offered record is the
 ///    standing one with that seat replaced by `{new key, its joined_at, the
 ///    seat's role}` and the head link moved; nothing else.
@@ -1573,6 +1591,11 @@ fn verify_recovery_against(
             key_id: new_signing_key_id.to_string(),
         });
     }
+    if new_signing_key_id == recovery_key.key_id {
+        return Err(LiveQuorumError::RecoveryKeyAsSigningKey {
+            key_id: recovery_key.key_id.clone(),
+        });
+    }
     if new_signing_key_id.is_empty() || standing.seat(new_signing_key_id).is_some() {
         return Err(LiveQuorumError::RecoverySeatTaken {
             key_id: new_signing_key_id.to_string(),
@@ -1586,6 +1609,16 @@ fn verify_recovery_against(
                 "the new signing key {new_signing_key_id} is not in the directory"
             ))
         })?;
+    // The recovery key is spent here; it never becomes the seat, under another
+    // id either (CC 4.2.6).
+    if new_member.ed25519_public_key_base64 == recovery_key.pubkey_ed25519_base64
+        || new_member.mldsa65_public_key_base64.as_deref()
+            == Some(recovery_key.pubkey_ml_dsa_65_base64.as_str())
+    {
+        return Err(LiveQuorumError::RecoveryKeyAsSigningKey {
+            key_id: recovery_key.key_id.clone(),
+        });
+    }
     let shares_a_key = directory.iter().any(|m| {
         m.member_id != new_signing_key_id
             && m.member_id != holder_key_id
@@ -3128,6 +3161,49 @@ mod tests {
             Err(LiveQuorumError::RecoveryReusesSigningKey {
                 key_id: "A1".to_string()
             })
+        );
+    }
+
+    #[test]
+    fn a_recovery_seating_its_own_recovery_key_concludes_nothing() {
+        let f = recovery_fixture();
+        let refused = Err(LiveQuorumError::RecoveryKeyAsSigningKey {
+            key_id: "RA1".to_string(),
+        });
+        // The builder refuses it.
+        assert_eq!(
+            build_holder_recovery(
+                &f.standing,
+                &request("A1", "RA1", "RA1", &f.next_commitment)
+            )
+            .map(|_| ()),
+            refused.clone()
+        );
+        // By id: the statement seats RA1 itself.
+        let mut d = draft_a(&f, &f.next_commitment);
+        d.statement["new_holder_key_id"] = json!("RA1");
+        d.next.members[0].key_id = "RA1".to_string();
+        rebind(&mut d.statement, &d.next);
+        let sig = sign_st(&f.recovery_a, &d.statement);
+        assert_eq!(
+            verify_a(&f, &d.next, &d.statement, &f.recovery_a.record(), &[sig]).map(|_| ()),
+            refused.clone()
+        );
+        // By public key: A1n's directory entry carries RA1's keys.
+        let mut f = recovery_fixture();
+        let ra1 = f.recovery_a.member();
+        let a1n = f
+            .directory
+            .iter_mut()
+            .find(|m| m.member_id == "A1n")
+            .unwrap();
+        a1n.ed25519_public_key_base64 = ra1.ed25519_public_key_base64;
+        a1n.mldsa65_public_key_base64 = ra1.mldsa65_public_key_base64;
+        let d = draft_a(&f, &f.next_commitment);
+        let sig = sign_st(&f.recovery_a, &d.statement);
+        assert_eq!(
+            verify_a(&f, &d.next, &d.statement, &f.recovery_a.record(), &[sig]).map(|_| ()),
+            refused
         );
     }
 

@@ -36,3 +36,26 @@ byte through `ciris_verify_core::persist_canonical`, every `persist_row_hash`,
 every probe and instant, rebuilds v2's and v3's change envelopes, offered
 records and signing bytes from v1 plus the vector's inputs, and verifies the
 roster change and the recovery with the vector's signatures and keys.
+
+## The recovery refusals (verify-authored)
+
+`accord_recovery_refusals_v1.json` is **verify's** file, built on top of
+`accord_lineage_v1.json`. It is made by `tests/accord_recovery_refusals.rs`,
+which rebuilds it from scratch and fails on any difference
+(`CIRIS_ACCORD_REFUSALS_REGENERATE=1` rewrites it). Each case is a recovery of
+`vec-holder-a` under `vec-holder-a-recovery`, against a lineage taken from
+persist's versions, that CC 4.2.6 (rc20) refuses:
+
+| Case | Refusal (`LiveQuorumError`) |
+|------|-----------------------------|
+| `next_commitment_reused` | `RecoveryReusesCommitment` |
+| `same_signing_key` | `RecoveryReusesSigningKey` |
+| `recovery_key_as_signing_key` | `RecoveryKeyAsSigningKey` |
+| `lineage_not_from_genesis` | `LineageIncomplete` |
+| `lineage_gap` | `LineageIncomplete` |
+
+Every recovery signature is genuine, made by persist's deterministic signer
+for the recovery key and checked in the test, so a door that verifies
+signatures first still reaches the refusal under test. Cases that follow
+charter versions (a spent commitment re-listed by a later charter; a missing
+charter row) need persist's charter rows and are not in v1.
