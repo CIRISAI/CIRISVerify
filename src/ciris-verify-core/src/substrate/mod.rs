@@ -70,7 +70,8 @@ pub use aggregation::{
     effective_source_count, eject_aggregated_tier, ejection_verdict, mass_commitment,
     mass_to_fixed, member_commitment, passes_dominance_gate, passes_multiplicity_gate,
     verify_aggregation_meta, verify_mass_commitment, verify_member_commitment, AggregationMetaV1,
-    AggregationMetaVerification, EjectionVerdict, MASS_FIXED_POINT_SCALE,
+    AggregationMetaVerification, EjectionVerdict, AGGREGATION_META_DOMINATED,
+    MASS_FIXED_POINT_SCALE,
 };
 
 pub use wholeness_witness::{

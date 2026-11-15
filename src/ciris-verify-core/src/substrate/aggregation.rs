@@ -200,23 +200,30 @@ pub fn effective_source_count(committed_masses: &[u64]) -> Result<u32, Holonomic
     Ok(u32::try_from(sum_squared / sum_sq).unwrap_or(u32::MAX))
 }
 
-/// §19.7.1.2 dominance gate (CIRISVerify#167 / CC 6.1.2 noise floor). A tier
-/// passes iff its **signed** effective source count is at least `min_ratio` of
-/// its raw `source_count` — rejecting a composite dominated by a few high-mass
-/// sources (the 900/1000 case, `n_eff ≈ 1 ≪ source_count`), where the noise-floor
-/// guarantee is violated because a dominated source is effectively recoverable.
+/// CC 6.1.2.3 mass-dominance gate. A tier passes iff `version = 3`,
+/// `source_count > 0`, and its **signed** effective source count satisfies
+/// `n_eff ≥ min_ratio · source_count` with the CEG-pinned `min_ratio = 0.5`,
+/// tested over the committed integers as `n_eff * 2 >= source_count` ("the exact
+/// integer form of `min_ratio = 0.5`. No IEEE-754 path is used here"). This rejects
+/// a composite dominated by a few high-mass sources (the 900/1000 case,
+/// `n_eff ≈ 1 ≪ source_count`).
 ///
-/// Requires a **version-2** tier (a *signed* `n_eff`, per [`AggregationMetaV1::signing_preimage`]);
-/// a version-1 tier has no dominance surface and **fails closed**. Callers that
-/// require dominance-checking gate on this after [`verify_aggregation_meta`]
-/// (which authenticates the `n_eff` this reads).
+/// `min_ratio` is "a normative constant, not an implementation-tunable knob", so
+/// it is not a parameter. `version < 3` is inadmissible and fails closed. Run it
+/// after [`verify_aggregation_meta`] (which authenticates the `n_eff` this reads)
+/// and before persistence; a failing tier is rejected with
+/// [`AGGREGATION_META_DOMINATED`].
 #[must_use]
-pub fn passes_dominance_gate(meta: &AggregationMetaV1, min_ratio: f64) -> bool {
-    if meta.version < 2 || meta.source_count == 0 {
+pub fn passes_dominance_gate(meta: &AggregationMetaV1) -> bool {
+    if meta.version != 3 || meta.source_count == 0 {
         return false;
     }
-    f64::from(meta.n_eff) >= min_ratio * f64::from(meta.source_count)
+    u64::from(meta.n_eff) * 2 >= u64::from(meta.source_count)
 }
+
+/// CC 6.1.2.3: the stable rejection token for a tier that fails
+/// [`passes_dominance_gate`].
+pub const AGGREGATION_META_DOMINATED: &str = "aggregation_meta_dominated";
 
 /// CC 6.1.2.3 fixed-point scale for committed masses: a member's share of the
 /// fold's mass is committed in micro-units (10⁶ per whole fold), by
@@ -646,30 +653,42 @@ mod tests {
 
     #[test]
     fn dominance_gate_rejects_the_900_of_1000_case() {
-        // A balanced v2 fold: n_eff == source_count → passes at any sane ratio.
+        // A balanced v3 fold: n_eff == source_count → passes.
         let mut balanced = meta();
-        balanced.version = 2;
+        balanced.version = 3;
         balanced.source_count = 1000;
         balanced.n_eff = 1000;
-        assert!(passes_dominance_gate(&balanced, 0.5));
+        assert!(passes_dominance_gate(&balanced));
 
         // The dominated 900/1000 fold: source_count=1000 but n_eff≈1 → rejected.
         let mut dominated = balanced.clone();
         dominated.n_eff = 1;
         assert!(
-            !passes_dominance_gate(&dominated, 0.5),
+            !passes_dominance_gate(&dominated),
             "a 90%-mass-dominated fold must be rejected"
         );
-        // Even a lenient 10% floor rejects n_eff=1 of 1000.
-        assert!(!passes_dominance_gate(&dominated, 0.1));
 
-        // A v1 tier has no signed dominance surface → fails closed.
-        let mut v1 = balanced.clone();
-        v1.version = 1;
-        assert!(
-            !passes_dominance_gate(&v1, 0.5),
-            "a v1 tier (no signed n_eff) must fail the dominance gate"
-        );
+        // The integer boundary of min_ratio = 0.5: n_eff * 2 >= source_count.
+        let mut edge = balanced.clone();
+        edge.source_count = 1001;
+        edge.n_eff = 500;
+        assert!(!passes_dominance_gate(&edge), "500*2 < 1001");
+        edge.n_eff = 501;
+        assert!(passes_dominance_gate(&edge), "501*2 >= 1001");
+
+        // version < 3 is inadmissible (CC 6.1.2.1) and fails closed, even balanced.
+        for v in [1, 2] {
+            let mut old = balanced.clone();
+            old.version = v;
+            assert!(
+                !passes_dominance_gate(&old),
+                "a v{v} tier must fail the dominance gate"
+            );
+        }
+        let mut empty = balanced.clone();
+        empty.source_count = 0;
+        empty.n_eff = 0;
+        assert!(!passes_dominance_gate(&empty), "source_count = 0 fails");
     }
 
     #[test]
@@ -758,7 +777,7 @@ mod tests {
         m.n_eff = 1000; // equal mass → honestly passes the mass dominance gate…
         m.max_source_multiplicity = 900; // …but 900 are near-duplicate content.
         assert!(
-            passes_dominance_gate(&m, 0.5),
+            passes_dominance_gate(&m),
             "equal-mass fold passes the mass gate"
         );
         assert!(
