@@ -20,10 +20,8 @@ function checks only that the blessing names the pipeline that signed.
 **Fail-closed:** a rejection is a successful call returning ``verified: False``
 with a ``reason``, never an exception. Only a malformed request raises.
 
-23.0.0 adds the signed build claim verifier and the presenter path
-(CIRISVerify#315): :func:`verify_signed_build` (Contribution + pipeline key
-record + manifest bytes, standing checked against the accord roster baked into
-the library), and :func:`build_attestation_bundle_envelope` /
+23.0.0 adds the presenter path (CIRISVerify#315):
+:func:`build_attestation_bundle_envelope` /
 :func:`assemble_build_attestation_bundle` / :func:`verify_build_attestation_bundle`
 for an occurrence presenting the build it runs.
 """
@@ -39,7 +37,6 @@ from typing import Any, Optional
 
 __all__ = [
     "verify_build_manifest_contribution",
-    "verify_signed_build",
     "build_attestation_bundle_envelope",
     "assemble_build_attestation_bundle",
     "verify_build_attestation_bundle",
@@ -47,7 +44,6 @@ __all__ = [
 
 _SYMBOLS = (
     "ciris_verify_build_manifest_contribution",
-    "ciris_verify_signed_build_verify",
     "ciris_verify_build_attestation_bundle_envelope",
     "ciris_verify_build_attestation_bundle_assemble",
     "ciris_verify_build_attestation_bundle_verify",
@@ -184,30 +180,6 @@ def verify_build_manifest_contribution(
     )
 
 
-def verify_signed_build(signed_build: dict, target: str) -> dict:
-    """Verify a pipeline-signed build claim for ``target`` (CC 3.1.2.1).
-
-    Args:
-        signed_build: ``{"contribution": {"signed_envelope", "ed25519_signature_base64",
-            "mldsa65_signature_base64"}, "pipeline_record": {...KeyRecord...},
-            "manifest_base64": "..."}``. The pipeline's standing is its key
-            record's accord co-scrub, checked against the roster baked into
-            the library (strict majority, hybrid, ``roles: ["infra:attest"]``).
-        target: the target the build must be for.
-
-    Returns:
-        ``{"verified": True, "attestation_id", "manifest_hash", "binary_hash",
-        "target", ...}`` (the members :func:`verify_build_manifest_contribution`
-        returns), or ``{"verified": False, "reason": "..."}``. ``manifest_hash``
-        and ``attestation_id`` are the ``build_manifest_hash`` /
-        ``build_manifest_ref`` an occurrence row carries (CC 3.3.6).
-    """
-    return _call(
-        "ciris_verify_signed_build_verify",
-        {"signed_build": signed_build, "target": target},
-    )
-
-
 def build_attestation_bundle_envelope(
     presents: str,
     presenter_key_id: str,
@@ -271,31 +243,26 @@ def assemble_build_attestation_bundle(
 def verify_build_attestation_bundle(
     bundle: Any,
     presenter_member: dict,
-    pipeline_member: Optional[dict] = None,
-    blessing: Optional[dict] = None,
-    pipeline_record: Optional[dict] = None,
+    pipeline_member: dict,
+    blessing: dict,
     attester: Optional[str] = None,
 ) -> dict:
     """Verify a build-attestation bundle and return the verified build.
 
-    Standing comes from EITHER ``pipeline_member`` + ``blessing`` (your
-    directory's answer, as for :func:`verify_build_manifest_contribution`) OR
-    ``pipeline_record`` (the pipeline's key record, whose accord co-scrub is
-    checked against the baked roster). Passing both, or neither, raises
-    ValueError.
+    Standing comes from ``pipeline_member`` + ``blessing``: your directory's
+    answer, as for :func:`verify_build_manifest_contribution`.
 
     Returns:
         ``{"verified": True, "presenter_key_id", "presents", "transparency",
         "build": {"manifest_hash", "attestation_id", ...},
         "attestation_entries": [...]}`` or ``{"verified": False, "reason"}``.
     """
-    req: dict = {"bundle": bundle, "presenter_member": presenter_member}
-    if pipeline_member is not None:
-        req["pipeline_member"] = pipeline_member
-    if blessing is not None:
-        req["blessing"] = blessing
-    if pipeline_record is not None:
-        req["pipeline_record"] = pipeline_record
+    req: dict = {
+        "bundle": bundle,
+        "presenter_member": presenter_member,
+        "pipeline_member": pipeline_member,
+        "blessing": blessing,
+    }
     if attester is not None:
         req["attester"] = attester
     return _call("ciris_verify_build_attestation_bundle_verify", req)

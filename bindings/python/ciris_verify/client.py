@@ -612,8 +612,8 @@ class CIRISVerify:
         try:
             self._lib.ciris_verify_save_manifest_cache.argtypes = [
                 ctypes.c_void_p,                    # handle
-                ctypes.c_char_p,                    # signed_build_json
-                ctypes.c_size_t,                    # signed_build_len
+                ctypes.c_char_p,                    # binary_manifest_json
+                ctypes.c_size_t,                    # binary_manifest_len
                 ctypes.c_char_p,                    # function_manifest_json (nullable)
                 ctypes.c_size_t,                    # function_manifest_len
                 ctypes.c_char_p,                    # build_record_json (nullable)
@@ -2081,7 +2081,7 @@ class CIRISVerify:
 
     def save_manifest_cache_sync(
         self,
-        signed_build: dict,
+        binary_manifest: dict,
         function_manifest: Optional[dict] = None,
         build_record: Optional[dict] = None,
     ) -> bool:
@@ -2097,11 +2097,7 @@ class CIRISVerify:
         - No expiration: Valid as long as the binary and key are unchanged
 
         Args:
-            signed_build: SignedBuild dict (required, 23.0.0): ``contribution``
-                (the pipeline-signed build Contribution), ``pipeline_record``
-                (the pipeline's accord-co-scrubbed key record) and
-                ``manifest_base64``. It must verify for this binary's target or
-                nothing is cached.
+            binary_manifest: BinaryManifest dict from registry (required).
             function_manifest: FunctionManifest dict (optional).
             build_record: BuildRecord dict for file integrity (optional).
 
@@ -2115,7 +2111,7 @@ class CIRISVerify:
         if not self.has_manifest_cache_support:
             raise RuntimeError("Manifest cache not available in this library version (requires >= 1.2.0)")
 
-        binary_bytes = json.dumps(signed_build).encode("utf-8")
+        binary_bytes = json.dumps(binary_manifest).encode("utf-8")
         func_bytes = json.dumps(function_manifest).encode("utf-8") if function_manifest else None
         build_bytes = json.dumps(build_record).encode("utf-8") if build_record else None
 
@@ -2133,8 +2129,6 @@ class CIRISVerify:
             raise VerificationFailedError(ret, "No signing key available to sign manifest cache")
         if ret == -6:  # SigningFailed
             raise VerificationFailedError(ret, "Failed to sign manifest cache")
-        if ret == -9:  # SignatureInvalid
-            raise VerificationFailedError(ret, "Signed build claim does not verify; not cached")
         if ret != 0:
             raise VerificationFailedError(ret, f"save_manifest_cache failed with code {ret}")
 
@@ -2148,7 +2142,7 @@ class CIRISVerify:
 
         Returns:
             SignedManifestCache dict if valid, None if not found.
-            Contains: signed_build, function_manifest, build_record,
+            Contains: binary_manifest, function_manifest, build_record,
                      cached_at, verify_version, target, public_key_fingerprint
 
         Raises:

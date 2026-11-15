@@ -37,7 +37,6 @@ pub struct BuildRecord {
     /// SHA-256 of the manifest JSON itself.
     pub file_manifest_hash: String,
     /// Number of files in manifest.
-    #[serde(default)]
     pub file_manifest_count: i32,
     /// Full manifest: {"version":"...","files":{"path":"sha256",...}}.
     pub file_manifest_json: FileManifest,
@@ -56,15 +55,6 @@ pub struct BuildRecord {
     /// Status: active, deprecated, revoked.
     #[serde(default)]
     pub status: String,
-    /// The pipeline-signed `provenance:build_manifest:{target}` Contribution,
-    /// when the serving node carries it (the CEG-native `/v1/builds` route).
-    /// Used only to name the build Level 5 checked
-    /// ([`crate::signed_build::name_agent_build`]); never trusted unverified.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub contribution: Option<crate::self_at_login::SignedEnvelope>,
-    /// The pipeline's key record, beside `contribution`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub pipeline_record: Option<crate::federation_self_record::KeyRecord>,
 }
 
 /// File integrity manifest.
@@ -125,7 +115,7 @@ impl FileManifest {
 /// ## Project handling (v1.12.0+)
 ///
 /// **Project is per-call, not bound at construction.** Each project-scoped
-/// read method (`get_build_by_version`, `get_signed_build`,
+/// read method (`get_build_by_version`, `get_binary_manifest`,
 /// `get_function_manifest`, `list_function_manifest_targets`) takes
 /// `project: &str` as its first argument and validates it via
 /// `validate_project`. This lets a single client instance serve multiple
@@ -419,28 +409,71 @@ impl RegistryClient {
     }
 }
 
-/// Is `s` 64 lowercase hex chars (a bare SHA-256, CC 2.6.3)? Used to refuse a
-/// blob address that would otherwise be spliced into a URL.
-fn is_bare_sha256_hex(s: &str) -> bool {
-    s.len() == 64
-        && s.bytes()
-            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-}
-
-/// The blob address a build response claims, refused unless it is bare hex.
-fn claimed_blob_address(
-    response: &crate::signed_build::BuildClaimResponse,
-    url: &str,
-) -> Result<String, VerifyError> {
-    match response.claimed_manifest_hash() {
-        Some(h) if is_bare_sha256_hex(h) => Ok(h.to_string()),
-        _ => Err(VerifyError::ResponseSchemaMismatch {
-            url: url.to_string(),
-            status: 200,
-            detail: "contribution.signed_envelope.build.manifest_hash is not bare sha256 hex"
-                .to_string(),
-        }),
-    }
+/// Binary manifest from CIRISRegistry.
+///
+/// Contains SHA-256 hashes of CIRISVerify binaries for each platform.
+/// Used for Level 2 binary self-verification ("who watches the watchmen").
+///
+/// ## Recursive Trust Dependency
+///
+/// Binary self-verification is inherently recursive:
+/// - To verify the binary, we fetch the manifest from the registry
+/// - To trust the manifest, we need Level 3 multi-source validation
+/// - But Level 3 validation is performed BY this binary
+///
+/// This circular dependency is resolved by the initial provisioning:
+/// - The FIRST installation must come from a trusted source (app stores, PyPI)
+/// - Once installed, the binary can verify future updates against the registry
+/// - Level 3 cross-validation (2/3 geo-distributed sources) prevents registry MITM
+///
+/// ## Trust Boundaries
+///
+/// Self-verification does NOT protect against:
+/// - A fully compromised registry (attacker updates both binary and manifest)
+/// - Compromised initial provisioning (malicious app store listing)
+///
+/// Mitigations:
+/// - Level 3 multi-source consensus (US DNS + EU DNS + HTTPS must agree)
+/// - Initial install via trusted channels (Google Play, App Store, PyPI)
+/// - Manifest signing key pinning (future enhancement)
+///
+/// ## Registry Route Required
+///
+/// The registry needs to implement:
+/// ```text
+/// GET /v1/verify/binary-manifest/{version}
+/// ```
+///
+/// Response:
+/// ```json
+/// {
+///   "version": "0.5.2",
+///   "binaries": {
+///     "x86_64-unknown-linux-gnu": "sha256:abc123...",
+///     "aarch64-apple-darwin": "sha256:def456...",
+///     "x86_64-pc-windows-msvc": "sha256:ghi789..."
+///   },
+///   "generated_at": "2026-02-20T00:00:00Z"
+/// }
+/// ```
+///
+/// ## GitHub Release Integration
+///
+/// The release workflow computes hashes for each binary:
+/// 1. Build binaries for all targets
+/// 2. Compute SHA-256 for each binary
+/// 3. Upload CHECKSUMS.txt as release asset
+/// 4. POST hashes to registry API (or registry fetches from GitHub)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BinaryManifest {
+    /// CIRISVerify version.
+    pub version: String,
+    /// Map of target triple → SHA-256 hash.
+    /// Keys: x86_64-unknown-linux-gnu, aarch64-apple-darwin, etc.
+    pub binaries: HashMap<String, String>,
+    /// ISO 8601 timestamp when manifest was generated.
+    #[serde(default)]
+    pub generated_at: String,
 }
 
 impl RegistryClient {
@@ -448,83 +481,53 @@ impl RegistryClient {
     // Binary & Function Manifests - Desktop (async reqwest)
     // =========================================================================
 
-    /// Fetch the signed build claim for `version` on `target` (Level 1, CC
-    /// 3.1.2.1): the pipeline-signed `provenance:build_manifest:{target}`
-    /// Contribution and the pipeline's key record from
-    /// `GET /v1/builds/{version}?target=`, then the manifest bytes it cites from
-    /// `GET /v1/builds/manifest/{manifest_hash}`. Nothing here is trusted: the
-    /// caller verifies the result with
-    /// [`crate::signed_build::verify_signed_build`].
+    /// Fetch the binary manifest for self-verification.
+    ///
+    /// `project` selects the registry namespace (typically `"ciris-verify"`
+    /// for an L1 self-attestation read).
     #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    #[instrument(skip(self), fields(project = %project, version = %version, target = %target))]
-    pub async fn get_signed_build(
+    #[instrument(skip(self), fields(project = %project, version = %version))]
+    pub async fn get_binary_manifest(
         &self,
         project: &str,
         version: &str,
-        target: &str,
-    ) -> Result<crate::signed_build::SignedBuild, VerifyError> {
+    ) -> Result<BinaryManifest, VerifyError> {
         validate_project(project)?;
         let url = format!(
-            "{}/v1/builds/{}?project={}&target={}",
-            self.base_url, version, project, target
+            "{}/v1/verify/binary-manifest/{}?project={}",
+            self.base_url, version, project
         );
-        info!("Fetching signed build claim from URL: {}", url);
+        info!("Fetching binary manifest from URL: {}", url);
+
         let response = self.client.get(&url).send().await.map_err(|e| {
-            warn!("Signed build request FAILED: url={}, error={}", url, e);
+            warn!("Binary manifest request FAILED: url={}, error={}", url, e);
             VerifyError::HttpsError {
-                message: format!("Signed build request failed (url={}): {}", url, e),
+                message: format!("Binary manifest request failed (url={}): {}", url, e),
             }
         })?;
+
         let retry_after = response
             .headers()
             .get(reqwest::header::RETRY_AFTER)
             .and_then(|v| v.to_str().ok())
             .and_then(parse_retry_after);
         status_to_error(response.status().as_u16(), &url, retry_after)?;
-        let text = response.text().await.map_err(|e| VerifyError::HttpsError {
-            message: format!("Read body from {url} failed: {e}"),
-        })?;
-        let claim: crate::signed_build::BuildClaimResponse =
-            serde_json::from_str(&text).map_err(|e| VerifyError::ResponseSchemaMismatch {
-                url: url.clone(),
-                status: 200,
-                detail: e.to_string(),
-            })?;
-        let hash = claimed_blob_address(&claim, &url)?;
-        let bytes = self.get_manifest_blob(&hash).await?;
-        Ok(crate::signed_build::SignedBuild::from_parts(claim, &bytes))
-    }
 
-    /// Fetch manifest bytes by their SHA-256 from
-    /// `GET /v1/builds/manifest/{manifest_hash}`. Unverified: the caller checks
-    /// size and hash against a verified Contribution.
-    #[cfg(not(any(target_os = "android", target_os = "ios")))]
-    #[instrument(skip(self))]
-    pub async fn get_manifest_blob(&self, manifest_hash: &str) -> Result<Vec<u8>, VerifyError> {
-        if !is_bare_sha256_hex(manifest_hash) {
-            return Err(VerifyError::HttpsError {
-                message: "manifest blob address is not bare sha256 hex".into(),
-            });
-        }
-        let blob_url = format!("{}/v1/builds/manifest/{}", self.base_url, manifest_hash);
-        let blob =
-            self.client
-                .get(&blob_url)
-                .send()
+        let manifest =
+            response
+                .json::<BinaryManifest>()
                 .await
                 .map_err(|e| VerifyError::HttpsError {
-                    message: format!("Manifest blob request failed (url={}): {}", blob_url, e),
+                    message: format!("Failed to parse binary manifest: {}", e),
                 })?;
-        let retry_after = blob
-            .headers()
-            .get(reqwest::header::RETRY_AFTER)
-            .and_then(|v| v.to_str().ok())
-            .and_then(parse_retry_after);
-        status_to_error(blob.status().as_u16(), &blob_url, retry_after)?;
-        let bytes = blob.bytes().await.map_err(|e| VerifyError::HttpsError {
-            message: format!("Read body from {blob_url} failed: {e}"),
-        })?;
-        Ok(bytes.to_vec())
+
+        info!(
+            version = %manifest.version,
+            binary_count = manifest.binaries.len(),
+            "Fetched binary manifest from registry"
+        );
+
+        Ok(manifest)
     }
 
     /// Fetch the function-level integrity manifest for a specific target.
@@ -737,40 +740,21 @@ impl RegistryClient {
     // Binary & Function Manifests - Mobile (blocking ureq)
     // =========================================================================
 
-    /// Fetch the signed build claim (mobile - blocking). See the desktop
-    /// variant.
+    /// Fetch the binary manifest for self-verification (mobile - blocking).
     #[cfg(any(target_os = "android", target_os = "ios"))]
-    #[instrument(skip(self), fields(project = %project, version = %version, target = %target))]
-    pub async fn get_signed_build(
+    #[instrument(skip(self), fields(project = %project, version = %version))]
+    pub async fn get_binary_manifest(
         &self,
         project: &str,
         version: &str,
-        target: &str,
-    ) -> Result<crate::signed_build::SignedBuild, VerifyError> {
+    ) -> Result<BinaryManifest, VerifyError> {
         validate_project(project)?;
         let url = format!(
-            "{}/v1/builds/{}?project={}&target={}",
-            self.base_url, version, project, target
+            "{}/v1/verify/binary-manifest/{}?project={}",
+            self.base_url, version, project
         );
-        info!("Fetching signed build claim from URL: {} (mobile)", url);
-        let claim: crate::signed_build::BuildClaimResponse =
-            mobile_http::get_json_async(&self.agent, &url).await?;
-        let hash = claimed_blob_address(&claim, &url)?;
-        let bytes = self.get_manifest_blob(&hash).await?;
-        Ok(crate::signed_build::SignedBuild::from_parts(claim, &bytes))
-    }
-
-    /// Fetch manifest bytes by their SHA-256 (mobile - blocking).
-    #[cfg(any(target_os = "android", target_os = "ios"))]
-    #[instrument(skip(self))]
-    pub async fn get_manifest_blob(&self, manifest_hash: &str) -> Result<Vec<u8>, VerifyError> {
-        if !is_bare_sha256_hex(manifest_hash) {
-            return Err(VerifyError::HttpsError {
-                message: "manifest blob address is not bare sha256 hex".into(),
-            });
-        }
-        let blob_url = format!("{}/v1/builds/manifest/{}", self.base_url, manifest_hash);
-        mobile_http::get_bytes_async(&self.agent, &blob_url).await
+        info!("Fetching binary manifest from URL: {} (mobile)", url);
+        mobile_http::get_json_async(&self.agent, &url).await
     }
 
     /// Fetch the function-level integrity manifest (mobile - blocking).
@@ -1639,6 +1623,40 @@ pub fn current_target() -> &'static str {
     env!("TARGET")
 }
 
+/// Verify the running binary against a registry manifest.
+///
+/// # Arguments
+///
+/// * `manifest` - Binary manifest from registry
+///
+/// # Returns
+///
+/// `true` if the running binary's hash matches the manifest entry
+/// for the current target triple.
+pub fn verify_self_against_manifest(manifest: &BinaryManifest) -> Result<bool, VerifyError> {
+    let target = current_target();
+    let actual_hash = compute_self_hash()?;
+
+    match manifest.binaries.get(target) {
+        Some(expected_hash) => {
+            // Strip "sha256:" prefix if present
+            let expected = expected_hash
+                .strip_prefix("sha256:")
+                .unwrap_or(expected_hash);
+
+            // Constant-time comparison
+            use subtle::ConstantTimeEq;
+            let actual_bytes = hex::decode(&actual_hash).unwrap_or_default();
+            let expected_bytes = hex::decode(expected).unwrap_or_default();
+
+            Ok(actual_bytes.ct_eq(&expected_bytes).into())
+        },
+        None => Err(VerifyError::IntegrityError {
+            message: format!("No binary hash for target '{}' in manifest", target),
+        }),
+    }
+}
+
 /// Default registry URL.
 pub const DEFAULT_REGISTRY_URL: &str = "https://api.registry.ciris-services-1.ai";
 
@@ -1953,34 +1971,20 @@ impl ResilientRegistryClient {
         .await
     }
 
-    /// Fetch the signed build claim by racing all endpoints in parallel.
+    /// Fetch binary manifest by racing all endpoints in parallel.
     /// See [`Self::get_build_by_version`] for v4.8.0 semantics.
-    pub async fn get_signed_build(
+    pub async fn get_binary_manifest(
         &self,
         project: &str,
         version: &str,
-        target: &str,
-    ) -> Result<crate::signed_build::SignedBuild, VerifyError> {
-        let op = format!("builds/{version}?target={target}");
+    ) -> Result<BinaryManifest, VerifyError> {
+        let op = format!("binary-manifest/{version}");
         let project = project.to_string();
         let version = version.to_string();
-        let target = target.to_string();
         self.race_endpoints(op, move |client| {
             let project = project.clone();
             let version = version.clone();
-            let target = target.clone();
-            async move { client.get_signed_build(&project, &version, &target).await }
-        })
-        .await
-    }
-
-    /// Fetch manifest bytes by racing all endpoints in parallel.
-    pub async fn get_manifest_blob(&self, manifest_hash: &str) -> Result<Vec<u8>, VerifyError> {
-        let op = format!("builds/manifest/{manifest_hash}");
-        let manifest_hash = manifest_hash.to_string();
-        self.race_endpoints(op, move |client| {
-            let manifest_hash = manifest_hash.clone();
-            async move { client.get_manifest_blob(&manifest_hash).await }
+            async move { client.get_binary_manifest(&project, &version).await }
         })
         .await
     }
@@ -2140,7 +2144,7 @@ mod tests {
 
         // Underscores rejected (kebab-case only).
         let err = client
-            .get_signed_build("ciris_verify", "1.0.0", "x86_64-unknown-linux-gnu")
+            .get_binary_manifest("ciris_verify", "1.0.0")
             .await
             .unwrap_err();
         assert!(format!("{err}").contains("kebab-case"), "got: {err}");
@@ -2157,9 +2161,7 @@ mod tests {
             RegistryClient::new(&format!("http://{}", addr), Duration::from_secs(5)).unwrap();
 
         // Engine reads its own L1/L2 manifest under ciris-verify ...
-        let _ = client
-            .get_signed_build("ciris-verify", "1.12.0", "x86_64-unknown-linux-gnu")
-            .await;
+        let _ = client.get_binary_manifest("ciris-verify", "1.12.0").await;
         // ... and in the same verify cycle, the agent's L4 build under ciris-agent.
         let _ = client.get_build_by_version("ciris-agent", "2.8.3").await;
 
@@ -2168,10 +2170,9 @@ mod tests {
         let urls = captured.lock().unwrap().clone();
         assert!(urls.len() >= 2, "expected ≥2 captured URLs, got {urls:?}");
         assert!(
-            urls.iter().any(|u| u.contains(
-                "GET /v1/builds/1.12.0?project=ciris-verify&target=x86_64-unknown-linux-gnu"
-            )),
-            "missing ciris-verify signed build read; got {urls:?}"
+            urls.iter()
+                .any(|u| u.contains("GET /v1/verify/binary-manifest/1.12.0?project=ciris-verify")),
+            "missing ciris-verify binary-manifest read; got {urls:?}"
         );
         assert!(
             urls.iter()
@@ -2375,13 +2376,13 @@ mod tests {
 
     /// Lock: 429 with `Retry-After: 5` parses to `RateLimited{retry_after_secs: Some(5)}`.
     #[tokio::test]
-    async fn get_signed_build_returns_structured_rate_limited_with_retry_after() {
+    async fn get_binary_manifest_returns_structured_rate_limited_with_retry_after() {
         let (addr, _h) =
             one_shot_status_server("HTTP/1.1 429 Too Many Requests", "Retry-After: 5\r\n").await;
         let client =
             RegistryClient::new(&format!("http://{}", addr), Duration::from_secs(5)).unwrap();
         let err = client
-            .get_signed_build("ciris-verify", "2.2.0", "x86_64-unknown-linux-gnu")
+            .get_binary_manifest("ciris-verify", "2.2.0")
             .await
             .unwrap_err();
         assert!(
@@ -2496,9 +2497,7 @@ mod tests {
 
         // Both 429s, so we should exit via "all endpoints failed". The
         // important assertion is the cooldown gate is now raised.
-        let _ = resilient
-            .get_signed_build("ciris-verify", "2.2.0", "x86_64-unknown-linux-gnu")
-            .await;
+        let _ = resilient.get_binary_manifest("ciris-verify", "2.2.0").await;
 
         let cooldown = resilient
             .cooldown_until_ms

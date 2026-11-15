@@ -123,9 +123,6 @@ pub mod registry;
 pub mod safety_evidence;
 pub mod security;
 pub mod self_at_login;
-/// Level 1's signed build claim (CC 3.1.2.1): the pipeline-signed manifest
-/// Contribution, its ceremony-plane standing and its blob.
-pub mod signed_build;
 pub mod skill_import;
 pub mod subject_binding;
 /// §19 Holonomic substrate verifiers (CEG 1.0-RC11, CIRISVerify#78) — ALM
@@ -241,12 +238,9 @@ pub use audit::{
     ChainSummary,
 };
 pub use registry::{
-    compute_ed25519_fingerprint, compute_self_hash, current_target, BuildRecord,
-    FileManifest as RegistryManifest, KeyVerificationResponse, RegistryClient,
-};
-pub use signed_build::{
-    binary_hash_matches, verify_signed_build, verify_signed_build_baked, BuildClaimRejection,
-    SignedBuild,
+    compute_ed25519_fingerprint, compute_self_hash, current_target, verify_self_against_manifest,
+    BinaryManifest, BuildRecord, FileManifest as RegistryManifest, KeyVerificationResponse,
+    RegistryClient,
 };
 pub use tree_verify::{
     verify_tree, FailedFile, FailedFileKind, TreeVerifyRequest, TreeVerifyResult,

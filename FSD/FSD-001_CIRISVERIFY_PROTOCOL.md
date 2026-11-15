@@ -774,7 +774,7 @@ class WiseBus:
 | Rollback to an older trust root | Highest verified version is selected |
 | Replay of a revoked object | Quorum-signed `federation_revocations` rows |
 | Emulator/debugger interception | Platform integrity checks |
-| Binary modification | Self-integrity verification against the pipeline-signed, accord-blessed build claim (CC 3.1.2.1) |
+| Binary modification | Self-integrity verification against the registry binary manifest (unsigned, unpinned until the edition-2 signed build record) |
 | Key extraction from binary | Keys stored in hardware, never in binary |
 
 ### Security Assumptions
@@ -832,19 +832,15 @@ This binding ensures an attacker cannot strip one signature while preserving the
 #### 3. Transport Security
 
 TLS protects availability and privacy of a fetch, not its authority. No
-certificate is pinned; TLS verifies against the bundled web-PKI roots. Authority
-rides on content signatures only:
+certificate is pinned; TLS verifies against the bundled web-PKI roots. The trust
+root's authority rides on content signatures: a GenesisBundle is accepted only if
+it verifies against the baked accord holders (§5). So a host presenting a
+different certificate can withhold a trust root but not forge one.
 
-- a GenesisBundle is accepted only if it verifies against the baked accord holders
-  (§5);
-- Level 1 accepts a build only through its pipeline-signed
-  `provenance:build_manifest:{target}:v1` Contribution (CC 3.1.2.1), whose pipeline
-  key record a strict majority of the baked accord roster co-scrubbed with
-  `roles: ["infra:attest"]` (CC 4.2.1), and whose manifest blob matches the signed
-  `manifest_size` and then `manifest_hash`.
-
-So a host presenting a different certificate can withhold an object but not forge
-one.
+**Known limitation.** Level 1's binary manifest and Level 5's build record are plain
+registry JSON: not signed, not pinned. A host that can present a web-PKI certificate
+for the registry can serve a manifest naming a replaced binary. The edition-2 signed
+build record (CBOR/COSE, CC 2.6.1.9), published after the re-genesis, closes this.
 
 #### 4. Constant-Time Cryptographic Operations
 

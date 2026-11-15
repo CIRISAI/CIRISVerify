@@ -641,10 +641,10 @@ impl LicenseEngine {
             return status;
         };
 
-        // Engine self-verify reads its OWN signed build claim, so project is
+        // Engine self-verify reads its OWN binary manifest, so project is
         // the engine's own configured identity (typically "ciris-verify").
-        let claim = match client
-            .get_signed_build(&self.config.project, version, target)
+        let manifest = match client
+            .get_binary_manifest(&self.config.project, version)
             .await
         {
             Ok(m) => m,
@@ -656,7 +656,7 @@ impl LicenseEngine {
                     actual_hash: Some(actual_hash),
                     expected_hash: None,
                     matches: false,
-                    error: Some(format!("Failed to fetch signed build claim: {}", e)),
+                    error: Some(format!("Failed to fetch manifest: {}", e)),
                     verified_at: now,
                 };
                 self.cache_binary_integrity(&status);
@@ -664,12 +664,10 @@ impl LicenseEngine {
             },
         };
 
-        // The claim is the authority, not the response: standing, signature,
-        // target, blob size and hash all verify or the binary is unverified.
-        let verified = match crate::signed_build::verify_signed_build_baked(&claim, target) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("Signed build claim refused: {}", e);
+        // Get expected hash for our target
+        let expected_hash = match manifest.binaries.get(target) {
+            Some(h) => h.strip_prefix("sha256:").unwrap_or(h).to_string(),
+            None => {
                 let status = BinaryIntegrityStatus {
                     status: "not_found".to_string(),
                     version: version.to_string(),
@@ -677,7 +675,7 @@ impl LicenseEngine {
                     actual_hash: Some(actual_hash),
                     expected_hash: None,
                     matches: false,
-                    error: Some(format!("No verified build claim for target '{}'", target)),
+                    error: Some(format!("No manifest entry for target '{}'", target)),
                     verified_at: now,
                 };
                 self.cache_binary_integrity(&status);
@@ -685,18 +683,23 @@ impl LicenseEngine {
             },
         };
 
-        let matches = crate::signed_build::binary_hash_matches(&verified, &actual_hash);
+        // Constant-time comparison
+        use subtle::ConstantTimeEq;
+        let actual_bytes = hex::decode(&actual_hash).unwrap_or_default();
+        let expected_bytes = hex::decode(&expected_hash).unwrap_or_default();
+        let matches: bool = actual_bytes.ct_eq(&expected_bytes).into();
+
         let status = BinaryIntegrityStatus {
             status: if matches { "verified" } else { "tampered" }.to_string(),
             version: version.to_string(),
             target: target.to_string(),
             actual_hash: Some(actual_hash),
-            expected_hash: Some(verified.binary_hash.clone()),
+            expected_hash: Some(expected_hash),
             matches,
             error: if matches {
                 None
             } else {
-                Some("Binary hash does not match the signed build claim".to_string())
+                Some("Binary hash does not match registry manifest".to_string())
             },
             verified_at: now,
         };

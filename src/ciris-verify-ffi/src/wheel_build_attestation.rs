@@ -1,15 +1,11 @@
-//! Presenter path for a running build (CIRISVerify#315) and the signed build
-//! claim verifier (23.0.0), for the Python wheel and other FFI callers.
+//! Presenter path for a running build (CIRISVerify#315), for the Python
+//! wheel and other FFI callers.
 //!
-//! An occurrence names the build it runs by `build_manifest_hash` and
-//! `build_manifest_ref` (CC 3.3.6), and presents that it runs it as an
+//! An occurrence presents that it runs a build as an
 //! `attestation:self_verify` / `attestation:agent_integrity` claim citing the
-//! manifest's Contribution (CC 3.1.2.1). These four calls are that path:
+//! pipeline's manifest Contribution (CC 3.1.2.1). These three calls are that
+//! path:
 //!
-//! - [`ciris_verify_signed_build_verify`]: verify a pipeline-signed build claim
-//!   (Contribution + pipeline key record + manifest bytes) for a target, and
-//!   return the facts, including `manifest_hash` and `attestation_id` (the
-//!   values an occurrence row carries).
 //! - [`ciris_verify_build_attestation_bundle_envelope`]: the presenter's
 //!   unsigned bundle envelope and its JCS signing bytes, for a presenter whose
 //!   key signs outside verify.
@@ -23,12 +19,9 @@
 //! successful call returning `{"verified": false, "reason": ...}`; only
 //! malformed input returns `SerializationError`.
 //!
-//! **Standing.** A bundle's pipeline standing comes from one of two places,
-//! never both: the caller's own directory answer (`pipeline_member` +
-//! `blessing`, as in `ciris_verify_build_manifest_contribution`), or the
-//! pipeline's key record (`pipeline_record`), whose accord co-scrub is checked
-//! here against the roster baked into this binary (the ceremony plane, CC
-//! 4.2.1).
+//! **Standing.** A bundle's pipeline standing is the caller's own directory
+//! answer (`pipeline_member` + `blessing`, as in
+//! `ciris_verify_build_manifest_contribution`).
 
 use std::panic::{catch_unwind, AssertUnwindSafe};
 
@@ -38,10 +31,7 @@ use ciris_verify_core::build_attestation_bundle::{
     verify_build_attestation_bundle, BundleInputs, PresentedBuild, TransparencyCheck,
 };
 use ciris_verify_core::ceg_outbox::SignedCegObject;
-use ciris_verify_core::federation_self_record::KeyRecord;
-use ciris_verify_core::manifest_contribution::{PipelineBlessing, VerifiedManifest};
 use ciris_verify_core::self_at_login::SignedEnvelope;
-use ciris_verify_core::signed_build::{ceremony_standing, verify_signed_build, SignedBuild};
 use ciris_verify_core::threshold::ThresholdMember;
 use ciris_verify_core::transparency::MerkleProof;
 use serde::{Deserialize, Serialize};
@@ -124,83 +114,6 @@ const fn transparency_str(t: TransparencyCheck) -> &'static str {
     }
 }
 
-#[derive(Serialize)]
-struct FactsVerdict {
-    verified: bool,
-    #[serde(flatten, skip_serializing_if = "Option::is_none")]
-    facts: Option<Facts>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    reason: Option<String>,
-}
-
-impl FactsVerdict {
-    fn from_result<E: std::fmt::Display>(r: Result<VerifiedManifest, E>) -> Self {
-        match r {
-            Ok(v) => Self {
-                verified: true,
-                facts: Some(v.into()),
-                reason: None,
-            },
-            Err(e) => Self {
-                verified: false,
-                facts: None,
-                reason: Some(e.to_string()),
-            },
-        }
-    }
-}
-
-// --------------------------------------------------------------------------
-// ciris_verify_signed_build_verify
-// --------------------------------------------------------------------------
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct SignedBuildRequest {
-    /// `{contribution, pipeline_record, manifest_base64}`.
-    signed_build: SignedBuild,
-    /// The target the build must be for.
-    target: String,
-}
-
-/// Verify a pipeline-signed build claim for a target against the accord
-/// roster baked into this binary (ceremony-plane standing, the pipeline's
-/// signature, the target, then the manifest's size and SHA-256).
-///
-/// `input_json`: `{"signed_build": {"contribution": {...}, "pipeline_record":
-/// {...}, "manifest_base64": "..."}, "target": "..."}`.
-///
-/// Result: `{"verified": true, "attestation_id", "manifest_hash",
-/// "binary_hash", "target", ...}` (the members of
-/// `ciris_verify_build_manifest_contribution`'s verdict) or `{"verified":
-/// false, "reason"}`.
-///
-/// # Safety
-/// `input_json` must point to `input_len` valid bytes; `result_out` and
-/// `result_len_out` must be valid pointers.
-#[no_mangle]
-pub unsafe extern "C" fn ciris_verify_signed_build_verify(
-    input_json: *const u8,
-    input_len: usize,
-    result_out: *mut *mut u8,
-    result_len_out: *mut usize,
-) -> i32 {
-    ffi_guard!("ciris_verify_signed_build_verify", {
-        let req: SignedBuildRequest =
-            match read_request(input_json, input_len, result_out, result_len_out) {
-                Ok(r) => r,
-                Err(code) => return code,
-            };
-        let verdict = FactsVerdict::from_result(verify_signed_build(
-            &req.signed_build,
-            &req.target,
-            &ciris_verify_core::accord_genesis::baked_accord_roster(),
-            chrono::Utc::now(),
-        ));
-        emit_json(&verdict, result_out, result_len_out)
-    })
-}
-
 // --------------------------------------------------------------------------
 // ciris_verify_build_attestation_bundle_envelope / _assemble
 // --------------------------------------------------------------------------
@@ -243,7 +156,8 @@ struct EnvelopeOut {
 /// mldsa65_signature_base64}` to `ciris_verify_build_attestation_bundle_assemble`.
 ///
 /// # Safety
-/// As [`ciris_verify_signed_build_verify`].
+/// `input_json` must point to `input_len` valid bytes; `result_out` and
+/// `result_len_out` must be valid pointers.
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_build_attestation_bundle_envelope(
     input_json: *const u8,
@@ -309,7 +223,8 @@ struct AssembleRequest {
 /// the check.
 ///
 /// # Safety
-/// As [`ciris_verify_signed_build_verify`].
+/// `input_json` must point to `input_len` valid bytes; `result_out` and
+/// `result_len_out` must be valid pointers.
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_build_attestation_bundle_assemble(
     input_json: *const u8,
@@ -354,16 +269,10 @@ struct BundleVerifyRequest {
     bundle: SignedCegObject,
     /// The presenter's pinned pubkeys, from the caller's directory.
     presenter_member: ThresholdMember,
-    /// Directory standing: the pipeline's pinned pubkeys.
-    #[serde(default)]
-    pipeline_member: Option<ThresholdMember>,
-    /// Directory standing: the caller's authority's answer.
-    #[serde(default)]
-    blessing: Option<BlessingIn>,
-    /// Ceremony standing: the pipeline's key record, checked against the
-    /// baked accord roster. Exclusive with `pipeline_member` + `blessing`.
-    #[serde(default)]
-    pipeline_record: Option<KeyRecord>,
+    /// The pipeline's pinned pubkeys, from the caller's directory.
+    pipeline_member: ThresholdMember,
+    /// The caller's authority's answer for the pipeline's standing.
+    blessing: BlessingIn,
     /// Attester name for `attestation_entries`; defaults to `ciris-verify`.
     #[serde(default)]
     attester: Option<String>,
@@ -405,10 +314,8 @@ impl BundleVerdictOut {
 /// Verify a build-attestation bundle and return the verdict with the verified
 /// manifest hash.
 ///
-/// `input_json`: `{"bundle": {...}, "presenter_member": {...}}` plus EITHER
-/// `{"pipeline_member": {...}, "blessing": {...}}` (directory standing) OR
-/// `{"pipeline_record": {...}}` (ceremony standing against the baked roster),
-/// and optionally `"attester"`.
+/// `input_json`: `{"bundle": {...}, "presenter_member": {...},
+/// "pipeline_member": {...}, "blessing": {...}}` and optionally `"attester"`.
 ///
 /// Result: `{"verified": true, "presenter_key_id", "presents",
 /// "transparency": "absent"|"verified"|"invalid", "build": {"manifest_hash",
@@ -416,7 +323,8 @@ impl BundleVerdictOut {
 /// false, "reason"}`.
 ///
 /// # Safety
-/// As [`ciris_verify_signed_build_verify`].
+/// `input_json` must point to `input_len` valid bytes; `result_out` and
+/// `result_len_out` must be valid pointers.
 #[no_mangle]
 pub unsafe extern "C" fn ciris_verify_build_attestation_bundle_verify(
     input_json: *const u8,
@@ -430,42 +338,28 @@ pub unsafe extern "C" fn ciris_verify_build_attestation_bundle_verify(
                 Ok(r) => r,
                 Err(code) => return code,
             };
-        let standing: Result<(PipelineBlessing, ThresholdMember), String> =
-            match (req.pipeline_record, req.pipeline_member, req.blessing) {
-                (Some(record), None, None) => ceremony_standing(
-                    &record,
-                    &ciris_verify_core::accord_genesis::baked_accord_roster(),
-                    chrono::Utc::now(),
-                )
-                .map_err(|e| e.to_string()),
-                (None, Some(member), Some(b)) => match b.into_blessing() {
-                    Some(blessing) => Ok((blessing, member)),
-                    None => return CirisVerifyError::SerializationError as i32,
-                },
-                _ => return CirisVerifyError::SerializationError as i32,
-            };
-        let out = match standing {
-            Err(reason) => BundleVerdictOut::rejected(reason),
-            Ok((blessing, pipeline_member)) => match verify_build_attestation_bundle(
-                &req.bundle,
-                &req.presenter_member,
-                &pipeline_member,
-                &blessing,
-            ) {
-                Err(e) => BundleVerdictOut::rejected(e.to_string()),
-                Ok(v) => {
-                    let attester = req.attester.as_deref().unwrap_or("ciris-verify");
-                    let entries = serde_json::to_value(v.to_attestation_entries(attester)).ok();
-                    BundleVerdictOut {
-                        verified: true,
-                        presenter_key_id: Some(v.presenter_key_id.clone()),
-                        presents: Some(v.presents.dimension()),
-                        transparency: Some(transparency_str(v.transparency)),
-                        build: Some(v.build.into()),
-                        attestation_entries: entries,
-                        reason: None,
-                    }
-                },
+        let Some(blessing) = req.blessing.into_blessing() else {
+            return CirisVerifyError::SerializationError as i32;
+        };
+        let out = match verify_build_attestation_bundle(
+            &req.bundle,
+            &req.presenter_member,
+            &req.pipeline_member,
+            &blessing,
+        ) {
+            Err(e) => BundleVerdictOut::rejected(e.to_string()),
+            Ok(v) => {
+                let attester = req.attester.as_deref().unwrap_or("ciris-verify");
+                let entries = serde_json::to_value(v.to_attestation_entries(attester)).ok();
+                BundleVerdictOut {
+                    verified: true,
+                    presenter_key_id: Some(v.presenter_key_id.clone()),
+                    presents: Some(v.presents.dimension()),
+                    transparency: Some(transparency_str(v.transparency)),
+                    build: Some(v.build.into()),
+                    attestation_entries: entries,
+                    reason: None,
+                }
             },
         };
         emit_json(&out, result_out, result_len_out)
@@ -591,22 +485,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unblessed_pipeline_record_is_refused_and_mixed_standing_is_malformed() {
+    async fn a_bundle_without_directory_standing_is_malformed() {
         let presenter = HybridSigningIdentity::generate("agent-occurrence").unwrap();
         let pipeline = HybridSigningIdentity::generate("ci-pipeline").unwrap();
         let contribution = manifest(&pipeline).await;
-        let pm = pipeline.directory_member().unwrap();
-        // A self-signed record: no accord co-scrub, so no ceremony standing.
-        let record = ciris_verify_core::federation_self_record::produce_self_key_record(
-            &pipeline,
-            "node",
-            "2026-10-01T00:00:00Z",
-            None,
-            &[],
-        )
-        .await
-        .unwrap()
-        .record;
         let bundle = ciris_verify_core::build_attestation_bundle::produce_build_attestation_bundle(
             &presenter,
             &BundleInputs {
@@ -618,67 +500,27 @@ mod tests {
         )
         .await
         .unwrap();
-        let (rc, verdict) = unsafe {
-            call(
-                ciris_verify_build_attestation_bundle_verify,
-                &serde_json::json!({
-                    "bundle": bundle,
-                    "presenter_member": presenter.directory_member().unwrap(),
-                    "pipeline_record": record,
-                }),
-            )
-        };
-        assert_eq!(rc, 0);
-        assert_eq!(verdict["verified"], false);
+        // No pipeline_member / blessing: no standing to judge, so malformed.
         let (rc, _) = unsafe {
             call(
                 ciris_verify_build_attestation_bundle_verify,
                 &serde_json::json!({
                     "bundle": bundle,
                     "presenter_member": presenter.directory_member().unwrap(),
-                    "pipeline_record": record,
-                    "pipeline_member": pm,
-                    "blessing": {"pipeline_key_id": "ci-pipeline", "standing": "accord_role"},
                 }),
             )
         };
         assert_eq!(rc, CirisVerifyError::SerializationError as i32);
-    }
-
-    #[tokio::test]
-    async fn a_signed_build_without_baked_standing_is_refused() {
-        let pipeline = HybridSigningIdentity::generate("ci-pipeline").unwrap();
-        let contribution = manifest(&pipeline).await;
-        let record = ciris_verify_core::federation_self_record::produce_self_key_record(
-            &pipeline,
-            "node",
-            "2026-10-01T00:00:00Z",
-            None,
-            &[],
-        )
-        .await
-        .unwrap()
-        .record;
-        let (rc, verdict) = unsafe {
-            call(
-                ciris_verify_signed_build_verify,
-                &serde_json::json!({
-                    "signed_build": {
-                        "contribution": contribution.body,
-                        "pipeline_record": record,
-                        "manifest_base64": "AAAAAAAAAAAAAA==",
-                    },
-                    "target": "python-source-tree",
-                }),
-            )
-        };
-        assert_eq!(rc, 0);
-        assert_eq!(verdict["verified"], false);
-        assert!(verdict.get("manifest_hash").is_none());
+        // A standing the blessing vocabulary does not name is malformed too.
         let (rc, _) = unsafe {
             call(
-                ciris_verify_signed_build_verify,
-                &serde_json::json!({"signed_build": {}, "target": "x"}),
+                ciris_verify_build_attestation_bundle_verify,
+                &serde_json::json!({
+                    "bundle": bundle,
+                    "presenter_member": presenter.directory_member().unwrap(),
+                    "pipeline_member": pipeline.directory_member().unwrap(),
+                    "blessing": {"pipeline_key_id": "ci-pipeline", "standing": "ceremony"},
+                }),
             )
         };
         assert_eq!(rc, CirisVerifyError::SerializationError as i32);

@@ -74,7 +74,6 @@ from ._manifest_contribution import (
     build_attestation_bundle_envelope,
     verify_build_attestation_bundle,
     verify_build_manifest_contribution,
-    verify_signed_build,
 )
 from ._accord_invocation import accord_latch_apply, accord_latch_status, verify_accord_invocation
 from ._accord_custody import verify_accord_custody_attestation
@@ -204,7 +203,6 @@ __all__ = [
     "self_enc_respond",
     "create_federation_identity",
     "verify_build_manifest_contribution",
-    "verify_signed_build",
     "build_attestation_bundle_envelope",
     "assemble_build_attestation_bundle",
     "verify_build_attestation_bundle",

@@ -10,8 +10,8 @@
 //!   who is *presenting* it.
 //! - [`crate::transport_binding`] binds **key K → transport identity T**. It says
 //!   nothing about what code K runs.
-//! - [`crate::signed_build::binary_hash_matches`] compares the running
-//!   binary to a signed build claim — but it is a **local `bool`**, not a transmissible
+//! - [`crate::registry::verify_self_against_manifest`] compares the running
+//!   binary to a manifest — but it is a **local `bool`**, not a transmissible
 //!   artifact. A peer cannot consume it.
 //!
 //! So a peer could verify *"this build is approved"* and *"this key owns that

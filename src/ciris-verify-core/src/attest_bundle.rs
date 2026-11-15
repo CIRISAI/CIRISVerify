@@ -772,8 +772,6 @@ mod tests {
                 target: "x86_64-unknown-linux-gnu".into(),
                 binary_hash: "deadbeef".into(),
                 expected_hash: Some("deadbeef".into()),
-                build_manifest_hash: None,
-                build_manifest_ref: None,
                 functions_checked: 10,
                 functions_passed: 10,
                 registry_reachable: true,
