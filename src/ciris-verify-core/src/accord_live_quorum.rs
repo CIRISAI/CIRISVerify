@@ -25,9 +25,11 @@
 //!   pre-committed recovery key alone, changing only that holder's own seat
 //!   (its signing key; the statement names its next recovery commitment). It
 //!   needs no quorum. The commitment it must match is the one **in force**
-//!   ([`recovery_commitment_in_force`](crate::accord_live_quorum::recovery_commitment_in_force)), read by
-//!   walking the roster lineage back by `prev_head_digest` to the latest
-//!   recovery that seated the holder's current key, else the charter.
+//!   ([`recovery_commitment_in_force`](crate::accord_live_quorum::recovery_commitment_in_force)):
+//!   the one named by the latest row of the roster lineage, in
+//!   `prev_head_digest` link order, that names a commitment for the holder (a
+//!   recovery version's next commitment, or a charter version's entry). A
+//!   commitment a recovery has spent never comes back into force.
 //!
 //! **The records are CIRISPersist's.** A roster version is persist's `Family`
 //! record ([`FamilyRecord`](crate::accord_live_quorum::FamilyRecord)); its
@@ -365,8 +367,8 @@ pub enum LiveQuorumError {
     /// The presented recovery key's record does not hash to the commitment in
     /// force for the holder (CC 4.2.6: the recovery concludes nothing).
     RecoveryCommitmentMismatch,
-    /// No recovery commitment is in force for the holder: no recovery seated
-    /// their current key and the charter carries no entry for them. Their
+    /// No recovery commitment is in force for the holder: no row of the
+    /// lineage names an unspent commitment for their current key. Their
     /// recovery is a roster change.
     NoCommitmentInForce {
         /// The holder key id.
@@ -422,6 +424,15 @@ pub enum LiveQuorumError {
     RecoveryKeySpent {
         /// The recovery key id.
         key_id: String,
+    },
+    /// A charter version of the lineage names a `charter_digest` that no
+    /// supplied charter row hashes to; the walk fails closed rather than skip
+    /// it (CC 4.2.6).
+    CharterMissing {
+        /// Index of the version naming the charter.
+        index: usize,
+        /// The `charter_digest` it names.
+        charter_digest: String,
     },
 }
 
@@ -511,6 +522,13 @@ impl std::fmt::Display for LiveQuorumError {
             Self::RecoveryKeySpent { key_id } => {
                 write!(f, "recovery key {key_id} already rotated a seat (CC 4.2.6)")
             },
+            Self::CharterMissing {
+                index,
+                charter_digest,
+            } => write!(
+                f,
+                "roster version {index} adopts charter {charter_digest}, which no supplied charter row hashes to"
+            ),
         }
     }
 }
@@ -845,6 +863,17 @@ pub(crate) fn apply_seat_change(
 /// The version that carries the change is verified separately, against the
 /// recorded decision ([`crate::accord_genesis::verify_membership_change`]).
 ///
+/// # Conformance
+/// This is a pure verifier of the vote. For a change that adds a holder it
+/// does **not** check, and CC 4.2.6 requires of whoever admits the change, for
+/// each key in `change.add`: the added holder's own hybrid signature over the
+/// offered record's `record_signing_bytes()`; that the key is a registered
+/// `accord_holder` key record; and that the charter the offered version names
+/// by `charter_digest` covers the roster, listing the added holder's recovery
+/// commitment. [`crate::accord_genesis::verify_membership_change`] does not
+/// check them either (see its `# Conformance`). A caller that skips them does
+/// not conform.
+///
 /// # Errors
 /// [`LiveQuorumError`] for a binding violation or a bad participation. Whether
 /// the change carries is [`RosterChangeVerdict::authorized`].
@@ -1053,10 +1082,153 @@ fn check_lineage(lineage: &[RosterVersion]) -> Result<Vec<String>, LiveQuorumErr
     Ok(hashes)
 }
 
-/// The recovery commitment **in force** for `holder_key_id` (CC 4.2.6): "the
-/// one named by the latest recovery version that seated their current key, or,
-/// if they have never recovered, their entry in the charter's
-/// `recovery_commitments`".
+/// Where the commitment walk reads charter `recovery_commitments` from.
+enum CharterSource<'a> {
+    /// One charter, read as the charter adopted at genesis (the single-charter
+    /// entry points).
+    Single(&'a Value),
+    /// Charter rows by `persist_row_hash`: each version that adopts a new
+    /// `charter_digest` reads that row's entries, in link order.
+    ByDigest(std::collections::BTreeMap<String, &'a Value>),
+}
+
+impl<'a> CharterSource<'a> {
+    fn by_digest(charters: &'a [Value]) -> Result<Self, LiveQuorumError> {
+        let mut map = std::collections::BTreeMap::new();
+        for c in charters {
+            let digest = crate::persist_canonical::persist_row_hash(c)
+                .map_err(|e| LiveQuorumError::Structure(e.to_string()))?;
+            map.insert(digest, c);
+        }
+        Ok(Self::ByDigest(map))
+    }
+}
+
+/// Every commitment the lineage names, per key id, in link order, and every
+/// commitment a recovery in the lineage spent.
+#[derive(Default)]
+struct CommitmentWalk {
+    named: std::collections::BTreeMap<String, Vec<String>>,
+    spent: std::collections::BTreeSet<String>,
+}
+
+impl CommitmentWalk {
+    /// The latest commitment named for `key_id` that no recovery has spent.
+    fn in_force(&self, key_id: &str) -> Option<String> {
+        self.named
+            .get(key_id)?
+            .iter()
+            .rev()
+            .find(|c| !self.spent.contains(*c))
+            .cloned()
+    }
+
+    fn name_from_charter(&mut self, charter: &Value) {
+        let Some(entries) = charter
+            .get(CHARTER_RECOVERY_COMMITMENTS_FIELD)
+            .and_then(Value::as_object)
+        else {
+            return;
+        };
+        for (key_id, c) in entries {
+            if let Some(c) = c.as_str() {
+                self.named
+                    .entry(key_id.clone())
+                    .or_default()
+                    .push(c.to_string());
+            }
+        }
+    }
+}
+
+/// Walk `lineage` in link order (checked first: an incomplete chain fails
+/// closed), recording each commitment a row names and each one a recovery
+/// spends.
+///
+/// A recovery version spends the commitment then in force for its old key and
+/// names its `next_recovery_commitment` for the new key. A charter version
+/// names every entry of its `recovery_commitments`.
+fn walk_commitments(
+    charters: &CharterSource<'_>,
+    lineage: &[RosterVersion],
+) -> Result<CommitmentWalk, LiveQuorumError> {
+    check_lineage(lineage)?;
+    let mut walk = CommitmentWalk::default();
+    for (index, version) in lineage.iter().enumerate() {
+        if let Some(statement) = version
+            .change_envelope
+            .as_ref()
+            .filter(|e| is_recovery_statement(e))
+        {
+            let old = str_field(statement, "old_holder_key_id");
+            let new = str_field(statement, "new_holder_key_id");
+            if let Some(c) = walk.in_force(old) {
+                walk.spent.insert(c);
+            }
+            let next = statement
+                .get("next_recovery_commitment")
+                .and_then(Value::as_str)
+                .ok_or_else(|| {
+                    LiveQuorumError::Structure(format!(
+                        "the recovery statement that seated {new} carries no next_recovery_commitment"
+                    ))
+                })?;
+            walk.named
+                .entry(new.to_string())
+                .or_default()
+                .push(next.to_string());
+        }
+        match charters {
+            CharterSource::Single(charter) => {
+                if index == 0 {
+                    walk.name_from_charter(charter);
+                }
+            },
+            CharterSource::ByDigest(rows) => {
+                let digest = &version.family.charter_digest;
+                let adopts = index == 0 || *digest != lineage[index - 1].family.charter_digest;
+                if adopts && !digest.is_empty() {
+                    let charter =
+                        rows.get(digest)
+                            .ok_or_else(|| LiveQuorumError::CharterMissing {
+                                index,
+                                charter_digest: digest.clone(),
+                            })?;
+                    walk.name_from_charter(charter);
+                }
+            },
+        }
+    }
+    Ok(walk)
+}
+
+fn in_force_at_head(
+    charters: &CharterSource<'_>,
+    lineage: &[RosterVersion],
+    holder_key_id: &str,
+) -> Result<Option<String>, LiveQuorumError> {
+    let walk = walk_commitments(charters, lineage)?;
+    let head = &lineage[lineage.len() - 1].family;
+    if head.seat(holder_key_id).is_none() {
+        return Ok(None);
+    }
+    Ok(walk.in_force(holder_key_id))
+}
+
+/// The recovery commitment **in force** for `holder_key_id` (CC 4.2.6, rc20):
+/// the one named by the **latest** row of the accord's own roster lineage that
+/// names a commitment for that holder, where "latest" follows the
+/// `prev_head_digest` links, never instants. That row is a recovery version
+/// (its statement's `next_recovery_commitment` for the key it seats) or a
+/// charter version (its `recovery_commitments` entry for the key). A
+/// commitment a recovery has spent never comes back into force: an entry equal
+/// to a spent commitment concludes nothing, and the latest **unspent** one
+/// stands.
+///
+/// This entry point takes **one** charter and reads it as the charter adopted
+/// at genesis; it does not follow a superseding charter that a later version
+/// names by `charter_digest`, since it has no row to read. To follow charter
+/// versions in link order, use [`recovery_commitment_in_force_with_charters`].
 ///
 /// `lineage` is the accord's **stored** roster versions **oldest first**: the
 /// genesis version, then each successor in order, ending at the standing head,
@@ -1064,65 +1236,47 @@ fn check_lineage(lineage: &[RosterVersion]) -> Result<Vec<String>, LiveQuorumErr
 /// first names its predecessor's `persist_row_hash` as [`PREV_HEAD_DIGEST_FIELD`]
 /// (CC 3.2 T6, annex 8.11), and its envelope binds the same link. The caller
 /// supplies versions it has already admitted; this function checks only the
-/// chain, not their signatures.
+/// chain, not their signatures. A recovery whose old key had no commitment in
+/// force (as the supplied charters read) spends nothing the walk can name;
+/// [`verify_holder_recovery`] still refuses its recovery key by id.
 ///
-/// The walk starts at the head and steps back while `holder_key_id` stays
-/// seated. A version that newly seats the key by a recovery statement
-/// ([`RECOVERY_STATEMENT_KIND`], `new_holder_key_id == holder_key_id`) supplies
-/// that statement's `next_recovery_commitment`. A version that newly seats it
-/// by an ordinary roster change, or the genesis version, means no recovery
-/// seated this key: the charter's [`CHARTER_RECOVERY_COMMITMENTS_FIELD`] entry
-/// is in force. A later version need not repeat the commitment.
-///
-/// Returns `Ok(None)` when the holder holds no seat at the head, or no
-/// recovery seated their key and the charter has no entry: that holder cannot
-/// self-rotate, and their recovery is a roster change.
+/// Returns `Ok(None)` when the holder holds no seat at the head, or no row
+/// names an unspent commitment for them: that holder cannot self-rotate, and
+/// their recovery is a roster change.
 ///
 /// # Errors
 /// [`LiveQuorumError::LineageIncomplete`] when the chain is empty, does not
-/// start at genesis, or a link is missing or wrong: it never falls back to the
-/// charter. [`LiveQuorumError::Structure`] when the recovery statement that
-/// seated the key carries no commitment.
+/// start at genesis, or a link is missing or wrong: it never falls back to an
+/// earlier row across the gap. [`LiveQuorumError::Structure`] when a recovery
+/// statement in the lineage carries no next commitment.
 pub fn recovery_commitment_in_force(
     charter: &Value,
     lineage: &[RosterVersion],
     holder_key_id: &str,
 ) -> Result<Option<String>, LiveQuorumError> {
-    check_lineage(lineage)?;
-    let charter_entry = || {
-        charter
-            .get(CHARTER_RECOVERY_COMMITMENTS_FIELD)
-            .and_then(|c| c.get(holder_key_id))
-            .and_then(Value::as_str)
-            .map(str::to_string)
-    };
-    let head = lineage.len() - 1;
-    if lineage[head].family.seat(holder_key_id).is_none() {
-        return Ok(None);
-    }
-    for i in (1..=head).rev() {
-        if lineage[i - 1].family.seat(holder_key_id).is_some() {
-            continue; // seated before this version too: keep walking back.
-        }
-        // Version `i` seated the holder's current key.
-        let statement = lineage[i].change_envelope.as_ref().filter(|e| {
-            is_recovery_statement(e) && str_field(e, "new_holder_key_id") == holder_key_id
-        });
-        let Some(statement) = statement else {
-            return Ok(charter_entry());
-        };
-        return statement
-            .get("next_recovery_commitment")
-            .and_then(Value::as_str)
-            .map(|c| Some(c.to_string()))
-            .ok_or_else(|| {
-                LiveQuorumError::Structure(format!(
-                    "the recovery statement that seated {holder_key_id} carries no next_recovery_commitment"
-                ))
-            });
-    }
-    // Seated at genesis: never recovered.
-    Ok(charter_entry())
+    in_force_at_head(&CharterSource::Single(charter), lineage, holder_key_id)
+}
+
+/// [`recovery_commitment_in_force`] following **every** charter version in
+/// link order (CC 4.2.6, rc20).
+///
+/// `charters` are the charter rows as CIRISPersist stores them; each is
+/// identified by its own `persist_row_hash`, recomputed here, never by a
+/// caller-supplied label. A version is a charter version when it is the
+/// genesis version or names a `charter_digest` other than its predecessor's;
+/// at that point in the walk the row with that digest names its
+/// `recovery_commitments` entries. An empty `charter_digest` adopts none.
+///
+/// # Errors
+/// As [`recovery_commitment_in_force`], and
+/// [`LiveQuorumError::CharterMissing`] when a charter version names a digest
+/// no row in `charters` has: the walk fails closed rather than skip it.
+pub fn recovery_commitment_in_force_with_charters(
+    charters: &[Value],
+    lineage: &[RosterVersion],
+    holder_key_id: &str,
+) -> Result<Option<String>, LiveQuorumError> {
+    in_force_at_head(&CharterSource::by_digest(charters)?, lineage, holder_key_id)
 }
 
 /// What a holder asks a recovery for (CIRISPersist `AccordRecoveryRequest`
@@ -1266,26 +1420,102 @@ fn unbound(detail: impl Into<String>) -> LiveQuorumError {
 ///    standing one with that seat replaced by `{new key, its joined_at, the
 ///    seat's role}` and the head link moved; nothing else.
 /// 4. **The next commitment** is well formed.
-/// 5. **The commitment in force** is resolved by walking `lineage`
-///    ([`recovery_commitment_in_force`]); an incomplete lineage fails closed and
-///    no commitment in force is [`LiveQuorumError::NoCommitmentInForce`].
-/// 6. **A new commitment**: the next commitment differs from the one in force
-///    ([`LiveQuorumError::RecoveryReusesCommitment`]).
-/// 7. **The recovery key matches the commitment in force**:
-///    `recovery_key.commitment() == in force` (constant time).
-/// 8. **Unspent**: no recovery statement in `lineage` names this recovery key
+/// 5. **The lineage** is walked in link order
+///    ([`recovery_commitment_in_force`]); an incomplete lineage fails closed.
+/// 6. **Unspent**: no recovery statement in `lineage` names this recovery key,
+///    and no recovery there spent its commitment
 ///    ([`LiveQuorumError::RecoveryKeySpent`]).
-/// 9. **Signed by the recovery key alone**: exactly one signature, by
-///    `statement.recovery_key_id == recovery_key.key_id`, a hybrid signature
-///    over the statement's JCS bytes (CIRISPersist's `ceg_produce_canonicalize`,
-///    which is [`crate::jcs::canonicalize`]). No quorum is consulted.
+/// 7. **The commitment in force** is the latest unspent one the lineage names
+///    for the holder; none is [`LiveQuorumError::NoCommitmentInForce`].
+/// 8. **A new commitment**: the next commitment is neither the one in force
+///    nor one a recovery already spent
+///    ([`LiveQuorumError::RecoveryReusesCommitment`]).
+/// 9. **The recovery key matches the commitment in force**:
+///    `recovery_key.commitment() == in force` (constant time).
+/// 10. **Signed by the recovery key alone**: exactly one signature, by
+///     `statement.recovery_key_id == recovery_key.key_id`, a hybrid signature
+///     over the statement's JCS bytes (CIRISPersist's `ceg_produce_canonicalize`,
+///     which is [`crate::jcs::canonicalize`]). No quorum is consulted.
 ///
 /// No minimum roster size applies (CC 4.2.6 states none).
+///
+/// This entry point reads `charter` as the charter adopted at genesis (see
+/// [`recovery_commitment_in_force`]); [`verify_holder_recovery_with_charters`]
+/// follows every charter version of the lineage.
+///
+/// # Conformance
+/// This is a pure verifier. A recovery seats a new signing key, and CC 4.2.6
+/// requires of whoever admits the version checks this function does **not**
+/// make; a caller that skips them does not conform:
+/// - **The new key's own signature on the record**: a hybrid signature by
+///   `new_holder_key_id`, resolved in the caller's key directory, over
+///   `offered.record_signing_bytes()` (JCS of the record without
+///   `persist_row_hash`, [`HolderRecoveryDraft::record_bytes`]).
+/// - **Its key type**: `new_holder_key_id` is a registered key record of type
+///   `accord_holder` (not merely present in `directory`, which this function
+///   only uses for its public keys).
+/// - **Charter coverage**: the charter the offered version names
+///   (`charter_digest`, unchanged from the standing version by check 3) is the
+///   stored charter row that covers this roster; this function never reads
+///   the row behind a `charter_digest` except to resolve commitments.
 ///
 /// # Errors
 /// [`LiveQuorumError`] naming the first failed check.
 pub fn verify_holder_recovery(
     charter: &Value,
+    lineage: &[RosterVersion],
+    offered: &FamilyRecord,
+    statement: &Value,
+    recovery_key: &RecoveryKeyRecord,
+    recovery_signatures: &[ThresholdSignature],
+    directory: &[ThresholdMember],
+) -> Result<RecoveryVerdict, LiveQuorumError> {
+    verify_recovery_against(
+        &CharterSource::Single(charter),
+        lineage,
+        offered,
+        statement,
+        recovery_key,
+        recovery_signatures,
+        directory,
+    )
+}
+
+/// [`verify_holder_recovery`] with the commitment in force resolved over
+/// **every** charter version of `lineage` in link order
+/// ([`recovery_commitment_in_force_with_charters`]): `charters` are the stored
+/// charter rows, each identified by its recomputed `persist_row_hash`.
+///
+/// # Conformance
+/// As [`verify_holder_recovery`]: the caller must still check the new key's
+/// signature on the offered record, that it is an `accord_holder` key record,
+/// and that the named charter covers the roster.
+///
+/// # Errors
+/// As [`verify_holder_recovery`], and [`LiveQuorumError::CharterMissing`] when
+/// a version adopts a charter not in `charters`.
+pub fn verify_holder_recovery_with_charters(
+    charters: &[Value],
+    lineage: &[RosterVersion],
+    offered: &FamilyRecord,
+    statement: &Value,
+    recovery_key: &RecoveryKeyRecord,
+    recovery_signatures: &[ThresholdSignature],
+    directory: &[ThresholdMember],
+) -> Result<RecoveryVerdict, LiveQuorumError> {
+    verify_recovery_against(
+        &CharterSource::by_digest(charters)?,
+        lineage,
+        offered,
+        statement,
+        recovery_key,
+        recovery_signatures,
+        directory,
+    )
+}
+
+fn verify_recovery_against(
+    charters: &CharterSource<'_>,
     lineage: &[RosterVersion],
     offered: &FamilyRecord,
     statement: &Value,
@@ -1391,39 +1621,41 @@ pub fn verify_holder_recovery(
     let next_commitment = str_field(statement, "next_recovery_commitment").to_string();
     check_commitment_form(&next_commitment)?;
 
-    // 5. The commitment in force, by the lineage.
-    let in_force =
-        recovery_commitment_in_force(charter, lineage, holder_key_id)?.ok_or_else(|| {
-            LiveQuorumError::NoCommitmentInForce {
-                holder_key_id: holder_key_id.to_string(),
-            }
-        })?;
-    check_commitment_form(&in_force)?;
+    // 5. The lineage, in link order: every commitment named, every one spent.
+    let walk = walk_commitments(charters, lineage)?;
 
-    // 6. The next commitment is not the one being spent.
-    if eq(&next_commitment, &in_force) {
-        return Err(LiveQuorumError::RecoveryReusesCommitment);
-    }
-
-    // 7. The recovery key hashes to the commitment in force.
+    // 6. The recovery key has not rotated a seat before; its commitment is unspent.
     let presented = recovery_key.commitment()?;
-    if !eq(&presented, &in_force) {
-        return Err(LiveQuorumError::RecoveryCommitmentMismatch);
-    }
-
-    // 8. The recovery key has not rotated a seat before.
-    let spent = lineage.iter().any(|v| {
+    let spent_by_id = lineage.iter().any(|v| {
         v.change_envelope.as_ref().is_some_and(|e| {
             is_recovery_statement(e) && str_field(e, "recovery_key_id") == recovery_key.key_id
         })
     });
-    if spent {
+    if spent_by_id || walk.spent.contains(&presented) {
         return Err(LiveQuorumError::RecoveryKeySpent {
             key_id: recovery_key.key_id.clone(),
         });
     }
 
-    // 9. Signed under the recovery key alone, over the statement.
+    // 7. The commitment in force: the latest unspent one named for the holder.
+    let in_force =
+        walk.in_force(holder_key_id)
+            .ok_or_else(|| LiveQuorumError::NoCommitmentInForce {
+                holder_key_id: holder_key_id.to_string(),
+            })?;
+    check_commitment_form(&in_force)?;
+
+    // 8. The next commitment is new: not the one spent here, nor one spent before.
+    if eq(&next_commitment, &in_force) || walk.spent.contains(&next_commitment) {
+        return Err(LiveQuorumError::RecoveryReusesCommitment);
+    }
+
+    // 9. The recovery key hashes to the commitment in force.
+    if !eq(&presented, &in_force) {
+        return Err(LiveQuorumError::RecoveryCommitmentMismatch);
+    }
+
+    // 10. Signed under the recovery key alone, over the statement.
     if str_field(statement, "recovery_key_id") != recovery_key.key_id
         || recovery_signatures.len() != 1
         || recovery_signatures[0].member_id != recovery_key.key_id
@@ -2543,8 +2775,223 @@ mod tests {
         // The charter's (spent) recovery key is refused.
         assert_eq!(
             verify_second(&t, &t.lineage, &t.recovery_a),
+            Err(LiveQuorumError::RecoveryKeySpent {
+                key_id: "RA1".to_string()
+            })
+        );
+    }
+
+    // --- charter versions in link order (CC 4.2.6, rc20) ---------------------
+
+    /// genesis A1,B1,C1 adopting charter G → A1 recovers under RA1 (A1 → A1n,
+    /// next RA2) → a roster change adding D1 adopts a new charter.
+    struct CharterAfterRecovery {
+        genesis_charter: Value,
+        lineage: Vec<RosterVersion>,
+        directory: Vec<ThresholdMember>,
+        recovery_a: Holder,
+        recovery_a2: Holder,
+    }
+
+    fn charter_row(entries: Value, version: u32) -> Value {
+        json!({
+            "charter_version": version,
+            CHARTER_RECOVERY_COMMITMENTS_FIELD: entries,
+        })
+    }
+
+    fn row_digest(charter: &Value) -> String {
+        crate::persist_canonical::persist_row_hash(charter).unwrap()
+    }
+
+    /// The lineage, with the third version adopting `new_charter`.
+    fn charter_after_recovery(
+        new_charter: impl Fn(&RecoveryFixture, &Holder) -> Value,
+    ) -> (CharterAfterRecovery, Value) {
+        let f = recovery_fixture();
+        let recovery_a2 = Holder::new("RA2");
+        let genesis_charter = charter_row(f.charter[CHARTER_RECOVERY_COMMITMENTS_FIELD].clone(), 1);
+        let mut v0 = f.standing.clone();
+        v0.charter_digest = row_digest(&genesis_charter);
+        let v0 = stored(v0);
+        let first = build_holder_recovery(
+            &v0,
+            &request(
+                "A1",
+                "A1n",
+                "RA1",
+                &recovery_a2.record().commitment().unwrap(),
+            ),
+        )
+        .unwrap();
+        let v1 = stored(first.next);
+        let charter2 = new_charter(&f, &recovery_a2);
+        let change = build_membership_change(
+            &v1,
+            &[DecidedSeatChange {
+                change: adding(&["D1"]),
+                decision: "d".repeat(64),
+            }],
+            &row_digest(&charter2),
+            at(T1),
+        )
+        .unwrap();
+        let mut directory = f.directory.clone();
+        directory.push(Holder::new("D1").member());
+        directory.push(Holder::new("A1nn").member());
+        let lineage = vec![
+            RosterVersion {
+                family: v0,
+                change_envelope: None,
+            },
+            RosterVersion {
+                family: v1,
+                change_envelope: Some(first.statement),
+            },
+            RosterVersion {
+                family: stored(change.next),
+                change_envelope: Some(change.change_envelope),
+            },
+        ];
+        (
+            CharterAfterRecovery {
+                genesis_charter,
+                lineage,
+                directory,
+                recovery_a: f.recovery_a,
+                recovery_a2,
+            },
+            charter2,
+        )
+    }
+
+    /// A1n → A1nn under `key`, verified over both charters in link order.
+    fn recover_a1n(
+        t: &CharterAfterRecovery,
+        charters: &[Value],
+        key: &Holder,
+        next: &str,
+    ) -> Result<RecoveryVerdict, LiveQuorumError> {
+        let head = &t.lineage[2].family;
+        let d = build_holder_recovery(head, &request("A1n", "A1nn", &key.member_id, next)).unwrap();
+        verify_holder_recovery_with_charters(
+            charters,
+            &t.lineage,
+            &d.next,
+            &d.statement,
+            &key.record(),
+            &[sign_st(key, &d.statement)],
+            &t.directory,
+        )
+    }
+
+    #[test]
+    fn a_new_charter_listing_a_fresh_entry_after_a_recovery_is_in_force() {
+        let fresh = Holder::new("RA9");
+        let fresh_c = fresh.record().commitment().unwrap();
+        let (t, charter2) = charter_after_recovery(|f, _| {
+            let mut e = f.charter[CHARTER_RECOVERY_COMMITMENTS_FIELD].clone();
+            e["A1n"] = json!(fresh_c);
+            e["D1"] = json!("d".repeat(64));
+            charter_row(e, 2)
+        });
+        let charters = [t.genesis_charter.clone(), charter2];
+        assert_eq!(
+            recovery_commitment_in_force_with_charters(&charters, &t.lineage, "A1n").unwrap(),
+            Some(fresh_c.clone())
+        );
+        // Before the charter version, the recovery's next commitment stood.
+        assert_eq!(
+            recovery_commitment_in_force_with_charters(&charters, &t.lineage[..2], "A1n").unwrap(),
+            Some(t.recovery_a2.record().commitment().unwrap())
+        );
+        // D1, listed by the new charter only, reads it.
+        assert_eq!(
+            recovery_commitment_in_force_with_charters(&charters, &t.lineage, "D1").unwrap(),
+            Some("d".repeat(64))
+        );
+        let next = Holder::new("RA10").record().commitment().unwrap();
+        assert_eq!(
+            recover_a1n(&t, &charters, &fresh, &next)
+                .unwrap()
+                .new_signing_key_id,
+            "A1nn"
+        );
+        // The commitment the charter superseded no longer matches.
+        assert_eq!(
+            recover_a1n(&t, &charters, &t.recovery_a2, &next),
             Err(LiveQuorumError::RecoveryCommitmentMismatch)
         );
+    }
+
+    #[test]
+    fn a_new_charter_copying_a_spent_entry_concludes_nothing() {
+        let (t, charter2) = charter_after_recovery(|f, _| {
+            // The genesis entries copied, and the spent RA1 listed for A1n too.
+            let mut e = f.charter[CHARTER_RECOVERY_COMMITMENTS_FIELD].clone();
+            e["A1n"] = e["A1"].clone();
+            charter_row(e, 2)
+        });
+        let charters = [t.genesis_charter.clone(), charter2];
+        let ra2 = t.recovery_a2.record().commitment().unwrap();
+        // The recovery's next commitment stays in force.
+        assert_eq!(
+            recovery_commitment_in_force_with_charters(&charters, &t.lineage, "A1n").unwrap(),
+            Some(ra2)
+        );
+        let next = Holder::new("RA3").record().commitment().unwrap();
+        // The spent key is refused...
+        assert_eq!(
+            recover_a1n(&t, &charters, &t.recovery_a, &next),
+            Err(LiveQuorumError::RecoveryKeySpent {
+                key_id: "RA1".to_string()
+            })
+        );
+        // ...and the unspent one rotates the seat.
+        assert_eq!(
+            recover_a1n(&t, &charters, &t.recovery_a2, &next)
+                .unwrap()
+                .next_commitment,
+            next
+        );
+        // A recovery naming the spent commitment as its next one is refused.
+        let spent = t.recovery_a.record().commitment().unwrap();
+        assert_eq!(
+            recover_a1n(&t, &charters, &t.recovery_a2, &spent),
+            Err(LiveQuorumError::RecoveryReusesCommitment)
+        );
+    }
+
+    #[test]
+    fn a_charter_version_without_its_row_fails_closed() {
+        let (t, _) = charter_after_recovery(|f, _| charter_row(f.charter.clone(), 2));
+        assert_eq!(
+            recovery_commitment_in_force_with_charters(
+                std::slice::from_ref(&t.genesis_charter),
+                &t.lineage,
+                "A1n"
+            ),
+            Err(LiveQuorumError::CharterMissing {
+                index: 2,
+                charter_digest: t.lineage[2].family.charter_digest.clone(),
+            })
+        );
+        // A row whose content was altered no longer hashes to the digest named.
+        let mut altered = t.genesis_charter.clone();
+        altered["charter_version"] = json!(9);
+        assert!(matches!(
+            recovery_commitment_in_force_with_charters(&[altered], &t.lineage[..1], "A1"),
+            Err(LiveQuorumError::CharterMissing { index: 0, .. })
+        ));
+        // A broken link still fails closed before any charter is read.
+        assert!(matches!(
+            recovery_commitment_in_force_with_charters(
+                std::slice::from_ref(&t.genesis_charter),
+                &[t.lineage[0].clone(), t.lineage[2].clone()],
+                "A1n"
+            ),
+            Err(LiveQuorumError::LineageIncomplete { .. })
+        ));
     }
 
     #[test]

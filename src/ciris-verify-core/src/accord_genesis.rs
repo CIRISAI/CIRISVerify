@@ -1001,9 +1001,27 @@ pub fn build_membership_change(
 ///
 /// Returns the key ids the change seats.
 ///
-/// Not checked here (persist's door checks them against its store): that the
-/// added holders signed the offered record, that they are `accord_holder` key
-/// records, and that the named charter covers the roster.
+/// # Conformance
+/// This is a pure verifier: it reads no store. CC 4.2.6 requires three more
+/// checks of whoever admits a change that adds a holder, and this function
+/// makes **none** of them; a caller that skips them does not conform. For each
+/// key id returned (each added holder), the caller must check:
+/// - **The added holder's own signature on the record**: a hybrid signature by
+///   that key, resolved in the caller's key directory, over
+///   `offered.record_signing_bytes()` (JCS of the offered record without
+///   `persist_row_hash`, [`RosterChangeDraft::record_bytes`]). The standing
+///   roster's cosigns over the envelope are not this signature; signing the
+///   record is the holder's consent to the seat.
+/// - **Its key type**: the key id names a registered key record of type
+///   `accord_holder` (`directory` here supplies only public keys and proves
+///   nothing about the record's type).
+/// - **Charter coverage**: the charter row the offered version names
+///   (`offered.charter_digest`, that row's `persist_row_hash`) is stored, and
+///   covers the offered roster: in particular its `recovery_commitments`
+///   lists each added holder's commitment (CC 4.2.6).
+///
+/// CIRISPersist's door (`accord_roster::verify_accord_roster_change`) makes
+/// these checks against its store.
 ///
 /// # Errors
 /// [`AccordGenesisError`] naming the first failing check.

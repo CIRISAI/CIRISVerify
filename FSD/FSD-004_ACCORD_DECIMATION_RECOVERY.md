@@ -234,13 +234,23 @@ The change that carries a version is persist's shape, and its signers sign its J
   change envelope that admitted it, and checks every link: each version's
   `prev_head_digest` is its predecessor's `persist_row_hash`, its envelope's
   `prior_persist_row_hash` / `next_persist_row_hash` bind the same pair, and each stored
-  `persist_row_hash` recomputes. It walks back from the head while the key stays seated. The
-  version that newly seated the key supplies the answer: if a recovery statement seated
-  it, that statement's `next_recovery_commitment`; if an ordinary roster change or genesis
-  did, the charter's `recovery_commitments` entry. An incomplete lineage (empty, not
-  starting at genesis, a missing or wrong link, a version without its envelope) fails
-  closed with `LineageIncomplete`; it never falls back to the charter. `verify_holder_recovery` resolves the commitment itself from
-  `charter` and `lineage`, so a caller cannot pass the spent one.
+  `persist_row_hash` recomputes. Per CC 4.2.6 (rc20) the commitment in force is the one
+  named by the **latest** row, in link order (never by instants), that names a commitment
+  for the holder: a recovery version (its statement's `next_recovery_commitment` for the
+  key it seats) or a charter version (the genesis version, or one naming a
+  `charter_digest` other than its predecessor's; its `recovery_commitments` entry). A
+  commitment a recovery has spent never comes back into force: a charter entry equal to
+  one spent earlier concludes nothing and the latest unspent commitment stands. The
+  single-charter form reads `charter` as the genesis charter;
+  `recovery_commitment_in_force_with_charters(charters, lineage, holder_key_id)` (and
+  `verify_holder_recovery_with_charters`) takes the stored charter rows, identifies each by
+  its recomputed `persist_row_hash`, reads each charter version's row in link order, and
+  fails closed with `CharterMissing` when a named row is absent. An incomplete lineage
+  (empty, not starting at genesis, a missing or wrong link, a version without its
+  envelope) fails closed with `LineageIncomplete`; it never falls back to an earlier row
+  across the gap. `verify_holder_recovery` resolves the commitment itself, so a caller
+  cannot pass the spent one, and refuses a recovery key whose id or commitment a recovery
+  in the lineage already spent, and a next commitment already spent.
 - **(b) No minimum roster size**, on recoveries and on ordinary roster changes (above).
 - **(c) A recovery whose next commitment equals the commitment it spends concludes
   nothing** (`RecoveryReusesCommitment`).
