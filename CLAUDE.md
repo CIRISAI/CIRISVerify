@@ -79,7 +79,7 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 | `bindings/python` | Released | ciris-verify on PyPI with platform wheels, wallet signing, named key storage, `jcs_canonicalize`, `resolve_role_authority`, `verify_partner_record_quorum`, `verify_delegation_scope_split`, `verify_accord_custody_attestation`, `verify_accord_invocation` / `accord_latch_apply` / `accord_latch_status`, `rns_destination_hash`, `scope_privacy` namespace, `derive_epoch_key` / `derive_epoch_stream_nonce`, `canonical_subject` / `canonical_subject_from_triple` / `parse_canonical_subject`, `derive_self_enc` / `self_enc_pubkeys` / `self_enc_respond`, `keccak256` / `checksum_address` / `CIRISVerify.sign_evm_transaction_fields`, `verify_ed25519` / `verify_p256`, `test_anchor_compiled_in`; `SourceDetails` carries `sources` / `trust_root` |
 | `bindings/swift` | Released | CIRISVerify.swift wrapper + bridging header, XCFramework build script |
 
-**Trust root**: the CC 5.3.4 **GenesisBundle** (charter, accord-holder roster, serve nodes and their transit destinations), fetched over HTTPS from every configured host and verified by `genesis_bundle::verify_genesis_bundle` against the A1/B1/C1 holders baked into this binary (never the bundle's own `holders`). Threshold is `max(carried M, strict majority of the baked roster)`, hybrid on every counted authorization, v4 only. `select_trust_root` takes the highest verified version; two verified bundles at one version with different fingerprints select nothing (CC 3.2 T8(ii)). One verified host suffices. There is no DNS source and no single steward key.
+**Trust root**: the CC 5.3.4 **GenesisBundle** (charter, accord-holder roster, serve nodes and their transit destinations), fetched over HTTPS from every configured host and verified by `genesis_bundle::verify_genesis_bundle` against the A1/B1/C1 holders baked into this binary (never the bundle's own `holders`). Threshold is `max(carried M, strict majority of the baked roster)`, hybrid on every counted authorization, v4 only. `select_trust_root` selects the one verified bundle fingerprint; two or more distinct verified bundles select nothing (CC 3.2 T8(ii)). `version` is the format version (only 4 verifies), not a sequence, and bundles carry no `prev`, so a successor bundle is not followed while any host serves its predecessor (fails closed; chain-following is edition 2, #338). One verified host suffices. There is no DNS source and no single steward key.
 
 **Licensing**: a licence is a cosigned `licensure:{authority}:v1` row honoured through the reader's own trust set (CC 4.4.3.8). Verify does not yet evaluate those rows, so **every deployment is community**. Revocation is persist's `federation_revocations` quorum rows.
 
@@ -175,7 +175,7 @@ This project extends Veilid's `keyring-manager` pattern. To maintain compatibili
 │  HTTPS trust-root hosts (api / us / eu registry, serve nodes) each      │
 │  serve the holder-authorized GenesisBundle                              │
 │  Every bundle verified against the accord holders baked into the binary │
-│  Highest verified version selected; one verified host suffices          │
+│  One distinct verified bundle selected; one verified host suffices      │
 │  Two verified bundles at one version, different fingerprints → none     │
 └─────────────────────────────────────────────────────────────────────────┘
                                     │
