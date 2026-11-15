@@ -136,6 +136,10 @@ pub mod xwing;
 #[cfg(feature = "hpke")]
 pub mod hpke;
 
+// Composite ML-DSA-65 with Ed25519, the edition-2 signature (CC 2.6.1.7, #326).
+#[cfg(feature = "composite")]
+pub mod composite;
+
 #[cfg(feature = "scope-privacy")]
 pub mod scope_privacy;
 

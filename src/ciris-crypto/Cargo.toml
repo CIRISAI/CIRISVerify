@@ -99,6 +99,9 @@ bench-liboqs = ["dep:oqs"]
 xwing = ["dep:x-wing", "dep:zeroize"]
 xchacha = ["std", "dep:chacha20poly1305"]
 hpke = ["xwing", "aes-gcm", "random"]
+# v23.0.0+ (CIRISVerify#326, CC 2.6.1.7): composite ML-DSA-65 with Ed25519
+# (draft-ietf-lamps-pq-composite-sigs-19 as profiled by draft-ietf-jose-pq-composite-sigs-06). no_std.
+composite = ["pqc-ml-dsa", "ed25519"]
 scope-privacy = ["kdf", "hmac"]
 
 [dependencies]
