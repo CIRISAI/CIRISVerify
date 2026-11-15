@@ -97,6 +97,8 @@ pub mod build_attestation_bundle;
 pub mod cache;
 /// CC 2.3.2.1 canonical-hash subject codec (#201) — tagged subjects, bare hex rejected.
 pub mod canonical_subject;
+/// CBOR Common Deterministic Encoding, the edition-2 wire encoding (CC 2.6.1, #326).
+pub mod cde;
 pub mod ceg_error;
 pub mod ceg_outbox;
 /// Does a shipped classification carry policy force? (#238 follow-up) —
@@ -109,6 +111,9 @@ pub mod config;
 #[cfg(feature = "host")]
 pub mod device_attestation;
 pub mod doc_integrity;
+/// The edition-2 signed row: COSE_Sign1 over deterministic CBOR, composite signature (CC 2.6.1, #326).
+#[cfg(feature = "pqc")]
+pub mod edition2;
 #[cfg(feature = "host")]
 pub mod engine;
 pub mod error;

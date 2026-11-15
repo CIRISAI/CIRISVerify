@@ -62,7 +62,7 @@ host = [
     "dep:android_system_properties",
     "dep:windows-sys",
 ]
-pqc = ["ciris-crypto/pqc-ml-dsa", "ciris-keyring?/pqc-ml-dsa"]
+pqc = ["ciris-crypto/pqc-ml-dsa", "ciris-crypto/composite", "ciris-keyring?/pqc-ml-dsa"]
 # CIRISVerify#202 — TEST-ONLY trust-root / custody relaxation for the local mesh
 # harness (a software single-key accord anchor + a software-only accord holder,
 # no operator YubiKeys). This is the REAL boundary, not a runtime flag: the prod
