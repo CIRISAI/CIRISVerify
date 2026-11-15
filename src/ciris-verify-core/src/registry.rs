@@ -1385,7 +1385,7 @@ pub struct FunctionManifestTargets {
     pub targets: Vec<String>,
 }
 
-/// Compute SHA-256 hash of the currently running binary.
+/// Compute SHA-256 hash of the file that holds CIRISVerify's own code.
 ///
 /// Used for Level 4 self-verification: proves CIRISVerify hasn't been tampered with.
 ///
@@ -1393,90 +1393,35 @@ pub struct FunctionManifestTargets {
 ///
 /// Lowercase hex-encoded SHA-256 hash, or error if binary cannot be read.
 ///
-/// # Platform Notes
+/// # Which file
 ///
-/// - Android: Discovers `libciris_verify_ffi.so` via `/proc/self/maps`
-/// - Linux: Discovers `libciris_verify_ffi.so` via `/proc/self/maps` (FFI-aware)
-/// - iOS: Discovers dylib via `_dyld_image_count()` / `_dyld_get_image_name()`
-/// - macOS/Windows: Uses `std::env::current_exe()` (standalone binary usage)
+/// The file is found by address, not by name ([`self_module_path`]): the mapped
+/// file whose code contains a function of this crate. So the standalone
+/// `libciris_verify_ffi.so`, a cdylib that statically folds verify in (e.g.
+/// `ciris_server/_native.abi3.so`, CIRISVerify#210), an Apple framework and the
+/// `ciris-verify` executable all hash the file verify actually runs from.
+/// `current_exe()` is used only when that lookup fails, and is logged at warn:
+/// when verify is a library it names the host process.
+///
+/// The hash is `binary_format::canonical_binary_hash` over the whole file
+/// (the Mach-O `__TEXT` region on Apple, the whole file elsewhere).
 pub fn compute_self_hash() -> Result<String, VerifyError> {
-    // On Android, current_exe() returns /system/bin/app_process64 which is the
-    // Android runtime, not our library. We need to find libciris_verify_ffi.so.
-    #[cfg(target_os = "android")]
-    let exe_path = {
-        match find_library_path("libciris_verify_ffi.so") {
-            Some(path) => {
-                tracing::debug!("compute_self_hash (Android): found .so at {:?}", path);
-                path
-            },
-            None => {
-                tracing::warn!(
-                    "compute_self_hash (Android): could not find libciris_verify_ffi.so, falling back to current_exe()"
-                );
-                std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
-                    message: format!("Cannot determine executable path: {}", e),
-                })?
-            },
-        }
+    let exe_path = match self_module_path() {
+        Some(path) => {
+            tracing::debug!(path = %path.display(), "compute_self_hash: located own module");
+            path
+        },
+        None => {
+            let exe = std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
+                message: format!("Cannot determine executable path: {}", e),
+            })?;
+            tracing::warn!(
+                fallback = %exe.display(),
+                "compute_self_hash: module holding CIRISVerify code not found; hashing current_exe(), which is the host process when CIRISVerify is a library"
+            );
+            exe
+        },
     };
-
-    // On iOS/macOS, current_exe() returns the host app binary (or Python interpreter),
-    // not our dylib. Use dyld image iteration to find libciris_verify_ffi.dylib.
-    #[cfg(any(target_os = "ios", target_os = "macos"))]
-    let exe_path = {
-        match find_library_path_dyld() {
-            Some(path) => {
-                tracing::debug!("compute_self_hash (Apple): found dylib at {:?}", path);
-                path
-            },
-            None => {
-                tracing::warn!(
-                    "compute_self_hash (Apple): dylib not found in dyld images, falling back to current_exe()"
-                );
-                std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
-                    message: format!("Cannot determine executable path: {}", e),
-                })?
-            },
-        }
-    };
-
-    // On Linux (not Android), when loaded as FFI library (e.g., by Python),
-    // current_exe() returns the host process (e.g., /usr/bin/python3.12).
-    // Use /proc/self/maps to find our .so instead.
-    #[cfg(all(target_os = "linux", not(target_os = "android")))]
-    let exe_path = {
-        match find_library_path_linux("libciris_verify_ffi.so") {
-            Some(path) => {
-                tracing::debug!("compute_self_hash (Linux): found .so at {:?}", path);
-                path
-            },
-            None => {
-                tracing::warn!(
-                    "compute_self_hash (Linux): could not find libciris_verify_ffi.so, falling back to current_exe()"
-                );
-                std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
-                    message: format!("Cannot determine executable path: {}", e),
-                })?
-            },
-        }
-    };
-
-    // On Windows (and other platforms), use current_exe() (standalone binary usage)
-    #[cfg(not(any(
-        target_os = "android",
-        target_os = "ios",
-        target_os = "macos",
-        target_os = "linux"
-    )))]
-    let exe_path = std::env::current_exe().map_err(|e| VerifyError::IntegrityError {
-        message: format!("Cannot determine executable path: {}", e),
-    })?;
-
-    tracing::debug!(
-        "compute_self_hash: exe_path={:?}, exists={}",
-        exe_path,
-        exe_path.exists()
-    );
 
     let file_bytes = std::fs::read(&exe_path).map_err(|e| VerifyError::IntegrityError {
         message: format!("Cannot read executable for hashing: {}", e),
@@ -1491,158 +1436,170 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
     Ok(hex::encode(hash))
 }
 
-/// Find a loaded library's path by parsing /proc/self/maps.
+/// An address inside this crate's code. `#[inline(never)]` so the function has
+/// a body of its own in whichever module verify is linked into.
+#[inline(never)]
+fn self_code_address() -> usize {
+    self_code_address as *const () as usize
+}
+
+/// Path of the loaded file (executable or shared library) that contains
+/// CIRISVerify's code, found from the address of a function in this crate
+/// (CIRISVerify#210).
 ///
-/// On Android, shared libraries are loaded into the process address space
-/// and their paths are listed in /proc/self/maps. This function finds the
-/// first mapping for a library with the given name.
-#[cfg(target_os = "android")]
-fn find_library_path(lib_name: &str) -> Option<std::path::PathBuf> {
-    use std::fs::File;
-    use std::io::{BufRead, BufReader};
+/// - Linux / Android: the `/proc/self/maps` entry whose address range contains
+///   that address, then `dladdr` if `/proc` is unavailable.
+/// - macOS / iOS: `dladdr`.
+/// - Windows: `GetModuleHandleExW(GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS)` +
+///   `GetModuleFileNameW`.
+///
+/// `None` when no lookup names an absolute path to a regular file. On Android
+/// a library mapped straight out of the APK (`base.apk`, or a `dladdr` name
+/// with `!/`) is `None`: the APK is not the library's file.
+#[must_use]
+pub fn self_module_path() -> Option<std::path::PathBuf> {
+    let addr = self_code_address();
 
-    let maps_file = match File::open("/proc/self/maps") {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!("find_library_path: cannot open /proc/self/maps: {}", e);
-            return None;
-        },
-    };
-
-    let reader = BufReader::new(maps_file);
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-
-        // /proc/self/maps format:
-        // address          perms offset  dev   inode   pathname
-        // 7f1234567000-... r-xp  00000000 fd:01 1234567 /path/to/lib.so
-        if line.contains(lib_name) {
-            // Find the path - it's the last whitespace-separated field
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 6 {
-                let full_path = parts[5..].join(" ");
-                if full_path.contains(lib_name) {
-                    tracing::debug!("find_library_path: found {} at {}", lib_name, full_path);
-                    return Some(std::path::PathBuf::from(full_path));
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    {
+        match std::fs::read_to_string("/proc/self/maps") {
+            Ok(maps) => {
+                if let Some(p) = mapped_file_containing(&maps, addr).filter(|p| usable_path(p)) {
+                    return Some(p);
                 }
-            }
+            },
+            Err(e) => tracing::debug!(error = %e, "self_module_path: /proc/self/maps unreadable"),
         }
     }
 
-    tracing::warn!(
-        "find_library_path: {} not found in /proc/self/maps",
-        lib_name
-    );
+    #[cfg(unix)]
+    {
+        if let Some(p) = dladdr_path(addr).filter(|p| usable_path(p)) {
+            return Some(p);
+        }
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        if let Some(p) = windows_module_path(addr).filter(|p| usable_path(p)) {
+            return Some(p);
+        }
+    }
+
+    #[cfg(not(any(unix, target_os = "windows")))]
+    let _ = addr;
+
     None
 }
 
-/// Find a loaded library's path by parsing /proc/self/maps (Linux desktop/server).
-///
-/// On Linux, when the FFI library is loaded by another process (e.g., Python),
-/// `current_exe()` returns the host process path (e.g., `/usr/bin/python3.12`)
-/// rather than our shared library. This function parses `/proc/self/maps` to
-/// find `libciris_verify_ffi.so` in the process's memory mappings.
-#[cfg(all(target_os = "linux", not(target_os = "android")))]
-fn find_library_path_linux(lib_name: &str) -> Option<std::path::PathBuf> {
-    use std::fs::File;
-    use std::io::{BufRead, BufReader};
+/// An absolute path to an existing regular file, and not an APK container.
+fn usable_path(p: &std::path::Path) -> bool {
+    let s = p.to_string_lossy();
+    if s.contains("!/") || s.ends_with(".apk") {
+        return false;
+    }
+    p.is_absolute() && p.is_file()
+}
 
-    let maps_file = match File::open("/proc/self/maps") {
-        Ok(f) => f,
-        Err(e) => {
-            tracing::warn!(
-                "find_library_path_linux: cannot open /proc/self/maps: {}",
-                e
-            );
-            return None;
-        },
-    };
-
-    let reader = BufReader::new(maps_file);
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
+/// The pathname of the `/proc/self/maps` entry whose `[start, end)` range
+/// contains `addr`, if that entry names a file (pathname starting with `/`).
+#[cfg(any(target_os = "linux", target_os = "android", test))]
+fn mapped_file_containing(maps: &str, addr: usize) -> Option<std::path::PathBuf> {
+    // Format: `start-end perms offset dev inode<spaces>pathname`; the pathname
+    // may contain spaces, so it is the remainder after the fifth field.
+    for line in maps.lines() {
+        let mut rest = line;
+        let mut fields = [""; 5];
+        for f in &mut fields {
+            rest = rest.trim_start();
+            let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+            *f = &rest[..end];
+            rest = &rest[end..];
+        }
+        let Some((start, end)) = fields[0].split_once('-') else {
+            continue;
         };
-
-        // /proc/self/maps format:
-        // address          perms offset  dev   inode   pathname
-        // 7f1234567000-... r-xp  00000000 fd:01 1234567 /path/to/lib.so
-        if line.contains(lib_name) {
-            // Find the path - it's the last whitespace-separated field
-            let parts: Vec<&str> = line.split_whitespace().collect();
-            if parts.len() >= 6 {
-                let full_path = parts[5..].join(" ");
-                if full_path.contains(lib_name) {
-                    tracing::info!(
-                        "find_library_path_linux: found {} at {}",
-                        lib_name,
-                        full_path
-                    );
-                    return Some(std::path::PathBuf::from(full_path));
-                }
-            }
+        let (Ok(start), Ok(end)) = (
+            usize::from_str_radix(start, 16),
+            usize::from_str_radix(end, 16),
+        ) else {
+            continue;
+        };
+        if (start..end).contains(&addr) {
+            let path = rest.trim();
+            return path
+                .starts_with('/')
+                .then(|| std::path::PathBuf::from(path));
         }
     }
-
-    tracing::warn!(
-        "find_library_path_linux: {} not found in /proc/self/maps",
-        lib_name
-    );
     None
 }
 
-/// Find the path to our loaded library using dyld image iteration.
-///
-/// Iterates all loaded dyld images to find one whose name contains
-/// `libciris_verify_ffi` or `CIRISVerify`. This matches the same approach
-/// used by `get_code_base_macos()` in function_integrity.rs.
-#[cfg(any(target_os = "ios", target_os = "macos"))]
-fn find_library_path_dyld() -> Option<std::path::PathBuf> {
-    extern "C" {
-        fn _dyld_image_count() -> u32;
-        fn _dyld_get_image_name(image_index: u32) -> *const std::ffi::c_char;
+/// `dladdr`'s `dli_fname` for `addr`: the file of the loaded object that
+/// contains it.
+#[cfg(unix)]
+fn dladdr_path(addr: usize) -> Option<std::path::PathBuf> {
+    use std::os::unix::ffi::OsStrExt;
+
+    let mut info: libc::Dl_info = unsafe { std::mem::zeroed() };
+    // SAFETY: `info` is a valid out-pointer; `addr` is only compared, never
+    // dereferenced, by the loader.
+    let rc = unsafe { libc::dladdr(addr as *const libc::c_void, &mut info) };
+    if rc == 0 || info.dli_fname.is_null() {
+        return None;
+    }
+    // SAFETY: non-null `dli_fname` is a NUL-terminated string owned by the
+    // loader for the life of the object.
+    let name = unsafe { std::ffi::CStr::from_ptr(info.dli_fname) };
+    Some(std::path::PathBuf::from(std::ffi::OsStr::from_bytes(
+        name.to_bytes(),
+    )))
+}
+
+/// The file of the module (DLL or EXE) containing `addr`.
+#[cfg(target_os = "windows")]
+fn windows_module_path(addr: usize) -> Option<std::path::PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+
+    const GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS: u32 = 0x0000_0004;
+    const GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT: u32 = 0x0000_0002;
+
+    #[link(name = "kernel32")]
+    extern "system" {
+        fn GetModuleHandleExW(
+            dw_flags: u32,
+            lp_module_name: *const u16,
+            ph_module: *mut *mut std::ffi::c_void,
+        ) -> i32;
+        fn GetModuleFileNameW(
+            h_module: *mut std::ffi::c_void,
+            lp_filename: *mut u16,
+            n_size: u32,
+        ) -> u32;
     }
 
-    const LIB_NAME: &str = "libciris_verify_ffi";
-    const FRAMEWORK_NAME: &str = "CIRISVerify";
-
-    unsafe {
-        let count = _dyld_image_count();
-        tracing::info!("find_library_path_dyld: searching {} loaded images", count);
-
-        for i in 0..count {
-            let name_ptr = _dyld_get_image_name(i);
-            if name_ptr.is_null() {
-                continue;
-            }
-            let name = std::ffi::CStr::from_ptr(name_ptr);
-            let name_str = name.to_string_lossy();
-
-            if i < 5 || name_str.contains(LIB_NAME) || name_str.contains(FRAMEWORK_NAME) {
-                tracing::info!("find_library_path_dyld: image[{}] = {}", i, name_str);
-            }
-
-            if name_str.contains(LIB_NAME) || name_str.contains(FRAMEWORK_NAME) {
-                let path = std::path::PathBuf::from(name_str.into_owned());
-                tracing::info!("find_library_path_dyld: FOUND at image[{}]: {:?}", i, path);
-                return Some(path);
-            }
-        }
-
-        tracing::warn!(
-            "find_library_path_dyld: {} / {} not found in {} images",
-            LIB_NAME,
-            FRAMEWORK_NAME,
-            count
-        );
-        None
+    let mut handle: *mut std::ffi::c_void = std::ptr::null_mut();
+    // SAFETY: with FROM_ADDRESS the name argument is an address inside a
+    // module, never read as a string; `handle` is a valid out-pointer.
+    let ok = unsafe {
+        GetModuleHandleExW(
+            GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+            addr as *const u16,
+            &mut handle,
+        )
+    };
+    if ok == 0 || handle.is_null() {
+        return None;
     }
+    let mut buf = vec![0u16; 32_768];
+    // SAFETY: `buf` holds `buf.len()` u16s.
+    let n = unsafe { GetModuleFileNameW(handle, buf.as_mut_ptr(), buf.len() as u32) } as usize;
+    if n == 0 || n >= buf.len() {
+        return None;
+    }
+    Some(std::path::PathBuf::from(std::ffi::OsString::from_wide(
+        &buf[..n],
+    )))
 }
 
 /// Get the current target platform name at compile time.
@@ -2570,5 +2527,88 @@ mod tests {
             ),
             "URL did not match documented Path A shape: got '{url}'"
         );
+    }
+
+    // ---- CIRISVerify#210: the self-hash locates its module by address ----
+
+    #[test]
+    fn maps_parser_finds_the_range_holding_the_address() {
+        let maps = "\
+55d0a0000000-55d0a0001000 r--p 00000000 fd:01 100 /usr/bin/python3.12
+7f0000000000-7f0000100000 r-xp 00001000 fd:01 200                        /srv/site packages/ciris_server/_native.abi3.so
+7f0000100000-7f0000200000 r-xp 00000000 fd:01 300 /usr/lib/libciris_verify_ffi.so
+7f0000200000-7f0000201000 rw-p 00000000 00:00 0
+7ffd00000000-7ffd00021000 rw-p 00000000 00:00 0                          [stack]
+";
+        assert_eq!(
+            mapped_file_containing(maps, 0x7f00_0000_1234),
+            Some(std::path::PathBuf::from(
+                "/srv/site packages/ciris_server/_native.abi3.so"
+            )),
+            "the folding cdylib, not the name-matching library"
+        );
+        assert_eq!(
+            mapped_file_containing(maps, 0x7f00_0010_0000),
+            Some(std::path::PathBuf::from("/usr/lib/libciris_verify_ffi.so"))
+        );
+        // End is exclusive; anonymous and pseudo mappings name no file.
+        assert_eq!(mapped_file_containing(maps, 0x7f00_0020_0000), None);
+        assert_eq!(mapped_file_containing(maps, 0x7ffd_0000_0010), None);
+        assert_eq!(mapped_file_containing(maps, 0x1000), None);
+    }
+
+    #[test]
+    fn usable_path_refuses_apk_containers_and_relative_paths() {
+        assert!(!usable_path(std::path::Path::new(
+            "/data/app/x/base.apk!/lib/arm64-v8a/libciris_verify_ffi.so"
+        )));
+        assert!(!usable_path(std::path::Path::new("/data/app/x/base.apk")));
+        assert!(!usable_path(std::path::Path::new("python3")));
+    }
+
+    /// The located file is the one whose mapped code contains a known function
+    /// of this crate (`compute_self_hash`), and `dladdr` agrees.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn self_module_path_contains_a_known_function() {
+        let path = self_module_path().expect("own module located");
+        assert!(path.is_absolute() && path.is_file(), "{}", path.display());
+
+        let known = compute_self_hash as *const () as usize;
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        let holds_known = maps.lines().any(|line| {
+            let Some((range, _)) = line.split_once(' ') else {
+                return false;
+            };
+            let Some((s, e)) = range.split_once('-') else {
+                return false;
+            };
+            let (s, e) = (
+                usize::from_str_radix(s, 16).unwrap(),
+                usize::from_str_radix(e, 16).unwrap(),
+            );
+            (s..e).contains(&known) && line.trim_end().ends_with(path.to_str().unwrap())
+        });
+        assert!(
+            holds_known,
+            "{} has no mapping containing compute_self_hash",
+            path.display()
+        );
+
+        let via_dladdr = dladdr_path(known).expect("dladdr resolves");
+        assert_eq!(
+            std::fs::canonicalize(&via_dladdr).unwrap(),
+            std::fs::canonicalize(&path).unwrap()
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn compute_self_hash_hashes_the_located_file() {
+        let path = self_module_path().unwrap();
+        let want = hex::encode(crate::binary_format::canonical_binary_hash(
+            &std::fs::read(path).unwrap(),
+        ));
+        assert_eq!(compute_self_hash().unwrap(), want);
     }
 }
