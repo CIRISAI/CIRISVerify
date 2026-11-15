@@ -47,6 +47,25 @@ fn every_valid_vector_recomputes() {
 }
 
 #[test]
+fn both_accepted_forms_are_covered() {
+    let v = vectors();
+    let ids: Vec<&str> = v["valid"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|c| s(c, "stream_id"))
+        .collect();
+    assert!(
+        ids.iter().any(|id| id.len() == 64),
+        "a normative bare-hex case"
+    );
+    assert!(
+        ids.iter().any(|id| id.starts_with("av-")),
+        "an edge av- case"
+    );
+}
+
+#[test]
 fn every_refusal_is_refused() {
     let v = vectors();
     for c in v["refusals"].as_array().expect("refusals is an array") {

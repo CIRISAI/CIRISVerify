@@ -10,14 +10,31 @@ DEK(stream_id, epoch) = HKDF-SHA256(ikm  = MLS-Exporter("ciris-stream-dek/v1", "
                                     len  = 32)
 ```
 
+## The stream id
+
+The **normative** `stream_id` is the lowercase hex of the 32-byte stream-id
+digest: 64 lowercase hex characters, one rule for every stream kind, A/V and
+data streams (CC 5.3.3.2) alike (CC 5.3.3.1). CIRISEdge currently spells A/V
+stream ids `av-{64 lowercase hex}`. That is a recorded divergence, but the
+string is a KDF input both ends must agree on, so verify accepts it for
+compatibility. The two spellings of one digest derive different DEKs.
+
+## Cases
+
 Each `valid` case gives the exporter secret (the MLS exporter output; the MLS
-step is the caller's), the `stream_id` (`av-` + 64 lowercase hex), the epoch,
-the HKDF `info` in hex and the DEK in hex. The cases cover epoch 0, a rolled
-epoch, two streams in one epoch, the CC 5.3.3.7 known-answer stream id, a
-second exporter secret and epoch `u64::MAX`. Each `refusals` case is a
-`stream_id` that must be refused: a bare 64-hex id (persist's inline-blob log
-id, CIRISPersist#953), upper-case hex, 63 and 65 digits, a non-hex digit, a
-wrong prefix, the empty string and the prefix alone.
+step is the caller's), the `stream_id`, the epoch, the HKDF `info` in hex and
+the DEK in hex.
+
+- Edge's `av-` form: epoch 0, a rolled epoch, two streams in one epoch, the
+  CC 5.3.3.7 known-answer stream id, a second exporter secret and epoch
+  `u64::MAX`.
+- The normative bare form: the CC 5.3.3.7 known-answer stream id, the bare
+  spelling of `epoch_zero`'s digest (a different DEK from the `av-` spelling),
+  and a data stream at two epochs.
+
+Each `refusals` case is a `stream_id` that must be refused: upper-case hex,
+63 and 65 digits and a non-hex digit (each with and without `av-`), `AV-`,
+another prefix, the empty string and the prefix alone.
 
 ## How the file was made
 

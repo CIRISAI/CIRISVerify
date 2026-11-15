@@ -58,7 +58,7 @@ from ._jcs import jcs_canonicalize
 from ._rns_dest_hash import rns_destination_hash
 from . import _scope_privacy as scope_privacy
 from ._epoch_key import derive_epoch_key, derive_epoch_stream_nonce
-from ._stream_dek import STREAM_DEK_LABEL, av_stream_id, stream_dek
+from ._stream_dek import STREAM_DEK_LABEL, av_stream_id, stream_dek, stream_id_hex
 from ._self_enc import (
     EncryptionPubkeys,
     SelfEncKeys,
@@ -192,6 +192,7 @@ __all__ = [
     "STREAM_DEK_LABEL",
     "av_stream_id",
     "stream_dek",
+    "stream_id_hex",
     "EncryptionPubkeys",
     "self_enc_pubkeys",
     "self_enc_respond",

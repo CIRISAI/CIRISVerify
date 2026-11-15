@@ -7,8 +7,12 @@
 //! ## Wire shape (JSON in → 32 raw bytes out)
 //!
 //! ```text
-//! {"exporter_secret":[u8;32], "stream_id":"av-{64 lowercase hex}", "epoch":u64}
+//! {"exporter_secret":[u8;32], "stream_id":"{64 lowercase hex}", "epoch":u64}
 //! ```
+//!
+//! `stream_id` is the normative 64 lowercase hex of the 32-byte stream-id
+//! digest (CC 5.3.3.1), or CIRISEdge's `av-{64 lowercase hex}`, accepted for
+//! compatibility. Anything else is `InvalidArgument`.
 //!
 //! `exporter_secret` is the caller's `MLS-Exporter("ciris-stream-dek/v1", "",
 //! 32)` output for the group at `epoch`; verify does no MLS.
@@ -34,8 +38,8 @@ struct StreamDekRequest {
 /// `result_out` / `result_len_out` receive the 32-byte DEK (caller frees via
 /// `ciris_verify_free`). Returns:
 /// - `Success` (0) on success;
-/// - `InvalidArgument` on a null pointer, or a `stream_id` that is not
-///   `av-{64 lowercase hex}`;
+/// - `InvalidArgument` on a null pointer, or a `stream_id` that is neither
+///   64 lowercase hex (CC 5.3.3.1) nor `av-{64 lowercase hex}` (edge's form);
 /// - `SerializationError` if `input_json` is not a valid request or
 ///   `exporter_secret` is not exactly 32 bytes.
 ///
@@ -109,6 +113,19 @@ mod tests {
         );
     }
 
+    /// The `bare_hex_cc_5_3_3_7` case: the normative bare form.
+    #[test]
+    fn ffi_reproduces_the_bare_hex_known_answer() {
+        let secret: Vec<u8> = vec![0x42; 32];
+        let sid = "c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d8";
+        let req = serde_json::json!({"exporter_secret": secret, "stream_id": sid, "epoch": 5});
+        let got = unsafe { ffi(&req.to_string()) }.unwrap();
+        assert_eq!(
+            hex::encode(got),
+            "72405c46a749b28ea28b626d29a3583355a0179b43922631763b03811a7d930d"
+        );
+    }
+
     #[test]
     fn ffi_refuses_malformed_input() {
         let ok_sid = format!("av-{}", "ab".repeat(32));
@@ -118,7 +135,7 @@ mod tests {
                 CirisVerifyError::SerializationError,
             ),
             (
-                serde_json::json!({"exporter_secret": vec![0x42u8; 32], "stream_id": "ab".repeat(32), "epoch": 0}),
+                serde_json::json!({"exporter_secret": vec![0x42u8; 32], "stream_id": "AB".repeat(32), "epoch": 0}),
                 CirisVerifyError::InvalidArgument,
             ),
             (

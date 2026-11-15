@@ -1,11 +1,31 @@
 {
-  "$schema_note": "CC 5.1 (rc19) per-stream call DEK known answers (CIRISVerify#308). DEK = HKDF-SHA256(ikm = exporter_secret, salt = empty, info = b\"ciris-stream-dek/v1\" || utf8(stream_id) || u64_be(epoch), L = 32), where exporter_secret = MLS-Exporter(\"ciris-stream-dek/v1\", \"\", 32). Generated independently of the Rust code by a from-scratch RFC 5869 HKDF over Python hmac/hashlib (self-checked against RFC 5869 A.1 and A.3); see README.md beside this file.",
+  "$schema_note": "CC 5.1 (rc19) per-stream call DEK known answers (CIRISVerify#308). DEK = HKDF-SHA256(ikm = exporter_secret, salt = empty, info = b\"ciris-stream-dek/v1\" || utf8(stream_id) || u64_be(epoch), L = 32), where exporter_secret = MLS-Exporter(\"ciris-stream-dek/v1\", \"\", 32). stream_id is the normative 64 lowercase hex of the 32-byte stream-id digest (CC 5.3.3.1), or CIRISEdge's av- + 64 lowercase hex, accepted for compatibility. Generated independently of the Rust code by a from-scratch RFC 5869 HKDF over Python hmac/hashlib (self-checked against RFC 5869 A.1 and A.3); see README.md beside this file.",
   "label": "ciris-stream-dek/v1",
   "refusals": [
     {
-      "description": "A bare 64-hex id is persist's inline-blob log id (CIRISPersist#953), not an A/V stream id.",
-      "id": "bare_hex",
-      "stream_id": "c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d8"
+      "description": "Bare hex must be lowercase.",
+      "id": "uppercase_bare_hex",
+      "stream_id": "C7ADFC999AFBC7643B24EAB3B57CA66540315D345E52BBB33CFA1D5DFB9C18D8"
+    },
+    {
+      "description": "63 hex digits, no prefix.",
+      "id": "short_bare_hex",
+      "stream_id": "c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d"
+    },
+    {
+      "description": "65 hex digits, no prefix.",
+      "id": "long_bare_hex",
+      "stream_id": "c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d80"
+    },
+    {
+      "description": "A non-hex digit, no prefix.",
+      "id": "non_hex_bare",
+      "stream_id": "c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18dg"
+    },
+    {
+      "description": "No prefix other than edge's av- is accepted.",
+      "id": "other_prefix",
+      "stream_id": "dv-c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d8"
     },
     {
       "description": "Hex must be lowercase.",
@@ -28,7 +48,7 @@
       "stream_id": "av-c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18dg"
     },
     {
-      "description": "The prefix is exactly av-.",
+      "description": "Edge's prefix is exactly av-.",
       "id": "wrong_prefix",
       "stream_id": "AV-c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d8"
     },
@@ -106,6 +126,42 @@
       "id": "max_epoch",
       "info_hex": "63697269732d73747265616d2d64656b2f763161762d32336366333633343939663137353165653834643264353034353338653633356531343061356638613862383864643739366462306234613430623332396537ffffffffffffffff",
       "stream_id": "av-23cf363499f1751ee84d2d504538e635e140a5f8a8b88dd796db0b4a40b329e7"
+    },
+    {
+      "dek_hex": "72405c46a749b28ea28b626d29a3583355a0179b43922631763b03811a7d930d",
+      "description": "Normative bare form (CC 5.3.3.1): the CC 5.3.3.7 known-answer stream_id as 64 lowercase hex, epoch 5.",
+      "epoch": 5,
+      "exporter_secret_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "id": "bare_hex_cc_5_3_3_7",
+      "info_hex": "63697269732d73747265616d2d64656b2f7631633761646663393939616662633736343362323465616233623537636136363534303331356433343565353262626233336366613164356466623963313864380000000000000005",
+      "stream_id": "c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d8"
+    },
+    {
+      "dek_hex": "62bcdbbc395fa7e619199a45d4369d7ca55c5a17c03641b8f8cfdb38be95b2bd",
+      "description": "The bare form of stream A's digest at epoch 0: differs from epoch_zero, edge's av- spelling of the same digest.",
+      "epoch": 0,
+      "exporter_secret_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "id": "bare_hex_vs_edge_form",
+      "info_hex": "63697269732d73747265616d2d64656b2f7631623937633934313962323561393237333531373465633864343464363665666136643262663735386430393933346266373132396336613865373761326334620000000000000000",
+      "stream_id": "b97c9419b25a92735174ec8d44d66efa6d2bf758d09934bf7129c6a8e77a2c4b"
+    },
+    {
+      "dek_hex": "c9754eab5e9f269f8964319ba6d37dd8a92ae066e4c8670fba4b05373762cccd",
+      "description": "A data stream (CC 5.3.3.2) in the normative bare form, epoch 3.",
+      "epoch": 3,
+      "exporter_secret_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "id": "bare_hex_data_stream",
+      "info_hex": "63697269732d73747265616d2d64656b2f7631333831373331306535343132363064323034346332316335366163316136636237373132373863623563363663353536316662353164386131363734373237630000000000000003",
+      "stream_id": "3817310e541260d2044c21c56ac1a6cb771278cb5c66c5561fb51d8a1674727c"
+    },
+    {
+      "dek_hex": "8b661b9f6ff1194828ba9c01c288f5f71b83e2d8667306590cee577831e80b38",
+      "description": "The same data stream at epoch 4.",
+      "epoch": 4,
+      "exporter_secret_hex": "4242424242424242424242424242424242424242424242424242424242424242",
+      "id": "bare_hex_data_stream_rolled",
+      "info_hex": "63697269732d73747265616d2d64656b2f7631333831373331306535343132363064323034346332316335366163316136636237373132373863623563363663353536316662353164386131363734373237630000000000000004",
+      "stream_id": "3817310e541260d2044c21c56ac1a6cb771278cb5c66c5561fb51d8a1674727c"
     }
   ]
 }
