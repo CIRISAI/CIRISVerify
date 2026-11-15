@@ -5,7 +5,7 @@
 > aggregation pyramid (CC 6.1.2), replication (CC 6.1.5), recursive bootstrap and
 > ALM capacity — lives in **[`SUBSTRATE.md`](SUBSTRATE.md)**.
 
-**Last updated:** 2026-10-28 (v21.0.0). Earlier revisions are in git history.
+**Last updated:** 2026-11-15 (v23.0.0): certificate pinning removed (#321); AV-5 states that Level 1 / Level 5 read an unsigned, unpinned registry manifest until the edition-2 signed build record; roster changes are a strict majority of the standing roster with holder recovery replacing the steward backstop (#302). Earlier revisions are in git history.
 
 ## 1. Scope
 

@@ -6,7 +6,7 @@
 > file. Methodology: `~/CIRISAgent/FSD/MISSION_DRIVEN_DEVELOPMENT.md`
 > and the overview at [ciris.ai/mdd](https://ciris.ai/mdd).
 
-**Version**: 1.2
+**Version**: 1.3 (2026-11-15, v23.0.0: the accord roster change is described in CIRISPersist's shape, `FamilyRecord` versions linked by `persist_row_hash`, CC 3.2 T6)
 **Status**: Active — tracking `main` at v6.11.0. v1.2 adds the HUMANITY_ACCORD
 kill-switch as a first-class mission pillar (§1.7) — the most direct realization
 of the Accord's halt mandate, which had grown from a one-line M-of-N use to a
