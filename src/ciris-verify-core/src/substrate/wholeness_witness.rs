@@ -33,7 +33,7 @@
 //! ## Authority (N3 / N4)
 //!
 //! A WholenessWitness is federation-tier: hybrid PQC verified **at ingest and
-//! before persistence** ([`crate::substrate::verify_bound_hybrid`]);
+//! before persistence** ([`crate::substrate::verify_composite`]);
 //! [`compare_witnesses`] MUST NOT run on an unverified witness. Two
 //! validly-signed witnesses from the same `(peer_id, epoch_id,
 //! claim_namespace_set)` with **different** `merkle_root` are **non-repudiable
@@ -113,7 +113,7 @@ pub fn compute_merkle_root(leaf_bytes: &[Vec<u8>]) -> Result<Hash, HolonomicErro
 }
 
 /// A WholenessWitness as parsed off the wire (its signed scalar members plus
-/// the bound-hybrid signature halves). The exact signed-preimage field layout is
+/// the composite signature). The exact signed-preimage field layout is
 /// pinned by §19.1 and frozen by the §19.6 vectors (CIRISEdge#143); this struct
 /// carries what the invariant checks need.
 ///
@@ -201,9 +201,8 @@ const FORBIDDEN_NAMESPACE_MARKERS: &[&str] = &["anonymous", "self"];
 pub fn verify_witness(
     witness: &WholenessWitness,
     witness_preimage: &[u8],
-    sig: &super::preimage::BoundHybridSig<'_>,
-    ed25519_pubkey: &[u8],
-    mldsa65_pubkey: &[u8],
+    sig: &[u8],
+    composite_pubkey: &[u8],
     leaves: Option<&[Vec<u8>]>,
 ) -> Result<(), HolonomicError> {
     // WW-2 / WW-1: a witness must scope at least one namespace and MUST NOT name
@@ -225,8 +224,9 @@ pub fn verify_witness(
         }
     }
 
-    // N3: hybrid PQC verified at the gate (before any compare / persist).
-    super::preimage::verify_bound_hybrid(witness_preimage, sig, ed25519_pubkey, mldsa65_pubkey)?;
+    // N3: composite PQC signature verified at the gate (before any compare /
+    // persist).
+    super::preimage::verify_composite(witness_preimage, sig, composite_pubkey)?;
 
     // If the leaves were disclosed, the signed root must match a recompute.
     if let Some(leaves) = leaves {
@@ -451,16 +451,44 @@ mod tests {
     #[test]
     fn verify_witness_rejects_self_namespace() {
         let w = ww("peer-a", 1, &["cohort_scope:self:notes"], [0u8; 32]);
-        let sig = super::super::preimage::BoundHybridSig {
-            ed25519: &[0u8; 64],
-            mldsa65: Some(&[0u8; 8]),
-        };
-        let err = verify_witness(&w, b"pre", &sig, &[0u8; 32], &[0u8; 8], None).unwrap_err();
+        let err = verify_witness(&w, b"pre", &[0u8; 8], &[0u8; 8], None).unwrap_err();
         assert!(matches!(
             err,
             super::super::preimage::HolonomicError::Invariant {
                 reason: "ww_namespace"
             }
         ));
+    }
+
+    #[test]
+    fn verify_witness_round_trips_composite_and_rejects_bad_sigs() {
+        use super::super::preimage::HolonomicError;
+        use ciris_crypto::composite::{CompositeSigningKey, MLDSA65_SIG_LEN};
+        let k = CompositeSigningKey::from_seeds(&[3; 32], &[4; 32]);
+        let other = CompositeSigningKey::from_seeds(&[5; 32], &[6; 32]);
+        let leaves = vec![leaf(b"x"), leaf(b"y")];
+        let root = compute_merkle_root(&leaves).unwrap();
+        let w = ww("peer-a", 1, &["scores:medical"], root);
+        let pre = w.canonical_preimage();
+        let sig = k.sign(&pre).unwrap();
+        let pk = k.public_key().as_bytes();
+        assert!(verify_witness(&w, &pre, &sig, pk, Some(&leaves)).is_ok());
+        assert_eq!(
+            verify_witness(&w, &pre, &sig[MLDSA65_SIG_LEN..], pk, None),
+            Err(HolonomicError::MalformedKeyOrSignature)
+        );
+        for i in [0, MLDSA65_SIG_LEN] {
+            let mut bad = sig.clone();
+            bad[i] ^= 1;
+            assert_eq!(
+                verify_witness(&w, &pre, &bad, pk, None),
+                Err(HolonomicError::SignatureInvalid)
+            );
+        }
+        let foreign = other.sign(&pre).unwrap();
+        assert_eq!(
+            verify_witness(&w, &pre, &foreign, pk, None),
+            Err(HolonomicError::SignatureInvalid)
+        );
     }
 }

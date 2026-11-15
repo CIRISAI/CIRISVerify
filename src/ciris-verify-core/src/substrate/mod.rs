@@ -10,7 +10,8 @@
 //! ## What's here
 //!
 //! - `preimage` — §19.0 binary signed-preimage framing + the PQC-mandatory
-//!   bound-hybrid gate every §19 object rides (`verify_bound_hybrid`). NOT JCS.
+//!   composite ML-DSA-65-Ed25519 gate (CC 2.6.1.7) every §19 object rides
+//!   (`verify_composite`). NOT JCS.
 //! - `wholeness_witness` — §19.1 WholenessWitness Merkle (lexicographic leaves,
 //!   odd-node duplication, `WW-v1-empty` sentinel — distinct from the §10.3 RFC
 //!   6962 log) + N4 equivocation detection.
@@ -64,9 +65,9 @@ pub mod wholeness_witness;
 // ---- the load-bearing surface, re-exported flat -----------------------
 
 pub use preimage::{
-    verify_bound_hybrid, BoundHybridSig, HolonomicError, Preimage, DOMAIN_AGG_META,
-    DOMAIN_COMPRESS_REQUEST, DOMAIN_CORPUS_WANT, DOMAIN_HOLDING_CLAIM, DOMAIN_RELAY_CAPACITY,
-    DOMAIN_SIGNED_CLAIM, DOMAIN_STORAGE_BUDGET, DOMAIN_WITNESS_PREIMAGE, WW_EMPTY_SENTINEL,
+    verify_composite, HolonomicError, Preimage, DOMAIN_AGG_META, DOMAIN_COMPRESS_REQUEST,
+    DOMAIN_CORPUS_WANT, DOMAIN_HOLDING_CLAIM, DOMAIN_RELAY_CAPACITY, DOMAIN_SIGNED_CLAIM,
+    DOMAIN_STORAGE_BUDGET, DOMAIN_WITNESS_PREIMAGE, WW_EMPTY_SENTINEL,
 };
 
 pub use aggregation::{

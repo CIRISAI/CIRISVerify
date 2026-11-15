@@ -29,7 +29,7 @@
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use super::preimage::{BoundHybridSig, HolonomicError};
+use super::preimage::HolonomicError;
 
 /// The §13.3 default delegation-chain depth cap (hops).
 pub const MAX_BOOTSTRAP_HOPS: usize = 5;
@@ -51,12 +51,13 @@ pub struct TrustRoot {
 }
 
 /// One hop of a bootstrap chain: `from_peer` attests trust `weight_bp` in
-/// `to_peer`, over a §19.2 `SignedClaim` bound-hybrid signature.
+/// `to_peer`, over a §19.2 `SignedClaim` composite ML-DSA-65-Ed25519
+/// signature (CC 2.6.1.7).
 ///
 /// The `SignedClaim` preimage layout (domain `b"CIRIS-CLAIM-v1\0\0"`) gains
 /// owner-binding fields under CIRISEdge#143 and is byte-frozen by the §19.6
 /// vectors — the caller builds it via [`crate::substrate::Preimage`]; this hop
-/// carries the bytes plus the pinned pubkeys to verify against.
+/// carries the bytes plus the pinned composite public key to verify against.
 pub struct BootstrapHop<'a> {
     /// The attesting (delegating) peer.
     pub from_peer: String,
@@ -64,14 +65,14 @@ pub struct BootstrapHop<'a> {
     pub to_peer: String,
     /// Trust `from_peer` confers on `to_peer`, basis points (≤ `FULL_TRUST_BP`).
     pub weight_bp: WeightBp,
-    /// The §19.2 signed preimage these halves cover.
+    /// The §19.2 signed preimage the signature covers.
     pub preimage: &'a [u8],
-    /// The bound-hybrid signature halves (PQC-mandatory).
-    pub sig: BoundHybridSig<'a>,
-    /// `from_peer`'s pinned Ed25519 pubkey (the signer of this hop).
-    pub from_ed25519_pubkey: &'a [u8],
-    /// `from_peer`'s pinned ML-DSA-65 pubkey.
-    pub from_mldsa65_pubkey: &'a [u8],
+    /// The 3373-byte composite signature `mldsaSig ‖ ed25519Sig` over
+    /// `preimage` (CC 2.6.1.7, PQC-mandatory; neither half verifies alone).
+    pub sig: &'a [u8],
+    /// `from_peer`'s pinned 1984-byte composite public key
+    /// `mldsaPK ‖ ed25519PK` (the signer of this hop).
+    pub from_composite_pubkey: &'a [u8],
 }
 
 /// The verdict of a bootstrap walk. **There is deliberately no `Admitted`
@@ -102,7 +103,7 @@ pub enum BootstrapVerdict {
 /// verdict. **Pure evaluator** (no I/O): every input — the hops, their pubkeys,
 /// the trust roots — is caller-supplied.
 ///
-/// Enforced: per-hop bound-hybrid signature (PQC-mandatory); depth ≤
+/// Enforced: per-hop composite signature (PQC-mandatory); depth ≤
 /// [`MAX_BOOTSTRAP_HOPS`] (N2); cycle rejection over the visited peer set (N2);
 /// link continuity (`hop[i].to_peer == hop[i+1].from_peer`); the terminal hop's
 /// `to_peer` is a pinned [`TrustRoot`]; and the §13.3 aggregate-weight cap
@@ -178,12 +179,7 @@ pub fn recursive_trust_bootstrap(
 }
 
 fn verify_hop(hop: &BootstrapHop<'_>) -> Result<(), HolonomicError> {
-    super::preimage::verify_bound_hybrid(
-        hop.preimage,
-        &hop.sig,
-        hop.from_ed25519_pubkey,
-        hop.from_mldsa65_pubkey,
-    )
+    super::preimage::verify_composite(hop.preimage, hop.sig, hop.from_composite_pubkey)
 }
 
 /// The owner-binding inputs a non-`infrastructure` membership admission requires
@@ -272,39 +268,28 @@ impl SignedClaim {
 mod tests {
     use super::*;
     use crate::substrate::Preimage;
-    use ciris_crypto::{ClassicalSigner, Ed25519Signer, MlDsa65Signer, PqcSigner};
+    use ciris_crypto::composite::CompositeSigningKey;
+    use sha2::{Digest, Sha256};
 
     struct Peer {
         id: String,
-        ed: Ed25519Signer,
-        mldsa: MlDsa65Signer,
+        key: CompositeSigningKey,
     }
     impl Peer {
         fn new(id: &str) -> Self {
+            let seed: [u8; 32] = Sha256::digest(id.as_bytes()).into();
+            let ed_seed: [u8; 32] = Sha256::digest(seed).into();
             Self {
                 id: id.to_string(),
-                ed: Ed25519Signer::random().unwrap(),
-                mldsa: MlDsa65Signer::new().unwrap(),
+                key: CompositeSigningKey::from_seeds(&seed, &ed_seed),
             }
-        }
-        fn ed_pub(&self) -> Vec<u8> {
-            self.ed.public_key().unwrap()
-        }
-        fn mldsa_pub(&self) -> Vec<u8> {
-            self.mldsa.public_key().unwrap()
-        }
-        fn sign(&self, pre: &[u8]) -> (Vec<u8>, Vec<u8>) {
-            let ed_sig = self.ed.sign(pre).unwrap();
-            let mut bound = pre.to_vec();
-            bound.extend_from_slice(&ed_sig);
-            (ed_sig, self.mldsa.sign(&bound).unwrap())
         }
     }
 
-    /// `(preimage, ed_sig, pqc_sig, ed_pub, mldsa_pub)` — a signed hop's bytes.
-    type HopBytes = (Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>);
+    /// `(preimage, composite_sig, composite_pubkey)` — a signed hop's bytes.
+    type HopBytes = (Vec<u8>, Vec<u8>, Vec<u8>);
 
-    /// Build a hop `from → to` with a real bound-hybrid signature.
+    /// Build a hop `from → to` with a real composite signature.
     fn hop<'a>(
         from: &'a Peer,
         to: &str,
@@ -316,8 +301,8 @@ mod tests {
             .lp(to.as_bytes())
             .u32_be(weight_bp)
             .finish();
-        let (ed_sig, pqc_sig) = from.sign(&preimage);
-        store.push((preimage, ed_sig, pqc_sig, from.ed_pub(), from.mldsa_pub()));
+        let sig = from.key.sign(&preimage).unwrap();
+        store.push((preimage, sig, from.key.public_key().as_bytes().to_vec()));
         store.len() - 1
     }
 
@@ -334,24 +319,16 @@ mod tests {
                 to_peer: "b".into(),
                 weight_bp: FULL_TRUST_BP,
                 preimage: &store[h0].0,
-                sig: BoundHybridSig {
-                    ed25519: &store[h0].1,
-                    mldsa65: Some(&store[h0].2),
-                },
-                from_ed25519_pubkey: &store[h0].3,
-                from_mldsa65_pubkey: &store[h0].4,
+                sig: &store[h0].1,
+                from_composite_pubkey: &store[h0].2,
             },
             BootstrapHop {
                 from_peer: "b".into(),
                 to_peer: "root".into(),
                 weight_bp: FULL_TRUST_BP,
                 preimage: &store[h1].0,
-                sig: BoundHybridSig {
-                    ed25519: &store[h1].1,
-                    mldsa65: Some(&store[h1].2),
-                },
-                from_ed25519_pubkey: &store[h1].3,
-                from_mldsa65_pubkey: &store[h1].4,
+                sig: &store[h1].1,
+                from_composite_pubkey: &store[h1].2,
             },
         ];
         let roots = vec![TrustRoot {
@@ -396,12 +373,8 @@ mod tests {
                 },
                 weight_bp: FULL_TRUST_BP,
                 preimage: &store[idxs[i]].0,
-                sig: BoundHybridSig {
-                    ed25519: &store[idxs[i]].1,
-                    mldsa65: Some(&store[idxs[i]].2),
-                },
-                from_ed25519_pubkey: &store[idxs[i]].3,
-                from_mldsa65_pubkey: &store[idxs[i]].4,
+                sig: &store[idxs[i]].1,
+                from_composite_pubkey: &store[idxs[i]].2,
             })
             .collect();
         let roots = vec![TrustRoot {
@@ -429,24 +402,16 @@ mod tests {
                 to_peer: "b".into(),
                 weight_bp: FULL_TRUST_BP,
                 preimage: &store[h0].0,
-                sig: BoundHybridSig {
-                    ed25519: &store[h0].1,
-                    mldsa65: Some(&store[h0].2),
-                },
-                from_ed25519_pubkey: &store[h0].3,
-                from_mldsa65_pubkey: &store[h0].4,
+                sig: &store[h0].1,
+                from_composite_pubkey: &store[h0].2,
             },
             BootstrapHop {
                 from_peer: "b".into(),
                 to_peer: "a".into(),
                 weight_bp: FULL_TRUST_BP,
                 preimage: &store[h1].0,
-                sig: BoundHybridSig {
-                    ed25519: &store[h1].1,
-                    mldsa65: Some(&store[h1].2),
-                },
-                from_ed25519_pubkey: &store[h1].3,
-                from_mldsa65_pubkey: &store[h1].4,
+                sig: &store[h1].1,
+                from_composite_pubkey: &store[h1].2,
             },
         ];
         let roots = vec![TrustRoot {
@@ -472,12 +437,8 @@ mod tests {
             to_peer: "root".into(),
             weight_bp: FULL_TRUST_BP,
             preimage: &bad_pre,
-            sig: BoundHybridSig {
-                ed25519: &store[h0].1,
-                mldsa65: Some(&store[h0].2),
-            },
-            from_ed25519_pubkey: &store[h0].3,
-            from_mldsa65_pubkey: &store[h0].4,
+            sig: &store[h0].1,
+            from_composite_pubkey: &store[h0].2,
         }];
         let roots = vec![TrustRoot {
             peer_id: "root".into(),
@@ -489,6 +450,39 @@ mod tests {
                 reason: "hop_signature"
             }
         );
+    }
+
+    #[test]
+    fn hop_signed_by_another_key_or_truncated_rejected() {
+        let a = Peer::new("a");
+        let mallory = Peer::new("mallory");
+        let mut store = Vec::new();
+        let h0 = hop(&a, "root", FULL_TRUST_BP, &mut store);
+        let roots = vec![TrustRoot {
+            peer_id: "root".into(),
+            root_trust_bp: FULL_TRUST_BP,
+        }];
+        let mallory_pk = mallory.key.public_key().as_bytes().to_vec();
+        let truncated = &store[h0].1[..store[h0].1.len() - 1];
+        for (sig, pk) in [
+            (&store[h0].1[..], &mallory_pk[..]),
+            (truncated, &store[h0].2[..]),
+        ] {
+            let chain = vec![BootstrapHop {
+                from_peer: "a".into(),
+                to_peer: "root".into(),
+                weight_bp: FULL_TRUST_BP,
+                preimage: &store[h0].0,
+                sig,
+                from_composite_pubkey: pk,
+            }];
+            assert_eq!(
+                recursive_trust_bootstrap(&chain, &roots),
+                BootstrapVerdict::NoStanding {
+                    reason: "hop_signature"
+                }
+            );
+        }
     }
 
     #[test]

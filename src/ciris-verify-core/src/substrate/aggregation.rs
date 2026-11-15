@@ -14,7 +14,8 @@
 //!   reference impl predates it: Persist v8.3.0 stores `aggregation_meta`
 //!   *opaque*, the wire-churn firewall). Its preimage rides the §19.0 binary
 //!   framing (u32-lp, big-endian, the 16-byte `b"AGG-META-v1\0\0\0\0\0"` domain)
-//!   and a PQC-mandatory bound-hybrid signature ([`verify_aggregation_meta`]).
+//!   and a PQC-mandatory composite ML-DSA-65-Ed25519 signature (CC 2.6.1.7,
+//!   [`verify_aggregation_meta`]).
 //! - **[`member_commitment`] / [`verify_member_commitment`]** (§19.7.1.1) — the
 //!   Merkle root over the tier's source member ids, computed by the **§19.1
 //!   WholenessWitness construction reused verbatim** ([`super::compute_merkle_root`]),
@@ -39,9 +40,7 @@
 use crate::prelude::*;
 
 use super::durable_storage::ConsentState;
-use super::preimage::{
-    verify_bound_hybrid, BoundHybridSig, HolonomicError, Preimage, DOMAIN_AGG_META,
-};
+use super::preimage::{verify_composite, HolonomicError, Preimage, DOMAIN_AGG_META};
 
 /// One tier of the §19.7 memory pyramid — which content, at what aggregation
 /// tier, over which source members, by which mechanical operator. A substrate
@@ -392,35 +391,27 @@ pub fn descend_order(member_ids: &[String]) -> Vec<String> {
 /// there is no classical-only acceptance for a federation-tier aggregation tier.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum AggregationMetaVerification {
-    /// Both halves verified — admissible at ingest.
-    HybridVerified,
-    /// Verification failed (bad/absent classical or ML-DSA-65 half).
+    /// The composite signature verified — admissible at ingest.
+    Verified,
+    /// Verification failed (wrong length, undecodable key, or the composite
+    /// signature did not verify; which half failed is not said).
     Failed,
 }
 
-/// Verify an `AggregationMetaV1` tier's bound-hybrid signature over its §19.7.1
-/// canonical preimage (PQC-mandatory). The §10.1.5.1.1 store-path rule applies:
-/// a substrate MUST reject a tier whose ML-DSA-65 half is missing/invalid **at
-/// ingest and before persistence** — pass only [`AggregationMetaVerification::HybridVerified`].
+/// Verify an `AggregationMetaV1` tier's composite ML-DSA-65-Ed25519 signature
+/// (CC 2.6.1.7; `sig` 3373 bytes, `composite_pubkey` 1984 bytes) over its
+/// §19.7.1 canonical preimage (PQC-mandatory; neither half verifies alone). The
+/// §10.1.5.1.1 store-path rule applies: a substrate MUST reject a tier whose
+/// composite signature does not verify **at ingest and before persistence** — pass only [`AggregationMetaVerification::Verified`].
 #[must_use]
 pub fn verify_aggregation_meta(
     meta: &AggregationMetaV1,
-    sig_ed25519: &[u8],
-    sig_ml_dsa_65: &[u8],
-    ed25519_pubkey: &[u8],
-    ml_dsa_65_pubkey: &[u8],
+    sig: &[u8],
+    composite_pubkey: &[u8],
 ) -> AggregationMetaVerification {
-    let preimage = meta.signing_preimage();
-    let sig = BoundHybridSig {
-        ed25519: sig_ed25519,
-        mldsa65: Some(sig_ml_dsa_65),
-    };
-    match verify_bound_hybrid(&preimage, &sig, ed25519_pubkey, ml_dsa_65_pubkey) {
-        Ok(()) => AggregationMetaVerification::HybridVerified,
-        Err(HolonomicError::ClassicalSignatureInvalid)
-        | Err(HolonomicError::PqcHalfMissingOrInvalid)
-        | Err(HolonomicError::MalformedKeyOrSignature)
-        | Err(HolonomicError::Invariant { .. }) => AggregationMetaVerification::Failed,
+    match verify_composite(&meta.signing_preimage(), sig, composite_pubkey) {
+        Ok(()) => AggregationMetaVerification::Verified,
+        Err(_) => AggregationMetaVerification::Failed,
     }
 }
 
@@ -492,7 +483,11 @@ pub fn ejection_verdict(consent: ConsentState, under_capacity_pressure: bool) ->
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ciris_crypto::{ClassicalSigner, Ed25519Signer, MlDsa65Signer, PqcSigner};
+    use ciris_crypto::composite::{CompositeSigningKey, MLDSA65_SIG_LEN};
+
+    fn key() -> CompositeSigningKey {
+        CompositeSigningKey::from_seeds(&[1; 32], &[2; 32])
+    }
 
     fn meta() -> AggregationMetaV1 {
         let members: Vec<String> = ["m3", "m1", "m2"].iter().map(|s| s.to_string()).collect();
@@ -555,36 +550,43 @@ mod tests {
 
     #[test]
     fn aggregation_meta_round_trips_pqc_mandatory() {
-        let ed = Ed25519Signer::random().unwrap();
-        let mldsa = MlDsa65Signer::new().unwrap();
+        let k = key();
+        let other = CompositeSigningKey::from_seeds(&[3; 32], &[4; 32]);
         let m = meta();
         let pre = m.signing_preimage();
-        let ed_sig = ed.sign(&pre).unwrap();
-        let mut bound = pre.clone();
-        bound.extend_from_slice(&ed_sig);
-        let pqc_sig = mldsa.sign(&bound).unwrap();
+        let sig = k.sign(&pre).unwrap();
+        let pk = k.public_key().as_bytes();
 
         assert_eq!(
-            verify_aggregation_meta(
-                &m,
-                &ed_sig,
-                &pqc_sig,
-                &ed.public_key().unwrap(),
-                &mldsa.public_key().unwrap()
-            ),
-            AggregationMetaVerification::HybridVerified
+            verify_aggregation_meta(&m, &sig, pk),
+            AggregationMetaVerification::Verified
         );
         // Tampered tier → fail.
         let mut m2 = m.clone();
         m2.tier = 3;
         assert_eq!(
-            verify_aggregation_meta(
-                &m2,
-                &ed_sig,
-                &pqc_sig,
-                &ed.public_key().unwrap(),
-                &mldsa.public_key().unwrap()
-            ),
+            verify_aggregation_meta(&m2, &sig, pk),
+            AggregationMetaVerification::Failed
+        );
+        // Wrong length: the bare Ed25519 half (the old classical-only shape).
+        assert_eq!(
+            verify_aggregation_meta(&m, &sig[MLDSA65_SIG_LEN..], pk),
+            AggregationMetaVerification::Failed
+        );
+        // A flipped byte in the ML-DSA region and in the Ed25519 region.
+        for i in [0, MLDSA65_SIG_LEN] {
+            let mut bad = sig.clone();
+            bad[i] ^= 1;
+            assert_eq!(
+                verify_aggregation_meta(&m, &bad, pk),
+                AggregationMetaVerification::Failed,
+                "byte {i}"
+            );
+        }
+        // A signature under a different key.
+        let foreign = other.sign(&pre).unwrap();
+        assert_eq!(
+            verify_aggregation_meta(&m, &foreign, pk),
             AggregationMetaVerification::Failed
         );
     }
@@ -698,27 +700,23 @@ mod tests {
     fn n_eff_is_covered_by_the_v2_signature() {
         // Sign a v2 tier, then flip n_eff: the signature must no longer verify —
         // proving n_eff is in the signed preimage (not forgeable post-signature).
-        let ed = Ed25519Signer::random().unwrap();
-        let mldsa = MlDsa65Signer::new().unwrap();
+        let k = key();
         let mut m = meta();
         m.version = 2;
         m.n_eff = 3;
         let pre = m.signing_preimage();
-        let ed_sig = ed.sign(&pre).unwrap();
-        let mut bound = pre.clone();
-        bound.extend_from_slice(&ed_sig);
-        let pqc_sig = mldsa.sign(&bound).unwrap();
-        let (edk, mldk) = (ed.public_key().unwrap(), mldsa.public_key().unwrap());
+        let sig = k.sign(&pre).unwrap();
+        let pk = k.public_key().as_bytes();
 
         assert_eq!(
-            verify_aggregation_meta(&m, &ed_sig, &pqc_sig, &edk, &mldk),
-            AggregationMetaVerification::HybridVerified
+            verify_aggregation_meta(&m, &sig, pk),
+            AggregationMetaVerification::Verified
         );
         // Forge a smaller n_eff (make a dominated fold look diverse) → sig fails.
         let mut forged = m.clone();
         forged.n_eff = 1;
         assert_eq!(
-            verify_aggregation_meta(&forged, &ed_sig, &pqc_sig, &edk, &mldk),
+            verify_aggregation_meta(&forged, &sig, pk),
             AggregationMetaVerification::Failed,
             "n_eff must be bound by the v2 signature"
         );
@@ -918,29 +916,25 @@ mod tests {
     }
 
     #[test]
-    fn v3_bound_hybrid_signature_covers_the_new_surface() {
-        let ed = Ed25519Signer::random().unwrap();
-        let mldsa = MlDsa65Signer::new().unwrap();
+    fn v3_composite_signature_covers_the_new_surface() {
+        let k = key();
         let mut m = meta();
         m.version = 3;
         m.max_source_multiplicity = 3;
         m.mass_commitment =
             mass_commitment(&[("m1".into(), 100), ("m2".into(), 100), ("m3".into(), 100)]).unwrap();
         let pre = m.signing_preimage();
-        let ed_sig = ed.sign(&pre).unwrap();
-        let mut bound = pre.clone();
-        bound.extend_from_slice(&ed_sig);
-        let pqc_sig = mldsa.sign(&bound).unwrap();
-        let (edk, mldk) = (ed.public_key().unwrap(), mldsa.public_key().unwrap());
+        let sig = k.sign(&pre).unwrap();
+        let pk = k.public_key().as_bytes();
         assert_eq!(
-            verify_aggregation_meta(&m, &ed_sig, &pqc_sig, &edk, &mldk),
-            AggregationMetaVerification::HybridVerified
+            verify_aggregation_meta(&m, &sig, pk),
+            AggregationMetaVerification::Verified
         );
         // Flipping max_source_multiplicity after signing breaks the signature.
         let mut forged = m.clone();
         forged.max_source_multiplicity = 900;
         assert_eq!(
-            verify_aggregation_meta(&forged, &ed_sig, &pqc_sig, &edk, &mldk),
+            verify_aggregation_meta(&forged, &sig, pk),
             AggregationMetaVerification::Failed,
             "the signed preimage covers max_source_multiplicity"
         );

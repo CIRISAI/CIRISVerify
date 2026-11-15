@@ -18,7 +18,9 @@
 //! classical" discipline applies: each submitted signature carries an
 //! Ed25519 half and an ML-DSA-65 half. The PQC half covers
 //! `bytes ‖ classical_sig` — the bound-signature rule shared with
-//! `FederationEnvelope`, `WitnessSignature`, and `ProvenanceLink`.
+//! `FederationEnvelope` and `ProvenanceLink`. (Transparency-log STHs and
+//! witness cosignatures are the CC 2.6.1.7 composite instead; see
+//! [`crate::transparency`].)
 //!
 //! **Both halves are MANDATORY at federation-tier (the default,
 //! [`HybridPolicy::RequireHybrid`], CEG 1.0-RC7 §10.1.5.1.1).** A

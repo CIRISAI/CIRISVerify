@@ -5,7 +5,7 @@
 //! edge-internal (the §19.0 / §1.1 wire-vs-internal line):
 //!
 //! - **N8 (capacity authenticity).** Capacity advertisements feeding the
-//!   topology MUST be hybrid-verified (`SignedRelayCapacity`, domain
+//!   topology MUST be composite-verified (`SignedRelayCapacity`, domain
 //!   `b"CIRISALM-CAPv2\0\0"`) **before scoring** ([`verify_relay_capacity`]).
 //!   Self-asserted `uplink_mbps` MUST NOT be the dominant, unbounded selection
 //!   term — determinism amplifies one capacity lie into a *universal* eclipse,
@@ -26,7 +26,7 @@
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use super::preimage::{BoundHybridSig, HolonomicError, Preimage, DOMAIN_RELAY_CAPACITY};
+use super::preimage::{HolonomicError, Preimage, DOMAIN_RELAY_CAPACITY};
 
 /// A relay's signed capacity advertisement (§19.4 N8). The exact preimage field
 /// set is byte-frozen by the §19.6 vectors; the load-bearing fields the
@@ -54,8 +54,9 @@ impl SignedRelayCapacity {
     }
 }
 
-/// N8: verify a capacity advertisement's bound-hybrid signature
-/// (PQC-mandatory) **before** it may feed [`canonicalize_snapshot`] / scoring.
+/// N8: verify a capacity advertisement's composite ML-DSA-65-Ed25519
+/// signature (CC 2.6.1.7, PQC-mandatory; `sig` is 3373 bytes and
+/// `composite_pubkey` 1984 bytes) **before** it may feed [`canonicalize_snapshot`] / scoring.
 /// An unverified advert MUST NOT influence the topology.
 ///
 /// # Errors
@@ -63,12 +64,11 @@ impl SignedRelayCapacity {
 /// [`HolonomicError`] from the signature gate.
 pub fn verify_relay_capacity(
     cap: &SignedRelayCapacity,
-    sig: &BoundHybridSig<'_>,
-    ed25519_pubkey: &[u8],
-    mldsa65_pubkey: &[u8],
+    sig: &[u8],
+    composite_pubkey: &[u8],
 ) -> Result<(), HolonomicError> {
     let preimage = cap.signing_preimage();
-    super::preimage::verify_bound_hybrid(&preimage, sig, ed25519_pubkey, mldsa65_pubkey)
+    super::preimage::verify_composite(&preimage, sig, composite_pubkey)
 }
 
 /// The per-identity capacity cap (Mbps) beyond which a self-asserted `uplink_mbps`
@@ -114,45 +114,42 @@ pub fn canonicalize_snapshot(verified_adverts: &[SignedRelayCapacity]) -> Vec<Si
 #[cfg(test)]
 mod tests {
     use super::*;
-    use ciris_crypto::{ClassicalSigner, Ed25519Signer, MlDsa65Signer, PqcSigner};
+    use ciris_crypto::composite::{CompositeSigningKey, MLDSA65_SIG_LEN};
 
     #[test]
     fn n8_capacity_advert_round_trips_pqc_mandatory() {
-        let ed = Ed25519Signer::random().unwrap();
-        let mldsa = MlDsa65Signer::new().unwrap();
+        let k = CompositeSigningKey::from_seeds(&[1; 32], &[2; 32]);
+        let other = CompositeSigningKey::from_seeds(&[3; 32], &[4; 32]);
         let cap = SignedRelayCapacity {
             peer_id: "relay-1".into(),
             uplink_mbps: 500,
             epoch: 3,
         };
         let pre = cap.signing_preimage();
-        let ed_sig = ed.sign(&pre).unwrap();
-        let mut bound = pre.clone();
-        bound.extend_from_slice(&ed_sig);
-        let pqc_sig = mldsa.sign(&bound).unwrap();
-        let good = BoundHybridSig {
-            ed25519: &ed_sig,
-            mldsa65: Some(&pqc_sig),
-        };
-        assert!(verify_relay_capacity(
-            &cap,
-            &good,
-            &ed.public_key().unwrap(),
-            &mldsa.public_key().unwrap()
-        )
-        .is_ok());
-        // Classical-only advert is rejected (N8 + PQC-mandatory).
-        let co = BoundHybridSig {
-            ed25519: &ed_sig,
-            mldsa65: None,
-        };
-        assert!(verify_relay_capacity(
-            &cap,
-            &co,
-            &ed.public_key().unwrap(),
-            &mldsa.public_key().unwrap()
-        )
-        .is_err());
+        let sig = k.sign(&pre).unwrap();
+        let pk = k.public_key().as_bytes();
+        assert!(verify_relay_capacity(&cap, &sig, pk).is_ok());
+        // Wrong length (a bare Ed25519 signature, the old classical-only shape).
+        assert_eq!(
+            verify_relay_capacity(&cap, &sig[MLDSA65_SIG_LEN..], pk),
+            Err(HolonomicError::MalformedKeyOrSignature)
+        );
+        // A flipped byte in the ML-DSA region and in the Ed25519 region.
+        for i in [0, MLDSA65_SIG_LEN] {
+            let mut bad = sig.clone();
+            bad[i] ^= 1;
+            assert_eq!(
+                verify_relay_capacity(&cap, &bad, pk),
+                Err(HolonomicError::SignatureInvalid),
+                "byte {i}"
+            );
+        }
+        // A signature under a different key.
+        let foreign = other.sign(&pre).unwrap();
+        assert_eq!(
+            verify_relay_capacity(&cap, &foreign, pk),
+            Err(HolonomicError::SignatureInvalid)
+        );
     }
 
     #[test]

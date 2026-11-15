@@ -5,7 +5,7 @@
 > aggregation pyramid (CC 6.1.2), replication (CC 6.1.5), recursive bootstrap and
 > ALM capacity — lives in **[`SUBSTRATE.md`](SUBSTRATE.md)**.
 
-**Last updated:** 2026-11-15 (v23.0.0): certificate pinning removed (#321); AV-5 states that Level 1 / Level 5 read an unsigned, unpinned registry manifest until the edition-2 signed build record; roster changes are a strict majority of the standing roster with holder recovery replacing the steward backstop (#302). Earlier revisions are in git history.
+**Last updated:** 2026-11-15 (v23.0.0): certificate pinning removed (#321); AV-5 states that Level 1 / Level 5 read an unsigned, unpinned registry manifest until the edition-2 signed build record; roster changes are a strict majority of the standing roster with holder recovery replacing the steward backstop (#302); transparency-log STHs, witness cosignatures and the CC Part 6 substrate objects are signed with the CC 2.6.1.7 composite ML-DSA-65-Ed25519, with no bound-hybrid form (#326). Earlier revisions are in git history.
 
 ## 1. Scope
 
@@ -759,7 +759,7 @@ The federation expects CIRISVerify to be the **substrate-level crypto authority*
 - ✅ **Authenticated transport-identity binding (AV-42)** — `FederationEnvelope`, `federation_keys` provenance verifier, `EnvelopeVerifyPolicy::RequireTransportBinding`, deterministic `derive_transport_identity`.
 - ✅ **M-of-N threshold-signature verifier** — `verify_threshold_signatures` over hybrid signatures; used by founder quorum, partner-record quorum, keyset rotation and the accord.
 - ✅ **Scalar-attestation surface** — `federation_provenance` carries `AttestationEntry { dimension, score, attester, source_ref }` measurements; the response composes no verdict (the §1.4 authentication ≠ trust invariant). `AttestBundle` projects the same data into named measurement fields; tier mapping is consumer policy.
-- ✅ **Transparency-log witness cosigning receiver** — `SignedTreeHead::cosign`, `TrustedWitness`, `witness_quorum_met`; cosignatures count only with a verifying `WitnessConsistencyProof`.
+- ✅ **Transparency-log witness cosigning receiver** — `SignedTreeHead::cosign`, `TrustedWitness`, `witness_quorum_met`; the STH and every cosignature are the CC 2.6.1.7 composite ML-DSA-65-Ed25519 signature, verified under the witness's pinned composite key; cosignatures count only with a verifying `WitnessConsistencyProof`.
 - ✅ **Typed error envelope** — `ceg_error::CegErrorCode` stable wire codes + `CegError` with `From<VerifyError>`.
 - ✅ **Full-SHA verification before consumption** — `holds_bytes::verify_holds_bytes` enforces canonical hex before hashing and compares digests constant-time, closing the prefix-collision class.
 - ✅ **Canonicalization discipline** — RFC 8785 JCS (`jcs`), `check_canonical_rfc3339`, `check_canonical_hex64`, `canonical_subject` (CC 2.3.2.1).
