@@ -60,7 +60,7 @@ node/agent is *canonical-trust-and-serve only* until owned.
 | **family** | `family` (CC §3.3.4) | `family_key_id` | intimate roster; structural-invisibility (CC §5.2) |
 | **community** | `community` (CC §3.2) | `community_key_id` | larger roster; admission-gated; provenance-visible |
 
-One identity MAY belong to multiple families/communities (CC §4.4.3.4 Policy L);
+One identity MAY belong to multiple families/communities (CC §4.4.3.15 Policy L);
 the group code carries the group's `*_key_id` so the consumer resolves the right
 roster + DEK + `consensus_protocol` admission.
 

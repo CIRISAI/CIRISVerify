@@ -127,7 +127,7 @@ pub struct BuildAttestation<'a> {
     /// upper-case value would produce a ref that exists and **never
     /// matches** — so the producer refuses it rather than emit it.
     pub manifest_hash: &'a str,
-    /// The manifest blob's length in bytes. CC 5.3.2.5: a descriptor citing a
+    /// The manifest blob's length in bytes. CC 5.3.2.11: a descriptor citing a
     /// blob from `evidence_refs` carries its size, and a fetcher checks size
     /// **before** the full SHA, so an oversized or truncated body is refused
     /// without hashing it. `build` is that descriptor (CC 3.1.2.1).
@@ -410,7 +410,7 @@ pub struct VerifiedManifest {
     pub binary_version: String,
     /// SHA-256 of the canonical file manifest, hex.
     pub manifest_hash: String,
-    /// The manifest blob's declared length in bytes (CC 5.3.2.5). A fetcher
+    /// The manifest blob's declared length in bytes (CC 5.3.2.11). A fetcher
     /// MUST refuse a body of any other length before hashing it.
     pub manifest_size: u64,
     /// The blob(s) this Contribution references (CIRISVerify#281); always
@@ -723,7 +723,7 @@ pub fn verify_build_manifest_contribution(
         manifest_hash: manifest_hash.to_string(),
         manifest_size: build.get("manifest_size").and_then(Value::as_u64).ok_or(
             ManifestRejection::Malformed {
-                field: "build.manifest_size (absent or not a u64 — CC 5.3.2.5)",
+                field: "build.manifest_size (absent or not a u64 — CC 5.3.2.11)",
             },
         )?,
         evidence_refs,
@@ -960,7 +960,7 @@ mod tests {
         }
     }
 
-    /// CC 5.3.2.5: the descriptor carries the blob's size; without it a
+    /// CC 5.3.2.11: the descriptor carries the blob's size; without it a
     /// fetcher can only fall back to the global cap.
     #[tokio::test]
     async fn a_build_without_a_declared_size_is_refused() {

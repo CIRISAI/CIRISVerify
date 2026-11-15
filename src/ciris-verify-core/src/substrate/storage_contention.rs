@@ -18,7 +18,7 @@
 //! big-endian, 16-byte domain-separated — **NOT** JCS) and a **bound-hybrid**
 //! signature: `Ed25519(preimage)` plus `ML-DSA-65(preimage ‖ ed25519_sig)`
 //! ([`verify_bound_hybrid`]). A verifier MUST reject a shape lacking a valid
-//! ML-DSA-65 half at ingest and before persistence (CC 5.3.2.4.3.1 store-path —
+//! ML-DSA-65 half at ingest and before persistence (CC 5.3.2.8 store-path —
 //! both are federation-tier). Same gate every §19 object rides.
 //!
 //! # Canonical home

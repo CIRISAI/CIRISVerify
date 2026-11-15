@@ -301,7 +301,7 @@ message LicenseStatusResponse {
 enum LicenseStatus {
   LICENSE_STATUS_UNSPECIFIED = 0;
 
-  // Licensed statuses (reserved for the licensure gate, CC 4.4.3.8)
+  // Licensed statuses (reserved for the licensure gate, CC 4.4.3.34)
   LICENSED_PROFESSIONAL = 1;      // Professional licence
   LICENSED_COMMUNITY_PLUS = 2;    // Enhanced community (some features)
 
@@ -627,7 +627,7 @@ message ResponseMetadata {
 
 ## Mandatory Disclosure Strings
 
-The following disclosure strings are baked into the binary and cannot be modified. The licensed, revoked and expired strings apply only once the licensure gate (CC 4.4.3.8) exists:
+The following disclosure strings are baked into the binary and cannot be modified. The licensed, revoked and expired strings apply only once the licensure gate (CC 4.4.3.34) exists:
 
 ```
 LICENSED_PROFESSIONAL:
@@ -689,7 +689,7 @@ selection are specified in §5. Defaults: `https://api.registry.ciris-services-1
 Hosts add availability, not trust: a host can withhold a bundle but cannot forge
 one, because only the baked accord holders can authorize it. DNS is not a source.
 
-## Licensure (CC 4.4.3.8)
+## Licensure (CC 4.4.3.34)
 
 A licence is a cosigned `licensure:{authority}:v1` row about the deployment's key,
 honoured when its authority is in the reader's trust set. This module does not yet
@@ -1002,7 +1002,7 @@ The protocol supports algorithm agility via the `PQCAlgorithm` enum. Future NIST
 
 ### Revocation
 - Revocation is a quorum-signed `federation_revocations` row.
-- Revocation policy for licences is the licensing authority's, expressed through its licensure rows (CC 4.4.3.8).
+- Revocation policy for licences is the licensing authority's, expressed through its licensure rows (CC 4.4.3.34).
 
 ### Disputes
 - Arbitration process defined in license agreement

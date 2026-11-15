@@ -105,7 +105,7 @@ consumes.
 Its trust root is the GenesisBundle authorized by the HUMANITY_ACCORD holders
 whose keys are baked into the binary (CC 5.3.4), fetched over HTTPS from the
 registry hosts at `/v1/trust-root/bundle`. A licence is a cosigned
-`licensure:{authority}:v1` row (CC 4.4.3.8); verify does not yet evaluate those
+`licensure:{authority}:v1` row (CC 4.4.3.34); verify does not yet evaluate those
 rows, so every deployment currently reports community status.
 
 It proves an agent is **authentic** — necessary, not sufficient. Ethical

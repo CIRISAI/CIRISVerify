@@ -115,7 +115,7 @@ AV-46..AV-51 (presenter binding, device attestation, trust anchors, canonical by
 
 **Attack**: Capture a valid response or object before it is revoked, replay it afterward.
 
-**Primary mitigation**: Challenge nonce (32+ bytes) binds each attestation response to the request, preventing simple response replay. Revocation is a quorum-signed `federation_revocations` row; there is no separate signed revocation list to roll back. The trust root cannot be rolled back because the highest verified GenesisBundle version is selected (AV-3). No licence is honoured until the licensure-row gate exists (CC 4.4.3.8), so there is no licence to replay; the local cache is never an authority for a licence.
+**Primary mitigation**: Challenge nonce (32+ bytes) binds each attestation response to the request, preventing simple response replay. Revocation is a quorum-signed `federation_revocations` row; there is no separate signed revocation list to roll back. The trust root cannot be rolled back because the highest verified GenesisBundle version is selected (AV-3). No licence is honoured until the licensure-row gate exists (CC 4.4.3.34), so there is no licence to replay; the local cache is never an authority for a licence.
 
 **Secondary**: Transparency log records verification events; `LicenseCache::check_and_update_revision` provides a monotonic highest-seen-revision guard (`RollbackDetected`).
 
@@ -448,7 +448,7 @@ Stated honestly rather than overclaimed: "hardware-rooted" means the *classical*
 | AV-1 | Code fork / license-check removal | Hardware-bound signing key | Binary integrity check | ✓ Mitigated |
 | AV-2 | Runtime modification | Binary self-integrity + anti-debug | Platform integrity checks | ✓ Mitigated |
 | AV-3 | Endpoint spoofing / trust-root substitution | GenesisBundle verified per host against the baked accord holders, threshold `max(carried M, strict majority)`; highest verified version selected; equal-version split = equivocation (CC 5.3.4) | TLS (availability/confidentiality only) | ✓ Mitigated; residual: all hosts can deny service |
-| AV-4 | Replay after revocation | Challenge nonce; quorum-signed `federation_revocations` rows; trust root not rollbackable; no licence honoured until CC 4.4.3.8 gate | Transparency log; monotonic revision guard | ✓ Mitigated; residual: revocation propagation (R1) |
+| AV-4 | Replay after revocation | Challenge nonce; quorum-signed `federation_revocations` rows; trust root not rollbackable; no licence honoured until CC 4.4.3.34 gate | Transparency log; monotonic revision guard | ✓ Mitigated; residual: revocation propagation (R1) |
 | AV-5 | MITM attestation | Hybrid Ed25519 + ML-DSA-65 (bound), hybrid required at federation tier | Remote attestation proof export | ✓ Mitigated |
 | AV-6 | Emulator/debugger interception | Platform integrity checks | Timing anomaly detection | ✓ Mitigated |
 | AV-7 | Ephemeral identity storage | `HardwareSigner::storage_descriptor()` + boot-time logging | `--strict-storage` consumer flag, ephemeral-path heuristics | ✓ Mitigated |
@@ -576,7 +576,7 @@ All failures degrade to MORE restrictive modes, never less:
 | Trust-root equivocation (two verified bundles at one version) | RESTRICTED | Possible attack on the trust root |
 | Rollback detected | RESTRICTED | Possible replay attack |
 | No trust-root host reachable, or none verifies | COMMUNITY | No trust root selected |
-| No honoured licensure row (CC 4.4.3.8; the gate is not implemented) | COMMUNITY | No licence |
+| No honoured licensure row (CC 4.4.3.34; the gate is not implemented) | COMMUNITY | No licence |
 | Signature verification failed | COMMUNITY | Cannot verify authenticity |
 | Hardware attestation failed | COMMUNITY | Cannot verify hardware binding |
 
@@ -620,7 +620,7 @@ These don't belong to a single AV because the failure mode crosses surfaces:
 
 5. **Quantum computer capable of breaking both Ed25519 and ML-DSA-65** (AV-5 + AV-9 + AV-12 worst case): current quantum computers cannot break either. Hybrid approach means BOTH must fall. ML-DSA-65 provides NIST-standardized post-quantum resistance. Mitigation: algorithm agility allows future upgrades — see §10 gap #6 for the formal migration plan.
 
-6. **Insider threat at a licensing authority**: a compromised authority in a reader's trust set could cosign licensure rows for malicious agents (once the licensure gate exists, CC 4.4.3.8). Cross-cuts AV-1, AV-12. Mitigation: a licence is honoured only through the reader's trust set, so a reader controls which authorities count; licensure rows are cosigned and audit-visible. Per-primitive signing-key separation means a compromised licensing authority cannot forge BuildManifest signatures.
+6. **Insider threat at a licensing authority**: a compromised authority in a reader's trust set could cosign licensure rows for malicious agents (once the licensure gate exists, CC 4.4.3.34). Cross-cuts AV-1, AV-12. Mitigation: a licence is honoured only through the reader's trust set, so a reader controls which authorities count; licensure rows are cosigned and audit-visible. Per-primitive signing-key separation means a compromised licensing authority cannot forge BuildManifest signatures.
 
 ---
 
@@ -750,7 +750,7 @@ The federation expects CIRISVerify to be the **substrate-level crypto authority*
 - ✅ **Hardware-bound identity** (TPM 2.0 via the runtime-loaded plugin, Android Keystore / StrongBox, iOS Secure Enclave, YubiKey PIV over PKCS#11, software fallback) — `HardwareSigner` trait, `StorageDescriptor` for transparency about identity material location.
 - ✅ **Build attestation** (BuildManifest validator, function-level integrity, file-tree integrity, multi-target sign + register, build-manifest Contributions, wheel identity check) — registry round-trip locked by post-release-verify CI; Sigstore + GitHub Actions OIDC for CI signing; `BuildManifest::to_attestation_entries` emits `provenance:build_manifest:{target}:v1`.
 - ✅ **Runtime integrity** (`verify_tree`, Algorithm A shared with `ciris-build-sign sign --tree`, missing/extra/mismatch verdicts) — Python FFI exposed; live-registry CI gate.
-- ✅ **License tier enforcement + mandatory disclosure** — `LicenseEngine`, fail-secure degradation (LOCKDOWN / RESTRICTED / COMMUNITY), capability gating against `PROHIBITED_CAPABILITIES`. Every deployment is community until the licensure-row gate (CC 4.4.3.8).
+- ✅ **License tier enforcement + mandatory disclosure** — `LicenseEngine`, fail-secure degradation (LOCKDOWN / RESTRICTED / COMMUNITY), capability gating against `PROHIBITED_CAPABILITIES`. Every deployment is community until the licensure-row gate (CC 4.4.3.34).
 - ✅ **Federation symmetric authority** — AES-256-GCM (with and without AAD), XChaCha20-Poly1305, PBKDF2, HKDF, HMAC, OsRng — single audit point. NIST GCM + RFC 5869 + RFC 4231 vectors locked.
 - ✅ **Key exchange** — X25519 + ML-KEM-768 hybrid KEX, `key_grant` DEK wrap, HPKE over X-Wing, the A/V per-hop transit key.
 - ✅ **Wallet signing** (secp256k1 EVM, EIP-155 field-level transaction construction, EIP-712, address recovery).
@@ -773,7 +773,7 @@ The federation expects CIRISVerify to be the **substrate-level crypto authority*
 - ✓ **PQC algorithm-agility** (Gap 6) — `HybridSignature::meets_federation_policy()` + `docs/CRYPTO_AGILITY.md`.
 - ⏳ **In-hardware symmetric derivation** (AV-41) — derivation is HKDF in software from a sealed seed.
 - ⏳ **PBKDF2 iteration bump** (AV-36) — 100k → 600k+.
-- ⏳ **Licensure-row gate** (CC 4.4.3.8) — until it exists, no deployment is licensed.
+- ⏳ **Licensure-row gate** (CC 4.4.3.34) — until it exists, no deployment is licensed.
 
 ### 11.3 Out of scope by design (boundary defense, not omission)
 

@@ -100,7 +100,7 @@ pub mod ml_kem;
 #[cfg(feature = "hybrid-kex")]
 pub mod hybrid_kex;
 
-// v20.2.0+ — CC 5.3.3.5 E1 A/V per-hop transit key: hybrid KEX against a
+// v20.2.0+ — CC 5.3.3.10 E1 A/V per-hop transit key: hybrid KEX against a
 // relay's published transit pair, two per-direction keys (CIRISVerify#309).
 #[cfg(feature = "transit-kex")]
 pub mod transit_kex;

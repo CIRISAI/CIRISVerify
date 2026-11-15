@@ -10,7 +10,7 @@ pip install ciris-verify
 
 Platform wheels bundle the CIRISVerify native library. On other platforms, build it from source (see the [CIRISVerify repository](https://github.com/CIRISAI/CIRISVerify)).
 
-**Licensing:** a licence is a cosigned `licensure:{authority}:v1` row (CC 4.4.3.8). CIRISVerify does not yet evaluate licensure rows, so `get_license_status` reports `UNLICENSED_COMMUNITY` or a more restrictive status for every deployment, and `status.license` is `None`.
+**Licensing:** a licence is a cosigned `licensure:{authority}:v1` row (CC 4.4.3.34). CIRISVerify does not yet evaluate licensure rows, so `get_license_status` reports `UNLICENSED_COMMUNITY` or a more restrictive status for every deployment, and `status.license` is `None`.
 
 ## Quick Start
 

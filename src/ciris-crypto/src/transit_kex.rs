@@ -1,4 +1,4 @@
-//! CC 5.3.3.5 E1 — the A/V **per-hop transit key**: the key that seals the
+//! CC 5.3.3.10 E1 — the A/V **per-hop transit key**: the key that seals the
 //! outer layer of `double_sealed_ciphertext` on one hop.
 //!
 //! The outer nonce is already pinned in `ciris-verify-core`'s `av_chunk`
@@ -90,7 +90,7 @@ use crate::ml_kem::{
 };
 use crate::{kdf, ml_kem, x25519};
 
-/// Wire-vocabulary identifier of the in-transit KEX (CC 5.3.3.5 E1). Distinct
+/// Wire-vocabulary identifier of the in-transit KEX (CC 5.3.3.10 E1). Distinct
 /// from the at-rest `wrap_algorithm`; matched by exact byte comparison.
 pub const TRANSIT_KEX_IDENTIFIER: &str = "transit_x25519_mlkem768_hkdf_sha256";
 

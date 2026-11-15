@@ -234,7 +234,7 @@ pub struct SafetyEvidence<'a> {
     pub captured_at: &'a str,
     /// SHA-256 of the blob, bare lowercase hex; emitted as `evidence_refs[0]`.
     pub manifest_hash: &'a str,
-    /// The blob's length in bytes (CC 5.3.2.5).
+    /// The blob's length in bytes (CC 5.3.2.11).
     pub manifest_size: u64,
 }
 
@@ -575,7 +575,7 @@ impl SignedSafetyEvidence {
         })
     }
 
-    /// Check a fetched blob against the row: length first (CC 5.3.2.5), then
+    /// Check a fetched blob against the row: length first (CC 5.3.2.11), then
     /// SHA-256 in constant time.
     ///
     /// # Errors
@@ -716,7 +716,7 @@ pub fn verify_safety_evidence_signature(
         ev.get("manifest_size")
             .and_then(Value::as_u64)
             .ok_or(EvidenceRejection::Malformed {
-                field: "evidence.manifest_size (absent or not a u64 — CC 5.3.2.5)",
+                field: "evidence.manifest_size (absent or not a u64 — CC 5.3.2.11)",
             })?;
 
     // --- 4. The score. ---

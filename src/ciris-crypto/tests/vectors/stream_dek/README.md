@@ -26,9 +26,9 @@ step is the caller's), the `stream_id`, the epoch, the HKDF `info` in hex and
 the DEK in hex.
 
 - Edge's `av-` form: epoch 0, a rolled epoch, two streams in one epoch, the
-  CC 5.3.3.7 known-answer stream id, a second exporter secret and epoch
+  CC 5.3.3.5 known-answer stream id, a second exporter secret and epoch
   `u64::MAX`.
-- The normative bare form: the CC 5.3.3.7 known-answer stream id, the bare
+- The normative bare form: the CC 5.3.3.5 known-answer stream id, the bare
   spelling of `epoch_zero`'s digest (a different DEK from the `av-` spelling),
   and a data stream at two epochs.
 

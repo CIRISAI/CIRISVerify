@@ -1,7 +1,7 @@
 //! The substrate verifiers (CC 6.1): the wholeness witness (CC 6.1.1), the
 //! noise floor and its aggregation tier (CC 6.1.2), durable storage and
 //! replication (CC 6.1.5), deterministic ALM topology (CC 6.1.6), transitive
-//! trust discovery (CC 6.1.8), and the A/V chunk seal (CC 5.3.3.2.5).
+//! trust discovery (CC 6.1.8), and the A/V chunk seal (CC 5.3.3.7).
 //!
 //! Producers (CIRISEdge, CIRISPersist) build these objects; this module is
 //! where their invariants are checked, so every implementation is held to the

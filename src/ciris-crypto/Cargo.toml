@@ -40,7 +40,7 @@ key-grant = ["x25519", "aes-gcm", "kdf", "random"]
 # decrypt-later vulnerability).
 ml-kem = ["dep:ml-kem"]
 hybrid-kex = ["x25519", "ml-kem", "kdf", "random"]
-# v20.2.0+ (CIRISVerify#309, CC 5.3.3.5 E1): the A/V per-hop transit key —
+# v20.2.0+ (CIRISVerify#309, CC 5.3.3.10 E1): the A/V per-hop transit key —
 # hybrid KEX against the relay's published transit pair, one key per direction.
 transit-kex = ["hybrid-kex", "dep:zeroize"]
 # v23.0.0+ (CIRISVerify#308, CC 5.1): the per-stream call DEK under the MLS

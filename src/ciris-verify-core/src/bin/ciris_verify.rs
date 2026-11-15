@@ -300,7 +300,7 @@ enum ManifestAction {
         /// SHA-256 of the canonical file manifest, hex (matches the served manifest).
         #[arg(long)]
         manifest_hash: String,
-        /// Length of the manifest blob in bytes (CC 5.3.2.5 — a fetcher checks
+        /// Length of the manifest blob in bytes (CC 5.3.2.11 — a fetcher checks
         /// it before the SHA).
         #[arg(long)]
         manifest_size: u64,
