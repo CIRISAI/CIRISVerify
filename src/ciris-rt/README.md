@@ -47,7 +47,7 @@ calls `ciris_host_abi::export_node!` on it. On wasm32 that emits the
 | `yield_now`, `blocking`, `spawn_blocking` | `blocking(f).await` and `spawn_blocking(f)` run `f` inline (FSD §5.2) |
 | `time` | `Instant` (std-shaped, µs), `Duration`, `sleep`, `sleep_until`, `timeout`, `timeout_at` → `Result<T, Elapsed>`, `interval`, `interval_at`, `Interval::{tick, poll_tick, reset, period, set_missed_tick_behavior}`, `MissedTickBehavior` |
 | `net` | `dial(..).await -> Connection`, `listen(c, &ListenOptions) -> Listener`, `Listener::accept().await`, `bind(..) -> Datagram`; `Connection::{conn_info, read, write, write_all, send_message, recv_message, close}`, `futures_io::AsyncRead` / `AsyncWrite`; `Datagram::{send_to, recv_from, local_addr, max_datagram, multicast_join, multicast_leave}`; `NetError` |
-| `seal` | `generate(id, kind)`, `sign_composite`, `sign_classical`, `sign_pqc`, `kem_decap` (→ `Zeroizing`), `wrap`, `unwrap` (→ `Zeroizing`); `describe`, `public_key` re-exported |
+| `seal` | `generate(id, kind)`, `sign_composite`, `sign_classical`, `sign_pqc`, `kem_decap` (transit-kex, → `Zeroizing` 64-byte ikm), `xwing_decap` (onion-hop, → `Zeroizing` 32-byte X-Wing secret), `wrap`, `unwrap` (→ `Zeroizing`); `describe`, `public_key` re-exported |
 | `lifecycle` | `current()`, `next().await`, `clock_trusted()`, `wait_clock_trusted().await` |
 | `RtNode`, `node!` | the export helper |
 | `replay` (default feature) | `Session::{record, replaying, init, tick, on_event, api, log, finish}`, `replay::<N>(&Log) -> Log`, `Log::{to_jsonl, from_jsonl, entries, import_calls}` |

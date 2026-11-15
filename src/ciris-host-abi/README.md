@@ -102,7 +102,7 @@ holds for `net` and `seal`:
 * `net.bind(bind, port, token)` → a `datagram`; `readable(token)` /
   `writable(token)` as for streams.
 * `seal.sign-composite(id, msg, token)` (and `generate`, `kem-decap`,
-  `wrap`, `unwrap`, `sign-classical`, `sign-pqc`) → `ok` means accepted, `err` means it never started; then
+  `xwing-decap`, `wrap`, `unwrap`, `sign-classical`, `sign-pqc`) → `ok` means accepted, `err` means it never started; then
   `sealed(token)`; then `seal.take(token)` returns the result once (the
   signature, or for `generate` the 1984-byte public key; `would-block`
   before the event, `not-found` after it was taken). **Many seal tokens
@@ -215,30 +215,49 @@ Seeds never pass through node memory. There is no node-facing
   `random`, the host seals it, and `take(token)` returns **only the public
   key**:
   * `composite`: 1984 bytes, `mldsaPK || ed25519PK`;
-  * `transit-kex` and `onion-hop`: 1216 bytes, `x25519PK(32) ||
-    mlkem768EK(1184)`. Transit-kex derives both from one 64-byte root seed
+  * `transit-kex`: split X25519 + ML-KEM-768, 1216 bytes,
+    `x25519PK(32) || mlkem768EK(1184)`, derived from one 64-byte root seed
     exactly as edge's `transit_kex_custody` does: x25519 =
     `HKDF-SHA256(seed, salt="", info="ciris-transit-kex/v1/x25519", 32)`,
     ML-KEM `d || z` = `HKDF-SHA256(seed, "", "ciris-transit-kex/v1/ml-kem-768", 64)`
-    through FIPS 203 deterministic keygen. Onion-hop follows edge's
-    `HopSecret::from_root_seed`: X-Wing seed =
-    `HKDF-SHA3-256(root, "", "ciris-onion-hop/v1/xwing-seed", 32)`, expanded
-    by X-Wing draft-06 (`SHAKE256(seed, 96)` = `d || z || x25519 scalar`).
-    (These labels are edge's; verify's `ciris_crypto::transit_kex` holds
-    the handshake KDF, not the seed derivation.)
-* `seal.kem-decap(id, x25519-peer-pub, mlkem-ct, token)` against a
-  transit-kex or onion-hop key: `take` returns **64 bytes,
-  `shared_x25519(32) || ss_mlkem768(32)`**, which is exactly the `ikm`
-  `ciris_crypto::transit_kex::respond` forms before its HKDF, so the node
-  runs `derive_transit_keys` itself (for onion-hop it applies its own
-  combiner to the same two parts). An all-zero X25519 secret is `invalid`.
+    through FIPS 203 deterministic keygen. (These labels are edge's;
+    verify's `ciris_crypto::transit_kex` holds the handshake KDF, not the
+    seed derivation.)
+  * `onion-hop`: **X-Wing** (edge's `outfox-xwing-v1` hop KEM). The
+    private key is a 32-byte X-Wing seed; the public key is the X-Wing
+    encoding, 1216 bytes, **`pk_M(1184) || pk_X(32)`, ML-KEM first**
+    (`ciris_crypto::xwing::XWingSecretKey::from_seed`). A **host-side
+    adopt** of an existing edge hop root seed must use edge's derivation
+    (`HopSecret::from_root_seed`: X-Wing seed =
+    `HKDF-SHA3-256(64-byte root, "", "ciris-onion-hop/v1/xwing-seed", 32)`)
+    and install the resulting 32-byte X-Wing seed.
+* **transit-kex → `seal.kem-decap(id, x25519-peer-pub, mlkem-ct, token)`**:
+  `take` returns **64 bytes, `shared_x25519(32) || ss_mlkem768(32)`**,
+  which is exactly the `ikm` `ciris_crypto::transit_kex::respond` forms
+  before its HKDF, so the node runs `derive_transit_keys` itself. An
+  all-zero X25519 secret is `invalid`; so is an onion-hop or composite id.
+* **onion-hop → `seal.xwing-decap(id, ct, token)`**: `ct` is the 1120-byte
+  X-Wing ciphertext `ct_M(1088) || ct_X(32)`; `take` returns the **32-byte
+  X-Wing shared secret** `SHA3-256(ss_M || ss_X || ct_X || pk_X || "\.//^\")`
+  (`XWingSecretKey::decapsulate`). Wrong ct length, or a transit-kex or
+  composite id, is `invalid`.
+* **X-Wing draft -06 versus -11.** Edge's packets are draft-06 (libcrux
+  `XWingKemDraft06`); verify's `ciris_crypto::xwing` implements draft-11.
+  For a given secret key they are identical in key generation from the
+  seed, public-key layout, ciphertext layout, and the combiner:
+  `tests/native_seam.rs` (`xwing_decap_reproduces_edges_draft_06_known_answer`)
+  takes edge's `kat_outfox_xwing_v1` vector (hop-1 seed, fixed eseed),
+  reproduces libcrux's public key, ciphertext and shared secret with
+  verify's X-Wing, and gets edge's shared secret from `xwing-decap` through
+  the seal.
 * `seal.public-key(id)` answers for every kind. **`not-found` means first
   run**; on any other error a node must not regenerate an identity-class
   key, because regenerating rotates a published pair under every peer.
 * an **existing** key is provisioned by the host through its seal root:
   the host unwraps it under the root and installs it into the vault with
-  `signer.install(id, kind, seed)`. That is host-side only, never via the
-  node.
+  `signer.install(id, kind, seed)` (64 bytes for composite and
+  transit-kex, the 32-byte X-Wing seed for onion-hop). That is host-side
+  only, never via the node.
 
 **Which secrets live where.**
 
@@ -294,7 +313,7 @@ imports only `log` and `random`. `random` serves `signer.generate` (a fresh
 key needs fresh seeds); signing itself is deterministic (FIPS 204 §3.4).
 The vault therefore carries ML-DSA-65, Ed25519, X25519 and ML-KEM-768.
 It exports `signer` (`install(id, kind, seed)`, `generate(id, kind)`,
-`kem-decap`, `public-key`, `sign-classical`, `sign-pqc`, `sign-composite`,
+`kem-decap`, `xwing-decap`, `public-key`, `sign-classical`, `sign-pqc`, `sign-composite`,
 `forget`, `forget-all`),
 all synchronous: the host has already done any gesture or unwrap. Bindings are in `ciris_host_abi::bindings::vault`, and
 item 9 implements them with `export_vault!`. Gate a vault module with

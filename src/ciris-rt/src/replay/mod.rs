@@ -735,6 +735,14 @@ impl Host for TapeHost {
         );
         c::de_result(&v, |_| ())
     }
+    fn seal_xwing_decap(&self, id: &str, ct: &[u8], token: u64) -> Result<(), Errno> {
+        let v = self.tape.import(
+            "seal.xwing-decap",
+            json!({"id": id, "ct": c::bytes(ct), "token": token}),
+            |l, _| c::result(&l.host.seal_xwing_decap(id, ct, token), c::unit),
+        );
+        c::de_result(&v, |_| ())
+    }
     fn seal_sign_classical(&self, id: &str, msg: &[u8], token: u64) -> Result<(), Errno> {
         let v = self.tape.import(
             "seal.sign-classical",

@@ -66,6 +66,28 @@ fn generate_kem_decap_wrap_unwrap() {
             .await
             .unwrap();
         let bad = seal::kem_decap("transit-kex:v1:t", &[9; 31], &[1; 1088]).await;
+        let hop_pk = seal::generate("onion-hop:v1:h", KeyKind::OnionHop)
+            .await
+            .unwrap();
+        assert_eq!(hop_pk.len(), seal::XWING_PUBLIC_KEY_LEN);
+        let hop_ss = seal::xwing_decap("onion-hop:v1:h", &[3; 1120])
+            .await
+            .unwrap();
+        assert_eq!(hop_ss.len(), seal::XWING_SHARED_SECRET_LEN);
+        assert_eq!(
+            seal::kem_decap("onion-hop:v1:h", &[9; 32], &[1; 1088])
+                .await
+                .map(|_| ()),
+            Err(Errno::Invalid),
+            "kem-decap is transit-kex only"
+        );
+        assert_eq!(
+            seal::xwing_decap("transit-kex:v1:t", &[3; 1120])
+                .await
+                .map(|_| ()),
+            Err(Errno::Invalid),
+            "xwing-decap is onion-hop only"
+        );
         let blob = seal::wrap("rns-transport-identity/v1", b"secret")
             .await
             .unwrap();

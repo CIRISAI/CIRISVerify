@@ -44,11 +44,13 @@ getrandom03 = { package = "getrandom", version = "0.3.4" }
 getrandom04 = { package = "getrandom", version = "0.4.2" }
 rand_core = { workspace = true, features = ["getrandom"] }
 
-# The test-only native `seal.wrap` / `unwrap` (tests/native_seam.rs):
-# HKDF-SHA256 + XChaCha20-Poly1305. Native only, so the wasm32 example
+# The test-only native `seal.wrap` / `unwrap` (HKDF-SHA256 +
+# XChaCha20-Poly1305) and `seal.xwing-decap` (tests/native_seam.rs). Native only, so the wasm32 example
 # build never compiles it.
 [target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
-ciris-crypto = { path = "../ciris-crypto", default-features = false, features = ["std", "random", "kdf", "xchacha"] }
+ciris-crypto = { path = "../ciris-crypto", default-features = false, features = ["std", "random", "kdf", "xchacha", "xwing"] }
+# SHAKE256 / SHA3-256 to rebuild edge's draft-06 X-Wing known answer.
+sha3 = { version = "0.10.9", default-features = false }
 
 [[bin]]
 name = "ciris-abi-gate"

@@ -22,7 +22,8 @@ use std::rc::Rc;
 
 use ciris_host_abi::host::{Host, HostDatagram, HostStream};
 use ciris_host_abi::seal::{
-    COMPOSITE_SIGNATURE_LEN, KEM_IKM_LEN, KEX_PUBLIC_KEY_LEN, PUBLIC_KEY_LEN,
+    COMPOSITE_SIGNATURE_LEN, KEM_IKM_LEN, KEX_PUBLIC_KEY_LEN, PUBLIC_KEY_LEN, XWING_CIPHERTEXT_LEN,
+    XWING_PUBLIC_KEY_LEN, XWING_SHARED_SECRET_LEN,
 };
 use ciris_host_abi::types::{
     Carrier, CloseInfo, CloseReason, ConnInfo, Errno, Event, FailInfo, FailReason, Framing,
@@ -449,15 +450,22 @@ impl Host for Scripted {
     fn seal_generate(&self, id: &str, kind: KeyKind, token: u64) -> Result<(), Errno> {
         let len = match kind {
             KeyKind::Composite => PUBLIC_KEY_LEN,
-            KeyKind::TransitKex | KeyKind::OnionHop => KEX_PUBLIC_KEY_LEN,
+            KeyKind::TransitKex => KEX_PUBLIC_KEY_LEN,
+            KeyKind::OnionHop => XWING_PUBLIC_KEY_LEN,
         };
         self.seal_start(token, fake_sig(id.as_bytes(), len))
     }
-    fn seal_kem_decap(&self, _id: &str, peer: &[u8], ct: &[u8], token: u64) -> Result<(), Errno> {
-        if peer.len() != 32 || ct.len() != 1088 {
+    fn seal_kem_decap(&self, id: &str, peer: &[u8], ct: &[u8], token: u64) -> Result<(), Errno> {
+        if id.starts_with("onion-hop:") || peer.len() != 32 || ct.len() != 1088 {
             return Err(Errno::Invalid);
         }
         self.seal_start(token, fake_sig(peer, KEM_IKM_LEN))
+    }
+    fn seal_xwing_decap(&self, id: &str, ct: &[u8], token: u64) -> Result<(), Errno> {
+        if !id.starts_with("onion-hop:") || ct.len() != XWING_CIPHERTEXT_LEN {
+            return Err(Errno::Invalid);
+        }
+        self.seal_start(token, fake_sig(ct, XWING_SHARED_SECRET_LEN))
     }
     fn seal_sign_composite(&self, _id: &str, msg: &[u8], token: u64) -> Result<(), Errno> {
         self.seal_start(token, fake_sig(msg, COMPOSITE_SIGNATURE_LEN))

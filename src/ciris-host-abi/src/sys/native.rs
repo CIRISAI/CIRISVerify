@@ -254,6 +254,9 @@ pub fn seal_wrap(label: &str, plaintext: &[u8], token: u64) -> Result<(), Errno>
 pub fn seal_unwrap(label: &str, wrapped: &[u8], token: u64) -> Result<(), Errno> {
     host().seal_unwrap(label, wrapped, token)
 }
+pub fn seal_xwing_decap(id: &str, ct: &[u8], token: u64) -> Result<(), Errno> {
+    host().seal_xwing_decap(id, ct, token)
+}
 pub fn seal_take(token: u64) -> Result<Vec<u8>, Errno> {
     host().seal_take(token)
 }

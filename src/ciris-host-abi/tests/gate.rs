@@ -60,6 +60,7 @@ fn only_good_passes() {
             ("ciris:node/seal@0.1.0", "sign-composite"),
             ("ciris:node/seal@0.1.0", "generate"),
             ("ciris:node/seal@0.1.0", "kem-decap"),
+            ("ciris:node/seal@0.1.0", "xwing-decap"),
             ("ciris:node/seal@0.1.0", "wrap"),
             ("ciris:node/seal@0.1.0", "unwrap"),
             ("ciris:node/net@0.1.0", "bind"),

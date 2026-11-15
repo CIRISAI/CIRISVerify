@@ -20,7 +20,7 @@ use ciris_host_abi::seal as abi;
 pub use ciris_host_abi::seal::{
     describe, public_key, COMPOSITE_LABEL, COMPOSITE_SIGNATURE_LEN, KEM_IKM_LEN,
     KEX_PUBLIC_KEY_LEN, MLKEM768_CIPHERTEXT_LEN, PUBLIC_KEY_LEN, WRAP_LABEL_MAX,
-    WRAP_PLAINTEXT_MIN_MAX,
+    WRAP_PLAINTEXT_MIN_MAX, XWING_CIPHERTEXT_LEN, XWING_PUBLIC_KEY_LEN, XWING_SHARED_SECRET_LEN,
 };
 pub use ciris_host_abi::types::{Custody, Errno, KeyKind};
 pub use zeroize::Zeroizing;
@@ -90,8 +90,10 @@ async fn run(start: impl FnOnce(u64) -> Result<(), Errno>) -> Result<Vec<u8>, Er
     .await
 }
 
-/// Generate key `id` of `kind` inside the seal; returns only its public key
-/// ([`PUBLIC_KEY_LEN`] for composite, [`KEX_PUBLIC_KEY_LEN`] otherwise).
+/// Generate key `id` of `kind` inside the seal; returns only its public key:
+/// [`PUBLIC_KEY_LEN`] for composite, [`KEX_PUBLIC_KEY_LEN`]
+/// (x25519PK || mlkem768EK) for transit-kex, and the X-Wing encoding
+/// [`XWING_PUBLIC_KEY_LEN`] (pk_M || pk_X, ML-KEM first) for onion-hop.
 /// Call only after [`public_key`] answered `not-found` (first run); never
 /// regenerate an identity-class key on any other error.
 ///
@@ -126,20 +128,32 @@ pub async fn sign_pqc(id: &str, ctx: &[u8], msg: &[u8]) -> Result<Vec<u8>, Errno
     run(|t| abi::sign_pqc(id, ctx, msg, t)).await
 }
 
-/// Key agreement against transit-kex / onion-hop key `id`: returns
+/// Key agreement against TRANSIT-KEX key `id`: returns
 /// `shared_x25519(32) || ss_mlkem768(32)`, the `ikm` of
 /// `ciris_crypto::transit_kex::respond`, for the node's own
 /// `derive_transit_keys`.
 ///
 /// # Errors
-/// `invalid` (low-order peer key, wrong lengths, a composite id); the
-/// host's refusal or failure.
+/// `invalid` (low-order peer key, wrong lengths, a composite or onion-hop
+/// id); the host's refusal or failure.
 pub async fn kem_decap(
     id: &str,
     x25519_peer_pub: &[u8],
     mlkem_ct: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>, Errno> {
     run(|t| abi::kem_decap(id, x25519_peer_pub, mlkem_ct, t))
+        .await
+        .map(Zeroizing::new)
+}
+
+/// X-Wing decapsulation of the 1120-byte `ct` (ct_M || ct_X) against
+/// ONION-HOP key `id`: returns the 32-byte X-Wing shared secret.
+///
+/// # Errors
+/// `invalid` (wrong ct length, a composite or transit-kex id); the host's
+/// refusal or failure.
+pub async fn xwing_decap(id: &str, ct: &[u8]) -> Result<Zeroizing<Vec<u8>>, Errno> {
+    run(|t| abi::xwing_decap(id, ct, t))
         .await
         .map(Zeroizing::new)
 }

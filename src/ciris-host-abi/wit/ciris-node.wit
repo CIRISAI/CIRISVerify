@@ -128,12 +128,17 @@ interface types {
     /// 1984 bytes, mldsaPK(1952) || ed25519PK(32).
     composite,
     /// The static transit-KEX pair (CC 3.3.6.2 / 5.3.3.10 E1) published in
-    /// `transit_kex_pubkeys`. Public key: 1216 bytes,
-    /// x25519PK(32) || mlkem768EK(1184).
+    /// `transit_kex_pubkeys`: split X25519 + ML-KEM-768. Public key: 1216
+    /// bytes, x25519PK(32) || mlkem768EK(1184). Key agreement is
+    /// `kem-decap`, which returns the two shared secrets for the
+    /// `ciris_crypto::transit_kex` combiner.
     transit-kex,
-    /// The onion hop key, published in `onion_hop_pubkeys`, independent of
-    /// the transit pair. Public key: 1216 bytes,
-    /// x25519PK(32) || mlkem768EK(1184).
+    /// The onion hop key (CC 5.4.6, `outfox-xwing-v1`), published in
+    /// `onion_hop_pubkeys`, independent of the transit pair: X-Wing
+    /// (draft-connolly-cfrg-xwing-kem; decapsulation is identical in -06 and
+    /// -11). Public key: the X-Wing encoding, 1216 bytes,
+    /// pk_M = mlkem768EK(1184) || pk_X = x25519PK(32), ML-KEM FIRST. Key
+    /// agreement is `xwing-decap`, which returns the X-Wing shared secret.
     onion-hop,
   }
 
@@ -485,26 +490,39 @@ interface seal {
   ///     HKDF-SHA256(seed, salt = "", info =
   ///     "ciris-transit-kex/v1/ml-kem-768", 64), through FIPS 203
   ///     deterministic keygen (edge `transit_kex_custody`).
-  ///   * onion-hop: one 64-byte root seed; the X-Wing seed =
-  ///     HKDF-SHA3-256(root, salt = "", info =
-  ///     "ciris-onion-hop/v1/xwing-seed", 32), expanded as X-Wing draft-06
-  ///     (SHAKE256(seed, 96) = ML-KEM `d || z`(64) || x25519 scalar(32))
-  ///     (edge `onion::HopSecret::from_root_seed`). The public key is still
-  ///     given x25519PK || mlkem768EK.
+  ///   * onion-hop: a 32-byte X-Wing seed, which IS the X-Wing private key
+  ///     (draft §5.2); the public key is its X-Wing expansion
+  ///     (`ciris_crypto::xwing::XWingSecretKey::from_seed`), returned in
+  ///     X-Wing order pk_M || pk_X. A HOST-SIDE adopt of an existing edge
+  ///     hop seed must use edge's derivation (edge
+  ///     `onion::HopSecret::from_root_seed`: X-Wing seed =
+  ///     HKDF-SHA3-256(64-byte root, salt = "", info =
+  ///     "ciris-onion-hop/v1/xwing-seed", 32)) and install the resulting
+  ///     32-byte X-Wing seed; seed-to-key expansion is not something to
+  ///     re-derive differently across drafts.
   /// `invalid` if `id` already exists: generate never overwrites.
   generate: func(id: string, kind: key-kind, token: u64) -> result<_, errno>;
-  /// Key agreement against a transit-kex or onion-hop key `id`. The vault
-  /// computes the X25519 shared secret with `x25519-peer-pub` (32 bytes)
-  /// and the ML-KEM-768 decapsulation of `mlkem-ct` (1088 bytes), and
-  /// `take(token)` returns the 64 bytes
+  /// Key agreement against a TRANSIT-KEX key `id` only. The vault computes
+  /// the X25519 shared secret with `x25519-peer-pub` (32 bytes) and the
+  /// ML-KEM-768 decapsulation of `mlkem-ct` (1088 bytes), and `take(token)`
+  /// returns the 64 bytes
   ///   shared_x25519(32) || ss_mlkem768(32)
   /// which is exactly the `ikm` `ciris_crypto::transit_kex::respond` forms
-  /// before its HKDF, so the node runs `derive_transit_keys` itself (for
-  /// onion-hop the node applies its own combiner to the same two parts).
-  /// The private keys never leave the vault. An all-zero X25519 shared
-  /// secret (a low-order peer key) is refused with `invalid`; `invalid`
-  /// too for a composite `id` or wrong input lengths.
+  /// before its HKDF, so the node runs `derive_transit_keys` itself. The
+  /// private keys never leave the vault. `invalid` for an all-zero X25519
+  /// shared secret (a low-order peer key), for a composite or onion-hop
+  /// `id`, and for wrong input lengths.
   kem-decap: func(id: string, x25519-peer-pub: list<u8>, mlkem-ct: list<u8>, token: u64) -> result<_, errno>;
+  /// X-Wing decapsulation against an ONION-HOP key `id` only. `ct` is the
+  /// 1120-byte X-Wing ciphertext ct_M(1088) || ct_X(32); `take(token)`
+  /// returns the 32-byte X-Wing shared secret
+  ///   SHA3-256(ss_M || ss_X || ct_X || pk_X || "\.//^\")
+  /// (`ciris_crypto::xwing::XWingSecretKey::decapsulate`). A well-formed
+  /// ciphertext always decapsulates (implicit rejection: a wrong key gives
+  /// an unrelated secret, which the AEAD above refuses). `invalid` for a
+  /// ciphertext that is not 1120 bytes, and for a composite or transit-kex
+  /// `id`.
+  xwing-decap: func(id: string, ct: list<u8>, token: u64) -> result<_, errno>;
   /// Ed25519 over `msg` as it is (64 bytes). Kept for non-composite
   /// consumers; forward-model signatures use `sign-composite`.
   sign-classical: func(id: string, msg: list<u8>, token: u64) -> result<_, errno>;
@@ -548,6 +566,7 @@ interface seal {
   unwrap: func(label: string, wrapped: list<u8>, token: u64) -> result<_, errno>;
   /// The result of the completed operation `token`: the signature, the
   /// public key for `generate`, the 64-byte ikm for `kem-decap`, the
+  /// 32-byte shared secret for `xwing-decap`, the
   /// wrapped bytes for `wrap`, or the plaintext for `unwrap`. `would-block` before `event.sealed(token)`;
   /// `not-found` for an unknown or already-taken token.
   take: func(token: u64) -> result<list<u8>, errno>;
@@ -605,9 +624,10 @@ world node {
 interface signer {
   use types.{errno, key-kind};
 
-  /// Load the 64-byte seed of key `id` of `kind` into vault memory (for
-  /// composite, mldsaSeed || ed25519Seed; for transit-kex and onion-hop,
-  /// the root seed, derived as `seal.generate` states). HOST-SIDE only:
+  /// Load the seed of key `id` of `kind` into vault memory: composite, 64
+  /// bytes mldsaSeed || ed25519Seed; transit-kex, the 64-byte root seed;
+  /// onion-hop, the 32-byte X-Wing seed (see `seal.generate` for adopting
+  /// an edge hop root seed). HOST-SIDE only:
   /// the host unwraps the seed under its seal root and installs it here;
   /// it never passes through the node. This is also how an EXISTING key
   /// is provisioned (import, migration): by the host through its seal
@@ -619,10 +639,14 @@ interface signer {
   /// this interface); the seed never enters node memory. Backs
   /// `seal.generate`.
   generate: func(id: string, kind: key-kind) -> result<list<u8>, errno>;
-  /// Key agreement for an installed transit-kex / onion-hop `id`: returns
+  /// Key agreement for an installed transit-kex `id`: returns
   /// shared_x25519(32) || ss_mlkem768(32), as `seal.kem-decap` states.
   /// Backs `seal.kem-decap`.
   kem-decap: func(id: string, x25519-peer-pub: list<u8>, mlkem-ct: list<u8>) -> result<list<u8>, errno>;
+  /// X-Wing decapsulation for an installed onion-hop `id`: returns the
+  /// 32-byte shared secret, as `seal.xwing-decap` states. Backs
+  /// `seal.xwing-decap`.
+  xwing-decap: func(id: string, ct: list<u8>) -> result<list<u8>, errno>;
   /// The public key of an installed `id`, for every `key-kind`.
   public-key: func(id: string) -> result<list<u8>, errno>;
   sign-classical: func(id: string, msg: list<u8>) -> result<list<u8>, errno>;

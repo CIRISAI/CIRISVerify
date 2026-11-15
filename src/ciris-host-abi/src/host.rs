@@ -237,6 +237,13 @@ pub trait Host {
     ) -> Result<(), Errno> {
         Err(Errno::Unsupported)
     }
+    /// `seal.xwing-decap`.
+    ///
+    /// # Errors
+    /// Default: `unsupported`.
+    fn seal_xwing_decap(&self, _id: &str, _ct: &[u8], _token: u64) -> Result<(), Errno> {
+        Err(Errno::Unsupported)
+    }
     /// `seal.sign-classical`.
     ///
     /// # Errors

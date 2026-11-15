@@ -426,3 +426,261 @@ fn new_event_variants_exist() {
     ];
     assert_eq!(evs.len(), 3);
 }
+
+// ---------------------------------------------------------------------------
+// Onion-hop keys are X-Wing: `generate(onion-hop)` returns pk_M || pk_X and
+// `xwing-decap` returns the X-Wing shared secret. A TEST-ONLY vault over
+// `ciris_crypto::xwing` (draft -11), checked against edge's draft-06 known
+// answer computed by an independent implementation (libcrux
+// `XWingKemDraft06`, CIRISEdge `src/onion/packet.rs` `kat_outfox_xwing_v1`).
+// ---------------------------------------------------------------------------
+
+mod xwing_vault {
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    use ciris_crypto::xwing::{XWingSecretKey, XWING_CIPHERTEXT_LEN};
+    use ciris_host_abi::host::Host;
+    use ciris_host_abi::types::{Errno, KeyKind};
+
+    #[derive(Default)]
+    pub struct XWingVault {
+        hop: RefCell<BTreeMap<String, XWingSecretKey>>,
+        other: RefCell<BTreeMap<String, KeyKind>>,
+        done: RefCell<BTreeMap<u64, Result<Vec<u8>, Errno>>>,
+    }
+
+    impl XWingVault {
+        /// Host-side adopt of an existing 32-byte X-Wing seed (never via
+        /// the node).
+        pub fn adopt_onion_hop(&self, id: &str, seed: [u8; 32]) {
+            self.hop
+                .borrow_mut()
+                .insert(id.into(), XWingSecretKey::from_seed(seed));
+        }
+        pub fn add_other(&self, id: &str, kind: KeyKind) {
+            self.other.borrow_mut().insert(id.into(), kind);
+        }
+        fn finish(&self, token: u64, r: Result<Vec<u8>, Errno>) -> Result<(), Errno> {
+            self.done.borrow_mut().insert(token, r);
+            Ok(())
+        }
+    }
+
+    impl Host for XWingVault {
+        fn monotonic_us(&self) -> u64 {
+            0
+        }
+        fn wall_ms(&self) -> Option<i64> {
+            None
+        }
+        fn random_fill(&self, len: u32) -> Vec<u8> {
+            ciris_crypto::random::bytes(len as usize).unwrap()
+        }
+        fn log_record(&self, _: u8, _: &str, _: &str) {}
+        fn seal_public_key(&self, id: &str) -> Result<Vec<u8>, Errno> {
+            self.hop
+                .borrow()
+                .get(id)
+                .map(|k| k.public_key().as_bytes().to_vec())
+                .ok_or(Errno::NotFound)
+        }
+        fn seal_generate(&self, id: &str, kind: KeyKind, token: u64) -> Result<(), Errno> {
+            if kind != KeyKind::OnionHop {
+                return Err(Errno::Unsupported);
+            }
+            if self.hop.borrow().contains_key(id) {
+                return Err(Errno::Invalid); // generate never overwrites
+            }
+            let sk = XWingSecretKey::generate().map_err(|_| Errno::Io)?;
+            let pk = sk.public_key().as_bytes().to_vec();
+            self.hop.borrow_mut().insert(id.into(), sk);
+            self.finish(token, Ok(pk))
+        }
+        fn seal_xwing_decap(&self, id: &str, ct: &[u8], token: u64) -> Result<(), Errno> {
+            let hop = self.hop.borrow();
+            let Some(sk) = hop.get(id) else {
+                return Err(if self.other.borrow().contains_key(id) {
+                    Errno::Invalid
+                } else {
+                    Errno::NotFound
+                });
+            };
+            if ct.len() != XWING_CIPHERTEXT_LEN {
+                return Err(Errno::Invalid);
+            }
+            let ss = sk.decapsulate(ct).map_err(|_| Errno::Invalid)?;
+            drop(hop);
+            self.finish(token, Ok(ss.to_vec()))
+        }
+        fn seal_kem_decap(
+            &self,
+            id: &str,
+            _peer: &[u8],
+            _ct: &[u8],
+            _token: u64,
+        ) -> Result<(), Errno> {
+            // kem-decap is transit-kex only: an onion-hop key is invalid.
+            if self.hop.borrow().contains_key(id) {
+                Err(Errno::Invalid)
+            } else {
+                Err(Errno::NotFound)
+            }
+        }
+        fn seal_take(&self, token: u64) -> Result<Vec<u8>, Errno> {
+            self.done
+                .borrow_mut()
+                .remove(&token)
+                .unwrap_or(Err(Errno::NotFound))
+        }
+    }
+}
+
+/// `SHAKE256(seed)` read in order, as edge's `FixedEntropy`: the 64-byte
+/// encapsulation randomness of edge's known answer, as a `CryptoRng`.
+struct EdgeFixedEntropy(Vec<u8>, usize);
+impl EdgeFixedEntropy {
+    fn new(seed: &[u8], len: usize) -> Self {
+        use sha3::digest::{ExtendableOutput, Update, XofReader};
+        let mut h = sha3::Shake256::default();
+        h.update(seed);
+        let mut out = vec![0u8; len];
+        h.finalize_xof().read(&mut out);
+        Self(out, 0)
+    }
+}
+impl rand_core::RngCore for EdgeFixedEntropy {
+    fn next_u32(&mut self) -> u32 {
+        unreachable!("X-Wing draws its eseed with fill_bytes")
+    }
+    fn next_u64(&mut self) -> u64 {
+        unreachable!("X-Wing draws its eseed with fill_bytes")
+    }
+    fn fill_bytes(&mut self, dest: &mut [u8]) {
+        let end = self.1 + dest.len();
+        dest.copy_from_slice(&self.0[self.1..end]);
+        self.1 = end;
+    }
+    fn try_fill_bytes(&mut self, dest: &mut [u8]) -> Result<(), rand_core::Error> {
+        self.fill_bytes(dest);
+        Ok(())
+    }
+}
+impl rand_core::CryptoRng for EdgeFixedEntropy {}
+
+fn sha3_256(b: &[u8]) -> String {
+    use sha3::Digest;
+    hex::encode(sha3::Sha3_256::digest(b))
+}
+
+mod hex {
+    pub fn encode(b: impl AsRef<[u8]>) -> String {
+        b.as_ref().iter().map(|x| format!("{x:02x}")).collect()
+    }
+}
+
+#[test]
+fn xwing_decap_reproduces_edges_draft_06_known_answer() {
+    // CIRISEdge src/onion/packet.rs, kat_outfox_xwing_v1 (libcrux
+    // XWingKemDraft06): hop 1's seed is SHA3-256(KAT_SEED || "/hop" || 1),
+    // the eseed is the first 64 bytes of SHAKE256(KAT_SEED || "/encaps").
+    const KAT_SEED: &[u8] = b"CIRIS outfox-xwing-v1 KAT 2026-11-01";
+    const HOP1_PK_SHA3: &str = "ea7ad961f646e19457f1d666f48ea2b7e244090a13745129743b1cc337a8d4a8";
+    const ENCAPS_SS: &str = "ffde16940725ed13e97b2cf083082d66e5c04e55977cfb570093df0ab17002fd";
+    const ENCAPS_CT_SHA3: &str = "e8f9c18b704a22bf63686b93ae1d5f5feea82602407eecc6ead04af98c53f902";
+
+    let seed: [u8; 32] = {
+        use sha3::Digest;
+        sha3::Sha3_256::digest([KAT_SEED, b"/hop", &[1u8]].concat()).into()
+    };
+    let vault = std::rc::Rc::new(xwing_vault::XWingVault::default());
+    struct Shared(std::rc::Rc<xwing_vault::XWingVault>);
+    impl Host for Shared {
+        fn monotonic_us(&self) -> u64 {
+            0
+        }
+        fn wall_ms(&self) -> Option<i64> {
+            None
+        }
+        fn random_fill(&self, len: u32) -> Vec<u8> {
+            self.0.random_fill(len)
+        }
+        fn log_record(&self, _: u8, _: &str, _: &str) {}
+        fn seal_public_key(&self, id: &str) -> Result<Vec<u8>, Errno> {
+            self.0.seal_public_key(id)
+        }
+        fn seal_generate(&self, id: &str, kind: KeyKind, token: u64) -> Result<(), Errno> {
+            self.0.seal_generate(id, kind, token)
+        }
+        fn seal_xwing_decap(&self, id: &str, ct: &[u8], token: u64) -> Result<(), Errno> {
+            self.0.seal_xwing_decap(id, ct, token)
+        }
+        fn seal_kem_decap(&self, id: &str, p: &[u8], c: &[u8], t: u64) -> Result<(), Errno> {
+            self.0.seal_kem_decap(id, p, c, t)
+        }
+        fn seal_take(&self, token: u64) -> Result<Vec<u8>, Errno> {
+            self.0.seal_take(token)
+        }
+    }
+    vault.adopt_onion_hop("onion-hop:v1:kat", seed);
+    vault.add_other("transit-kex:v1:t", KeyKind::TransitKex);
+    host::install(Shared(vault.clone()));
+
+    // Key generation from the seed matches draft-06 (libcrux): the public
+    // key, in X-Wing order pk_M || pk_X.
+    let pk = seal::public_key("onion-hop:v1:kat").unwrap();
+    assert_eq!(pk.len(), seal::XWING_PUBLIC_KEY_LEN);
+    assert_eq!(sha3_256(&pk), HOP1_PK_SHA3, "draft-06 public key");
+
+    // Encapsulation with edge's eseed gives edge's draft-06 ciphertext.
+    let xpk = ciris_crypto::xwing::XWingPublicKey::from_bytes(&pk).unwrap();
+    let mut rng = EdgeFixedEntropy::new(&[KAT_SEED, b"/encaps"].concat(), 64);
+    let (ct, enc_ss) = xpk.encapsulate_with_rng(&mut rng);
+    assert_eq!(sha3_256(&ct), ENCAPS_CT_SHA3, "draft-06 ciphertext");
+    assert_eq!(
+        hex::encode(*enc_ss),
+        ENCAPS_SS,
+        "draft-06 shared secret (encaps)"
+    );
+
+    // The decisive one: verify's -11 decapsulation of the draft-06
+    // ciphertext, through the seal, yields draft-06's shared secret.
+    seal::xwing_decap("onion-hop:v1:kat", &ct, 1).unwrap();
+    let ss = seal::take(1).unwrap();
+    assert_eq!(ss.len(), seal::XWING_SHARED_SECRET_LEN);
+    assert_eq!(
+        hex::encode(&ss),
+        ENCAPS_SS,
+        "draft-06 shared secret (decaps)"
+    );
+
+    // Refusals: wrong ct length; a transit-kex id; kem-decap on onion-hop.
+    assert_eq!(
+        seal::xwing_decap("onion-hop:v1:kat", &ct[..1119], 2),
+        Err(Errno::Invalid)
+    );
+    assert_eq!(
+        seal::xwing_decap("transit-kex:v1:t", &ct, 3),
+        Err(Errno::Invalid)
+    );
+    assert_eq!(
+        seal::kem_decap("onion-hop:v1:kat", &[9; 32], &[0; 1088], 4),
+        Err(Errno::Invalid)
+    );
+
+    // Vault-side generation: X-Wing order, and it decapsulates its own.
+    seal::generate("onion-hop:v1:new", KeyKind::OnionHop, 5).unwrap();
+    let pk2 = seal::take(5).unwrap();
+    assert_eq!(pk2, seal::public_key("onion-hop:v1:new").unwrap());
+    let xpk2 = ciris_crypto::xwing::XWingPublicKey::from_bytes(&pk2).unwrap();
+    assert_eq!(xpk2.ml_kem_768(), &pk2[..1184], "ML-KEM first");
+    assert_eq!(xpk2.x25519(), &pk2[1184..], "X25519 last");
+    let (ct2, ss2) = xpk2.encapsulate().unwrap();
+    seal::xwing_decap("onion-hop:v1:new", &ct2, 6).unwrap();
+    assert_eq!(seal::take(6).unwrap(), ss2.to_vec());
+    assert_eq!(
+        seal::generate("onion-hop:v1:new", KeyKind::OnionHop, 7),
+        Err(Errno::Invalid),
+        "generate never overwrites"
+    );
+}
