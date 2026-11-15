@@ -113,7 +113,7 @@ mod tests {
         );
     }
 
-    /// The `bare_hex_cc_5_3_3_7` case: the normative bare form.
+    /// The `bare_hex_cc_5_3_3_5` case: the normative bare form.
     #[test]
     fn ffi_reproduces_the_bare_hex_known_answer() {
         let secret: Vec<u8> = vec![0x42; 32];

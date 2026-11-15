@@ -102,10 +102,10 @@
     },
     {
       "dek_hex": "faab53b77e26902b1e77d5b595fa285f2667cd4bbfd6102976661190cbae94a9",
-      "description": "The CC 5.3.3.7 known-answer stream_id at its epoch 5.",
+      "description": "The CC 5.3.3.5 known-answer stream_id at its epoch 5.",
       "epoch": 5,
       "exporter_secret_hex": "4242424242424242424242424242424242424242424242424242424242424242",
-      "id": "cc_5_3_3_7_stream_id",
+      "id": "cc_5_3_3_5_stream_id",
       "info_hex": "63697269732d73747265616d2d64656b2f763161762d633761646663393939616662633736343362323465616233623537636136363534303331356433343565353262626233336366613164356466623963313864380000000000000005",
       "stream_id": "av-c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d8"
     },
@@ -129,10 +129,10 @@
     },
     {
       "dek_hex": "72405c46a749b28ea28b626d29a3583355a0179b43922631763b03811a7d930d",
-      "description": "Normative bare form (CC 5.3.3.1): the CC 5.3.3.7 known-answer stream_id as 64 lowercase hex, epoch 5.",
+      "description": "Normative bare form (CC 5.3.3.1): the CC 5.3.3.5 known-answer stream_id as 64 lowercase hex, epoch 5.",
       "epoch": 5,
       "exporter_secret_hex": "4242424242424242424242424242424242424242424242424242424242424242",
-      "id": "bare_hex_cc_5_3_3_7",
+      "id": "bare_hex_cc_5_3_3_5",
       "info_hex": "63697269732d73747265616d2d64656b2f7631633761646663393939616662633736343362323465616233623537636136363534303331356433343565353262626233336366613164356466623963313864380000000000000005",
       "stream_id": "c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d8"
     },
