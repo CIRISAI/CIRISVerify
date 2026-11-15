@@ -145,6 +145,8 @@ pub mod manifest_cache;
 pub mod manifest_contribution;
 #[cfg(all(feature = "host", any(target_os = "android", target_os = "ios")))]
 pub mod mobile_http;
+/// CC 3.1.7 R3 dimension matcher: a wire `dimension` resolved to its registry family (port of CC's `cc_namespace_match.py`).
+pub mod namespace_match;
 pub mod operational_admit;
 #[cfg(feature = "host")]
 pub mod parallel_race;

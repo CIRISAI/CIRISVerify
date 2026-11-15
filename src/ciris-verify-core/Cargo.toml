@@ -147,6 +147,11 @@ zmij = { version = "1", default-features = false }
 # needs only `alloc`, so the cache is the same with and without `std` (#325).
 once_cell = { version = "1.21", default-features = false, features = ["race", "alloc"] }
 
+# `namespace_match` (CC 3.1.7 R3) applies the CC registry's segment patterns.
+# `regex` is `no_std` + `alloc` with default features off (no `perf`, no
+# Unicode tables: the manifest's patterns are ASCII classes).
+regex = { version = "1.12", default-features = false }
+
 # Error handling
 thiserror.workspace = true
 
