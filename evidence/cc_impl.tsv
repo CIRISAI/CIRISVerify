@@ -27,7 +27,7 @@ decimal_id	claim_id	repo	path#symbol	crate@version	span_sha256
 4.2.6	CLM-accord-livequorum	CIRISVerify	src/ciris-verify-core/src/accord_live_quorum.rs#verify_holder_recovery	ciris-verify-core@v23.0.0	17144dd2d06c286b241d1ff8ee5383885d7539140e00f725d5ba62e43006b310
 4.4.3.19	CLM-cohort	CIRISVerify	src/ciris-verify-core/src/self_at_login.rs#perform_self_at_login	ciris-verify-core@v12.5.0	b70f6d2a856a48ca9f26a5fb92d014333e0c40d315f0057624b719002e87c0a8
 4.4.3.20	CLM-canonicalization-signing	CIRISVerify	src/ciris-verify-core/src/self_at_login.rs#sign_partnership_grant	ciris-verify-core@v12.5.0	8e95a3c88fb7d530c9a44ce0348b1bf017f28b09934973f97f2062e5979f2947
-5.3.1	CLM-witness	CIRISVerify	src/ciris-verify-core/src/transparency.rs#SignedTreeHead::cosign	ciris-verify-core@v12.5.0	d9a1d2f49599d5b5b828152c56418d0d0cdf9e7dfef4aa24d2c104baf7653085
+5.3.1	CLM-witness	CIRISVerify	src/ciris-verify-core/src/transparency.rs#SignedTreeHead::cosign	ciris-verify-core@v12.5.0	50aa3cffb3b93d8850fb371a3f096c9b2e27f872f27444584b29d9c0470e56a9
 5.3.1.1	CLM-consistency-proof	CIRISVerify	src/ciris-verify-core/src/transparency.rs#verify_consistency	ciris-verify-core@v12.5.0	bf21ef6c3d33963dffc39217e1187479a71441f8bc021072bb4ea2197e70316b
 5.3.2.11	CLM-full-sha	CIRISVerify	src/ciris-verify-core/src/holds_bytes.rs#verify_holds_bytes	ciris-verify-core@v12.5.0	b8fb0352036d912b86f757cd568dd3ca17036d3e9edc3bcece68189b46cce319
 5.3.6.1	CLM-envelope-error	CIRISVerify	src/ciris-verify-core/src/ceg_error.rs#CegError	ciris-verify-core@v12.5.0	36dce0adbf81e85720d6a208155e9e9309ea16ab246ec0cff87c597ce6c161f2
