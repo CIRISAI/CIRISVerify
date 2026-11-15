@@ -37,7 +37,8 @@ struct Guard {
 
 impl Drop for Guard {
     fn drop(&mut self) {
-        if self.done {
+        // While unwinding, touch no host: a second panic would abort.
+        if self.done || std::thread::panicking() {
             return;
         }
         let sealed = self

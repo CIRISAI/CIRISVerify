@@ -50,7 +50,7 @@ calls `ciris_host_abi::export_node!` on it. On wasm32 that emits the
 | `seal` | `generate(id, kind)`, `sign_composite`, `sign_classical`, `sign_pqc`, `kem_decap` (transit-kex, → `Zeroizing` 64-byte ikm), `xwing_decap` (onion-hop, → `Zeroizing` 32-byte X-Wing secret), `wrap`, `unwrap` (→ `Zeroizing`); `describe`, `public_key` re-exported |
 | `lifecycle` | `current()`, `next().await`, `clock_trusted()`, `wait_clock_trusted().await` |
 | `RtNode`, `node!` | the export helper |
-| `replay` (default feature) | `Session::{record, replaying, init, tick, on_event, api, log, finish}`, `replay::<N>(&Log) -> Log`, `Log::{to_jsonl, from_jsonl, entries, import_calls}` |
+| `replay` (default feature) | `Session::{record, record_with, replaying, replaying_with, init, tick, on_event, api, log, finish}`, `replay::<N>(&Log) -> Log`, `replay_with::<N>(&Log, impl SecretSource) -> Log`, `Log::{to_jsonl, from_jsonl, entries, import_calls, secrets}`, `SecretSource`, `SecretOp`, `TestSecrets`, `SeededRandom`, `RecordOptions`, `raw_capture_allowed` |
 
 ## Tick and timers
 
@@ -134,9 +134,9 @@ two things:
 `replay::<N>(&log)` re-runs a whole log and returns the log it produced,
 byte-identical for a deterministic node.
 
-**Format: JSON lines.** Line 1 is `{"format":"ciris-rt-replay","version":1}`.
-Each further line is an object with sorted keys
-`{"args","call","dir","ret","seq"}`:
+**Format: JSON lines.** Line 1 is the header,
+`{"format":"ciris-rt-replay","secrets":"redacted","version":2}`. Each
+further line is an object with sorted keys `{"args","call","dir","ret","seq"}`:
 
 * `dir` is one of:
   * `export`: the host called the node;
@@ -153,15 +153,66 @@ Each further line is an object with sorted keys
 The log covers every import in the `node` world, including storage, plus
 every event delivered (as `on-event` exports).
 
-**A log holds every secret that crossed the boundary** (random bytes,
-`unwrap` plaintexts, `kem-decap` material). Treat it as secret.
+### Secrets are redacted by default
+
+Ephemeral keys are never persisted in plaintext, and a log is a file. So
+these values are written as `{"len":<n>,"redacted":true,"sha256":"<hex>"}`
+(SHA-256 of the bytes), never as the bytes:
+
+* the result of `random.fill` (its bytes become ephemeral keys and nonces);
+* the `seal.take` result of a `seal.unwrap`, `seal.kem-decap` or
+  `seal.xwing-decap` (the token is remembered when the operation starts);
+* the `plaintext` argument of `seal.wrap`.
+
+Signatures, public keys, wrapped blobs and everything else stay raw. A node
+that logs a secret through `log.record`, or sends one in clear over a
+stream, still puts it in the log; that is the node's bug, not the
+recorder's.
+
+**Replay of a redacted log** takes a `SecretSource`
+(`replay::replay_with::<N>(&log, source)`, `Session::replaying_with`). The
+source re-supplies each redacted value, and the replayer checks it against
+the recorded `sha256` and `len`, panicking on any mismatch.
+`replay::TestSecrets::new(SeededRandom::new(seed), vault)` is the test
+source:
+
+* `SeededRandom` is SHA-256 in counter mode over a seed, the same stream the
+  scripted host's `random.fill` drew from. It is test only.
+* `vault` is any `Host` implementing the seal operations, which re-runs
+  each `unwrap`, `kem-decap` or `xwing-decap`.
+
+Replaying a redacted log without a source panics, saying it needs one.
+
+### Raw capture: never in release
+
+`Session::record_with(host, RecordOptions { capture_raw_secrets: true })`
+writes those values raw and marks the header `"secrets":"raw"`; a raw log
+replays without a source. It needs **both** of these:
+
+* the cargo feature `replay-capture-secrets` (off by default);
+* the runtime flag.
+
+It is **also refused (panics) in any build without `debug_assertions`**,
+i.e. every `--release` build, even with the feature on. When it starts, it
+logs an error-level `log.record` warning (`RAW SECRET CAPTURE IS ON …`)
+through the live host. **Never enable `replay-capture-secrets` in a release
+or production build.**
 
 `tests/it/replay.rs` records a node that uses timers, `random.fill`, a
-scripted stream with partial writes and would-block, a `timeout` and a seal
-call. It then round-trips the log through JSON lines and replays it with no
-host. The replay gives an identical import sequence and a byte-identical log
-and node output. A flipped random byte fails loudly, and so does a truncated
-log.
+scripted stream with partial writes and `would-block`, a `timeout`, a
+composite signature, `wrap` / `unwrap` and `xwing-decap`. It covers:
+
+* a redacted record, then a replay with the test source, giving a
+  byte-identical log, output and import sequence;
+* the log contains none of the random draws, the wrap plaintext or the
+  decapsulated secret;
+* a wrongly seeded source and a tampered vault, both caught by the hash
+  check;
+* a missing source, a changed import and a truncated log, all failing
+  loudly;
+* raw capture refused without the feature (and in release with it), and
+  working with it:
+  `cargo test -p ciris-rt --features replay-capture-secrets`.
 
 ## No target cfg, and std
 

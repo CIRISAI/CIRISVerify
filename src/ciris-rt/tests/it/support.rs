@@ -52,7 +52,8 @@ pub struct StreamState {
 pub struct State {
     pub now: u64,
     pub step: u64,
-    pub rng: u64,
+    /// `random.fill`'s stream: seeded, so a replay can re-supply it.
+    pub rng: ciris_rt::replay::SeededRandom,
     pub outbox: VecDeque<Event>,
     pub deadlines: Vec<u64>,
     pub logs: Vec<String>,
@@ -80,7 +81,13 @@ pub struct Scripted(pub Rc<RefCell<State>>);
 
 impl Scripted {
     pub fn new(step: u64) -> Self {
+        Self::seeded(step, b"ciris-rt tests")
+    }
+
+    /// A host whose `random.fill` is `SeededRandom::new(seed)`.
+    pub fn seeded(step: u64, seed: &[u8]) -> Self {
         let s = Self::default();
+        s.0.borrow_mut().rng = ciris_rt::replay::SeededRandom::new(seed);
         s.0.borrow_mut().step = step;
         s.0.borrow_mut().seal_auto = true;
         s.0.borrow_mut().now = 1_000;
@@ -338,16 +345,7 @@ impl Host for Scripted {
         None
     }
     fn random_fill(&self, len: u32) -> Vec<u8> {
-        let mut st = self.0.borrow_mut();
-        (0..len)
-            .map(|_| {
-                st.rng = st
-                    .rng
-                    .wrapping_mul(6364136223846793005)
-                    .wrapping_add(1442695040888963407);
-                (st.rng >> 56) as u8
-            })
-            .collect()
+        self.0.borrow_mut().rng.fill(len as usize)
     }
     fn log_record(&self, level: u8, target: &str, msg: &str) {
         self.0
@@ -474,15 +472,21 @@ impl Host for Scripted {
         self.seal_start(token, fake_sig(msg, 64))
     }
     fn seal_wrap(&self, label: &str, pt: &[u8], token: u64) -> Result<(), Errno> {
+        // Test-only "AEAD": label || 0 || pt XOR keystream(label). The blob
+        // never contains the plaintext.
         let mut blob = label.as_bytes().to_vec();
         blob.push(0);
-        blob.extend(pt);
+        let ks = fake_sig(label.as_bytes(), pt.len());
+        blob.extend(pt.iter().zip(ks).map(|(a, b)| a ^ b));
         self.seal_start(token, blob)
     }
     fn seal_unwrap(&self, label: &str, wrapped: &[u8], token: u64) -> Result<(), Errno> {
         let mut prefix = label.as_bytes().to_vec();
         prefix.push(0);
-        let r = wrapped.strip_prefix(prefix.as_slice()).map(<[u8]>::to_vec);
+        let r = wrapped.strip_prefix(prefix.as_slice()).map(|ct| {
+            let ks = fake_sig(label.as_bytes(), ct.len());
+            ct.iter().zip(ks).map(|(a, b)| a ^ b).collect::<Vec<u8>>()
+        });
         match r {
             Some(pt) => self.seal_start(token, pt),
             None => {

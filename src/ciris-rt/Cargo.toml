@@ -13,7 +13,11 @@ readme = "README.md"
 default = ["replay"]
 # The ABI-boundary recorder and replayer (FSD §5.1, §11.4): JSON lines.
 # Native tooling; a node module may build with default-features = false.
-replay = ["dep:serde_json", "dep:hex"]
+replay = ["dep:serde_json", "dep:hex", "dep:sha2"]
+# Lets `replay::Session::record_with(.., RecordOptions { capture_raw_secrets:
+# true })` write secrets raw. Off by default; refused anyway in a build
+# without debug_assertions. NEVER enable in a release or production build.
+replay-capture-secrets = ["replay"]
 
 [dependencies]
 # The only way to the host (FSD §4.1): ciris-rt has no target cfg.
@@ -24,6 +28,7 @@ pin-project-lite = "0.2.17"
 zeroize = { workspace = true }
 serde_json = { workspace = true, optional = true }
 hex = { workspace = true, optional = true }
+sha2 = { workspace = true, optional = true }
 
 [dev-dependencies]
 # Channels are not ciris-rt's: these prove the common ones run under it.
