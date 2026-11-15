@@ -11,17 +11,16 @@ secret, bound to one stream and one epoch by an HKDF step::
 The caller supplies ``exporter_secret``: it MUST be exactly
 ``MLS-Exporter("ciris-stream-dek/v1", "", 32)`` (label
 :data:`STREAM_DEK_LABEL`, empty context, length 32) of the group at ``epoch``.
-Verify does no MLS. ``stream_id`` is, normatively, the lowercase hex of the
-32-byte stream-id digest, 64 characters, for every stream kind (CC 5.3.3.1;
-:func:`stream_id_hex`). CIRISEdge's A/V spelling ``av-{64 lowercase hex}``
-(:func:`av_stream_id`) is a recorded divergence, accepted for compatibility.
-The two spellings of one digest derive different DEKs.
+Verify does no MLS. ``stream_id`` is ``av-`` followed by the lowercase hex of
+the 32-byte stream id, 67 characters (rc20 CC 5.3.3.1; :func:`av_stream_id`).
+Bare 64-hex is the store's inline-blob log id, not a stream id, and is refused,
+as is every other spelling (23.0.0 hard cut).
 
 The bytes come from the one Rust impl over the FFI symbol
 ``ciris_verify_stream_dek_derive``; there is no second implementation.
 
-    from ciris_verify import stream_dek, stream_id_hex
-    dek = stream_dek(exporter_secret, stream_id_hex(stream_id_digest), epoch)  # 32 bytes
+    from ciris_verify import av_stream_id, stream_dek
+    dek = stream_dek(exporter_secret, av_stream_id(stream_id), epoch)  # 32 bytes
 """
 
 from __future__ import annotations
@@ -35,13 +34,13 @@ from typing import Optional
 
 from ._epoch_key import _candidate_paths
 
-__all__ = ["STREAM_DEK_LABEL", "av_stream_id", "stream_dek", "stream_id_hex"]
+__all__ = ["STREAM_DEK_LABEL", "av_stream_id", "stream_dek"]
 
 #: The one CC 5.1 label: the MLS exporter label and the HKDF ``info`` tag.
 STREAM_DEK_LABEL = "ciris-stream-dek/v1"
 
-# The normative bare form (CC 5.3.3.1), or edge's av- form (compatibility).
-_STREAM_ID_RE = _re.compile(r"(?:av-)?[0-9a-f]{64}")
+# The one spelling (rc20 CC 5.3.3.1): av- + 64 lowercase hex.
+_STREAM_ID_RE = _re.compile(r"av-[0-9a-f]{64}")
 _lib: Optional[ctypes.CDLL] = None
 _lib_lock = _threading.Lock()
 _SUCCESS = 0
@@ -83,22 +82,12 @@ def _load_lib() -> ctypes.CDLL:
     )
 
 
-def stream_id_hex(digest: bytes) -> str:
-    """The normative stream id (CC 5.3.3.1): the lowercase hex of a 32-byte
-    stream-id digest, 64 characters, for every stream kind."""
-    if len(digest) != 32:
-        raise ValueError(f"digest must be 32 bytes, got {len(digest)}")
-    return digest.hex()
-
-
 def av_stream_id(header_stream_id: bytes) -> str:
-    """CIRISEdge's divergent A/V spelling ``av-{lowercase hex}`` of a 32-byte
-    header stream id.
-
-    Accepted for compatibility; the normative form is :func:`stream_id_hex`
-    (CC 5.3.3.1). The two spellings derive different DEKs.
-    """
-    return "av-" + stream_id_hex(header_stream_id)
+    """The stream id string of a 32-byte stream id: ``av-{lowercase hex}``,
+    67 characters (rc20 CC 5.3.3.1)."""
+    if len(header_stream_id) != 32:
+        raise ValueError(f"stream id must be 32 bytes, got {len(header_stream_id)}")
+    return "av-" + header_stream_id.hex()
 
 
 def stream_dek(exporter_secret: bytes, stream_id: str, epoch: int) -> bytes:
@@ -106,8 +95,8 @@ def stream_dek(exporter_secret: bytes, stream_id: str, epoch: int) -> bytes:
 
     ``exporter_secret`` is ``MLS-Exporter("ciris-stream-dek/v1", "", 32)`` of the
     group at ``epoch``. Raises ``ValueError`` on a secret that is not 32 bytes,
-    an epoch outside ``u64``, or a ``stream_id`` that is neither 64 lowercase
-    hex (CC 5.3.3.1) nor ``av-{64 lowercase hex}`` (edge's form).
+    an epoch outside ``u64``, or a ``stream_id`` that is not
+    ``av-{64 lowercase hex}`` (bare hex included).
     """
     if len(exporter_secret) != 32:
         raise ValueError(f"exporter_secret must be 32 bytes, got {len(exporter_secret)}")
@@ -115,7 +104,7 @@ def stream_dek(exporter_secret: bytes, stream_id: str, epoch: int) -> bytes:
         raise ValueError("epoch must fit in a u64")
     if not _STREAM_ID_RE.fullmatch(stream_id):
         raise ValueError(
-            "stream_id must be 64 lowercase hex digits (or edge's av- + 64 lowercase hex)"
+            "stream_id must be av- followed by 64 lowercase hex digits"
         )
     input_bytes = _json.dumps(
         {"exporter_secret": list(exporter_secret), "stream_id": stream_id, "epoch": epoch}

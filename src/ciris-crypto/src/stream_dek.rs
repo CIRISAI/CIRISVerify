@@ -11,9 +11,8 @@
 //!
 //! One label, [`STREAM_DEK_LABEL`], serves both the exporter call and the
 //! `info` tag. `epoch_be8` is the `u64` epoch big-endian (the CC 5.3.3.1
-//! encoding). There is no length prefix: the fixed tag and the fixed 8-byte
-//! epoch suffix parse unambiguously, whichever accepted stream-id form sits
-//! between them (CC 5.3.3.1).
+//! encoding). There is no length prefix: the fixed tag, the fixed-length stream
+//! id and the fixed 8-byte epoch suffix parse unambiguously (CC 5.3.3.1).
 //!
 //! ## What the caller supplies
 //!
@@ -27,21 +26,14 @@
 //!
 //! ## The stream id
 //!
-//! `stream_id_utf8` is the UTF-8 bytes of the stream id string. The
-//! **normative** form (CC 5.3.3.1, applied by CC 5.1) is the lowercase hex of
-//! the 32-byte stream-id digest: exactly 64 lowercase hex characters, one rule
-//! for every stream kind, A/V and data streams (CC 5.3.3.2) alike.
-//! [`stream_id_hex`] builds it.
+//! `stream_id_utf8` is the UTF-8 of `av-` followed by the lowercase hex of the
+//! 32-byte stream id: exactly 67 bytes (rc20 CC 5.3.3.1, the spelling CIRISEdge
+//! and the store already use). [`av_stream_id`] builds it. Bare 64-hex is the
+//! store's inline-blob log id (CIRISPersist#953) and is **not** a stream id.
 //!
-//! CIRISEdge currently spells A/V stream ids `av-{64 lowercase hex}` (67
-//! bytes). That is a recorded divergence from CC 5.3.3.1, but the string is a
-//! KDF input both ends must agree on, so [`validate_stream_id`] **accepts** it
-//! for compatibility while edge ships it ([`av_stream_id`] builds it). The two
-//! spellings of one digest derive different DEKs; they are not aliases.
-//!
-//! Exactly those two forms are accepted. Everything else is refused:
-//! upper-case hex, the wrong length, a non-hex digit, `AV-`, any other prefix,
-//! the empty string.
+//! 23.0.0 is a hard cut to that one spelling. Everything else is refused: bare
+//! hex, upper-case hex, the wrong length, a non-hex digit, `AV-`, any other
+//! prefix, the empty string.
 //!
 //! ## Not to be confused with
 //!
@@ -64,40 +56,30 @@ pub const STREAM_DEK_LABEL: &str = "ciris-stream-dek/v1";
 pub const STREAM_DEK_EXPORTER_CONTEXT: &[u8] = b"";
 /// Exporter output length the caller must request, and the DEK length.
 pub const STREAM_DEK_LEN: usize = 32;
-/// Length of the normative stream id (CC 5.3.3.1): 64 lowercase hex digits,
-/// the hex of the 32-byte stream-id digest.
+/// Number of hex digits after the prefix: the lowercase hex of the 32-byte
+/// stream id.
 pub const STREAM_ID_HEX_LEN: usize = 64;
-/// The prefix of CIRISEdge's divergent A/V spelling, `av-{64 lowercase hex}`.
-/// Accepted for compatibility; the normative form has no prefix (CC 5.3.3.1).
-pub const EDGE_AV_STREAM_ID_PREFIX: &str = "av-";
-/// Length of CIRISEdge's divergent A/V spelling: `av-` + 64 lowercase hex.
-pub const EDGE_AV_STREAM_ID_LEN: usize = EDGE_AV_STREAM_ID_PREFIX.len() + STREAM_ID_HEX_LEN;
+/// The stream-id prefix (rc20 CC 5.3.3.1).
+pub const AV_STREAM_ID_PREFIX: &str = "av-";
+/// Length of a stream id: `av-` + 64 lowercase hex = 67 bytes.
+pub const AV_STREAM_ID_LEN: usize = AV_STREAM_ID_PREFIX.len() + STREAM_ID_HEX_LEN;
 
 /// Why a stream DEK was not derived.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum StreamDekError {
-    /// `stream_id` is neither 64 lowercase hex digits (CC 5.3.3.1) nor edge's
-    /// `av-` + 64 lowercase hex digits.
-    #[error("stream_id is neither {{64 lowercase hex}} nor av-{{64 lowercase hex}}")]
+    /// `stream_id` is not `av-` + 64 lowercase hex digits (rc20 CC 5.3.3.1).
+    #[error("stream_id is not av-{{64 lowercase hex}}")]
     MalformedStreamId,
 }
 
-/// The **normative** stream id for a 32-byte stream-id digest (CC 5.3.3.1):
-/// its lowercase hex, 64 characters, for every stream kind.
-#[must_use]
-pub fn stream_id_hex(digest: &[u8; 32]) -> String {
-    hex::encode(digest)
-}
-
-/// CIRISEdge's divergent A/V spelling, `av-{lowercase hex}`, of a 32-byte
-/// A/V header stream id. Accepted for compatibility; the normative form is
-/// [`stream_id_hex`] (CC 5.3.3.1). The two spellings derive different DEKs.
+/// The stream id string of a 32-byte stream id: `av-{lowercase hex}`, 67
+/// bytes (rc20 CC 5.3.3.1).
 #[must_use]
 pub fn av_stream_id(header_stream_id: &[u8; 32]) -> String {
-    let mut s = String::with_capacity(EDGE_AV_STREAM_ID_LEN);
-    s.push_str(EDGE_AV_STREAM_ID_PREFIX);
-    s.push_str(&stream_id_hex(header_stream_id));
+    let mut s = String::with_capacity(AV_STREAM_ID_LEN);
+    s.push_str(AV_STREAM_ID_PREFIX);
+    s.push_str(&hex::encode(header_stream_id));
     s
 }
 
@@ -107,20 +89,15 @@ fn is_lower_hex_64(s: &str) -> bool {
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 
-/// Check that `stream_id` is one of the two accepted forms: 64 lowercase hex
-/// digits (normative, CC 5.3.3.1), or `av-` followed by 64 lowercase hex digits
-/// (CIRISEdge's form, accepted for compatibility).
+/// Check that `stream_id` is `av-` followed by 64 lowercase hex digits, the
+/// one spelling (rc20 CC 5.3.3.1).
 ///
 /// # Errors
-/// [`StreamDekError::MalformedStreamId`] otherwise.
+/// [`StreamDekError::MalformedStreamId`] otherwise, bare hex included.
 pub fn validate_stream_id(stream_id: &str) -> Result<(), StreamDekError> {
-    let hex_part = stream_id
-        .strip_prefix(EDGE_AV_STREAM_ID_PREFIX)
-        .unwrap_or(stream_id);
-    if is_lower_hex_64(hex_part) {
-        Ok(())
-    } else {
-        Err(StreamDekError::MalformedStreamId)
+    match stream_id.strip_prefix(AV_STREAM_ID_PREFIX) {
+        Some(hex_part) if is_lower_hex_64(hex_part) => Ok(()),
+        _ => Err(StreamDekError::MalformedStreamId),
     }
 }
 
@@ -142,8 +119,8 @@ pub fn stream_dek_info(stream_id: &str, epoch: u64) -> Vec<u8> {
 /// the group at `epoch` (see the module docs). Deterministic, no I/O.
 ///
 /// # Errors
-/// [`StreamDekError::MalformedStreamId`] when `stream_id` is neither 64
-/// lowercase hex (normative) nor `av-{64 lowercase hex}` (edge's form).
+/// [`StreamDekError::MalformedStreamId`] when `stream_id` is not
+/// `av-{64 lowercase hex}`.
 pub fn stream_dek(
     exporter_secret: &[u8; STREAM_DEK_LEN],
     stream_id: &str,
@@ -175,24 +152,19 @@ mod tests {
     }
 
     #[test]
-    fn stream_id_shapes() {
-        let bare = stream_id_hex(&[0xab; 32]);
-        assert_eq!(bare.len(), STREAM_ID_HEX_LEN);
-        assert_eq!(bare, "ab".repeat(32));
-        assert!(validate_stream_id(&bare).is_ok());
-
-        let edge = sid(0xab);
-        assert_eq!(edge.len(), EDGE_AV_STREAM_ID_LEN);
-        assert_eq!(edge, format!("av-{bare}"));
-        assert!(validate_stream_id(&edge).is_ok());
+    fn stream_id_shape() {
+        let id = sid(0xab);
+        assert_eq!(id.len(), AV_STREAM_ID_LEN);
+        assert_eq!(id, format!("av-{}", "ab".repeat(32)));
+        assert!(validate_stream_id(&id).is_ok());
     }
 
     #[test]
-    fn the_two_spellings_of_one_digest_are_not_aliases() {
-        let d = [0x5a; 32];
-        assert_ne!(
-            *stream_dek(&SECRET, &stream_id_hex(&d), 0).unwrap(),
-            *stream_dek(&SECRET, &av_stream_id(&d), 0).unwrap()
+    fn bare_hex_is_not_a_stream_id() {
+        let bare = "5a".repeat(32);
+        assert_eq!(
+            stream_dek(&SECRET, &bare, 0).unwrap_err(),
+            StreamDekError::MalformedStreamId
         );
     }
 
@@ -212,10 +184,7 @@ mod tests {
     fn info_layout() {
         let s = sid(3);
         let info = stream_dek_info(&s, 5);
-        assert_eq!(
-            info.len(),
-            STREAM_DEK_LABEL.len() + EDGE_AV_STREAM_ID_LEN + 8
-        );
+        assert_eq!(info.len(), STREAM_DEK_LABEL.len() + AV_STREAM_ID_LEN + 8);
         assert!(info.starts_with(STREAM_DEK_LABEL.as_bytes()));
         assert_eq!(&info[info.len() - 8..], &5u64.to_be_bytes());
     }
@@ -224,6 +193,8 @@ mod tests {
     fn malformed_stream_ids_are_refused() {
         let hex = "ab".repeat(32);
         for bad in [
+            hex.clone(),
+            format!("av{hex}"),
             hex.to_uppercase(),
             format!("av-{}", hex.to_uppercase()),
             hex[..63].to_string(),

@@ -7,12 +7,12 @@
 //! ## Wire shape (JSON in → 32 raw bytes out)
 //!
 //! ```text
-//! {"exporter_secret":[u8;32], "stream_id":"{64 lowercase hex}", "epoch":u64}
+//! {"exporter_secret":[u8;32], "stream_id":"av-{64 lowercase hex}", "epoch":u64}
 //! ```
 //!
-//! `stream_id` is the normative 64 lowercase hex of the 32-byte stream-id
-//! digest (CC 5.3.3.1), or CIRISEdge's `av-{64 lowercase hex}`, accepted for
-//! compatibility. Anything else is `InvalidArgument`.
+//! `stream_id` is `av-` + the 64 lowercase hex of the 32-byte stream id, 67
+//! bytes (rc20 CC 5.3.3.1). Anything else, bare hex included, is
+//! `InvalidArgument`.
 //!
 //! `exporter_secret` is the caller's `MLS-Exporter("ciris-stream-dek/v1", "",
 //! 32)` output for the group at `epoch`; verify does no MLS.
@@ -39,7 +39,7 @@ struct StreamDekRequest {
 /// `ciris_verify_free`). Returns:
 /// - `Success` (0) on success;
 /// - `InvalidArgument` on a null pointer, or a `stream_id` that is neither
-///   64 lowercase hex (CC 5.3.3.1) nor `av-{64 lowercase hex}` (edge's form);
+///   `av-{64 lowercase hex}` (bare hex is refused);
 /// - `SerializationError` if `input_json` is not a valid request or
 ///   `exporter_secret` is not exactly 32 bytes.
 ///
@@ -113,16 +113,16 @@ mod tests {
         );
     }
 
-    /// The `bare_hex_cc_5_3_3_5` case: the normative bare form.
+    /// The `cc_5_3_3_5_stream_id` case: the CC 5.3.3.5 known-answer stream id.
     #[test]
-    fn ffi_reproduces_the_bare_hex_known_answer() {
+    fn ffi_reproduces_the_cc_5_3_3_5_known_answer() {
         let secret: Vec<u8> = vec![0x42; 32];
-        let sid = "c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d8";
+        let sid = "av-c7adfc999afbc7643b24eab3b57ca66540315d345e52bbb33cfa1d5dfb9c18d8";
         let req = serde_json::json!({"exporter_secret": secret, "stream_id": sid, "epoch": 5});
         let got = unsafe { ffi(&req.to_string()) }.unwrap();
         assert_eq!(
             hex::encode(got),
-            "72405c46a749b28ea28b626d29a3583355a0179b43922631763b03811a7d930d"
+            "faab53b77e26902b1e77d5b595fa285f2667cd4bbfd6102976661190cbae94a9"
         );
     }
 
@@ -136,6 +136,11 @@ mod tests {
             ),
             (
                 serde_json::json!({"exporter_secret": vec![0x42u8; 32], "stream_id": "AB".repeat(32), "epoch": 0}),
+                CirisVerifyError::InvalidArgument,
+            ),
+            // Bare hex is the store's inline-blob log id, not a stream id.
+            (
+                serde_json::json!({"exporter_secret": vec![0x42u8; 32], "stream_id": "ab".repeat(32), "epoch": 0}),
                 CirisVerifyError::InvalidArgument,
             ),
             (

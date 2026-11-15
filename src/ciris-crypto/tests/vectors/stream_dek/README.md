@@ -1,6 +1,6 @@
 # Stream DEK known answers
 
-`stream_dek_vectors.json` is the CC 5.1 (rc19) known-answer set for the
+`stream_dek_vectors.json` is the CC 5.1 known-answer set for the
 per-stream call DEK under the MLS group exporter (CIRISVerify#308):
 
 ```
@@ -12,29 +12,24 @@ DEK(stream_id, epoch) = HKDF-SHA256(ikm  = MLS-Exporter("ciris-stream-dek/v1", "
 
 ## The stream id
 
-The **normative** `stream_id` is the lowercase hex of the 32-byte stream-id
-digest: 64 lowercase hex characters, one rule for every stream kind, A/V and
-data streams (CC 5.3.3.2) alike (CC 5.3.3.1). CIRISEdge currently spells A/V
-stream ids `av-{64 lowercase hex}`. That is a recorded divergence, but the
-string is a KDF input both ends must agree on, so verify accepts it for
-compatibility. The two spellings of one digest derive different DEKs.
+`stream_id` is `av-` followed by the lowercase hex of the 32-byte stream id,
+67 characters (rc20 CC 5.3.3.1): the spelling CIRISEdge and the store use.
+Bare 64-hex is the store's inline-blob log id (CIRISPersist#953), not a stream
+id. From 23.0.0 that is the only spelling accepted (a hard cut).
 
 ## Cases
 
 Each `valid` case gives the exporter secret (the MLS exporter output; the MLS
 step is the caller's), the `stream_id`, the epoch, the HKDF `info` in hex and
-the DEK in hex.
+the DEK in hex: epoch 0, a rolled epoch, two streams in one epoch, the
+CC 5.3.3.5 known-answer stream id, a second exporter secret, epoch `u64::MAX`,
+and a third stream at two epochs. The cases kept from before 23.0.0 have
+unchanged bytes.
 
-- Edge's `av-` form: epoch 0, a rolled epoch, two streams in one epoch, the
-  CC 5.3.3.5 known-answer stream id, a second exporter secret and epoch
-  `u64::MAX`.
-- The normative bare form: the CC 5.3.3.5 known-answer stream id, the bare
-  spelling of `epoch_zero`'s digest (a different DEK from the `av-` spelling),
-  and a data stream at two epochs.
-
-Each `refusals` case is a `stream_id` that must be refused: upper-case hex,
-63 and 65 digits and a non-hex digit (each with and without `av-`), `AV-`,
-another prefix, the empty string and the prefix alone.
+Each `refusals` case is a `stream_id` that must be refused: bare hex (two
+digests), bare upper-case hex, `av` with no hyphen, `AV-`, another prefix,
+upper-case hex, 63 and 65 digits and a non-hex digit after `av-`, the empty
+string and the prefix alone.
 
 ## How the file was made
 

@@ -47,21 +47,19 @@ fn every_valid_vector_recomputes() {
 }
 
 #[test]
-fn both_accepted_forms_are_covered() {
+fn only_the_av_spelling_is_valid_and_bare_hex_is_refused() {
     let v = vectors();
-    let ids: Vec<&str> = v["valid"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|c| s(c, "stream_id"))
-        .collect();
+    for c in v["valid"].as_array().unwrap() {
+        let id = s(c, "stream_id");
+        assert!(id.starts_with("av-") && id.len() == 67, "{id}");
+    }
     assert!(
-        ids.iter().any(|id| id.len() == 64),
-        "a normative bare-hex case"
-    );
-    assert!(
-        ids.iter().any(|id| id.starts_with("av-")),
-        "an edge av- case"
+        v["refusals"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|c| s(c, "stream_id").len() == 64),
+        "a bare-hex refusal"
     );
 }
 
