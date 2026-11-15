@@ -33,6 +33,9 @@
 //! and are byte-frozen by the §19.6 / #57 conformance vectors — this module
 //! owns the **framing rules and the PQC gate**, which are stable now.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use ciris_crypto::{ClassicalVerifier, Ed25519Verifier, MlDsa65Verifier, PqcVerifier};
 
 // ---- pinned domain separators (§19.0) ---------------------------------
@@ -84,8 +87,8 @@ pub enum HolonomicError {
     },
 }
 
-impl std::fmt::Display for HolonomicError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for HolonomicError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::ClassicalSignatureInvalid => write!(f, "§19 classical signature invalid"),
             Self::PqcHalfMissingOrInvalid => {
@@ -97,7 +100,7 @@ impl std::fmt::Display for HolonomicError {
     }
 }
 
-impl std::error::Error for HolonomicError {}
+impl core::error::Error for HolonomicError {}
 
 /// Builder for a §19.0 binary signed preimage: `domain ‖ fields`, variable
 /// fields `u32`-BE length-prefixed, integers big-endian, fixed fields raw.

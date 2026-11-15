@@ -9,8 +9,60 @@ repository.workspace = true
 authors.workspace = true
 
 [features]
-default = ["pqc"]
-pqc = ["ciris-crypto/pqc-ml-dsa", "ciris-keyring/pqc-ml-dsa"]
+default = ["std", "host", "pqc"]
+# CIRISVerify#325 / CIRISServer#870 — the pure / host split.
+#
+# Without `std` the crate is `#![no_std]` + `alloc` and holds the pure
+# verifiers only: no clock, no RNG, no I/O (`now` is a parameter). It checks
+# on `wasm32-unknown-unknown` and `x86_64-unknown-uefi` in CI. `std` adds the
+# pure modules that still need the standard library (X.509 parsing, the
+# clock-reading conveniences). `host` adds the I/O half: the keyring, HTTP,
+# TLS, SQLite, the attestation engine, the CLI. Consumers that build with
+# default features see no change.
+std = [
+    "ciris-crypto/std",
+    "ciris-crypto/random",
+    "ciris-crypto/kdf",
+    "ciris-crypto/aes-gcm",
+    "serde/std",
+    "serde_json/std",
+    "thiserror/std",
+    "chrono/std",
+    "chrono/clock",
+    "sha2/std",
+    "hex/std",
+    "base64/std",
+    "subtle/std",
+    "zeroize/std",
+    "tracing/std",
+    "ciborium/std",
+    "hkdf/std",
+    "ed25519-dalek/std",
+    "dep:x509-parser",
+    "dep:rand",
+]
+host = [
+    "std",
+    "dep:ciris-keyring",
+    "dep:tokio",
+    "dep:futures",
+    "dep:clap",
+    "dep:rpassword",
+    "dep:qrcode",
+    "dep:tracing-subscriber",
+    "dep:rustls",
+    "dep:webpki-roots",
+    "dep:reqwest",
+    "dep:chacha20poly1305",
+    "dep:libc",
+    "dep:goblin",
+    "dep:rusqlite",
+    "dep:zip",
+    "dep:ureq",
+    "dep:android_system_properties",
+    "dep:windows-sys",
+]
+pqc = ["ciris-crypto/pqc-ml-dsa", "ciris-keyring?/pqc-ml-dsa"]
 # CIRISVerify#202 — TEST-ONLY trust-root / custody relaxation for the local mesh
 # harness (a software single-key accord anchor + a software-only accord holder,
 # no operator YubiKeys). This is the REAL boundary, not a runtime flag: the prod
@@ -28,112 +80,120 @@ test-anchor = []
 # forge a real-gate pass with them. Never in `default`; a downstream enables it
 # under its OWN `[dev-dependencies]`, so it does not leak into that crate's
 # normal build. Pulls `rcgen` only when enabled.
-test-support = ["dep:rcgen", "pqc"]
-android = ["ciris-keyring/android"]
-ios = ["ciris-keyring/ios"]
+test-support = ["dep:rcgen", "pqc", "std"]
+android = ["host", "ciris-keyring/android"]
+ios = ["host", "ciris-keyring/ios"]
 # Runtime-loaded TPM backend (CIRISVerify#141): the keyring's sole TPM backend —
 # it `dlopen`s `libciris_tpm_plugin.so` (seal/unseal + signer + quote) instead of
 # link-binding tss-esapi. Pulls only `libloading` — NO tss-esapi, NO libtss2
 # DT_NEEDED — safe on the wheel cdylib + musl. Default-on in the keyring as of
 # v8.0.0 (the link-time `tpm` feature was deleted), so this is inherited by
 # default; named here for explicit control.
-tpm-plugin = ["ciris-keyring/tpm-plugin"]
-tpm-windows = ["ciris-keyring/tpm-windows"]  # Experimental: Windows native TPM
+tpm-plugin = ["host", "ciris-keyring/tpm-plugin"]
+tpm-windows = ["host", "ciris-keyring/tpm-windows"]  # Experimental: Windows native TPM
 # PKCS#11 hardware-token support (YubiKey PIV / OpenSC) for the `token` CLI
 # subcommand. Pulls in `cryptoki` via the keyring; needs a physical token to
 # exercise (CIRISVerify#80). Bakes the dep into the binary build.
-pkcs11 = ["ciris-keyring/pkcs11"]
+pkcs11 = ["host", "ciris-keyring/pkcs11"]
 
 [[bin]]
 name = "ciris-verify"
 path = "src/bin/ciris_verify.rs"
+required-features = ["host"]
 
 [dependencies]
 # Optional: only linked with the `test-support` feature (CIRISVerify#219).
 rcgen = { version = "0.13", optional = true }
 # Internal crates
-ciris-keyring.workspace = true
+ciris-keyring = { workspace = true, optional = true }
 zeroize.workspace = true
 # `kdf` + `aes-gcm` enable password-protected software keys (PBKDF2 → AES-256-GCM).
-ciris-crypto = { workspace = true, features = ["kdf", "aes-gcm"] }
+ciris-crypto = { workspace = true, default-features = false, features = ["ed25519", "ecdsa-p256"] }
 
 # Async
-tokio.workspace = true
+tokio = { workspace = true, optional = true }
 async-trait.workspace = true
-futures.workspace = true
+futures = { workspace = true, optional = true }
 
 # CLI
-clap = { version = "4.5", features = ["derive"] }
+clap = { version = "4.5", features = ["derive"], optional = true }
 # Hidden PIN / password prompt (keeps secrets out of argv / shell history) —
 # used by the `token` PKCS#11 PIN and the `fedcode`/identity software-key password.
-rpassword = "7"
+rpassword = { version = "7", optional = true }
 # QR rendering for fedcodes (terminal unicode + SVG only). `default-features =
 # false` drops the `image` render feature and its `image@0.25` dependency tree;
 # we only use the svg/unicode renderers.
-qrcode = { version = "0.14", default-features = false, features = ["svg"] }
+qrcode = { version = "0.14", default-features = false, features = ["svg"], optional = true }
 
 # Serialization
 serde = { workspace = true, features = ["derive"] }
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
 # v4.11.0 (CIRISVerify#59): RFC 8785 JSON Canonicalization Scheme — the
 # cross-impl signing-bytes encoding CEG §0.9 mandates for federation
 # Contributions. Wrapped behind `ciris_verify_core::jcs`; the notorious
 # ECMAScript number-to-string algorithm (RFC 8785 §3.2.2.3) lives in this
 # crate's `ryu-js` backend rather than being hand-rolled. Behavior is
 # locked by RFC 8785 Appendix B KAT vectors in `jcs::tests`.
-serde_jcs = "0.2"
+# `jcs::canonicalize` is verify's own encoder (no_std, CIRISVerify#325);
+# `serde_jcs` stays as the dev-time oracle it is tested against, and
+# `ryu-js` 0.2 is the ECMAScript number formatter both use.
+ryu-js = { version = "0.2", default-features = false }
 # `persist_canonical::format_f64`: the float token CIRISPersist writes into a
 # `persist_row_hash` preimage is zmij's (serde_json's formatter); pinned
 # directly so a serde_json upgrade cannot move it unnoticed.
-zmij = "1"
+zmij = { version = "1", default-features = false }
+
+# `humanity_accord_genesis()` parses the baked genesis once; `race::OnceBox`
+# needs only `alloc`, so the cache is the same with and without `std` (#325).
+once_cell = { version = "1.21", default-features = false, features = ["race", "alloc"] }
 
 # Error handling
 thiserror.workspace = true
 
 # Logging
 tracing.workspace = true
-tracing-subscriber.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
 
 # Time
-chrono.workspace = true
+chrono = { version = "0.4", default-features = false, features = ["alloc", "serde"] }
 
 # TLS for `mobile_http` (ureq on Android/iOS) with bundled Mozilla CA certs.
 # ring backend to match the repo's force-ring policy.
-rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
-webpki-roots = "0.26"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"], optional = true }
+webpki-roots = { version = "0.26", optional = true }
 
 # HTTP client
-reqwest.workspace = true
+reqwest = { workspace = true, optional = true }
 
 # Crypto utilities
 sha2.workspace = true
-hkdf = "0.12"
-base64.workspace = true
+hkdf = { version = "0.12", default-features = false }
+base64 = { version = "0.21", default-features = false, features = ["alloc"] }
 hex.workspace = true
 ed25519-dalek.workspace = true
 
 # Authenticated encryption
-chacha20poly1305 = "0.10"
+chacha20poly1305 = { version = "0.10", optional = true }
 
 # Random
-rand.workspace = true
+rand = { workspace = true, optional = true }
 
 # Constant-time comparison
-subtle = "2.6"
+subtle = { version = "2.6", default-features = false }
 
 # Platform-specific
-libc = "0.2"
+libc = { version = "0.2", optional = true }
 
 # Binary parsing (Mach-O __TEXT segment hashing for iOS code-sign stability)
-goblin.workspace = true
+goblin = { workspace = true, optional = true }
 
 # v4.3.0 (CIRISPersist#132): rusqlite at the unconditional level so
 # every target gets rusqlite. The Android-only target table further
 # down adds the `bundled` feature for Android; every other target
 # (Linux / macOS / Windows / iOS) inherits this base entry and links
 # dynamically against the platform's libsqlite3.
-rusqlite.workspace = true
-x509-parser = { version = "0.16", features = ["verify"] }
+rusqlite = { workspace = true, optional = true }
+x509-parser = { version = "0.16", features = ["verify"], optional = true }
 # CBOR — Apple App Attest attestation objects are CBOR, not X.509
 # (CIRISVerify#199). Deliberately NOT platform-gated: App Attest verification is
 # a RELYING-PARTY operation — the iOS device produces the attestation, and
@@ -148,8 +208,8 @@ x509-parser = { version = "0.16", features = ["verify"] }
 #
 # Also forward-looking: CoRIM/CoTS is a CBOR encoding, so the deferred
 # `trust_anchor_store` wire format (CIRISVerify#227) lands on this same dep.
-ciborium = "0.2"
-zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+ciborium = { version = "0.2", default-features = false }
+zip = { version = "9", default-features = false, features = ["deflate-flate2-zlib-rs"], optional = true }
 
 # SQLite for audit trail verification.
 #
@@ -181,16 +241,16 @@ zip = { version = "9", default-features = false, features = ["deflate-flate2-zli
 [target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
 # ureq with rustls for blocking HTTPS (bypasses broken tokio async I/O).
 # rustls (0.23, ring) + webpki-roots (0.26) come from the common [dependencies] above.
-ureq = { version = "2.9", default-features = false, features = ["tls", "json"] }
+ureq = { version = "2.9", default-features = false, features = ["tls", "json"], optional = true }
 
 [target.'cfg(target_os = "android")'.dependencies]
 # v4.3.0 (CIRISPersist#132): rusqlite `bundled` for Android. NDK
 # libsqlite3 isn't guaranteed across vendor builds; Android's app-
 # sandbox convention is static linking. See the rationale comment
 # before the rusqlite workspace entry for the full story.
-rusqlite = { version = "0.41", features = ["bundled"] }
+rusqlite = { version = "0.41", features = ["bundled"], optional = true }
 # Android system properties API (for emulator detection)
-android_system_properties = "0.1"
+android_system_properties = { version = "0.1", optional = true }
 
 # v4.4.3 (CIRISVerify#45 / CIRISPersist#141): macOS dropped from the
 # bundled target table. The v4.4.1 hypothesis that the CIRISEdge#50
@@ -213,14 +273,15 @@ android_system_properties = "0.1"
 # system libsqlite3 on Windows by default (vcpkg/chocolatey paths
 # are fragile in CI).
 [target.'cfg(target_os = "windows")'.dependencies]
-rusqlite = { version = "0.41", features = ["bundled"] }
-windows-sys = { version = "0.52", features = [
+rusqlite = { version = "0.41", features = ["bundled"], optional = true }
+windows-sys = { version = "0.52", optional = true, features = [
     "Win32_Foundation",
     "Win32_System_Threading",
     "Win32_System_Diagnostics_Debug",
 ] }
 
 [dev-dependencies]
+serde_jcs = "0.2"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros"] }
 proptest = { workspace = true }
 pretty_assertions = { workspace = true }
@@ -228,14 +289,26 @@ tempfile = "3"
 criterion.workspace = true
 rcgen = "0.13"
 
+# The examples and benches drive the host half (keyring, engine, TLS).
+[[example]]
+name = "readme_android"
+required-features = ["host"]
+
+[[example]]
+name = "validate_yubikey_attestation"
+required-features = ["host"]
+
 [[bench]]
 name = "build_manifest"
 harness = false
+required-features = ["host"]
 
 [[bench]]
 name = "transparency_merkle"
 harness = false
+required-features = ["host"]
 
 [[bench]]
 name = "key_derivation"
 harness = false
+required-features = ["host"]

@@ -25,10 +25,13 @@
 //! The vector `tests/vectors/accord_lineage/accord_lineage_v1.json` (persist
 //! commit `e943482e`) pins every rule.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use core::fmt::Write as _;
 use serde::Serialize;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use std::fmt::Write as _;
 
 /// The top-level members `persist_row_hash` never covers: the hash itself and
 /// the mutable `consent_role` marker.

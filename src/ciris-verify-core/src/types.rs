@@ -1,8 +1,13 @@
 //! Protocol types for CIRISVerify requests and responses.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+#[cfg(feature = "host")]
 use ciris_keyring::PlatformAttestation;
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "host")]
 use crate::license::{LicenseDetails, LicenseStatus};
 
 /// Request for license status verification.
@@ -55,6 +60,7 @@ impl LicenseStatusRequest {
 }
 
 /// Response containing license status and attestation.
+#[cfg(feature = "host")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LicenseStatusResponse {
     /// Overall license status.
@@ -178,6 +184,7 @@ pub enum DisclosureSeverity {
 }
 
 /// Attestation data for the response.
+#[cfg(feature = "host")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ResponseAttestation {
     /// Platform attestation from hardware.
@@ -456,6 +463,7 @@ pub enum ShutdownType {
 /// 2. Cryptographic identity (classical + PQC public keys)
 /// 3. Signature validity (dual bound signatures over challenge)
 /// 4. Audit trail integrity (Merkle root from transparency log)
+#[cfg(feature = "host")]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AttestationProof {
     /// Platform attestation from hardware security module.

@@ -78,6 +78,9 @@
 //! [`FederationProvenance::policy`] for auditability, but the
 //! verdict itself is not verify's to declare.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 /// Verify-owned canonical dimension strings (FSD-002 §3.2). Stable
@@ -87,6 +90,8 @@ use serde::{Deserialize, Serialize};
 /// ones are `&'static str` constants.
 pub mod dim {
     use crate::classification::{Arity, Frame, UndeclaredFrame};
+    #[allow(unused_imports)]
+    use crate::prelude::*;
 
     /// Self-verification — the running CIRISVerify binary attests
     /// itself against its function manifest ("who watches the
@@ -820,6 +825,7 @@ mod tests {
         assert!(i.score.is_nan());
     }
 
+    #[cfg(feature = "host")]
     #[test]
     fn parameterized_dimensions_format_correctly() {
         assert_eq!(dim::provenance_slsa(3), "provenance:slsa:3:v1");

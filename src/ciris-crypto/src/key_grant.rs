@@ -82,6 +82,8 @@
 //! wire — the envelope's `wrap_algorithm` field selects which to
 //! deserialize.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::error::CryptoError;

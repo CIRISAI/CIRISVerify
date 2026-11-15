@@ -25,6 +25,9 @@
 //!
 //! [WebAuthn Level 2 §7.2]: https://www.w3.org/TR/webauthn-2/#sctn-verifying-assertion
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use base64::Engine;
 use ciris_crypto::{ClassicalVerifier, Ed25519Verifier, P256Verifier};
 use sha2::{Digest, Sha256};

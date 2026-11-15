@@ -39,6 +39,9 @@
 //! today"* is **not** a reason to skip binding it. Records become conferral
 //! subjects through elevation paths added later.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde_json::{Map, Value};
 
 /// A subject binding did not hold. Every variant is a refusal.
@@ -98,8 +101,8 @@ impl SubjectBindingError {
     }
 }
 
-impl std::fmt::Display for SubjectBindingError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for SubjectBindingError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NotAnObject { context } => {
                 write!(f, "{context}: signed payload is not a JSON object, so it carries no subject binding")
@@ -124,7 +127,7 @@ impl std::fmt::Display for SubjectBindingError {
     }
 }
 
-impl std::error::Error for SubjectBindingError {}
+impl core::error::Error for SubjectBindingError {}
 
 /// Builder for the set of members that name **who a signed object is about**.
 ///

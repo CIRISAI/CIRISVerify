@@ -27,6 +27,8 @@
 //!   public-key contributions (which the consumer's AEAD step
 //!   detects as a tag-mismatch failure on unwrap).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use rand_core::OsRng;
 use x25519_dalek::{EphemeralSecret, PublicKey, StaticSecret};
 

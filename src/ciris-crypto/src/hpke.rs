@@ -67,6 +67,8 @@
 //! // transmit (sealed, sig, inviter_pk); recipient verifies sig BEFORE open_base.
 //! ```
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use hkdf::Hkdf;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 use sha2::Sha256;

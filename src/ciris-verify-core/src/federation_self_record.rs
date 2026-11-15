@@ -27,6 +27,9 @@
 //! canonicalize → hash → verify, so the envelope shape is the producer's; the
 //! `purpose` string is flagged for CIRISServer/Persist cross-confirmation.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use base64::Engine;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -351,7 +354,7 @@ impl KeyRecord {
     /// before the bytes are handed to persist.
     #[must_use]
     pub fn distinct_scrub_count(&self) -> usize {
-        let mut ids = std::collections::BTreeSet::new();
+        let mut ids = alloc::collections::BTreeSet::new();
         ids.insert(self.scrub_key_id.as_str());
         for s in &self.additional_scrubs {
             ids.insert(s.scrub_key_id.as_str());
@@ -411,7 +414,7 @@ pub async fn produce_self_key_record(
     // spelling was signed (#268 round 9). Validating without using the
     // validated value is the same shape as documenting a check instead of
     // performing one.
-    let validity = crate::federation_identity::Validity::checked(valid_from, valid_until)?;
+    let validity = Validity::checked(valid_from, valid_until)?;
     let valid_until = validity.until();
 
     let key_id = signer.key_id().to_string();
@@ -544,7 +547,7 @@ pub async fn produce_scrubbed_key_record(
     // spelling was signed (#268 round 9). Validating without using the
     // validated value is the same shape as documenting a check instead of
     // performing one.
-    let validity = crate::federation_identity::Validity::checked(valid_from, valid_until)?;
+    let validity = Validity::checked(valid_from, valid_until)?;
     let valid_until = validity.until();
 
     // Same rich envelope as `produce_self_key_record`, but over the TARGET's
@@ -696,6 +699,112 @@ pub async fn append_scrub(
     Ok(record)
 }
 
+/// A key's validity window (CIRISVerify#268).
+///
+/// This exists to make a specific mis-call **impossible rather than
+/// discouraged**. `valid_until` and `seal_alias` are both `Option<&str>` and
+/// were adjacent, so a caller migrating from the pre-14.0 signature who added
+/// the new argument in the wrong slot would compile cleanly and **sign their
+/// seal alias as the key's expiry**, while the alias silently became `None`.
+///
+/// A previous revision of this file asserted the opposite — that "every pair
+/// is type-distinguished, so a mis-ordered call does not compile" — and used
+/// that claim to silence `clippy::too_many_arguments`. The claim was false for
+/// exactly the pair that mattered, and the lint was pointing at the real
+/// problem. Bundling the window into one type makes the assertion true and
+/// drops the argument count honestly, so the allow is gone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Validity<'a> {
+    from: &'a str,
+    /// Owned because it is CANONICALIZED at construction, not borrowed from
+    /// the caller's text — see [`Validity::checked`].
+    until: Option<String>,
+}
+
+impl<'a> Validity<'a> {
+    /// Build a window, **refusing an instant nothing can compare against**
+    /// (CIRISVerify#268).
+    ///
+    /// This is the **only** way to construct a `Validity`. The fields are
+    /// private and there is no unchecked constructor: an optional check is
+    /// skippable by omission (the #252 rule 3 lesson).
+    ///
+    /// It is also the single validation rule for every entry point — the CLI's
+    /// `--valid-until`, the FFI's `valid_until`, and any Rust caller — so no
+    /// entry point can emit a **signed** record carrying an expiry no consumer
+    /// could evaluate. Two checks for one rule is how they drift, so there is
+    /// one.
+    ///
+    /// # Errors
+    /// [`VerifyError::IntegrityError`] if either instant is not RFC-3339, or
+    /// if the window ends before it starts.
+    pub fn checked(from: &'a str, until: Option<&'a str>) -> Result<Self, VerifyError> {
+        let bad = |what: &str, v: &str| VerifyError::IntegrityError {
+            message: format!("{what} must be an RFC-3339 instant, got {v:?}"),
+        };
+        let start =
+            chrono::DateTime::parse_from_rfc3339(from).map_err(|_| bad("valid_from", from))?;
+        if let Some(u) = until {
+            let end = chrono::DateTime::parse_from_rfc3339(u).map_err(|_| bad("valid_until", u))?;
+            if end <= start {
+                return Err(VerifyError::IntegrityError {
+                    message: format!(
+                        "valid_until ({u}) must be after valid_from ({from}) — a window \
+                         that closes before it opens is not an expiry"
+                    ),
+                });
+            }
+            // ONE canonical text form for the signed member (#268).
+            //
+            // `2027-08-19T00:00:00+02:00` and `2027-08-18T22:00:00Z` are the
+            // same instant and different bytes. The subject binding compares
+            // the top-level field against the signed envelope copy as TEXT,
+            // and a consumer that round-trips the record through a typed
+            // timestamp column — which CIRISPersist has — re-serializes the
+            // column while the envelope stays opaque. The two then disagree
+            // about a record nobody tampered with.
+            //
+            // A caller may pass any RFC-3339 form; what is PINNED is what gets
+            // signed: UTC, `Z`, second precision.
+            //
+            // Deliberately NOT applied to `valid_from`: it is an existing
+            // signed member, so rewriting it would change the canonical bytes
+            // of every record already produced. That asymmetry is a
+            // compatibility fact rather than a preference.
+            return Ok(Self {
+                from,
+                until: Some(
+                    // `AutoSi`, NOT `Secs`. Truncating to whole seconds could
+                    // move the expiry EARLIER than `valid_from` — for
+                    // `from = ...00.100Z` and `until = ...00.900Z` the
+                    // ordering check above passes on the parsed instants and
+                    // then truncation rewrites `until` to `...00Z`, signing an
+                    // inverted window that this very validator would reject
+                    // (#268 round 9). Normalizing the REPRESENTATION must not
+                    // change the INSTANT.
+                    end.with_timezone(&chrono::Utc)
+                        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+                ),
+            });
+        }
+        Ok(Self { from, until: None })
+    }
+
+    /// The instant the key becomes valid (RFC-3339, validated).
+    #[must_use]
+    pub const fn from(&self) -> &'a str {
+        self.from
+    }
+
+    /// The instant the key stops being valid, if it expires (RFC-3339,
+    /// validated). `None` omits the member from the signed envelope entirely,
+    /// reproducing the pre-14.0 canonical bytes.
+    #[must_use]
+    pub fn until(&self) -> Option<&str> {
+        self.until.as_deref()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -810,7 +919,7 @@ mod tests {
             mldsa65_signature_base64: r.scrub_signature_pqc.clone(),
         };
         assert_eq!(
-            verify_threshold_signatures(&canonical, &[scrubber], std::slice::from_ref(&sig), 1),
+            verify_threshold_signatures(&canonical, &[scrubber], core::slice::from_ref(&sig), 1),
             Ok(1),
             "must hybrid-verify against the SCRUBBER's key (root_binding path)"
         );
@@ -1487,7 +1596,7 @@ mod expiry {
     /// without a pinned form the two disagree about an untampered record.
     #[tokio::test]
     async fn equivalent_instants_canonicalize_to_one_form() {
-        use crate::federation_identity::Validity;
+        use crate::federation_self_record::Validity;
         let a = Validity::checked(FROM, Some("2027-08-19T00:00:00+02:00")).unwrap();
         let b = Validity::checked(FROM, Some("2027-08-18T22:00:00Z")).unwrap();
         assert_eq!(a.until(), b.until(), "same instant must sign identically");
@@ -1536,7 +1645,7 @@ mod expiry {
     /// validator would reject.
     #[tokio::test]
     async fn sub_second_precision_survives_canonicalization() {
-        use crate::federation_identity::Validity;
+        use crate::federation_self_record::Validity;
         let from = "2026-08-19T00:00:00.100Z";
         let v = Validity::checked(from, Some("2026-08-19T00:00:00.900Z")).unwrap();
         let until = v.until().unwrap();

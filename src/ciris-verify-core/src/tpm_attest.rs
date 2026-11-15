@@ -39,6 +39,9 @@
 //! - Boot chain integrity (PCR values)
 //! - Key is TPM-resident (AK in quote signature)
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 /// Request to verify TPM attestation.

@@ -68,6 +68,9 @@
 //! substrate sees a quorum role-withdrawal, so only the substrate can say a
 //! withdrawn pipeline no longer verifies.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use chrono::{DateTime, Timelike, Utc};
 use serde_json::{json, Value};
 
@@ -468,8 +471,8 @@ pub enum ManifestRejection {
     },
 }
 
-impl std::fmt::Display for ManifestRejection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ManifestRejection {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::WrongKind { kind } => {
                 write!(f, "not a build-manifest contribution: kind {kind:?}")
@@ -512,7 +515,7 @@ impl std::fmt::Display for ManifestRejection {
     }
 }
 
-impl std::error::Error for ManifestRejection {}
+impl core::error::Error for ManifestRejection {}
 
 fn str_field<'a>(v: &'a Value, field: &'static str) -> Result<&'a str, ManifestRejection> {
     v.get(field)
@@ -616,7 +619,7 @@ pub(crate) fn envelope_verifies(
         ed25519_signature_base64: ed_sig.to_string(),
         mldsa65_signature_base64: mldsa_sig.map(str::to_string),
     };
-    verify_threshold_signatures(&bytes, std::slice::from_ref(member), &[sig], 1) == Ok(1)
+    verify_threshold_signatures(&bytes, core::slice::from_ref(member), &[sig], 1) == Ok(1)
 }
 
 /// Verify a build-manifest Contribution and return its facts.

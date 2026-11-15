@@ -72,6 +72,9 @@
 //! hardware Ed25519 token with a single-shot input ceiling can produce this
 //! bundle. Tampering with the carried evidence breaks the commitment.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde_json::{json, Value};
 
 use crate::ceg_outbox::SignedCegObject;
@@ -385,8 +388,8 @@ pub enum BundleRejection {
     },
 }
 
-impl std::fmt::Display for BundleRejection {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for BundleRejection {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::WrongKind { kind } => write!(f, "not a build_attestation_bundle (got {kind})"),
             Self::Malformed { field } => write!(f, "malformed bundle: field {field}"),
@@ -411,7 +414,7 @@ impl std::fmt::Display for BundleRejection {
     }
 }
 
-impl std::error::Error for BundleRejection {}
+impl core::error::Error for BundleRejection {}
 
 /// Pull a `&str` field from a JSON object, or [`BundleRejection::Malformed`].
 fn str_field<'a>(v: &'a Value, field: &'static str) -> Result<&'a str, BundleRejection> {
@@ -501,7 +504,7 @@ pub fn verify_build_attestation_bundle(
         ed25519_signature_base64: ed_sig.to_string(),
         mldsa65_signature_base64: mldsa_sig.map(str::to_string),
     };
-    if verify_threshold_signatures(&bytes, std::slice::from_ref(presenter_member), &[sig], 1)
+    if verify_threshold_signatures(&bytes, core::slice::from_ref(presenter_member), &[sig], 1)
         != Ok(1)
     {
         return Err(BundleRejection::PresenterSignatureInvalid);

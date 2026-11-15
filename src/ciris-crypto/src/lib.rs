@@ -27,8 +27,22 @@
 //!
 //! This enables crypto agility and clear algorithm identification.
 
+#![cfg_attr(not(feature = "std"), no_std)]
 #![warn(missing_docs)]
 #![warn(clippy::all)]
+
+#[macro_use]
+extern crate alloc;
+
+/// The `alloc` names every module uses, so the crate reads the same with and
+/// without `std` (CIRISVerify#325).
+#[allow(unused_imports)]
+mod prelude {
+    pub(crate) use alloc::borrow::ToOwned;
+    pub(crate) use alloc::boxed::Box;
+    pub(crate) use alloc::string::{String, ToString};
+    pub(crate) use alloc::vec::Vec;
+}
 
 mod error;
 mod hybrid;

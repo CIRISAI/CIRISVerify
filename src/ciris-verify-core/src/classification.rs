@@ -70,6 +70,9 @@
 //! A `Proposal` is a promise to either get it ratified or withdraw it — the
 //! status is not a place to park an opinion indefinitely.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 /// Whether a consumer may gate on a classification verify ships — and, when it
 /// may, **on what grounds**.
 ///
@@ -292,8 +295,8 @@ pub struct UndeclaredFrame {
     pub subject: &'static str,
 }
 
-impl std::fmt::Display for UndeclaredFrame {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for UndeclaredFrame {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         write!(
             f,
             "refusing to classify {} as testimonial with no declared frame: \
@@ -304,7 +307,7 @@ impl std::fmt::Display for UndeclaredFrame {
     }
 }
 
-impl std::error::Error for UndeclaredFrame {}
+impl core::error::Error for UndeclaredFrame {}
 
 /// **The arity of a classification's discriminator.**
 ///
@@ -392,7 +395,7 @@ mod tests {
 
 /// Cross-module proof that every shipped classification declares its status —
 /// the guard against a new one being added without an answer.
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 mod shipped_classifications {
     use super::{Classification, Gating};
     use crate::device_attestation::{AndroidSecurityLevel, AppAttestEnvironment};

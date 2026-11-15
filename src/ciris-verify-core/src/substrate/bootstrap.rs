@@ -26,6 +26,9 @@
 //! Trust weights are **basis points** (`u32`, `10_000` = 1.0) — integer-only, no
 //! IEEE-754, so the cap arithmetic is deterministic cross-impl.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use super::preimage::{BoundHybridSig, HolonomicError};
 
 /// The §13.3 default delegation-chain depth cap (hops).

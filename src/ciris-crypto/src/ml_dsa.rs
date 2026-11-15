@@ -15,6 +15,8 @@
 
 use crate::error::CryptoError;
 use crate::hybrid::{PqcSigner, PqcVerifier};
+#[allow(unused_imports)]
+use crate::prelude::*;
 use crate::types::PqcAlgorithm;
 
 #[cfg(feature = "pqc-ml-dsa")]
@@ -54,7 +56,8 @@ impl MlDsa65Signer {
     /// `Failed` (fail-secure; no key generated), or
     /// `CryptoError::UnsupportedAlgorithm` if the PQC feature is not
     /// enabled.
-    #[cfg(feature = "pqc-ml-dsa")]
+    /// Absent without `std`: there the caller supplies the seed (`from_seed`).
+    #[cfg(all(feature = "pqc-ml-dsa", feature = "std"))]
     pub fn new() -> Result<Self, CryptoError> {
         // Generate a random 32-byte seed using the fail-secure RNG facade.
         let mut seed_bytes = [0u8; 32];

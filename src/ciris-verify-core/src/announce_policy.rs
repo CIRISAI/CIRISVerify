@@ -65,6 +65,9 @@
 //! In-group MLS distribution of addressing material was never prohibited —
 //! that is the cached-directory discipline itself.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::classification::{Classification, Gating};
 
 /// A destination's cohort scope, as CC 5.4.6 partitions it.

@@ -43,7 +43,12 @@
 //! handles chain-linking (previous-entry hash) so engine callers don't
 //! have to assemble entries manually.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+#[cfg(feature = "std")]
 use std::path::PathBuf;
+#[cfg(feature = "std")]
 use std::sync::{Arc, RwLock};
 
 use chrono::{DateTime, Utc};
@@ -733,6 +738,7 @@ pub trait TransparencyStore<L: TransparencyLeaf>: Send + Sync {
 /// read sibling hashes directly (O(log N)); consistency proofs read
 /// cached subtree roots (O(log² N)). Pre-v2.6.0 every one of these
 /// recomputed the whole tree from a flat leaf-hash vector.
+#[cfg(feature = "std")]
 pub struct InMemoryTransparencyStore<L: TransparencyLeaf + Serialize> {
     entries: Arc<RwLock<Vec<L>>>,
     /// Cached Merkle levels. `levels[0]` = leaf hashes; the top level
@@ -742,6 +748,7 @@ pub struct InMemoryTransparencyStore<L: TransparencyLeaf + Serialize> {
     log_path: Option<PathBuf>,
 }
 
+#[cfg(feature = "std")]
 impl<L: TransparencyLeaf + Serialize> InMemoryTransparencyStore<L> {
     /// Construct an in-memory store. Pass `Some(path)` to also append each
     /// leaf as a JSON line for crash recovery.
@@ -756,6 +763,7 @@ impl<L: TransparencyLeaf + Serialize> InMemoryTransparencyStore<L> {
     }
 }
 
+#[cfg(feature = "std")]
 impl<L: TransparencyLeaf + Serialize> TransparencyStore<L> for InMemoryTransparencyStore<L> {
     fn append(&self, entry: L) -> Result<u64, TransparencyError> {
         let canonical = entry.canonical_bytes()?;
@@ -909,11 +917,13 @@ impl<L: TransparencyLeaf + Serialize> TransparencyStore<L> for InMemoryTranspare
 /// One log per `log_id`. Multiple `TransparencyLog<L>` instances can wrap
 /// the same store backend, but each is logically a separate tree
 /// (callers must ensure `log_id` uniqueness in shared backends).
+#[cfg(feature = "std")]
 pub struct TransparencyLog<L: TransparencyLeaf> {
     log_id: String,
     store: Arc<dyn TransparencyStore<L>>,
 }
 
+#[cfg(feature = "std")]
 impl<L: TransparencyLeaf> TransparencyLog<L> {
     /// Construct a new log bound to `log_id` and backed by `store`.
     #[must_use]
@@ -1015,6 +1025,7 @@ impl<L: TransparencyLeaf> TransparencyLog<L> {
 // License-domain convenience methods on TransparencyLog<TransparencyEntry>
 // ------------------------------------------------------------------------
 
+#[cfg(feature = "std")]
 impl TransparencyLog<TransparencyEntry> {
     /// Construct an in-memory license-domain log with optional file
     /// persistence. Convenience matching v2.2.x's `TransparencyLog::new`.
@@ -1292,6 +1303,7 @@ fn largest_pow2_leq(n: usize) -> usize {
 
 /// Read the cached Merkle root: the single node at the top level.
 /// `[0; 32]` for an empty tree.
+#[cfg(feature = "std")]
 fn cached_root(levels: &[Vec<[u8; 32]>]) -> [u8; 32] {
     levels
         .last()
@@ -1302,6 +1314,7 @@ fn cached_root(levels: &[Vec<[u8; 32]>]) -> [u8; 32] {
 
 /// Append one leaf hash to the level cache, updating only the rightmost
 /// path. O(log N).
+#[cfg(feature = "std")]
 fn append_leaf_to_levels(levels: &mut Vec<Vec<[u8; 32]>>, leaf: [u8; 32]) {
     if levels.is_empty() {
         levels.push(Vec::new());
@@ -1340,6 +1353,7 @@ fn append_leaf_to_levels(levels: &mut Vec<Vec<[u8; 32]>>, leaf: [u8; 32]) {
 /// when that index exists (a promoted odd node has no sibling at its
 /// level — skipped). `pos` halves each level. Direction `true` means the
 /// sibling is on the right (proven node at an even index).
+#[cfg(feature = "std")]
 fn inclusion_path_from_levels(levels: &[Vec<[u8; 32]>], index: usize) -> Vec<(bool, [u8; 32])> {
     let mut siblings = Vec::new();
     if levels.len() < 2 {
@@ -1363,6 +1377,7 @@ fn inclusion_path_from_levels(levels: &[Vec<[u8; 32]>], index: usize) -> Vec<(bo
 /// RFC-6962-style and recurses. The `start + len <= leaf_count` guard
 /// ensures the cache node is a *full* perfect subtree and not a promoted
 /// partial at the tree's right edge.
+#[cfg(feature = "std")]
 fn range_root(levels: &[Vec<[u8; 32]>], start: usize, len: usize) -> [u8; 32] {
     if len == 0 {
         return [0u8; 32];
@@ -1389,6 +1404,7 @@ fn range_root(levels: &[Vec<[u8; 32]>], start: usize, len: usize) -> [u8; 32] {
 /// RFC 6962 §2.1.2 SUBPROOF over `leaves[start .. start+len)`, reading
 /// subtree roots from the level cache via [`range_root`]. Produces the
 /// same `proof_hashes` as the slice-based [`subproof`], in O(log² N).
+#[cfg(feature = "std")]
 fn subproof_from_levels(
     m: usize,
     start: usize,
@@ -1535,6 +1551,7 @@ fn reconstruct_recursive(
 // File-backed persistence (legacy)
 // ========================================================================
 
+#[cfg(feature = "std")]
 fn append_to_file<L: Serialize>(path: &PathBuf, entry: &L) -> Result<(), String> {
     use std::io::Write;
 

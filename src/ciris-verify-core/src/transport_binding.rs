@@ -67,6 +67,9 @@
 //! compose (both serve AV-42) but verify different shapes; do not conflate
 //! them.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -466,7 +469,7 @@ pub fn verify_transport_binding(
         ed25519_signature_base64: binding.signature.ed25519_signature_base64.clone(),
         mldsa65_signature_base64: binding.signature.mldsa65_signature_base64.clone(),
     };
-    if verify_threshold_signatures(&bytes, std::slice::from_ref(signer), &[sig], 1).is_err() {
+    if verify_threshold_signatures(&bytes, core::slice::from_ref(signer), &[sig], 1).is_err() {
         return Ok(reject(TransportBindingReason::SignatureInvalid));
     }
 

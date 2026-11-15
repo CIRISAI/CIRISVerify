@@ -68,6 +68,9 @@
 //! `verify_contribution_signature` can wrap this with the stripping baked
 //! in; until then this is the reusable mechanism.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use ciris_crypto::{Ed25519Verifier, HybridSignature, HybridVerifier, MlDsa65Verifier};
 use serde_json::Value;
 
@@ -86,9 +89,113 @@ use crate::error::VerifyError;
 /// [`VerifyError::IntegrityError`] if the value cannot be canonicalized
 /// (e.g. a non-finite float, which JSON cannot represent).
 pub fn canonicalize(value: &Value) -> Result<Vec<u8>, VerifyError> {
-    serde_jcs::to_vec(value).map_err(|e| VerifyError::IntegrityError {
-        message: format!("JCS canonicalization failed: {e}"),
-    })
+    let mut out = Vec::with_capacity(128);
+    write_value(value, &mut out)?;
+    Ok(out)
+}
+
+// The encoder below is the one verify signs and verifies with, with and
+// without `std` (CIRISVerify#325). It reproduces `serde_jcs` 0.2 byte for byte;
+// `tests::matches_serde_jcs_*` hold it to that under `std`.
+//
+// - Numbers: every JSON number is an IEEE 754 double (RFC 8785 §3.2.2.3), so
+//   an integer is converted to `f64` first and printed by the ECMAScript
+//   algorithm (`ryu-js`, the formatter `serde_jcs` uses). Non-finite values
+//   cannot occur in a `Value` but are refused anyway.
+// - Strings: `"` and `\` escaped; U+0008, U+0009, U+000A, U+000C, U+000D as
+//   `\b \t \n \f \r`; every other control character below U+0020 as
+//   `\u00xx` with lowercase hex; everything else, `/` and non-ASCII included,
+//   written as is (RFC 8785 §3.2.2.2).
+// - Objects: members sorted by their names' UTF-16 code units (§3.2.3).
+
+fn write_value(value: &Value, out: &mut Vec<u8>) -> Result<(), VerifyError> {
+    match value {
+        Value::Null => out.extend_from_slice(b"null"),
+        Value::Bool(true) => out.extend_from_slice(b"true"),
+        Value::Bool(false) => out.extend_from_slice(b"false"),
+        Value::Number(n) => {
+            #[allow(clippy::cast_precision_loss)]
+            let f = if let Some(u) = n.as_u64() {
+                u as f64
+            } else if let Some(i) = n.as_i64() {
+                i as f64
+            } else {
+                n.as_f64().unwrap_or(f64::NAN)
+            };
+            if !f.is_finite() {
+                return Err(VerifyError::IntegrityError {
+                    message: "JCS canonicalization failed: invalid float value".into(),
+                });
+            }
+            let mut buf = ryu_js::Buffer::new();
+            out.extend_from_slice(buf.format_finite(f).as_bytes());
+        },
+        Value::String(s) => write_string(s, out),
+        Value::Array(items) => {
+            out.push(b'[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    out.push(b',');
+                }
+                write_value(item, out)?;
+            }
+            out.push(b']');
+        },
+        Value::Object(map) => {
+            let mut members: Vec<(Vec<u16>, &String, &Value)> = map
+                .iter()
+                .map(|(k, v)| (k.encode_utf16().collect(), k, v))
+                .collect();
+            members.sort_by(|a, b| a.0.cmp(&b.0));
+            out.push(b'{');
+            for (i, (_, k, v)) in members.into_iter().enumerate() {
+                if i > 0 {
+                    out.push(b',');
+                }
+                write_string(k, out);
+                out.push(b':');
+                write_value(v, out)?;
+            }
+            out.push(b'}');
+        },
+    }
+    Ok(())
+}
+
+fn write_string(s: &str, out: &mut Vec<u8>) {
+    const HEX: &[u8; 16] = b"0123456789abcdef";
+    out.push(b'"');
+    let bytes = s.as_bytes();
+    let mut start = 0;
+    for (i, &b) in bytes.iter().enumerate() {
+        let esc: &[u8] = match b {
+            b'"' => b"\\\"",
+            b'\\' => b"\\\\",
+            0x08 => b"\\b",
+            0x09 => b"\\t",
+            0x0A => b"\\n",
+            0x0C => b"\\f",
+            0x0D => b"\\r",
+            0x00..=0x1F => &[],
+            _ => continue,
+        };
+        out.extend_from_slice(&bytes[start..i]);
+        if esc.is_empty() {
+            out.extend_from_slice(&[
+                b'\\',
+                b'u',
+                b'0',
+                b'0',
+                HEX[(b >> 4) as usize],
+                HEX[(b & 0xF) as usize],
+            ]);
+        } else {
+            out.extend_from_slice(esc);
+        }
+        start = i + 1;
+    }
+    out.extend_from_slice(&bytes[start..]);
+    out.push(b'"');
 }
 
 /// Verify a detached hybrid (Ed25519 + ML-DSA-65) signature over the
@@ -337,5 +444,85 @@ mod tests {
             !verify_jcs_hybrid_signature(&tampered, &sig, &verifier).unwrap(),
             "a semantic edit changes the JCS bytes and must fail verification"
         );
+    }
+
+    // -------------------------------------------------------------------
+    // The encoder against `serde_jcs` 0.2, the backend it replaced
+    // (CIRISVerify#325). Equal bytes for every value is the contract: a
+    // signature made before 23.0.0 must verify after it.
+    // -------------------------------------------------------------------
+
+    fn assert_matches_serde_jcs(v: &Value) {
+        assert_eq!(
+            canonicalize(v).unwrap(),
+            serde_jcs::to_vec(v).unwrap(),
+            "diverged from serde_jcs on {v}"
+        );
+    }
+
+    #[test]
+    fn matches_serde_jcs_on_edge_values() {
+        let mut every_control = String::new();
+        for c in 0u8..0x20 {
+            every_control.push(char::from(c));
+        }
+        every_control.push_str("\u{7f}/\"\\\u{2028}\u{2029}\u{e9}\u{1f600}\u{fffd}");
+        let cases = vec![
+            json!(null),
+            json!(true),
+            json!(false),
+            json!(0),
+            json!(-0.0),
+            json!(1),
+            json!(-1),
+            json!(u64::MAX),
+            json!(i64::MIN),
+            json!(9_007_199_254_740_993_u64),
+            json!(1e21),
+            json!(1e-7),
+            json!(123_456_789.123_457),
+            json!(5e-324),
+            json!(f64::MAX),
+            json!(0.1),
+            json!(-1.5e300),
+            json!(every_control),
+            json!(""),
+            json!([]),
+            json!({}),
+            json!({"\u{20ac}": 1, "\r": 2, "\u{1f600}": 3, "\u{fb33}": 4, "1": 5, "": 6, "a": [1, {"z": null, "y": [true]}]}),
+            json!([[], [[]], {"": {}}]),
+        ];
+        for v in &cases {
+            assert_matches_serde_jcs(v);
+        }
+    }
+
+    fn arb_value() -> impl proptest::strategy::Strategy<Value = Value> {
+        use proptest::prelude::*;
+        let leaf = prop_oneof![
+            Just(Value::Null),
+            any::<bool>().prop_map(Value::Bool),
+            any::<u64>().prop_map(|n| json!(n)),
+            any::<i64>().prop_map(|n| json!(n)),
+            any::<f64>()
+                .prop_filter("finite", |f| f.is_finite())
+                .prop_map(|f| json!(f)),
+            any::<String>().prop_map(Value::String),
+            "[\\x00-\\x20\"\\\\/a-z\\u{80}-\\u{10ffff}]{0,12}".prop_map(Value::String),
+        ];
+        leaf.prop_recursive(4, 64, 8, |inner| {
+            prop_oneof![
+                proptest::collection::vec(inner.clone(), 0..8).prop_map(Value::Array),
+                proptest::collection::btree_map(any::<String>(), inner, 0..8)
+                    .prop_map(|m| Value::Object(m.into_iter().collect())),
+            ]
+        })
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn matches_serde_jcs_on_arbitrary_values(v in arb_value()) {
+            assert_matches_serde_jcs(&v);
+        }
     }
 }

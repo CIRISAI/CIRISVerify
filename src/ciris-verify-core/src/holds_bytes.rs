@@ -29,10 +29,13 @@
 //! - 24-hour TTL on `holds_bytes` directory entries (§10.1.2) —
 //!   the caller checks `signed_at` against the freshness window.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use sha2::{Digest, Sha256};
 
 use crate::ceg_error::{CegError, CegErrorCode};
-use crate::security::constant_time_eq;
+use ciris_crypto::constant_time_eq;
 
 /// Typed failure modes for [`verify_holds_bytes`]. All map cleanly
 /// into the §10.0.1 wire envelope via [`From`].
@@ -52,8 +55,8 @@ pub enum HoldsBytesError {
     },
 }
 
-impl std::fmt::Display for HoldsBytesError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for HoldsBytesError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::Section06Violation(msg) => write!(f, "§0.6 violation: {msg}"),
             Self::DigestMismatch { computed, expected } => {
@@ -68,7 +71,7 @@ impl std::fmt::Display for HoldsBytesError {
     }
 }
 
-impl std::error::Error for HoldsBytesError {}
+impl core::error::Error for HoldsBytesError {}
 
 impl From<HoldsBytesError> for CegError {
     fn from(e: HoldsBytesError) -> Self {
@@ -176,7 +179,7 @@ fn hex_nibble_lowercase(c: u8) -> Result<u8, String> {
 fn hex_encode_lowercase(bytes: &[u8]) -> String {
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        use std::fmt::Write;
+        use core::fmt::Write;
         let _ = write!(s, "{b:02x}");
     }
     s

@@ -92,6 +92,8 @@
 //! ```
 //! Indistinguishable from a real Merkle root under HMAC-SHA3 IND.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use hkdf::Hkdf;
 use sha2::Sha256;
 

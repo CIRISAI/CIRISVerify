@@ -795,6 +795,7 @@ pub fn verify_binary_blob(manifest: &BuildManifest, binary: &[u8]) -> Result<(),
 ///
 /// Whatever [`verify_binary_blob`] refuses, or an `IntegrityError` naming the
 /// version or platform the wheel and manifest disagree on.
+#[cfg(feature = "host")]
 pub fn verify_wheel_blob(
     manifest: &BuildManifest,
     wheel: &[u8],
@@ -1407,6 +1408,7 @@ mod tests {
     /// through (the hash matches — this is the rollback); `verify_wheel_blob`
     /// refuses it, and accepts the manifest's real wheel only when the hash
     /// agrees too.
+    #[cfg(feature = "host")]
     #[test]
     fn verify_wheel_blob_refuses_a_hash_signed_over_another_versions_wheel() {
         use crate::security::wheel::test_wheels::wheel;

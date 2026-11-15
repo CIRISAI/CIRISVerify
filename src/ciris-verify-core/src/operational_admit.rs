@@ -62,6 +62,9 @@
 //! rejection (never fail-open). This is the same opaque-failure
 //! discipline used across CIRISVerify.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -197,7 +200,7 @@ impl MembershipGrant {
             ed25519_signature_base64: self.ed25519_signature_base64.clone(),
             mldsa65_signature_base64: self.mldsa65_signature_base64.clone(),
         };
-        verify_threshold_signatures(&bytes, std::slice::from_ref(granter), &[sig], 1).is_ok()
+        verify_threshold_signatures(&bytes, core::slice::from_ref(granter), &[sig], 1).is_ok()
     }
 }
 
@@ -423,7 +426,7 @@ pub fn verify_partner_record_quorum(
 pub const FEDERATION_SET_SEMANTICS_UNSORTED: &str = "federation_set_semantics_unsorted";
 
 /// Compare two strings in UTF-16 code-unit order (RFC 8785 §3.2.3, CC 2.6.1.2).
-fn utf16_cmp(a: &str, b: &str) -> std::cmp::Ordering {
+fn utf16_cmp(a: &str, b: &str) -> core::cmp::Ordering {
     a.encode_utf16().cmp(b.encode_utf16())
 }
 
@@ -468,7 +471,7 @@ pub fn check_set_semantics_sorted(value: &Value, fields: &[&str]) -> Result<(), 
         if let Some((i, w)) = strs
             .windows(2)
             .enumerate()
-            .find(|(_, w)| utf16_cmp(w[0], w[1]) != std::cmp::Ordering::Less)
+            .find(|(_, w)| utf16_cmp(w[0], w[1]) != core::cmp::Ordering::Less)
         {
             let what = if w[0] == w[1] {
                 "carries a duplicate element"
@@ -582,8 +585,8 @@ pub enum ScopeSplitError {
     },
 }
 
-impl std::fmt::Display for ScopeSplitError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ScopeSplitError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NodeCarriesAgency { scope } => write!(
                 f,
@@ -597,7 +600,7 @@ impl std::fmt::Display for ScopeSplitError {
     }
 }
 
-impl std::error::Error for ScopeSplitError {}
+impl core::error::Error for ScopeSplitError {}
 
 /// Enforce the CEG §8.1.12.7.1 / §5.6.8.10 `infra:*` / `agency:*` scope split on
 /// a `delegates_to` — the wire-checkable form of §1.3 "infrastructure must not

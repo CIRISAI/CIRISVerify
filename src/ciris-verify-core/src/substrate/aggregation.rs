@@ -35,6 +35,9 @@
 //! `member_commitment` Merkle is the §19.1 WholenessWitness scheme verbatim —
 //! one Merkle scheme across §19.1 + §19.7, no fork.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use super::durable_storage::ConsentState;
 use super::preimage::{
     verify_bound_hybrid, BoundHybridSig, HolonomicError, Preimage, DOMAIN_AGG_META,
@@ -596,7 +599,7 @@ mod tests {
         // The 900/1000 dominance case: one source holds 90% of the mass, the
         // other 999 share 10% equally → n_eff collapses toward ~1.
         let mut w = vec![900_000u64];
-        w.extend(std::iter::repeat_n(100, 999));
+        w.extend(core::iter::repeat_n(100, 999));
         let total: u64 = w.iter().sum();
         let m: Vec<u64> = w.iter().map(|&wi| mass_to_fixed(wi, total)).collect();
         let n_eff = effective_source_count(&m).unwrap();

@@ -1,5 +1,7 @@
 //! Cryptographic error types.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use thiserror::Error;
 
 use crate::types::{ClassicalAlgorithm, PqcAlgorithm};

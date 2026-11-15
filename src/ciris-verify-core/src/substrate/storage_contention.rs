@@ -31,6 +31,9 @@
 //! Python wheel (CIRISPersist#356), CIRISEdge drops its local copy, and
 //! CIRISConformance drives the #57 freeze-gate vectors against it.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use super::preimage::{
     verify_bound_hybrid, BoundHybridSig, HolonomicError, Preimage, DOMAIN_CORPUS_WANT,
     DOMAIN_STORAGE_BUDGET,
@@ -89,7 +92,7 @@ impl core::fmt::Display for StorageContentionError {
     }
 }
 
-impl std::error::Error for StorageContentionError {}
+impl core::error::Error for StorageContentionError {}
 
 /// `true` iff `it` yields strictly-ascending (sorted, no duplicates) items.
 fn is_sorted_dedup<'a, I: Iterator<Item = &'a str>>(mut it: I) -> bool {

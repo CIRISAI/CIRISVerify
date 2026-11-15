@@ -39,6 +39,8 @@
 //! is `Failed`. The gate only *reads* the latch — it never re-runs the
 //! check (which would itself draw, risking recursion).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use rand_core::{OsRng, RngCore};
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::OnceLock;

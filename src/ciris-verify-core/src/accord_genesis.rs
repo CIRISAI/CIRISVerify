@@ -32,6 +32,9 @@
 //! CIRISRegistry / CEG §9.1 cross-confirmation (runbook §5), like the #76
 //! partnership set and the manifest-contribution shape.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use base64::Engine;
 use serde_json::{json, Value};
 
@@ -318,8 +321,8 @@ pub enum AccordGenesisError {
     },
 }
 
-impl std::fmt::Display for AccordGenesisError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for AccordGenesisError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::MalformedEnvelope { detail } => {
                 write!(f, "malformed accord family envelope: {detail}")
@@ -379,7 +382,7 @@ impl std::fmt::Display for AccordGenesisError {
     }
 }
 
-impl std::error::Error for AccordGenesisError {}
+impl core::error::Error for AccordGenesisError {}
 
 /// Extract the envelope's member `key_id`s in order.
 pub(crate) fn envelope_member_key_ids(envelope: &Value) -> Result<Vec<String>, AccordGenesisError> {
@@ -437,8 +440,8 @@ fn quorum_threshold_from_envelope(envelope: &Value) -> Result<usize, AccordGenes
 /// itself. The load-bearing one-key/one-human-one-seat gate, shared by genesis,
 /// the roster derivation, and the membership-change verifier.
 fn reject_duplicate_member_keys(members: &[ThresholdMember]) -> Result<(), AccordGenesisError> {
-    let mut seen_ed = std::collections::HashSet::new();
-    let mut seen_pqc = std::collections::HashSet::new();
+    let mut seen_ed = alloc::collections::BTreeSet::new();
+    let mut seen_pqc = alloc::collections::BTreeSet::new();
     for m in members {
         if !seen_ed.insert(m.ed25519_public_key_base64.as_str()) {
             return Err(AccordGenesisError::DuplicateFounderKey {
@@ -519,7 +522,7 @@ pub fn assemble_accord_family_genesis(
     // 1. Envelope well-formed + distinct key_ids + envelope↔founders set match.
     let mut env_ids = envelope_member_key_ids(envelope)?;
     {
-        let mut seen = std::collections::HashSet::new();
+        let mut seen = alloc::collections::BTreeSet::new();
         for k in &env_ids {
             if !seen.insert(k.as_str()) {
                 return Err(AccordGenesisError::DuplicateMemberKeyId { key_id: k.clone() });
@@ -665,7 +668,7 @@ pub fn roster_from_envelope(
     // members (the assembler rejects them), a caller may pass an unverified
     // object — reject duplicate key_ids and duplicate pubkeys at derivation too,
     // so a malformed `members` can never silently double-seat a human.
-    let mut seen = std::collections::HashSet::new();
+    let mut seen = alloc::collections::BTreeSet::new();
     for k in &member_ids {
         if !seen.insert(k.as_str()) {
             return Err(AccordGenesisError::DuplicateMemberKeyId { key_id: k.clone() });
@@ -737,16 +740,19 @@ const FOUNDER_PUBKEYS_JSON: &str = include_str!("genesis/founder_pubkeys.json");
 /// stays `None` (a malformed bake is treated as not-baked, fail-closed).
 #[must_use]
 pub fn humanity_accord_genesis() -> Option<&'static SignedCegObject> {
-    static PARSED: std::sync::OnceLock<Option<SignedCegObject>> = std::sync::OnceLock::new();
+    static PARSED: once_cell::race::OnceBox<Option<SignedCegObject>> =
+        once_cell::race::OnceBox::new();
     PARSED
         .get_or_init(|| {
             let trimmed = HUMANITY_ACCORD_GENESIS_JSON.trim();
             if trimmed.is_empty() {
-                return None;
+                return Box::new(None);
             }
-            serde_json::from_str::<SignedCegObject>(trimmed)
-                .ok()
-                .filter(|o| o.kind == ACCORD_FAMILY_GENESIS_KIND)
+            Box::new(
+                serde_json::from_str::<SignedCegObject>(trimmed)
+                    .ok()
+                    .filter(|o| o.kind == ACCORD_FAMILY_GENESIS_KIND),
+            )
         })
         .as_ref()
 }
@@ -807,6 +813,7 @@ pub fn baked_accord_roster() -> Vec<ThresholdMember> {
 pub fn accord_holder_bootstrap_anchor() -> Vec<[u8; 32]> {
     // TEST-ONLY (compile-time-fenced + runtime-gated): a software test anchor for
     // the local mesh harness. `None` in prod (feature absent) → baked path.
+    #[cfg(feature = "std")]
     if let Some(test_root) = crate::test_anchor::test_trust_root_override() {
         return test_root;
     }
@@ -925,7 +932,7 @@ pub fn build_membership_change(
     }
     let prior = standing_hash(standing)?;
     let mut next = standing.clone();
-    let mut seats: std::collections::BTreeMap<String, Option<String>> = standing
+    let mut seats: alloc::collections::BTreeMap<String, Option<String>> = standing
         .members
         .iter()
         .map(|m| (m.key_id.clone(), m.role.clone()))
@@ -1045,7 +1052,7 @@ pub fn verify_membership_change(
     let next = offered
         .row_hash()
         .map_err(|e| roster_change_unbound(e.to_string()))?;
-    let eq = |a: &str, b: &str| crate::security::constant_time_eq(a.as_bytes(), b.as_bytes());
+    let eq = |a: &str, b: &str| ciris_crypto::constant_time_eq(a.as_bytes(), b.as_bytes());
     if field("family_key_id") != standing.family_key_id
         || offered.family_key_id != standing.family_key_id
         || !eq(field("prior_persist_row_hash"), &prior)
@@ -1073,12 +1080,12 @@ pub fn verify_membership_change(
         .and_then(Value::as_array)
         .filter(|a| !a.is_empty())
         .ok_or_else(|| roster_change_uncovered("no decision is named"))?;
-    let mut seats: std::collections::BTreeMap<String, Option<String>> = standing
+    let mut seats: alloc::collections::BTreeMap<String, Option<String>> = standing
         .members
         .iter()
         .map(|m| (m.key_id.clone(), m.role.clone()))
         .collect();
-    let mut seen = std::collections::BTreeSet::new();
+    let mut seen = alloc::collections::BTreeSet::new();
     for c in changes {
         let digest = c
             .get("decision")
@@ -1112,14 +1119,14 @@ pub fn verify_membership_change(
         }
         apply_seat_change(&mut seats, &change).map_err(roster_change_uncovered)?;
     }
-    let mut listed = std::collections::BTreeSet::new();
+    let mut listed = alloc::collections::BTreeSet::new();
     if let Some(m) = offered.members.iter().find(|m| !listed.insert(&m.key_id)) {
         return Err(roster_change_uncovered(format!(
             "{} is listed twice in the offered roster",
             m.key_id
         )));
     }
-    let offered_seats: std::collections::BTreeMap<String, Option<String>> = offered
+    let offered_seats: alloc::collections::BTreeMap<String, Option<String>> = offered
         .members
         .iter()
         .map(|m| (m.key_id.clone(), m.role.clone()))
@@ -1322,8 +1329,8 @@ pub fn is_roster_member(roster: &[ThresholdMember], key_id: &str) -> bool {
 /// Reject a roster whose members are not distinct keys (the same gate genesis
 /// uses — a forged roster could otherwise let one key meet 2/3 alone).
 fn require_distinct_keys(roster: &[ThresholdMember]) -> Result<(), AccordGenesisError> {
-    let mut seen_ed = std::collections::HashSet::new();
-    let mut seen_pqc = std::collections::HashSet::new();
+    let mut seen_ed = alloc::collections::BTreeSet::new();
+    let mut seen_pqc = alloc::collections::BTreeSet::new();
     for m in roster {
         if !seen_ed.insert(m.ed25519_public_key_base64.as_str()) {
             return Err(AccordGenesisError::DuplicateFounderKey {
@@ -1385,8 +1392,8 @@ pub fn accord_invocation_status(
         {
             if verify_threshold_signatures(
                 &bytes,
-                std::slice::from_ref(m),
-                std::slice::from_ref(sig),
+                core::slice::from_ref(m),
+                core::slice::from_ref(sig),
                 1,
             ) == Ok(1)
             {
@@ -1477,8 +1484,8 @@ pub async fn concur_accord_invocation(
             })?;
         if verify_threshold_signatures(
             &bytes,
-            std::slice::from_ref(member),
-            std::slice::from_ref(s),
+            core::slice::from_ref(member),
+            core::slice::from_ref(s),
             1,
         ) != Ok(1)
         {
@@ -1985,7 +1992,7 @@ mod tests {
 
         let sigs = cosign(&[&hs[1], &hs[2]], &draft.change_envelope).await;
         assert_eq!(
-            verify(&standing, &draft, &sigs, std::slice::from_ref(&d), &dir).unwrap(),
+            verify(&standing, &draft, &sigs, core::slice::from_ref(&d), &dir).unwrap(),
             vec!["D1".to_string()]
         );
         // One standing cosign is short; the incoming holder's does not count.
@@ -2049,7 +2056,7 @@ mod tests {
             rebind(&mut draft);
             let sigs = cosign(&[&hs[0], &hs[1]], &draft.change_envelope).await;
             assert!(matches!(
-                verify(&standing, &draft, &sigs, std::slice::from_ref(&d), &dir).unwrap_err(),
+                verify(&standing, &draft, &sigs, core::slice::from_ref(&d), &dir).unwrap_err(),
                 AccordGenesisError::RosterChangeNotSeats
             ));
         }
@@ -2059,14 +2066,14 @@ mod tests {
         rebind(&mut draft);
         let sigs = cosign(&[&hs[0], &hs[1]], &draft.change_envelope).await;
         assert!(matches!(
-            verify(&standing, &draft, &sigs, std::slice::from_ref(&d), &dir).unwrap_err(),
+            verify(&standing, &draft, &sigs, core::slice::from_ref(&d), &dir).unwrap_err(),
             AccordGenesisError::RosterChangeUncovered { .. }
         ));
         // Not bound to the standing head, or to the offered version.
         let mut draft = base.clone();
         draft.change_envelope["prior_persist_row_hash"] = json!("0".repeat(64));
         assert!(matches!(
-            verify(&standing, &draft, &[], std::slice::from_ref(&d), &dir).unwrap_err(),
+            verify(&standing, &draft, &[], core::slice::from_ref(&d), &dir).unwrap_err(),
             AccordGenesisError::RosterChangeUnbound { .. }
         ));
         let mut draft = base;
@@ -2395,7 +2402,7 @@ mod tests {
         let inv = halt("halt-sealed-2020");
         let sig = co_sign_invocation(&hs[1], &inv).await.unwrap();
         assert_eq!(
-            crate::humanity_accord::verify_invocation(&inv, &roster, std::slice::from_ref(&sig))
+            crate::humanity_accord::verify_invocation(&inv, &roster, core::slice::from_ref(&sig))
                 .unwrap(),
             1
         );
@@ -2403,7 +2410,7 @@ mod tests {
             HUMANITY_ACCORD_FAMILY_KEY_ID,
             &roster,
             &inv,
-            std::slice::from_ref(&sig),
+            core::slice::from_ref(&sig),
             TS,
         );
         let st = accord_invocation_status(&parse_accord_invocation(&obj).unwrap()).unwrap();
@@ -2434,7 +2441,7 @@ mod tests {
         assert!(crate::humanity_accord::verify_invocation(
             &inv,
             &roster,
-            std::slice::from_ref(&forged)
+            core::slice::from_ref(&forged)
         )
         .is_err());
 
@@ -2444,7 +2451,7 @@ mod tests {
         assert!(crate::humanity_accord::verify_invocation(
             &inv,
             &roster,
-            std::slice::from_ref(&drill_sig)
+            core::slice::from_ref(&drill_sig)
         )
         .is_err());
 
@@ -2455,7 +2462,7 @@ mod tests {
         assert!(crate::humanity_accord::verify_invocation(
             &tampered,
             &roster,
-            std::slice::from_ref(&sig)
+            core::slice::from_ref(&sig)
         )
         .is_err());
     }
@@ -2470,7 +2477,7 @@ mod tests {
         let a = co_sign_invocation(&hs[0], &inv).await.unwrap();
         let b = co_sign_invocation(&hs[1], &inv).await.unwrap();
         assert!(matches!(
-            crate::humanity_accord::verify_invocation(&inv, &roster, std::slice::from_ref(&a)),
+            crate::humanity_accord::verify_invocation(&inv, &roster, core::slice::from_ref(&a)),
             Err(crate::humanity_accord::InvocationError::QuorumNotMet {
                 valid: 1,
                 required: 2
@@ -2517,7 +2524,7 @@ mod tests {
             inv.invocation_kind = kind;
             let a = co_sign_invocation(&hs[0], &inv).await.unwrap();
             assert_eq!(
-                crate::humanity_accord::verify_invocation(&inv, &roster, std::slice::from_ref(&a))
+                crate::humanity_accord::verify_invocation(&inv, &roster, core::slice::from_ref(&a))
                     .unwrap(),
                 1,
                 "{kind:?}"
@@ -2636,7 +2643,7 @@ mod tests {
         let c = confirmation("confirm-1", "halt-1");
         let a = co_sign_invocation(&hs[0], &c).await.unwrap();
         assert!(matches!(
-            crate::humanity_accord::verify_invocation(&c, &roster, std::slice::from_ref(&a)),
+            crate::humanity_accord::verify_invocation(&c, &roster, core::slice::from_ref(&a)),
             Err(crate::humanity_accord::InvocationError::QuorumNotMet {
                 valid: 1,
                 required: 2
@@ -2662,7 +2669,7 @@ mod tests {
         let inv = halt("halt-1");
         let sig = co_sign_invocation(&hs[0], &inv).await.unwrap();
         assert!(matches!(
-            crate::humanity_accord::verify_invocation(&inv, &[], std::slice::from_ref(&sig)),
+            crate::humanity_accord::verify_invocation(&inv, &[], core::slice::from_ref(&sig)),
             Err(crate::humanity_accord::InvocationError::EmptyRoster)
         ));
     }
@@ -2689,7 +2696,7 @@ mod tests {
             HUMANITY_ACCORD_FAMILY_KEY_ID,
             &roster,
             &inv,
-            std::slice::from_ref(&sig_a),
+            core::slice::from_ref(&sig_a),
             TS,
         );
         let obj2 = concur_accord_invocation(&obj, &hs[1], TS).await.unwrap();
@@ -2721,7 +2728,7 @@ mod tests {
             HUMANITY_ACCORD_FAMILY_KEY_ID,
             &roster,
             &inv,
-            std::slice::from_ref(&sig_a),
+            core::slice::from_ref(&sig_a),
             TS,
         );
         let st = accord_invocation_status(&parse_accord_invocation(&obj).unwrap()).unwrap();

@@ -26,6 +26,9 @@
 //! but CIRISVerify still functions without it. Apple's attestation proves
 //! the app runs on genuine Apple hardware with an unmodified app binary.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 /// Nonce response from registry for App Attest.
@@ -219,7 +222,7 @@ pub struct AppAttestAssertionResponse {
 }
 
 /// Result type for App Attest operations.
-pub type Result<T> = std::result::Result<T, AppAttestError>;
+pub type Result<T> = core::result::Result<T, AppAttestError>;
 
 /// App Attest errors.
 #[derive(Debug, Clone)]
@@ -241,8 +244,8 @@ pub enum AppAttestError {
     NotSupported,
 }
 
-impl std::fmt::Display for AppAttestError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for AppAttestError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::NetworkError(msg) => write!(f, "network error: {}", msg),
             Self::RegistryError(msg) => write!(f, "registry error: {}", msg),
@@ -255,7 +258,7 @@ impl std::fmt::Display for AppAttestError {
     }
 }
 
-impl std::error::Error for AppAttestError {}
+impl core::error::Error for AppAttestError {}
 
 #[cfg(test)]
 mod tests {

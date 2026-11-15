@@ -48,6 +48,9 @@
 //! names and JSON shape are the contract — a change is a cross-repo
 //! coordination event.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use base64::Engine;
 use ciris_crypto::{ClassicalVerifier, Ed25519Verifier, MlDsa65Verifier, PqcVerifier};
 use sha2::{Digest, Sha256};
@@ -250,8 +253,8 @@ pub enum ProvenanceError {
     },
 }
 
-impl std::fmt::Display for ProvenanceError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for ProvenanceError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::SubjectBindingFailed { key_id, source } => {
                 write!(f, "link {key_id}: {source}")
@@ -323,7 +326,7 @@ impl std::fmt::Display for ProvenanceError {
     }
 }
 
-impl std::error::Error for ProvenanceError {}
+impl core::error::Error for ProvenanceError {}
 
 /// Verify a federation-key provenance chain (CIRISVerify#29 WS-4).
 ///
@@ -1109,7 +1112,7 @@ mod tests {
         );
 
         // … and the chain is refused anyway, on the subject.
-        match verify_provenance_chain(&attack, std::slice::from_ref(&anchor)) {
+        match verify_provenance_chain(&attack, core::slice::from_ref(&anchor)) {
             Err(ProvenanceError::SubjectBindingFailed { key_id, source }) => {
                 assert_eq!(key_id, "mallory");
                 assert!(matches!(
@@ -1129,7 +1132,7 @@ mod tests {
         let (mut chain, anchor, ..) = valid_chain();
         chain.chain[0].pubkey_ml_dsa_65_base64 = Some(Keypair::new().mldsa_pub_b64());
         assert!(matches!(
-            verify_provenance_chain(&chain, std::slice::from_ref(&anchor)),
+            verify_provenance_chain(&chain, core::slice::from_ref(&anchor)),
             Err(ProvenanceError::SubjectBindingFailed { .. })
         ));
     }
@@ -1153,7 +1156,7 @@ mod tests {
         chain.chain[0].scrub_signature_pqc = Some(b64.encode(steward.mldsa.sign(&bound).unwrap()));
 
         assert!(matches!(
-            verify_provenance_chain(&chain, std::slice::from_ref(&anchor)),
+            verify_provenance_chain(&chain, core::slice::from_ref(&anchor)),
             Err(ProvenanceError::SubjectBindingFailed {
                 source: crate::subject_binding::SubjectBindingError::Missing { .. },
                 ..
@@ -1179,7 +1182,7 @@ mod tests {
     #[test]
     fn multi_role_fabric_node_steward_terminus_verifies() {
         let (chain, anchor) = chain_with_terminus_type("steward,witness");
-        assert!(verify_provenance_chain(&chain, std::slice::from_ref(&anchor)).is_ok());
+        assert!(verify_provenance_chain(&chain, core::slice::from_ref(&anchor)).is_ok());
 
         // …and a set that does NOT contain "steward" is still rejected
         // (membership, not substring — "stewardship" must not match). Built

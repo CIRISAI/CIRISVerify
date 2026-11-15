@@ -53,7 +53,12 @@
 //! (no binding asserted), and recipients tolerate it. Requiring a non-empty
 //! binding is a fleet-wide flag day (CIRISVerify#28 Phase 4).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+#[cfg(feature = "std")]
 use std::collections::HashMap;
+#[cfg(feature = "std")]
 use std::sync::RwLock;
 
 use ciris_crypto::{
@@ -331,11 +336,13 @@ impl FederationEnvelope {
 /// watermark.
 ///
 /// Mirrors the `revocation_revision` anti-rollback rule.
+#[cfg(feature = "std")]
 #[derive(Debug, Default)]
 pub struct TransportEpochGuard {
     seen: RwLock<HashMap<String, u64>>,
 }
 
+#[cfg(feature = "std")]
 impl TransportEpochGuard {
     /// A fresh guard with no watermarks.
     #[must_use]

@@ -46,7 +46,10 @@
 //!   `CIRISLensCore` (CIRISLensCore#29 multimedia detector path is
 //!   parallel surface).
 
-use std::collections::HashMap;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeMap as HashMap;
 
 use serde::{Deserialize, Serialize};
 

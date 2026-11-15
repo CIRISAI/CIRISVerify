@@ -13,10 +13,33 @@ authors.workspace = true
 # + SP 800-90B startup health-check (`rng_health`) must always be
 # compiled so the fail-secure gate is present in every shipped build.
 # Zero added dependency cost — `rand_core` is already non-optional.
-default = ["ecdsa-p256", "ed25519", "secp256k1", "random"]
+default = ["std", "ecdsa-p256", "ed25519", "secp256k1", "random"]
+# CIRISVerify#325: without `std` the crate is `#![no_std]` + `alloc` (wasm32,
+# x86_64/aarch64-unknown-uefi). The verification surface (Ed25519, ECDSA P-256,
+# ML-DSA-65, the hybrid verifier, SHA-256, HKDF, the CC 5.x derivations) needs
+# neither a clock nor an RNG. Every feature that draws OS randomness or links
+# `ring` implies `std`.
+std = [
+    "serde/std",
+    "sha2/std",
+    "rand_core/std",
+    "rand_core/getrandom",
+    "signature/std",
+    "hex/std",
+    "thiserror/std",
+    "subtle/std",
+    "hkdf/std",
+    "sha3/std",
+    "ed25519-dalek?/std",
+    "p256?/std",
+    "p256?/pem",
+    "zeroize?/std",
+    "ml-dsa?/getrandom",
+    "ml-dsa?/pkcs8",
+]
 ecdsa-p256 = ["p256"]
 ed25519 = ["ed25519-dalek"]
-secp256k1 = ["k256"]
+secp256k1 = ["std", "k256"]
 # PQC feature (ML-DSA-65 / FIPS 204)
 pqc-ml-dsa = ["ml-dsa", "dep:zeroize"]
 
@@ -25,10 +48,10 @@ pqc-ml-dsa = ["ml-dsa", "dep:zeroize"]
 # CIRISEdge#3's at-rest crypto, etc.) can pick the surface they need.
 # The federation's threat model centralizes these in ciris-crypto so
 # consumers never reach into RustCrypto crates directly. See CIRISVerify#7.
-aes-gcm = ["dep:ring"]   # v2.8.0+: AES-256-GCM via ring — see CIRISVerify#26
-kdf = ["dep:pbkdf2"]   # hkdf is already a non-optional dep (used by secp256k1 wallet)
-hmac = ["dep:hmac"]
-random = []  # uses rand_core::OsRng — already pulled in by rand_core dep
+aes-gcm = ["std", "dep:ring"]   # v2.8.0+: AES-256-GCM via ring — see CIRISVerify#26
+kdf = ["std", "dep:pbkdf2"]   # hkdf is already a non-optional dep (used by secp256k1 wallet)
+hmac = ["std", "dep:hmac"]
+random = ["std"]  # uses rand_core::OsRng — already pulled in by rand_core dep
 # v4.4.0+ (CIRISVerify#44 / CIRISNodeCore MEDIA_SHARING.md §6.3):
 # X25519 ECDH primitive + HPKE-RFC-9180-base-mode-shaped key-grant
 # wrap/unwrap (`x25519-aes256-gcm-hkdf-sha256`). Multimedia tier
@@ -38,7 +61,7 @@ key-grant = ["x25519", "aes-gcm", "kdf", "random"]
 # v4.6.0+ (CIRISVerify#47): Gap C closure — hybrid X25519 + ML-KEM-768
 # KEX with HKDF-SHA256 binding. Closes Fed TM §3.3 Gap C (harvest-now-
 # decrypt-later vulnerability).
-ml-kem = ["dep:ml-kem"]
+ml-kem = ["std", "dep:ml-kem"]
 hybrid-kex = ["x25519", "ml-kem", "kdf", "random"]
 # v20.2.0+ (CIRISVerify#309, CC 5.3.3.10 E1): the A/V per-hop transit key —
 # hybrid KEX against the relay's published transit pair, one key per direction.
@@ -70,7 +93,7 @@ bench-liboqs = ["dep:oqs"]
 #  - `scope-privacy` — §2.2 MLS-exporter helpers + §2.4 record_id / symbol-key
 #                      derivation (HMAC-SHA3-256 + HKDF-SHA3-256, both added to
 #                      `hmac` / `kdf`) + the §3.4 witness cover-leaf PRF.
-xchacha = ["dep:chacha20poly1305"]
+xchacha = ["std", "dep:chacha20poly1305"]
 hpke = ["hybrid-kex", "aes-gcm", "kdf"]
 scope-privacy = ["kdf", "hmac"]
 
@@ -79,7 +102,7 @@ thiserror.workspace = true
 serde = { workspace = true, features = ["derive"] }
 sha2.workspace = true
 rand_core.workspace = true
-subtle = "2.6"
+subtle = { version = "2.6", default-features = false }
 
 # Classical cryptography
 p256 = { workspace = true, optional = true }
@@ -94,9 +117,9 @@ signature.workspace = true
 
 # secp256k1 for EVM wallet signing
 k256 = { version = "0.14", features = ["ecdsa", "ecdsa-core"], optional = true }
-sha3 = "0.10"  # keccak256 for EVM addresses
-hkdf = "0.12"  # Key derivation
-hex = "0.4"    # Hex encoding for EVM addresses
+sha3 = { version = "0.10", default-features = false }  # keccak256 for EVM addresses
+hkdf = { version = "0.12", default-features = false }  # Key derivation
+hex = { version = "0.4", default-features = false, features = ["alloc"] }    # Hex encoding for EVM addresses
 
 # Post-quantum (choose one via feature flag)
 # Pin EXACT (=). The pre-1.0 RC line churned its API — rc.11 (2026-05-11)
@@ -106,10 +129,10 @@ hex = "0.4"    # Hex encoding for EVM addresses
 # ml_dsa.rs) and — the reason for the bump (CIRISVerify#87) — made the OUTER
 # `SigningKey<P>` `ZeroizeOnDrop`: its `Drop` now scrubs the raw 32-byte
 # `seed` field, which rc.8 left un-zeroized for the signer's lifetime.
-ml-dsa = { version = "=0.1.1", optional = true, features = ["zeroize"] }
+ml-dsa = { version = "=0.1.1", optional = true, default-features = false, features = ["zeroize", "alloc"] }
 # Zeroes the transient `Seed` in `from_seed`; with 0.1.1 the outer
 # `SigningKey.seed` is also `ZeroizeOnDrop` (CIRISVerify#87 closed).
-zeroize = { version = "1", optional = true }
+zeroize = { version = "1", optional = true, default-features = false, features = ["alloc"] }
 
 # NB (CIRISVerify#164): the direct `pkcs8 =0.11.0` pin + the aspirational
 # `aws-lc-rs`/`pqc-aws-lc` backend were dropped as provably-unused — ml-dsa 0.1.1

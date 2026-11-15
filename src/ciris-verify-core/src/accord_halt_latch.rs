@@ -38,6 +38,9 @@
 //! `Serialize`), the roster, and per-kind dedup of `invocation_id` within
 //! `valid_until` ([`crate::humanity_accord::InvocationDedup`]).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 

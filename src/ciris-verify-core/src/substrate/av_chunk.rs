@@ -23,6 +23,9 @@
 //! ```
 //! A v3.7.0 chunk round-trips as `codec_id = 0xFF` + `ChunkLayer{0,0,0}`.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use sha2::{Digest, Sha256};
 
 /// The fixed `stream_id`+`epoch`+`chunk_seq` header length (stable since v3.7.0).

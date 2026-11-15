@@ -67,6 +67,9 @@
 //! [`crate::redactable::RedactableCommitment::root`], and the existing hybrid machinery is
 //! unchanged.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -157,8 +160,8 @@ pub enum RedactionError {
     RootMismatch,
 }
 
-impl std::fmt::Display for RedactionError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for RedactionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::IndexOutOfRange { index, count } => write!(
                 f,
@@ -175,7 +178,7 @@ impl std::fmt::Display for RedactionError {
     }
 }
 
-impl std::error::Error for RedactionError {}
+impl core::error::Error for RedactionError {}
 
 /// What a verifier learned about one member.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +217,7 @@ impl RedactableCommitment {
     /// # Errors
     /// [`crate::error::VerifyError`] if the RNG refuses (SP 800-90B fail-secure
     /// latch — a predictable salt would defeat the point).
+    #[cfg(feature = "std")]
     pub fn commit(members: &[Vec<u8>]) -> Result<Self, crate::error::VerifyError> {
         let mut disclosures = Vec::with_capacity(members.len());
         for (i, m) in members.iter().enumerate() {

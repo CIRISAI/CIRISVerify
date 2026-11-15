@@ -50,6 +50,9 @@
 //! caller makes. The `SourceType` enum exposes the source-type
 //! classification so the caller can route key selection deterministically.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use serde::{Deserialize, Serialize};
 
 use crate::error::VerifyError;
@@ -360,7 +363,7 @@ fn check_canonical_rfc3339(s: &str, field: &str) -> Result<(), VerifyError> {
     want(19, b'.', "`.` (millisecond separator)")?;
     want(23, b'Z', "`Z` (UTC suffix)")?;
 
-    let digits_at = |range: std::ops::Range<usize>| -> Result<(), VerifyError> {
+    let digits_at = |range: core::ops::Range<usize>| -> Result<(), VerifyError> {
         for i in range.clone() {
             if !bytes[i].is_ascii_digit() {
                 return Err(VerifyError::IntegrityError {

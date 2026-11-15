@@ -52,6 +52,8 @@
 //! Known answers: `tests/vectors/stream_dek/stream_dek_vectors.json`, generated
 //! independently of this code (see the README beside it).
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use hkdf::Hkdf;
 use sha2::Sha256;
 use zeroize::Zeroizing;

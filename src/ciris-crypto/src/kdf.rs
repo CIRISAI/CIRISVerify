@@ -12,6 +12,8 @@
 //!
 //! Both return raw bytes; callers cast/copy into fixed arrays as needed.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use hkdf::Hkdf;
 use sha2::Sha256;
 use sha3::Sha3_256;

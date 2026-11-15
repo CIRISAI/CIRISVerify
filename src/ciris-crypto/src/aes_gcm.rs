@@ -54,6 +54,8 @@
 //! [`ring`]: https://docs.rs/ring
 //! [`Nonce::assume_unique_for_key`]: https://docs.rs/ring/latest/ring/aead/struct.Nonce.html
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use ring::aead::{Aad, LessSafeKey, Nonce, UnboundKey, AES_256_GCM};
 
 use crate::error::CryptoError;

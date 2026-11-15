@@ -3,8 +3,11 @@
 //! Used for steward signatures and software-only deployments.
 //! Note: Most mobile hardware HSMs do NOT support Ed25519.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 #[cfg(not(feature = "random"))]
+#[cfg(feature = "std")]
 use rand_core::OsRng;
 
 use crate::error::CryptoError;
@@ -38,6 +41,8 @@ impl Ed25519Signer {
     /// `CryptoError::RngHealthCheckFailed` if the RNG health latch is
     /// `Failed` (fail-secure; no key generated). Other variants only on
     /// the rare platforms where the OS entropy source itself errors.
+    /// Absent without `std`: there the caller supplies the seed (`from_seed`).
+    #[cfg(feature = "std")]
     pub fn random() -> Result<Self, CryptoError> {
         let mut seed = [0u8; 32];
         #[cfg(feature = "random")]

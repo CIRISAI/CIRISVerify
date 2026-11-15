@@ -49,7 +49,10 @@
 //! Every counted authorization is hybrid (Ed25519 over the digest, ML-DSA-65
 //! over `digest ‖ ed25519_sig`); a duplicate holder is refused, not merged.
 
-use std::collections::BTreeSet;
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+use alloc::collections::BTreeSet;
 
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -603,7 +606,7 @@ pub fn verify_genesis_bundle_against(
         if verify_threshold_signatures_with_policy(
             &digest,
             roster,
-            std::slice::from_ref(sig),
+            core::slice::from_ref(sig),
             1,
             HybridPolicy::RequireHybrid,
         )

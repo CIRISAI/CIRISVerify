@@ -65,10 +65,15 @@
 //! as [`VerifyError`]. There is no "soft" partial output — a function either
 //! returns a fully-signed envelope or an error.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
+#[cfg(feature = "host")]
 use std::sync::Arc;
 
 use base64::Engine;
 use ciris_crypto::{ClassicalSigner, Ed25519Signer, MlDsa65Signer, PqcSigner};
+#[cfg(feature = "host")]
 use ciris_keyring::{ClassicalAlgorithm, HardwareSigner};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -145,6 +150,10 @@ impl HybridSigningIdentity {
     ///
     /// [`VerifyError::IntegrityError`] if the ML-DSA-65 signer cannot be
     /// constructed (e.g. the `pqc-ml-dsa` feature is disabled).
+    ///
+    /// Needs `std` (the OS RNG); without it, build the halves from seeds and
+    /// call [`Self::new`].
+    #[cfg(feature = "std")]
     pub fn generate(key_id: impl Into<String>) -> Result<Self, VerifyError> {
         let mldsa = MlDsa65Signer::new().map_err(|e| VerifyError::IntegrityError {
             message: format!("ML-DSA-65 signer construction failed: {e}"),
@@ -208,6 +217,7 @@ fn crypto_err(e: ciris_crypto::CryptoError) -> VerifyError {
     }
 }
 
+#[cfg(feature = "host")]
 fn keyring_err(e: ciris_keyring::KeyringError) -> VerifyError {
     VerifyError::IntegrityError {
         message: format!("hardware signer fault: {e}"),
@@ -332,12 +342,14 @@ impl SelfSigner for HybridSigningIdentity {
 /// The hardware signer MUST be Ed25519 ([`ClassicalAlgorithm::Ed25519`]) — the
 /// federation signing algorithm. A P-256-only token is rejected at
 /// [`HardwareRootedIdentity::new`] (fail-closed, not silently downgraded).
+#[cfg(feature = "host")]
 pub struct HardwareRootedIdentity {
     key_id: String,
     ed: Arc<dyn HardwareSigner>,
     mldsa: Arc<dyn ciris_keyring::PqcSigner>,
 }
 
+#[cfg(feature = "host")]
 impl HardwareRootedIdentity {
     /// Construct from a hardware Ed25519 signer plus an ML-DSA-65 PQC signer.
     ///
@@ -386,6 +398,7 @@ impl HardwareRootedIdentity {
     }
 }
 
+#[cfg(feature = "host")]
 #[async_trait::async_trait]
 impl SelfSigner for HardwareRootedIdentity {
     fn key_id(&self) -> &str {
@@ -1163,7 +1176,7 @@ pub async fn perform_self_at_login(
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "host"))]
 mod tests {
     use super::*;
     use crate::operational_admit::{resolve_role_authority, AuthorizationReason, OrgRole};
@@ -1682,7 +1695,7 @@ mod tests {
             "org-x",
             OrgRole::Operator,
             &[as_membership_grant(&bundle.delegation)],
-            std::slice::from_ref(&bundle.user_directory_member),
+            core::slice::from_ref(&bundle.user_directory_member),
             &["user-steward-1".to_string()],
         );
         assert!(
@@ -1696,7 +1709,7 @@ mod tests {
         assert_eq!(
             verify_threshold_signatures(
                 &g_bytes,
-                std::slice::from_ref(&bundle.user_directory_member),
+                core::slice::from_ref(&bundle.user_directory_member),
                 &[threshold_sig("user-steward-1", &bundle.partnership_grant)],
                 1,
             ),
@@ -1706,7 +1719,7 @@ mod tests {
         assert_eq!(
             verify_threshold_signatures(
                 &a_bytes,
-                std::slice::from_ref(&bundle.occurrence_directory_member),
+                core::slice::from_ref(&bundle.occurrence_directory_member),
                 &[threshold_sig("agent-occ-1", &bundle.partnership_accept)],
                 1,
             ),
@@ -1720,7 +1733,7 @@ mod tests {
         // (c) transport binding verifies through verify_transport_binding.
         let tv = verify_transport_binding(
             &bundle.transport_binding,
-            std::slice::from_ref(&bundle.occurrence_directory_member),
+            core::slice::from_ref(&bundle.occurrence_directory_member),
         )
         .unwrap();
         assert!(tv.authentic, "ceremony transport binding must verify");

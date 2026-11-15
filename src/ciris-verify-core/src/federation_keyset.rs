@@ -37,6 +37,9 @@
 //! and the threshold-verification primitive; the announcement shape is
 //! consumer.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use crate::threshold::ThresholdMember;
 use serde::{Deserialize, Serialize};
 

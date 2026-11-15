@@ -1,5 +1,7 @@
 //! Cryptographic types following Veilid's CryptoKind pattern.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use serde::{Deserialize, Serialize};
 
 /// Four-character code identifying a cryptographic system.

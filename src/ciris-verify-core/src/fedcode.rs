@@ -36,6 +36,9 @@
 //! recomputes the suffix from the pubkey). The label is cosmetic; the
 //! fingerprint is the cryptographic anchor.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use base64::Engine;
 use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
@@ -358,8 +361,8 @@ pub enum FedCodeError {
     },
 }
 
-impl std::fmt::Display for FedCodeError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for FedCodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             FedCodeError::InvalidVersion(m) => write!(f, "unsupported fedcode version: {m}"),
             FedCodeError::Malformed(m) => write!(f, "malformed fedcode: {m}"),
@@ -371,7 +374,7 @@ impl std::fmt::Display for FedCodeError {
     }
 }
 
-impl std::error::Error for FedCodeError {}
+impl core::error::Error for FedCodeError {}
 
 /// Derive a collision-free, verifiable `key_id` = `"<label>-<fingerprint>"`.
 ///
@@ -987,7 +990,7 @@ fn read_length_prefixed(buf: &[u8], offset: usize) -> Result<(String, usize), Fe
             "declared field length {length} exceeds buffer"
         )));
     }
-    let value = std::str::from_utf8(&buf[start..end])
+    let value = core::str::from_utf8(&buf[start..end])
         .map_err(|e| FedCodeError::Malformed(format!("field not UTF-8: {e}")))?
         .to_string();
     Ok((value, end))

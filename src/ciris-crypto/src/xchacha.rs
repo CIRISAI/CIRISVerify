@@ -15,6 +15,8 @@
 //! safe for effectively unbounded message counts, which is exactly why the
 //! extended-nonce variant is the right fit for the per-symbol fan-out.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use chacha20poly1305::{
     aead::{Aead, KeyInit},
     XChaCha20Poly1305, XNonce,

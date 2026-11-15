@@ -76,6 +76,9 @@
 //! participation signature can never verify as an invoke / lifecycle /
 //! proposal signature.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -279,8 +282,8 @@ impl AccordParticipation {
         let canonical = self.canonical_bytes();
         verify_threshold_signatures(
             &canonical,
-            std::slice::from_ref(member),
-            std::slice::from_ref(&self.signature),
+            core::slice::from_ref(member),
+            core::slice::from_ref(&self.signature),
             1,
         )
         .map_err(|e| LiveQuorumError::Signature(format!("{e:?}")))?;
@@ -436,8 +439,8 @@ pub enum LiveQuorumError {
     },
 }
 
-impl std::fmt::Display for LiveQuorumError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+impl core::fmt::Display for LiveQuorumError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::ProposalMismatch { expected, got } => write!(
                 f,
@@ -533,7 +536,7 @@ impl std::fmt::Display for LiveQuorumError {
     }
 }
 
-impl std::error::Error for LiveQuorumError {}
+impl core::error::Error for LiveQuorumError {}
 
 /// The result of tallying participations — the frozen `L` (M2) plus the vote
 /// breakdown. `live_set` is the distinct set of members who proved life, each
@@ -699,7 +702,7 @@ impl FamilyRecord {
     fn checked_row_hash(&self) -> Result<String, LiveQuorumError> {
         let computed = self.row_hash()?;
         if !self.persist_row_hash.is_empty()
-            && !crate::security::constant_time_eq(
+            && !ciris_crypto::constant_time_eq(
                 self.persist_row_hash.as_bytes(),
                 computed.as_bytes(),
             )
@@ -824,7 +827,7 @@ pub fn seat_change_digest(
 /// Apply `change` to the seats `seats` (key id → role), in place: every removed
 /// key must hold a seat and every added key must not.
 pub(crate) fn apply_seat_change(
-    seats: &mut std::collections::BTreeMap<String, Option<String>>,
+    seats: &mut alloc::collections::BTreeMap<String, Option<String>>,
     change: &SeatChange,
 ) -> Result<(), String> {
     for k in &change.remove {
@@ -907,7 +910,7 @@ pub fn verify_membership_change_by_live_quorum(
     }
 
     // 2. The change applies to the standing roster.
-    let mut seats: std::collections::BTreeMap<String, Option<String>> = standing
+    let mut seats: alloc::collections::BTreeMap<String, Option<String>> = standing
         .members
         .iter()
         .map(|m| (m.key_id.clone(), m.role.clone()))
@@ -954,7 +957,7 @@ impl RecoveryKeyRecord {
     /// # Errors
     /// [`LiveQuorumError::Structure`] on a canonicalization fault.
     pub fn commitment(&self) -> Result<String, LiveQuorumError> {
-        recovery_commitment(std::slice::from_ref(self))
+        recovery_commitment(core::slice::from_ref(self))
     }
 
     fn as_member(&self) -> ThresholdMember {
@@ -1057,7 +1060,7 @@ fn check_lineage(lineage: &[RosterVersion]) -> Result<Vec<String>, LiveQuorumErr
             if named.is_empty() {
                 return Err(broken(index, "the version names no predecessor"));
             }
-            if !crate::security::constant_time_eq(named.as_bytes(), prior.as_bytes()) {
+            if !ciris_crypto::constant_time_eq(named.as_bytes(), prior.as_bytes()) {
                 return Err(broken(
                     index,
                     "prev_head_digest is not the preceding version's persist_row_hash",
@@ -1068,7 +1071,7 @@ fn check_lineage(lineage: &[RosterVersion]) -> Result<Vec<String>, LiveQuorumErr
                 .as_ref()
                 .ok_or_else(|| broken(index, "the version carries no change envelope"))?;
             let binds = |k: &str, h: &str| {
-                crate::security::constant_time_eq(str_field(env, k).as_bytes(), h.as_bytes())
+                ciris_crypto::constant_time_eq(str_field(env, k).as_bytes(), h.as_bytes())
             };
             if !binds("prior_persist_row_hash", prior) || !binds("next_persist_row_hash", &hash) {
                 return Err(broken(
@@ -1089,12 +1092,12 @@ enum CharterSource<'a> {
     Single(&'a Value),
     /// Charter rows by `persist_row_hash`: each version that adopts a new
     /// `charter_digest` reads that row's entries, in link order.
-    ByDigest(std::collections::BTreeMap<String, &'a Value>),
+    ByDigest(alloc::collections::BTreeMap<String, &'a Value>),
 }
 
 impl<'a> CharterSource<'a> {
     fn by_digest(charters: &'a [Value]) -> Result<Self, LiveQuorumError> {
-        let mut map = std::collections::BTreeMap::new();
+        let mut map = alloc::collections::BTreeMap::new();
         for c in charters {
             let digest = crate::persist_canonical::persist_row_hash(c)
                 .map_err(|e| LiveQuorumError::Structure(e.to_string()))?;
@@ -1108,8 +1111,8 @@ impl<'a> CharterSource<'a> {
 /// commitment a recovery in the lineage spent.
 #[derive(Default)]
 struct CommitmentWalk {
-    named: std::collections::BTreeMap<String, Vec<String>>,
-    spent: std::collections::BTreeSet<String>,
+    named: alloc::collections::BTreeMap<String, Vec<String>>,
+    spent: alloc::collections::BTreeSet<String>,
 }
 
 impl CommitmentWalk {
@@ -1537,7 +1540,7 @@ fn verify_recovery_against(
     }
     let standing_hash = standing.checked_row_hash()?;
     let offered_hash = offered.row_hash()?;
-    let eq = |a: &str, b: &str| crate::security::constant_time_eq(a.as_bytes(), b.as_bytes());
+    let eq = |a: &str, b: &str| ciris_crypto::constant_time_eq(a.as_bytes(), b.as_bytes());
     if str_field(statement, "family_key_id") != standing.family_key_id
         || offered.family_key_id != standing.family_key_id
     {
@@ -2967,7 +2970,7 @@ mod tests {
         let (t, _) = charter_after_recovery(|f, _| charter_row(f.charter.clone(), 2));
         assert_eq!(
             recovery_commitment_in_force_with_charters(
-                std::slice::from_ref(&t.genesis_charter),
+                core::slice::from_ref(&t.genesis_charter),
                 &t.lineage,
                 "A1n"
             ),
@@ -2986,7 +2989,7 @@ mod tests {
         // A broken link still fails closed before any charter is read.
         assert!(matches!(
             recovery_commitment_in_force_with_charters(
-                std::slice::from_ref(&t.genesis_charter),
+                core::slice::from_ref(&t.genesis_charter),
                 &[t.lineage[0].clone(), t.lineage[2].clone()],
                 "A1n"
             ),

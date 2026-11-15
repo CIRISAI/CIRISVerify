@@ -23,6 +23,9 @@
 //! never attested, replicated, or witness-leafed (§10.5.6 "reachability is never
 //! trust"). They feed the local planner, not any signed/§19.1 surface.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use super::preimage::{BoundHybridSig, HolonomicError, Preimage, DOMAIN_RELAY_CAPACITY};
 
 /// A relay's signed capacity advertisement (§19.4 N8). The exact preimage field

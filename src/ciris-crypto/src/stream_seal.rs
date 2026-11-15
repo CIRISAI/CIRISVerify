@@ -36,6 +36,8 @@
 //! epoch ‖ seq)[0..12]` construction is deprecated in `ciris-verify-core`'s
 //! `av_chunk` and seals nothing.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use hkdf::Hkdf;
 use sha2::Sha256;
 

@@ -29,6 +29,9 @@
 //! NOT create a second who-holds-what directory; it inherits the §10.1.4
 //! `cohort_scope: self | family` suppression.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use sha2::{Digest, Sha256};
 
 use super::preimage::{

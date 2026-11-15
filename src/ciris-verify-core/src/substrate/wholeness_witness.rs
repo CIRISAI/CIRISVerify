@@ -40,6 +40,9 @@
 //! equivocation** ([`Equivocation`]) — retained and surfaced as a `hard_case:*`,
 //! never silently reconciled.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
+
 use sha2::{Digest, Sha256};
 
 use super::preimage::{HolonomicError, WW_EMPTY_SENTINEL};
@@ -277,7 +280,7 @@ pub enum WitnessComparison {
 /// - all agree → [`WitnessComparison::Consistent`].
 #[must_use]
 pub fn compare_witnesses(verified: &[WholenessWitness]) -> WitnessComparison {
-    use std::collections::BTreeMap;
+    use alloc::collections::BTreeMap;
 
     // Group roots by equivocation identity.
     let mut by_identity: BTreeMap<(String, u64, Vec<String>), Vec<Hash>> = BTreeMap::new();
@@ -289,7 +292,7 @@ pub fn compare_witnesses(verified: &[WholenessWitness]) -> WitnessComparison {
     }
 
     let mut equivocations = Vec::new();
-    let mut distinct_roots_seen = std::collections::BTreeSet::new();
+    let mut distinct_roots_seen = alloc::collections::BTreeSet::new();
     for ((peer_id, epoch_id, ns), mut roots) in by_identity {
         roots.sort_unstable();
         roots.dedup();

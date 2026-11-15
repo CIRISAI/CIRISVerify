@@ -82,6 +82,8 @@
 //! other's place. The two direction labels are domain-separation byte literals
 //! and are used exactly as written.
 
+#[allow(unused_imports)]
+use crate::prelude::*;
 use zeroize::Zeroizing;
 
 use crate::error::CryptoError;
