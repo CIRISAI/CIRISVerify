@@ -17,7 +17,7 @@
 //! - `bootstrap` — §19.2 recursive trust bootstrap: ≤5-hop, cycle-reject,
 //!   §13.3 weight cap, and **N1 trust ≠ membership** (the verdict can't express
 //!   admission).
-//! - `fountain` — §19.3 holding-claim verify + N5 retention-respects-revocation
+//! - `durable_storage` — §19.3 holding-claim verify + N5 retention-respects-revocation
 //!   + N6 possession-bound + N7 symbol integrity.
 //! - `alm` — §19.4 N8 capacity-authenticity gate + the deterministic-topology
 //!   input canonicalizer.
@@ -30,7 +30,7 @@
 //! WholenessWitness Merkle, the A/V nonces, the §19.0 framing + PQC gate) ship
 //! now and are KAT-locked. The **exact signed-preimage field sets** for the
 //! shapes that gain fields under CIRISEdge#143 (`SignedClaim` owner-binding,
-//! `SignedRelayCapacity`, the fountain claims) are byte-frozen by the §19.6
+//! `SignedRelayCapacity`, the holding claim and compress request) are byte-frozen by the §19.6
 //! conformance vectors authored against the **fixed** edge v4.0.x — until a
 //! second impl reproduces those vectors byte-for-byte the §19 shapes are
 //! **pinned-but-unproven, RC-grade**. This module owns the verifier side of that
@@ -53,7 +53,7 @@ pub mod aggregation;
 pub mod alm;
 pub mod av_chunk;
 pub mod bootstrap;
-pub mod fountain;
+pub mod durable_storage;
 pub mod preimage;
 pub mod storage_contention;
 pub mod wholeness_witness;
@@ -83,9 +83,9 @@ pub use bootstrap::{
     BootstrapVerdict, OwnerBinding, SignedClaim, TrustRoot, MAX_BOOTSTRAP_HOPS,
 };
 
-pub use fountain::{
+pub use durable_storage::{
     holding_claim_counts_toward_rarity, retention_decision, verify_holding_claim, verify_symbol,
-    ConsentState, FountainCompressRequest, FountainHoldingClaim, RetentionDecision,
+    CompressRequest, ConsentState, HoldingClaim, RetentionDecision,
 };
 
 pub use storage_contention::{

@@ -32,7 +32,7 @@ decimal_id	claim_id	repo	path#symbol	crate@version
 6.1.2.1	CLM-aggregationmetav1	CIRISVerify	src/ciris-verify-core/src/substrate/aggregation.rs#AggregationMetaV1	ciris-verify-core@v12.5.0
 6.1.2.2	CLM-descent	CIRISVerify	src/ciris-verify-core/src/substrate/aggregation.rs#descend_order	ciris-verify-core@v12.5.0
 6.1.2.3	CLM-noise-ejection	CIRISVerify	src/ciris-verify-core/src/substrate/aggregation.rs#EjectionVerdict	ciris-verify-core@v12.5.0
-6.1.5	CLM-noise-N5	CIRISVerify	src/ciris-verify-core/src/substrate/fountain.rs#retention_decision	ciris-verify-core@v12.5.0
+6.1.5	CLM-noise-N5	CIRISVerify	src/ciris-verify-core/src/substrate/durable_storage.rs#retention_decision	ciris-verify-core@v12.5.0
 6.1.8	CLM-trust	CIRISVerify	src/ciris-verify-core/src/substrate/bootstrap.rs#recursive_trust_bootstrap	ciris-verify-core@v12.5.0
 6.1.2.1.2	CLM-neff-dominance-gate	CIRISVerify	src/ciris-verify-core/src/substrate/aggregation.rs#passes_dominance_gate	ciris-verify-core@v12.5.0
 #

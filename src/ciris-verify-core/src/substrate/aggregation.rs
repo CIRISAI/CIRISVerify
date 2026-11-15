@@ -21,7 +21,7 @@
 //!   so the federation carries one aggregation/witness Merkle scheme, not a third.
 //! - **[`EjectionVerdict`] / [`ejection_verdict`]** (§19.7.3) — the tier-aware
 //!   retirement surface persist consumes, the canonical superset of v5.9.0's
-//!   [`super::fountain::RetentionDecision`]. The §19.3 N5 mapping is load-bearing:
+//!   [`super::durable_storage::RetentionDecision`]. The §19.3 N5 mapping is load-bearing:
 //!   a revoked item → [`EjectionVerdict::EjectHardDelete`] (the fastest descent,
 //!   **never** tier-shed); capacity pressure → [`EjectionVerdict::EjectToTier`].
 //!
@@ -35,7 +35,7 @@
 //! `member_commitment` Merkle is the §19.1 WholenessWitness scheme verbatim —
 //! one Merkle scheme across §19.1 + §19.7, no fork.
 
-use super::fountain::ConsentState;
+use super::durable_storage::ConsentState;
 use super::preimage::{
     verify_bound_hybrid, BoundHybridSig, HolonomicError, Preimage, DOMAIN_AGG_META,
 };
@@ -321,7 +321,7 @@ pub fn verify_aggregation_meta(
 
 /// §19.7.3: the single tier-aware retirement verdict a verifier exposes and a
 /// substrate consumes to gate one step of the §19.7 descent. The canonical
-/// superset of v5.9.0's rarity-only [`super::fountain::RetentionDecision`].
+/// superset of v5.9.0's rarity-only [`super::durable_storage::RetentionDecision`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EjectionVerdict {
     /// Above the floor, no pressure step — retain at current fidelity.

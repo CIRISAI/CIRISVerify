@@ -29,7 +29,7 @@
 //! unambiguous, cross-impl-stable encoding. Fixed-width fields (e.g. a 32-byte
 //! `stream_id`) are appended raw. The exact field *set/order* for each shape is
 //! pinned by its §19 subsection; several shapes (`SignedClaim`,
-//! `SignedRelayCapacity`, the fountain claims) gain fields under CIRISEdge#143
+//! `SignedRelayCapacity`, the holding claim and compress request) gain fields under CIRISEdge#143
 //! and are byte-frozen by the §19.6 / #57 conformance vectors — this module
 //! owns the **framing rules and the PQC gate**, which are stable now.
 
@@ -39,9 +39,9 @@ use ciris_crypto::{ClassicalVerifier, Ed25519Verifier, MlDsa65Verifier, PqcVerif
 
 /// `SignedRelayCapacity` domain separator (§19.4 N8).
 pub const DOMAIN_RELAY_CAPACITY: &[u8] = b"CIRISALM-CAPv2\0\0";
-/// `FountainHoldingClaim` domain separator (§19.3).
+/// `HoldingClaim` domain separator (§19.3).
 pub const DOMAIN_HOLDING_CLAIM: &[u8] = b"ciris-edge/holding-claim/v1";
-/// `FountainCompressRequest` domain separator (§19.3).
+/// `CompressRequest` domain separator (§19.3).
 pub const DOMAIN_COMPRESS_REQUEST: &[u8] = b"ciris-edge/compress-request/v1";
 /// Recursive-bootstrap `SignedClaim` domain separator (§19.2).
 pub const DOMAIN_SIGNED_CLAIM: &[u8] = b"CIRIS-CLAIM-v1\0\0";
@@ -140,7 +140,7 @@ impl Preimage {
     }
 
     /// Append a variable-length field, **`u64`** big-endian length-prefixed (the
-    /// fountain holding-claim / compress-request fields, per the v4.1.2 vectors).
+    /// holding-claim / compress-request fields, per the v4.1.2 vectors).
     #[must_use]
     pub fn lp_u64(mut self, bytes: &[u8]) -> Self {
         self.buf

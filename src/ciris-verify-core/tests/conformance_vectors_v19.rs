@@ -17,7 +17,7 @@ use ciris_verify_core::substrate::{
     alm::SignedRelayCapacity,
     bootstrap::SignedClaim,
     compute_merkle_root,
-    fountain::{FountainCompressRequest, FountainHoldingClaim},
+    durable_storage::{CompressRequest, HoldingClaim},
     wholeness_witness::WholenessWitness,
     DOMAIN_COMPRESS_REQUEST, DOMAIN_HOLDING_CLAIM, DOMAIN_SIGNED_CLAIM, DOMAIN_WITNESS_PREIMAGE,
 };
@@ -176,12 +176,12 @@ fn signed_claim_with_owner_binding() {
     check_signed_claim("signed_claim/canonical_bytes_with_owner_binding.json");
 }
 
-// ---- §19.3 fountain holding claim / compress request -------------------
+// ---- §19.3 durable-storage holding claim / compress request -----------
 
 #[test]
-fn fountain_holding_claim_canonical_bytes() {
+fn holding_claim_canonical_bytes() {
     let v = vector("fountain_holding_claim/canonical_bytes.json");
-    let c = FountainHoldingClaim {
+    let c = HoldingClaim {
         peer_id: s(&v, "peer_id"),
         content_id: s(&v, "content_id"),
         symbol_ids: v["symbol_ids"]
@@ -200,9 +200,9 @@ fn fountain_holding_claim_canonical_bytes() {
 }
 
 #[test]
-fn fountain_compress_request_canonical_bytes() {
+fn compress_request_canonical_bytes() {
     let v = vector("fountain_compress_request/canonical_bytes.json");
-    let c = FountainCompressRequest {
+    let c = CompressRequest {
         peer_id: s(&v, "peer_id"),
         content_id: s(&v, "content_id"),
         evicting_range_low: u64f(&v, "evicting_range_low") as u32,
