@@ -25,6 +25,7 @@
 pub mod disclosure;
 pub mod family;
 pub mod keys;
+pub mod recovery;
 
 use crate::cde::{self, Value};
 use crate::prelude::*;
