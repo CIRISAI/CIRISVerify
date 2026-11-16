@@ -68,7 +68,7 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 
 ## Current Implementation Status
 
-*(Current release: **23.0.0** — see [Release history](#release-history) for this and every prior entry.)*
+*(Current release: **23.1.0** — see [Release history](#release-history) for this and every prior entry.)*
 
 | Crate | Status | Notes |
 |-------|--------|-------|
