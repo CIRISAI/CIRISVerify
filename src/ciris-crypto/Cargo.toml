@@ -63,9 +63,11 @@ key-grant = ["x25519", "aes-gcm", "kdf", "random"]
 # decrypt-later vulnerability).
 ml-kem = ["std", "dep:ml-kem"]
 hybrid-kex = ["x25519", "ml-kem", "kdf", "random"]
-# v20.2.0+ (CIRISVerify#309, CC 5.3.3.10 E1): the A/V per-hop transit key —
-# hybrid KEX against the relay's published transit pair, one key per direction.
-transit-kex = ["hybrid-kex", "dep:zeroize"]
+# v23.1.0+ (CIRISEdge#1007, CC 5.3.3.10): the mutual X-Wing link handshake,
+# CTKX v2 (docs/TRANSIT_HANDSHAKE_V2.md), replacing v20.2.0's `transit-kex` as a
+# hard cut. no_std: HKDF and HMAC directly, and RustCrypto AES-256-GCM (the
+# `aes-gcm` feature is `ring`, which needs std).
+transit = ["xwing", "dep:hmac", "dep:aes-gcm-soft", "dep:zeroize"]
 # v23.0.0+ (CIRISVerify#308, CC 5.1): the per-stream call DEK under the MLS
 # group exporter. HKDF is non-optional; the feature pulls in `zeroize` for the
 # returned `Zeroizing` DEK.
@@ -157,6 +159,10 @@ zeroize = { version = "1", optional = true, default-features = false, features =
 ring = { version = "0.17", optional = true }
 pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"], optional = true }
 hmac = { version = "0.12", optional = true }
+# v23.1.0+ (CIRISEdge#1007): RustCrypto AES-256-GCM for the no_std `transit`
+# handshake's identity block. Already in the lock (same `aes` / `ghash` as the
+# rest of the tree); `ring` stays the AEAD of the std `aes-gcm` module.
+aes-gcm-soft = { package = "aes-gcm", version = "0.10.3", optional = true, default-features = false, features = ["aes", "alloc", "zeroize"] }
 
 # v23.0.0+ (CIRISVerify#324): draft X-Wing KEM. Shares `ml-kem` 0.3 with
 # `ml-kem` above.
