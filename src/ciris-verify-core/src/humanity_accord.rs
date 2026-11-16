@@ -20,6 +20,10 @@
 //!   threshold each kind requires ([`InvocationKind::required_signatures`]):
 //!   **one** holder fires a `constitutional` halt, a **strict majority of the
 //!   standing roster** resumes from one (CC 4.2.1.1).
+//! - `verify_invocation_composite` (feature `pqc`) — one holder's composite
+//!   ML-DSA-65-Ed25519 signature (CC 2.6.1.7) over the canonical bytes, the
+//!   holder signature of CC 4.2.1.1; known answers in
+//!   `tests/vectors/accord_halt/`.
 //!
 //! ## Strongest safety-critical path in the grammar
 //!
@@ -329,6 +333,10 @@ pub enum InvocationError {
     },
     /// Underlying threshold-signature error.
     Threshold(String),
+    /// The holder's composite signature (CC 2.6.1.7) does not verify over the
+    /// invocation's canonical bytes under the holder's key
+    /// (`verify_invocation_composite`, feature `pqc`).
+    CompositeSignatureInvalid,
 }
 
 impl core::fmt::Display for InvocationError {
@@ -368,6 +376,10 @@ impl core::fmt::Display for InvocationError {
             },
             Self::EmptyRoster => write!(f, "CC 4.2.1.1: no holder roster to verify against"),
             Self::Threshold(msg) => write!(f, "§9.2.1 threshold verify: {msg}"),
+            Self::CompositeSignatureInvalid => write!(
+                f,
+                "CC 4.2.1.1: holder composite signature does not verify over the canonical bytes"
+            ),
         }
     }
 }
@@ -404,17 +416,7 @@ pub fn verify_invocation(
     // not merely as a preimage mismatch.
     // Each lifecycle kind carries exactly its own binding line and no other;
     // the invoke kinds carry neither (they are not in their preimage).
-    let kind = invocation.invocation_kind;
-    let has_resumes = invocation.resumes_halt_id.is_some();
-    let has_confirms = invocation.confirms_halt_id.is_some();
-    let wants_resumes = matches!(kind, InvocationKind::LifecycleActive);
-    let wants_confirms = matches!(kind, InvocationKind::LifecycleConfirmed);
-    if wants_resumes != has_resumes || wants_confirms != has_confirms {
-        return Err(InvocationError::MalformedResumption {
-            invocation_kind: kind,
-            had_resumes_halt_id: has_resumes || has_confirms,
-        });
-    }
+    check_binding_lines(invocation)?;
 
     let required = invocation
         .invocation_kind
@@ -436,6 +438,52 @@ pub fn verify_invocation(
             }
         })?;
     Ok(valid)
+}
+
+/// The CC 4.2.1.3 structural gate: each lifecycle kind carries exactly its own
+/// binding line (`resumes_halt_id` / `confirms_halt_id`) and no other; the
+/// invoke kinds carry neither (it is not in their preimage).
+fn check_binding_lines(invocation: &Invocation) -> Result<(), InvocationError> {
+    let kind = invocation.invocation_kind;
+    let has_resumes = invocation.resumes_halt_id.is_some();
+    let has_confirms = invocation.confirms_halt_id.is_some();
+    let wants_resumes = matches!(kind, InvocationKind::LifecycleActive);
+    let wants_confirms = matches!(kind, InvocationKind::LifecycleConfirmed);
+    if wants_resumes != has_resumes || wants_confirms != has_confirms {
+        return Err(InvocationError::MalformedResumption {
+            invocation_kind: kind,
+            had_resumes_halt_id: has_resumes || has_confirms,
+        });
+    }
+    Ok(())
+}
+
+/// Verify ONE holder's composite signature on an invocation (CC 4.2.1.1): the
+/// composite ML-DSA-65-Ed25519 of CC 2.6.1.7 over
+/// [`Invocation::canonical_bytes`], the canonical text preimage with its
+/// domain prefix, never its SHA-256.
+///
+/// `holder` is the key of one holder on the **pinned** standing roster; which
+/// holder, and how many distinct holders a kind needs
+/// ([`InvocationKind::required_signatures`]), is the caller's count. A
+/// `constitutional` halt fires on one. The binding-line gate of
+/// [`verify_invocation`] applies first. Known answers:
+/// `tests/vectors/accord_halt/accord_halt_composite_v1.json`.
+///
+/// # Errors
+/// [`InvocationError::MalformedResumption`] on a binding line the kind does
+/// not take or lacks; [`InvocationError::CompositeSignatureInvalid`] when the
+/// signature does not verify under `holder`.
+#[cfg(feature = "pqc")]
+pub fn verify_invocation_composite(
+    invocation: &Invocation,
+    holder: &ciris_crypto::composite::CompositePublicKey,
+    signature: &[u8],
+) -> Result<(), InvocationError> {
+    check_binding_lines(invocation)?;
+    holder
+        .verify(&invocation.canonical_bytes(), signature)
+        .map_err(|_| InvocationError::CompositeSignatureInvalid)
 }
 
 /// CEG §9.2.1 dedup tracker — rejects duplicate `invocation_id`
