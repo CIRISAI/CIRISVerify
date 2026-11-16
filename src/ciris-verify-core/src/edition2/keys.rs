@@ -427,6 +427,47 @@ mod tests {
         );
     }
 
+    /// Eric's ruling (CIRISConstitution rc20 e08bf05): a key is live in the
+    /// forward model only by an edition-2 `key:record` row. An earlier-form
+    /// (JSON) key record is not filed and never makes an edition-2 statement
+    /// Valid; the statement waits on the edition-2 record.
+    #[test]
+    fn an_earlier_form_record_never_answers_for_an_edition_2_statement() {
+        let k = key(5);
+        let earlier = serde_json::to_vec(&serde_json::json!({
+            "key_id": "node-1",
+            "identity_type": "node",
+            "pubkey_ed25519_base64": "AAAA",
+            "registration_envelope": {"key_id": "node-1"},
+            "scrub_signature_classical": "AAAA",
+        }))
+        .unwrap();
+        let mut d = KeyRecordDirectory::new();
+        assert_eq!(
+            d.insert(earlier),
+            None,
+            "an earlier-form record is not filed"
+        );
+        let p = Value::Map(vec![(t("asserted_at"), Value::Uint(T0))]);
+        let iss = identity_ref(&thumbprint(k.public_key()));
+        let st = sign_row_statement(
+            &k,
+            &iss,
+            "s",
+            "scores",
+            "evidence:.suite:.kind:.cell:.prefix",
+            &p,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            verify_row_statement(&st, &d),
+            Verdict::Waiting {
+                missing: vec![MissingKey::Kid(thumbprint(k.public_key()))]
+            }
+        );
+    }
+
     #[test]
     fn held_in_part_waits_on_the_half() {
         let mut d = KeyRecordDirectory::new();
