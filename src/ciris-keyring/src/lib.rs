@@ -95,6 +95,11 @@ mod software;
 #[cfg(feature = "pqc-ml-dsa")]
 pub mod pqc;
 
+/// The CC 2.6.1.7 composite over an opaque Ed25519 [`HardwareSigner`] and an
+/// ML-DSA-65 [`PqcSigner`]: `composite_sign`, `composite_public_key` (v23.1.2).
+#[cfg(feature = "pqc-ml-dsa")]
+pub mod composite;
+
 /// Single-call steward seed loader (v2.1.0+, CIRISVerify#20).
 ///
 /// Cross-crate convenience for federation consumers: load both classical

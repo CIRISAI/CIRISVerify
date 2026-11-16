@@ -353,6 +353,10 @@ impl PqcSigner for UsbWrappedMlDsa65Signer {
         self.inner.sign(data).await
     }
 
+    async fn sign_with_context(&self, ctx: &[u8], msg: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        self.inner.sign_with_context(ctx, msg).await
+    }
+
     async fn attestation(&self) -> Result<PlatformAttestation, KeyringError> {
         self.inner.attestation().await
     }
@@ -542,6 +546,16 @@ mod tests {
             a.public_key().await.unwrap(),
             direct.public_key().await.unwrap()
         );
+        // Context signing passes through to the unwrapped seed.
+        let ctx = ciris_crypto::composite::LABEL;
+        assert_eq!(
+            a.sign_with_context(ctx, b"m").await.unwrap(),
+            direct.sign_with_context(ctx, b"m").await.unwrap()
+        );
+        assert!(matches!(
+            a.sign_with_context(&[0; 256], b"m").await,
+            Err(KeyringError::SigningFailed { .. })
+        ));
     }
 
     #[tokio::test]

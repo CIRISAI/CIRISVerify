@@ -112,6 +112,10 @@ pub mod config;
 #[cfg(feature = "host")]
 pub mod device_attestation;
 pub mod doc_integrity;
+/// Verify-only readers for objects of the earlier, bound-hybrid form (CC
+/// 8.11.12): `verify_bound_hybrid` and `EarlierSignedTreeHead`. No producers.
+#[cfg(feature = "pqc")]
+pub mod earlier_form;
 /// The edition-2 signed row: COSE_Sign1 over deterministic CBOR, composite signature (CC 2.6.1, #326).
 #[cfg(feature = "pqc")]
 pub mod edition2;

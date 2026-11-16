@@ -43,6 +43,24 @@ pub trait PqcSigner {
 
     /// Sign data and return the signature.
     fn sign(&self, data: &[u8]) -> Result<Vec<u8>, CryptoError>;
+
+    /// FIPS 204 `ML-DSA.Sign(sk, msg, ctx)` with a context string, signed
+    /// deterministically as [`Self::sign`] is (v23.1.2). `ctx` is at most 255
+    /// bytes. The composite (CC 2.6.1.7) signs its ML-DSA-65 half with the
+    /// composite label as `ctx`.
+    ///
+    /// Provided so implementors outside this crate keep compiling: the default
+    /// returns [`CryptoError::UnsupportedAlgorithm`].
+    ///
+    /// # Errors
+    /// [`CryptoError::UnsupportedAlgorithm`] by default;
+    /// [`CryptoError::SigningFailed`] when `ctx` is over 255 bytes or signing fails.
+    fn sign_with_context(&self, ctx: &[u8], msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        let _ = (ctx, msg);
+        Err(CryptoError::UnsupportedAlgorithm {
+            algorithm: "context signing is not implemented by this PQC signer".into(),
+        })
+    }
 }
 
 /// Trait for PQC signature verification.
