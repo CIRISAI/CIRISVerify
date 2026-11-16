@@ -244,8 +244,10 @@ The change that carries a version is persist's shape, and its signers sign its J
   single-charter form reads `charter` as the genesis charter;
   `recovery_commitment_in_force_with_charters(charters, lineage, holder_key_id)` (and
   `verify_holder_recovery_with_charters`) takes the stored charter rows, identifies each by
-  its recomputed `persist_row_hash`, reads each charter version's row in link order, and
-  fails closed with `CharterMissing` when a named row is absent. An incomplete lineage
+  its recomputed `persist_row_hash`, reads each charter version's row in link order (its
+  entries are the row's `attestation_envelope.recovery_commitments`, as persist stores
+  them; `accord_lineage_v2.json` pins the shape), and fails closed with `CharterMissing`
+  when a named row is absent. An incomplete lineage
   (empty, not starting at genesis, a missing or wrong link, a version without its
   envelope) fails closed with `LineageIncomplete`; it never falls back to an earlier row
   across the gap. `verify_holder_recovery` resolves the commitment itself, so a caller

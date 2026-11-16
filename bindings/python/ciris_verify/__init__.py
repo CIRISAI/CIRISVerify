@@ -178,7 +178,7 @@ def get_library_version() -> str:
     return __version__
 
 
-__version__ = "23.1.3"
+__version__ = "23.2.0"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",

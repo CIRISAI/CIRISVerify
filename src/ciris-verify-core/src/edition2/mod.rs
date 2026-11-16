@@ -22,10 +22,16 @@
 //!
 //! Pure: no clock, no randomness, no I/O.
 
+// The accord halt rows of edition 2 (CC 4.2.1.1, 4.2.1.3).
+pub mod accord_halt;
 pub mod disclosure;
-pub mod earlier;
 pub mod family;
+// The `ceg-genesis-bundle/2` reader (CC 2.6.1.11). `std` tier: its custody
+// gate parses X.509 attestation chains.
+#[cfg(feature = "std")]
+pub mod genesis;
 pub mod keys;
+pub mod recovery;
 
 use crate::cde::{self, Value};
 use crate::prelude::*;
@@ -113,7 +119,7 @@ pub enum Invalid {
     KidMismatch,
     /// The composite signature does not verify.
     BadSignature,
-    /// The signer's key record is Invalid, or the key is not in force.
+    /// The signer's key record is Invalid.
     KeyNotValid,
     /// A disclosure opens no digest the payload carries, opens one already
     /// opened, or repeats a member its map already holds.
@@ -151,16 +157,17 @@ pub enum Verdict {
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 #[non_exhaustive]
 pub enum MissingKey {
-    /// A composite key, by its thumbprint.
+    /// A composite key, by its thumbprint: no record of it is held.
     Kid(Digest32),
-    /// The ML-DSA-65 half of a key held in part, by the SHA-256 commitment
-    /// the reader holds for it (an earlier-form key known by its FedCode
-    /// commitment, CC 2.6.8).
-    MlDsaHalf {
-        /// The thumbprint the statement names.
+    /// A record of the key `kid` that covers the instant `at_ms`. A record of
+    /// the key is held, but it ends (`valid_until`) before `at_ms`; a row whose
+    /// signed instant no held record of its key covers is retryable (CC
+    /// 2.4.1.1), so what is missing is a newer record of that key.
+    CoveringRecord {
+        /// The thumbprint of the key.
         kid: Digest32,
-        /// SHA-256 of the missing ML-DSA-65 public key.
-        commitment: Digest32,
+        /// The instant to cover, POSIX ms.
+        at_ms: u64,
     },
 }
 
@@ -172,9 +179,10 @@ pub enum KeyLookup {
     Held(Box<CompositePublicKey>),
     /// Nothing is known of it.
     NotHeld,
-    /// Its key record, or a half of it, waits on other keys.
+    /// Its key record waits on other keys, or no held record of it covers
+    /// the statement's instant.
     Waiting(Vec<MissingKey>),
-    /// Its key record is Invalid, or the key is not in force for this statement.
+    /// Its key record is Invalid.
     Invalid,
 }
 
@@ -395,9 +403,13 @@ fn check_hash_digest(v: &Value, member: &'static str) -> Result<(), Invalid> {
     }
 }
 
+/// `row-ref = [edition: 2, id: hash-digest]`. The edition is the constant 2:
+/// no row of this form names an object of the earlier form (CC 2.6.1.3,
+/// 2.6.1.12), so `[1, …]` does not match the CDDL and is refused as a
+/// malformed member like any other mismatch.
 fn check_row_ref(v: &Value, member: &'static str) -> Result<(), Invalid> {
     match v.as_array() {
-        Some([ed, id]) if matches!(ed.as_u64(), Some(1 | 2)) => check_hash_digest(id, member),
+        Some([ed, id]) if ed.as_u64() == Some(EDITION) => check_hash_digest(id, member),
         _ => Err(malformed(member)),
     }
 }
@@ -887,9 +899,10 @@ fn read_object_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Object
                 .to_owned(),
         ),
     };
-    if let Some(r) = payload.get_text("refs") {
-        check_refs(r)?;
-    }
+    // The payload's members, `refs` included, are the typ's payload rule and
+    // the caller's (a genesis bundle's are its schema, CC 2.6.1.11): a payload
+    // fault is the object's own, shared by every statement over it, never a
+    // reason to refuse one statement apart from the others.
     let pk = match keys.lookup(&kid, iat.map_or(0, |s| s.saturating_mul(1000))) {
         KeyLookup::Held(pk) => pk,
         KeyLookup::NotHeld => {
@@ -985,7 +998,7 @@ pub fn hash_digest_value(d: &Digest32) -> Value {
 /// An edition-2 `row-ref` to a row id.
 #[must_use]
 pub fn row_ref(d: &Digest32) -> Value {
-    Value::Array(vec![Value::Uint(2), hash_digest(d)])
+    Value::Array(vec![Value::Uint(EDITION), hash_digest(d)])
 }
 
 #[cfg(test)]
@@ -1306,6 +1319,20 @@ mod tests {
             )])),
             Verdict::Valid(_)
         ));
+        // No row of this form names an object of the earlier form (CC 2.6.1.3,
+        // 2.6.1.12): an edition-1 row-ref is refused wherever it stands.
+        let earlier = Value::Array(vec![Value::Uint(1), hash_digest(&[1; 32])]);
+        assert_eq!(
+            mk(Value::Map(vec![(t("target"), earlier.clone())])),
+            Verdict::Invalid(Invalid::Malformed { member: "target" })
+        );
+        assert_eq!(
+            mk(Value::Map(vec![(
+                t("also"),
+                Value::Map(vec![(t("cites"), Value::Array(vec![earlier, b.clone()]))])
+            )])),
+            Verdict::Invalid(Invalid::Malformed { member: "also" })
+        );
         assert_eq!(
             mk(Value::Map(vec![(t("pointer"), a)])),
             Verdict::Invalid(Invalid::UnexpectedMember { within: "refs" })
