@@ -24,6 +24,16 @@
 //! - **A second halt while paused changes nothing.** It does not reset the
 //!   fuse; a fresh halt fired *after* a lapse pauses again with a fresh fuse.
 //!
+//! ## Two input forms, one state machine
+//!
+//! [`crate::accord_halt_latch::HaltLatch::apply`] takes a row of the earlier
+//! form (CC 8.11.29), named by `invocation_id`;
+//! [`crate::accord_halt_latch::HaltLatch::apply_forward`] takes an edition-2
+//! row read by [`crate::edition2::accord_halt`], whose lifecycle rows name the
+//! halt by row id. Both drive one transition function, so the table above is
+//! the same for both, and a lifecycle row of one form never names a halt
+//! latched from the other.
+//!
 //! ## Only verified rows reach the latch
 //!
 //! [`crate::accord_halt_latch::HaltLatch::apply`] takes a
@@ -44,6 +54,8 @@ use crate::prelude::*;
 use chrono::{DateTime, Duration, Utc};
 use serde::{Deserialize, Serialize};
 
+use crate::edition2::accord_halt::{InvocationRow, InvokeKind, LifecycleKind, LifecycleRow};
+use crate::edition2::Digest32;
 use crate::humanity_accord::{verify_invocation, Invocation, InvocationError, InvocationKind};
 use crate::threshold::{ThresholdMember, ThresholdSignature};
 
@@ -92,6 +104,10 @@ pub struct LatchedHalt {
     pub received_at: DateTime<Utc>,
     /// Whether a strict majority confirmed it before the fuse ran out.
     pub confirmed: bool,
+    /// The halt's row id, for an edition-2 halt (its lifecycle rows name it
+    /// by this); `None` for a halt of the earlier form.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub halt_row: Option<Digest32>,
 }
 
 /// What [`HaltLatch::apply`] did with a verified row.
@@ -149,41 +165,90 @@ impl HaltLatch {
             .map(|h| lapses_at(h, halt_fuse_secs))
     }
 
-    /// Apply a verified row received at `now`.
+    /// Apply a verified row of the earlier form received at `now`.
     pub fn apply(
         &mut self,
         row: &VerifiedInvocation,
         now: DateTime<Utc>,
         halt_fuse_secs: u64,
     ) -> LatchOutcome {
+        let inv = &row.invocation;
+        let step = match inv.invocation_kind {
+            InvocationKind::Constitutional => Step::Halt {
+                halt_id: &inv.invocation_id,
+                halt_row: None,
+            },
+            InvocationKind::LifecycleConfirmed => {
+                Step::Confirm(Named::Earlier(inv.confirms_halt_id.as_deref()))
+            },
+            InvocationKind::LifecycleActive => {
+                Step::Resume(Named::Earlier(inv.resumes_halt_id.as_deref()))
+            },
+            InvocationKind::Notify | InvocationKind::Drill => Step::Inert,
+        };
+        self.step(step, now, halt_fuse_secs)
+    }
+
+    /// Apply a verified edition-2 row received at `now` (CC 4.2.1.1,
+    /// CC 4.2.1.3): a `constitutional` [`InvocationRow`] halts, a counted
+    /// `confirmed` / `active` [`LifecycleRow`] confirms or ends the halt whose
+    /// row id its `refs.target` names, and a notify or a drill changes
+    /// nothing. The state machine is [`HaltLatch::apply`]'s. `halt_fuse_secs`
+    /// is the bundle in force's ([`HaltRoster::halt_fuse_secs`]).
+    ///
+    /// [`HaltRoster::halt_fuse_secs`]: crate::edition2::accord_halt::HaltRoster::halt_fuse_secs
+    pub fn apply_forward(
+        &mut self,
+        row: ForwardRow<'_>,
+        now: DateTime<Utc>,
+        halt_fuse_secs: u64,
+    ) -> LatchOutcome {
+        let step = match row {
+            ForwardRow::Invocation(inv) => match inv.kind() {
+                InvokeKind::Constitutional => Step::Halt {
+                    halt_id: inv.invocation_id(),
+                    halt_row: Some(*inv.row_id()),
+                },
+                InvokeKind::Notify | InvokeKind::Drill => Step::Inert,
+            },
+            ForwardRow::Lifecycle(l) => match l.kind() {
+                LifecycleKind::Confirmed => Step::Confirm(Named::Row(*l.target())),
+                LifecycleKind::Active => Step::Resume(Named::Row(*l.target())),
+            },
+        };
+        self.step(step, now, halt_fuse_secs)
+    }
+
+    /// The one state machine, for both forms.
+    fn step(&mut self, step: Step<'_>, now: DateTime<Utc>, halt_fuse_secs: u64) -> LatchOutcome {
         // A lone halt whose fuse has run is gone before anything else is judged:
         // a fresh halt may then pause again, and a late confirmation finds
         // nothing to confirm.
         if self.halt.is_some() && !self.is_paused(now, halt_fuse_secs) {
             self.halt = None;
         }
-        let inv = &row.invocation;
-        match inv.invocation_kind {
-            InvocationKind::Constitutional => {
+        match step {
+            Step::Halt { halt_id, halt_row } => {
                 if self.halt.is_some() {
                     return LatchOutcome::Unchanged {
                         why: "already paused; a second halt changes nothing and does not reset the fuse",
                     };
                 }
                 self.halt = Some(LatchedHalt {
-                    halt_id: inv.invocation_id.clone(),
+                    halt_id: halt_id.to_owned(),
                     received_at: now,
                     confirmed: false,
+                    halt_row,
                 });
                 LatchOutcome::Paused
             },
-            InvocationKind::LifecycleConfirmed => {
+            Step::Confirm(named) => {
                 let Some(h) = self.halt.as_mut() else {
                     return LatchOutcome::Unchanged {
                         why: "no halt in force; a confirmation after the fuse confirms nothing",
                     };
                 };
-                if inv.confirms_halt_id.as_deref() != Some(h.halt_id.as_str()) {
+                if !named.names(h) {
                     return LatchOutcome::Unchanged {
                         why: "confirmation names a different halt",
                     };
@@ -196,13 +261,13 @@ impl HaltLatch {
                 h.confirmed = true;
                 LatchOutcome::Confirmed
             },
-            InvocationKind::LifecycleActive => {
+            Step::Resume(named) => {
                 let Some(h) = self.halt.as_ref() else {
                     return LatchOutcome::Unchanged {
                         why: "no halt in force",
                     };
                 };
-                if inv.resumes_halt_id.as_deref() != Some(h.halt_id.as_str()) {
+                if !named.names(h) {
                     return LatchOutcome::Unchanged {
                         why: "resumption names a different halt",
                     };
@@ -210,9 +275,48 @@ impl HaltLatch {
                 self.halt = None;
                 LatchOutcome::Resumed
             },
-            InvocationKind::Notify | InvocationKind::Drill => LatchOutcome::Unchanged {
+            Step::Inert => LatchOutcome::Unchanged {
                 why: "notify and drill never touch the latch",
             },
+        }
+    }
+}
+
+/// A verified edition-2 accord row, for [`HaltLatch::apply_forward`]. Both
+/// variants are made only by the `edition2::accord_halt` readers.
+#[derive(Debug, Clone, Copy)]
+pub enum ForwardRow<'a> {
+    /// An invocation: one holder's statement.
+    Invocation(&'a InvocationRow),
+    /// A counted lifecycle row.
+    Lifecycle(&'a LifecycleRow),
+}
+
+/// What a row does to the latch, whichever form it came in.
+enum Step<'a> {
+    Halt {
+        halt_id: &'a str,
+        halt_row: Option<Digest32>,
+    },
+    Confirm(Named<'a>),
+    Resume(Named<'a>),
+    Inert,
+}
+
+/// How a lifecycle row names its halt: by `invocation_id` in the earlier
+/// form, by row id in edition 2. A name of one form never matches a halt
+/// latched from the other.
+enum Named<'a> {
+    Earlier(Option<&'a str>),
+    Row(Digest32),
+}
+
+impl Named<'_> {
+    fn names(&self, h: &LatchedHalt) -> bool {
+        match (self, &h.halt_row) {
+            (Self::Earlier(Some(id)), None) => *id == h.halt_id,
+            (Self::Row(r), Some(hr)) => r == hr,
+            _ => false,
         }
     }
 }
