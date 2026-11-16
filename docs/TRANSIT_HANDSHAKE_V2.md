@@ -155,9 +155,22 @@ Here `bound = u8 len ‖ suite ‖ u16 len ‖ initiator_key_id ‖ u16 len ‖ 
   - **Phases:** phase 0 holds the keys from `msg2`. Phase 1 holds `k_i2r'` / `k_r2i'` from a promotion. A link is promoted at most once, so `phase` is 0 or 1, and any other value fails to open.
   - **Lanes and counters:** lanes are Channel 1, Resource 2, Request 3, Response 4 and Datagram 5. Each lane has its own counter, and the counter **continues** across the phase change, so the 128-frame replay window carries over. A (key, nonce) pair never repeats: the phase changes the key, and within a phase the lane and counter make each nonce unique.
   - **The receiver** opens a frame with the keys of the phase it names. After a promotion it keeps phase 0's open keys until it has seen phase 1 on that lane, or for one handshake budget, whichever is first, then zeroizes them.
+  - **The receiver classifies a frame by its clear phase byte before opening it** (edge's rule; confirmed against `link_seal.rs` v45.1.3):
+    - **A stale phase-0 frame** that arrives after phase 0's keys on that lane are retired (past the budget, or once phase 1 has been seen on the lane) is **dropped and counted** (`seal_stale_phase`). The link stays open: such a frame is late, not forged, and closing on it would reintroduce the reordering problem the phases solve.
+    - **An unknown phase** (2 or more), **or a phase-1 frame before the link is promoted**, is a protocol violation and **closes the link**.
+    - **A frame of a known, held phase that fails to open** (an AEAD failure) **closes the link**, as in v1.
+    - A frame whose counter falls outside the lane's replay window, or repeats inside it, is handled as in v1.
   - **A sender** switches to phase 1 for every lane once it has sent or received `CTKC'`.
   - **The label** is `CIRIS-E1-LINK-SEAL-V2`, not v1's: the frame format changed, so the derived key changes with it.
-  - **Known answers:** verify's vectors fix the handshake and the promotion rekey (`k_i2r'`, `k_r2i'`). Seal-frame known answers are not yet published: a phase-0 frame and a phase-1 frame on each direction, a stale phase-0 frame after the switch, and an unknown phase. Verify will publish them independently, as for the handshake, once edge confirms the layout.
+  - **Confirmed by edge** against `link_seal.rs` (v45.1.3): v1 is the same frame without the phase byte, with label `CIRIS-E1-LINK-SEAL-V1`. The `-V2` label stays.
+  - **Known answers:** verify's vectors fix the handshake and the promotion rekey (`k_i2r'`, `k_r2i'`). The seal-frame vectors cover:
+    - a phase-0 frame and a phase-1 frame in each direction;
+    - a stale phase-0 frame after the switch: dropped, the link stays open;
+    - an unknown phase: closes;
+    - phase 1 before promotion: closes;
+    - a tampered frame: closes.
+
+    They follow in `src/ciris-crypto/tests/vectors/transit/`.
 
 ## Downgrade
 
