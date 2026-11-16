@@ -815,17 +815,42 @@ case("recovered_holder_seated_key", "After A's recovery, a roster bundle re-comm
                                     prev=RECP))],
      predecessors=PRE_R, cc=ccp(P_after, (A, B), ids(REC_HELD), None))
 P_stale = later_payload(["rec_1"] + REST, commits={**NEXT, B.iss: hd(commitment([REC[4]]))}, version=3, prev=OR, at=T3)
-case("recovered_holder_genesis_record", "After A's recovery, a roster bundle naming A's genesis record: not the key "
-     "the bundle in force seats for A.",
-     [voice(A_NEW, P_stale, iss=A.iss), voice(B, P_stale), voice(C, P_stale)], held("rec_1", *REST), None,
+case("recovered_holder_genesis_record", "After A's recovery, a roster bundle B and C sign naming A's genesis record: "
+     "not the key the bundle in force seats for A, and A's own statement under that key is not among the counted.",
+     [voice(B, P_stale), voice(C, P_stale)], held("rec_1", *REST), None,
      [bundle(object_id(enc(P_stale)), "nothing", "genesis_bundle_row_invalid", "holder_not_genesis_key")],
-     predecessors=PRE_R, cc=ccp(P_stale, (A, B, C), ids(["rec_1"] + REST), None))
-P_rot = later_payload(["recA"] + REST, commits={**NEXT, A.iss: hd(commitment([REC[1]]))})
-case("roster_bundle_rotates_holder_key", "Without a recovery, a roster bundle every holder signs naming a new record "
-     "for A: not the key the predecessor seats for A.",
-     [voice(k, P_rot) for k in (A, B, C)], held("recA", *REST), None,
-     [bundle(object_id(enc(P_rot)), "nothing", "genesis_bundle_row_invalid", "holder_not_genesis_key")],
-     predecessors=PRE, cc=ccp(P_rot, (A, B, C), ids(["recA"] + REST), None))
+     predecessors=PRE_R, cc=ccp(P_stale, (B, C), ids(["rec_1"] + REST), None))
+
+# --- a roster bundle re-seats a holder under a new key only with that holder's counted statement under its current key
+ROT = ["recA"] + REST
+P_rot = later_payload(ROT, commits={**NEXT, A.iss: hd(commitment([REC[1]]))})
+O_rot = object_id(enc(P_rot))
+ROTP = placement_of(P_rot, (A, B, C), (S1, S2), (), (A, B, C), recs={A: (R["recA"][1], A_NEW)}, prev=GOOD_PLACEMENT)
+case("roster_bundle_rotates_holder_key", "Without a recovery, a roster bundle every holder signs, A under its current "
+     "(genesis) key, naming a new record for A: A's own counted statement re-seats A at the new key.",
+     [voice(k, P_rot) for k in (A, B, C)], held(*ROT), None, [bundle(O_rot, "valid", placement=ROTP)],
+     predecessors=PRE, cc=ccp(P_rot, (A, B, C), ids(ROT), None))
+case("roster_bundle_rotates_without_holder_voice", "The same bundle counted on B and C alone: A's statement is not "
+     "among the counted, so A's new record is not the key the bundle in force seats for A.",
+     [voice(k, P_rot) for k in (B, C)], held(*ROT), None,
+     [bundle(O_rot, "nothing", "genesis_bundle_row_invalid", "holder_not_genesis_key")],
+     predecessors=PRE, cc=ccp(P_rot, (B, C), ids(ROT), None))
+case("roster_bundle_rotates_holder_voice_under_new_key", "The same bundle with A's statement under the new key: refused "
+     "(statement_kid_not_iss, not the key the predecessor seats); B and C meet the count, but A's statement under its "
+     "current key is not among the counted, so A's new record is holder_not_genesis_key.",
+     [voice(A_NEW, P_rot, iss=A.iss), voice(B, P_rot), voice(C, P_rot)], held(*ROT), None,
+     [bundle(O_rot, "nothing", "genesis_bundle_row_invalid", "holder_not_genesis_key",
+             refused=[(0, "statement_kid_not_iss")])],
+     predecessors=PRE, cc=ccp(P_rot, (A, B, C), ids(ROT), None))
+P_rot2 = later_payload(ROT, commits={**NEXT, A.iss: hd(commitment([REC[1]])), B.iss: hd(commitment([REC[4]]))},
+                       version=3, prev=O_rot, at=T3)
+case("roster_after_rotation_counts_new_key", "The next bundle after A's rotation re-commits B, signed by A under its new "
+     "key (the one the predecessor now seats) and B: Valid.",
+     [voice(A_NEW, P_rot2, iss=A.iss), voice(B, P_rot2)], held(*ROT), None,
+     [bundle(object_id(enc(P_rot2)), "valid",
+             placement=placement_of(P_rot2, (A, B, C), (S1, S2), (), (A, B), recs={A: (R["recA"][1], A_NEW)},
+                                    prev=ROTP))],
+     predecessors=[{"case": "roster_bundle_rotates_holder_key"}], cc=ccp(P_rot2, (A, B), ids(ROT), None))
 
 # ================================================================ forks
 def common(tips):

@@ -5946,7 +5946,7 @@
   },
   {
    "anchor": null,
-   "description": "After A's recovery, a roster bundle naming A's genesis record: not the key the bundle in force seats for A.",
+   "description": "After A's recovery, a roster bundle B and C sign naming A's genesis record: not the key the bundle in force seats for A, and A's own statement under that key is not among the counted.",
    "expect": [
     {
      "detail": "holder_not_genesis_key",
@@ -5993,7 +5993,6 @@
     }
    ],
    "statements": [
-    "9b08e835c507cfdd",
     "5ba8c03fe0d8ccb8",
     "7d09086108b2442c"
    ],
@@ -6001,14 +6000,87 @@
   },
   {
    "anchor": null,
-   "description": "Without a recovery, a roster bundle every holder signs naming a new record for A: not the key the predecessor seats for A.",
+   "description": "Without a recovery, a roster bundle every holder signs, A under its current (genesis) key, naming a new record for A: A's own counted statement re-seats A at the new key.",
    "expect": [
     {
-     "detail": "holder_not_genesis_key",
      "object_id": "429606807301a02c9205e4bf35afb2b143c2c1a147d4b649b3d07fff7761c4aa",
+     "placement": {
+      "asserted_at": 1769904000123,
+      "counted": [
+       "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM",
+       "urn:ietf:params:oauth:ckt:sha-256:TjkwzcxCJYXe8Of_OiKEuHShc9mC2cS0IwRkf5PZnyM",
+       "urn:ietf:params:oauth:ckt:sha-256:w7DbHNKuHi5uU2nSXjTLkVNkr5vBJN_bSeMFvFuBmvQ"
+      ],
+      "family_key_id": "humanity-accord",
+      "halt_fuse": 86400,
+      "holders": [
+       {
+        "hardware_class": "YubiKey_5_FIPS",
+        "identity_ref": "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM",
+        "kid": "113a376ef59b87581f0f38ef3ffc35388c4690fee6f830387e79982eb19d37c2",
+        "pq_custody": "removable_offline",
+        "record": "71956bc66fb557b3b3941d1199cdd2955069ebd62b65a1b4fb483c7c2c3f1c6d",
+        "recovery_commitment": "81005d487ff736c836d6c550b219246f46cabbb5c92dda73bf3be43faf811941"
+       },
+       {
+        "hardware_class": "YubiKey_5_FIPS",
+        "identity_ref": "urn:ietf:params:oauth:ckt:sha-256:TjkwzcxCJYXe8Of_OiKEuHShc9mC2cS0IwRkf5PZnyM",
+        "kid": "4e3930cdcc422585def0e7ff3a2284b874a173d982d9c4b42304647f93d99f23",
+        "pq_custody": "removable_offline",
+        "record": "5dec43dd33d1a6d8a87113fe6f472b1ed13e3e42cb220ee9cb08869fb440e8a4",
+        "recovery_commitment": "4ca3fb7b3cf7bb71d6eb9ce99f7f2825f2e4dfc2b15bb965dd4b7cea56fa2e5a"
+       },
+       {
+        "hardware_class": "YubiKey_5_FIPS",
+        "identity_ref": "urn:ietf:params:oauth:ckt:sha-256:w7DbHNKuHi5uU2nSXjTLkVNkr5vBJN_bSeMFvFuBmvQ",
+        "kid": "c3b0db1cd2ae1e2e6e5369d25e34cb915364af9bc124dfdb49e305bc5b819af4",
+        "pq_custody": "removable_offline",
+        "record": "cd87172fce0dd2d673ee6eb47f28e05310a41b5c42368759dffa679685a13474",
+        "recovery_commitment": "4b04751020f381b09c786c49298876ffe82af6a4c0c33b307fb1d20150e3e3ad"
+       }
+      ],
+      "lineage_commitments": [
+       "4b04751020f381b09c786c49298876ffe82af6a4c0c33b307fb1d20150e3e3ad",
+       "4ca3fb7b3cf7bb71d6eb9ce99f7f2825f2e4dfc2b15bb965dd4b7cea56fa2e5a",
+       "81005d487ff736c836d6c550b219246f46cabbb5c92dda73bf3be43faf811941"
+      ],
+      "object_id": "429606807301a02c9205e4bf35afb2b143c2c1a147d4b649b3d07fff7761c4aa",
+      "prev": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
+      "recovered": null,
+      "scope": [
+       "infra:serve",
+       "infra:attest"
+      ],
+      "seats": [
+       {
+        "binding": "cd79fec827d9b494bd936b24ea2038c656fc27274d30ce28a30cf81b0f6ba789",
+        "identity_ref": "urn:ietf:params:oauth:ckt:sha-256:-BF0BUeALZS0w8Z8xe1Mv6-03W9OPLscamliS7Su0fg",
+        "kid": "f811740547802d94b4c3c67cc5ed4cbfafb4dd6f4e3cbb1c6a69624bb4aed1f8",
+        "onion_hop_xwing_pubkey_sha256": "889eae388d48b0d9c7728d5d85d22bb305eaa3346dd294f4d1a854a556827409",
+        "onion_seed": "edc508465e6750af6377eb06d1577ff64310b61453297fd92b460cd65bf555ba",
+        "record": "c399a236ab9bdf590df3dae7becbab187eee1057d0d36087fbdbb285fa0462e8",
+        "transit_seed": "e560555aa94435449767f5a14714ccc16c46dfb7660b1060251a08a7757190f8",
+        "transit_xwing_pubkey_sha256": "42006f0d8cc98bdf419e67e4922aeb427875d8f533754b98966c8ef628883ffb",
+        "valid_until": 1798761600000
+       },
+       {
+        "binding": "6fbac8f192a96a66a75a3c48399ecd7a053aba4133d45dc6ae183bc2749cf4e3",
+        "identity_ref": "urn:ietf:params:oauth:ckt:sha-256:vSeGTVgwMTHMNvrinFFFfVajLiu5mdHU31Aif-JVrBA",
+        "kid": "bd27864d58303131cc36fae29c51457d56a32e2bb999d1d4df50227fe255ac10",
+        "onion_hop_xwing_pubkey_sha256": "2d55c220418dc783783b0301a684562c7c093ebb45d2f84945355fb22306b794",
+        "onion_seed": "f49f094b8b799077233354128cec9666297f4ee4ce4e4a3ba699848bf5b49456",
+        "record": "9819977107aaad9a06ced7e02473cd7660e67f2cd192132f5ac92e54ea74851f",
+        "transit_seed": "35f179c8092a5d539323b0810c4cd4a2194acf86d7b00fb372c6d0848f8a396f",
+        "transit_xwing_pubkey_sha256": "fdfd01825be8ef9fb1f9ce7b5339b13399c3f2d9c6cf5c834502803a7cbad87c",
+        "valid_until": 1798761600000
+       }
+      ],
+      "spent_commitments": [],
+      "version": 2,
+      "witnesses": []
+     },
      "refused": [],
-     "token": "genesis_bundle_row_invalid",
-     "verdict": "nothing"
+     "verdict": "valid"
     }
    ],
    "id": "roster_bundle_rotates_holder_key",
@@ -6051,6 +6123,247 @@
     "4bb5a0a8f4aba289",
     "a7d25bc3e2ff0cd2",
     "8ed0583f989dff4a"
+   ],
+   "top_refused": []
+  },
+  {
+   "anchor": null,
+   "description": "The same bundle counted on B and C alone: A's statement is not among the counted, so A's new record is not the key the bundle in force seats for A.",
+   "expect": [
+    {
+     "detail": "holder_not_genesis_key",
+     "object_id": "429606807301a02c9205e4bf35afb2b143c2c1a147d4b649b3d07fff7761c4aa",
+     "refused": [],
+     "token": "genesis_bundle_row_invalid",
+     "verdict": "nothing"
+    }
+   ],
+   "id": "roster_bundle_rotates_without_holder_voice",
+   "predecessors": [
+    {
+     "case": "first_valid"
+    }
+   ],
+   "rows": [
+    {
+     "id": "71956bc66fb557b3b3941d1199cdd2955069ebd62b65a1b4fb483c7c2c3f1c6d",
+     "statement": "b2f101936313fb7a"
+    },
+    {
+     "id": "5dec43dd33d1a6d8a87113fe6f472b1ed13e3e42cb220ee9cb08869fb440e8a4",
+     "statement": "82aef7fcc97f3d72"
+    },
+    {
+     "id": "cd87172fce0dd2d673ee6eb47f28e05310a41b5c42368759dffa679685a13474",
+     "statement": "9e5dceb8dff3f8c3"
+    },
+    {
+     "id": "c399a236ab9bdf590df3dae7becbab187eee1057d0d36087fbdbb285fa0462e8",
+     "statement": "cf4931e3c5ae0252"
+    },
+    {
+     "id": "9819977107aaad9a06ced7e02473cd7660e67f2cd192132f5ac92e54ea74851f",
+     "statement": "62d7def028805e23"
+    },
+    {
+     "id": "cd79fec827d9b494bd936b24ea2038c656fc27274d30ce28a30cf81b0f6ba789",
+     "statement": "88537a10a96572c7"
+    },
+    {
+     "id": "6fbac8f192a96a66a75a3c48399ecd7a053aba4133d45dc6ae183bc2749cf4e3",
+     "statement": "8b0c57990c0849dd"
+    }
+   ],
+   "statements": [
+    "a7d25bc3e2ff0cd2",
+    "8ed0583f989dff4a"
+   ],
+   "top_refused": []
+  },
+  {
+   "anchor": null,
+   "description": "The same bundle with A's statement under the new key: refused (statement_kid_not_iss, not the key the predecessor seats); B and C meet the count, but A's statement under its current key is not among the counted, so A's new record is holder_not_genesis_key.",
+   "expect": [
+    {
+     "detail": "holder_not_genesis_key",
+     "object_id": "429606807301a02c9205e4bf35afb2b143c2c1a147d4b649b3d07fff7761c4aa",
+     "refused": [
+      {
+       "fault": "statement_kid_not_iss",
+       "index": 0
+      }
+     ],
+     "token": "genesis_bundle_row_invalid",
+     "verdict": "nothing"
+    }
+   ],
+   "id": "roster_bundle_rotates_holder_voice_under_new_key",
+   "predecessors": [
+    {
+     "case": "first_valid"
+    }
+   ],
+   "rows": [
+    {
+     "id": "71956bc66fb557b3b3941d1199cdd2955069ebd62b65a1b4fb483c7c2c3f1c6d",
+     "statement": "b2f101936313fb7a"
+    },
+    {
+     "id": "5dec43dd33d1a6d8a87113fe6f472b1ed13e3e42cb220ee9cb08869fb440e8a4",
+     "statement": "82aef7fcc97f3d72"
+    },
+    {
+     "id": "cd87172fce0dd2d673ee6eb47f28e05310a41b5c42368759dffa679685a13474",
+     "statement": "9e5dceb8dff3f8c3"
+    },
+    {
+     "id": "c399a236ab9bdf590df3dae7becbab187eee1057d0d36087fbdbb285fa0462e8",
+     "statement": "cf4931e3c5ae0252"
+    },
+    {
+     "id": "9819977107aaad9a06ced7e02473cd7660e67f2cd192132f5ac92e54ea74851f",
+     "statement": "62d7def028805e23"
+    },
+    {
+     "id": "cd79fec827d9b494bd936b24ea2038c656fc27274d30ce28a30cf81b0f6ba789",
+     "statement": "88537a10a96572c7"
+    },
+    {
+     "id": "6fbac8f192a96a66a75a3c48399ecd7a053aba4133d45dc6ae183bc2749cf4e3",
+     "statement": "8b0c57990c0849dd"
+    }
+   ],
+   "statements": [
+    "952f32d51f8c9ca4",
+    "a7d25bc3e2ff0cd2",
+    "8ed0583f989dff4a"
+   ],
+   "top_refused": []
+  },
+  {
+   "anchor": null,
+   "description": "The next bundle after A's rotation re-commits B, signed by A under its new key (the one the predecessor now seats) and B: Valid.",
+   "expect": [
+    {
+     "object_id": "702fa98d3edcdac72763ba15278f940dbd2feed9203e699bdc7e9e17ad5d562e",
+     "placement": {
+      "asserted_at": 1770076800123,
+      "counted": [
+       "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM",
+       "urn:ietf:params:oauth:ckt:sha-256:TjkwzcxCJYXe8Of_OiKEuHShc9mC2cS0IwRkf5PZnyM"
+      ],
+      "family_key_id": "humanity-accord",
+      "halt_fuse": 86400,
+      "holders": [
+       {
+        "hardware_class": "YubiKey_5_FIPS",
+        "identity_ref": "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM",
+        "kid": "113a376ef59b87581f0f38ef3ffc35388c4690fee6f830387e79982eb19d37c2",
+        "pq_custody": "removable_offline",
+        "record": "71956bc66fb557b3b3941d1199cdd2955069ebd62b65a1b4fb483c7c2c3f1c6d",
+        "recovery_commitment": "81005d487ff736c836d6c550b219246f46cabbb5c92dda73bf3be43faf811941"
+       },
+       {
+        "hardware_class": "YubiKey_5_FIPS",
+        "identity_ref": "urn:ietf:params:oauth:ckt:sha-256:TjkwzcxCJYXe8Of_OiKEuHShc9mC2cS0IwRkf5PZnyM",
+        "kid": "4e3930cdcc422585def0e7ff3a2284b874a173d982d9c4b42304647f93d99f23",
+        "pq_custody": "removable_offline",
+        "record": "5dec43dd33d1a6d8a87113fe6f472b1ed13e3e42cb220ee9cb08869fb440e8a4",
+        "recovery_commitment": "228c0e5100c0c797b9fb04466cc999373d53cb151bc62a66cc95892b1c2d7192"
+       },
+       {
+        "hardware_class": "YubiKey_5_FIPS",
+        "identity_ref": "urn:ietf:params:oauth:ckt:sha-256:w7DbHNKuHi5uU2nSXjTLkVNkr5vBJN_bSeMFvFuBmvQ",
+        "kid": "c3b0db1cd2ae1e2e6e5369d25e34cb915364af9bc124dfdb49e305bc5b819af4",
+        "pq_custody": "removable_offline",
+        "record": "cd87172fce0dd2d673ee6eb47f28e05310a41b5c42368759dffa679685a13474",
+        "recovery_commitment": "4b04751020f381b09c786c49298876ffe82af6a4c0c33b307fb1d20150e3e3ad"
+       }
+      ],
+      "lineage_commitments": [
+       "228c0e5100c0c797b9fb04466cc999373d53cb151bc62a66cc95892b1c2d7192",
+       "4b04751020f381b09c786c49298876ffe82af6a4c0c33b307fb1d20150e3e3ad",
+       "4ca3fb7b3cf7bb71d6eb9ce99f7f2825f2e4dfc2b15bb965dd4b7cea56fa2e5a",
+       "81005d487ff736c836d6c550b219246f46cabbb5c92dda73bf3be43faf811941"
+      ],
+      "object_id": "702fa98d3edcdac72763ba15278f940dbd2feed9203e699bdc7e9e17ad5d562e",
+      "prev": "429606807301a02c9205e4bf35afb2b143c2c1a147d4b649b3d07fff7761c4aa",
+      "recovered": null,
+      "scope": [
+       "infra:serve",
+       "infra:attest"
+      ],
+      "seats": [
+       {
+        "binding": "cd79fec827d9b494bd936b24ea2038c656fc27274d30ce28a30cf81b0f6ba789",
+        "identity_ref": "urn:ietf:params:oauth:ckt:sha-256:-BF0BUeALZS0w8Z8xe1Mv6-03W9OPLscamliS7Su0fg",
+        "kid": "f811740547802d94b4c3c67cc5ed4cbfafb4dd6f4e3cbb1c6a69624bb4aed1f8",
+        "onion_hop_xwing_pubkey_sha256": "889eae388d48b0d9c7728d5d85d22bb305eaa3346dd294f4d1a854a556827409",
+        "onion_seed": "edc508465e6750af6377eb06d1577ff64310b61453297fd92b460cd65bf555ba",
+        "record": "c399a236ab9bdf590df3dae7becbab187eee1057d0d36087fbdbb285fa0462e8",
+        "transit_seed": "e560555aa94435449767f5a14714ccc16c46dfb7660b1060251a08a7757190f8",
+        "transit_xwing_pubkey_sha256": "42006f0d8cc98bdf419e67e4922aeb427875d8f533754b98966c8ef628883ffb",
+        "valid_until": 1798761600000
+       },
+       {
+        "binding": "6fbac8f192a96a66a75a3c48399ecd7a053aba4133d45dc6ae183bc2749cf4e3",
+        "identity_ref": "urn:ietf:params:oauth:ckt:sha-256:vSeGTVgwMTHMNvrinFFFfVajLiu5mdHU31Aif-JVrBA",
+        "kid": "bd27864d58303131cc36fae29c51457d56a32e2bb999d1d4df50227fe255ac10",
+        "onion_hop_xwing_pubkey_sha256": "2d55c220418dc783783b0301a684562c7c093ebb45d2f84945355fb22306b794",
+        "onion_seed": "f49f094b8b799077233354128cec9666297f4ee4ce4e4a3ba699848bf5b49456",
+        "record": "9819977107aaad9a06ced7e02473cd7660e67f2cd192132f5ac92e54ea74851f",
+        "transit_seed": "35f179c8092a5d539323b0810c4cd4a2194acf86d7b00fb372c6d0848f8a396f",
+        "transit_xwing_pubkey_sha256": "fdfd01825be8ef9fb1f9ce7b5339b13399c3f2d9c6cf5c834502803a7cbad87c",
+        "valid_until": 1798761600000
+       }
+      ],
+      "spent_commitments": [],
+      "version": 3,
+      "witnesses": []
+     },
+     "refused": [],
+     "verdict": "valid"
+    }
+   ],
+   "id": "roster_after_rotation_counts_new_key",
+   "predecessors": [
+    {
+     "case": "roster_bundle_rotates_holder_key"
+    }
+   ],
+   "rows": [
+    {
+     "id": "71956bc66fb557b3b3941d1199cdd2955069ebd62b65a1b4fb483c7c2c3f1c6d",
+     "statement": "b2f101936313fb7a"
+    },
+    {
+     "id": "5dec43dd33d1a6d8a87113fe6f472b1ed13e3e42cb220ee9cb08869fb440e8a4",
+     "statement": "82aef7fcc97f3d72"
+    },
+    {
+     "id": "cd87172fce0dd2d673ee6eb47f28e05310a41b5c42368759dffa679685a13474",
+     "statement": "9e5dceb8dff3f8c3"
+    },
+    {
+     "id": "c399a236ab9bdf590df3dae7becbab187eee1057d0d36087fbdbb285fa0462e8",
+     "statement": "cf4931e3c5ae0252"
+    },
+    {
+     "id": "9819977107aaad9a06ced7e02473cd7660e67f2cd192132f5ac92e54ea74851f",
+     "statement": "62d7def028805e23"
+    },
+    {
+     "id": "cd79fec827d9b494bd936b24ea2038c656fc27274d30ce28a30cf81b0f6ba789",
+     "statement": "88537a10a96572c7"
+    },
+    {
+     "id": "6fbac8f192a96a66a75a3c48399ecd7a053aba4133d45dc6ae183bc2749cf4e3",
+     "statement": "8b0c57990c0849dd"
+    }
+   ],
+   "statements": [
+    "c27cbea1f9cc6d78",
+    "c32d826f486d94b7"
    ],
    "top_refused": []
   },
@@ -7815,11 +8128,47 @@
     ]
    },
    {
-    "agree": false,
+    "agree": true,
     "case": "roster_bundle_rotates_holder_key",
+    "ours": [
+     "Valid",
+     null
+    ],
+    "reference": [
+     "Valid",
+     null
+    ]
+   },
+   {
+    "agree": false,
+    "case": "roster_bundle_rotates_without_holder_voice",
     "ours": [
      "nothing",
      "genesis_bundle_row_invalid"
+    ],
+    "reference": [
+     "Valid",
+     null
+    ]
+   },
+   {
+    "agree": false,
+    "case": "roster_bundle_rotates_holder_voice_under_new_key",
+    "ours": [
+     "nothing",
+     "genesis_bundle_row_invalid"
+    ],
+    "reference": [
+     "Valid",
+     null
+    ]
+   },
+   {
+    "agree": true,
+    "case": "roster_after_rotation_counts_new_key",
+    "ours": [
+     "Valid",
+     null
     ],
     "reference": [
      "Valid",

@@ -391,8 +391,10 @@ pub enum RowFault {
     /// A holder's record holds another key than the one the bundle in force
     /// seats for it: in a first bundle (and for a holder a later bundle
     /// adds) the key its identity reference names; in a later bundle the key
-    /// the predecessor seats; for the holder a recovery recovers, any new key
-    /// (the recovery's own rules judge it).
+    /// the predecessor seats, unless the holder's own statement under that
+    /// key counts toward the bundle (a roster bundle re-seating it); for the
+    /// holder a recovery recovers, any new key (the recovery's own rules
+    /// judge it).
     HolderNotGenesisKey,
     /// A seat's record's `identity_type` is not exactly `node`.
     SeatNotNode,
@@ -1377,6 +1379,19 @@ fn read_one(
         .unwrap_or_default();
     lineage.extend(b.charter.recovery_commitments.values().copied());
 
+    // 4 (continued). A holder re-seated under a new key by a roster bundle:
+    // only where its own statement, under the key the predecessor seats for
+    // it, verified and counts. A statement that does not verify counts for
+    // nothing, so it cannot re-seat anyone.
+    for (holder, row) in &rows.rotated {
+        if !counted.contains(holder) {
+            return GenesisVerdict::Nothing(Inconclusive::RowInvalid {
+                row: *row,
+                fault: RowFault::HolderNotGenesisKey,
+            });
+        }
+    }
+
     // 4 (end). A recovery's own rules, once its records are placed and its
     // statement verified: Invalid.
     if let (Some(a), Some(pp), RecoveryVoice::Verified(rk)) = (&attempt, prev, &recovery) {
@@ -1709,6 +1724,11 @@ struct Rows {
     bindings: BTreeMap<String, PlacedBinding>,
     /// A recovery key's own record, named for self-containment.
     recovery_key: Option<PlacedRecord>,
+    /// Holders of the predecessor (not the one a recovery recovers) whose
+    /// named record holds another key than the predecessor seats, by party
+    /// and row id: a roster bundle re-seats each only where that holder's
+    /// statement under its current key counts.
+    rotated: Vec<(String, Digest32)>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1817,6 +1837,7 @@ fn place_rows(
 
     // Each record, verified under the key it records, then its place's rule.
     let mut records = BTreeMap::new();
+    let mut rotated = Vec::new();
     for (party, (id, bytes, pk)) in &record_slots {
         let rec = verify_record(*id, bytes, pk)?;
         match place_of(party).expect("slotted") {
@@ -1824,14 +1845,22 @@ fn place_rows(
                 if !rec.identity_type.iter().any(|r| r == "accord_holder") {
                     return Err(row_invalid(*id, RowFault::HolderNotAccordHolder));
                 }
-                // The key the bundle in force seats for this holder.
+                // The key the bundle in force seats for this holder: the
+                // genesis key in a first bundle and for an added holder; in a
+                // later bundle the predecessor's, which a roster bundle may
+                // re-seat only with the holder's own counted statement under
+                // it (judged once the statements are verified).
                 let recovered = attempt.is_some_and(|a| a.holder == *party);
-                let seated = match prev.and_then(|pp| pp.holder(party)) {
-                    Some(h) => Some(h.kid),
-                    None => identity_ref_thumbprint(party),
-                };
-                if !recovered && seated != Some(rec.kid) {
-                    return Err(row_invalid(*id, RowFault::HolderNotGenesisKey));
+                match prev.and_then(|pp| pp.holder(party)) {
+                    Some(h) if !recovered && h.kid != rec.kid => {
+                        rotated.push(((*party).to_owned(), *id));
+                    },
+                    Some(_) => {},
+                    None => {
+                        if identity_ref_thumbprint(party) != Some(rec.kid) {
+                            return Err(row_invalid(*id, RowFault::HolderNotGenesisKey));
+                        }
+                    },
                 }
             },
             Place::Seat => {
@@ -1874,6 +1903,7 @@ fn place_rows(
         records,
         bindings,
         recovery_key,
+        rotated,
     })
 }
 
