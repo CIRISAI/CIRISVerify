@@ -73,3 +73,64 @@ is the one both implementations share.
 `msg2` is 1,154 bytes at first contact and 2,274 bytes mutual
 (`1 + 1 + 1120 [+ 1120] + 32`). The doc's prose figures (1,155 and 2,275) are
 one byte over its own layout; the layout governs.
+
+## The per-frame seal, v0x02 with key phases
+
+`transit_seal_frame_v2_v1.json` is the known-answer set for the CC 5.3.3.10 E1
+per-frame link seal, frame version 0x02 with key phases (the doc's "The
+per-frame seal is seal frame version 0x02, with key phases" and "Key phases"):
+
+```
+frame = 0x02 ‖ phase u8 ‖ counter u64_be ‖ AES-256-GCM(k, nonce, aad, pt) ‖ tag[16]
+k     = HKDF-SHA256(ikm = k_dir(phase), salt = link_id[16], info = "CIRIS-E1-LINK-SEAL-V2")
+nonce = lane u8 ‖ 0x000000 ‖ counter u64_be
+aad   = 0x02 ‖ lane u8 ‖ phase u8 ‖ link_id[16]
+```
+
+`gen.py` writes it in the same run, with pyca/cryptography's AES-GCM and its
+own HKDF, and runs every sequence through its own receiver model before
+writing it. `tests/transit_seal_frame_vectors.rs` replays each sequence
+through `ciris_crypto::transit::{seal_frame, FrameOpener}`.
+
+**Inputs chain to `transit_ctkx_v2_v1.json`.** The `link_id` and phase 0's
+`k_i2r` / `k_r2i` are the `first_contact_unbound_static` handshake's, and phase
+1's are its `promotion`'s `k_i2r'` / `k_r2i'`; the Rust test checks both
+files agree. Phase 0's first Channel frame carries that handshake's `CTKC`,
+and phase 1's carries `CTKC'`. `seal_keys` records the four derived `k`.
+
+**A sequence** names its receiver (`responder` opens `k_i2r` frames,
+`initiator` opens `k_r2i` frames) and lists operations in order: `open` (a
+lane and a frame), `promote` and `retire_phase0` (the handshake budget after
+a promotion has run out). Each `open` records the frame's seal inputs
+(`phase`, `counter`, `plaintext`, and `key_phase` when the key is not the
+named phase's) and any `tamper` applied after sealing (`xor`, `set`,
+`truncate_to`), so every frame but the v1 one is rebuilt and compared byte for
+byte. Outcomes are `plaintext`, `dropped_stale`, `dropped_replay`, `ok`, or
+`close` with the `FrameError::code`; a `close` ends its sequence. Each
+sequence also records its final `seal_stale_phase` and `seal_dropped_replay`
+counts.
+
+**Receiver rules the vectors fix:**
+
+- classification by the clear header, in order: an empty frame or one
+  shorter than header plus tag is `seal_truncated` (after the version check,
+  so v1 is refused by name: `seal_v1_refused`; other versions
+  `seal_version_unsupported`); phase 2 or more is `seal_unknown_phase`;
+  phase 1 before promotion is `seal_phase_before_promotion`; phase 0 on a lane
+  whose phase-0 keys are retired is `dropped_stale`, unopened;
+- a held phase that fails AEAD is `seal_open_failed`;
+- phase 0 is retired on a lane once a phase-1 frame on it opens (even one the
+  window then drops), and on every lane by `retire_phase0`, which does nothing
+  before a promotion; a second promotion is `seal_already_promoted`;
+- **the replay window is v1's** (edge's `link_seal.rs`): the AEAD opens first,
+  then a counter repeated inside the lane's 128-frame window, or 128 or more
+  behind its highest, is `dropped_replay` and the link stays open. The window
+  moves only for frames that opened and is shared by both phases.
+
+**Sequences** (25): phase 0 in each direction; promotion in each direction;
+stale phase 0 after phase 1 is seen, before it is seen, and after retirement;
+`retire_phase0` before promotion; phases 2 and 255; phase 1 before promotion;
+tampered ciphertext, tag and counter; the phase byte flipped 0→1 and 1→0;
+a frame on the wrong lane; a v1 frame, version 0x03, a truncated and an empty
+frame; a repeated counter, a too-old counter, a counter reused across the
+phase change; a second promotion.

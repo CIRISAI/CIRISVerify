@@ -40,10 +40,18 @@
 //!   known answers are deterministic. `*_with_rng` wrappers draw from an
 //!   injected RNG; with the `random` feature `*_random` wrappers draw from the
 //!   health-latched facade. A caller MUST NOT reuse encapsulation randomness.
-//! - **The per-frame link seal is edge's** (`link_seal.rs`). This module gives
+//! - **The per-frame link seal** is edge's (`link_seal.rs`); this module gives
 //!   the direction keys ([`SessionKeys`]), the `CTKC` payload to seal as the
-//!   first frame, and the promotion rekey ([`promotion_rekey`]) with a key
-//!   phase counter.
+//!   first frame, the promotion rekey ([`promotion_rekey`]) with a key phase
+//!   counter, and a reference implementation of the seal frame v0x02 with key
+//!   phases ([`seal_frame`], [`FrameOpener`]):
+//!
+//!   ```text
+//!   frame = 0x02 ‖ phase u8 ‖ counter u64_be ‖ AES-256-GCM(k, nonce, aad, pt) ‖ tag[16]
+//!   k     = HKDF-SHA256(ikm = k_dir(phase), salt = link_id, info = "CIRIS-E1-LINK-SEAL-V2")
+//!   nonce = lane u8 ‖ 0x000000 ‖ counter u64_be
+//!   aad   = 0x02 ‖ lane u8 ‖ phase u8 ‖ link_id
+//!   ```
 //! - **The part framing** (`"CTKX" ‖ 0x02 ‖ kind ‖ …`) is here:
 //!   [`encode_parts`] and [`Reassembler`]. `CTKX` 0x01 is refused by name.
 //!
@@ -66,8 +74,8 @@
 //! HMAC-SHA256 (`hmac`), AES-256-GCM. The AEAD here is **RustCrypto
 //! `aes-gcm` 0.10**, not the `ring`-backed `ciris_crypto::aes_gcm` module: `ring`
 //! needs `std`, and this module must build `no_std` for the WASM node. So the
-//! crate carries two AES-GCM implementations; this one seals only the
-//! identity block. RustCrypto's `aes` 0.8 uses AES-NI (detected at run time
+//! crate carries two AES-GCM implementations; this one seals the identity
+//! block and the reference seal frames. RustCrypto's `aes` 0.8 uses AES-NI (detected at run time
 //! via `cpufeatures`) on x86/x86_64 and otherwise the constant-time fixsliced
 //! software AES; on aarch64 the ARMv8 instructions need `--cfg aes_armv8`,
 //! without which it is the fixsliced software path. GHASH (`polyval`) likewise
@@ -1428,6 +1436,455 @@ impl Reassembler {
             return Ok(Some(core::mem::take(&mut self.buf)));
         }
         Ok(None)
+    }
+}
+
+// --------------------------------------------------------------------------
+// The per-frame link seal, frame version 0x02 with key phases
+// --------------------------------------------------------------------------
+
+/// Seal frame version of this module (key phases). The leading byte of every
+/// sealed frame.
+pub const SEAL_FRAME_VERSION: u8 = 0x02;
+/// v1's seal frame version (`0x01 ‖ counter ‖ …`), refused by name
+/// ([`FrameError::V1Refused`]).
+pub const SEAL_FRAME_VERSION_V1: u8 = 0x01;
+/// HKDF info of the per-direction seal key `k`.
+pub const LABEL_LINK_SEAL: &[u8] = b"CIRIS-E1-LINK-SEAL-V2";
+/// Header length: version, phase, `u64_be` counter.
+pub const SEAL_HEADER_LEN: usize = 1 + 1 + 8;
+/// The AES-256-GCM tag length.
+pub const SEAL_TAG_LEN: usize = AEAD_TAG_LEN;
+/// The shortest frame: a header and a tag (an empty plaintext).
+pub const SEAL_OVERHEAD: usize = SEAL_HEADER_LEN + SEAL_TAG_LEN;
+/// Each lane's replay window, in frames.
+pub const REPLAY_WINDOW: u64 = 128;
+/// Key phase 0: the keys from `msg2`.
+pub const PHASE_HANDSHAKE: u8 = 0;
+/// Key phase 1: the keys from a promotion (`k_i2r'`, `k_r2i'`).
+pub const PHASE_PROMOTED: u8 = 1;
+
+const LANE_COUNT: usize = 5;
+
+/// A link carrier. Each has its own counter and replay window, because lanes
+/// are not ordered with one another; the lane is in the nonce and the AAD but
+/// not on the wire.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(u8)]
+pub enum Lane {
+    /// A Channel message.
+    Channel = 1,
+    /// A Resource transfer.
+    Resource = 2,
+    /// A link request's data.
+    Request = 3,
+    /// A link response's data.
+    Response = 4,
+    /// A link datagram.
+    Datagram = 5,
+}
+
+impl Lane {
+    /// Every lane, in wire order.
+    pub const ALL: [Self; LANE_COUNT] = [
+        Self::Channel,
+        Self::Resource,
+        Self::Request,
+        Self::Response,
+        Self::Datagram,
+    ];
+
+    /// The lane byte in the nonce and the AAD.
+    #[must_use]
+    pub const fn as_u8(self) -> u8 {
+        self as u8
+    }
+
+    /// The lane with this byte, if any.
+    #[must_use]
+    pub const fn from_u8(b: u8) -> Option<Self> {
+        match b {
+            1 => Some(Self::Channel),
+            2 => Some(Self::Resource),
+            3 => Some(Self::Request),
+            4 => Some(Self::Response),
+            5 => Some(Self::Datagram),
+            _ => None,
+        }
+    }
+
+    const fn index(self) -> usize {
+        self as usize - 1
+    }
+}
+
+/// `k = HKDF-SHA256(ikm = k_dir, salt = link_id, info = "CIRIS-E1-LINK-SEAL-V2")`,
+/// the AES-256-GCM key of one direction in one key phase. `k_dir` is `k_i2r` or
+/// `k_r2i` (phase 0) or their promoted successors (phase 1).
+#[must_use]
+pub fn link_seal_key(
+    k_dir: &[u8; SESSION_KEY_LEN],
+    link_id: &[u8; LINK_ID_LEN],
+) -> Zeroizing<[u8; 32]> {
+    let hk = Hkdf::<Sha256>::new(Some(&link_id[..]), &k_dir[..]);
+    let mut out = Zeroizing::new([0u8; 32]);
+    hk.expand(LABEL_LINK_SEAL, out.as_mut())
+        .expect("32 bytes is within HKDF-SHA256's output bound");
+    out
+}
+
+/// `nonce = lane ‖ 0x000000 ‖ counter u64_be`.
+fn seal_nonce(lane: Lane, counter: u64) -> [u8; 12] {
+    let mut n = [0u8; 12];
+    n[0] = lane.as_u8();
+    n[4..].copy_from_slice(&counter.to_be_bytes());
+    n
+}
+
+/// `aad = 0x02 ‖ lane ‖ phase ‖ link_id`.
+fn seal_aad(lane: Lane, phase: u8, link_id: &[u8; LINK_ID_LEN]) -> [u8; 3 + LINK_ID_LEN] {
+    let mut a = [0u8; 3 + LINK_ID_LEN];
+    a[0] = SEAL_FRAME_VERSION;
+    a[1] = lane.as_u8();
+    a[2] = phase;
+    a[3..].copy_from_slice(link_id);
+    a
+}
+
+/// Seal one frame: `0x02 ‖ phase ‖ counter u64_be ‖ AES-256-GCM(k, nonce, aad,
+/// pt) ‖ tag[16]`, with `k` from [`link_seal_key`].
+///
+/// The caller owns the counter: one per lane, strictly increasing, and
+/// continuing across the phase change. A counter MUST NOT repeat on a lane
+/// within a phase. `phase` is written as given and not checked, so the
+/// known answers can build the frames a receiver refuses; a sender uses only
+/// [`PHASE_HANDSHAKE`] and [`PHASE_PROMOTED`], switching every lane to phase 1
+/// once it has sent or received `CTKC'`.
+#[must_use]
+pub fn seal_frame(
+    k_dir: &[u8; SESSION_KEY_LEN],
+    link_id: &[u8; LINK_ID_LEN],
+    lane: Lane,
+    phase: u8,
+    counter: u64,
+    pt: &[u8],
+) -> Vec<u8> {
+    let k = link_seal_key(k_dir, link_id);
+    let nonce = seal_nonce(lane, counter);
+    let aad = seal_aad(lane, phase, link_id);
+    let ct = aead(&k)
+        .encrypt(Nonce::from_slice(&nonce), Payload { msg: pt, aad: &aad })
+        .expect("AES-256-GCM seals any input under a 32-byte key");
+    let mut out = Vec::with_capacity(SEAL_HEADER_LEN + ct.len());
+    out.push(SEAL_FRAME_VERSION);
+    out.push(phase);
+    out.extend_from_slice(&counter.to_be_bytes());
+    out.extend_from_slice(&ct);
+    out
+}
+
+/// A refused sealed frame. **Every variant means the caller closes the
+/// link**; a frame the link survives is an [`OpenOutcome`] instead.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum FrameError {
+    /// Shorter than [`SEAL_OVERHEAD`] (or empty).
+    #[error("link seal: frame truncated")]
+    Truncated,
+    /// Seal frame version 0x01: v1 is refused after the cut.
+    #[error("link seal: v1 frame refused")]
+    V1Refused,
+    /// A seal frame version other than 0x01 or 0x02.
+    #[error("link seal: frame version unsupported")]
+    VersionUnsupported,
+    /// A phase byte of 2 or more: a link is promoted at most once.
+    #[error("link seal: unknown key phase")]
+    UnknownPhase,
+    /// A phase-1 frame on a link this receiver has not promoted.
+    #[error("link seal: phase 1 before promotion")]
+    PhaseBeforePromotion,
+    /// A frame of a known, held phase fails AEAD.
+    #[error("link seal: frame does not open")]
+    OpenFailed,
+    /// [`FrameOpener::promote`] called on a link already promoted.
+    #[error("link seal: link already promoted")]
+    AlreadyPromoted,
+}
+
+impl FrameError {
+    /// The stable refusal name, as the seal-frame known answers record it.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Truncated => "seal_truncated",
+            Self::V1Refused => "seal_v1_refused",
+            Self::VersionUnsupported => "seal_version_unsupported",
+            Self::UnknownPhase => "seal_unknown_phase",
+            Self::PhaseBeforePromotion => "seal_phase_before_promotion",
+            Self::OpenFailed => "seal_open_failed",
+            Self::AlreadyPromoted => "seal_already_promoted",
+        }
+    }
+}
+
+/// What [`FrameOpener::open`] did with a frame the link survives.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenOutcome {
+    /// The frame opened and its counter is fresh: deliver the plaintext.
+    Plaintext(Vec<u8>),
+    /// A phase-0 frame on a lane whose phase-0 keys are retired: late, not
+    /// forged. Dropped unopened and counted ([`FrameOpener::seal_stale_phase`]).
+    DroppedStale,
+    /// The frame opened, but its counter repeats inside the lane's window or
+    /// is older than it. Dropped and counted
+    /// ([`FrameOpener::seal_dropped_replay`]), as in v1: the tag is valid, so
+    /// the peer holds the keys.
+    DroppedReplay,
+}
+
+/// Highest counter accepted plus a bitmap of the [`REPLAY_WINDOW`] below it.
+#[derive(Debug, Default, Clone, Copy)]
+struct ReplayWindow {
+    highest: Option<u64>,
+    /// Bit `i` set iff `highest - i` was accepted.
+    seen: u128,
+}
+
+impl ReplayWindow {
+    /// Accept `c` once, or refuse it.
+    fn accept(&mut self, c: u64) -> bool {
+        let Some(h) = self.highest else {
+            self.highest = Some(c);
+            self.seen = 1;
+            return true;
+        };
+        if c > h {
+            let shift = c - h;
+            self.seen = if shift >= REPLAY_WINDOW {
+                0
+            } else {
+                self.seen << shift
+            };
+            self.seen |= 1;
+            self.highest = Some(c);
+            return true;
+        }
+        let back = h - c;
+        if back >= REPLAY_WINDOW {
+            return false;
+        }
+        let bit = 1u128 << back;
+        if self.seen & bit != 0 {
+            return false;
+        }
+        self.seen |= bit;
+        true
+    }
+}
+
+/// The receiving half of one link's seal: the open keys of each phase held,
+/// and per lane whether phase 0 is retired and the replay window.
+///
+/// [`open`](Self::open) classifies a frame by its clear phase byte before
+/// opening it:
+///
+/// - phase 0 on a lane whose phase-0 keys are retired (phase 1 seen on that
+///   lane, or [`retire_phase0`](Self::retire_phase0) at the end of the
+///   handshake budget): [`OpenOutcome::DroppedStale`], the link stays open;
+/// - phase 2 or more, or phase 1 before [`promote`](Self::promote):
+///   [`FrameError::UnknownPhase`] / [`FrameError::PhaseBeforePromotion`];
+/// - a held phase that fails AEAD: [`FrameError::OpenFailed`];
+/// - a frame that opened with a repeated or too-old counter:
+///   [`OpenOutcome::DroppedReplay`]. The window moves only for a frame that
+///   opened, so forged counters cannot push real frames out of it. It is
+///   shared by both phases, because counters continue across the change.
+///
+/// Every [`FrameError`] means close the link; the opener is then not reused.
+pub struct FrameOpener {
+    role: Role,
+    link_id: [u8; LINK_ID_LEN],
+    phase0: Option<Zeroizing<[u8; 32]>>,
+    phase1: Option<Zeroizing<[u8; 32]>>,
+    phase0_retired: [bool; LANE_COUNT],
+    windows: [ReplayWindow; LANE_COUNT],
+    stale: u64,
+    replays: u64,
+}
+
+impl core::fmt::Debug for FrameOpener {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("FrameOpener")
+            .field("role", &self.role)
+            .field("promoted", &self.is_promoted())
+            .field("phase0_retired", &self.phase0_retired)
+            .field("seal_stale_phase", &self.stale)
+            .field("seal_dropped_replay", &self.replays)
+            .finish_non_exhaustive()
+    }
+}
+
+impl FrameOpener {
+    /// The receiver of `role` on `link_id`, holding phase 0 from the `msg2`
+    /// keys. It opens the peer's direction: `k_i2r` at the responder, `k_r2i`
+    /// at the initiator.
+    #[must_use]
+    pub fn new(
+        role: Role,
+        k_i2r: &[u8; SESSION_KEY_LEN],
+        k_r2i: &[u8; SESSION_KEY_LEN],
+        link_id: &[u8; LINK_ID_LEN],
+    ) -> Self {
+        Self {
+            role,
+            link_id: *link_id,
+            phase0: Some(link_seal_key(Self::pick(role, k_i2r, k_r2i), link_id)),
+            phase1: None,
+            phase0_retired: [false; LANE_COUNT],
+            windows: [ReplayWindow::default(); LANE_COUNT],
+            stale: 0,
+            replays: 0,
+        }
+    }
+
+    /// [`new`](Self::new) from the handshake's [`SessionKeys`].
+    #[must_use]
+    pub fn from_session_keys(role: Role, keys: &SessionKeys, link_id: &[u8; LINK_ID_LEN]) -> Self {
+        Self::new(role, keys.k_i2r(), keys.k_r2i(), link_id)
+    }
+
+    fn pick<'k>(
+        role: Role,
+        k_i2r: &'k [u8; SESSION_KEY_LEN],
+        k_r2i: &'k [u8; SESSION_KEY_LEN],
+    ) -> &'k [u8; SESSION_KEY_LEN] {
+        match role {
+            Role::Initiator => k_r2i,
+            Role::Responder => k_i2r,
+        }
+    }
+
+    /// Install phase 1 from the promotion keys `k_i2r'` / `k_r2i'`. Phase 0's
+    /// keys stay held on each lane until phase 1 is seen there, or until
+    /// [`retire_phase0`](Self::retire_phase0).
+    ///
+    /// # Errors
+    /// [`FrameError::AlreadyPromoted`]: a link is promoted at most once.
+    pub fn promote(
+        &mut self,
+        k_i2r_prime: &[u8; SESSION_KEY_LEN],
+        k_r2i_prime: &[u8; SESSION_KEY_LEN],
+    ) -> Result<(), FrameError> {
+        if self.phase1.is_some() {
+            return Err(FrameError::AlreadyPromoted);
+        }
+        self.phase1 = Some(link_seal_key(
+            Self::pick(self.role, k_i2r_prime, k_r2i_prime),
+            &self.link_id,
+        ));
+        Ok(())
+    }
+
+    /// [`promote`](Self::promote) from the promotion's [`SessionKeys`].
+    ///
+    /// # Errors
+    /// As [`promote`](Self::promote).
+    pub fn promote_session_keys(&mut self, keys: &SessionKeys) -> Result<(), FrameError> {
+        self.promote(keys.k_i2r(), keys.k_r2i())
+    }
+
+    /// Retire phase 0 on every lane and zeroize its key: the handshake budget
+    /// after the promotion has run out. Before a promotion it does nothing,
+    /// because phase 0 is then the link's only phase.
+    pub fn retire_phase0(&mut self) {
+        if self.is_promoted() {
+            self.phase0_retired = [true; LANE_COUNT];
+            self.phase0 = None;
+        }
+    }
+
+    /// Whether phase 1 is installed.
+    #[must_use]
+    pub fn is_promoted(&self) -> bool {
+        self.phase1.is_some()
+    }
+
+    /// Whether phase-0 frames still open on `lane`.
+    #[must_use]
+    pub fn holds_phase0(&self, lane: Lane) -> bool {
+        self.phase0.is_some() && !self.phase0_retired[lane.index()]
+    }
+
+    /// Frames dropped as a stale phase (the `seal_stale_phase` counter).
+    #[must_use]
+    pub fn seal_stale_phase(&self) -> u64 {
+        self.stale
+    }
+
+    /// Frames that opened but were dropped by the replay window.
+    #[must_use]
+    pub fn seal_dropped_replay(&self) -> u64 {
+        self.replays
+    }
+
+    /// Open one frame received on `lane`.
+    ///
+    /// # Errors
+    /// Every [`FrameError`] closes the link: [`FrameError::Truncated`],
+    /// [`FrameError::V1Refused`], [`FrameError::VersionUnsupported`],
+    /// [`FrameError::UnknownPhase`], [`FrameError::PhaseBeforePromotion`],
+    /// [`FrameError::OpenFailed`].
+    pub fn open(&mut self, lane: Lane, frame: &[u8]) -> Result<OpenOutcome, FrameError> {
+        match frame.first() {
+            None => return Err(FrameError::Truncated),
+            Some(&SEAL_FRAME_VERSION) => {},
+            Some(&SEAL_FRAME_VERSION_V1) => return Err(FrameError::V1Refused),
+            Some(_) => return Err(FrameError::VersionUnsupported),
+        }
+        if frame.len() < SEAL_OVERHEAD {
+            return Err(FrameError::Truncated);
+        }
+        let phase = frame[1];
+        let mut be = [0u8; 8];
+        be.copy_from_slice(&frame[2..SEAL_HEADER_LEN]);
+        let counter = u64::from_be_bytes(be);
+        let i = lane.index();
+        let key = match phase {
+            PHASE_HANDSHAKE => match &self.phase0 {
+                Some(k) if !self.phase0_retired[i] => k,
+                _ => {
+                    self.stale += 1;
+                    return Ok(OpenOutcome::DroppedStale);
+                },
+            },
+            PHASE_PROMOTED => match &self.phase1 {
+                Some(k) => k,
+                None => return Err(FrameError::PhaseBeforePromotion),
+            },
+            _ => return Err(FrameError::UnknownPhase),
+        };
+        let nonce = seal_nonce(lane, counter);
+        let aad = seal_aad(lane, phase, &self.link_id);
+        let pt = aead(key)
+            .decrypt(
+                Nonce::from_slice(&nonce),
+                Payload {
+                    msg: &frame[SEAL_HEADER_LEN..],
+                    aad: &aad,
+                },
+            )
+            .map_err(|_| FrameError::OpenFailed)?;
+        if phase == PHASE_PROMOTED && !self.phase0_retired[i] {
+            self.phase0_retired[i] = true;
+            if self.phase0_retired.iter().all(|r| *r) {
+                self.phase0 = None;
+            }
+        }
+        if self.windows[i].accept(counter) {
+            Ok(OpenOutcome::Plaintext(pt))
+        } else {
+            self.replays += 1;
+            Ok(OpenOutcome::DroppedReplay)
+        }
     }
 }
 

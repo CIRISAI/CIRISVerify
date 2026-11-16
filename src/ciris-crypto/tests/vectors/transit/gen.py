@@ -19,7 +19,11 @@ Run (from the repository root, with a venv holding kyber-py and cryptography):
 
     python3 -I src/ciris-crypto/tests/vectors/transit/gen.py
 
-It writes transit_ctkx_v2_v1.json beside itself.
+It writes transit_ctkx_v2_v1.json beside itself, and transit_seal_frame_v2_v1.json:
+the per-frame seal v0x02 with key phases, keyed from that file's promotion
+(the first-contact handshake's k_i2r / k_r2i at phase 0, k_i2r' / k_r2i' at
+phase 1), as scripted receiver sequences run through this script's own
+receiver model.
 """
 
 import hashlib
@@ -32,6 +36,7 @@ from cryptography.hazmat.primitives.asymmetric.x25519 import (
     X25519PrivateKey,
     X25519PublicKey,
 )
+from cryptography.exceptions import InvalidTag
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 from cryptography.hazmat.primitives import serialization
 from kyber_py.ml_kem import ML_KEM_768
@@ -39,6 +44,7 @@ from kyber_py.ml_kem import ML_KEM_768
 HERE = os.path.dirname(os.path.abspath(__file__))
 XWING_KAT = os.path.join(HERE, "..", "xwing", "draft-connolly-cfrg-xwing-kem-11.json")
 OUT = os.path.join(HERE, "transit_ctkx_v2_v1.json")
+OUT_SEAL = os.path.join(HERE, "transit_seal_frame_v2_v1.json")
 
 # --------------------------------------------------------------------------
 # X-Wing, draft-11
@@ -462,6 +468,426 @@ def reassemble(parts):
 
 
 # --------------------------------------------------------------------------
+# Per-frame seal, frame version 0x02 with key phases
+# (doc "Framing, sizes, limits" -> "The per-frame seal is seal frame version
+# 0x02, with key phases")
+# --------------------------------------------------------------------------
+
+SEAL_V2 = 0x02
+SEAL_V1 = 0x01
+SEAL_LABEL_V2 = b"CIRIS-E1-LINK-SEAL-V2"
+SEAL_LABEL_V1 = b"CIRIS-E1-LINK-SEAL-V1"
+SEAL_HEADER = 1 + 1 + 8
+SEAL_OVERHEAD = SEAL_HEADER + 16
+REPLAY_WINDOW = 128
+LANES = {"channel": 1, "resource": 2, "request": 3, "response": 4, "datagram": 5}
+
+
+def seal_key(k_dir, link_id, label=SEAL_LABEL_V2):
+    return hkdf(link_id, k_dir, label, 32)
+
+
+def seal_nonce(lane, counter):
+    return bytes([lane]) + b"\x00\x00\x00" + counter.to_bytes(8, "big")
+
+
+def seal_aad(lane, phase, link_id):
+    return bytes([SEAL_V2, lane, phase]) + link_id
+
+
+def seal_frame(k_dir, link_id, lane, phase, counter, pt):
+    ct = AESGCM(seal_key(k_dir, link_id)).encrypt(
+        seal_nonce(lane, counter), pt, seal_aad(lane, phase, link_id)
+    )
+    return bytes([SEAL_V2, phase]) + counter.to_bytes(8, "big") + ct
+
+
+def seal_frame_v1(k_dir, link_id, lane, counter, pt):
+    """v1, per the doc: the same frame without the phase byte, label -V1."""
+    aad = bytes([SEAL_V1, lane]) + link_id
+    ct = AESGCM(seal_key(k_dir, link_id, SEAL_LABEL_V1)).encrypt(seal_nonce(lane, counter), pt, aad)
+    return bytes([SEAL_V1]) + counter.to_bytes(8, "big") + ct
+
+
+class Window:
+    """Highest accepted counter and the REPLAY_WINDOW counters below it."""
+
+    def __init__(self):
+        self.highest = None
+        self.seen = set()
+
+    def accept(self, c):
+        if self.highest is None or c > self.highest:
+            self.highest = c
+            self.seen = {x for x in self.seen if c - x < REPLAY_WINDOW} | {c}
+            return True
+        if self.highest - c >= REPLAY_WINDOW or c in self.seen:
+            return False
+        self.seen.add(c)
+        return True
+
+
+class Opener:
+    """The receiver: classify by the clear phase byte, then open."""
+
+    def __init__(self, k_open0, link_id):
+        self.link_id = link_id
+        self.keys = {0: seal_key(k_open0, link_id)}
+        self.promoted = False
+        self.retired = {lane: False for lane in LANES.values()}
+        self.windows = {lane: Window() for lane in LANES.values()}
+        self.stale = 0
+        self.replays = 0
+
+    def promote(self, k_open1):
+        if self.promoted:
+            raise Refusal("seal_already_promoted")
+        self.keys[1] = seal_key(k_open1, self.link_id)
+        self.promoted = True
+
+    def retire_phase0(self):
+        if self.promoted:
+            for lane in self.retired:
+                self.retired[lane] = True
+
+    def open(self, lane, frame):
+        if not frame:
+            raise Refusal("seal_truncated")
+        if frame[0] == SEAL_V1:
+            raise Refusal("seal_v1_refused")
+        if frame[0] != SEAL_V2:
+            raise Refusal("seal_version_unsupported")
+        if len(frame) < SEAL_OVERHEAD:
+            raise Refusal("seal_truncated")
+        phase = frame[1]
+        counter = int.from_bytes(frame[2:10], "big")
+        if phase >= 2:
+            raise Refusal("seal_unknown_phase")
+        if phase == 1 and not self.promoted:
+            raise Refusal("seal_phase_before_promotion")
+        if phase == 0 and self.retired[lane]:
+            self.stale += 1
+            return ("dropped_stale", None)
+        try:
+            pt = AESGCM(self.keys[phase]).decrypt(
+                seal_nonce(lane, counter), frame[SEAL_HEADER:], seal_aad(lane, phase, self.link_id)
+            )
+        except InvalidTag:
+            raise Refusal("seal_open_failed")
+        if phase == 1:
+            self.retired[lane] = True
+        if not self.windows[lane].accept(counter):
+            self.replays += 1
+            return ("dropped_replay", None)
+        return ("plaintext", pt)
+
+
+class SealSeq:
+    """One scripted receiver sequence, run through the model as it is written."""
+
+    def __init__(self, keys, link_id, name, receiver, description):
+        self.keys, self.link_id = keys, link_id
+        self.name, self.receiver, self.description = name, receiver, description
+        # The receiver opens the peer's direction.
+        self.dir = "i2r" if receiver == "responder" else "r2i"
+        self.op = Opener(keys[(0, self.dir)], link_id)
+        self.steps = []
+        self.closed = False
+        self.n = 0
+
+    def pt(self):
+        self.n += 1
+        return f"seal-v2-kat/{self.name}/{self.n}".encode()
+
+    def sealed(self, lane, phase, counter, pt=None, key_phase=None, tamper=None):
+        if pt is None:
+            pt = self.pt()
+        kp = phase if key_phase is None else key_phase
+        frame = seal_frame(self.keys[(kp, self.dir)], self.link_id, LANES[lane], phase, counter, pt)
+        spec = {"phase": phase, "counter": counter, "plaintext": hx(pt)}
+        if key_phase is not None:
+            spec["key_phase"] = key_phase
+        if tamper is not None:
+            if "xor" in tamper:
+                off, mask = tamper["xor"]
+                frame = flip(frame, off, mask)
+            if "set" in tamper:
+                off, val = tamper["set"]
+                b = bytearray(frame)
+                b[off] = val
+                frame = bytes(b)
+            if "truncate_to" in tamper:
+                frame = frame[: tamper["truncate_to"]]
+        out = {"lane": lane, "frame": hx(frame), "sealed": spec}
+        if tamper is not None:
+            out["tamper"] = tamper
+        return out, frame, pt
+
+    def open(self, fr, expect, error=None):
+        assert not self.closed
+        spec, frame, pt = fr
+        step = dict(spec, op="open", expect=expect)
+        if expect == "close":
+            expect_refusal(error, lambda: self.op.open(LANES[spec["lane"]], frame))
+            step["error"] = error
+            self.closed = True
+        else:
+            got, gpt = self.op.open(LANES[spec["lane"]], frame)
+            assert got == expect, (self.name, got, expect)
+            if expect == "plaintext":
+                assert gpt == pt
+                step["plaintext"] = hx(pt)
+        self.steps.append(step)
+
+    def promote(self, error=None):
+        assert not self.closed
+        if error:
+            expect_refusal(error, lambda: self.op.promote(self.keys[(1, self.dir)]))
+            self.steps.append({"op": "promote", "expect": "close", "error": error})
+            self.closed = True
+        else:
+            self.op.promote(self.keys[(1, self.dir)])
+            self.steps.append({"op": "promote", "expect": "ok"})
+
+    def retire(self):
+        self.op.retire_phase0()
+        self.steps.append({"op": "retire_phase0", "expect": "ok"})
+
+    def doc(self):
+        return {
+            "name": self.name,
+            "description": self.description,
+            "receiver": self.receiver,
+            "steps": self.steps,
+            "seal_stale_phase": self.op.stale,
+            "seal_dropped_replay": self.op.replays,
+        }
+
+
+def seal_frame_vectors(link_id, k0_i2r, k0_r2i, k1_i2r, k1_r2i, ctkc, ctkc_p):
+    keys = {(0, "i2r"): k0_i2r, (0, "r2i"): k0_r2i, (1, "i2r"): k1_i2r, (1, "r2i"): k1_r2i}
+    seqs = []
+
+    def seq(name, receiver, description):
+        s = SealSeq(keys, link_id, name, receiver, description)
+        seqs.append(s)
+        return s
+
+    # Phase 0, each direction, two or more lanes.
+    s = seq("phase0_initiator_to_responder", "responder",
+            "Phase-0 frames on Channel (CTKC first), Datagram (empty plaintext) and Resource.")
+    s.open(s.sealed("channel", 0, 0, ctkc), "plaintext")
+    s.open(s.sealed("channel", 0, 1), "plaintext")
+    s.open(s.sealed("datagram", 0, 0, b""), "plaintext")
+    s.open(s.sealed("resource", 0, 0), "plaintext")
+
+    s = seq("phase0_responder_to_initiator", "initiator",
+            "Phase-0 frames on Channel and Datagram.")
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+    s.open(s.sealed("datagram", 0, 0), "plaintext")
+    s.open(s.sealed("channel", 0, 1), "plaintext")
+
+    # Phase 1 after promotion, counters continuing.
+    s = seq("promotion_initiator_to_responder", "responder",
+            "CTKC at phase 0, promote, CTKC' at phase 1 with the Channel counter continuing; "
+            "Datagram likewise.")
+    s.open(s.sealed("channel", 0, 0, ctkc), "plaintext")
+    s.open(s.sealed("datagram", 0, 0), "plaintext")
+    s.promote()
+    s.open(s.sealed("channel", 1, 1, ctkc_p), "plaintext")
+    s.open(s.sealed("datagram", 1, 1), "plaintext")
+
+    s = seq("promotion_responder_to_initiator", "initiator",
+            "Phase 0, promote, phase 1 on Channel; Resource has not seen phase 1, so its "
+            "phase-0 frame still opens, then its phase-1 frame.")
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+    s.promote()
+    s.open(s.sealed("channel", 1, 1), "plaintext")
+    s.open(s.sealed("resource", 0, 0), "plaintext")
+    s.open(s.sealed("resource", 1, 1), "plaintext")
+
+    # Stale phase 0.
+    stale_pt = b"seal-v2-kat/stale-phase0"
+    s = seq("stale_phase0_after_phase1_seen", "responder",
+            "After phase 1 is seen on Channel, a late phase-0 Channel frame is dropped and "
+            "counted; the link stays open and other lanes keep phase 0.")
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+    s.promote()
+    s.open(s.sealed("channel", 1, 2), "plaintext")
+    s.open(s.sealed("channel", 0, 1, stale_pt), "dropped_stale")
+    s.open(s.sealed("channel", 1, 3), "plaintext")
+    s.open(s.sealed("resource", 0, 0), "plaintext")
+
+    s = seq("stale_phase0_before_phase1_seen", "responder",
+            "The same late phase-0 frame, on a link promoted but before phase 1 is seen on "
+            "Channel and before retirement: it opens.")
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+    s.promote()
+    s.open(s.sealed("channel", 0, 1, stale_pt), "plaintext")
+    s.open(s.sealed("channel", 1, 2), "plaintext")
+
+    s = seq("stale_phase0_after_retirement", "initiator",
+            "The handshake budget runs out (retire_phase0): a phase-0 frame on a lane that "
+            "never saw phase 1 is dropped as stale.")
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+    s.promote()
+    s.retire()
+    s.open(s.sealed("resource", 0, 0), "dropped_stale")
+    s.open(s.sealed("channel", 1, 1), "plaintext")
+
+    s = seq("retire_before_promotion_is_noop", "responder",
+            "retire_phase0 before a promotion changes nothing: phase 0 is the only phase.")
+    s.retire()
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+
+    # Unknown phase, phase 1 early.
+    s = seq("unknown_phase_2", "responder",
+            "Phase byte 2 (sealed under the phase-1 key, AAD phase 2) on a promoted link: closes.")
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+    s.promote()
+    s.open(s.sealed("channel", 2, 1, key_phase=1), "close", "seal_unknown_phase")
+
+    s = seq("unknown_phase_255", "initiator", "Phase byte 255 before promotion: closes.")
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+    s.open(s.sealed("channel", 255, 1, key_phase=0), "close", "seal_unknown_phase")
+
+    s = seq("phase1_before_promotion", "responder",
+            "A genuine phase-1 frame (under k_i2r') before the receiver promoted: closes.")
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+    s.open(s.sealed("channel", 1, 1), "close", "seal_phase_before_promotion")
+
+    # Tampering of a held phase: AEAD failure closes.
+    s = seq("tampered_ciphertext", "responder", "A ciphertext byte flipped: closes.")
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+    s.open(s.sealed("channel", 0, 1, tamper={"xor": [SEAL_HEADER + 2, 0x01]}), "close", "seal_open_failed")
+
+    s = seq("tampered_tag", "initiator", "The last tag byte flipped: closes.")
+    s.open(s.sealed("datagram", 0, 0), "plaintext")
+    fr = s.sealed("datagram", 0, 1)
+    s.open(s.sealed("datagram", 0, 1, tamper={"xor": [len(fr[1]) - 1, 0x80]}), "close", "seal_open_failed")
+
+    s = seq("tampered_counter", "responder", "The counter's low byte changed (nonce differs): closes.")
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+    s.open(s.sealed("channel", 0, 1, tamper={"xor": [SEAL_HEADER - 1, 0x01]}), "close", "seal_open_failed")
+
+    s = seq("phase_byte_flipped_0_to_1", "responder",
+            "A phase-0 frame with its phase byte set to 1 while phase 1 is held: opened under "
+            "the phase-1 key with AAD phase 1, fails AEAD, closes.")
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+    s.promote()
+    s.open(s.sealed("channel", 0, 1, tamper={"xor": [1, 0x01]}), "close", "seal_open_failed")
+
+    s = seq("phase_byte_flipped_1_to_0", "initiator",
+            "A phase-1 frame with its phase byte set to 0 while phase 0 is held on the lane: "
+            "fails AEAD, closes.")
+    s.promote()
+    s.open(s.sealed("channel", 1, 0, tamper={"xor": [1, 0x01]}), "close", "seal_open_failed")
+
+    s = seq("wrong_lane", "responder",
+            "A Channel frame delivered on Resource (the lane is in the nonce and AAD): closes.")
+    fr_spec, fr_bytes, fr_pt = s.sealed("channel", 0, 0)
+    s.open(({**fr_spec, "lane": "resource", "sealed": dict(fr_spec["sealed"], lane="channel")},
+            fr_bytes, fr_pt), "close", "seal_open_failed")
+
+    # Versions and lengths.
+    s = seq("v1_frame", "responder",
+            "A v1 frame (0x01 || counter || AES-256-GCM under the -V1 label, AAD 0x01 || lane "
+            "|| link_id): refused by name, closes.")
+    v1pt = b"seal-v1-kat/frame"
+    v1 = seal_frame_v1(k0_i2r, link_id, LANES["channel"], 0, v1pt)
+    expect_refusal("seal_v1_refused", lambda: s.op.open(LANES["channel"], v1))
+    s.steps.append({"op": "open", "lane": "channel", "frame": hx(v1),
+                    "v1": {"counter": 0, "plaintext": hx(v1pt)},
+                    "expect": "close", "error": "seal_v1_refused"})
+    s.closed = True
+
+    s = seq("version_0x03", "responder", "Seal frame version 0x03: closes.")
+    s.open(s.sealed("channel", 0, 0, tamper={"set": [0, 0x03]}), "close", "seal_version_unsupported")
+
+    s = seq("truncated", "responder", "A frame one byte short of header plus tag: closes.")
+    s.open(s.sealed("channel", 0, 0, b"", tamper={"truncate_to": SEAL_OVERHEAD - 1}), "close", "seal_truncated")
+
+    s = seq("empty_frame", "initiator", "An empty frame: closes.")
+    s.steps.append({"op": "open", "lane": "channel", "frame": "", "expect": "close", "error": "seal_truncated"})
+    expect_refusal("seal_truncated", lambda: s.op.open(LANES["channel"], b""))
+    s.closed = True
+
+    # Replay window (v1's rule: an opened frame with a repeated or too-old
+    # counter is dropped, the link stays open).
+    s = seq("replay_same_counter", "responder",
+            "The same frame twice: the second is dropped as a replay; the link stays open.")
+    f = s.sealed("channel", 0, 0)
+    s.open(f, "plaintext")
+    s.open(f, "dropped_replay")
+    s.open(s.sealed("channel", 0, 1), "plaintext")
+
+    s = seq("replay_too_old", "responder",
+            "Counter 200 accepted; 72 is 128 behind (outside the window): dropped; 73 is 127 "
+            "behind and unseen: opens.")
+    s.open(s.sealed("channel", 0, 0), "plaintext")
+    s.open(s.sealed("channel", 0, 200), "plaintext")
+    s.open(s.sealed("channel", 0, 72), "dropped_replay")
+    s.open(s.sealed("channel", 0, 73), "plaintext")
+    s.open(s.sealed("resource", 0, 72), "plaintext")
+
+    s = seq("replay_across_phase", "initiator",
+            "The window carries over the phase change: a phase-1 frame reusing a phase-0 counter "
+            "opens (new key) but is dropped as a replay; it still shows phase 1 on the lane, so a "
+            "later phase-0 frame there is stale.")
+    s.open(s.sealed("channel", 0, 5), "plaintext")
+    s.promote()
+    s.open(s.sealed("channel", 1, 5), "dropped_replay")
+    s.open(s.sealed("channel", 1, 6), "plaintext")
+    s.open(s.sealed("channel", 0, 7), "dropped_stale")
+
+    s = seq("promote_twice", "responder", "A second promotion: a link is promoted at most once; closes.")
+    s.promote()
+    s.promote(error="seal_already_promoted")
+
+    for s_ in seqs:
+        assert s_.steps, s_.name
+    # The stale frame is the same bytes in both stale sequences.
+    by = {s_.name: s_ for s_ in seqs}
+    assert by["stale_phase0_after_phase1_seen"].steps[3]["frame"] == by["stale_phase0_before_phase1_seen"].steps[2]["frame"]
+
+    derived = {
+        f"phase{p}_{d}": hx(seal_key(keys[(p, d)], link_id)) for p in (0, 1) for d in ("i2r", "r2i")
+    }
+    return {
+        "description": (
+            "CC 5.3.3.10 E1 per-frame link seal, frame version 0x02 with key phases "
+            "(docs/TRANSIT_HANDSHAKE_V2.md, 'The per-frame seal is seal frame version 0x02'). "
+            "Generated by gen.py independently of the Rust. Each sequence is replayed against one "
+            "receiver; every FrameError closes the link."
+        ),
+        "layout": {
+            "frame": "0x02 || phase u8 || counter u64_be || AES-256-GCM(k, nonce, aad, pt) || tag[16]",
+            "k": "HKDF-SHA256(ikm = k_dir(phase), salt = link_id[16], info = 'CIRIS-E1-LINK-SEAL-V2')",
+            "nonce": "lane u8 || 0x000000 || counter u64_be",
+            "aad": "0x02 || lane u8 || phase u8 || link_id[16]",
+            "lanes": LANES,
+            "replay_window": REPLAY_WINDOW,
+        },
+        "replay_rule": (
+            "As edge's v1: the AEAD opens first; an opened frame whose counter repeats inside the "
+            "lane's 128-frame window, or is 128 or more behind its highest, is dropped "
+            "(dropped_replay) and the link stays open. The window moves only for frames that "
+            "opened, and is shared by both phases."
+        ),
+        "inputs": {
+            "source": "transit_ctkx_v2_v1.json",
+            "handshake": "first_contact_unbound_static",
+            "promotion": "promotion",
+            "link_id": hx(link_id),
+            "phase0": {"k_i2r": hx(k0_i2r), "k_r2i": hx(k0_r2i)},
+            "phase1": {"k_i2r": hx(k1_i2r), "k_r2i": hx(k1_r2i)},
+        },
+        "seal_keys": derived,
+        "sequences": [s_.doc() for s_ in seqs],
+    }
+
+
+# --------------------------------------------------------------------------
 # Fixed inputs
 # --------------------------------------------------------------------------
 
@@ -590,6 +1016,11 @@ def main():
     ctkc_p = initiator_on_promote(f1ctx["ilink"], msg3, f1ctx["sk_si"])
     rst, il = f1ctx["rst"], f1ctx["ilink"]
     assert (il["k_i2r_p"], il["k_r2i_p"], il["k_conf_p"]) == (rst["k_i2r_p"], rst["k_r2i_p"], rst["k_conf_p"])
+    assert (il["k_i2r"], il["k_r2i"]) == (rst["k_i2r"], rst["k_r2i"])
+    assert hx(rst["k_i2r"]) == fc1["k_i2r"] and hx(rst["k_r2i"]) == fc1["k_r2i"]
+    seal_inputs = (
+        link_id, rst["k_i2r"], rst["k_r2i"], rst["k_i2r_p"], rst["k_r2i_p"], f1ctx["ctkc"], ctkc_p,
+    )
     check_ctkc(ctkc_p, rst["k_conf_p"], rst["h3p"])
     # A pre-promotion CTKC never verifies as CTKC'.
     expect_refusal("ctkc_mismatch", lambda: check_ctkc(f1ctx["ctkc"], rst["k_conf_p"], rst["h3p"]))
@@ -779,6 +1210,12 @@ def main():
         f"{len(framing)} framing, {len(refusals)} refusals",
         file=sys.stderr,
     )
+
+    seal = seal_frame_vectors(*seal_inputs)
+    with open(OUT_SEAL, "w") as f:
+        json.dump(seal, f, indent=1, sort_keys=True)
+        f.write("\n")
+    print(f"wrote {OUT_SEAL}: {len(seal['sequences'])} sequences", file=sys.stderr)
 
 
 if __name__ == "__main__":

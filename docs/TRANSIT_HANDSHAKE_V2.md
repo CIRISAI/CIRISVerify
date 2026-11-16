@@ -163,14 +163,15 @@ Here `bound = u8 len ‖ suite ‖ u16 len ‖ initiator_key_id ‖ u16 len ‖ 
   - **A sender** switches to phase 1 for every lane once it has sent or received `CTKC'`.
   - **The label** is `CIRIS-E1-LINK-SEAL-V2`, not v1's: the frame format changed, so the derived key changes with it.
   - **Confirmed by edge** against `link_seal.rs` (v45.1.3): v1 is the same frame without the phase byte, with label `CIRIS-E1-LINK-SEAL-V1`. The `-V2` label stays.
-  - **Known answers:** verify's vectors fix the handshake and the promotion rekey (`k_i2r'`, `k_r2i'`). The seal-frame vectors cover:
-    - a phase-0 frame and a phase-1 frame in each direction;
-    - a stale phase-0 frame after the switch: dropped, the link stays open;
-    - an unknown phase: closes;
+  - **Known answers:** verify's vectors fix the handshake and the promotion rekey (`k_i2r'`, `k_r2i'`). The seal-frame vectors are in `src/ciris-crypto/tests/vectors/transit/transit_seal_frame_v2_v1.json`, keyed from that promotion, as 25 scripted receiver sequences. `tests/transit_seal_frame_vectors.rs` replays them through `ciris_crypto::transit::{seal_frame, FrameOpener}`, frame bytes and outcomes. They cover:
+    - phase-0 frames in each direction on two or more lanes, and a phase-1 frame in each direction after promotion, with the counter continuing;
+    - a stale phase-0 frame after phase 1 is seen on the lane, or after the budget retires phase 0: dropped and counted, the link stays open;
+    - the same frame before phase 1 is seen on the lane: it opens;
+    - an unknown phase (2, 255): closes;
     - phase 1 before promotion: closes;
-    - a tampered frame: closes.
-
-    They follow in `src/ciris-crypto/tests/vectors/transit/`.
+    - a tampered ciphertext, tag or counter, a phase byte flipped either way, or a frame on the wrong lane: AEAD failure, closes;
+    - a v0x01 frame (refused by name), version 0x03, a truncated and an empty frame: closes;
+    - a repeated counter, a counter 128 behind, and a phase-1 frame reusing a phase-0 counter: opened, then dropped by the replay window, the link stays open (v1's rule in edge's `link_seal.rs`).
 
 ## Downgrade
 
