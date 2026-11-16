@@ -49,18 +49,35 @@
 //! (`Yubico Attestation Root 1`, `developers.yubico.com/PKI/yubico-ca-1.pem`),
 //! not the rotating `B 1` intermediate; the bundle carries `[f9, B 1]`. Pre-5.7
 //! keys still verify with `[f9]` under the old `Yubico PIV Root CA Serial 263751`.
+//!
+//! ## Tiers (CIRISVerify#325)
+//!
+//! The verifiers (`verify_accord_custody_attestation`,
+//! `verify_yubikey_piv_attestation`) and their verdict and error types are in
+//! the `std` tier: they parse X.509 and read no clock, keyring or network, so a
+//! browser or UEFI node built with `default-features = false, features =
+//! ["std", "pqc"]` verifies custody. The producers
+//! (`produce_accord_custody_attestation`, `_validated`) and
+//! `custody_attestation_to_platform_attestation`, which returns a
+//! `ciris_keyring` type, need `host`. `test_support` needs only `std` (plus its
+//! own `test-support` feature).
 
 use base64::Engine;
-use serde_json::{json, Value};
+#[cfg(any(feature = "host", feature = "test-support", test))]
+use serde_json::json;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use x509_parser::der_parser::asn1_rs::FromDer;
 use x509_parser::prelude::*;
 
 use crate::ceg_outbox::SignedCegObject;
+#[cfg(any(feature = "host", feature = "test-support", test))]
 use crate::error::VerifyError;
 use crate::jcs;
+#[cfg(any(feature = "host", feature = "test-support", test))]
 use crate::self_at_login::SelfSigner;
 use crate::threshold::{verify_threshold_signatures, ThresholdMember, ThresholdSignature};
+#[cfg(feature = "host")]
 use ciris_keyring::{ExternalSecureElementAttestation, PlatformAttestation};
 
 /// CEG `kind` of an accord-holder custody attestation in the outbox.
@@ -194,6 +211,7 @@ impl std::error::Error for CustodyError {}
 
 /// The canonical custody-attestation envelope. The holder hybrid-signs the JCS
 /// bytes of this, binding their identity to the YubiKey attestation.
+#[cfg(any(feature = "host", feature = "test-support", test))]
 fn custody_envelope(
     holder_key_id: &str,
     ed25519_pubkey_b64: &str,
@@ -247,7 +265,29 @@ fn custody_envelope(
 /// # Errors
 ///
 /// [`VerifyError`] on a signer or canonicalization fault.
+#[cfg(feature = "host")]
 pub async fn produce_accord_custody_attestation(
+    holder: &dyn SelfSigner,
+    attestation_9c_der: &[u8],
+    attestation_chain_ders: &[&[u8]],
+    custody_tier: &str,
+    signed_at: &str,
+) -> Result<SignedCegObject, VerifyError> {
+    sign_custody_attestation(
+        holder,
+        attestation_9c_der,
+        attestation_chain_ders,
+        custody_tier,
+        signed_at,
+    )
+    .await
+}
+
+/// The body of [`produce_accord_custody_attestation`], shared with
+/// `test_support` and the `std`-tier tests so all three mint the same bytes.
+/// It needs only [`SelfSigner`] (no keyring).
+#[cfg(any(feature = "host", feature = "test-support", test))]
+async fn sign_custody_attestation(
     holder: &dyn SelfSigner,
     attestation_9c_der: &[u8],
     attestation_chain_ders: &[&[u8]],
@@ -324,6 +364,7 @@ pub async fn produce_accord_custody_attestation(
 ///
 /// [`VerifyError`] on a signer/serialization fault, or — the point of this
 /// function — if the freshly-minted attestation does **not** verify.
+#[cfg(feature = "host")]
 pub async fn produce_accord_custody_attestation_validated(
     holder: &dyn SelfSigner,
     attestation_9c_der: &[u8],
@@ -575,6 +616,7 @@ pub fn verify_accord_custody_attestation(
 /// # Errors
 ///
 /// [`CustodyError`] if the bundle's evidence certs are missing or malformed.
+#[cfg(feature = "host")]
 pub fn custody_attestation_to_platform_attestation(
     obj: &SignedCegObject,
     verdict: &CustodyVerdict,
@@ -794,9 +836,7 @@ pub fn verify_yubikey_piv_attestation(
 /// fabrication code are physically absent from production artifacts.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
-    use super::{
-        produce_accord_custody_attestation, CUSTODY_TIER_PORTABLE_2FA, TOUCH_POLICY_ALWAYS,
-    };
+    use super::{sign_custody_attestation, CUSTODY_TIER_PORTABLE_2FA, TOUCH_POLICY_ALWAYS};
     use crate::ceg_outbox::SignedCegObject;
     use crate::self_at_login::HybridSigningIdentity;
     use crate::threshold::ThresholdMember;
@@ -963,7 +1003,9 @@ pub mod test_support {
             let holder = HybridSigningIdentity::new(key_id, ed, mldsa);
             let member = holder.directory_member().expect("directory member");
 
-            let attestation = produce_accord_custody_attestation(
+            // The producer's own body (`produce_accord_custody_attestation`
+            // delegates to it), so the mock needs no `host`.
+            let attestation = sign_custody_attestation(
                 &holder,
                 cert_9c.der().as_ref(),
                 &[f9.der().as_ref()],
@@ -986,6 +1028,10 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
+    // Without `host` the public producer is absent; its body is not, so the
+    // producer-path tests run in the `std` tier against the same bytes.
+    #[cfg(not(feature = "host"))]
+    use super::sign_custody_attestation as produce_accord_custody_attestation;
     use rcgen::{
         CertificateParams, CustomExtension, DistinguishedName, DnType, KeyPair, PKCS_ED25519,
     };
@@ -1193,6 +1239,34 @@ mod tests {
         let pem = format!("-----BEGIN PRIVATE KEY-----\n{b64}\n-----END PRIVATE KEY-----\n");
         let kp = KeyPair::from_pkcs8_pem_and_sign_algo(&pem, &PKCS_ED25519).unwrap();
         (pem, kp)
+    }
+
+    /// The CIRISPersist shape (`default-features = false, features = ["std",
+    /// "pqc"]`): the verifier resolves the pinned root from the baked store with
+    /// no `host`, and a mock-CA member, valid under its own root, is refused
+    /// under every real Yubico root (#325).
+    #[tokio::test]
+    async fn mock_member_is_refused_under_the_baked_yubico_roots() {
+        use super::test_support::MockYubicoCa;
+        use crate::trust_anchor_store::{baked, environments, Purpose};
+
+        let ca = MockYubicoCa::new();
+        let m = ca
+            .attest_member([7; 32], "A1", "2026-11-15T00:00:00Z")
+            .await;
+        assert!(
+            verify_accord_custody_attestation(&m.attestation, &m.member, ca.root_der()).is_ok()
+        );
+
+        let store = baked::default_store();
+        let roots = store.resolve_x509(Purpose::KeyAttestation, environments::YUBIKEY_PIV);
+        assert!(!roots.is_empty(), "the baked store pins a Yubico PIV root");
+        for root in roots {
+            assert!(matches!(
+                verify_accord_custody_attestation(&m.attestation, &m.member, root),
+                Err(CustodyError::ChainInvalid { .. })
+            ));
+        }
     }
 
     /// #219: the exported `test_support` machinery must produce members the REAL
@@ -1522,6 +1596,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "host")]
     #[tokio::test]
     async fn custody_attestation_wraps_to_external_se_platform_attestation(/* #117 */) {
         // The registration bridge: a verified custody attestation must convert to
@@ -1577,6 +1652,7 @@ mod tests {
 
     /// Helper: a holder + its mock chain, plus a store carrying that mock root
     /// under the PIV environment.
+    #[cfg(feature = "host")]
     fn self_validation_fixture(
         seed: [u8; 32],
     ) -> (
@@ -1599,6 +1675,7 @@ mod tests {
     }
 
     /// A good mint self-validates and returns its own verdict.
+    #[cfg(feature = "host")]
     #[tokio::test]
     async fn generation_self_validates_against_the_store() {
         use crate::trust_anchor_store::{baked, TrustAnchorStore};
@@ -1629,6 +1706,7 @@ mod tests {
     /// THE point: a mint whose chain does not root at the store's anchor FAILS
     /// AT GENERATION, rather than producing an artifact that only fails later
     /// on someone else's gate.
+    #[cfg(feature = "host")]
     #[tokio::test]
     async fn generation_fails_loudly_when_the_mint_would_not_verify() {
         use crate::trust_anchor_store::{baked, environments, TrustAnchorStore};
@@ -1658,6 +1736,7 @@ mod tests {
 
     /// No pinned anchor is "could not self-check", NOT a failure — hardware is
     /// a signal, not a requirement.
+    #[cfg(feature = "host")]
     #[tokio::test]
     async fn generation_without_an_anchor_is_unvalidated_not_failed() {
         use crate::trust_anchor_store::TrustAnchorStore;
