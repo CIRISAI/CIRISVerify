@@ -292,6 +292,17 @@ kr("pseudonym_with_end", "A pseudonym may carry valid_until.", ["pseudonym"], T0
 kr("steward_no_end_rule", "A role outside both groups takes no end rule.", ["steward"], None, "ok")
 kr("roles_unsorted", "identity_type not sorted.", ["node", "user"], None, "key_record_bad_identity_type",
    raw_roles=["user", "node"])
+def kr_ev(cid, desc, ev, expect):
+    p = krec(B, ["accord_holder"], None)
+    p["attestation_evidence"] = ev
+    key_records.append({"id": cid, "description": desc, "payload_hex": enc(p).hex(), "expect": expect})
+kr_ev("pq_custody_removable_offline", "An accord holder's key: hardware_class names the Ed25519 half, pq_custody removable_offline (CC 4.2.2).",
+      {"hardware_class": "YubiKey_5_FIPS", "pq_custody": "removable_offline"}, "ok")
+kr_ev("pq_custody_missing", "hardware_class without pq_custody: carried (the consumer weighs it at 0.0), not refused.",
+      {"hardware_class": "YubiKey_5_FIPS"}, "ok")
+kr_ev("pq_custody_unknown", "pq_custody outside the three values.", {"hardware_class": "YubiKey_5_FIPS", "pq_custody": "tpm"},
+      "key_record_bad_pq_custody")
+kr_ev("attestation_evidence_not_map", "attestation_evidence that is not a map.", "YubiKey_5_FIPS", "key_record_bad_pq_custody")
 
 # ---- Key directory: Waiting through records and on a half ----
 def krow(signer, subject, roles, until):
