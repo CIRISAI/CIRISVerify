@@ -144,6 +144,9 @@ struct Case {
     rule: &'static str,
     description: &'static str,
     expect: &'static str,
+    /// The token CIRISPersist's own accord_recovery.rs refuses this case with
+    /// (v62), recorded so the file cross-checks both implementations.
+    expect_persist: &'static str,
     with_every_charter: &'static str,
     charter_rows: Vec<usize>,
     recovery_key_id: &'static str,
@@ -174,6 +177,7 @@ fn cases(v: &Value) -> Vec<Case> {
             rule: "CC 4.2.6 (rc20): a commitment a recovery has spent never comes back into force, even when a later charter version re-lists it",
             description: "v3 spent vec-holder-a-recovery's commitment; v4's charter re-lists it for vec-holder-a2. vec-holder-a2 recovers to vec-holder-a3 under vec-holder-a-recovery, over every charter row.",
             expect: "RecoveryKeySpent",
+            expect_persist: "accord_recovery_key_spent",
             with_every_charter: "RecoveryKeySpent",
             charter_rows: vec![0, 1, 2],
             recovery_key_id: "vec-holder-a-recovery",
@@ -185,6 +189,7 @@ fn cases(v: &Value) -> Vec<Case> {
             rule: "CC 4.2.6 (rc20): the commitment walk reads every charter version in link order; a charter row it needs and is not given fails closed, it is never skipped",
             description: "vec-holder-a2 recovers to vec-holder-a3 under vec-holder-a2-recovery (the commitment v3 named for it, still in force at v4), offered with v4's charter row withheld. Accepted with every row.",
             expect: "CharterMissing",
+            expect_persist: "accord_recovery_lineage_incomplete",
             with_every_charter: "accepted",
             charter_rows: vec![0, 1],
             recovery_key_id: "vec-holder-a2-recovery",
@@ -209,6 +214,7 @@ fn render(v: &Value) -> Value {
                 "rule": c.rule,
                 "description": c.description,
                 "expect_verify": c.expect,
+                "expect_persist": c.expect_persist,
                 "with_every_charter": c.with_every_charter,
                 "lineage_versions": [1, 2, 3, 4],
                 "charter_rows": c.charter_rows,

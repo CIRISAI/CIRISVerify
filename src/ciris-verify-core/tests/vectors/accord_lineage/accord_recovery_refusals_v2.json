@@ -26,6 +26,7 @@
         2
       ],
       "description": "v3 spent vec-holder-a-recovery's commitment; v4's charter re-lists it for vec-holder-a2. vec-holder-a2 recovers to vec-holder-a3 under vec-holder-a-recovery, over every charter row.",
+      "expect_persist": "accord_recovery_key_spent",
       "expect_verify": "RecoveryKeySpent",
       "id": "spent_commitment_relisted",
       "lineage_versions": [
@@ -93,6 +94,7 @@
         1
       ],
       "description": "vec-holder-a2 recovers to vec-holder-a3 under vec-holder-a2-recovery (the commitment v3 named for it, still in force at v4), offered with v4's charter row withheld. Accepted with every row.",
+      "expect_persist": "accord_recovery_lineage_incomplete",
       "expect_verify": "CharterMissing",
       "id": "charter_missing",
       "lineage_versions": [
