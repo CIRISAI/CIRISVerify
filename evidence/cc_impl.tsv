@@ -21,9 +21,7 @@ decimal_id	claim_id	repo	path#symbol	crate@version	span_sha256
 3.3.6.2	CLM-transport-authenticated	CIRISVerify	src/ciris-verify-core/src/transport_binding.rs#verify_transport_binding	ciris-verify-core@v12.5.0	84da52afde7db1072d7eda57124778b4bd06e23ec12ec53254e1df3c62f782bb
 3.3.6.3	CLM-rns	CIRISVerify	src/ciris-verify-core/src/transport_binding.rs#compute_destination_hash	ciris-verify-core@v12.5.0	e52da34983d43cb2d3905da3013bcaa1c450d232a3b512bd3b8c764831e0cfac
 4.2.1.1	CLM-invocation	CIRISVerify	src/ciris-verify-core/src/humanity_accord.rs#Invocation::canonical_bytes	ciris-verify-core@v12.5.0	ed112668148018b7355e82c7b29cff6e869bb36fc8b9c1bbbf003d2b6010c2ab
-4.2.1.3	CLM-lifecycle	CIRISVerify	src/ciris-verify-core/src/humanity_accord.rs#verify_invocation	ciris-verify-core@v12.5.0	f52ddebb967523cdee4ad81c4c81a99f77b9d1014307edb1d066104f29703862
-4.2.1.3	CLM-lifecycle	CIRISVerify	src/ciris-verify-core/src/humanity_accord.rs#check_binding_lines	ciris-verify-core@v23.2.0	3b82b32990531f0e89725c05db0ac95aba46ef6ae3334eb9300d703c4159ebe6
-4.2.1.1	CLM-invocation	CIRISVerify	src/ciris-verify-core/src/humanity_accord.rs#verify_invocation_composite	ciris-verify-core@v23.2.0	6985c5cf4ea63b5d745845b12979888aa4fcd5c1cf52ecb20367f692c4deb334
+4.2.1.3	CLM-lifecycle	CIRISVerify	src/ciris-verify-core/src/humanity_accord.rs#verify_invocation	ciris-verify-core@v12.5.0	13d3ff9c3c2ab5763a83b3ba93f443c5d1b9661df95a594316bba18a863eb2d5
 4.2.2	CLM-hardware-class	CIRISVerify	src/ciris-keyring/src/hw_token.rs#hardware_class_table	ciris-keyring@v10.1.1	bfcad5af15db3c637c7e98a55f906c5882685b155fffbe377b7e58471fc65dc7
 4.2.6	CLM-accord-livequorum	CIRISVerify	src/ciris-verify-core/src/accord_live_quorum.rs#verify_membership_change_by_live_quorum	ciris-verify-core@v12.5.0	d9ac398f66d3e6b093fd879e8719b756e74bb814201492959c78de8823e99ae0
 4.2.6	CLM-accord-livequorum	CIRISVerify	src/ciris-verify-core/src/accord_live_quorum.rs#verify_holder_recovery	ciris-verify-core@v23.0.0	17144dd2d06c286b241d1ff8ee5383885d7539140e00f725d5ba62e43006b310
