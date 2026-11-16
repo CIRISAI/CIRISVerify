@@ -13,7 +13,7 @@
 # by the first hex character of their key, so each file stays under the repository's 1000 KB limit).
 #
 # With --cc it also loads CC's reference bundle reader and its broken samples (the tool at CIRISConstitution
-# 64c5918), embeds the samples' bytes, and runs the reference reader over every case it can model (first
+# 436b5bc), embeds the samples' bytes, and runs the reference reader over every case it can model (first
 # bundles and later ones, each over the reference reader's own placement of its predecessor), recording its
 # answer beside ours.
 import base64, datetime, hashlib, importlib.util, json, sys

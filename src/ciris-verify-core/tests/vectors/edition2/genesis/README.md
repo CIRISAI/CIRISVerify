@@ -22,7 +22,7 @@ expansion from the seeds the file states):
     pip install dilithium-py kyber-py cryptography
     python3 -I gen_genesis_bundles_v2.py --cc /path/to/CIRISConstitution/tools/build_cc_signed_object_v2.py --out .
 
-With `--cc` the generator also loads CC's tool (at 64c5918), embeds its broken samples, and runs CC's
+With `--cc` the generator also loads CC's tool (at 436b5bc), embeds its broken samples, and runs CC's
 reference bundle reader over every case it can model, writing its answer beside ours (`cc.reader`). Later
 bundles are read over the reference reader's own placement of their predecessor. Without `--cc` the `cc`
 section is absent and the Rust test's `cc_samples` fails, so regenerate with it.
@@ -114,16 +114,12 @@ New:
 - `scope_unsorted`; `fork_roster_and_recovery` (a roster change and a recovery on one predecessor: a fork whose
   tips share B and both seats).
 
-## Agreement with CC's reference reader (64c5918)
+## Agreement with CC's reference reader (436b5bc)
 
 CC's `read_bundle` (structure only, voices taken as verified) runs over the 60 cases it can model, first
-bundles and later ones: 53 agree. `iat_off_by_one`, the one v1 disagreement, now agrees (CC refuses that
-statement alone). The seven disagreements turn on rules CC is adding to its reader: which key a later bundle seats for a
-holder (`roster_bundle_rotates_without_holder_voice`, `roster_bundle_rotates_holder_voice_under_new_key`:
-`holder_not_genesis_key`) and the keys a lineage retired (`recovered_holder_genesis_record`,
-`roster_reseats_retired_key_after_rotation`, `roster_reseats_retired_key_after_recovery`,
-`roster_seats_in_force_recovery_key`, `roster_seats_spent_recovery_key`: `holder_key_retired`). The
-reference reader answers Valid for each. Each of CC's 24 reader breaks maps to a case here with the same answer, its two valid later
+bundles and later ones: all 60 agree at rc20 436b5bc, which adds the seated-key check (holder rotation
+by the holder's own counted voice), `holder_key_retired`, and the Invalid-first order. A refused statement
+is no voice, so the projection carries counted voices only. (At 64c5918, 53 of 60 agreed.) Each of CC's 24 reader breaks maps to a case here with the same answer, its two valid later
 samples to Valid cases, and its three cross-bundle checks to cases. CC's genesis payload samples (the valid
 one now in set order), key-record samples, recovery inputs and broken row statements are replayed as in v1;
 its five broken binding samples are each refused by `check_seat_binding`, and its valid one passes.

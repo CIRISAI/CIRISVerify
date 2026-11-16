@@ -1,5 +1,5 @@
 //! `ceg-genesis-bundle/2` known answers (CC 2.6.1.11, CC 4.2.6,
-//! CIRISConstitution rc20 64c5918).
+//! CIRISConstitution rc20 436b5bc for the cross-check).
 //!
 //! `tests/vectors/edition2/genesis/genesis_bundles_v2.json` was written by
 //! `gen_genesis_bundles_v2.py` beside it: its own CBOR encoder, dilithium-py,
@@ -679,10 +679,8 @@ fn cc_samples() {
         );
     }
     // The reference reader over every case it models (first bundles, and later ones over its own
-    // placement of the predecessor). It does not yet model the seated key of a holder in a later
-    // bundle (holder_not_genesis_key, re-seated only by the holder's own counted statement under its
-    // current key) nor the keys a lineage retired (holder_key_retired), so the seven cases that turn
-    // on them are the known disagreements.
+    // placement of the predecessor). At rc20 436b5bc it models the seated key, the retired keys and
+    // the Invalid-first order, so every case agrees.
     let reader = cc["reader"].as_array().unwrap();
     assert!(reader.len() >= 50, "the cases CC's reader models");
     let disagree: BTreeSet<&str> = reader
@@ -690,17 +688,9 @@ fn cc_samples() {
         .filter(|r| r["agree"] == false)
         .map(|r| r["case"].as_str().unwrap())
         .collect();
-    assert_eq!(
-        disagree,
-        BTreeSet::from([
-            "recovered_holder_genesis_record",
-            "roster_bundle_rotates_without_holder_voice",
-            "roster_bundle_rotates_holder_voice_under_new_key",
-            "roster_reseats_retired_key_after_rotation",
-            "roster_reseats_retired_key_after_recovery",
-            "roster_seats_in_force_recovery_key",
-            "roster_seats_spent_recovery_key"
-        ])
+    assert!(
+        disagree.is_empty(),
+        "CC's reference reader disagrees on {disagree:?}"
     );
     // Each of the reference reader's breaks, valid samples and chain checks has its case here, and each
     // break's answer is that case's.
