@@ -55,6 +55,9 @@ pub enum KeyRecordError {
     /// `attestation_evidence` is not a map, or its `pq_custody` is not one
     /// of the three values (CC 4.2.2).
     BadPqCustody,
+    /// `attestation_evidence.hardware_class` is not text, or its `chain` is
+    /// not a non-empty sequence of byte strings (CC 4.2.2.1).
+    BadAttestationEvidence,
 }
 
 /// Where a composite key's ML-DSA-65 half is held, when the record's
@@ -95,6 +98,7 @@ impl KeyRecordError {
             Self::BadIdentityType => "key_record_bad_identity_type",
             Self::BadTime => "key_record_bad_time",
             Self::BadPqCustody => "key_record_bad_pq_custody",
+            Self::BadAttestationEvidence => "key_record_bad_attestation_evidence",
         }
     }
 }
@@ -114,6 +118,12 @@ pub struct KeyRecord {
     pub valid_until: Option<u64>,
     /// `attestation_evidence.pq_custody`, where the record carries one.
     pub pq_custody: Option<PqCustody>,
+    /// `attestation_evidence.hardware_class`, where the record carries one:
+    /// the holder's claim, admitted only through the gate at seating.
+    pub hardware_class: Option<String>,
+    /// `attestation_evidence.chain`: X.509 DER, leaf first (CC 4.2.2.1);
+    /// empty where the record carries none.
+    pub chain: Vec<Vec<u8>>,
 }
 
 /// Check a key record's payload against the end rule.
@@ -177,10 +187,29 @@ pub fn check_key_record(payload: &Value) -> Result<KeyRecord, KeyRecordError> {
             return Err(KeyRecordError::OutOfWindow);
         }
     }
+    let mut hardware_class = None;
+    let mut chain = Vec::new();
     let pq_custody = match payload.get_text("attestation_evidence") {
         None => None,
         Some(ev) => {
             ev.as_map().ok_or(KeyRecordError::BadPqCustody)?;
+            if let Some(c) = ev.get_text("hardware_class") {
+                let c = c.as_text().ok_or(KeyRecordError::BadAttestationEvidence)?;
+                hardware_class = Some(c.to_owned());
+            }
+            if let Some(c) = ev.get_text("chain") {
+                chain = c
+                    .as_array()
+                    .filter(|a| !a.is_empty())
+                    .ok_or(KeyRecordError::BadAttestationEvidence)?
+                    .iter()
+                    .map(|d| {
+                        d.as_bytes()
+                            .map(<[u8]>::to_vec)
+                            .ok_or(KeyRecordError::BadAttestationEvidence)
+                    })
+                    .collect::<Result<_, _>>()?;
+            }
             match ev.get_text("pq_custody") {
                 None => None,
                 Some(v) => Some(match v.as_text() {
@@ -194,6 +223,8 @@ pub fn check_key_record(payload: &Value) -> Result<KeyRecord, KeyRecordError> {
     };
     Ok(KeyRecord {
         pq_custody,
+        hardware_class,
+        chain,
         kid: thumbprint(&key),
         key,
         identity_type,

@@ -25,7 +25,12 @@
 pub mod disclosure;
 pub mod earlier;
 pub mod family;
+// The `ceg-genesis-bundle/2` reader (CC 2.6.1.11). `std` tier: its custody
+// gate parses X.509 attestation chains.
+#[cfg(feature = "std")]
+pub mod genesis;
 pub mod keys;
+pub mod recovery;
 
 use crate::cde::{self, Value};
 use crate::prelude::*;
