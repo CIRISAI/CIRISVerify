@@ -210,6 +210,10 @@ impl PqcSigner for SealedMlDsa65Signer {
         self.inner.sign(data).await
     }
 
+    async fn sign_with_context(&self, ctx: &[u8], msg: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        self.inner.sign_with_context(ctx, msg).await
+    }
+
     async fn attestation(&self) -> Result<PlatformAttestation, KeyringError> {
         self.inner.attestation().await
     }
@@ -274,6 +278,24 @@ mod tests {
 
         let signer = SealedMlDsa65Signer::adopt("fed-pqc", &dir, &seed).unwrap();
         assert_eq!(signer.public_key().await.unwrap(), expected);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn sign_with_context_matches_the_software_signer() {
+        let dir = tmpdir();
+        let seed = [0x42u8; SEED_LEN];
+        let reference = MlDsa65SoftwareSigner::from_seed_bytes(&seed, "ref").unwrap();
+        let signer = SealedMlDsa65Signer::adopt("fed-pqc", &dir, &seed).unwrap();
+        let ctx = ciris_crypto::composite::LABEL;
+        assert_eq!(
+            signer.sign_with_context(ctx, b"m").await.unwrap(),
+            reference.sign_with_context(ctx, b"m").await.unwrap()
+        );
+        assert!(matches!(
+            signer.sign_with_context(&[0; 256], b"m").await,
+            Err(KeyringError::SigningFailed { .. })
+        ));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -106,6 +106,37 @@ pub trait PqcSigner: Send + Sync {
     /// Returns error if the key doesn't exist or signing fails.
     async fn sign(&self, data: &[u8]) -> Result<Vec<u8>, KeyringError>;
 
+    /// FIPS 204 `ML-DSA.Sign(sk, msg, ctx)` with the context string `ctx`,
+    /// deterministic like [`Self::sign`] (v23.1.2). `ctx` is at most 255
+    /// bytes; a longer one is refused with [`KeyringError::SigningFailed`]
+    /// before the key is touched. With an empty `ctx` the bytes equal
+    /// [`Self::sign`]'s.
+    ///
+    /// The CC 2.6.1.7 composite signs its ML-DSA-65 half this way, with
+    /// `ciris_crypto::composite::LABEL` as `ctx` over the message
+    /// representative `M'`; see [`crate::composite::composite_sign`].
+    ///
+    /// Provided so implementors outside this crate keep compiling: the default
+    /// returns [`KeyringError::NotSupported`]. Every ML-DSA-65 signer in this
+    /// crate overrides it ([`MlDsa65SoftwareSigner`], the direct
+    /// `ciris_crypto::MlDsa65Signer` impl, `SealedMlDsa65Signer`,
+    /// `UsbWrappedMlDsa65Signer`).
+    ///
+    /// # Errors
+    ///
+    /// [`KeyringError::NotSupported`] by default; [`KeyringError::SigningFailed`]
+    /// on an over-long `ctx`; otherwise as [`Self::sign`].
+    async fn sign_with_context(&self, ctx: &[u8], msg: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        let _ = (ctx, msg);
+        Err(KeyringError::NotSupported {
+            operation: format!(
+                "PqcSigner::sign_with_context ({:?} signer {:?})",
+                self.algorithm(),
+                self.current_alias()
+            ),
+        })
+    }
+
     /// Get attestation data.
     ///
     /// Software signers return [`PlatformAttestation::Software`] with a
@@ -130,6 +161,33 @@ pub trait PqcSigner: Send + Sync {
     /// detect ephemeral storage before identity churn starts breaking
     /// scoring.
     fn storage_descriptor(&self) -> StorageDescriptor;
+}
+
+/// FIPS 204 bounds `ctx` at 255 bytes (Algorithm 2 step 1).
+pub(crate) fn check_context(ctx: &[u8]) -> Result<(), KeyringError> {
+    if ctx.len() > 255 {
+        return Err(KeyringError::SigningFailed {
+            reason: format!(
+                "ML-DSA context string is at most 255 bytes, got {}",
+                ctx.len()
+            ),
+        });
+    }
+    Ok(())
+}
+
+/// Context-sign with a `ciris_crypto::MlDsa65Signer`, mapping the error.
+fn crypto_sign_with_context(
+    signer: &ciris_crypto::MlDsa65Signer,
+    ctx: &[u8],
+    msg: &[u8],
+) -> Result<Vec<u8>, KeyringError> {
+    check_context(ctx)?;
+    signer
+        .sign_with_context(ctx, msg)
+        .map_err(|e| KeyringError::SigningFailed {
+            reason: format!("ML-DSA-65 sign_with_context: {e}"),
+        })
 }
 
 /// Software ML-DSA-65 signer for the cold-path PQC fill-in flow.
@@ -323,6 +381,17 @@ impl PqcSigner for MlDsa65SoftwareSigner {
         })
     }
 
+    async fn sign_with_context(&self, ctx: &[u8], msg: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        check_context(ctx)?;
+        let inner = self
+            .inner
+            .as_ref()
+            .ok_or_else(|| KeyringError::KeyNotFound {
+                alias: self.alias.clone(),
+            })?;
+        crypto_sign_with_context(inner, ctx, msg)
+    }
+
     async fn attestation(&self) -> Result<PlatformAttestation, KeyringError> {
         Ok(PlatformAttestation::Software(SoftwareAttestation {
             key_derivation: "seed-bytes-or-file".to_string(),
@@ -399,6 +468,10 @@ impl PqcSigner for ciris_crypto::MlDsa65Signer {
         ciris_crypto::PqcSigner::sign(self, data).map_err(|e| KeyringError::HardwareError {
             reason: format!("ML-DSA-65 sign (direct impl): {e}"),
         })
+    }
+
+    async fn sign_with_context(&self, ctx: &[u8], msg: &[u8]) -> Result<Vec<u8>, KeyringError> {
+        crypto_sign_with_context(self, ctx, msg)
     }
 
     async fn attestation(&self) -> Result<PlatformAttestation, KeyringError> {

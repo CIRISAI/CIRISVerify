@@ -44,7 +44,7 @@ keyring-storage = ["fs", "dep:keyring"]
 # Post-quantum cryptography: enables ML-DSA-65 software signer + PqcSigner trait.
 # Used by CIRISPersist's cold-path PQC fill-in flow (federation_keys etc.) so
 # downstream consumers don't reach into the ml-dsa crate directly.
-pqc-ml-dsa = ["ciris-crypto/pqc-ml-dsa", "ciris-crypto/ed25519", "ciris-crypto/self-enc", "ciris-crypto/hybrid-kex"]
+pqc-ml-dsa = ["ciris-crypto/pqc-ml-dsa", "ciris-crypto/ed25519", "ciris-crypto/composite", "ciris-crypto/self-enc", "ciris-crypto/hybrid-kex"]
 
 [dependencies]
 async-trait.workspace = true

@@ -126,6 +126,33 @@ impl MlDsa65Signer {
         })
     }
 
+    /// FIPS 204 `ML-DSA.Sign(sk, msg, ctx)`, the deterministic variant
+    /// (FIPS 204 §3.4), with the context string `ctx` (v23.1.2). With an empty
+    /// `ctx` the bytes equal [`PqcSigner::sign`]'s.
+    ///
+    /// # Errors
+    /// [`CryptoError::SigningFailed`] if `ctx` is over 255 bytes (FIPS 204
+    /// Algorithm 2 step 1) or signing fails.
+    #[cfg(feature = "pqc-ml-dsa")]
+    pub fn sign_with_context(&self, ctx: &[u8], msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        if ctx.len() > 255 {
+            return Err(CryptoError::SigningFailed {
+                reason: format!(
+                    "ML-DSA-65 context string is at most 255 bytes, got {}",
+                    ctx.len()
+                ),
+            });
+        }
+        let sig = self
+            .signing_key
+            .expanded_key()
+            .sign_deterministic(msg, ctx)
+            .map_err(|_| CryptoError::SigningFailed {
+                reason: "ML-DSA-65 context sign".into(),
+            })?;
+        Ok(sig.encode().to_vec())
+    }
+
     /// Create a signer from seed bytes (stub when feature disabled).
     #[cfg(not(feature = "pqc-ml-dsa"))]
     pub fn from_seed(_seed: &[u8]) -> Result<Self, CryptoError> {
@@ -165,6 +192,11 @@ impl PqcSigner for MlDsa65Signer {
         Err(CryptoError::UnsupportedAlgorithm {
             algorithm: "ML-DSA-65 not implemented".into(),
         })
+    }
+
+    #[cfg(feature = "pqc-ml-dsa")]
+    fn sign_with_context(&self, ctx: &[u8], msg: &[u8]) -> Result<Vec<u8>, CryptoError> {
+        MlDsa65Signer::sign_with_context(self, ctx, msg)
     }
 }
 
@@ -225,6 +257,36 @@ impl PqcVerifier for MlDsa65Verifier {
 #[cfg(all(test, feature = "pqc-ml-dsa"))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sign_with_context_binds_the_context() {
+        let signer = MlDsa65Signer::from_seed(&[11; 32]).unwrap();
+        let enc =
+            EncodedVerifyingKey::<MlDsa65>::try_from(&signer.public_key().unwrap()[..]).unwrap();
+        let vk = VerifyingKey::<MlDsa65>::decode(&enc);
+        let sig = signer.sign_with_context(b"ctx-a", b"msg").unwrap();
+        assert_eq!(sig.len(), 3309);
+        let parsed = Signature::<MlDsa65>::try_from(&sig[..]).unwrap();
+        assert!(vk.verify_with_context(b"msg", b"ctx-a", &parsed));
+        assert!(!vk.verify_with_context(b"msg", b"ctx-b", &parsed));
+        assert!(!vk.verify_with_context(b"msg", b"", &parsed));
+        // Deterministic, and the empty context is `sign`.
+        assert_eq!(sig, signer.sign_with_context(b"ctx-a", b"msg").unwrap());
+        assert_eq!(
+            signer.sign_with_context(b"", b"msg").unwrap(),
+            PqcSigner::sign(&signer, b"msg").unwrap()
+        );
+        // Through the trait too.
+        assert_eq!(
+            PqcSigner::sign_with_context(&signer, b"ctx-a", b"msg").unwrap(),
+            sig
+        );
+        assert!(signer.sign_with_context(&[0; 255], b"msg").is_ok());
+        assert!(matches!(
+            signer.sign_with_context(&[0; 256], b"msg"),
+            Err(CryptoError::SigningFailed { .. })
+        ));
+    }
 
     #[test]
     fn test_ml_dsa_sign_verify() {

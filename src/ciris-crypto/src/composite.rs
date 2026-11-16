@@ -230,6 +230,41 @@ impl SplitCompositeSigner {
     }
 }
 
+/// Assemble a composite signature from halves produced elsewhere (v23.1.2).
+///
+/// For a caller whose two halves live behind opaque signers (a sealed or
+/// USB-wrapped ML-DSA-65 seed, an Ed25519 token): each signs
+/// [`message_representative`]`(msg)`, ML-DSA-65 with [`LABEL`] as its FIPS 204
+/// context string, and this checks both halves under `public` (ML-DSA-65 with
+/// ctx = [`LABEL`], Ed25519 strictly) before returning
+/// `mldsa_sig || ed25519_sig`. A half signed by another key, over another
+/// representative, or under another context is refused here, at mint.
+///
+/// # Errors
+/// [`CryptoError::InvalidSignature`] if `mldsa_sig` is not
+/// [`MLDSA65_SIG_LEN`] bytes; [`CryptoError::VerificationFailed`] if either
+/// half does not verify (the error does not say which).
+pub fn assemble_composite(
+    public: &CompositePublicKey,
+    msg: &[u8],
+    mldsa_sig: &[u8],
+    ed25519_sig: &[u8; 64],
+) -> Result<Vec<u8>, CryptoError> {
+    if mldsa_sig.len() != MLDSA65_SIG_LEN {
+        return Err(CryptoError::InvalidSignature {
+            reason: alloc::format!(
+                "ML-DSA-65 half is {MLDSA65_SIG_LEN} bytes, got {}",
+                mldsa_sig.len()
+            ),
+        });
+    }
+    let mut out = Vec::with_capacity(SIGNATURE_LEN);
+    out.extend_from_slice(mldsa_sig);
+    out.extend_from_slice(ed25519_sig);
+    public.verify(msg, &out)?;
+    Ok(out)
+}
+
 /// A composite public key, `mldsaPK || ed25519PK`.
 #[derive(Clone)]
 pub struct CompositePublicKey {
@@ -275,6 +310,27 @@ impl CompositePublicKey {
             mldsa,
             ed25519,
         })
+    }
+
+    /// Build from the two halves' public keys: the 1952-byte ML-DSA-65 key
+    /// and the 32-byte Ed25519 key (v23.1.2).
+    ///
+    /// # Errors
+    /// As [`Self::from_bytes`].
+    pub fn from_halves(mldsa_public: &[u8], ed25519_public: &[u8]) -> Result<Self, CryptoError> {
+        if mldsa_public.len() != MLDSA65_PK_LEN || ed25519_public.len() != 32 {
+            return Err(CryptoError::InvalidPublicKey {
+                reason: alloc::format!(
+                    "composite halves are {MLDSA65_PK_LEN} + 32 bytes, got {} + {}",
+                    mldsa_public.len(),
+                    ed25519_public.len()
+                ),
+            });
+        }
+        let mut pk = [0u8; PUBLIC_KEY_LEN];
+        pk[..MLDSA65_PK_LEN].copy_from_slice(mldsa_public);
+        pk[MLDSA65_PK_LEN..].copy_from_slice(ed25519_public);
+        Self::from_bytes(&pk)
     }
 
     /// The 1984-byte encoding.
@@ -368,6 +424,52 @@ mod tests {
         let mp = SplitCompositeSigner::representative(b"row");
         let ed = token.sign(&mp).to_bytes();
         assert_eq!(split.assemble(b"row", &ed).unwrap(), sig);
+    }
+
+    #[test]
+    fn assemble_from_external_halves() {
+        let whole = CompositeSigningKey::from_seeds(&[3; 32], &[4; 32]);
+        let ml = SigningKey::<MlDsa65>::from_seed(&Seed::from([3; 32]));
+        let ed = EdSigningKey::from_bytes(&[4; 32]);
+        let public = CompositePublicKey::from_halves(
+            &ml.verifying_key().encode(),
+            ed.verifying_key().as_bytes(),
+        )
+        .unwrap();
+        assert_eq!(public.as_bytes(), whole.public_key().as_bytes());
+        let mp = message_representative(b"row");
+        let ml_sig = ml
+            .expanded_key()
+            .sign_deterministic(&mp, LABEL)
+            .unwrap()
+            .encode();
+        let ed_sig = ed.sign(&mp).to_bytes();
+        let sig = assemble_composite(&public, b"row", &ml_sig, &ed_sig).unwrap();
+        assert_eq!(sig, whole.sign(b"row").unwrap());
+        // Ed25519 half from another key.
+        let other = EdSigningKey::from_bytes(&[5; 32]).sign(&mp).to_bytes();
+        assert!(matches!(
+            assemble_composite(&public, b"row", &ml_sig, &other),
+            Err(CryptoError::VerificationFailed)
+        ));
+        // ML-DSA half under the empty context.
+        let bare = ml
+            .expanded_key()
+            .sign_deterministic(&mp, b"")
+            .unwrap()
+            .encode();
+        assert!(matches!(
+            assemble_composite(&public, b"row", &bare, &ed_sig),
+            Err(CryptoError::VerificationFailed)
+        ));
+        // Halves over the raw message rather than M'.
+        let raw = ed.sign(b"row").to_bytes();
+        assert!(assemble_composite(&public, b"row", &ml_sig, &raw).is_err());
+        assert!(matches!(
+            assemble_composite(&public, b"row", &ml_sig[1..], &ed_sig),
+            Err(CryptoError::InvalidSignature { .. })
+        ));
+        assert!(CompositePublicKey::from_halves(&[0; 10], &[0; 32]).is_err());
     }
 
     #[test]
