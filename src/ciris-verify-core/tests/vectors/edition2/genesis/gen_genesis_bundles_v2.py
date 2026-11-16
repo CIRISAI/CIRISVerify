@@ -851,7 +851,8 @@ case("roster_bundle_rotates_holder_voice_under_new_key", "The same bundle with A
      [voice(A_NEW, P_rot, iss=A.iss), voice(B, P_rot), voice(C, P_rot)], held(*ROT), None,
      [bundle(O_rot, "nothing", "genesis_bundle_row_invalid", "holder_not_genesis_key",
              refused=[(0, "statement_kid_not_iss")])],
-     predecessors=PRE, cc=ccp(P_rot, (A, B, C), ids(ROT), None))
+     # A's statement is refused, so it is no voice: CC's projection carries the counted voices only.
+     predecessors=PRE, cc=ccp(P_rot, (B, C), ids(ROT), None))
 P_rot2 = later_payload(ROT, commits={**NEXT, A.iss: hd(commitment([REC[1]])), B.iss: hd(commitment([REC[4]]))},
                        version=3, prev=O_rot, at=T3)
 case("roster_after_rotation_counts_new_key", "The next bundle after A's rotation re-commits B, signed by A under its new "
