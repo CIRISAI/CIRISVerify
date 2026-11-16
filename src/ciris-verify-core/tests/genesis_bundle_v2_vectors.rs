@@ -1,12 +1,16 @@
-//! `ceg-genesis-bundle/2` known answers (CC 2.6.1.11, CIRISConstitution rc20 ae09856).
+//! `ceg-genesis-bundle/2` known answers (CC 2.6.1.11, CC 4.2.6,
+//! CIRISConstitution rc20 64c5918).
 //!
-//! `tests/vectors/edition2/genesis/genesis_bundles_v1.json` was written by
-//! `gen_genesis_bundles.py` beside it: its own CBOR encoder, dilithium-py,
+//! `tests/vectors/edition2/genesis/genesis_bundles_v2.json` was written by
+//! `gen_genesis_bundles_v2.py` beside it: its own CBOR encoder, dilithium-py,
 //! pyca/cryptography and kyber-py, sharing no code with verify. Every case is
 //! replayed through [`read_genesis_bundles`]; the custody gate trusts the
 //! file's mock attestation root, supplied as the reader's trust store. The
 //! file also carries CC's own samples (`tools/build_cc_signed_object_v2.py`)
-//! and the reference reader's answer beside ours for each first-bundle case.
+//! and the reference reader's answer beside ours for each case it models.
+//! `genesis_bundles_v1.json` (rc20 ae09856, cited by CC) stays byte-identical
+//! and is no longer replayed: rc20 64c5918 requires a seat's binding to name
+//! its record, which none of v1's bindings does.
 #![cfg(all(feature = "std", feature = "pqc"))]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -14,9 +18,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use ciris_crypto::composite::{CompositePublicKey, CompositeSigningKey, COSE_ALG};
 use ciris_verify_core::cde::{self, Value};
 use ciris_verify_core::edition2::genesis::{
-    find_forks, follow_to_head, read_genesis_bundles, Anchor, CustodyFault, Fork, GenesisInput,
-    GenesisPlacement, GenesisVerdict, Head, Inconclusive, Malformed, Predecessor,
-    GENESIS_BUNDLE_MALFORMED, GENESIS_BUNDLE_TYP,
+    check_seat_binding, find_forks, follow_to_head, read_genesis_bundles, tips_in_common, Anchor,
+    CustodyFault, Fork, GenesisInput, GenesisPlacement, GenesisVerdict, Head, Inconclusive,
+    Predecessor, GENESIS_BUNDLE_MALFORMED, GENESIS_BUNDLE_TYP,
 };
 use ciris_verify_core::edition2::keys::check_key_record;
 use ciris_verify_core::edition2::recovery::{
@@ -30,13 +34,17 @@ use ciris_verify_core::trust_anchor_store::{
 };
 use serde_json::Value as J;
 
-const FILE: &str = include_str!("vectors/edition2/genesis/genesis_bundles_v1.json");
+const FILE: &str = include_str!("vectors/edition2/genesis/genesis_bundles_v2.json");
 /// The statements, split so each file stays under the repository's size limit.
-const POOL: [&str; 4] = [
-    include_str!("vectors/edition2/genesis/pool_0.json"),
-    include_str!("vectors/edition2/genesis/pool_1.json"),
-    include_str!("vectors/edition2/genesis/pool_2.json"),
-    include_str!("vectors/edition2/genesis/pool_3.json"),
+const POOL: [&str; 8] = [
+    include_str!("vectors/edition2/genesis/pool_v2_0.json"),
+    include_str!("vectors/edition2/genesis/pool_v2_1.json"),
+    include_str!("vectors/edition2/genesis/pool_v2_2.json"),
+    include_str!("vectors/edition2/genesis/pool_v2_3.json"),
+    include_str!("vectors/edition2/genesis/pool_v2_4.json"),
+    include_str!("vectors/edition2/genesis/pool_v2_5.json"),
+    include_str!("vectors/edition2/genesis/pool_v2_6.json"),
+    include_str!("vectors/edition2/genesis/pool_v2_7.json"),
 ];
 
 /// The case file, with the pool merged in under `pool`.
@@ -140,6 +148,29 @@ fn check_placement(id: &str, p: &GenesisPlacement, e: &J) {
         .map(|s| s.as_str().unwrap())
         .collect();
     assert_eq!(p.counted, counted, "{id}: counted");
+    assert_eq!(h(&p.object_id), e["object_id"].as_str().unwrap(), "{id}");
+    assert_eq!(
+        p.recovered.as_deref(),
+        e["recovered"].as_str(),
+        "{id}: recovered"
+    );
+    let set = |k: &str| -> Vec<String> {
+        e[k].as_array()
+            .unwrap()
+            .iter()
+            .map(|x| x.as_str().unwrap().to_owned())
+            .collect()
+    };
+    assert_eq!(
+        p.spent_commitments.iter().map(h).collect::<Vec<_>>(),
+        set("spent_commitments"),
+        "{id}: spent"
+    );
+    assert_eq!(
+        p.lineage_commitments.iter().map(h).collect::<Vec<_>>(),
+        set("lineage_commitments"),
+        "{id}: lineage"
+    );
     let eh = e["holders"].as_array().unwrap();
     assert_eq!(p.holders.len(), eh.len(), "{id}");
     for (x, y) in p.holders.iter().zip(eh) {
@@ -194,14 +225,6 @@ fn check_placement(id: &str, p: &GenesisPlacement, e: &J) {
     }
 }
 
-fn detail(i: &Inconclusive) -> Option<&'static str> {
-    match i {
-        Inconclusive::RowInvalid { fault, .. } => Some(fault.token()),
-        Inconclusive::HolderCustody { fault, .. } => Some(fault.token()),
-        _ => None,
-    }
-}
-
 #[test]
 fn every_case_gives_its_verdict() {
     let f = file();
@@ -216,7 +239,7 @@ fn every_case_gives_its_verdict() {
     });
     let mut valid: BTreeMap<String, Vec<GenesisPlacement>> = BTreeMap::new();
     let cases = f["cases"].as_array().unwrap();
-    assert!(cases.len() >= 60, "the case list");
+    assert!(cases.len() >= 98, "the case list");
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let statements: Vec<Vec<u8>> = c["statements"]
@@ -335,9 +358,7 @@ fn every_case_gives_its_verdict() {
                 },
                 ("nothing", GenesisVerdict::Nothing(i)) => {
                     assert_eq!(i.token(), e["token"].as_str().unwrap(), "{id}: {i:?}");
-                    if let Some(d) = e.get("detail") {
-                        assert_eq!(detail(i), d.as_str(), "{id}: {i:?}");
-                    }
+                    assert_eq!(i.detail(), e["detail"].as_str(), "{id}: {i:?}");
                 },
                 (want, _) => panic!("{id}: want {want}, got {got}"),
             }
@@ -380,6 +401,42 @@ fn every_case_gives_its_verdict() {
                 (Head::Head(p), Some(want)) => assert_eq!(h(&p.object_id), want, "{id}: head"),
                 (Head::Fork(_), None) => {},
                 (other, want) => panic!("{id}: head {other:?}, want {want:?}"),
+            }
+            // What every tip names: a reader acts on it at a fork.
+            let common = tips_in_common(&all);
+            match (&common, fx["common"].as_object()) {
+                (None, None) => {},
+                (Some(t), Some(w)) => {
+                    let list = |k: &str| -> Vec<String> {
+                        w[k].as_array()
+                            .unwrap()
+                            .iter()
+                            .map(|x| x.as_str().unwrap().to_owned())
+                            .collect()
+                    };
+                    assert_eq!(
+                        t.tips.iter().map(h).collect::<Vec<_>>(),
+                        list("tips"),
+                        "{id}"
+                    );
+                    assert_eq!(
+                        t.holders
+                            .iter()
+                            .map(|x| x.identity_ref.clone())
+                            .collect::<Vec<_>>(),
+                        list("holders"),
+                        "{id}: common holders"
+                    );
+                    assert_eq!(
+                        t.seats
+                            .iter()
+                            .map(|x| x.identity_ref.clone())
+                            .collect::<Vec<_>>(),
+                        list("seats"),
+                        "{id}: common seats"
+                    );
+                },
+                (got, want) => panic!("{id}: common {got:?}, want {want:?}"),
             }
         }
         valid.insert(id.to_owned(), here);
@@ -497,10 +554,9 @@ fn cc_samples() {
     let roots = baked::default_store();
     let rows = BTreeMap::new();
     let k = key(1);
-    // The genesis bundle payload samples. Each broken one is Invalid for its own fault. CC's valid
-    // sample writes `scope` as ["infra:attest", "infra:serve"], which is not CDE set order (the
-    // shorter text sorts first, as CC's own PROPOSAL §3 notes), so the set rule (CC 2.6.1.2) refuses
-    // it; with `scope` re-sorted it is not Invalid. A defect in the sample, reported to CC.
+    // The genesis bundle payload samples. Each broken one is Invalid for its own fault; the valid one
+    // (whose `scope` is in CDE set order at 64c5918) is not Invalid: with no anchor it concludes
+    // nothing, not anchored.
     for s in cc["payload_samples"].as_array().unwrap() {
         let p = hex::decode(s["payload_hex"].as_str().unwrap()).unwrap();
         let at = cde::decode(&p)
@@ -520,51 +576,28 @@ fn cc_samples() {
         let v = &r.bundles[0].verdict;
         if s["expect"] == "invalid" {
             assert!(
-                matches!(v, GenesisVerdict::Invalid(m) if *m != Malformed::SetOrder { member: "scope" }),
+                matches!(v, GenesisVerdict::Invalid(_)),
                 "{}: {v:?}",
                 s["name"]
             );
             continue;
         }
         assert!(
-            matches!(
-                v,
-                GenesisVerdict::Invalid(Malformed::SetOrder { member: "scope" })
-            ),
+            matches!(v, GenesisVerdict::Nothing(Inconclusive::NotAnchored)),
             "{}: {v:?}",
             s["name"]
         );
-        let Value::Map(mut m) = cde::decode(&p).unwrap() else {
-            panic!()
-        };
-        for (kk, ch) in &mut m {
-            if kk.as_text() == Some("charter") {
-                let Value::Map(cm) = ch else { panic!() };
-                for (ck, sc) in cm.iter_mut() {
-                    if ck.as_text() == Some("scope") {
-                        let Value::Array(a) = sc else { panic!() };
-                        a.sort_by_key(cde::encode);
-                    }
-                }
-            }
+    }
+    // The binding samples (CC 3.3.6.2): the valid one passes the seat-binding rule (naming the record
+    // its refs cite), each broken one is refused.
+    let named: Digest32 = [4; 32];
+    for s in cc["binding_samples"].as_array().unwrap() {
+        let p = cde::decode(&hex::decode(s["payload_hex"].as_str().unwrap()).unwrap()).unwrap();
+        let got = check_seat_binding(&p, k.public_key(), &named);
+        match s["expect"].as_str().unwrap() {
+            "ok" => assert!(got.is_ok(), "{}: {got:?}", s["name"]),
+            _ => assert!(got.is_err(), "{}", s["name"]),
         }
-        let p2 = cde::encode(&Value::Map(m));
-        let st = vec![voice_over(&k, &p2, at / 1000)];
-        let r = read_genesis_bundles(&GenesisInput {
-            statements: &st,
-            rows: &rows,
-            anchor: None,
-            predecessors: &[],
-            attestation_roots: &roots,
-        });
-        assert!(
-            matches!(
-                r.bundles[0].verdict,
-                GenesisVerdict::Nothing(Inconclusive::NotAnchored)
-            ),
-            "{:?}",
-            r.bundles[0].verdict
-        );
     }
     // The key-record samples (CC 4.2.2.1). CC's key is 1984 zero bytes; where verify cannot decode it,
     // a real key stands in so the evidence member is what is judged.
@@ -624,23 +657,71 @@ fn cc_samples() {
             s["name"]
         );
     }
-    // The reference reader over our first-bundle cases: one known disagreement.
-    let disagree: BTreeSet<&str> = cc["reader"]
-        .as_array()
-        .unwrap()
+    // The reference reader over every case it models (first bundles, and later ones over its own
+    // placement of the predecessor). It does not model the seated key of a holder in a later bundle
+    // (holder_not_genesis_key), so the two cases that turn on it are the known disagreements.
+    let reader = cc["reader"].as_array().unwrap();
+    assert!(reader.len() >= 50, "the cases CC's reader models");
+    let disagree: BTreeSet<&str> = reader
         .iter()
         .filter(|r| r["agree"] == false)
         .map(|r| r["case"].as_str().unwrap())
         .collect();
-    assert_eq!(disagree, BTreeSet::from(["iat_off_by_one"]));
-    // Each of the reference reader's ten breaks has its case here.
-    let ids: BTreeSet<&str> = f["cases"]
+    assert_eq!(
+        disagree,
+        BTreeSet::from([
+            "recovered_holder_genesis_record",
+            "roster_bundle_rotates_holder_key"
+        ])
+    );
+    // Each of the reference reader's breaks, valid samples and chain checks has its case here, and each
+    // break's answer is that case's.
+    let by_id: BTreeMap<&str, &J> = f["cases"]
         .as_array()
         .unwrap()
         .iter()
-        .map(|c| c["id"].as_str().unwrap())
+        .map(|c| (c["id"].as_str().unwrap(), c))
         .collect();
+    let answer = |c: &J| -> (String, Option<String>) {
+        let e = &c["expect"][0];
+        match e["verdict"].as_str().unwrap() {
+            "valid" => ("Valid".into(), None),
+            "waiting" => ("Waiting".into(), None),
+            "invalid" => ("Invalid".into(), e["detail"].as_str().map(str::to_owned)),
+            _ => {
+                let t = e["token"].as_str().unwrap();
+                let d = e["detail"]
+                    .as_str()
+                    .filter(|d| d.starts_with("recovery_commitment_"));
+                (
+                    "nothing".into(),
+                    Some(d.map_or_else(|| t.to_owned(), |d| format!("{t}:{d}"))),
+                )
+            },
+        }
+    };
     for b in cc["reader_breaks"].as_array().unwrap() {
-        assert!(ids.contains(b["case"].as_str().unwrap()), "{}", b["name"]);
+        let c = by_id[b["case"].as_str().unwrap()];
+        let (v, d) = answer(c);
+        let want = b["expect"].as_array().unwrap();
+        assert_eq!(v, want[0].as_str().unwrap(), "{}", b["name"]);
+        if v != "Waiting" {
+            assert_eq!(d.as_deref(), want[1].as_str(), "{}", b["name"]);
+        }
+    }
+    for b in cc["reader_valid"].as_array().unwrap() {
+        assert_eq!(
+            answer(by_id[b["case"].as_str().unwrap()]).0,
+            "Valid",
+            "{}",
+            b["name"]
+        );
+    }
+    for b in cc["reader_chain_checks"].as_array().unwrap() {
+        assert!(
+            by_id.contains_key(b["case"].as_str().unwrap()),
+            "{}",
+            b["name"]
+        );
     }
 }

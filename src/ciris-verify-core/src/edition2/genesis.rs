@@ -1,5 +1,5 @@
 //! The genesis bundle of edition 2, `ceg-genesis-bundle/2` (CC 2.6.1.11,
-//! CC 5.3.4, CIRISConstitution rc20 ae09856).
+//! CC 4.2.6, CC 5.3.4, CIRISConstitution rc20 64c5918).
 //!
 //! A bundle is a **counted** signed object that is not a row: one
 //! `COSE_Sign1` per holder over one payload, with no `author`, so every voice
@@ -9,50 +9,66 @@
 //! in `refs.also.cites` by row id. The bundle's own count is the canonical
 //! conferral of every seat in `serve_nodes` (CC 4.2.1).
 //!
+//! A later bundle names its predecessor as `refs.prev`. A roster change is a
+//! later bundle counted at a strict majority of the predecessor's holders,
+//! each under the key the predecessor seats, plus each holder it adds or
+//! re-commits. A **recovery** is the one exception to the count (CC 4.2.6): a
+//! later bundle with one statement, whose `iss` is the holder and whose `kid`
+//! is the recovery key, resolved through the recovery key's `key:record`
+//! named in `refs.also.cites`. It counts where the predecessor's
+//! `recovery_commitments[iss]` equals the commitment over that key (CC 3.2
+//! T3, compared in constant time), and changes that holder's seat alone.
+//!
 //! # Answers
 //!
 //! [`GenesisVerdict`] has four forms:
 //!
 //! - **Valid**, with the [`GenesisPlacement`]: the holders, the seats with
-//!   their bindings' two X-Wing keys, the witnesses and the charter, so a
-//!   consumer does not place rows again;
+//!   their bindings' two X-Wing keys, the witnesses, the charter and the
+//!   lineage's commitments (named and spent), so a consumer does not place
+//!   rows again;
 //! - **Invalid** (`genesis_bundle_malformed`, with a reason) for a fault in
-//!   the payload bytes themselves, which is final;
-//! - **Waiting** on a named row, the predecessor or a voice's key the reader
-//!   does not hold, and on nothing else;
+//!   the payload bytes themselves, or a recovery that breaks one of its rules,
+//!   which is final;
+//! - **Waiting** on a named row or the predecessor the reader does not hold,
+//!   and on nothing else;
 //! - **concludes nothing** ([`Inconclusive`]): not anchored, the predecessor
 //!   not valid, a named row Invalid or unplaced, a holder failing the custody
-//!   gate, or the count not met. The bundle is held, never refused for
-//!   another row's fault.
+//!   gate, the count not met, or a recovery commitment that does not match or
+//!   is spent. The bundle is held, never refused for another row's fault.
 //!
-//! A statement's own fault (its header, its `iat`, its signature, a signer
-//! with no role) refuses that statement only ([`RefusedStatement`]); the
-//! other statements stand.
+//! A statement's own fault (its header, its `iat`, its `kid`, its signature, a
+//! signer with no role) refuses that statement only ([`RefusedStatement`]);
+//! the other statements stand.
 //!
-//! # Order
+//! # Order (CC 2.6.1.11)
 //!
 //! For each object (statements grouped by object id, never merged):
 //!
 //! 1. each statement: the object header (`verify_object_statement`'s
-//!    structure), `typ` `ceg-genesis-bundle/2`, `iat` present;
+//!    structure), `typ` `ceg-genesis-bundle/2`, `iat` present and equal to
+//!    `⌊asserted_at / 1000⌋`; its role, `kid` and signature once the keys are
+//!    placed (below);
 //! 2. the payload: the closed CDDL map, the sets, then the prose checks
 //!    (`version` 1 iff no `prev`; `holders` / `serve_nodes` / `witnesses`
 //!    disjoint; the commitments keyed by exactly `holders`; `scope` holding
 //!    `infra:attest` and `infra:serve`; the witness members together, with
-//!    `witness_quorum = ⌊|witnesses| / 2⌋ + 1`). Then each statement's `iat`
-//!    against `⌊asserted_at / 1000⌋`;
-//! 3. a first bundle: the anchor;
-//! 4. a later bundle: the predecessor, `version` = prev's + 1, the same
-//!    `family_key_id`;
-//! 5. the named rows: Waiting on any not held; then each placed by family and
-//!    author, verified under its own key (a binding under its seat's), the
-//!    seat bindings' X-Wing members and in-row separation, then the custody
-//!    gate at each holder seat (CC 4.2.2.1);
-//! 6. the voices: each statement's `kid` resolved to its `iss`'s key and its
-//!    signature verified;
-//! 7. the count: a first bundle every holder; a later one a strict majority
-//!    of the predecessor's holders, plus each holder it adds and each whose
-//!    recovery commitment it changes. Waiting is never counted.
+//!    `witness_quorum = ⌊|witnesses| / 2⌋ + 1`);
+//! 3. a first bundle: the anchor; a later bundle: the predecessor,
+//!    `version` = prev's + 1, the same `family_key_id`;
+//! 4. the named rows: Waiting on any not held; then each placed by family and
+//!    author (a recovery key's record by the recovery statement's `kid`),
+//!    verified under its own key (a binding under its seat's); each holder's
+//!    record holds the key the bundle in force seats for it; each seat's
+//!    record covers the bundle's `asserted_at` and its binding names that
+//!    record in `refs`; the seat bindings' X-Wing members and in-row
+//!    separation. Then a recovery's own rules, once its records are placed
+//!    and its statement verified;
+//! 5. the custody gate at each holder seat (CC 4.2.2.1);
+//! 6. the count: a bundle naming a spent commitment concludes nothing; a
+//!    recovery counts on its one statement; a first bundle on every holder; a
+//!    later one on a strict majority of the predecessor's holders, plus each
+//!    holder it adds and each whose recovery commitment it changes.
 //!
 //! # Tier
 //!
@@ -63,6 +79,7 @@
 //! mock root. No clock, no randomness, no I/O.
 
 use super::keys::{check_key_record, KeyRecord, KeyRecordError, PqCustody, KEY_RECORD_FAMILY};
+use super::recovery::recovery_commitment;
 use super::{
     cde, identity_ref, is_identity_ref, object_id, row_id, thumbprint, verify_object_statement,
     verify_row_statement, Digest32, Invalid, KeyDirectory, KeyLookup, ObjectVerdict, Value,
@@ -72,6 +89,7 @@ use crate::accord_custody_attestation::{verify_yubikey_piv_attestation, CustodyE
 use crate::prelude::*;
 use crate::trust_anchor_store::{environments, Purpose, TrustAnchorStore};
 use ciris_crypto::composite::{CompositePublicKey, MLDSA65_PK_LEN};
+use subtle::ConstantTimeEq;
 
 /// The `typ` of the genesis bundle.
 pub const GENESIS_BUNDLE_TYP: &str = "ceg-genesis-bundle/2";
@@ -140,8 +158,9 @@ pub struct GenesisInput<'a> {
     /// several payloads (each its own object).
     pub statements: &'a [Vec<u8>],
     /// The row statements the reader holds, by row id. The named rows are
-    /// read from here; a held `key:record` that is not named may answer for
-    /// a later bundle's voice (the key plane).
+    /// read from here, and only the named rows: a bundle and the rows it
+    /// names verify with no key from outside them (a recovery key's record
+    /// is named in the recovery bundle itself).
     pub rows: &'a BTreeMap<Digest32, Vec<u8>>,
     /// The reader's anchor, for a first bundle. `None`: nothing is rooted.
     pub anchor: Option<&'a Anchor>,
@@ -257,6 +276,16 @@ pub struct GenesisPlacement {
     pub charter: GenesisCharter,
     /// The identity references whose statements counted, sorted.
     pub counted: Vec<String>,
+    /// The holder this bundle recovered, where it is a recovery (CC 4.2.6).
+    pub recovered: Option<String>,
+    /// Every recovery commitment a counted recovery of this bundle's lineage
+    /// has used, this bundle's own included (CC 2.6.1.11): spent, so no
+    /// later bundle of the lineage may name one.
+    pub spent_commitments: BTreeSet<Digest32>,
+    /// Every recovery commitment any bundle of this lineage named, this
+    /// bundle's included: no recovery may seat a key one of them commits to
+    /// (`recovery_key_is_signing_key`).
+    pub lineage_commitments: BTreeSet<Digest32>,
 }
 
 impl GenesisPlacement {
@@ -300,6 +329,14 @@ pub enum Malformed {
     WitnessQuorumMismatch,
     /// A later bundle changes `family_key_id` (CC 5.3.4).
     FamilyKeyIdChanged,
+    /// A recovery's new signing key is the recovery key, or a key a
+    /// commitment of the lineage commits to.
+    RecoveryKeyIsSigningKey,
+    /// A recovery's new signing key is the holder's current key.
+    RecoveryReusesSigningKey,
+    /// A recovery changes more than its holder's key-record citation and
+    /// recovery commitment (beside `version`, `asserted_at` and `refs.prev`).
+    RecoveryChangesOtherSeat,
 }
 
 impl Malformed {
@@ -316,6 +353,9 @@ impl Malformed {
             Self::WitnessMembersPartial => "witness_members_partial",
             Self::WitnessQuorumMismatch => "witness_quorum_mismatch",
             Self::FamilyKeyIdChanged => "family_key_id_changed",
+            Self::RecoveryKeyIsSigningKey => "recovery_key_is_signing_key",
+            Self::RecoveryReusesSigningKey => "recovery_reuses_signing_key",
+            Self::RecoveryChangesOtherSeat => "recovery_changes_other_seat",
         }
     }
 }
@@ -327,7 +367,9 @@ pub struct GenesisWaiting {
     pub rows: Vec<Digest32>,
     /// The predecessor, by object id, where not held.
     pub prev: Option<Digest32>,
-    /// Voices' keys not held, by kid, sorted (a later bundle only).
+    /// Voices' keys not held, by kid, sorted. Under CC 2.6.1.11 (rc20
+    /// 64c5918) every voice's key is named by the bundle or seated by its
+    /// predecessor, so this reader leaves it empty.
     pub kids: Vec<Digest32>,
 }
 
@@ -346,8 +388,11 @@ pub enum RowFault {
     AuthorNotIss,
     /// A holder's record does not carry `accord_holder`.
     HolderNotAccordHolder,
-    /// In a first bundle, a holder's record holds a key whose thumbprint is
-    /// not the holder's identity reference.
+    /// A holder's record holds another key than the one the bundle in force
+    /// seats for it: in a first bundle (and for a holder a later bundle
+    /// adds) the key its identity reference names; in a later bundle the key
+    /// the predecessor seats; for the holder a recovery recovers, any new key
+    /// (the recovery's own rules judge it).
     HolderNotGenesisKey,
     /// A seat's record's `identity_type` is not exactly `node`.
     SeatNotNode,
@@ -369,6 +414,12 @@ pub enum RowFault {
     },
     /// The seat carries `onion_relay.opt_out` (`seat_opted_out`).
     SeatOptedOut,
+    /// A seat's key record does not cover the bundle's instant: its
+    /// `valid_until` is not later than the bundle's `asserted_at`.
+    SeatRecordEnded,
+    /// A seat's binding does not name the seat's key record by row id in
+    /// `refs`, under the `also` role `cites` (CC 3.3.6.2).
+    BindingNamesNoRecord,
 }
 
 impl RowFault {
@@ -388,6 +439,8 @@ impl RowFault {
             Self::XWingMember { .. } => "binding_xwing_member",
             Self::XWingReuse { token } => token,
             Self::SeatOptedOut => "seat_opted_out",
+            Self::SeatRecordEnded => "seat_record_ended",
+            Self::BindingNamesNoRecord => "binding_names_no_record",
         }
     }
 }
@@ -457,6 +510,10 @@ pub enum Inconclusive {
     },
     /// The count is not met.
     CountUnmet,
+    /// The count is not met because a recovery's statement does not count,
+    /// or the bundle names a spent commitment (token
+    /// `genesis_bundle_count_unmet`, with the fault's detail).
+    Commitment(CommitmentFault),
 }
 
 impl Inconclusive {
@@ -469,7 +526,43 @@ impl Inconclusive {
             Self::RowUnplaced { .. } => "genesis_bundle_row_unplaced",
             Self::RowInvalid { .. } => "genesis_bundle_row_invalid",
             Self::HolderCustody { .. } => "genesis_holder_custody",
-            Self::CountUnmet => "genesis_bundle_count_unmet",
+            Self::CountUnmet | Self::Commitment(_) => "genesis_bundle_count_unmet",
+        }
+    }
+
+    /// The detail under the token, where CC 2.6.1.11 names one: the row,
+    /// custody or commitment fault.
+    #[must_use]
+    pub fn detail(&self) -> Option<&'static str> {
+        match self {
+            Self::RowInvalid { fault, .. } => Some(fault.token()),
+            Self::HolderCustody { fault, .. } => Some(fault.token()),
+            Self::Commitment(f) => Some(f.token()),
+            _ => None,
+        }
+    }
+}
+
+/// Why a recovery's statement does not count, or a bundle is not counted for
+/// the commitments it names (CC 2.6.1.11, CC 4.2.6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum CommitmentFault {
+    /// The recovery key is not the one the commitment in force for the
+    /// holder commits to (or its record is not named).
+    Mismatch,
+    /// The recovery key's commitment is spent, the recovery keeps the
+    /// commitment it spends, or the bundle names a spent commitment.
+    Spent,
+}
+
+impl CommitmentFault {
+    /// A short name for the fault.
+    #[must_use]
+    pub fn token(&self) -> &'static str {
+        match self {
+            Self::Mismatch => "recovery_commitment_mismatch",
+            Self::Spent => "recovery_commitment_spent",
         }
     }
 }
@@ -510,8 +603,10 @@ pub enum StatementFault {
     IatMissing,
     /// Its `iat` is not `⌊asserted_at / 1000⌋`.
     IatMismatch,
-    /// In a first bundle, its `kid` is not the key the holder's named record
-    /// holds.
+    /// Its `kid` is not the key it must sign under: in a first bundle the
+    /// key the holder's named record holds; in a later bundle the key the
+    /// predecessor seats for the holder (or, for an added holder, its named
+    /// record's).
     KidNotIss,
     /// Its `iss` is neither in the counting roster nor an added holder.
     NoRole,
@@ -673,6 +768,85 @@ pub fn follow_to_head<'a>(valid: &[&'a GenesisPlacement]) -> Head<'a> {
         cur = next;
     }
     Head::Head(cur)
+}
+
+/// The tips of the lineage and what every tip names (CC 2.6.1.11).
+#[derive(Debug, Clone)]
+pub struct TipsInCommon {
+    /// The tips: each Valid bundle that descends from the root and has no
+    /// Valid successor, sorted by object id. One tip: no fork.
+    pub tips: Vec<Digest32>,
+    /// The holders every tip seats under the same key, in the first tip's
+    /// order.
+    pub holders: Vec<PlacedHolder>,
+    /// The seats every tip lists with the same key and the same two X-Wing
+    /// keys, in the first tip's order.
+    pub seats: Vec<PlacedSeat>,
+}
+
+/// Two later bundles that count on one predecessor are a fork: a reader
+/// reports it, holds both as tips, and acts on what every tip names, the
+/// holders and seats common to them (CC 2.6.1.11). From the one Valid first
+/// bundle among `valid`, the tips of its lineage and what they share. `None`
+/// where there is no Valid first bundle, or two (a fork of the genesis, on
+/// which the reader roots on neither).
+#[must_use]
+pub fn tips_in_common(valid: &[&GenesisPlacement]) -> Option<TipsInCommon> {
+    let mut roots = valid.iter().filter(|p| p.prev.is_none());
+    let root = roots.next()?;
+    if roots.next().is_some() {
+        return None;
+    }
+    let mut reach: BTreeSet<Digest32> = BTreeSet::from([root.object_id]);
+    loop {
+        let before = reach.len();
+        for p in valid {
+            if p.prev.is_some_and(|x| reach.contains(&x)) {
+                reach.insert(p.object_id);
+            }
+        }
+        if reach.len() == before {
+            break;
+        }
+    }
+    let mut tips: Vec<&GenesisPlacement> = valid
+        .iter()
+        .copied()
+        .filter(|p| reach.contains(&p.object_id))
+        .filter(|p| !valid.iter().any(|q| q.prev == Some(p.object_id)))
+        .collect();
+    tips.sort_by_key(|p| p.object_id);
+    tips.dedup_by_key(|p| p.object_id);
+    let (first, rest) = tips.split_first()?;
+    let holders = first
+        .holders
+        .iter()
+        .filter(|h| {
+            rest.iter()
+                .all(|t| t.holder(&h.identity_ref).is_some_and(|x| x.kid == h.kid))
+        })
+        .cloned()
+        .collect();
+    let seats = first
+        .seats
+        .iter()
+        .filter(|s| {
+            rest.iter().all(|t| {
+                t.seats.iter().any(|x| {
+                    x.identity_ref == s.identity_ref
+                        && x.kid == s.kid
+                        && x.transit_xwing_pubkey == s.transit_xwing_pubkey
+                        && x.onion_hop_xwing_pubkey == s.onion_hop_xwing_pubkey
+                })
+            })
+        })
+        .cloned()
+        .collect();
+    Some(TipsInCommon {
+        tips: tips.iter().map(|p| p.object_id).collect(),
+        holders,
+        seats,
+    })
 }
 
 // ------------------------------------------------------------------ statements
@@ -1025,6 +1199,8 @@ fn read_one(
         Ok(b) => b,
         Err(m) => return GenesisVerdict::Invalid(m),
     };
+    // 1. `iat` lies outside the object id: a statement whose `iat` disagrees
+    //    is refused alone, and the bundle is counted on the rest.
     let want_iat = b.asserted_at / 1000;
     let voices: Vec<Voice> = voices
         .into_iter()
@@ -1041,7 +1217,7 @@ fn read_one(
         })
         .collect();
 
-    // 3. The anchor (a first bundle), 4. the predecessor (a later one).
+    // 3. The anchor (a first bundle), the predecessor (a later one).
     let mut waiting = GenesisWaiting::default();
     let prev = match b.prev {
         None => {
@@ -1082,7 +1258,7 @@ fn read_one(
         },
     };
 
-    // 5. The named rows: Waiting on any not held.
+    // 4. The named rows: Waiting on any not held.
     let mut held: Vec<(Digest32, &[u8], RowPeek)> = Vec::new();
     for id in &b.cites {
         match input.rows.get(id) {
@@ -1105,92 +1281,192 @@ fn read_one(
         waiting.rows.sort_unstable();
         return GenesisVerdict::Waiting(waiting);
     }
-    let first = b.prev.is_none();
-    let rows = match place_rows(&b, first, &held, input.attestation_roots) {
-        Ok(r) => r,
-        Err(i) => return GenesisVerdict::Nothing(i),
-    };
 
-    // 6. The voices.
-    let added: BTreeSet<&String> = match prev {
+    // The roles: a first bundle's holders; a later bundle's predecessor
+    // holders and the holders it adds.
+    let added: BTreeSet<&str> = match prev {
         None => BTreeSet::new(),
         Some(pp) => b
             .holders
             .iter()
             .filter(|h| pp.holder(h).is_none())
+            .map(String::as_str)
             .collect(),
     };
     let roster: BTreeSet<&str> = match prev {
         None => b.holders.iter().map(String::as_str).collect(),
         Some(pp) => pp.holders.iter().map(|h| h.identity_ref.as_str()).collect(),
     };
-    let mut counted: BTreeSet<String> = BTreeSet::new();
-    let mut kids: BTreeSet<Digest32> = BTreeSet::new();
+    let mut voices_with_role: Vec<&Voice> = Vec::new();
     for v in &voices {
-        if !roster.contains(v.iss.as_str()) && !added.contains(&v.iss) {
+        if roster.contains(v.iss.as_str()) || added.contains(v.iss.as_str()) {
+            voices_with_role.push(v);
+        } else {
             refused.push(RefusedStatement {
                 index: v.index,
                 fault: StatementFault::NoRole,
             });
-            continue;
         }
-        let key = voice_key(v, &rows, prev, first, input.rows, b.asserted_at);
-        let key = match key {
-            VoiceKey::Key(k) => k,
-            VoiceKey::Refused(fault) => {
-                refused.push(RefusedStatement {
-                    index: v.index,
-                    fault,
-                });
-                continue;
-            },
-            VoiceKey::Waiting => {
-                kids.insert(v.kid);
-                continue;
-            },
+    }
+    let attempt = prev.and_then(|pp| recovery_attempt(pp, &voices_with_role, &held));
+
+    let rows = match place_rows(&b, prev, &held, attempt.as_ref()) {
+        Ok(r) => r,
+        Err(i) => return GenesisVerdict::Nothing(i),
+    };
+
+    // 1 (continued). Each voice's `kid` and signature, under the key it must
+    // sign under.
+    let mut counted: BTreeSet<String> = BTreeSet::new();
+    let mut recovery = RecoveryVoice::None;
+    for v in voices_with_role {
+        let is_attempt = attempt.as_ref().is_some_and(|a| a.index == v.index);
+        let key = if is_attempt {
+            match &rows.recovery_key {
+                Some(r) => r.rec.key.clone(),
+                None => {
+                    // The recovery key's record is not named: the statement
+                    // does not count.
+                    recovery = RecoveryVoice::Unresolved;
+                    continue;
+                },
+            }
+        } else {
+            match voice_key(v, &rows, prev) {
+                Some(k) => k,
+                None => {
+                    refused.push(RefusedStatement {
+                        index: v.index,
+                        fault: StatementFault::KidNotIss,
+                    });
+                    continue;
+                },
+            }
         };
         match verify_object_statement(&v.bytes, &OneKey(v.kid, &key)) {
+            ObjectVerdict::Valid(_) if is_attempt => {
+                recovery = RecoveryVoice::Verified(Box::new(key))
+            },
             ObjectVerdict::Valid(_) => {
                 counted.insert(v.iss.clone());
             },
-            ObjectVerdict::Invalid(i) => refused.push(RefusedStatement {
-                index: v.index,
-                fault: StatementFault::Object(i),
-            }),
+            ObjectVerdict::Invalid(i) => {
+                if is_attempt {
+                    recovery = RecoveryVoice::Refused;
+                }
+                refused.push(RefusedStatement {
+                    index: v.index,
+                    fault: StatementFault::Object(i),
+                });
+            },
             ObjectVerdict::Waiting { .. } => {
-                kids.insert(v.kid);
+                if is_attempt {
+                    recovery = RecoveryVoice::Refused;
+                }
+                refused.push(RefusedStatement {
+                    index: v.index,
+                    fault: StatementFault::KidNotIss,
+                });
             },
         }
     }
 
-    // 7. The count.
-    let met = match prev {
-        None => b.holders.iter().all(|h| counted.contains(h)),
-        Some(pp) => {
-            let n = pp.holders.len();
-            let valid = pp
-                .holders
-                .iter()
-                .filter(|h| counted.contains(&h.identity_ref))
-                .count();
-            let changed = b.holders.iter().filter(|h| {
-                pp.holder(h).is_some_and(|ph| {
-                    b.charter.recovery_commitments.get(*h) != Some(&ph.recovery_commitment)
-                })
+    // The lineage's commitments, this bundle's included.
+    let mut lineage: BTreeSet<Digest32> = prev
+        .map(|pp| pp.lineage_commitments.clone())
+        .unwrap_or_default();
+    lineage.extend(b.charter.recovery_commitments.values().copied());
+
+    // 4 (end). A recovery's own rules, once its records are placed and its
+    // statement verified: Invalid.
+    if let (Some(a), Some(pp), RecoveryVoice::Verified(rk)) = (&attempt, prev, &recovery) {
+        if let Err(m) = recovery_rules(&b, pp, &rows, &a.holder, rk, &lineage) {
+            return GenesisVerdict::Invalid(m);
+        }
+    }
+
+    // 5. The custody gate at each holder seat.
+    for h in &b.holders {
+        if let Err(fault) = custody_gate(&rows.records[h].rec, input.attestation_roots) {
+            return GenesisVerdict::Nothing(Inconclusive::HolderCustody {
+                holder: h.clone(),
+                fault,
             });
-            2 * valid > n
-                && added.iter().all(|h| counted.contains(*h))
-                && changed.into_iter().all(|h| counted.contains(h))
-        },
-    };
-    if !met {
-        if kids.is_empty() {
+        }
+    }
+
+    // 6. The count.
+    let mut spent: BTreeSet<Digest32> = prev
+        .map(|pp| pp.spent_commitments.clone())
+        .unwrap_or_default();
+    if b.charter
+        .recovery_commitments
+        .values()
+        .any(|c| spent.contains(c))
+    {
+        // A spent commitment never returns.
+        return GenesisVerdict::Nothing(Inconclusive::Commitment(CommitmentFault::Spent));
+    }
+    let mut recovered = None;
+    if let (Some(a), Some(pp)) = (&attempt, prev) {
+        let in_force = pp
+            .holder(&a.holder)
+            .map(|h| h.recovery_commitment)
+            .expect("an attempt names a predecessor holder");
+        let next = b.charter.recovery_commitments.get(&a.holder);
+        match &recovery {
+            RecoveryVoice::Verified(rk) => {
+                let c = recovery_commitment(core::slice::from_ref(rk));
+                if spent.contains(&c) || next == Some(&in_force) {
+                    return GenesisVerdict::Nothing(Inconclusive::Commitment(
+                        CommitmentFault::Spent,
+                    ));
+                }
+                if !bool::from(c.ct_eq(&in_force)) {
+                    return GenesisVerdict::Nothing(Inconclusive::Commitment(
+                        CommitmentFault::Mismatch,
+                    ));
+                }
+                // It counts on that one statement alone.
+                counted.insert(a.holder.clone());
+                spent.insert(in_force);
+                recovered = Some(a.holder.clone());
+            },
+            RecoveryVoice::Unresolved => {
+                let fault = if next == Some(&in_force) {
+                    CommitmentFault::Spent
+                } else {
+                    CommitmentFault::Mismatch
+                };
+                return GenesisVerdict::Nothing(Inconclusive::Commitment(fault));
+            },
+            RecoveryVoice::Refused | RecoveryVoice::None => {
+                return GenesisVerdict::Nothing(Inconclusive::CountUnmet);
+            },
+        }
+    } else {
+        let met = match prev {
+            None => b.holders.iter().all(|h| counted.contains(h)),
+            Some(pp) => {
+                let n = pp.holders.len();
+                let valid = pp
+                    .holders
+                    .iter()
+                    .filter(|h| counted.contains(&h.identity_ref))
+                    .count();
+                let changed = b.holders.iter().filter(|h| {
+                    pp.holder(h).is_some_and(|ph| {
+                        b.charter.recovery_commitments.get(*h) != Some(&ph.recovery_commitment)
+                    })
+                });
+                2 * valid > n
+                    && added.iter().all(|h| counted.contains(*h))
+                    && changed.into_iter().all(|h| counted.contains(h))
+            },
+        };
+        if !met {
             return GenesisVerdict::Nothing(Inconclusive::CountUnmet);
         }
-        return GenesisVerdict::Waiting(GenesisWaiting {
-            kids: kids.into_iter().collect(),
-            ..GenesisWaiting::default()
-        });
     }
 
     let charter = b.charter.clone();
@@ -1249,7 +1525,131 @@ fn read_one(
             .collect(),
         charter,
         counted: counted.into_iter().collect(),
+        recovered,
+        spent_commitments: spent,
+        lineage_commitments: lineage,
     }))
+}
+
+// ------------------------------------------------------------------ recovery
+
+/// A later bundle read as a recovery: its one statement, by a holder of the
+/// predecessor.
+struct Attempt {
+    /// The statement's index.
+    index: usize,
+    /// The holder (the statement's `iss`).
+    holder: String,
+    /// The recovery key's thumbprint (the statement's `kid`).
+    kid: Digest32,
+}
+
+/// What became of a recovery's statement.
+enum RecoveryVoice {
+    /// No recovery statement was read.
+    None,
+    /// The recovery key's record is not named.
+    Unresolved,
+    /// The statement is refused (its signature does not verify).
+    Refused,
+    /// The statement verifies under this recovery key.
+    Verified(Box<CompositePublicKey>),
+}
+
+/// A later bundle is a recovery (CC 2.6.1.11) when it carries one statement
+/// with a role, by a holder of the predecessor, that either signs under
+/// another key than the one the predecessor seats for it or comes with a
+/// second key record of that holder named (the recovery key's own).
+fn recovery_attempt(
+    pp: &GenesisPlacement,
+    voices: &[&Voice],
+    held: &[(Digest32, &[u8], RowPeek)],
+) -> Option<Attempt> {
+    let [v] = voices else { return None };
+    let seated = pp.holder(&v.iss)?;
+    let records = held
+        .iter()
+        .filter(|(_, _, pk)| {
+            pk.family == KEY_RECORD_FAMILY && pk.author.as_deref() == Some(v.iss.as_str())
+        })
+        .count();
+    (v.kid != seated.kid || records > 1).then(|| Attempt {
+        index: v.index,
+        holder: v.iss.clone(),
+        kid: v.kid,
+    })
+}
+
+/// A recovery's Invalid rules (CC 2.6.1.11, CC 4.2.6), in the reference
+/// reader's order: it changes only its holder's seat; the new signing key is
+/// neither the recovery key nor a key a commitment of the lineage commits to;
+/// it is not the holder's current key.
+fn recovery_rules(
+    b: &Bundle,
+    pp: &GenesisPlacement,
+    rows: &Rows,
+    holder: &str,
+    rk: &CompositePublicKey,
+    lineage: &BTreeSet<Digest32>,
+) -> Result<(), Malformed> {
+    fn ids(v: &[String]) -> Vec<&str> {
+        v.iter().map(String::as_str).collect()
+    }
+    let same_roster = ids(&b.holders)
+        == pp
+            .holders
+            .iter()
+            .map(|h| h.identity_ref.as_str())
+            .collect::<Vec<_>>()
+        && ids(&b.serve_nodes)
+            == pp
+                .seats
+                .iter()
+                .map(|s| s.identity_ref.as_str())
+                .collect::<Vec<_>>()
+        && ids(&b.charter.witnesses)
+            == pp
+                .witnesses
+                .iter()
+                .map(|w| w.identity_ref.as_str())
+                .collect::<Vec<_>>();
+    let (c, pc) = (&b.charter, &pp.charter);
+    let same_charter = c.scope == pc.scope
+        && c.halt_fuse_secs == pc.halt_fuse_secs
+        && c.attach_window_secs == pc.attach_window_secs
+        && c.witness_cadence_secs == pc.witness_cadence_secs
+        && c.witness_quorum == pc.witness_quorum
+        && c.witnesses == pc.witnesses;
+    let same_rows = same_roster
+        && pp
+            .holders
+            .iter()
+            .filter(|h| h.identity_ref != holder)
+            .all(|h| {
+                rows.records[&h.identity_ref].id == h.record
+                    && c.recovery_commitments.get(&h.identity_ref) == Some(&h.recovery_commitment)
+            })
+        && pp.seats.iter().all(|s| {
+            rows.records[&s.identity_ref].id == s.record
+                && rows.bindings[&s.identity_ref].id == s.binding
+        })
+        && pp
+            .witnesses
+            .iter()
+            .all(|w| rows.records[&w.identity_ref].id == w.record);
+    if !same_roster || !same_charter || !same_rows {
+        return Err(Malformed::RecoveryChangesOtherSeat);
+    }
+    let new = &rows.records[holder].rec;
+    if new.kid == thumbprint(rk)
+        || lineage.contains(&recovery_commitment(core::slice::from_ref(&new.key)))
+    {
+        return Err(Malformed::RecoveryKeyIsSigningKey);
+    }
+    if pp.holder(holder).is_some_and(|h| h.kid == new.kid) {
+        return Err(Malformed::RecoveryReusesSigningKey);
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------------ rows
@@ -1307,6 +1707,8 @@ struct PlacedBinding {
 struct Rows {
     records: BTreeMap<String, PlacedRecord>,
     bindings: BTreeMap<String, PlacedBinding>,
+    /// A recovery key's own record, named for self-containment.
+    recovery_key: Option<PlacedRecord>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1349,9 +1751,9 @@ fn verify_under(
 
 fn place_rows(
     b: &Bundle,
-    first: bool,
+    prev: Option<&GenesisPlacement>,
     held: &[(Digest32, &[u8], RowPeek)],
-    roots: &TrustAnchorStore,
+    attempt: Option<&Attempt>,
 ) -> Result<Rows, Inconclusive> {
     let place_of = |p: &str| {
         if b.holders.iter().any(|h| h == p) {
@@ -1365,11 +1767,23 @@ fn place_rows(
         }
     };
 
-    // Slot each row by family and author alone.
+    // Slot each row by family and author alone; a recovery key's record by
+    // the recovery statement's kid, the first named record that holds it.
     let mut record_slots: BTreeMap<&str, (Digest32, &[u8], &RowPeek)> = BTreeMap::new();
     let mut binding_slots: BTreeMap<&str, (Digest32, &[u8])> = BTreeMap::new();
+    let mut recovery_slot: Option<(Digest32, &[u8], &RowPeek)> = None;
     for (id, bytes, pk) in held {
         let author = pk.author.as_deref();
+        if let Some(a) = attempt {
+            if recovery_slot.is_none()
+                && pk.family == KEY_RECORD_FAMILY
+                && author == Some(a.holder.as_str())
+                && pk.key.as_ref().is_some_and(|k| thumbprint(k) == a.kid)
+            {
+                recovery_slot = Some((*id, bytes, pk));
+                continue;
+            }
+        }
         let slot = author.and_then(|a| place_of(a).map(|p| (a, p)));
         match (pk.family.as_str(), slot) {
             (KEY_RECORD_FAMILY, Some((a, _))) => {
@@ -1404,22 +1818,19 @@ fn place_rows(
     // Each record, verified under the key it records, then its place's rule.
     let mut records = BTreeMap::new();
     for (party, (id, bytes, pk)) in &record_slots {
-        let Some(key) = &pk.key else {
-            let fault = match verify_row_statement(bytes, &NoKeys) {
-                Verdict::Invalid(i) => RowFault::Row(i),
-                _ => RowFault::Record(KeyRecordError::BadKey),
-            };
-            return Err(row_invalid(*id, fault));
-        };
-        let row = verify_under(*id, bytes, thumbprint(key), key)?;
-        let rec =
-            check_key_record(&row.payload).map_err(|e| row_invalid(*id, RowFault::Record(e)))?;
+        let rec = verify_record(*id, bytes, pk)?;
         match place_of(party).expect("slotted") {
             Place::Holder => {
                 if !rec.identity_type.iter().any(|r| r == "accord_holder") {
                     return Err(row_invalid(*id, RowFault::HolderNotAccordHolder));
                 }
-                if first && identity_ref_thumbprint(party) != Some(rec.kid) {
+                // The key the bundle in force seats for this holder.
+                let recovered = attempt.is_some_and(|a| a.holder == *party);
+                let seated = match prev.and_then(|pp| pp.holder(party)) {
+                    Some(h) => Some(h.kid),
+                    None => identity_ref_thumbprint(party),
+                };
+                if !recovered && seated != Some(rec.kid) {
                     return Err(row_invalid(*id, RowFault::HolderNotGenesisKey));
                 }
             },
@@ -1427,11 +1838,21 @@ fn place_rows(
                 if rec.identity_type != ["node"] {
                     return Err(row_invalid(*id, RowFault::SeatNotNode));
                 }
+                if rec.valid_until.is_none_or(|u| u <= b.asserted_at) {
+                    return Err(row_invalid(*id, RowFault::SeatRecordEnded));
+                }
             },
             Place::Witness => {},
         }
         records.insert((*party).to_owned(), PlacedRecord { id: *id, rec });
     }
+    let recovery_key = match recovery_slot {
+        None => None,
+        Some((id, bytes, pk)) => Some(PlacedRecord {
+            id,
+            rec: verify_record(id, bytes, pk)?,
+        }),
+    };
 
     // Each seat's binding, under the seat's recorded key.
     let mut bindings = BTreeMap::new();
@@ -1439,7 +1860,7 @@ fn place_rows(
         let r = &records[*seat];
         let row = verify_under(*id, bytes, r.rec.kid, &r.rec.key)?;
         let (transit, onion) =
-            seat_xwing(&row.payload, &r.rec.key).map_err(|f| row_invalid(*id, f))?;
+            check_seat_binding(&row.payload, &r.rec.key, &r.id).map_err(|f| row_invalid(*id, f))?;
         bindings.insert(
             (*seat).to_owned(),
             PlacedBinding {
@@ -1449,15 +1870,24 @@ fn place_rows(
             },
         );
     }
+    Ok(Rows {
+        records,
+        bindings,
+        recovery_key,
+    })
+}
 
-    // The custody gate at each holder seat.
-    for h in &b.holders {
-        custody_gate(&records[h].rec, roots).map_err(|fault| Inconclusive::HolderCustody {
-            holder: h.clone(),
-            fault,
-        })?;
-    }
-    Ok(Rows { records, bindings })
+/// A named key record, verified under the key it records.
+fn verify_record(id: Digest32, bytes: &[u8], pk: &RowPeek) -> Result<KeyRecord, Inconclusive> {
+    let Some(key) = &pk.key else {
+        let fault = match verify_row_statement(bytes, &NoKeys) {
+            Verdict::Invalid(i) => RowFault::Row(i),
+            _ => RowFault::Record(KeyRecordError::BadKey),
+        };
+        return Err(row_invalid(id, fault));
+    };
+    let row = verify_under(id, bytes, thumbprint(key), key)?;
+    check_key_record(&row.payload).map_err(|e| row_invalid(id, RowFault::Record(e)))
 }
 
 fn collect_bytes<'a>(v: &'a Value, skip: &[&str], out: &mut Vec<&'a [u8]>) {
@@ -1477,28 +1907,98 @@ fn collect_bytes<'a>(v: &'a Value, skip: &[&str], out: &mut Vec<&'a [u8]>) {
     }
 }
 
-/// A seat binding's X-Wing keys (CC 3.3.6.2): the two 1216-byte members of
-/// the signed payload, beside its `transport_destination`, passing the in-row
-/// separation against each other, every other key on the row and the
-/// signer's Ed25519 half.
-fn seat_xwing(
+/// The members of `transport_destination` (CC 3.3.6.2, CC 3.3.6.3), each
+/// with the byte length it must carry (`None`: its own type).
+const TRANSPORT_DESTINATION: [&str; 5] = [
+    "reticulum_x25519_pubkey",
+    "reticulum_ed25519_pubkey",
+    "app_name",
+    "aspects",
+    "destination_hash",
+];
+
+/// `transport_destination` against its CDDL: a closed map of the five RNS
+/// members, each of its type.
+fn transport_destination_shape(td: &Value) -> Result<(), RowFault> {
+    let bad = || {
+        RowFault::Row(Invalid::Malformed {
+            member: "transport_destination",
+        })
+    };
+    let m = td.as_map().ok_or_else(bad)?;
+    if m.len() != TRANSPORT_DESTINATION.len()
+        || m.iter().any(|(k, _)| {
+            !k.as_text()
+                .is_some_and(|t| TRANSPORT_DESTINATION.contains(&t))
+        })
+    {
+        return Err(bad());
+    }
+    let len = |k: &str| td.get_text(k).and_then(Value::as_bytes).map(<[u8]>::len);
+    if len("reticulum_x25519_pubkey") != Some(32)
+        || len("reticulum_ed25519_pubkey") != Some(32)
+        || len("destination_hash") != Some(16)
+        || td.get_text("app_name").and_then(Value::as_text).is_none()
+        || !td
+            .get_text("aspects")
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.iter().all(|x| x.as_text().is_some()))
+    {
+        return Err(bad());
+    }
+    Ok(())
+}
+
+/// Does a binding's `refs` name `record` under the `also` role `cites`?
+fn names_record(p: &Value, record: &Digest32) -> bool {
+    p.get_text("refs")
+        .and_then(|r| r.get_text("also"))
+        .and_then(|a| a.get_text("cites"))
+        .and_then(Value::as_array)
+        .is_some_and(|cites| {
+            cites
+                .iter()
+                .any(|c| row_ref_of(c, "cites").ok() == Some(*record))
+        })
+}
+
+/// A seat's binding (CC 3.3.6.2): the payload of the seat's
+/// `identity:occurrence` row, signed by `signer` (the seat's key), whose
+/// seat key record is `record`. Returns its two X-Wing keys, the 1216-byte
+/// members of the signed payload beside `transport_destination`, once they
+/// pass the in-row separation against each other, every other key on the row
+/// and the signer's Ed25519 half, and the binding names `record` in `refs`.
+///
+/// # Errors
+///
+/// The [`RowFault`] the binding breaks: `binding_no_transport_destination`,
+/// `row_invalid` (`transport_destination` or `onion_relay` off its CDDL),
+/// `binding_earlier_transit_pair`, `seat_opted_out`, `binding_xwing_member`,
+/// an X-Wing reuse token, or `binding_names_no_record`.
+pub fn check_seat_binding(
     p: &Value,
     signer: &CompositePublicKey,
+    record: &Digest32,
 ) -> Result<([u8; XWING_PUBKEY_LEN], [u8; XWING_PUBKEY_LEN]), RowFault> {
-    if !p
+    let td = p
         .get_text("transport_destination")
-        .is_some_and(|t| t.as_map().is_some())
-    {
+        .ok_or(RowFault::NoTransportDestination)?;
+    if td.as_map().is_none() {
         return Err(RowFault::NoTransportDestination);
     }
+    transport_destination_shape(td)?;
     if p.get_text("transit_kex_pubkeys").is_some() {
         return Err(RowFault::EarlierTransitPair);
     }
-    if p.get_text("onion_relay")
-        .and_then(|o| o.get_text("opt_out"))
-        .is_some_and(|x| *x == Value::Bool(true))
-    {
-        return Err(RowFault::SeatOptedOut);
+    if let Some(o) = p.get_text("onion_relay") {
+        let opted_out = o.as_map().is_some_and(|m| m.len() == 1)
+            && o.get_text("opt_out") == Some(&Value::Bool(true));
+        if opted_out {
+            return Err(RowFault::SeatOptedOut);
+        }
+        return Err(RowFault::Row(Invalid::Malformed {
+            member: "onion_relay",
+        }));
     }
     let member = |m: &'static str| -> Result<[u8; XWING_PUBKEY_LEN], RowFault> {
         p.get_text(m)
@@ -1523,7 +2023,7 @@ fn seat_xwing(
     let mut others: Vec<&[u8]> = Vec::new();
     collect_bytes(
         p,
-        &["transit_xwing_pubkey", "onion_hop_xwing_pubkey"],
+        &["transit_xwing_pubkey", "onion_hop_xwing_pubkey", "refs"],
         &mut others,
     );
     let ed = &signer.as_bytes()[MLDSA65_PK_LEN..];
@@ -1549,6 +2049,9 @@ fn seat_xwing(
                 token: "transit_x25519_reuse",
             });
         }
+    }
+    if !names_record(p, record) {
+        return Err(RowFault::BindingNamesNoRecord);
     }
     Ok((transit, onion))
 }
@@ -1587,59 +2090,23 @@ fn custody_gate(rec: &KeyRecord, roots: &TrustAnchorStore) -> Result<(), Custody
 
 // ------------------------------------------------------------------ voices
 
-enum VoiceKey {
-    Key(Box<CompositePublicKey>),
-    Refused(StatementFault),
-    Waiting,
-}
-
-/// The key a voice's `kid` resolves to for its `iss`: the named record; in a
-/// later bundle also the predecessor's record of a removed holder, or a held
-/// `key:record` of the same `iss` (the key plane). Otherwise Waiting on the
-/// kid; in a first bundle, Invalid.
+/// The key a voice must sign under (CC 2.6.1.11): in a first bundle the key
+/// its holder's named record holds; in a later bundle the key the
+/// predecessor seats for its holder, or, for a holder the bundle adds, the
+/// key its named record holds. `None`: its `kid` is not that key.
 fn voice_key(
     v: &Voice,
     rows: &Rows,
     prev: Option<&GenesisPlacement>,
-    first: bool,
-    held: &BTreeMap<Digest32, Vec<u8>>,
-    at: u64,
-) -> VoiceKey {
-    if let Some(r) = rows.records.get(&v.iss) {
-        if r.rec.kid == v.kid {
-            return VoiceKey::Key(Box::new(r.rec.key.clone()));
-        }
-    }
-    if first {
-        return VoiceKey::Refused(StatementFault::KidNotIss);
-    }
-    if let Some(h) = prev.and_then(|p| p.holder(&v.iss)) {
-        if h.kid == v.kid {
-            return VoiceKey::Key(Box::new(h.key.clone()));
-        }
-    }
-    for (id, bytes) in held {
-        let Some(pk) = peek_row(bytes) else { continue };
-        if pk.row_id != *id
-            || pk.family != KEY_RECORD_FAMILY
-            || pk.author.as_deref() != Some(v.iss.as_str())
-        {
-            continue;
-        }
-        let Some(key) = pk.key else { continue };
-        if thumbprint(&key) != v.kid {
-            continue;
-        }
-        let Ok(row) = verify_under(*id, bytes, v.kid, &key) else {
-            continue;
-        };
-        if let Ok(rec) = check_key_record(&row.payload) {
-            if rec.valid_until.is_none_or(|u| at <= u) {
-                return VoiceKey::Key(Box::new(rec.key));
-            }
-        }
-    }
-    VoiceKey::Waiting
+) -> Option<CompositePublicKey> {
+    let (kid, key) = match prev.and_then(|pp| pp.holder(&v.iss)) {
+        Some(h) => (h.kid, &h.key),
+        None => {
+            let r = rows.records.get(&v.iss)?;
+            (r.rec.kid, &r.rec.key)
+        },
+    };
+    (kid == v.kid).then(|| key.clone())
 }
 
 #[cfg(test)]
@@ -1674,6 +2141,9 @@ mod tests {
                 witnesses: vec![],
             },
             counted: vec![],
+            recovered: None,
+            spent_commitments: BTreeSet::new(),
+            lineage_commitments: BTreeSet::new(),
         };
         let (a, b, c, d) = (p(1, None), p(2, Some(1)), p(3, Some(2)), p(4, Some(2)));
         assert!(matches!(follow_to_head(&[&a, &b]), Head::Head(h) if h.object_id == [2; 32]));
@@ -1692,5 +2162,9 @@ mod tests {
             }]
         );
         assert!(matches!(follow_to_head(&[]), Head::Nothing));
+        let t = tips_in_common(&[&a, &b, &c, &d]).unwrap();
+        assert_eq!(t.tips, vec![[3; 32], [4; 32]]);
+        assert_eq!(tips_in_common(&[&a, &b]).unwrap().tips, vec![[2; 32]]);
+        assert!(tips_in_common(&[&a, &e]).is_none());
     }
 }
