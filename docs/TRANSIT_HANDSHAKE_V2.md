@@ -111,13 +111,19 @@ Here `bound = u8 len ‖ suite ‖ u16 len ‖ initiator_key_id ‖ u16 len ‖ 
   msg3 = 0x03 ‖ ct3'[1120]
   ```
 - **The binding must match msg1's commitment.** The responder promotes only when the binding it now holds has a transit pair whose hash equals msg1's `H(pk(S_i))`. A binding naming any other static is refused for promotion. The link stays at first contact.
-- **The rekey:** both ends compute `prk' = HKDF-Extract(salt = H(h3 ‖ "promote" ‖ ct3'), ikm = k_i2r ‖ k_r2i ‖ ss3')`, then new `k_i2r`, `k_r2i` and `k_conf` under the same labels.
-- **The confirmation:** the initiator answers with `"CTKC" ‖ MAC(k_conf', "initiator" ‖ …)` under the new `k_i2r`.
+- **The rekey:** both ends compute `h3' = H(h3 ‖ "promote" ‖ ct3')` and `prk' = HKDF-Extract(salt = h3', ikm = k_i2r ‖ k_r2i ‖ ss3')`. From `prk'` they derive new `k_i2r'`, `k_r2i'` and `k_conf'` under the same labels as `msg2`, each followed by `bound` (`label ‖ bound`).
+- **The confirmation:** the initiator answers with `"CTKC" ‖ MAC(k_conf', "initiator" ‖ h3')` under the new `k_i2r'`. The responder sends no further confirmation: it is already authenticated on this sealed link, and `msg3` travels under its keys. The responder holds the initiator mutually attributed once `CTKC'` verifies. Anything else as the initiator's first frame under the new phase closes the link.
 - **Key phases (edge's proposal):** lanes are not ordered relative to one another, so a frame under the old key may arrive after the switch.
   - **Counters continue** across the rekey, so each lane's 128-frame replay window carries over. They do not restart.
   - **Seal frames gain a key-phase byte:** seal frame version 0x02, with the phase also in the AAD.
   - **The receiver keeps the previous phase's open keys** until it has seen the new phase on that lane, or for one handshake budget, whichever comes first. Then it zeroizes them.
   - A frame of an unknown phase fails to open.
+
+## Encoding details
+
+- **Byte order:** every length (`u16 len` in `msg1` and in `id_block`; `u32 total_len` in the part framing) and every integer is big-endian, as in v1's `bound`.
+- **Unknown bits refused:** `flags` bits other than bit 0 are refused (closed format).
+- **v1 refused by name:** the v1 suite string `transit_x25519_mlkem768_hkdf_sha256` is refused with its own error, separate from an unknown suite.
 
 ## Framing, sizes, limits
 
