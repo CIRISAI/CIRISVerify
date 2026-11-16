@@ -22,6 +22,8 @@
 //!
 //! Pure: no clock, no randomness, no I/O.
 
+// The accord halt rows of edition 2 (CC 4.2.1.1, 4.2.1.3).
+pub mod accord_halt;
 pub mod disclosure;
 pub mod family;
 // The `ceg-genesis-bundle/2` reader (CC 2.6.1.11). `std` tier: its custody
