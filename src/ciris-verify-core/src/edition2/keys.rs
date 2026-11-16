@@ -15,9 +15,10 @@
 //!
 //! [`KeyRecordDirectory`] answers [`KeyLookup`]s from held key-record
 //! statements: a record whose own signer is not held makes the key Waiting on
-//! that deeper key, an Invalid record makes it Invalid, and a key held in part
-//! (an earlier-form key whose ML-DSA half is known only by commitment) is
-//! Waiting on that half.
+//! that deeper key, an Invalid record makes it Invalid, and a held record that
+//! ends before the statement's instant makes it Waiting on a record of that
+//! key covering the instant ([`MissingKey::CoveringRecord`]; CC 2.4.1.1: such
+//! a row is retryable).
 
 use super::{
     cde, thumbprint, verify_row_statement, Digest32, KeyDirectory, KeyLookup, MissingKey, Value,
@@ -206,7 +207,6 @@ pub fn check_key_record(payload: &Value) -> Result<KeyRecord, KeyRecordError> {
 #[derive(Debug, Default, Clone)]
 pub struct KeyRecordDirectory {
     records: BTreeMap<Digest32, Vec<u8>>,
-    partial: BTreeMap<Digest32, Digest32>,
 }
 
 impl KeyRecordDirectory {
@@ -227,24 +227,12 @@ impl KeyRecordDirectory {
         Some(kid)
     }
 
-    /// Record that `kid` is held in part: its ML-DSA half is known only by
-    /// the SHA-256 `commitment`.
-    pub fn insert_partial(&mut self, kid: Digest32, commitment: Digest32) {
-        self.partial.insert(kid, commitment);
-    }
-
     fn resolve(&self, kid: &Digest32, at: u64, depth: usize) -> KeyLookup {
         if depth > MAX_RECORD_DEPTH {
             return KeyLookup::Invalid;
         }
         let Some(st) = self.records.get(kid) else {
-            return match self.partial.get(kid) {
-                Some(c) => KeyLookup::Waiting(vec![MissingKey::MlDsaHalf {
-                    kid: *kid,
-                    commitment: *c,
-                }]),
-                None => KeyLookup::NotHeld,
-            };
+            return KeyLookup::NotHeld;
         };
         let inner = Scoped {
             dir: self,
@@ -260,8 +248,16 @@ impl KeyRecordDirectory {
                 let Ok(rec) = check_key_record(&row.payload) else {
                     return KeyLookup::Invalid;
                 };
-                if rec.kid != *kid || rec.valid_until.is_some_and(|u| at > u) {
+                if rec.kid != *kid {
                     return KeyLookup::Invalid;
+                }
+                // The record is valid but ends before the instant: a newer
+                // record of the key may cover it, so the row waits (CC 2.4.1.1).
+                if rec.valid_until.is_some_and(|u| at > u) {
+                    return KeyLookup::Waiting(vec![MissingKey::CoveringRecord {
+                        kid: *kid,
+                        at_ms: at,
+                    }]);
                 }
                 KeyLookup::Held(Box::new(rec.key))
             },
@@ -460,8 +456,32 @@ mod tests {
             ))
             .unwrap();
         assert!(matches!(d.lookup(&node_kid, T0), KeyLookup::Held(_)));
-        // Past valid_until: not in force.
-        assert!(matches!(d.lookup(&node_kid, T0 + 1001), KeyLookup::Invalid));
+        assert!(matches!(d.lookup(&node_kid, T0 + 1000), KeyLookup::Held(_)));
+        // Past valid_until: no held record covers the instant, so the key
+        // waits on one that does (CC 2.4.1.1: retryable), never Invalid.
+        match d.lookup(&node_kid, T0 + 1001) {
+            KeyLookup::Waiting(m) => assert_eq!(
+                m,
+                vec![MissingKey::CoveringRecord {
+                    kid: node_kid,
+                    at_ms: T0 + 1001
+                }]
+            ),
+            other => panic!("{other:?}"),
+        }
+        // A newer record of the same key, covering the instant, answers it.
+        d.insert(signed_record(
+            &root,
+            &node,
+            &Value::Map(vec![
+                (t("key"), cose_key(node.public_key())),
+                (t("identity_type"), Value::Array(vec![t("node")])),
+                (t("asserted_at"), Value::Uint(T0 + 1000)),
+                (t("valid_until"), Value::Uint(T0 + 5000)),
+            ]),
+        ))
+        .unwrap();
+        assert!(matches!(d.lookup(&node_kid, T0 + 1001), KeyLookup::Held(_)));
 
         // A record signed by a key nobody holds: Waiting on that deeper key.
         let ghost = key(9);
@@ -562,21 +582,5 @@ mod tests {
                 missing: vec![MissingKey::Kid(thumbprint(k.public_key()))]
             }
         );
-    }
-
-    #[test]
-    fn held_in_part_waits_on_the_half() {
-        let mut d = KeyRecordDirectory::new();
-        d.insert_partial([7; 32], [8; 32]);
-        match d.lookup(&[7; 32], T0) {
-            KeyLookup::Waiting(m) => assert_eq!(
-                m,
-                vec![MissingKey::MlDsaHalf {
-                    kid: [7; 32],
-                    commitment: [8; 32]
-                }]
-            ),
-            other => panic!("{other:?}"),
-        }
     }
 }
