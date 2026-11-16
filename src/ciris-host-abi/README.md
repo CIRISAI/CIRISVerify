@@ -1,0 +1,423 @@
+# ciris-host-abi
+
+The `ciris:node` host interface of the CIRIS WASM node: work item 1 of
+CIRISServer `FSD/WASM_NODE.md` (§4, §5.1, §8, §10.1). It sits below every
+repo that builds into the node module (verify, persist, edge, leviculum,
+server).
+
+| Piece | Where |
+|---|---|
+| The normative WIT, package `ciris:node@0.1.0`, worlds `node` and `vault` | [`wit/ciris-node.wit`](wit/ciris-node.wit) |
+| wit-bindgen 0.51.0 guest bindings for a **core** module (§4.2) | `src/bindings.rs` |
+| Safe wrappers node crates call (`clock`, `random`, `storage`, `net`, `seal`, `wake`, `log`), the `Node` trait, `export_node!` | `src/lib.rs` |
+| The native host seam (`host::Host`, `host::install`) | `src/host.rs` |
+| **The target boundary**: the only `cfg(target_*)` a node build depends on | `src/sys/` |
+| getrandom custom backend over `random.fill` (feature `getrandom-backend`) | `src/sys/wasm.rs` |
+| Import-allowlist gate | `src/gate.rs`, `ciris-abi-gate` |
+| Target-`cfg` lint | `src/cfg_lint.rs`, `ciris-cfg-lint` |
+| Smoke node module | `examples/smoke_node.rs` |
+
+## The rule (§4.1)
+
+1. The node module imports only `ciris:node/*` interfaces of its world. No
+   `wasi:*`, no `env`, no wasm-bindgen. `ciris-abi-gate` enforces it.
+2. Node crates contain no `cfg(target_*)`, `cfg(unix)` or `cfg(windows)`.
+   Hosts differ by runtime answers (`net.carriers`, `net.can-listen`,
+   `volume.durability`, `seal.describe`). `ciris-cfg-lint` enforces it.
+   **This crate is the one place allowed to branch on target**, and all of
+   that branching is inside `src/sys/` (plus the declarations of the two
+   native-only tool modules, and `[target]` tables in this crate's
+   `Cargo.toml`).
+3. No ambient authority: no paths, environment, sockets or processes.
+
+## Writing a node
+
+```rust
+use ciris_host_abi::{clock, log, random, Event, Node};
+
+struct MyNode;
+impl Node for MyNode {
+    fn init() -> Result<(), String> { Ok(()) }
+    fn tick(budget_us: u32) -> u64 { clock::monotonic_us() + 1_000 }
+    fn on_event(e: Event) { /* readable / writable / connected / failed / listener-failed / closed / sealed / lifecycle / timer / clock-trusted */ }
+    fn api(req: Vec<u8>, local: bool) -> Vec<u8> { req }
+}
+ciris_host_abi::export_node!(MyNode);
+```
+
+On wasm32, `export_node!` emits the `node` world exports (`init`, `tick`,
+`on-event`, `api`, with their `cabi_post_*`). On native it only checks that
+the type implements `Node`; a native host calls the `Node` methods
+directly.
+
+## Native hosts and tests
+
+Implement `ciris_host_abi::host::Host` (and `HostVolume` / `HostStream`
+for storage and network) and call `ciris_host_abi::host::install(host)` on
+the thread that runs the node. The node is single-threaded (§5.1), so the
+host is per thread, and parallel tests install their own. `clock`,
+`random.fill` and `log.record` are required; everything else defaults to
+"this host does not offer it" (`unsupported`, no carriers, an
+`unsupported` evictable volume). A wrapper called with no host installed
+panics, as a module with an unsatisfied import would fail to instantiate.
+
+## Implementing the imports (wasm hosts)
+
+The browser, EFI and wasip2 hosts implement the `ciris:node/*` imports
+under the canonical ABI as wit-bindgen lowers them: import module
+`ciris:node/<interface>@0.1.0`, field the WIT function name
+(`monotonic-us`, `[method]volume.read`, `[resource-drop]stream`, ...).
+Lists and strings the host returns are allocated with the module's
+exported `cabi_realloc` and written through the return-area pointer
+argument. `ciris-abi-gate` prints the exact pairs a module uses.
+
+Event delivery is the host loop of §5.1:
+
+```
+loop:
+    poll host I/O; deliver events with on-event
+    deadline = tick(budget)
+    sleep until deadline or host event
+```
+
+Storage is synchronous. Network, seal and timers complete as events.
+
+### Asynchronous operations: the token shape
+
+Every asynchronous operation takes a `token: u64` **chosen by the node**,
+returns at once, and later events carry that token back. The same shape
+holds for `net` and `seal`:
+
+* `net.dial(carrier, target, subprotocols, token)` → `connected(token)` or
+  `failed({token, reason})` (`reason`: `refused`, `unreachable`,
+  `timeout`, `name-not-resolved`, `denied`, `error`); then
+  `readable(token)`, `writable(token)`, `closed({token, reason})`.
+* `net.listen(carrier, opts, token)`, `opts = listen-options { bind,
+  port, subprotocols, ws-path }` (`bind`: an IP literal the host
+  interprets, none = all addresses; `ws-path`: the HTTP upgrade path, e.g.
+  `/rns`) → `readable(token)` means `accept` until it returns none;
+  `accept(listener, token2)` gives each connection `token2`. A listener
+  that fails later reports `listener-failed({token, reason})`. **TLS (wss)
+  certificates are host configuration.**
+* `net.bind(bind, port, token)` → a `datagram`; `readable(token)` /
+  `writable(token)` as for streams.
+* `seal.sign-composite(id, msg, token)` (and `generate`,
+  `xwing-decap`, `wrap`, `unwrap`, `sign-classical`, `sign-pqc`) → `ok` means accepted, `err` means it never started; then
+  `sealed(token)`; then `seal.take(token)` returns the result once (the
+  signature, or for `generate` the 1984-byte public key; `would-block`
+  before the event, `not-found` after it was taken). **Many seal tokens
+  may be outstanding at once, and completions may arrive in any order**
+  (a backfill pipelines its signatures; `tests/native_seam.rs` runs three
+  in flight).
+
+### Readiness is edge-triggered
+
+* `readable(token)` fires when a connection goes from nothing to read to
+  something to read. The node must `recv` until `would-block` before it
+  can expect another `readable`.
+* `writable(token)` fires once after a `send` returned `would-block`, when
+  sending may succeed again.
+* On a listener, `readable(token)` means `accept` until it returns none.
+* A spurious event is allowed; it only means "try again". `ciris-rt`'s
+  adapters drain to `would-block` before parking.
+* **Receive backpressure.** The host buffers at most
+  `conn-info.recv-buffer` unread bytes per connection. At the cap it pauses
+  reading where the carrier can (TCP, WebSocketStream); where it cannot (a
+  browser `WebSocket`), it closes with `closed(error)`.
+* **Shutdown.** `closed(host-shutdown)` fires exactly once per open stream,
+  and all of them come before `lifecycle(shutdown)`.
+
+### Clock trust
+
+`clock.wall-ms` is none until the host trusts its time; `event.clock-trusted`
+fires once when it first becomes some. A node must not stamp signed rows
+(`created_at`, attestation times, consent windows) before that event.
+Transport and replication receive run on `monotonic-us`.
+
+### `log.metric`
+
+`metric(name, kind, value, labels)`, `kind` one of `counter` (value is the
+increment), `gauge` (the current reading), `histogram` (one observation);
+`labels` is a list of `(key, value)` pairs.
+
+A node-chosen token keeps one namespace per node, needs no host-side id
+allocation, and records and replays deterministically at the ABI boundary
+(§5.1).
+
+### `net` (as Leviculum needs it)
+
+* `carrier.udp` as a `stream` is **connected datagrams** (`dial` fixes the
+  peer; message framing); a host may omit `udp` from `carriers()`. The
+  **unconnected** path is the `datagram` resource: `net.bind(bind, port,
+  token)` (port 0 = any), `send-to(addr, data)` (would-block, then
+  `writable`), `recv-from()` → `(addr, data)` (would-block, then
+  `readable`, edge-triggered), `local-addr()`, `max-datagram()`,
+  `multicast-join(group, interface)` / `multicast-leave`. Plus
+  `net.interfaces()` (`{name, addresses, link-local, up}`) for
+  AutoInterface, and the runtime answers `can-datagram()` /
+  `can-multicast()`, false on browser hosts. This is how the native node
+  keeps UDPInterface, AutoInterface and hole punching through the same
+  seam (option (a) of edge's review). Multicast join/leave are methods of
+  the socket (`[method]datagram.multicast-join`).
+* **Serial:** baud, flow control and KISS settings are host configuration,
+  keyed by the `target` path string given to `dial(serial, target, ...)`.
+
+* Framing is reported **per connection** in `stream.info()`: `stream` or
+  `message`, since a WebSocket dial can negotiate either.
+* `conn-info` also carries `max-message` (message framing; sets Reticulum
+  `hw_mtu`), `reliable`, the negotiated `subprotocol` (none = the default),
+  `peer-subprotocols` (an accepted connection's client offer), the opaque
+  `peer` address and an optional `bitrate-hint`.
+* `dial` and `listen` take an ordered subprotocol list (e.g.
+  `["rns.hdlc", "rns.raw"]`); other carriers require it empty.
+* `send` is non-blocking: bytes accepted (stream framing, possibly short)
+  or 1 (message framing; a message is never split), `would-block` with a
+  later `writable(token)`, `invalid` for a message over `max-message`.
+* `recv` returns `would-block` (not an empty list) when nothing is ready.
+* `closed(close-info)` carries `peer-close`, `error` or `host-shutdown`.
+
+## The seal deviation
+
+§4.4 lists `sign-classical` and `sign-pqc` with no context. Every
+forward-model signature is the CC 2.6.1.7 composite ML-DSA-65-Ed25519
+(CIRISVerify#326, `ciris_crypto::composite`): ML-DSA-65 signs
+
+```
+M' = "CompositeAlgorithmSignatures2025" || "COMPSIG-MLDSA65-Ed25519-SHA512" || 0x00 || SHA-512(msg)
+```
+
+with the label as its FIPS 204 **context**, and Ed25519 signs `M'` as it
+is. A context-free `sign-pqc` cannot produce that. So:
+
+* `sign-pqc` takes `ctx: list<u8>`;
+* `sign-composite(id, msg, token)` yields the 3373-byte composite
+  (`mldsaSig || ed25519Sig`), the host or vault computing `M'` exactly as
+  `ciris_crypto::composite` does;
+* `sign-classical` stays (Ed25519 over `msg` as it is);
+* `public-key(id)` returns the 1984-byte composite key (`mldsaPK || ed25519PK`).
+
+Also: `describe` takes a key id, since custody differs per key on one
+host; and §4.4's one-word `tier` enum is replaced by the per-half
+`custody` record §8.1(1) requires (`classical-at-use`, `classical-at-rest`,
+`pqc-at-use`, `pqc-at-rest`, `seal-root`, `platform`). Values follow
+§8.2: at use `hardware | vault | software`; at rest
+`hardware | sealed | wrapped | software-sealed | unprotected`; seal root
+`tpm | tpm-measured | token-signature | webauthn-prf | platform-keystore | software`;
+`platform` is the CC `hardware_custody:{platform}` token, or none.
+
+## Seal provisioning and key agreement (§8.5)
+
+Seeds never pass through node memory. There is no node-facing
+`provision`:
+
+* a **new** key is made with `seal.generate(id, kind, token)`, `kind` one
+  of `composite`, `transit`, `onion-hop`: the vault draws the seed from
+  `random`, the host seals it, and `take(token)` returns **only the public
+  key**:
+  * `composite`: 1984 bytes, `mldsaPK || ed25519PK`;
+  * `transit`: the node's static **X-Wing** transit pair for the CC
+    5.3.3.10 mutual link handshake, minted fresh for this edition (no
+    earlier transit pair carries over). Made exactly as `onion-hop`: a
+    32-byte X-Wing seed, public key 1216 bytes,
+    **`pk_M(1184) || pk_X(32)`, ML-KEM first**.
+  * `onion-hop`: **X-Wing** (edge's `outfox-xwing-v1` hop KEM). The
+    private key is a 32-byte X-Wing seed; the public key is the X-Wing
+    encoding, 1216 bytes, **`pk_M(1184) || pk_X(32)`, ML-KEM first**
+    (`ciris_crypto::xwing::XWingSecretKey::from_seed`). A **host-side
+    adopt** of an existing edge hop root seed must use edge's derivation
+    (`HopSecret::from_root_seed`: X-Wing seed =
+    `HKDF-SHA3-256(64-byte root, "", "ciris-onion-hop/v1/xwing-seed", 32)`)
+    and install the resulting 32-byte X-Wing seed.
+* **transit and onion-hop → `seal.xwing-decap(id, ct, token)`**: `ct` is
+  the 1120-byte X-Wing ciphertext `ct_M(1088) || ct_X(32)`; `take` returns
+  the **32-byte X-Wing shared secret**
+  `SHA3-256(ss_M || ss_X || ct_X || pk_X || "\.//^\")`
+  (`XWingSecretKey::decapsulate`). Wrong ct length, or a composite id, is
+  `invalid`.
+  * transit: the CC 5.3.3.10 handshake. The responder decapsulates the
+    initiator's encapsulation to its static, and the initiator decapsulates
+    the responder's encapsulation to its static.
+  * onion-hop: onion layers (CC 5.4.6).
+  Encapsulation needs only public keys, so it runs in the node.
+* **X-Wing draft -06 versus -11.** Edge's packets are draft-06 (libcrux
+  `XWingKemDraft06`); verify's `ciris_crypto::xwing` implements draft-11.
+  For a given secret key they are identical in key generation from the
+  seed, public-key layout, ciphertext layout, and the combiner:
+  `tests/native_seam.rs` (`xwing_decap_reproduces_edges_draft_06_known_answer`)
+  takes edge's `kat_outfox_xwing_v1` vector (hop-1 seed, fixed eseed),
+  reproduces libcrux's public key, ciphertext and shared secret with
+  verify's X-Wing, and gets edge's shared secret from `xwing-decap` through
+  the seal.
+* `seal.public-key(id)` answers for every kind. **`not-found` means first
+  run**; on any other error a node must not regenerate an identity-class
+  key, because regenerating rotates a published pair under every peer.
+* an **existing** key is provisioned by the host through its seal root:
+  the host unwraps it under the root and installs it into the vault with
+  `signer.install(id, kind, seed)` (64 bytes for composite, the 32-byte
+  X-Wing seed for transit and onion-hop). That is host-side
+  only, never via the node.
+
+**Which secrets live where.**
+
+* **Long-lived identity secrets** (composite, transit, onion-hop) are
+  vault-only.
+* **Ephemeral session keys** (per-stream chunk keys, per-link E1 AEAD
+  keys, MLS epoch secrets, room/stream DEKs, and the CC 5.3.3.10
+  handshake's initiator ephemeral X-Wing key) may live in node memory. They
+  are derived or freshly drawn, short-lived, **zeroized when done, and never in plaintext at
+  rest**: if persisted at all, only wrapped via `seal.wrap`.
+* **The RNS transport identity** (X25519 + Ed25519, used on every link and
+  announce) is node-held at use (reported SoftwareOnly at use) and wrapped
+  at rest (Eric's ruling, a decided D-item in the §8.5 scope), under a key
+  the host derives from its seal root at start-up: the same at-rest posture
+  as native's keyring-backed `TransportIdentityKeystore`. Its plaintext
+  never touches `storage`.
+
+`seal.wrap(label, plaintext, token)` / `seal.unwrap(label, wrapped, token)`
+are the pair, async like the rest (`sealed(token)`, then `take`):
+
+* an AEAD (AES-256-GCM or XChaCha20-Poly1305, the host's choice) under a
+  key the host derives from its seal root, domain-separated by `label`;
+* the wrapping key never enters node memory;
+* the label binds the ciphertext: a blob wrapped under one label does not
+  unwrap under another (`take` gives `denied` / `invalid`);
+* for node-held secrets such as the RNS transport identity and
+  leviculum's ratchet private keys, **never** for CIRIS composite seeds,
+  which go through `generate` and the vault;
+* **labels**: any number, each domain-separating its derived key
+  (`rns-transport-identity/v1`, `rns-ratchets/v1`, ...); at most **128
+  bytes** (`seal::WRAP_LABEL_MAX`), `invalid` beyond;
+* **nonces**: a fresh random nonce per wrap, carried in the wrapped bytes;
+  repeated wraps under one label are expected and two wraps of one
+  plaintext differ. The host **MUST NOT** use deterministic nonces. A
+  random 24-byte XChaCha20-Poly1305 nonce is safe with no counter; a
+  random 96-bit AES-256-GCM nonce under the per-label key must stay well
+  within 2^32 wraps per key;
+* **size**: plaintext up to **64 KiB** (`seal::WRAP_PLAINTEXT_MIN_MAX`)
+  must be accepted; larger may be `invalid`.
+
+`tests/native_seam.rs` has a **test-only** native implementation, using
+`ciris-crypto` as a dev-dependency: key = HKDF-SHA256(test root, salt
+`ciris-host-abi/test-wrap/v1`, info = label), **XChaCha20-Poly1305** with
+a random 24-byte nonce, wrapped format `nonce(24) || ciphertext || tag(16)`.
+Its tests cover: two labels do not cross-unwrap, two wraps of one plaintext
+differ and both unwrap, a 64 KiB round trip, a tampered blob refused, an
+over-long label refused.
+
+## The vault world (§8.5)
+
+`world vault` is the separate signing instance: its own fixed linear
+memory, so seeds never enter the node's. It is **minimal on purpose**: it
+imports only `log` and `random`. `random` serves `signer.generate` (a fresh
+key needs fresh seeds); signing itself is deterministic (FIPS 204 §3.4).
+The vault therefore carries ML-DSA-65, Ed25519, X25519 and ML-KEM-768.
+It exports `signer` (`install(id, kind, seed)`, `generate(id, kind)`,
+`xwing-decap`, `public-key`, `sign-classical`, `sign-pqc`, `sign-composite`,
+`forget`, `forget-all`),
+all synchronous: the host has already done any gesture or unwrap. Bindings are in `ciris_host_abi::bindings::vault`, and
+item 9 implements them with `export_vault!`. Gate a vault module with
+`--world vault`.
+
+## getrandom on wasm32
+
+With feature `getrandom-backend`, on wasm32 this crate registers
+getrandom's custom backend over `ciris:node/random.fill`, so every crate in
+the module (`rand_core::OsRng`, Ed25519 / ML-DSA keygen, leviculum) draws
+CSPRNG bytes with no code change and no wasm-bindgen or WASI import:
+
+* getrandom **0.2**: `register_custom_getrandom!` (feature `custom`, which
+  this crate enables);
+* getrandom **0.3 and 0.4**: both call one symbol, `__getrandom_v03_custom`
+  (0.4.2's `src/backends/custom.rs` keeps the 0.3 name), which this crate
+  defines.
+
+`random.fill` traps rather than return short or weak bytes (the wrapper
+asserts the length; there is no fallback).
+
+A module build needs **both** the feature and the cfg, for the wasm target
+only:
+
+```
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='--cfg getrandom_backend="custom"' \
+  cargo build --target wasm32-unknown-unknown --release --features ciris-host-abi/getrandom-backend
+```
+
+or in the module's `.cargo/config.toml`:
+
+```toml
+[target.wasm32-unknown-unknown]
+rustflags = ['--cfg', 'getrandom_backend="custom"']
+```
+
+Without the cfg, getrandom 0.3 / 0.4 refuse to compile for
+wasm32-unknown-unknown; without the feature, the link has no backend. Do
+not enable getrandom's `js` / `wasm_js` features anywhere in the graph:
+they import wasm-bindgen.
+
+The two symbols (`__getrandom_custom`, `__getrandom_v03_custom`) also
+appear as module **exports**, since `#[no_mangle]` exports from a cdylib.
+They are not imports, so the gate does not care, but a host should not
+call them.
+
+## The gate
+
+```
+cargo run -p ciris-host-abi --bin ciris-abi-gate -- [--wit <file|dir>] [--world node|vault] module.wasm...
+```
+
+It lists every import and exits 1 when any is outside the world's
+allowlist, naming each offender and why (module not a `ciris:node`
+interface of the world, field not declared by the WIT, or not a function).
+The allowlist is derived from the WIT with `wit-parser` (the exact core
+names wit-bindgen gives each function, method and resource drop): by
+default the copy compiled into the binary, or `--wit`. Exit 2 is a usage
+or read error, and a component (rather than a core module) is refused.
+
+## The lint
+
+```
+cargo run -p ciris-host-abi --bin ciris-cfg-lint -- path/to/node-crate ...
+```
+
+Tokenizes every `.rs` file under each crate (skipping `target/` and
+dot-directories) with `proc-macro2`, so comments and strings never match,
+and exits 1 on any `cfg(…)`, `cfg!(…)` or `cfg_attr(…)` predicate naming
+`target_*`, `unix` or `windows` (under `not` / `any` / `all` too, and in
+`macro_rules!` bodies), and on `[target.'cfg(…)']` tables in the crate's
+`Cargo.toml`. A crate named `ciris-host-abi` is skipped and reported as
+exempt.
+
+## Smoke test
+
+```
+CARGO_TARGET_WASM32_UNKNOWN_UNKNOWN_RUSTFLAGS='--cfg getrandom_backend="custom"' \
+  cargo build -p ciris-host-abi --example smoke-node --target wasm32-unknown-unknown --release --features getrandom-backend
+cargo run -p ciris-host-abi --bin ciris-abi-gate -- target/wasm32-unknown-unknown/release/examples/smoke_node.wasm
+```
+
+The smoke node calls `clock`, `random` and `log` and draws through
+`rand_core::OsRng` and getrandom 0.2, 0.3 and 0.4. Its imports are exactly
+five, all `ciris:node/*`: `clock.monotonic-us`, `clock.wall-ms`,
+`log.record`, `log.metric`, `random.fill`. The same check runs as
+`cargo test -p ciris-host-abi --test smoke_wasm -- --ignored`, which also
+builds and gates `ciris-rt`'s smoke node (spawn, sleep and random over the
+runtime; see `src/ciris-rt/README.md`).
+
+## MSRV
+
+wit-bindgen 0.51.0 (rust-version 1.87), wit-parser / wasmparser /
+wasm-encoder 0.244.0 (1.81). All were already in the workspace lock.
+`cargo +1.89 check -p ciris-host-abi` passes.
+
+## Open
+
+* FSD D-items this crate does not settle: D1 (browser has no listener;
+  `can-listen` reports it), D8 (browser owner key without PRF), D9 (EFI
+  `PolicyAuthorize`; `tpm-measured` names the root, not the policy), D10
+  (seed dwell; `signer.forget-all` is the hook), D12 (the crate lives in
+  CIRISVerify for now, per Eric), D15 (the vault world exists; whether it
+  is required is the decision).
+* `wit-bindgen` output under wasm2c (§4.2, "untested") is still untested;
+  the smoke module runs under V8.
+* `ciris-rt` (item 2, `src/ciris-rt`) owns the executor, timers, async
+  net / seal adapters and record/replay over this ABI.

@@ -35,6 +35,7 @@ dependencies = [
  "ctr",
  "ghash",
  "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -667,7 +668,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-build-tool"
-version = "23.0.0"
+version = "23.1.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -689,8 +690,9 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "23.0.0"
+version = "23.1.0"
 dependencies = [
+ "aes-gcm",
  "chacha20poly1305",
  "criterion",
  "ed25519-dalek",
@@ -722,8 +724,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciris-host-abi"
+version = "23.1.0"
+dependencies = [
+ "ciris-crypto",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "getrandom 0.4.2",
+ "proc-macro2",
+ "rand_core 0.6.4",
+ "sha3 0.10.9",
+ "wasm-encoder",
+ "wasmparser",
+ "wit-bindgen 0.51.0",
+ "wit-parser",
+ "zeroize",
+]
+
+[[package]]
 name = "ciris-keyring"
-version = "23.0.0"
+version = "23.1.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -736,6 +756,7 @@ dependencies = [
  "cryptoki",
  "dirs",
  "ed25519-dalek",
+ "getrandom 0.2.17",
  "hex",
  "hkdf",
  "jni",
@@ -744,7 +765,6 @@ dependencies = [
  "objc2",
  "objc2-foundation",
  "p256",
- "rand 0.8.6",
  "rand_core 0.6.4",
  "secret-service",
  "security-framework",
@@ -763,7 +783,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "23.0.0"
+version = "23.1.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -779,8 +799,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciris-rt"
+version = "23.1.0"
+dependencies = [
+ "ciris-host-abi",
+ "futures-channel",
+ "futures-io",
+ "hex",
+ "pin-project-lite",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "ciris-tpm-plugin"
-version = "23.0.0"
+version = "23.1.0"
 dependencies = [
  "sha2 0.10.9",
  "tracing",
@@ -789,7 +824,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "23.0.0"
+version = "23.1.0"
 dependencies = [
  "android_system_properties",
  "async-trait",
@@ -840,7 +875,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "23.0.0"
+version = "23.1.0"
 dependencies = [
  "aes-gcm",
  "android_logger",

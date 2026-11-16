@@ -142,6 +142,94 @@ impl CompositeSigningKey {
     }
 }
 
+/// The ML-DSA-65 half of a composite key, held here, with the Ed25519 half
+/// held elsewhere: a PIV token (YubiKey 9c), a platform keystore, or any
+/// external Ed25519 signer. CC 4.2.2 lets a composite key's halves be held
+/// apart; an accord holder keeps Ed25519 on a YubiKey and ML-DSA-65 on a
+/// separate offline USB key (`pq_custody: removable_offline`).
+///
+/// [`SplitCompositeSigner::sign`] computes `M'`, signs it with ML-DSA-65
+/// locally (the label as FIPS 204 context), hands the same 127-byte `M'` to
+/// the external Ed25519 signer, and assembles `mldsaSig || ed25519Sig`: the
+/// same bytes [`CompositeSigningKey`] produces for the same keys. The
+/// external signature is verified against the stated Ed25519 public key
+/// before it is returned, so a token that signs with the wrong key is caught
+/// at mint, not by a verifier later.
+pub struct SplitCompositeSigner {
+    mldsa: SigningKey<MlDsa65>,
+    public: CompositePublicKey,
+}
+
+impl SplitCompositeSigner {
+    /// From the ML-DSA-65 seed and the external half's Ed25519 public key.
+    ///
+    /// # Errors
+    /// [`CryptoError::InvalidPublicKey`] if `ed25519_public` is not a valid point.
+    pub fn new(mldsa_seed: &[u8; 32], ed25519_public: &[u8; 32]) -> Result<Self, CryptoError> {
+        let seed = Zeroizing::new(Seed::from(*mldsa_seed));
+        let mldsa = SigningKey::<MlDsa65>::from_seed(&seed);
+        let mut pk = [0u8; PUBLIC_KEY_LEN];
+        pk[..MLDSA65_PK_LEN].copy_from_slice(&mldsa.verifying_key().encode());
+        pk[MLDSA65_PK_LEN..].copy_from_slice(ed25519_public);
+        let public = CompositePublicKey::from_bytes(&pk)?;
+        Ok(Self { mldsa, public })
+    }
+
+    /// The composite public key.
+    #[must_use]
+    pub fn public_key(&self) -> &CompositePublicKey {
+        &self.public
+    }
+
+    /// The message representative the external Ed25519 signer must sign
+    /// for `msg` (exposed for asynchronous signers, which compute it first).
+    #[must_use]
+    pub fn representative(msg: &[u8]) -> [u8; REPRESENTATIVE_LEN] {
+        message_representative(msg)
+    }
+
+    /// Sign `msg`, calling `ed25519_sign` with `M'` for the classical half.
+    ///
+    /// # Errors
+    /// The external signer's error, [`CryptoError::SigningFailed`] if ML-DSA
+    /// signing fails, or [`CryptoError::VerificationFailed`] if the external
+    /// signature does not verify under the stated Ed25519 public key.
+    pub fn sign(
+        &self,
+        msg: &[u8],
+        ed25519_sign: impl FnOnce(&[u8]) -> Result<[u8; 64], CryptoError>,
+    ) -> Result<Vec<u8>, CryptoError> {
+        let mp = message_representative(msg);
+        let ed = ed25519_sign(&mp)?;
+        self.assemble(msg, &ed)
+    }
+
+    /// Assemble the composite from an Ed25519 signature over
+    /// [`Self::representative`]`(msg)` obtained by the caller (for example
+    /// asynchronously from a token), signing the ML-DSA-65 half here.
+    ///
+    /// # Errors
+    /// As [`Self::sign`].
+    pub fn assemble(&self, msg: &[u8], ed25519_sig: &[u8; 64]) -> Result<Vec<u8>, CryptoError> {
+        let mp = message_representative(msg);
+        let ed_sig = ed25519_dalek::Signature::from_bytes(ed25519_sig);
+        if self.public.ed25519.verify_strict(&mp, &ed_sig).is_err() {
+            return Err(CryptoError::VerificationFailed);
+        }
+        let ml = self
+            .mldsa
+            .expanded_key()
+            .sign_deterministic(&mp, LABEL)
+            .map_err(|_| CryptoError::SigningFailed {
+                reason: "ML-DSA-65 composite half".into(),
+            })?;
+        let mut out = Vec::with_capacity(SIGNATURE_LEN);
+        out.extend_from_slice(&ml.encode());
+        out.extend_from_slice(ed25519_sig);
+        Ok(out)
+    }
+}
+
 /// A composite public key, `mldsaPK || ed25519PK`.
 #[derive(Clone)]
 pub struct CompositePublicKey {
@@ -254,6 +342,32 @@ mod tests {
             assert!(pk.verify(b"row", &bad).is_err(), "byte {i}");
         }
         assert!(pk.verify(b"row", &sig[..SIGNATURE_LEN - 1]).is_err());
+    }
+
+    #[test]
+    fn split_signer_matches_the_whole_key() {
+        let whole = CompositeSigningKey::from_seeds(&[3; 32], &[4; 32]);
+        let token = EdSigningKey::from_bytes(&[4; 32]);
+        let split = SplitCompositeSigner::new(&[3; 32], token.verifying_key().as_bytes()).unwrap();
+        assert_eq!(split.public_key().as_bytes(), whole.public_key().as_bytes());
+        let sig = split
+            .sign(b"row", |mp| {
+                assert_eq!(mp.len(), REPRESENTATIVE_LEN);
+                Ok(token.sign(mp).to_bytes())
+            })
+            .unwrap();
+        assert_eq!(sig, whole.sign(b"row").unwrap());
+        whole.public_key().verify(b"row", &sig).unwrap();
+        // A token signing with another key is caught at mint.
+        let wrong = EdSigningKey::from_bytes(&[5; 32]);
+        assert!(matches!(
+            split.sign(b"row", |mp| Ok(wrong.sign(mp).to_bytes())),
+            Err(CryptoError::VerificationFailed)
+        ));
+        // The asynchronous path: representative first, assemble later.
+        let mp = SplitCompositeSigner::representative(b"row");
+        let ed = token.sign(&mp).to_bytes();
+        assert_eq!(split.assemble(b"row", &ed).unwrap(), sig);
     }
 
     #[test]

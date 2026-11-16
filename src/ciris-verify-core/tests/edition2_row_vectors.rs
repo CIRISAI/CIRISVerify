@@ -14,8 +14,9 @@ use ciris_crypto::composite::{CompositePublicKey, CompositeSigningKey};
 use ciris_verify_core::cde;
 use ciris_verify_core::edition2::earlier;
 use ciris_verify_core::edition2::family::{
-    verify_row_in_family, FamilyFault, FamilyModel, FamilyRule, FamilyVerdict, RoleParty,
-    VendoredFamilyModel,
+    select::{Act, Group},
+    verify_row_in_family, verify_row_in_family_with, FamilyFault, FamilyModel, FamilyRule,
+    FamilyVerdict, RoleParty, SelectContext, VendoredFamilyModel,
 };
 use ciris_verify_core::edition2::keys::{check_key_record, KeyRecordDirectory};
 use ciris_verify_core::edition2::{
@@ -349,6 +350,27 @@ fn references_by_form() {
     }
 }
 
+/// A case's caller-supplied selector keys (CC's `family_select_vectors` form).
+fn context(ctx: &J) -> SelectContext {
+    SelectContext {
+        verb: ctx.get("verb").map(|v| v.as_str().unwrap().to_owned()),
+        identity: ctx.get("identity").map(|v| {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_str().unwrap().to_owned())
+                .collect()
+        }),
+        group: ctx
+            .get("group")
+            .map(|v| Group::parse(v.as_str().unwrap()).unwrap()),
+        seats: ctx.get("seats").map(|v| v.as_u64().unwrap()),
+        act: ctx
+            .get("act")
+            .map(|v| Act::parse(v.as_str().unwrap()).unwrap()),
+    }
+}
+
 fn run_family_cases(cases: &J, model: &dyn FamilyModel) {
     for c in cases.as_array().unwrap() {
         let id = c["id"].as_str().unwrap();
@@ -357,7 +379,16 @@ fn run_family_cases(cases: &J, model: &dyn FamilyModel) {
             .unwrap()
             .iter()
             .map(|n| n.as_u64().unwrap() as u8);
-        let got = match verify_row_in_family(&hx(&c["statement_hex"]), &dir(held), model) {
+        let verdict = match c.get("ctx") {
+            None => verify_row_in_family(&hx(&c["statement_hex"]), &dir(held), model),
+            Some(ctx) => verify_row_in_family_with(
+                &hx(&c["statement_hex"]),
+                &dir(held),
+                model,
+                &context(ctx),
+            ),
+        };
+        let got = match verdict {
             FamilyVerdict::Valid { role: None, .. } => "valid".to_owned(),
             FamilyVerdict::Valid { role: Some(r), .. } => format!("valid:role:{r}"),
             FamilyVerdict::FamilyInvalid(fault) => format!(
@@ -368,6 +399,7 @@ fn run_family_cases(cases: &J, model: &dyn FamilyModel) {
                     FamilyFault::IssNotInRole => "iss_not_in_role",
                     FamilyFault::DimensionMissing => "dimension_missing",
                     FamilyFault::AuthorshipUndetermined => "authorship_undetermined",
+                    FamilyFault::NoArmHolds => "no_arm_holds",
                     _ => "other",
                 }
             ),

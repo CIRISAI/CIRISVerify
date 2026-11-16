@@ -52,6 +52,36 @@ pub enum KeyRecordError {
     OutOfWindow,
     /// `asserted_at` is missing or not an ms-time.
     BadTime,
+    /// `attestation_evidence` is not a map, or its `pq_custody` is not one
+    /// of the three values (CC 4.2.2).
+    BadPqCustody,
+}
+
+/// Where a composite key's ML-DSA-65 half is held, when the record's
+/// `hardware_class` describes only the Ed25519 half (CC 4.2.2, rc20). The
+/// weighting (`software_wrapped` caps the class multiplier at 0.8; missing
+/// reads at 0.0) is the consumer's; the reader only carries the value and
+/// refuses one outside the three.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PqCustody {
+    /// In the same secure element as the Ed25519 half.
+    SameElement,
+    /// On a separate removable, offline element (an accord holder's USB key).
+    RemovableOffline,
+    /// Wrapped under a software-held key.
+    SoftwareWrapped,
+}
+
+impl PqCustody {
+    /// The wire value.
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::SameElement => "same_element",
+            Self::RemovableOffline => "removable_offline",
+            Self::SoftwareWrapped => "software_wrapped",
+        }
+    }
 }
 
 impl KeyRecordError {
@@ -64,6 +94,7 @@ impl KeyRecordError {
             Self::BadKey => "key_record_bad_key",
             Self::BadIdentityType => "key_record_bad_identity_type",
             Self::BadTime => "key_record_bad_time",
+            Self::BadPqCustody => "key_record_bad_pq_custody",
         }
     }
 }
@@ -81,6 +112,8 @@ pub struct KeyRecord {
     pub asserted_at: u64,
     /// When the key stops, ms.
     pub valid_until: Option<u64>,
+    /// `attestation_evidence.pq_custody`, where the record carries one.
+    pub pq_custody: Option<PqCustody>,
 }
 
 /// Check a key record's payload against the end rule.
@@ -144,7 +177,23 @@ pub fn check_key_record(payload: &Value) -> Result<KeyRecord, KeyRecordError> {
             return Err(KeyRecordError::OutOfWindow);
         }
     }
+    let pq_custody = match payload.get_text("attestation_evidence") {
+        None => None,
+        Some(ev) => {
+            ev.as_map().ok_or(KeyRecordError::BadPqCustody)?;
+            match ev.get_text("pq_custody") {
+                None => None,
+                Some(v) => Some(match v.as_text() {
+                    Some("same_element") => PqCustody::SameElement,
+                    Some("removable_offline") => PqCustody::RemovableOffline,
+                    Some("software_wrapped") => PqCustody::SoftwareWrapped,
+                    _ => return Err(KeyRecordError::BadPqCustody),
+                }),
+            }
+        },
+    };
     Ok(KeyRecord {
+        pq_custody,
         kid: thumbprint(&key),
         key,
         identity_type,
@@ -348,6 +397,53 @@ mod tests {
     }
 
     #[test]
+    fn pq_custody_is_carried_and_closed() {
+        let k = key(1);
+        let with = |ev: Value| {
+            let Value::Map(mut m) = rec(&k, &["accord_holder"], None) else {
+                panic!()
+            };
+            m.push((t("attestation_evidence"), ev));
+            check_key_record(&Value::Map(m))
+        };
+        let ev = |pq: Option<&str>| {
+            let mut m = vec![(t("hardware_class"), t("YubiKey_5_FIPS"))];
+            if let Some(v) = pq {
+                m.push((t("pq_custody"), t(v)));
+            }
+            Value::Map(m)
+        };
+        assert_eq!(
+            with(ev(Some("removable_offline"))).unwrap().pq_custody,
+            Some(PqCustody::RemovableOffline)
+        );
+        assert_eq!(
+            with(ev(Some("same_element"))).unwrap().pq_custody,
+            Some(PqCustody::SameElement)
+        );
+        assert_eq!(
+            with(ev(Some("software_wrapped"))).unwrap().pq_custody,
+            Some(PqCustody::SoftwareWrapped)
+        );
+        // Missing is carried as None (the consumer weighs it at 0.0), not refused.
+        assert_eq!(with(ev(None)).unwrap().pq_custody, None);
+        assert_eq!(
+            with(ev(Some("tpm"))).unwrap_err(),
+            KeyRecordError::BadPqCustody
+        );
+        assert_eq!(
+            with(t("not-a-map")).unwrap_err(),
+            KeyRecordError::BadPqCustody
+        );
+        assert_eq!(
+            check_key_record(&rec(&k, &["user"], None))
+                .unwrap()
+                .pq_custody,
+            None
+        );
+    }
+
+    #[test]
     fn directory_self_signed_chain_and_waiting() {
         let root = key(1);
         let node = key(2);
@@ -424,6 +520,47 @@ mod tests {
         assert_eq!(
             verify_row_statement(&st, &d),
             Verdict::Invalid(Invalid::KeyNotValid)
+        );
+    }
+
+    /// Eric's ruling (CIRISConstitution rc20 e08bf05): a key is live in the
+    /// forward model only by an edition-2 `key:record` row. An earlier-form
+    /// (JSON) key record is not filed and never makes an edition-2 statement
+    /// Valid; the statement waits on the edition-2 record.
+    #[test]
+    fn an_earlier_form_record_never_answers_for_an_edition_2_statement() {
+        let k = key(5);
+        let earlier = serde_json::to_vec(&serde_json::json!({
+            "key_id": "node-1",
+            "identity_type": "node",
+            "pubkey_ed25519_base64": "AAAA",
+            "registration_envelope": {"key_id": "node-1"},
+            "scrub_signature_classical": "AAAA",
+        }))
+        .unwrap();
+        let mut d = KeyRecordDirectory::new();
+        assert_eq!(
+            d.insert(earlier),
+            None,
+            "an earlier-form record is not filed"
+        );
+        let p = Value::Map(vec![(t("asserted_at"), Value::Uint(T0))]);
+        let iss = identity_ref(&thumbprint(k.public_key()));
+        let st = sign_row_statement(
+            &k,
+            &iss,
+            "s",
+            "scores",
+            "evidence:.suite:.kind:.cell:.prefix",
+            &p,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            verify_row_statement(&st, &d),
+            Verdict::Waiting {
+                missing: vec![MissingKey::Kid(thumbprint(k.public_key()))]
+            }
         );
     }
 

@@ -9,9 +9,18 @@
 //! - a statement whose `iss` is not the payload's `author` is accepted only in a
 //!   role the family names, and only when `iss` is the party that role names in
 //!   the payload, or the CWT `sub` where the role is the attested key.
+//!
+//! CC's own model is vendored ([`VendoredFamilyModel`]): its selector cells
+//! are read by [`select`], the port of CC's reference evaluator, against the
+//! row's leaf (its `dimension` bound under the family) and the keys the
+//! caller supplies in a [`SelectContext`] ([`verify_row_in_family_with`]).
+
+pub mod select;
 
 use super::{verify_row_statement, Invalid, KeyDirectory, Value, Verdict, VerifiedRow};
 use crate::prelude::*;
+pub use select::SelectContext;
+use select::{Arm, Cell, SecondSigner, Select, Selector, Signers};
 
 /// Where a second-consent role names its party.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,8 +44,35 @@ pub struct FamilyRule {
 
 /// The family model a reader applies.
 pub trait FamilyModel {
-    /// The rule of the registered family `family_id`, if registered.
+    /// The rule of the registered family `family_id`, if registered, read
+    /// without any row keys.
     fn rule(&self, family_id: &str) -> Option<FamilyRule>;
+
+    /// The rule of `family_id` for one row: `leaf` is the row's dimension
+    /// bound under the family (`None`: no dimension), `ctx` the keys the
+    /// caller supplies. A model whose rules do not depend on the row keeps the
+    /// default, which answers [`FamilyModel::rule`].
+    fn rule_for(&self, family_id: &str, leaf: Option<&str>, ctx: &SelectContext) -> RuleAnswer {
+        let _ = (leaf, ctx);
+        self.rule(family_id)
+            .map_or(RuleAnswer::Unregistered, RuleAnswer::Rule)
+    }
+}
+
+/// A model's answer for one row of a family.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RuleAnswer {
+    /// The family's rule for this row.
+    Rule(FamilyRule),
+    /// The model does not register the family.
+    Unregistered,
+    /// Registered, but the authorship is not decided for this row: the cell
+    /// is a `gap`, or an arm before the decider reads a key that is not
+    /// supplied.
+    Undetermined,
+    /// Registered, and every arm of the authorship cell reads false.
+    NoArmHolds,
 }
 
 impl FamilyModel for BTreeMap<String, FamilyRule> {
@@ -45,84 +81,189 @@ impl FamilyModel for BTreeMap<String, FamilyRule> {
     }
 }
 
-/// The family-model columns vendored from CC (`authorship`, `second_signers`;
-/// CIRISConstitution rc20 a15ce94), extracted to `data/cc/family_columns.json`.
-pub const FAMILY_COLUMNS_JSON: &str = include_str!("../../data/cc/family_columns.json");
-/// The CC commit the columns come from.
-pub const FAMILY_MODEL_CC_COMMIT: &str = "a15ce94";
+/// CC's canonical extract of the family model's `authorship` and
+/// `second_signers` cells (`manifests/family_authorship.json`,
+/// CIRISConstitution rc20 e08bf05), vendored at
+/// `data/cc/family_authorship.json`.
+pub const FAMILY_AUTHORSHIP_JSON: &str = include_str!("../../data/cc/family_authorship.json");
+/// The CC commit the extract comes from.
+pub const FAMILY_MODEL_CC_COMMIT: &str = "e08bf05";
+/// SHA-256 (lowercase hex) of the vendored extract, LF line endings.
+pub const FAMILY_AUTHORSHIP_SHA256: &str =
+    "334027850f9c2d7fd382249b5bb188533a25307082794bce168625d1e5cfaf93";
+/// SHA-256 of the family model the extract is cut from (its
+/// `_meta.source_sha256`).
+pub const FAMILY_MODEL_SHA256: &str =
+    "3c64403a56b0da0138433041af972ee552ead95d5f129f1f5fad26df6a8d1caf";
 
-/// What the vendored model says of one family.
+/// Second-signer members the vendored model cannot resolve from the row: a
+/// `gap` (the text names no member), and `owner_of_sub` (the owner the
+/// owner-binding of the row's `sub` names, which only a held binding tells).
+/// A role naming one is never admitted from the vendored model.
+pub const UNRESOLVED_MEMBERS: &[&str] = &["gap", "owner_of_sub"];
+
+/// One family of the vendored extract.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VendoredRule {
-    /// A plain `authored` / `counted` cell.
-    Known(FamilyRule),
-    /// Registered, but the caller must decide: a `gap` cell, or a per-leaf
-    /// selector (no reference evaluator yet; CC will publish
-    /// `tools/cc_family_select.py`).
-    CallerMustSupply,
+pub struct VendoredFamily {
+    /// The family's registry prefix (`accord:*`).
+    pub prefix: String,
+    /// The `authorship` cell.
+    pub authorship: Cell,
+    /// The `second_signers` entries.
+    pub second_signers: Vec<SecondSigner>,
 }
 
-fn vendored() -> &'static BTreeMap<String, VendoredRule> {
-    static V: once_cell::race::OnceBox<BTreeMap<String, VendoredRule>> =
-        once_cell::race::OnceBox::new();
-    V.get_or_init(|| {
-        let j: serde_json::Value =
-            serde_json::from_str(FAMILY_COLUMNS_JSON).expect("vendored family columns parse");
-        let mut out = BTreeMap::new();
-        for (prefix, f) in j["families"].as_object().expect("families") {
-            let roles = f["second_signers"]
-                .as_array()
-                .into_iter()
-                .flatten()
-                // A `gap` member cannot be admitted; a `when`-conditioned role
-                // waits on the selector evaluator.
-                .filter(|r| r.get("when").is_none())
-                .filter_map(|r| {
-                    let role = r["role"].as_str()?.to_owned();
-                    match r["member"].as_str()? {
-                        "gap" => None,
-                        "sub" => Some((role, RoleParty::Sub)),
-                        m => Some((role, RoleParty::Member(m.to_owned()))),
-                    }
+fn load_vendored(json: &str) -> Result<BTreeMap<String, VendoredFamily>, String> {
+    let j: serde_json::Value = serde_json::from_str(json).map_err(|e| e.to_string())?;
+    let fams = j["families"]
+        .as_object()
+        .ok_or_else(|| "families".to_owned())?;
+    let text = |v: &serde_json::Value, what: &str| -> Result<String, String> {
+        v.as_str().map(str::to_owned).ok_or_else(|| what.to_owned())
+    };
+    let mut out = BTreeMap::new();
+    for (prefix, f) in fams {
+        let a = &f["authorship"];
+        let arms = a["arms"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|x| {
+                Arm::new(&text(&x["when"], "when")?, &text(&x["value"], "value")?)
+                    .map_err(|e| format!("{prefix}: {}", e.test))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let authorship = Cell {
+            value: a["value"].as_str().map(str::to_owned),
+            source: text(&a["source"], "source")?,
+            arms,
+        };
+        let second_signers = f["second_signers"]["value"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .map(|e| {
+                Ok(SecondSigner {
+                    role: text(&e["role"], "role")?,
+                    member: text(&e["member"], "member")?,
+                    when: match e["when"].as_str() {
+                        None => None,
+                        Some(w) => {
+                            Some(Selector::parse(w).map_err(|e| format!("{prefix}: {}", e.test))?)
+                        },
+                    },
                 })
-                .collect();
-            let rule = match f["authorship"].as_str() {
-                Some("authored") => VendoredRule::Known(FamilyRule {
-                    authored: true,
-                    roles,
-                    scores_dimension: false,
-                }),
-                Some("counted") => VendoredRule::Known(FamilyRule {
-                    authored: false,
-                    roles,
-                    scores_dimension: false,
-                }),
-                _ => VendoredRule::CallerMustSupply,
-            };
-            out.insert(crate::namespace_match::family_id(prefix), rule);
-        }
-        Box::new(out)
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        out.insert(
+            crate::namespace_match::family_id(prefix),
+            VendoredFamily {
+                prefix: prefix.clone(),
+                authorship,
+                second_signers,
+            },
+        );
+    }
+    Ok(out)
+}
+
+fn vendored() -> &'static BTreeMap<String, VendoredFamily> {
+    static V: once_cell::race::OnceBox<BTreeMap<String, VendoredFamily>> =
+        once_cell::race::OnceBox::new();
+    // A compile-time asset whose load the tests exercise; the same bytes
+    // through the same parser cannot fail later.
+    V.get_or_init(|| {
+        Box::new(load_vendored(FAMILY_AUTHORSHIP_JSON).expect("vendored family authorship"))
     })
 }
 
-/// The vendored model's answer for a family id, if CC's model lists it.
+/// The vendored extract's cells for a family id (`accord:.`), if CC's model
+/// lists it.
 #[must_use]
-pub fn vendored_rule(family_id: &str) -> Option<VendoredRule> {
-    vendored().get(family_id).cloned()
+pub fn vendored_family(family_id: &str) -> Option<&'static VendoredFamily> {
+    vendored().get(family_id)
 }
 
-/// CC's vendored family model as a [`FamilyModel`]: plain cells only.
-/// `scores_dimension` is false here (a `dimension` that is present is still
-/// resolved against -70002 by the row reader).
+/// Every family id the vendored extract lists, in order.
+pub fn vendored_family_ids() -> impl Iterator<Item = &'static str> {
+    vendored().keys().map(String::as_str)
+}
+
+/// What the vendored model says of one family with no row keys.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VendoredRule {
+    /// The cells decide without any row key: a plain cell, or arms whose first
+    /// arm is `*`.
+    Known(FamilyRule),
+    /// Registered, but the rule needs row keys ([`VendoredFamilyModel`]'s
+    /// [`FamilyModel::rule_for`] with the row's leaf and a [`SelectContext`]),
+    /// or the cell is a `gap` the caller must decide.
+    CallerMustSupply,
+}
+
+/// The vendored model's answer for a family id read without row keys, if CC's
+/// model lists it.
+#[must_use]
+pub fn vendored_rule(family_id: &str) -> Option<VendoredRule> {
+    vendored_family(family_id)?;
+    Some(
+        match VendoredFamilyModel.rule_for(family_id, None, &SelectContext::default()) {
+            RuleAnswer::Rule(r) => VendoredRule::Known(r),
+            _ => VendoredRule::CallerMustSupply,
+        },
+    )
+}
+
+/// CC's vendored family model as a [`FamilyModel`], its selector arms read by
+/// [`select`] against the row's leaf and the caller's [`SelectContext`].
+///
+/// A `when`-conditioned second signer is admitted when its `when` holds; when
+/// any entry's `when` is unknown the cell is unknown and no second signer is
+/// admitted. A role whose member is in [`UNRESOLVED_MEMBERS`] is never
+/// admitted. `scores_dimension` is false here (a `dimension` that is present
+/// is still resolved against -70002 by the row reader).
 #[derive(Debug, Clone, Copy, Default)]
 pub struct VendoredFamilyModel;
 
 impl FamilyModel for VendoredFamilyModel {
     fn rule(&self, family_id: &str) -> Option<FamilyRule> {
-        match vendored_rule(family_id)? {
-            VendoredRule::Known(r) => Some(r),
-            VendoredRule::CallerMustSupply => None,
+        match self.rule_for(family_id, None, &SelectContext::default()) {
+            RuleAnswer::Rule(r) => Some(r),
+            _ => None,
         }
+    }
+
+    fn rule_for(&self, family_id: &str, leaf: Option<&str>, ctx: &SelectContext) -> RuleAnswer {
+        let Some(f) = vendored_family(family_id) else {
+            return RuleAnswer::Unregistered;
+        };
+        let authored = match f.authorship.answer(leaf, ctx).0 {
+            Select::Value(v) if v == "authored" => true,
+            Select::Value(v) if v == "counted" => false,
+            Select::Null => return RuleAnswer::NoArmHolds,
+            // unknown, gap, or a value outside the authorship vocabulary
+            _ => return RuleAnswer::Undetermined,
+        };
+        let roles = match select::second_signers(&f.second_signers, leaf, ctx) {
+            Signers::Roles(rs) => rs
+                .into_iter()
+                .filter(|r| !UNRESOLVED_MEMBERS.contains(&r.member.as_str()))
+                .map(|r| {
+                    let party = if r.member == "sub" {
+                        RoleParty::Sub
+                    } else {
+                        RoleParty::Member(r.member.clone())
+                    };
+                    (r.role.clone(), party)
+                })
+                .collect(),
+            Signers::Unknown => Vec::new(),
+        };
+        RuleAnswer::Rule(FamilyRule {
+            authored,
+            roles,
+            scores_dimension: false,
+        })
     }
 }
 
@@ -134,6 +275,13 @@ impl FamilyModel for WithVendored<'_> {
         self.0
             .rule(family_id)
             .or_else(|| VendoredFamilyModel.rule(family_id))
+    }
+
+    fn rule_for(&self, family_id: &str, leaf: Option<&str>, ctx: &SelectContext) -> RuleAnswer {
+        match self.0.rule_for(family_id, leaf, ctx) {
+            RuleAnswer::Unregistered => VendoredFamilyModel.rule_for(family_id, leaf, ctx),
+            a => a,
+        }
     }
 }
 
@@ -149,10 +297,13 @@ pub enum FamilyFault {
     IssNotInRole,
     /// A family that scores a dimension carries none.
     DimensionMissing,
-    /// The family is registered but no model decides its authorship: CC's
-    /// cell is a `gap` or a selector the vendored model does not evaluate,
-    /// and the caller's model does not cover it.
+    /// The family is registered but no model decides its authorship for
+    /// this row: CC's cell is a `gap`, or an arm before the decider reads a
+    /// key the row and the caller's [`SelectContext`] leave unknown.
     AuthorshipUndetermined,
+    /// The family's authorship cell answers null for this row: every arm
+    /// reads false.
+    NoArmHolds,
 }
 
 /// A row read under its family's rules.
@@ -209,23 +360,68 @@ pub fn check_family(row: &VerifiedRow, rule: &FamilyRule) -> Result<Option<Strin
     }
 }
 
-/// Read a row statement and apply its family's rules.
+/// A row's leaf: its `dimension` bound under its own family (header -70002)
+/// by [`crate::namespace_match::bind_leaf`]. `None` (unknown) when the row
+/// carries no dimension.
+#[must_use]
+pub fn row_leaf(row: &VerifiedRow) -> Option<String> {
+    let dimension = row.payload.get_text("dimension")?.as_text()?;
+    let prefix = crate::namespace_match::prefix_of_family_id(&row.family)?;
+    crate::namespace_match::bind_leaf(prefix, dimension)
+        .ok()
+        .map(|b| b.leaf)
+}
+
+/// Read a row statement and apply its family's rules, with no caller-supplied
+/// selector keys: [`verify_row_in_family_with`] under an empty
+/// [`SelectContext`] (the leaf is still bound from the row's dimension).
 #[must_use]
 pub fn verify_row_in_family(
     bytes: &[u8],
     keys: &dyn KeyDirectory,
     model: &dyn FamilyModel,
 ) -> FamilyVerdict {
+    verify_row_in_family_with(bytes, keys, model, &SelectContext::default())
+}
+
+/// Read a row statement and apply its family's rules for this row: the
+/// model's [`FamilyModel::rule_for`] with the row's leaf ([`row_leaf`]) and
+/// the caller's `ctx` (`verb`, `identity`, `group`, `seats`, `act`; a key
+/// left `None` reads unknown).
+///
+/// An undecided authorship is [`FamilyFault::AuthorshipUndetermined`]; an
+/// authorship cell whose every arm reads false is [`FamilyFault::NoArmHolds`].
+#[must_use]
+pub fn verify_row_in_family_with(
+    bytes: &[u8],
+    keys: &dyn KeyDirectory,
+    model: &dyn FamilyModel,
+    ctx: &SelectContext,
+) -> FamilyVerdict {
     match verify_row_statement(bytes, keys) {
         Verdict::Invalid(i) => FamilyVerdict::Invalid(i),
         Verdict::Waiting { missing } => FamilyVerdict::Waiting(missing),
         Verdict::Valid(row) => {
-            let Some(rule) = model.rule(&row.family) else {
-                let fault = match vendored_rule(&row.family) {
-                    Some(VendoredRule::CallerMustSupply) => FamilyFault::AuthorshipUndetermined,
-                    _ => FamilyFault::UnregisteredFamily,
-                };
-                return FamilyVerdict::FamilyInvalid(fault);
+            let leaf = row_leaf(&row);
+            let leaf = leaf.as_deref();
+            let rule = match model.rule_for(&row.family, leaf, ctx) {
+                RuleAnswer::Rule(r) => r,
+                RuleAnswer::Undetermined => {
+                    return FamilyVerdict::FamilyInvalid(FamilyFault::AuthorshipUndetermined)
+                },
+                RuleAnswer::NoArmHolds => {
+                    return FamilyVerdict::FamilyInvalid(FamilyFault::NoArmHolds)
+                },
+                // Not the caller's family: say whether CC's model would have
+                // left it undecided for this row too.
+                RuleAnswer::Unregistered => {
+                    let fault = match VendoredFamilyModel.rule_for(&row.family, leaf, ctx) {
+                        RuleAnswer::Undetermined => FamilyFault::AuthorshipUndetermined,
+                        RuleAnswer::NoArmHolds => FamilyFault::NoArmHolds,
+                        _ => FamilyFault::UnregisteredFamily,
+                    };
+                    return FamilyVerdict::FamilyInvalid(fault);
+                },
             };
             match check_family(&row, &rule) {
                 Ok(role) => FamilyVerdict::Valid { row, role },
@@ -324,6 +520,70 @@ mod tests {
         };
         assert!(k.roles.is_empty());
         assert!(vendored_rule("nobody:fam").is_none());
+    }
+
+    #[test]
+    fn vendored_selectors_decide_with_row_keys() {
+        let none = SelectContext::default();
+        let v = VendoredFamilyModel;
+        let authored = |a: RuleAnswer| match a {
+            RuleAnswer::Rule(r) => Some(r.authored),
+            _ => None,
+        };
+        // accord:* by leaf.
+        assert_eq!(
+            authored(v.rule_for("accord:.", Some("lifecycle:confirmed"), &none)),
+            Some(false)
+        );
+        assert_eq!(
+            authored(v.rule_for("accord:.", Some("human_dignity"), &none)),
+            Some(true)
+        );
+        assert_eq!(
+            v.rule_for("accord:.", None, &none),
+            RuleAnswer::Undetermined
+        );
+        // A caller-supplied key.
+        let group = SelectContext {
+            act: Some(select::Act::Group),
+            ..SelectContext::default()
+        };
+        assert_eq!(
+            authored(v.rule_for("collection:.kind", Some("x"), &group)),
+            Some(false)
+        );
+        assert_eq!(
+            v.rule_for("collection:.kind", Some("x"), &none),
+            RuleAnswer::Undetermined
+        );
+        // A gap stays undetermined whatever is supplied.
+        assert_eq!(
+            v.rule_for("licensure:.authority_id", Some("x"), &group),
+            RuleAnswer::Undetermined
+        );
+        // `when`-conditioned second signers: admitted when the `when` holds,
+        // never `owner_of_sub` or a `gap` member, none while unknown.
+        let own = SelectContext {
+            act: Some(select::Act::Own),
+            ..SelectContext::default()
+        };
+        let roles = |leaf| match v.rule_for("trust:.job:.version", leaf, &own) {
+            RuleAnswer::Rule(r) => r.roles,
+            other => panic!("{other:?}"),
+        };
+        assert_eq!(
+            roles(Some("confers")),
+            vec![("delegate".to_owned(), RoleParty::Sub)]
+        );
+        assert!(roles(Some("accepts")).is_empty());
+        let RuleAnswer::Rule(r) = v.rule_for("trust:.job:.version", None, &own) else {
+            panic!()
+        };
+        assert!(r.roles.is_empty());
+        let RuleAnswer::Rule(r) = v.rule_for("retirement:.state", Some("retired"), &none) else {
+            panic!()
+        };
+        assert!(r.roles.is_empty());
     }
 
     #[test]

@@ -37,9 +37,24 @@ Sections (rc20, CIRISConstitution 09907aa; the namespace registry vendored at
   on the deepest missing key, a key held in part (ML-DSA half by commitment),
   a record that breaks the end rule, and a statement after `valid_until`.
 - `family_model` + `family`: the author column and second-consent roles under a
-  stated test model. CC's typed `authorship` / `second_signers` columns are
-  pending in rc20; until they land, the model is caller-supplied.
+  stated test model (a caller-supplied model).
 - `objects`: non-row object headers (no `cty`, never -70001/-70002, closed
   `typ`), with the object id. Payload rules come with the ceremony set.
 - `references`: values typed by form (`[-16, digest]` a row, an identity
   reference a key), for CIRISKernel's `Obj::from_reference`.
+- `family_vendored`: the author column and second-consent roles under CC's own
+  cells (`manifests/family_authorship.json`, rc20 e08bf05), read by CC's one
+  selector evaluator (`tools/cc_family_select.py`): the leaf is the row's
+  dimension bound under its family, and `verb` / `identity` / `group` / `seats` /
+  `act` come from the case's optional `ctx` (absent: unknown). The expectations
+  are stated from that evaluator's answers: a leaf or a caller key that decides,
+  an unknown arm before the decider (`authorship_undetermined`), a false test
+  beside an unsupplied one, `when`-conditioned roles that hold, do not hold or
+  are unknown, a `gap` member, and `owner_of_sub` never read from the payload.
+  A row's dimension must resolve to its own header family, so `accord:*` (a
+  closed family no dimension resolves to cleanly) is reached only without a
+  dimension, where its first arm is unknown.
+
+The 23.0.0 release shipped this file with the first eight `family_vendored`
+cases. 23.1.0 adds cases and rewords one description; no earlier case's
+statement or verdict changed, so the file stays `row_statements_v1.json`.

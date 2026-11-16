@@ -19,7 +19,7 @@
 //! object (Linux/Windows), Secure Enclave (iOS/macOS), Keystore/StrongBox
 //! (Android), and an encrypted software fallback. There are no new per-tier
 //! backends — [`BlobTransportKeystore`] is a thin, length-typed adapter
-//! over whatever tier [`crate::storage::create_platform_storage`] selects.
+//! over whatever tier `crate::storage::create_platform_storage` selects.
 //!
 //! ## AV-17 — at-rest vs. transient-in-process (a deliberate carve-out)
 //!
@@ -41,10 +41,13 @@
 //! [`TransportIdentityKeystore::load`] returns the 64 bytes by value — the
 //! caller owns them and SHOULD zeroize after constructing the `Identity`.
 
+#[cfg(feature = "fs")]
 use std::path::PathBuf;
 
 use crate::error::KeyringError;
-use crate::storage::{create_platform_storage, SecureBlobStorage};
+#[cfg(feature = "fs")]
+use crate::storage::create_platform_storage;
+use crate::storage::SecureBlobStorage;
 
 /// Length of an RNS transport identity: `x25519_priv (32) ‖ ed25519_priv (32)`.
 pub const TRANSPORT_IDENTITY_LEN: usize = 64;
@@ -113,7 +116,8 @@ impl BlobTransportKeystore {
 
     /// Build over the best storage tier this platform offers
     /// ([`create_platform_storage`]): TPM/SE/StrongBox where available,
-    /// encrypted software fallback otherwise.
+    /// encrypted software fallback otherwise. Needs the `fs` feature.
+    #[cfg(feature = "fs")]
     pub fn platform(
         alias: impl Into<String>,
         storage_dir: impl Into<PathBuf>,
@@ -179,7 +183,7 @@ impl TransportIdentityKeystore for BlobTransportKeystore {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "fs"))]
 mod tests {
     use super::*;
     use crate::storage::SoftwareSecureBlobStorage;

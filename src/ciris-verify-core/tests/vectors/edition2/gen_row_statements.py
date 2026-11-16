@@ -292,6 +292,17 @@ kr("pseudonym_with_end", "A pseudonym may carry valid_until.", ["pseudonym"], T0
 kr("steward_no_end_rule", "A role outside both groups takes no end rule.", ["steward"], None, "ok")
 kr("roles_unsorted", "identity_type not sorted.", ["node", "user"], None, "key_record_bad_identity_type",
    raw_roles=["user", "node"])
+def kr_ev(cid, desc, ev, expect):
+    p = krec(B, ["accord_holder"], None)
+    p["attestation_evidence"] = ev
+    key_records.append({"id": cid, "description": desc, "payload_hex": enc(p).hex(), "expect": expect})
+kr_ev("pq_custody_removable_offline", "An accord holder's key: hardware_class names the Ed25519 half, pq_custody removable_offline (CC 4.2.2).",
+      {"hardware_class": "YubiKey_5_FIPS", "pq_custody": "removable_offline"}, "ok")
+kr_ev("pq_custody_missing", "hardware_class without pq_custody: carried (the consumer weighs it at 0.0), not refused.",
+      {"hardware_class": "YubiKey_5_FIPS"}, "ok")
+kr_ev("pq_custody_unknown", "pq_custody outside the three values.", {"hardware_class": "YubiKey_5_FIPS", "pq_custody": "tpm"},
+      "key_record_bad_pq_custody")
+kr_ev("attestation_evidence_not_map", "attestation_evidence that is not a map.", "YubiKey_5_FIPS", "key_record_bad_pq_custody")
 
 # ---- Key directory: Waiting through records and on a half ----
 def krow(signer, subject, roles, until):
@@ -398,7 +409,16 @@ references = [
     {"id": "bare_hex", "cbor_hex": enc(_d.hex()).hex(), "form": "neither"},
 ]
 
-# ---- Family rules under CC's vendored model (rc20 a15ce94 authorship / second_signers) ----
+# ---- Family rules under CC's vendored model (rc20 e08bf05 manifests/family_authorship.json) ----
+# Selector cells are read by CC's one evaluator (tools/cc_family_select.py): the leaf is the row's
+# dimension bound under its family; verb, identity, group, seats and act come from the case's `ctx`
+# (absent: unknown). Each expectation below is what that evaluator answers for the cell, stated here.
+def vfam(cid, desc, signer, sub, family, payload, expect, ctx=None):
+    c = fam(cid, desc, signer, sub, family, payload, expect)
+    if ctx is not None:
+        c["ctx"] = ctx
+    return c
+_cp = {"asserted_at": T0}
 family_vendored = [
     fam("v_delegate_is_sub", "self:delegates_to: the delegate (CWT sub) signs the author's payload.", B, B.iss,
         "self:delegates_to", _ap, "valid:role:delegate"),
@@ -409,10 +429,58 @@ family_vendored = [
     fam("v_author_signs", "key:record is authored; its author signs.", A, "s", "key:record", _ap, "valid"),
     fam("v_counted", "group:roster is counted: no author.", A, "s", "group:roster", {"asserted_at": T0}, "valid"),
     fam("v_counted_with_author", "group:roster with an author.", A, "s", "group:roster", _ap, "family_invalid:author_column"),
-    fam("v_selector_undetermined", "accord:* has a per-leaf selector: the caller must decide.", A, "s", "accord:.", _ap,
+    fam("v_selector_undetermined", "accord:* arm 0 is leaf=lifecycle:{kind}; with no dimension the leaf is unknown, "
+        "so the arm is unknown before the decider and the authorship is undetermined.", A, "s", "accord:.", _ap,
         "family_invalid:authorship_undetermined"),
     fam("v_gap_undetermined", "licensure:{authority_id} is a gap: the caller must decide.", A, "s", "licensure:.authority_id", _ap,
         "family_invalid:authorship_undetermined"),
+    # the leaf decides
+    vfam("v_leaf_counted", "membership:{stage}: leaf widening holds arm 0 (leaf=widening|removal): counted, no author.", A, "s",
+         "membership:.stage", edit(_cp, "dimension", "membership:widening:v1"), "valid"),
+    vfam("v_leaf_counted_with_author", "membership:widening is counted: an author is refused.", A, "s",
+         "membership:.stage", edit(_ap, "dimension", "membership:widening:v1"), "family_invalid:author_column"),
+    vfam("v_leaf_authored", "membership:{stage}: leaf proposal reads arm 0 false, so the `*` arm decides: authored.", A, "s",
+         "membership:.stage", edit(_ap, "dimension", "membership:proposal:v1"), "valid"),
+    vfam("v_leaf_authored_without_author", "membership:proposal is authored: a row with no author is refused.", A, "s",
+         "membership:.stage", edit(_cp, "dimension", "membership:proposal:v1"), "family_invalid:author_column"),
+    vfam("v_no_dimension_undetermined", "membership:{stage} with no dimension: arm 0 is unknown.", A, "s",
+         "membership:.stage", _ap, "family_invalid:authorship_undetermined"),
+    vfam("v_accord_lifecycle_counted", "accord:lifecycle:{kind} (the family accord:lifecycle:confirmed:v1 resolves to; "
+         "under accord:* the same dimension binds leaf lifecycle:confirmed and arm 0 holds): counted.", A, "s",
+         "accord:lifecycle:.kind", edit(_cp, "dimension", "accord:lifecycle:confirmed:v1"), "valid"),
+    # a caller-supplied key decides
+    vfam("v_act_group_counted", "collection:{kind} with act=group: arm 0 holds, counted.", A, "s",
+         "collection:.kind", edit(_cp, "dimension", "collection:sample:v1"), "valid", {"act": "group"}),
+    vfam("v_act_own_authored", "collection:{kind} with act=own: arm 0 is false, authored.", A, "s",
+         "collection:.kind", edit(_ap, "dimension", "collection:sample:v1"), "valid", {"act": "own"}),
+    vfam("v_act_own_counted_refused", "collection:{kind} with act=own is authored: a row with no author is refused.", A, "s",
+         "collection:.kind", edit(_cp, "dimension", "collection:sample:v1"), "family_invalid:author_column", {"act": "own"}),
+    vfam("v_act_unsupplied", "collection:{kind} with act not supplied: arm 0 is unknown.", A, "s",
+         "collection:.kind", edit(_ap, "dimension", "collection:sample:v1"), "family_invalid:authorship_undetermined"),
+    vfam("v_identity_user_counted", "identity:occurrence_revocation with identity {user}: counted.", A, "s",
+         "identity:occurrence_revocation", edit(_cp, "dimension", "identity:occurrence_revocation:v1"), "valid",
+         {"identity": ["user"]}),
+    vfam("v_identity_node_authored", "identity:occurrence_revocation with identity {node}: arm 0 false, authored.", A, "s",
+         "identity:occurrence_revocation", edit(_ap, "dimension", "identity:occurrence_revocation:v1"), "valid",
+         {"identity": ["node"]}),
+    vfam("v_group_seats_counted", "quarantine:{state} with group=affiliations and seats=1: counted.", A, "s",
+         "quarantine:.state", _cp, "valid", {"group": "affiliations", "seats": 1}),
+    vfam("v_false_beats_unknown", "quarantine:{state} with group=family and seats not supplied: group reads false, so arm 0 is "
+         "false whatever seats reads, and the `*` arm decides: authored.", A, "s",
+         "quarantine:.state", _ap, "valid", {"group": "family"}),
+    # when-conditioned second signers
+    vfam("v_when_role_admitted", "trust:{job}:{version}, leaf confers, act=own: the delegate (CWT sub) role's when holds.", B, B.iss,
+         "trust:.job:.version", edit(_ap, "dimension", "trust:confers:v1"), "valid:role:delegate", {"act": "own"}),
+    vfam("v_when_role_not_holding", "trust:{job}:{version}, leaf accepts: the delegate role's when is false.", B, B.iss,
+         "trust:.job:.version", edit(_ap, "dimension", "trust:accepts:v1"), "family_invalid:iss_not_in_role", {"act": "own"}),
+    vfam("v_when_role_unknown", "trust:{job}:{version} with no dimension and act=own: authored, but the roles' when is unknown, "
+         "so no second signer is admitted.", B, B.iss,
+         "trust:.job:.version", _ap, "family_invalid:iss_not_in_role", {"act": "own"}),
+    vfam("v_when_gap_member", "retirement:{state}, leaf retired: the custodian role's when holds but its member is gap.", B, B.iss,
+         "retirement:.state", edit(_ap, "dimension", "retirement:retired:v1"), "family_invalid:iss_not_in_role"),
+    vfam("v_owner_of_sub_not_a_member", "self:delegates_to's delegate_owner role is by owner_of_sub, the owner the owner-binding "
+         "of sub names; a payload member of that name does not admit the signer.", B, C.iss,
+         "self:delegates_to", edit(_ap, "owner_of_sub", B.iss), "family_invalid:iss_not_in_role"),
 ]
 assert len({r["id"] for r in refusals}) == len(refusals)
 out = {
@@ -422,7 +490,9 @@ out = {
         "key_seed n. Signatures are deterministic (FIPS 204 deterministic variant; Ed25519). Generated "
         "independently of the Rust code by its own CBOR encoder over dilithium-py and pyca/cryptography; "
         "see README.md beside this file. expect: valid, waiting, or invalid:<reason>[:<member>]. family_model is a "
-        "stated test model (CC's typed authorship / second_signers columns are pending in rc20)."),
+        "stated test model. family_vendored is read under CC's family_authorship.json (rc20 e08bf05) by CC's selector "
+        "evaluator (tools/cc_family_select.py): the leaf from the row's dimension, and verb, identity, group, seats and "
+        "act from the case's optional ctx (absent: unknown)."),
     "valid": valid,
     "refusals": refusals,
     "earlier_form": earlier,

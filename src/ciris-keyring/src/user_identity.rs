@@ -36,10 +36,13 @@
 //! (`ciris_verify_core::threshold` at threshold 1 over
 //! `UserIdentityKeyset::signing_public_keys`).
 
+#[cfg(feature = "fs")]
 use std::path::PathBuf;
 
+#[cfg(feature = "fs")]
 use crate::error::KeyringError;
 use crate::hw_token::TokenInterface;
+#[cfg(feature = "fs")]
 use crate::signer::HardwareSigner;
 
 /// What a federation identity factor can cryptographically do.
@@ -57,7 +60,7 @@ pub enum FactorKind {
 /// Where a factor's key material is custodied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FactorBackend {
-    /// TPM 2.0 / Secure Enclave-sealed Ed25519 ([`crate::sealed_ed25519`]).
+    /// TPM 2.0 / Secure Enclave-sealed Ed25519 (`crate::sealed_ed25519`).
     PlatformSealed,
     /// External hardware token over PKCS#11 / PIV (YubiKey). Real signing behind
     /// the token; resolved by [`crate::hw_token`].
@@ -196,6 +199,7 @@ pub enum SigningBackend {
 /// How to locate the user identity's signing key. **Distinct namespace from the
 /// node steward** (`key_id` + `seed_dir` MUST NOT collide with the node's) — the
 /// whole point is that the human's key is not co-resident with the node key.
+#[cfg(feature = "fs")]
 #[derive(Debug, Clone)]
 pub struct UserIdentityConfig {
     /// The user-identity alias (e.g. `CIRIS_USER_KEY_ID`).
@@ -221,6 +225,7 @@ pub struct UserIdentityConfig {
 /// # Errors
 ///
 /// Propagates the backend's construction error.
+#[cfg(feature = "fs")]
 pub fn get_user_identity_signer(
     config: &UserIdentityConfig,
 ) -> Result<Box<dyn HardwareSigner>, KeyringError> {
@@ -300,6 +305,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "fs")]
     #[test]
     fn software_user_identity_signer_resolves_and_is_distinct() {
         // A user identity under its own namespace (not the node steward's).
@@ -314,7 +320,7 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
-    #[cfg(not(feature = "pkcs11"))]
+    #[cfg(all(feature = "fs", not(feature = "pkcs11")))]
     #[test]
     fn pkcs11_backend_reports_unsupported_without_feature() {
         // Honest: no PKCS#11 backend compiled in / no token on this box.
