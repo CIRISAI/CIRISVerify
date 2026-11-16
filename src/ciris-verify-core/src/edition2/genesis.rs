@@ -286,6 +286,11 @@ pub struct GenesisPlacement {
     /// bundle's included: no recovery may seat a key one of them commits to
     /// (`recovery_key_is_signing_key`).
     pub lineage_commitments: BTreeSet<Digest32>,
+    /// The keys this lineage has retired for each holder, by identity
+    /// reference: every key the holder was seated at and later left, and
+    /// every recovery key a counted recovery of the holder spent. No later
+    /// bundle seats one of them for that holder (`holder_key_retired`).
+    pub retired_holder_keys: BTreeMap<String, BTreeSet<Digest32>>,
 }
 
 impl GenesisPlacement {
@@ -337,6 +342,10 @@ pub enum Malformed {
     /// A recovery changes more than its holder's key-record citation and
     /// recovery commitment (beside `version`, `asserted_at` and `refs.prev`).
     RecoveryChangesOtherSeat,
+    /// A later bundle seats for a holder a key its lineage has retired (a
+    /// key the holder was seated at and left, or a spent recovery key), or
+    /// a key the holder's recovery commitment in force commits to.
+    HolderKeyRetired,
 }
 
 impl Malformed {
@@ -356,6 +365,7 @@ impl Malformed {
             Self::RecoveryKeyIsSigningKey => "recovery_key_is_signing_key",
             Self::RecoveryReusesSigningKey => "recovery_reuses_signing_key",
             Self::RecoveryChangesOtherSeat => "recovery_changes_other_seat",
+            Self::HolderKeyRetired => "holder_key_retired",
         }
     }
 }
@@ -1379,6 +1389,25 @@ fn read_one(
         .unwrap_or_default();
     lineage.extend(b.charter.recovery_commitments.values().copied());
 
+    // 4 (end). A recovery's own rules, once its records are placed and its
+    // statement verified: Invalid. They come before `holder_key_retired`,
+    // which they overlap, so the more specific reason answers.
+    if let (Some(a), Some(pp), RecoveryVoice::Verified(rk)) = (&attempt, prev, &recovery) {
+        if let Err(m) = recovery_rules(&b, pp, &rows, &a.holder, rk, &lineage) {
+            return GenesisVerdict::Invalid(m);
+        }
+    }
+
+    // A later bundle seats no holder at a key its lineage retired, nor at
+    // the key its recovery commitment in force commits to: Invalid. This
+    // reads the payload's named records against the predecessor alone (the
+    // object id covers both), so no statement bears on it.
+    if let Some(pp) = prev {
+        if let Err(m) = check_retired(&b, pp, &rows) {
+            return GenesisVerdict::Invalid(m);
+        }
+    }
+
     // 4 (continued). A holder re-seated under a new key by a roster bundle:
     // only where its own statement, under the key the predecessor seats for
     // it, verified and counts. A statement that does not verify counts for
@@ -1389,14 +1418,6 @@ fn read_one(
                 row: *row,
                 fault: RowFault::HolderNotGenesisKey,
             });
-        }
-    }
-
-    // 4 (end). A recovery's own rules, once its records are placed and its
-    // statement verified: Invalid.
-    if let (Some(a), Some(pp), RecoveryVoice::Verified(rk)) = (&attempt, prev, &recovery) {
-        if let Err(m) = recovery_rules(&b, pp, &rows, &a.holder, rk, &lineage) {
-            return GenesisVerdict::Invalid(m);
         }
     }
 
@@ -1484,6 +1505,32 @@ fn read_one(
         }
     }
 
+    // The keys this bundle retires: each holder's seated key it leaves, and
+    // the recovery key a recovery spends.
+    let mut retired = prev
+        .map(|pp| pp.retired_holder_keys.clone())
+        .unwrap_or_default();
+    if let Some(pp) = prev {
+        for h in &pp.holders {
+            if rows
+                .records
+                .get(&h.identity_ref)
+                .is_some_and(|r| r.rec.kid != h.kid)
+            {
+                retired
+                    .entry(h.identity_ref.clone())
+                    .or_insert_with(BTreeSet::new)
+                    .insert(h.kid);
+            }
+        }
+    }
+    if let (Some(h), RecoveryVoice::Verified(rk)) = (&recovered, &recovery) {
+        retired
+            .entry(h.clone())
+            .or_insert_with(BTreeSet::new)
+            .insert(thumbprint(rk));
+    }
+
     let charter = b.charter.clone();
     GenesisVerdict::Valid(Box::new(GenesisPlacement {
         object_id: oid,
@@ -1543,6 +1590,7 @@ fn read_one(
         recovered,
         spent_commitments: spent,
         lineage_commitments: lineage,
+        retired_holder_keys: retired,
     }))
 }
 
@@ -1593,6 +1641,34 @@ fn recovery_attempt(
         holder: v.iss.clone(),
         kid: v.kid,
     })
+}
+
+/// `holder_key_retired` (CC 4.2.6, CC rc20 64c5918 ruling): every holder a
+/// later bundle seats at another key than the predecessor seats (or adds) is
+/// seated at neither a key the lineage retired for it nor the key its
+/// recovery commitment in force commits to (compared in constant time).
+fn check_retired(b: &Bundle, pp: &GenesisPlacement, rows: &Rows) -> Result<(), Malformed> {
+    for h in &b.holders {
+        let rec = &rows.records[h].rec;
+        let seated = pp.holder(h);
+        if seated.is_some_and(|x| x.kid == rec.kid) {
+            continue;
+        }
+        if pp
+            .retired_holder_keys
+            .get(h)
+            .is_some_and(|ks| ks.contains(&rec.kid))
+        {
+            return Err(Malformed::HolderKeyRetired);
+        }
+        if let Some(x) = seated {
+            let c = recovery_commitment(core::slice::from_ref(&rec.key));
+            if bool::from(c.ct_eq(&x.recovery_commitment)) {
+                return Err(Malformed::HolderKeyRetired);
+            }
+        }
+    }
+    Ok(())
 }
 
 /// A recovery's Invalid rules (CC 2.6.1.11, CC 4.2.6), in the reference
@@ -2174,6 +2250,7 @@ mod tests {
             recovered: None,
             spent_commitments: BTreeSet::new(),
             lineage_commitments: BTreeSet::new(),
+            retired_holder_keys: BTreeMap::new(),
         };
         let (a, b, c, d) = (p(1, None), p(2, Some(1)), p(3, Some(2)), p(4, Some(2)));
         assert!(matches!(follow_to_head(&[&a, &b]), Head::Head(h) if h.object_id == [2; 32]));

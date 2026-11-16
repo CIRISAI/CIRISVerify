@@ -171,6 +171,27 @@ fn check_placement(id: &str, p: &GenesisPlacement, e: &J) {
         set("lineage_commitments"),
         "{id}: lineage"
     );
+    let retired: BTreeMap<String, Vec<String>> = p
+        .retired_holder_keys
+        .iter()
+        .map(|(k, v)| (k.clone(), v.iter().map(h).collect()))
+        .collect();
+    let want_retired: BTreeMap<String, Vec<String>> = e["retired_holder_keys"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| {
+            (
+                k.clone(),
+                v.as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|x| x.as_str().unwrap().to_owned())
+                    .collect(),
+            )
+        })
+        .collect();
+    assert_eq!(retired, want_retired, "{id}: retired holder keys");
     let eh = e["holders"].as_array().unwrap();
     assert_eq!(p.holders.len(), eh.len(), "{id}");
     for (x, y) in p.holders.iter().zip(eh) {
@@ -239,7 +260,7 @@ fn every_case_gives_its_verdict() {
     });
     let mut valid: BTreeMap<String, Vec<GenesisPlacement>> = BTreeMap::new();
     let cases = f["cases"].as_array().unwrap();
-    assert!(cases.len() >= 101, "the case list");
+    assert!(cases.len() >= 105, "the case list");
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let statements: Vec<Vec<u8>> = c["statements"]
@@ -660,7 +681,8 @@ fn cc_samples() {
     // The reference reader over every case it models (first bundles, and later ones over its own
     // placement of the predecessor). It does not yet model the seated key of a holder in a later
     // bundle (holder_not_genesis_key, re-seated only by the holder's own counted statement under its
-    // current key), so the three cases that turn on it are the known disagreements.
+    // current key) nor the keys a lineage retired (holder_key_retired), so the seven cases that turn
+    // on them are the known disagreements.
     let reader = cc["reader"].as_array().unwrap();
     assert!(reader.len() >= 50, "the cases CC's reader models");
     let disagree: BTreeSet<&str> = reader
@@ -673,7 +695,11 @@ fn cc_samples() {
         BTreeSet::from([
             "recovered_holder_genesis_record",
             "roster_bundle_rotates_without_holder_voice",
-            "roster_bundle_rotates_holder_voice_under_new_key"
+            "roster_bundle_rotates_holder_voice_under_new_key",
+            "roster_reseats_retired_key_after_rotation",
+            "roster_reseats_retired_key_after_recovery",
+            "roster_seats_in_force_recovery_key",
+            "roster_seats_spent_recovery_key"
         ])
     );
     // Each of the reference reader's breaks, valid samples and chain checks has its case here, and each

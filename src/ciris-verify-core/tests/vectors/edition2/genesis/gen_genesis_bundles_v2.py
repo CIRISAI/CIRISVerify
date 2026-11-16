@@ -314,7 +314,7 @@ def bundle(oid, verdict, token=None, detail=None, refused=(), placement=None, wa
     return e
 
 
-def placement_of(p, holders, seats, witnesses, counted, recs=None, prev=None, recovered=None):
+def placement_of(p, holders, seats, witnesses, counted, recs=None, prev=None, recovered=None, rk=None):
     """The placement a Valid bundle yields. `recs` maps a holder to (its record's row id, the key it records)
     where that is not its genesis record; `prev` is the predecessor's placement, whose spent and named
     commitments this one carries on; `recovered` the holder a recovery recovers."""
@@ -330,6 +330,15 @@ def placement_of(p, holders, seats, witnesses, counted, recs=None, prev=None, re
            "halt_fuse": p["charter"].get("halt_fuse_secs", 86400), "scope": p["charter"]["scope"],
            "object_id": object_id(enc(p)).hex(), "recovered": recovered.iss if recovered else None,
            "spent_commitments": sorted(spent), "lineage_commitments": sorted(lineage)}
+    # The keys the lineage retired per holder: each seated key a holder left, and each spent recovery key.
+    retired = {k: set(v) for k, v in prev["retired_holder_keys"].items()} if prev else {}
+    for h in holders:
+        new = recs.get(h, (None, h))[1].kid.hex()
+        for x in (prev["holders"] if prev else []):
+            if x["identity_ref"] == h.iss and x["kid"] != new:
+                retired.setdefault(h.iss, set()).add(x["kid"])
+    if recovered is not None: retired.setdefault(recovered.iss, set()).add(rk.kid.hex())
+    out["retired_holder_keys"] = {k: sorted(v) for k, v in retired.items()}
     for h in sorted(holders, key=lambda k: enc(k.iss)):
         rid, key = recs.get(h, (R["rec_%d" % h.n][1], h))
         out["holders"].append({"identity_ref": h.iss, "kid": key.kid.hex(), "record": rid.hex(),
@@ -719,7 +728,7 @@ def rvoice(rk, p, **kw): return voice(rk, p, iss=A.iss, **kw)
 PR = later_payload(REC_ROWS)
 OR = object_id(enc(PR))
 RECP = placement_of(PR, (A, B, C), (S1, S2), (), (A,), recs={A: (R["recA"][1], A_NEW)}, prev=GOOD_PLACEMENT,
-                    recovered=A)
+                    recovered=A, rk=REC[1])
 case("recovery_valid", "A recovers: one statement by A's recovery key (iss A, kid the recovery key, its record "
      "named), A's new signing-key record named, A's commitment the next one. It counts on that statement alone; "
      "A's first commitment is spent.",
@@ -788,7 +797,7 @@ case("second_recovery_valid", "A recovers again, under the recovery key its firs
      [rvoice(A_REC2, P2)], held("recA2", "rk_2", *REST), None,
      [bundle(object_id(enc(P2)), "valid",
              placement=placement_of(P2, (A, B, C), (S1, S2), (), (A,), recs={A: (R["recA2"][1], A_NEW2)},
-                                    prev=RECP, recovered=A))],
+                                    prev=RECP, recovered=A, rk=A_REC2))],
      predecessors=PRE_R, cc=ccp(P2, [("recovery", A, A_REC2)], ids(["recA2", "rk_2"] + REST), None))
 P2s = later_payload(["recA2", "rk_1"] + REST, commits=NEXT2, version=3, prev=OR, at=T3)
 rcase("recovery_spent_key", "A second recovery under A's first recovery key, already spent.",
@@ -815,10 +824,11 @@ case("recovered_holder_seated_key", "After A's recovery, a roster bundle re-comm
                                     prev=RECP))],
      predecessors=PRE_R, cc=ccp(P_after, (A, B), ids(REC_HELD), None))
 P_stale = later_payload(["rec_1"] + REST, commits={**NEXT, B.iss: hd(commitment([REC[4]]))}, version=3, prev=OR, at=T3)
-case("recovered_holder_genesis_record", "After A's recovery, a roster bundle B and C sign naming A's genesis record: "
-     "not the key the bundle in force seats for A, and A's own statement under that key is not among the counted.",
+case("recovered_holder_genesis_record", "After A's recovery, a roster bundle B and C sign naming A's genesis record, "
+     "a key the recovery retired: holder_key_retired (Invalid, read from the payload and the predecessor; it answers "
+     "before holder_not_genesis_key, which turns on the statements held).",
      [voice(B, P_stale), voice(C, P_stale)], held("rec_1", *REST), None,
-     [bundle(object_id(enc(P_stale)), "nothing", "genesis_bundle_row_invalid", "holder_not_genesis_key")],
+     [bundle(object_id(enc(P_stale)), "invalid", "genesis_bundle_malformed", "holder_key_retired")],
      predecessors=PRE_R, cc=ccp(P_stale, (B, C), ids(["rec_1"] + REST), None))
 
 # --- a roster bundle re-seats a holder under a new key only with that holder's counted statement under its current key
@@ -851,6 +861,35 @@ case("roster_after_rotation_counts_new_key", "The next bundle after A's rotation
              placement=placement_of(P_rot2, (A, B, C), (S1, S2), (), (A, B), recs={A: (R["recA"][1], A_NEW)},
                                     prev=ROTP))],
      predecessors=[{"case": "roster_bundle_rotates_holder_key"}], cc=ccp(P_rot2, (A, B), ids(ROT), None))
+
+# --- no later bundle seats a holder at a key its lineage retired, or at its in-force recovery commitment's key
+PRE_ROT = [{"case": "roster_bundle_rotates_holder_key"}]
+GEN_A = ["rec_1"] + REST
+P_back = later_payload(GEN_A, commits={**NEXT, A.iss: hd(commitment([REC[1]]))}, version=3, prev=O_rot, at=T3)
+case("roster_reseats_retired_key_after_rotation", "After A rotated to a new key, a roster bundle A (under its new key) "
+     "and B sign re-seating A at its genesis key, which the lineage retired: holder_key_retired.",
+     [voice(A_NEW, P_back, iss=A.iss), voice(B, P_back)], held(*GEN_A), None,
+     [bundle(object_id(enc(P_back)), "invalid", "genesis_bundle_malformed", "holder_key_retired")],
+     predecessors=PRE_ROT, cc=ccp(P_back, (A, B), ids(GEN_A), None))
+P_back_r = later_payload(GEN_A, commits={**NEXT, B.iss: hd(commitment([REC[4]]))}, version=3, prev=OR, at=T3)
+case("roster_reseats_retired_key_after_recovery", "After A's recovery, a roster bundle A (under its recovered key), B "
+     "and C sign re-seating A at its genesis key, which the recovery retired: holder_key_retired.",
+     [voice(A_NEW, P_back_r, iss=A.iss), voice(B, P_back_r), voice(C, P_back_r)], held(*GEN_A), None,
+     [bundle(object_id(enc(P_back_r)), "invalid", "genesis_bundle_malformed", "holder_key_retired")],
+     predecessors=PRE_R, cc=ccp(P_back_r, (A, B, C), ids(GEN_A), None))
+RK_A = ["recA_rk"] + REST
+P_inforce = later_payload(RK_A, commits={**NEXT, A.iss: hd(commitment([REC[1]]))})
+case("roster_seats_in_force_recovery_key", "A roster bundle every holder signs (A under its current key) seating A at "
+     "the key A's recovery commitment in force commits to: holder_key_retired.",
+     [voice(k, P_inforce) for k in (A, B, C)], held(*RK_A), None,
+     [bundle(object_id(enc(P_inforce)), "invalid", "genesis_bundle_malformed", "holder_key_retired")],
+     predecessors=PRE, cc=ccp(P_inforce, (A, B, C), ids(RK_A), None))
+P_spentk = later_payload(RK_A, version=3, prev=OR, at=T3)
+case("roster_seats_spent_recovery_key", "After A's recovery, a roster bundle A (under its recovered key), B and C sign "
+     "seating A at the recovery key that recovery spent: holder_key_retired.",
+     [voice(A_NEW, P_spentk, iss=A.iss), voice(B, P_spentk), voice(C, P_spentk)], held(*RK_A), None,
+     [bundle(object_id(enc(P_spentk)), "invalid", "genesis_bundle_malformed", "holder_key_retired")],
+     predecessors=PRE_R, cc=ccp(P_spentk, (A, B, C), ids(RK_A), None))
 
 # ================================================================ forks
 def common(tips):

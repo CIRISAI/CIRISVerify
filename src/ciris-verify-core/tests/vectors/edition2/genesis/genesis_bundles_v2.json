@@ -62,6 +62,7 @@
       "object_id": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "prev": null,
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -188,6 +189,7 @@
       "object_id": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "prev": null,
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -318,6 +320,7 @@
       "object_id": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "prev": null,
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -458,6 +461,7 @@
       "object_id": "5775508757f32aee18922af70c173fa8ecff5aeb4bb53986e4d3f3d4e8d9adba",
       "prev": null,
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -3933,6 +3937,7 @@
       "object_id": "5afa28ef54a2e0e88db46eda0e41829a9796fdc2e1cef287614f798827c2636a",
       "prev": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -4062,6 +4067,7 @@
       "object_id": "5afa28ef54a2e0e88db46eda0e41829a9796fdc2e1cef287614f798827c2636a",
       "prev": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -4626,6 +4632,7 @@
       "object_id": "e77b89df38c841a04ba77a44c203432c95d6382ca7a25229050b99384766f5b9",
       "prev": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -4811,6 +4818,12 @@
       "object_id": "3de55f08436c21718300084723ac8818a0652f6dc30c2445a8d39744f8ade0f5",
       "prev": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "recovered": "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM",
+      "retired_holder_keys": {
+       "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM": [
+        "d14fbd156386f9cdcdd8cd69592a2ef1e916d444ba7c5d5efb5ff3fa1db66ca7",
+        "d6f095b738a1e18fb62fa92478036189cb894203946d4c71a52d9b27b4117463"
+       ]
+      },
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -5562,6 +5575,14 @@
       "object_id": "7b6760c28a9bbbdd6008c08da38fe95dbe80d8cb6c125917c1e93edfc5d22cac",
       "prev": "3de55f08436c21718300084723ac8818a0652f6dc30c2445a8d39744f8ade0f5",
       "recovered": "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM",
+      "retired_holder_keys": {
+       "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM": [
+        "113a376ef59b87581f0f38ef3ffc35388c4690fee6f830387e79982eb19d37c2",
+        "5037bc900c5a30f25345fc006010746f1e66085881abf6a379921e56d325dd90",
+        "d14fbd156386f9cdcdd8cd69592a2ef1e916d444ba7c5d5efb5ff3fa1db66ca7",
+        "d6f095b738a1e18fb62fa92478036189cb894203946d4c71a52d9b27b4117463"
+       ]
+      },
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -5864,6 +5885,12 @@
       "object_id": "b039046f8607fd157db776bbea8b613965b14dec8d0bee8c223769525fdca09a",
       "prev": "3de55f08436c21718300084723ac8818a0652f6dc30c2445a8d39744f8ade0f5",
       "recovered": null,
+      "retired_holder_keys": {
+       "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM": [
+        "d14fbd156386f9cdcdd8cd69592a2ef1e916d444ba7c5d5efb5ff3fa1db66ca7",
+        "d6f095b738a1e18fb62fa92478036189cb894203946d4c71a52d9b27b4117463"
+       ]
+      },
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -5946,14 +5973,14 @@
   },
   {
    "anchor": null,
-   "description": "After A's recovery, a roster bundle B and C sign naming A's genesis record: not the key the bundle in force seats for A, and A's own statement under that key is not among the counted.",
+   "description": "After A's recovery, a roster bundle B and C sign naming A's genesis record, a key the recovery retired: holder_key_retired (Invalid, read from the payload and the predecessor; it answers before holder_not_genesis_key, which turns on the statements held).",
    "expect": [
     {
-     "detail": "holder_not_genesis_key",
+     "detail": "holder_key_retired",
      "object_id": "4ced6328835a3a2939fb3de5ac716b4cbe772be9575b5f5746f978b687c2d9a8",
      "refused": [],
-     "token": "genesis_bundle_row_invalid",
-     "verdict": "nothing"
+     "token": "genesis_bundle_malformed",
+     "verdict": "invalid"
     }
    ],
    "id": "recovered_holder_genesis_record",
@@ -6047,6 +6074,11 @@
       "object_id": "429606807301a02c9205e4bf35afb2b143c2c1a147d4b649b3d07fff7761c4aa",
       "prev": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "recovered": null,
+      "retired_holder_keys": {
+       "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM": [
+        "d6f095b738a1e18fb62fa92478036189cb894203946d4c71a52d9b27b4117463"
+       ]
+      },
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -6289,6 +6321,11 @@
       "object_id": "702fa98d3edcdac72763ba15278f940dbd2feed9203e699bdc7e9e17ad5d562e",
       "prev": "429606807301a02c9205e4bf35afb2b143c2c1a147d4b649b3d07fff7761c4aa",
       "recovered": null,
+      "retired_holder_keys": {
+       "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM": [
+        "d6f095b738a1e18fb62fa92478036189cb894203946d4c71a52d9b27b4117463"
+       ]
+      },
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -6368,6 +6405,225 @@
    "top_refused": []
   },
   {
+   "anchor": null,
+   "description": "After A rotated to a new key, a roster bundle A (under its new key) and B sign re-seating A at its genesis key, which the lineage retired: holder_key_retired.",
+   "expect": [
+    {
+     "detail": "holder_key_retired",
+     "object_id": "cf2728c73d1fd3f65b181d0a9a29738c65dfb7f488f450481ddf58908bd7e089",
+     "refused": [],
+     "token": "genesis_bundle_malformed",
+     "verdict": "invalid"
+    }
+   ],
+   "id": "roster_reseats_retired_key_after_rotation",
+   "predecessors": [
+    {
+     "case": "roster_bundle_rotates_holder_key"
+    }
+   ],
+   "rows": [
+    {
+     "id": "26c4f4273e0bc9a97322b8c8868215da9333b657c8f5e7fca02ca6e21622d738",
+     "statement": "98ca8869f876805a"
+    },
+    {
+     "id": "5dec43dd33d1a6d8a87113fe6f472b1ed13e3e42cb220ee9cb08869fb440e8a4",
+     "statement": "82aef7fcc97f3d72"
+    },
+    {
+     "id": "cd87172fce0dd2d673ee6eb47f28e05310a41b5c42368759dffa679685a13474",
+     "statement": "9e5dceb8dff3f8c3"
+    },
+    {
+     "id": "c399a236ab9bdf590df3dae7becbab187eee1057d0d36087fbdbb285fa0462e8",
+     "statement": "cf4931e3c5ae0252"
+    },
+    {
+     "id": "9819977107aaad9a06ced7e02473cd7660e67f2cd192132f5ac92e54ea74851f",
+     "statement": "62d7def028805e23"
+    },
+    {
+     "id": "cd79fec827d9b494bd936b24ea2038c656fc27274d30ce28a30cf81b0f6ba789",
+     "statement": "88537a10a96572c7"
+    },
+    {
+     "id": "6fbac8f192a96a66a75a3c48399ecd7a053aba4133d45dc6ae183bc2749cf4e3",
+     "statement": "8b0c57990c0849dd"
+    }
+   ],
+   "statements": [
+    "115362d857967ad9",
+    "accf8f21d306c66d"
+   ],
+   "top_refused": []
+  },
+  {
+   "anchor": null,
+   "description": "After A's recovery, a roster bundle A (under its recovered key), B and C sign re-seating A at its genesis key, which the recovery retired: holder_key_retired.",
+   "expect": [
+    {
+     "detail": "holder_key_retired",
+     "object_id": "4ced6328835a3a2939fb3de5ac716b4cbe772be9575b5f5746f978b687c2d9a8",
+     "refused": [],
+     "token": "genesis_bundle_malformed",
+     "verdict": "invalid"
+    }
+   ],
+   "id": "roster_reseats_retired_key_after_recovery",
+   "predecessors": [
+    {
+     "case": "recovery_valid"
+    }
+   ],
+   "rows": [
+    {
+     "id": "26c4f4273e0bc9a97322b8c8868215da9333b657c8f5e7fca02ca6e21622d738",
+     "statement": "98ca8869f876805a"
+    },
+    {
+     "id": "5dec43dd33d1a6d8a87113fe6f472b1ed13e3e42cb220ee9cb08869fb440e8a4",
+     "statement": "82aef7fcc97f3d72"
+    },
+    {
+     "id": "cd87172fce0dd2d673ee6eb47f28e05310a41b5c42368759dffa679685a13474",
+     "statement": "9e5dceb8dff3f8c3"
+    },
+    {
+     "id": "c399a236ab9bdf590df3dae7becbab187eee1057d0d36087fbdbb285fa0462e8",
+     "statement": "cf4931e3c5ae0252"
+    },
+    {
+     "id": "9819977107aaad9a06ced7e02473cd7660e67f2cd192132f5ac92e54ea74851f",
+     "statement": "62d7def028805e23"
+    },
+    {
+     "id": "cd79fec827d9b494bd936b24ea2038c656fc27274d30ce28a30cf81b0f6ba789",
+     "statement": "88537a10a96572c7"
+    },
+    {
+     "id": "6fbac8f192a96a66a75a3c48399ecd7a053aba4133d45dc6ae183bc2749cf4e3",
+     "statement": "8b0c57990c0849dd"
+    }
+   ],
+   "statements": [
+    "9b08e835c507cfdd",
+    "5ba8c03fe0d8ccb8",
+    "7d09086108b2442c"
+   ],
+   "top_refused": []
+  },
+  {
+   "anchor": null,
+   "description": "A roster bundle every holder signs (A under its current key) seating A at the key A's recovery commitment in force commits to: holder_key_retired.",
+   "expect": [
+    {
+     "detail": "holder_key_retired",
+     "object_id": "6ae6ec24a1bc79a66ebc020d50e4c97001e9840c2e7ac73d789220689475f5bc",
+     "refused": [],
+     "token": "genesis_bundle_malformed",
+     "verdict": "invalid"
+    }
+   ],
+   "id": "roster_seats_in_force_recovery_key",
+   "predecessors": [
+    {
+     "case": "first_valid"
+    }
+   ],
+   "rows": [
+    {
+     "id": "f083762886d11c311afe442910d3682e81e1c190ce8bbde8942e7ed202b92796",
+     "statement": "861f24db35b475b7"
+    },
+    {
+     "id": "5dec43dd33d1a6d8a87113fe6f472b1ed13e3e42cb220ee9cb08869fb440e8a4",
+     "statement": "82aef7fcc97f3d72"
+    },
+    {
+     "id": "cd87172fce0dd2d673ee6eb47f28e05310a41b5c42368759dffa679685a13474",
+     "statement": "9e5dceb8dff3f8c3"
+    },
+    {
+     "id": "c399a236ab9bdf590df3dae7becbab187eee1057d0d36087fbdbb285fa0462e8",
+     "statement": "cf4931e3c5ae0252"
+    },
+    {
+     "id": "9819977107aaad9a06ced7e02473cd7660e67f2cd192132f5ac92e54ea74851f",
+     "statement": "62d7def028805e23"
+    },
+    {
+     "id": "cd79fec827d9b494bd936b24ea2038c656fc27274d30ce28a30cf81b0f6ba789",
+     "statement": "88537a10a96572c7"
+    },
+    {
+     "id": "6fbac8f192a96a66a75a3c48399ecd7a053aba4133d45dc6ae183bc2749cf4e3",
+     "statement": "8b0c57990c0849dd"
+    }
+   ],
+   "statements": [
+    "7e635a61929c1854",
+    "23b62ca44b623d1a",
+    "75439e50e65ec9d6"
+   ],
+   "top_refused": []
+  },
+  {
+   "anchor": null,
+   "description": "After A's recovery, a roster bundle A (under its recovered key), B and C sign seating A at the recovery key that recovery spent: holder_key_retired.",
+   "expect": [
+    {
+     "detail": "holder_key_retired",
+     "object_id": "a50a2892a677e9f502715ef683e20a59a7023cada7034a76580cdd2eb7572fe2",
+     "refused": [],
+     "token": "genesis_bundle_malformed",
+     "verdict": "invalid"
+    }
+   ],
+   "id": "roster_seats_spent_recovery_key",
+   "predecessors": [
+    {
+     "case": "recovery_valid"
+    }
+   ],
+   "rows": [
+    {
+     "id": "f083762886d11c311afe442910d3682e81e1c190ce8bbde8942e7ed202b92796",
+     "statement": "861f24db35b475b7"
+    },
+    {
+     "id": "5dec43dd33d1a6d8a87113fe6f472b1ed13e3e42cb220ee9cb08869fb440e8a4",
+     "statement": "82aef7fcc97f3d72"
+    },
+    {
+     "id": "cd87172fce0dd2d673ee6eb47f28e05310a41b5c42368759dffa679685a13474",
+     "statement": "9e5dceb8dff3f8c3"
+    },
+    {
+     "id": "c399a236ab9bdf590df3dae7becbab187eee1057d0d36087fbdbb285fa0462e8",
+     "statement": "cf4931e3c5ae0252"
+    },
+    {
+     "id": "9819977107aaad9a06ced7e02473cd7660e67f2cd192132f5ac92e54ea74851f",
+     "statement": "62d7def028805e23"
+    },
+    {
+     "id": "cd79fec827d9b494bd936b24ea2038c656fc27274d30ce28a30cf81b0f6ba789",
+     "statement": "88537a10a96572c7"
+    },
+    {
+     "id": "6fbac8f192a96a66a75a3c48399ecd7a053aba4133d45dc6ae183bc2749cf4e3",
+     "statement": "8b0c57990c0849dd"
+    }
+   ],
+   "statements": [
+    "a0c9712f7eaf8c66",
+    "8224dafdf0550932",
+    "3f9f48a7d740dfe7"
+   ],
+   "top_refused": []
+  },
+  {
    "anchor": {
     "thumbprints": [
      "4e3930cdcc422585def0e7ff3a2284b874a173d982d9c4b42304647f93d99f23",
@@ -6422,6 +6678,7 @@
       "object_id": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "prev": null,
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -6502,6 +6759,7 @@
       "object_id": "bdfb765718efd70d37a6c5e0533f54e7dd5551091b4e632e39494505550a8a8e",
       "prev": null,
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -6645,6 +6903,7 @@
       "object_id": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "prev": null,
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -6797,6 +7056,7 @@
       "object_id": "5afa28ef54a2e0e88db46eda0e41829a9796fdc2e1cef287614f798827c2636a",
       "prev": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -6878,6 +7138,7 @@
       "object_id": "bbf9e68076cf48ab869608def6edbd76fa1bad9bd053f4b20a628f111b09dd1f",
       "prev": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -7038,6 +7299,7 @@
       "object_id": "5afa28ef54a2e0e88db46eda0e41829a9796fdc2e1cef287614f798827c2636a",
       "prev": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -7183,6 +7445,12 @@
       "object_id": "3de55f08436c21718300084723ac8818a0652f6dc30c2445a8d39744f8ade0f5",
       "prev": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "recovered": "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM",
+      "retired_holder_keys": {
+       "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM": [
+        "d14fbd156386f9cdcdd8cd69592a2ef1e916d444ba7c5d5efb5ff3fa1db66ca7",
+        "d6f095b738a1e18fb62fa92478036189cb894203946d4c71a52d9b27b4117463"
+       ]
+      },
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -7266,6 +7534,7 @@
       "object_id": "5afa28ef54a2e0e88db46eda0e41829a9796fdc2e1cef287614f798827c2636a",
       "prev": "1e27f98ba06ff796be562f47084066e22e666abe8b091103fbb9d98b465abc50",
       "recovered": null,
+      "retired_holder_keys": {},
       "scope": [
        "infra:serve",
        "infra:attest"
@@ -8119,8 +8388,8 @@
     "agree": false,
     "case": "recovered_holder_genesis_record",
     "ours": [
-     "nothing",
-     "genesis_bundle_row_invalid"
+     "Invalid",
+     "holder_key_retired"
     ],
     "reference": [
      "Valid",
@@ -8169,6 +8438,54 @@
     "ours": [
      "Valid",
      null
+    ],
+    "reference": [
+     "Valid",
+     null
+    ]
+   },
+   {
+    "agree": false,
+    "case": "roster_reseats_retired_key_after_rotation",
+    "ours": [
+     "Invalid",
+     "holder_key_retired"
+    ],
+    "reference": [
+     "Valid",
+     null
+    ]
+   },
+   {
+    "agree": false,
+    "case": "roster_reseats_retired_key_after_recovery",
+    "ours": [
+     "Invalid",
+     "holder_key_retired"
+    ],
+    "reference": [
+     "Valid",
+     null
+    ]
+   },
+   {
+    "agree": false,
+    "case": "roster_seats_in_force_recovery_key",
+    "ours": [
+     "Invalid",
+     "holder_key_retired"
+    ],
+    "reference": [
+     "Valid",
+     null
+    ]
+   },
+   {
+    "agree": false,
+    "case": "roster_seats_spent_recovery_key",
+    "ours": [
+     "Invalid",
+     "holder_key_retired"
     ],
     "reference": [
      "Valid",

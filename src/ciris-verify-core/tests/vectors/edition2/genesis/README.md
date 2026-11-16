@@ -95,13 +95,19 @@ New:
   recovery key, which a commitment of the lineage names), `recovery_reuses_signing_key`,
   `recovery_changes_other_seat` (another holder re-committed; the charter's fuse; a seat dropped).
 - `holder_not_genesis_key` read against the bundle in force: a recovered holder's new record passes in the
-  next roster bundle (`recovered_holder_seated_key`); its genesis record then fails where A's statement is not
-  counted (`recovered_holder_genesis_record`). A roster bundle re-seats a holder under a new key only where
+  next roster bundle (`recovered_holder_seated_key`). A roster bundle re-seats a holder under a new key only where
   that holder's statement under its current key counts: `roster_bundle_rotates_holder_key` (A signs under
   its genesis key: Valid, A seated at the new key), `roster_bundle_rotates_without_holder_voice` (B and C
   only: `holder_not_genesis_key`), `roster_bundle_rotates_holder_voice_under_new_key` (A's statement under
   the new key refused `statement_kid_not_iss`; B and C meet the count; `holder_not_genesis_key`), and
   `roster_after_rotation_counts_new_key` (the next bundle counts A under the new key: Valid).
+- `holder_key_retired` (`genesis_bundle_malformed`): no later bundle seats a holder at a key its lineage
+  retired (one the holder was seated at and left, or a recovery key a recovery spent) or at the key its
+  in-force recovery commitment commits to. `roster_reseats_retired_key_after_rotation` and
+  `roster_reseats_retired_key_after_recovery` (A's genesis key back, with A's own statement),
+  `recovered_holder_genesis_record` (the same without A's statement: the check reads the payload and the
+  predecessor only, so it answers before `holder_not_genesis_key`), `roster_seats_in_force_recovery_key`,
+  `roster_seats_spent_recovery_key`. Placements carry `retired_holder_keys`.
 - Seats and bindings (`genesis_bundle_row_invalid`): `seat_record_ended` (at and before the bundle's instant),
   `binding_names_no_record` (no `refs`; another seat's record), and CC's binding samples (an X-Wing key inside
   `transport_destination`, a text `destination_hash`, `opt_out: false`: `row_invalid`).
@@ -110,13 +116,14 @@ New:
 
 ## Agreement with CC's reference reader (64c5918)
 
-CC's `read_bundle` (structure only, voices taken as verified) runs over the 56 cases it can model, first
+CC's `read_bundle` (structure only, voices taken as verified) runs over the 60 cases it can model, first
 bundles and later ones: 53 agree. `iat_off_by_one`, the one v1 disagreement, now agrees (CC refuses that
-statement alone). The three disagreements are `recovered_holder_genesis_record`,
-`roster_bundle_rotates_without_holder_voice` and `roster_bundle_rotates_holder_voice_under_new_key`: the
-reference reader does not yet check which key a later bundle seats for a holder (CC is adding the rule: a
-roster bundle re-seats a holder only with that holder's counted statement under its current key), so it
-answers Valid where this reader answers `holder_not_genesis_key`. Each of CC's 24 reader breaks maps to a case here with the same answer, its two valid later
+statement alone). The seven disagreements turn on rules CC is adding to its reader: which key a later bundle seats for a
+holder (`roster_bundle_rotates_without_holder_voice`, `roster_bundle_rotates_holder_voice_under_new_key`:
+`holder_not_genesis_key`) and the keys a lineage retired (`recovered_holder_genesis_record`,
+`roster_reseats_retired_key_after_rotation`, `roster_reseats_retired_key_after_recovery`,
+`roster_seats_in_force_recovery_key`, `roster_seats_spent_recovery_key`: `holder_key_retired`). The
+reference reader answers Valid for each. Each of CC's 24 reader breaks maps to a case here with the same answer, its two valid later
 samples to Valid cases, and its three cross-bundle checks to cases. CC's genesis payload samples (the valid
 one now in set order), key-record samples, recovery inputs and broken row statements are replayed as in v1;
 its five broken binding samples are each refused by `check_seat_binding`, and its valid one passes.
