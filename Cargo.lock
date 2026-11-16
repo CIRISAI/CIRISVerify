@@ -722,6 +722,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "ciris-host-abi"
+version = "23.0.0"
+dependencies = [
+ "ciris-crypto",
+ "getrandom 0.2.17",
+ "getrandom 0.3.4",
+ "getrandom 0.4.2",
+ "proc-macro2",
+ "rand_core 0.6.4",
+ "sha3 0.10.9",
+ "wasm-encoder",
+ "wasmparser",
+ "wit-bindgen 0.51.0",
+ "wit-parser",
+ "zeroize",
+]
+
+[[package]]
 name = "ciris-keyring"
 version = "23.0.0"
 dependencies = [
@@ -776,6 +794,21 @@ dependencies = [
  "thiserror 2.0.21",
  "tracing",
  "tracing-subscriber",
+]
+
+[[package]]
+name = "ciris-rt"
+version = "23.0.0"
+dependencies = [
+ "ciris-host-abi",
+ "futures-channel",
+ "futures-io",
+ "hex",
+ "pin-project-lite",
+ "serde_json",
+ "sha2 0.10.9",
+ "tokio",
+ "zeroize",
 ]
 
 [[package]]
