@@ -1,0 +1,213 @@
+{
+ "_meta": {
+  "cells": "count",
+  "source": "manifests/family_model.json",
+  "source_sha256": "3c64403a56b0da0138433041af972ee552ead95d5f129f1f5fad26df6a8d1caf"
+ },
+ "families": {
+  "accord:invoke:constitutional:{halt_id}": {
+   "arms": [
+    {
+     "doors": "accord_halt@accord",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "accord_halt@accord"
+  },
+  "accord:lifecycle:{kind}": {
+   "arms": [
+    {
+     "doors": "accord_halt@accord",
+     "when": "leaf=confirmed"
+    },
+    {
+     "doors": "accord_majority@accord",
+     "when": "leaf=active"
+    }
+   ],
+   "source": "cc-table",
+   "value": "leaf=confirmed => accord_halt@accord ; leaf=active => accord_majority@accord"
+  },
+  "ballot:moderator": {
+   "arms": [
+    {
+     "doors": "moderator_election@subject_group",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "moderator_election@subject_group"
+  },
+  "ballot:moderator_acceptance": {
+   "arms": [
+    {
+     "doors": "moderator_election@subject_group!result",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "moderator_election@subject_group!result"
+  },
+  "content_class:{class}": {
+   "arms": [
+    {
+     "doors": "moderation_action@subject_group",
+     "when": "leaf=reported"
+    }
+   ],
+   "source": "cc-table",
+   "value": "leaf=reported => moderation_action@subject_group"
+  },
+  "cosign:{state}": {
+   "arms": [
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "none"
+  },
+  "identity:occurrence": {
+   "arms": [
+    {
+     "doors": "self_roster_add@self",
+     "when": "identity=user"
+    },
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "identity=user => self_roster_add@self ; none"
+  },
+  "identity:occurrence_revocation": {
+   "arms": [
+    {
+     "doors": "none",
+     "when": "identity=node|agent"
+    },
+    {
+     "doors": "self_roster_evict@self",
+     "when": "identity=user"
+    }
+   ],
+   "source": "cc-table",
+   "value": "identity=node|agent => none ; identity=user => self_roster_evict@self"
+  },
+  "lineage_witness:{stage}": {
+   "arms": [
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "none"
+  },
+  "membership:{stage}": {
+   "arms": [
+    {
+     "doors": "none",
+     "when": "leaf=proposal|acceptance|decline"
+    },
+    {
+     "doors": "none",
+     "when": "leaf=resignation"
+    },
+    {
+     "doors": "affiliation_member_action@subject_group",
+     "when": "leaf=removal & group=affiliations & seats=one"
+    },
+    {
+     "doors": "cosigned_act@subject_group",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "leaf=proposal|acceptance|decline => none ; leaf=resignation => none ; leaf=removal & group=affiliations & seats=one => affiliation_member_action@subject_group ; cosigned_act@subject_group"
+  },
+  "objection:{state}": {
+   "arms": [
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "none"
+  },
+  "quarantine:{state}": {
+   "arms": [
+    {
+     "doors": "affiliation_member_action@subject_group",
+     "when": "group=affiliations & seats=one"
+    },
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "group=affiliations & seats=one => affiliation_member_action@subject_group ; none"
+  },
+  "retirement:{state}": {
+   "arms": [
+    {
+     "doors": "custodian_replace",
+     "when": "leaf=custodian_minted"
+    },
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "leaf=custodian_minted => custodian_replace ; none"
+  },
+  "slashing:{outcome}": {
+   "arms": [
+    {
+     "doors": "affiliation_member_action@subject_group",
+     "when": "group=affiliations & seats=one"
+    },
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "group=affiliations & seats=one => affiliation_member_action@subject_group ; none"
+  },
+  "takedown_notice:{basis}": {
+   "arms": [
+    {
+     "doors": "cosigned_act@trust_root",
+     "when": "leaf=steward_purge"
+    },
+    {
+     "doors": "affiliation_member_action@subject_group",
+     "when": "group=affiliations & seats=one"
+    },
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "leaf=steward_purge => cosigned_act@trust_root ; group=affiliations & seats=one => affiliation_member_action@subject_group ; none"
+  },
+  "transport:canonical_rebind": {
+   "arms": [
+    {
+     "doors": "accord_majority@accord",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "accord_majority@accord"
+  }
+ }
+}

@@ -143,6 +143,80 @@ pub fn match_family(dimension: &str) -> Match {
     rules().match_family(dimension)
 }
 
+/// The registry prefix of a family id (the inverse of [`family_id`]), if the
+/// registry registers it.
+#[must_use]
+pub fn prefix_of_family_id(id: &str) -> Option<&'static str> {
+    rules()
+        .families
+        .iter()
+        .find(|f| family_id(&f.prefix) == id)
+        .map(|f| f.prefix.as_str())
+}
+
+/// A dimension's leaf, bound under a family named by a selector cell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundLeaf {
+    /// The values bound to the family's non-literal segments, in segment
+    /// order, joined by `:`, the version segment left out.
+    pub leaf: String,
+    /// The family the matcher itself resolves the dimension to (it may be a
+    /// more specific one than the family the leaf is bound under).
+    pub matcher_family: Option<&'static str>,
+}
+
+/// Why a dimension binds no leaf under a family.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum LeafError {
+    /// The matcher refuses the dimension (the manifest's refusal token).
+    Refused(&'static str),
+    /// The family prefix is not registered.
+    UnregisteredFamily,
+    /// The dimension does not instantiate the family.
+    NotAnInstance,
+}
+
+/// Bind the leaf of `dimension` under the family whose registry prefix is
+/// `family_prefix`: the port of `cc_family_select.Registry.bind_leaf`.
+///
+/// The dimension must pass the matcher (whatever family it resolves to), and
+/// its segments must instantiate `family_prefix`, a trailing version segment
+/// stripped unless the family ends in `{version}`. Under `accord:*` the
+/// dimension `accord:lifecycle:confirmed:v1` has the leaf `lifecycle:confirmed`.
+///
+/// # Errors
+/// [`LeafError`].
+pub fn bind_leaf(family_prefix: &str, dimension: &str) -> Result<BoundLeaf, LeafError> {
+    let r = rules();
+    let m = r.match_family(dimension);
+    if let Some(token) = m.refusal {
+        return Err(LeafError::Refused(token));
+    }
+    let fam = r
+        .by_prefix
+        .get(family_prefix)
+        .map(|&i| &r.families[i])
+        .ok_or(LeafError::UnregisteredFamily)?;
+    let mut parts: Vec<&str> = dimension.split(':').collect();
+    let ends_version = fam.last().segment == "{version}";
+    if !ends_version && parts.len() > 1 && r.version.is_match(parts[parts.len() - 1]) {
+        parts.pop();
+    }
+    match r.match_segments_ordered(&fam.segments, &parts) {
+        Some((binds, None)) => Ok(BoundLeaf {
+            leaf: binds
+                .iter()
+                .filter(|(k, _)| k != "version")
+                .map(|(_, v)| v.as_str())
+                .collect::<Vec<_>>()
+                .join(":"),
+            matcher_family: m.family,
+        }),
+        _ => Err(LeafError::NotAnInstance),
+    }
+}
+
 // ---- the grammar, read from the manifest --------------------------------------
 
 #[derive(Deserialize)]
@@ -472,6 +546,18 @@ impl Rules {
         segs: &[Segment],
         parts: &[&str],
     ) -> Option<(BTreeMap<String, String>, Option<&'static str>)> {
+        self.match_segments_ordered(segs, parts)
+            .map(|(binds, refusal)| (binds.into_iter().collect(), refusal))
+    }
+
+    /// [`Rules::match_segments`] with the binds in the order the reference's
+    /// dict holds them: segment order, a repeated name keeping its first place,
+    /// the wildcard tail `*` last.
+    fn match_segments_ordered(
+        &'static self,
+        segs: &[Segment],
+        parts: &[&str],
+    ) -> Option<(OrderedBinds, Option<&'static str>)> {
         let last_seg = segs.last()?;
         let wildcard = last_seg.class == Class::Wildcard;
         let fixed = if wildcard {
@@ -493,7 +579,7 @@ impl Rules {
         } else {
             0
         };
-        let mut binds = BTreeMap::new();
+        let mut binds: OrderedBinds = Vec::new();
         let mut refusal: Option<&'static str> = None;
         let mut pi = 0usize;
         for (i, seg) in fixed.iter().enumerate() {
@@ -505,7 +591,7 @@ impl Rules {
                     // version-shape test applies inside the span
                     refusal = refusal.or_else(|| self.check_seg(seg, got));
                 }
-                binds.insert(seg.name.clone(), span.join(":"));
+                put(&mut binds, &seg.name, span.join(":"));
                 continue;
             }
             let got = parts[pi];
@@ -517,7 +603,7 @@ impl Rules {
                 continue;
             }
             refusal = refusal.or_else(|| self.check_seg(seg, got));
-            binds.insert(seg.name.clone(), got.to_owned());
+            put(&mut binds, &seg.name, got.to_owned());
         }
         let tail = &parts[pi..];
         for (k, got) in tail.iter().enumerate() {
@@ -533,7 +619,7 @@ impl Rules {
             }
         }
         if !tail.is_empty() {
-            binds.insert("*".to_owned(), tail.join(":"));
+            put(&mut binds, "*", tail.join(":"));
         }
         Some((binds, refusal))
     }
@@ -735,6 +821,17 @@ impl Rules {
             binds,
             refusal: None,
         }
+    }
+}
+
+/// Placeholder binds in the order the reference's dict holds them.
+type OrderedBinds = Vec<(String, String)>;
+
+/// A Python dict assignment: a new key goes last, a repeated one keeps its place.
+fn put(binds: &mut OrderedBinds, key: &str, value: String) {
+    match binds.iter_mut().find(|(k, _)| k == key) {
+        Some(slot) => slot.1 = value,
+        None => binds.push((key.to_owned(), value)),
     }
 }
 
