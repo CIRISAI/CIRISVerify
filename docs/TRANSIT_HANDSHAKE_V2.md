@@ -113,7 +113,7 @@ Here `bound = u8 len ‖ suite ‖ u16 len ‖ initiator_key_id ‖ u16 len ‖ 
 - **The binding must match msg1's commitment.** The responder promotes only when the binding it now holds has a transit pair whose hash equals msg1's `H(pk(S_i))`. A binding naming any other static is refused for promotion. The link stays at first contact.
 - **The rekey:** both ends compute `h3' = H(h3 ‖ "promote" ‖ ct3')` and `prk' = HKDF-Extract(salt = h3', ikm = k_i2r ‖ k_r2i ‖ ss3')`. From `prk'` they derive new `k_i2r'`, `k_r2i'` and `k_conf'` under the same labels as `msg2`, each followed by `bound` (`label ‖ bound`).
 - **The confirmation:** the initiator answers with `"CTKC" ‖ MAC(k_conf', "initiator" ‖ h3')` under the new `k_i2r'`. The responder sends no further confirmation: it is already authenticated on this sealed link, and `msg3` travels under its keys. The responder holds the initiator mutually attributed once `CTKC'` verifies. Anything else as the initiator's first frame under the new phase closes the link.
-- **Key phases (edge's proposal):** lanes are not ordered relative to one another, so a frame under the old key may arrive after the switch.
+- **Key phases (edge's proposal; the exact frame is under "Framing, sizes, limits" below):** lanes are not ordered relative to one another, so a frame under the old key may arrive after the switch.
   - **Counters continue** across the rekey, so each lane's 128-frame replay window carries over. They do not restart.
   - **Seal frames gain a key-phase byte:** seal frame version 0x02, with the phase also in the AAD.
   - **The receiver keeps the previous phase's open keys** until it has seen the new phase on that lane, or for one handshake budget, whichever comes first. Then it zeroizes them.
@@ -142,7 +142,36 @@ Here `bound = u8 len ‖ suite ‖ u16 len ‖ initiator_key_id ‖ u16 len ‖ 
   - no store read happens until `id_ct` opens;
   - binding lookups that miss are cached briefly;
   - first-contact sealed links, which now stay open per (b), have a count cap and an idle timeout.
-- **The per-frame seal is unchanged** (`link_seal.rs`): `k = HKDF(ikm = k_dir, salt = link_id, info = "CIRIS-E1-LINK-SEAL-V1")`, with lanes and a replay window as today.
+- **The per-frame seal is seal frame version 0x02, with key phases.** This supersedes v1's frame `0x01 ‖ counter ‖ …`, which is refused after the cut. The layout is edge's `link_seal.rs` with the phase byte added. Edge implements it and must confirm these bytes.
+
+  ```
+  frame = 0x02 ‖ phase u8 ‖ counter u64_be ‖ AES-256-GCM(k, nonce, aad, pt) ‖ tag[16]
+  k     = HKDF-SHA256(ikm = k_dir(phase), salt = link_id[16], info = "CIRIS-E1-LINK-SEAL-V2")
+  nonce = lane u8 ‖ 0x000000 ‖ counter u64_be          (12 bytes)
+  aad   = 0x02 ‖ lane u8 ‖ phase u8 ‖ link_id[16]
+  ```
+
+  - **`k_dir(phase)`** is `k_i2r` or `k_r2i` for the frame's direction.
+  - **Phases:** phase 0 holds the keys from `msg2`. Phase 1 holds `k_i2r'` / `k_r2i'` from a promotion. A link is promoted at most once, so `phase` is 0 or 1, and any other value fails to open.
+  - **Lanes and counters:** lanes are Channel 1, Resource 2, Request 3, Response 4 and Datagram 5. Each lane has its own counter, and the counter **continues** across the phase change, so the 128-frame replay window carries over. A (key, nonce) pair never repeats: the phase changes the key, and within a phase the lane and counter make each nonce unique.
+  - **The receiver** opens a frame with the keys of the phase it names. After a promotion it keeps phase 0's open keys until it has seen phase 1 on that lane, or for one handshake budget, whichever is first, then zeroizes them.
+  - **The receiver classifies a frame by its clear phase byte before opening it** (edge's rule; confirmed against `link_seal.rs` v45.1.3):
+    - **A stale phase-0 frame** that arrives after phase 0's keys on that lane are retired (past the budget, or once phase 1 has been seen on the lane) is **dropped and counted** (`seal_stale_phase`). The link stays open: such a frame is late, not forged, and closing on it would reintroduce the reordering problem the phases solve.
+    - **An unknown phase** (2 or more), **or a phase-1 frame before the link is promoted**, is a protocol violation and **closes the link**.
+    - **A frame of a known, held phase that fails to open** (an AEAD failure) **closes the link**, as in v1.
+    - A frame whose counter falls outside the lane's replay window, or repeats inside it, is handled as in v1.
+  - **A sender** switches to phase 1 for every lane once it has sent or received `CTKC'`.
+  - **The label** is `CIRIS-E1-LINK-SEAL-V2`, not v1's: the frame format changed, so the derived key changes with it.
+  - **Confirmed by edge** against `link_seal.rs` (v45.1.3): v1 is the same frame without the phase byte, with label `CIRIS-E1-LINK-SEAL-V1`. The `-V2` label stays.
+  - **Known answers:** verify's vectors fix the handshake and the promotion rekey (`k_i2r'`, `k_r2i'`). The seal-frame vectors are in `src/ciris-crypto/tests/vectors/transit/transit_seal_frame_v2_v1.json`, keyed from that promotion, as 25 scripted receiver sequences. `tests/transit_seal_frame_vectors.rs` replays them through `ciris_crypto::transit::{seal_frame, FrameOpener}`, frame bytes and outcomes. They cover:
+    - phase-0 frames in each direction on two or more lanes, and a phase-1 frame in each direction after promotion, with the counter continuing;
+    - a stale phase-0 frame after phase 1 is seen on the lane, or after the budget retires phase 0: dropped and counted, the link stays open;
+    - the same frame before phase 1 is seen on the lane: it opens;
+    - an unknown phase (2, 255): closes;
+    - phase 1 before promotion: closes;
+    - a tampered ciphertext, tag or counter, a phase byte flipped either way, or a frame on the wrong lane: AEAD failure, closes;
+    - a v0x01 frame (refused by name), version 0x03, a truncated and an empty frame: closes;
+    - a repeated counter, a counter 128 behind, and a phase-1 frame reusing a phase-0 counter: opened, then dropped by the replay window, the link stays open (v1's rule in edge's `link_seal.rs`).
 
 ## Downgrade
 
