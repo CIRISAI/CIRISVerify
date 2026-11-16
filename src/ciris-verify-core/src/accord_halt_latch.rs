@@ -131,6 +131,12 @@ pub enum LatchOutcome {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct HaltLatch {
     halt: Option<LatchedHalt>,
+    /// The halts (by row id) an edition-2 `lifecycle:active` this node has
+    /// applied names, whether or not that halt was in force: a halt past its
+    /// `valid_until` that one of them names does not fire (CC 4.2.1.1). Never
+    /// written by the earlier form.
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    held_resumptions: BTreeSet<Digest32>,
 }
 
 impl HaltLatch {
@@ -196,6 +202,13 @@ impl HaltLatch {
     /// nothing. The state machine is [`HaltLatch::apply`]'s. `halt_fuse_secs`
     /// is the bundle in force's ([`HaltRoster::halt_fuse_secs`]).
     ///
+    /// One check comes before it, and only here: the latch keeps the row id
+    /// each applied `lifecycle:active` names (held or not against a halt in
+    /// force), and a halt received after its `valid_until` that one of them
+    /// names does not fire (CC 4.2.1.1). A halt received within its
+    /// `valid_until` fires as before; a held resumption ends it only when it is
+    /// applied again.
+    ///
     /// [`HaltRoster::halt_fuse_secs`]: crate::edition2::accord_halt::HaltRoster::halt_fuse_secs
     pub fn apply_forward(
         &mut self,
@@ -205,6 +218,18 @@ impl HaltLatch {
     ) -> LatchOutcome {
         let step = match row {
             ForwardRow::Invocation(inv) => match inv.kind() {
+                // A halt that arrives after its valid_until still fires, unless
+                // the node already holds a resumption that names it. Within its
+                // valid_until it fires whatever is held (CC 4.2.1.1).
+                InvokeKind::Constitutional
+                    if received_after(now, inv.valid_until())
+                        && self.held_resumptions.contains(inv.row_id()) =>
+                {
+                    return LatchOutcome::Unchanged {
+                        why:
+                            "a halt past its valid_until that a held resumption names does not fire",
+                    };
+                },
                 InvokeKind::Constitutional => Step::Halt {
                     halt_id: inv.invocation_id(),
                     halt_row: Some(*inv.row_id()),
@@ -213,7 +238,10 @@ impl HaltLatch {
             },
             ForwardRow::Lifecycle(l) => match l.kind() {
                 LifecycleKind::Confirmed => Step::Confirm(Named::Row(*l.target())),
-                LifecycleKind::Active => Step::Resume(Named::Row(*l.target())),
+                LifecycleKind::Active => {
+                    self.held_resumptions.insert(*l.target());
+                    Step::Resume(Named::Row(*l.target()))
+                },
             },
         };
         self.step(step, now, halt_fuse_secs)
@@ -319,6 +347,11 @@ impl Named<'_> {
             _ => false,
         }
     }
+}
+
+/// Was `now` after `valid_until_ms` (POSIX ms)?
+fn received_after(now: DateTime<Utc>, valid_until_ms: u64) -> bool {
+    u64::try_from(now.timestamp_millis()).is_ok_and(|n| n > valid_until_ms)
 }
 
 fn lapses_at(h: &LatchedHalt, halt_fuse_secs: u64) -> DateTime<Utc> {

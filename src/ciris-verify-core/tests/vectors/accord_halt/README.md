@@ -37,8 +37,11 @@ them from a `GenesisPlacement`.
 
 ## The rows as implemented
 
-Every accord row is a `scores` row, one statement per voice, `sub` = the
-accord's `family_key_id` here (see [Open](#what-the-text-leaves-open)).
+Every accord row is a `scores` row, one statement per voice. Its CWT `sub` is
+the accord's `family_key_id`, equal to `accord_root` (`member:sub` otherwise),
+and its `valid_until` is after its `asserted_at`
+(`valid_until_not_after_asserted_at` otherwise). These follow CC's rulings on
+the points rc20 64c5918 left open.
 
 **Invocation** (one holder's statement). The kind is the family (header -70002):
 
@@ -91,46 +94,68 @@ only.
   repeated voice (`count_unmet:1:2`), two rows of one voice each, an outsider's
   voice, another halt (`other_halt`), the drill as target (`target_not_a_halt`),
   no target (`member:target`), another bundle (`other_bundle`), an author
-  (`family:author_column`), an unversioned dimension, and the halt's own
+  (`family:author_column`), an unversioned dimension, a `sub` that is not the
+  accord's (`member:sub`), `valid_until` before `asserted_at`, and the halt's own
   statement presented as a lifecycle row (`wrong_family`).
 - `invocation_refusals`: an outsider's halt (`not_a_holder`), a holder's key
   under another holder's `iss` (`iss_not_holder`), `author` not the `iss`, a
   member tampered after signing (`statement_invalid:bad_signature`), a carried
   `invocation_kind` (`member:closed_map`), `payload_digest` on a halt and none
   on a notify, a 31-byte nonce, another accord root, the parent family
-  `accord:.`, a `delegates_to` row type, and a lifecycle statement presented as
+  `accord:.`, a `delegates_to` row type, a `sub` that is not the accord's,
+  `valid_until` equal to `asserted_at`, and a lifecycle statement presented as
   an invocation (`wrong_family`).
 - `latch`: sequences of `apply` (a case, the receipt instant in ms, the outcome:
   `paused`, `confirmed`, `resumed`, `unchanged`) and `check` (an instant, paused
   or not), the fuse the roster's `halt_fuse_secs` counted from receipt: halt →
   fuse lapses; halt → confirmed → no lapse; halt → active → cleared; confirmed
   then active; a late confirmation; notify and drill never latch; a second halt
-  does not reset the fuse.
+  does not reset the fuse; and the held-resumption sequences below.
 
 A drill verifies as a halt does (one holder, CC 4.2.1.1: "a drill rehearses the
 fire path") and never touches the latch; a lifecycle row naming it is refused,
 since the lifecycle guard requires a `constitutional` halt as its target (CC
 8, `accord:lifecycle:{kind}` guard).
 
-## What the text leaves open
+## CC's rulings, and what stays open
 
-- **`sub`.** No member table fixes the CWT `sub` of an accord row; CC 2.6.1.1
-  says only "what the row is about". The row id reads it. The reader does not
-  constrain it; these vectors use the accord's `family_key_id`.
-- **Row type.** The text does not say `scores` in so many words; the families
-  are attestations (`+1.0 only`, transition `attest`), and none of the four
-  structural composers fits. The reader requires `scores`.
-- **`valid_until` against `asserted_at`.** No order is stated; none is checked.
-- **The resumption held before its halt.** "A halt that arrives after its
-  `valid_until` still fires, unless the node already holds a resumption that
-  names it" (CC 4.2.1.1). The latch keeps no resumption without a halt in
-  force, so this stays the caller's (the store holds rows).
-- **Dedup.** Per-kind dedup of `invocation_id` and single use of `nonce` within
-  `valid_until` stay the caller's.
+CC ruled on the points rc20 64c5918 left open:
+
+- **`sub`** is the accord's `family_key_id` (= `accord_root`), on invocation and
+  lifecycle rows alike: `halt_sub_not_accord`, `lifecycle_sub_not_accord`
+  (`member:sub`).
+- **The row type** is `scores`.
+- **A drill** rehearses the fire path only: a lifecycle row naming it is
+  `target_not_a_halt`.
+- **`valid_until <= asserted_at`** makes the row Invalid:
+  `halt_valid_until_equals_asserted_at`,
+  `lifecycle_valid_until_before_asserted_at`
+  (`valid_until_not_after_asserted_at`).
+- **A resumption held before its halt** is the latch's. The latch keeps the
+  row id each applied `lifecycle:active` names (whether or not that halt was
+  in force), and a halt received after its `valid_until` that one of them names
+  does not fire (CC 4.2.1.1). A halt received within its `valid_until` (or at
+  exactly it, which is not after it) fires: the text's exception is only for a
+  halt past its `valid_until`. The held resumption, applied again, ends it.
+  Sequences: `resumption_held_then_late_halt` (does not fire),
+  `resumption_held_then_halt_at_valid_until` and
+  `resumption_held_then_halt_within_valid_until` (fire),
+  `late_halt_without_resumption_fires`, `other_resumption_held_then_late_halt`.
+- **The roster** is the reader's: the bundle in force is the one the row names,
+  by `accord_root` for an invocation and `refs.head` for a lifecycle row
+  (`named_accord_root`, `named_head`, `HaltRoster::find_by_head`,
+  `HaltRoster::from_placements_by_head`); a row read under another is
+  `other_accord` / `other_bundle`.
+- **Dedup** of `invocation_id` (per kind) and the single use of `nonce` within
+  `valid_until` are the store's duty, and nothing here checks them: a replayed
+  row verifies again.
+
+Still as the text stands:
+
 - **The first drill's rehearsal.** CEREMONY.md step 11 has "confirmation and
   resumption rehearsed at a strict majority" after the first drill, while the
   lifecycle guard admits only a `constitutional` halt as target: a drill cannot
-  be confirmed or resumed by a lifecycle row as the text stands.
+  be confirmed or resumed by a lifecycle row.
 - CC's own schema sample (`tools/build_cc_signed_object_v2.py`) writes
   `dimension: "accord:lifecycle:active"` without the version tail, which the
   namespace matcher refuses (`missing_version_segment`); the sample is a CDDL

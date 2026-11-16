@@ -97,7 +97,7 @@ ACCORD_ROOT = "humanity-accord"
 # The bundle in force's object id, stated (not minted here: the reader takes it with the holders).
 BUNDLE = hashlib.sha256(b"accord_halt_v1: the bundle in force").digest()
 HALT_FUSE_SECS = 3600   # the charter's halt_fuse_secs (absent would mean 86400)
-SUB = ACCORD_ROOT        # the CWT sub of every accord row here: the text fixes none (see README)
+SUB = ACCORD_ROOT        # the CWT sub of every accord row: the accord's family_key_id (CC ruling)
 T0 = 1763300000000       # 2025-11-16T13:33:20Z
 DAY = 86400000
 
@@ -141,16 +141,16 @@ def add_invocation(cid, desc, name, k, fam, kind, p):
     return rid
 
 
-def add_lifecycle(cid, desc, kind, signers, p, halt, expect="valid", voices=None, extra_statements=()):
+def add_lifecycle(cid, desc, kind, signers, p, halt, expect="valid", voices=None, extra_statements=(), sub=SUB):
     sts = []
     rid = None
     for name, k in signers:
-        st, pb, plb = statement(k, SUB, "scores", FAM_LIFE, p)
-        rid = row_id("scores", FAM_LIFE, SUB, None, plb)
+        st, pb, plb = statement(k, sub, "scores", FAM_LIFE, p)
+        rid = row_id("scores", FAM_LIFE, sub, None, plb)
         sts.append(stmt_record(name, k, st, pb, plb))
     for rec in extra_statements:
         sts.append(rec)
-    case = {"id": cid, "description": desc, "kind": kind, "row_type": "scores", "family": FAM_LIFE, "sub": SUB,
+    case = {"id": cid, "description": desc, "kind": kind, "row_type": "scores", "family": FAM_LIFE, "sub": sub,
             "members": show(p), "payload_hex": enc(p).hex(), "row_id_hex": rid.hex(), "halt": halt,
             "statements": sts, "expect": expect}
     if voices is not None:
@@ -182,8 +182,8 @@ add_lifecycle("active_b1_c1", "lifecycle:active by B1 and C1 naming the halt: 2 
               [("B1", B1), ("C1", C1)], P_ACT, "halt_constitutional_a1", voices=[B1.iss, C1.iss])
 
 
-def lrefuse(cid, desc, kind, signers, p, halt, expect, extra_statements=()):
-    add_lifecycle(cid, desc, kind, signers, p, halt, expect=expect, extra_statements=extra_statements)
+def lrefuse(cid, desc, kind, signers, p, halt, expect, extra_statements=(), sub=SUB):
+    add_lifecycle(cid, desc, kind, signers, p, halt, expect=expect, extra_statements=extra_statements, sub=sub)
 
 
 lrefuse("confirmed_lone_a1", "A lone confirmed voice: 1 of 3 is no strict majority.", "confirmed",
@@ -221,6 +221,13 @@ lrefuse("lifecycle_dimension_unversioned", "dimension accord:lifecycle:confirmed
         "halt_constitutional_a1", "statement_invalid:dimension_refused:missing_version_segment")
 lrefuse("lifecycle_outsider_voice", "A1 and the outsider: the outsider's statement is no holder's, so 1 of 3.",
         "confirmed", [("A1", A1), ("OUTSIDER", OUTSIDER)], P_CONF, "halt_constitutional_a1", "count_unmet:1:2")
+lrefuse("lifecycle_sub_not_accord", "A lifecycle row whose CWT sub is not the accord's family_key_id.",
+        "confirmed", [("A1", A1), ("B1", B1)], lifecycle("confirmed", "confirm-7", 0x5d, T0 + 600000, H),
+        "halt_constitutional_a1", "member:sub", sub="the-halted-agents")
+lrefuse("lifecycle_valid_until_before_asserted_at", "A lifecycle row whose valid_until precedes its asserted_at.",
+        "confirmed", [("A1", A1), ("B1", B1)],
+        lifecycle("confirmed", "confirm-8", 0x5e, T0 + 600000, H, valid_until=T0 + 599000),
+        "halt_constitutional_a1", "valid_until_not_after_asserted_at")
 # Cross-family replay: a halt statement's bytes presented as a lifecycle row.
 _h_rec = invocations[0]["statement"]
 lifecycles.append({"id": "replay_halt_as_lifecycle", "description": "The constitutional halt's statement bytes "
@@ -231,11 +238,11 @@ lifecycles.append({"id": "replay_halt_as_lifecycle", "description": "The constit
 # ---- Invocation refusals ----
 
 
-def irefuse(cid, desc, name, k, fam, p, expect, iss=None, tamper=None, rtype="scores"):
-    st, pb, plb = statement(k, SUB, rtype, fam, p, iss=iss, tamper=tamper)
+def irefuse(cid, desc, name, k, fam, p, expect, iss=None, tamper=None, rtype="scores", sub=SUB):
+    st, pb, plb = statement(k, sub, rtype, fam, p, iss=iss, tamper=tamper)
     # members: as signed; row_id_hex: of the row as presented (for tampered_member, the altered payload).
-    refusals.append({"id": cid, "description": desc, "family": fam, "row_type": rtype, "sub": SUB,
-                     "members": show(p), "row_id_hex": row_id(rtype, fam, SUB, p.get("author"), plb).hex(),
+    refusals.append({"id": cid, "description": desc, "family": fam, "row_type": rtype, "sub": sub,
+                     "members": show(p), "row_id_hex": row_id(rtype, fam, sub, p.get("author"), plb).hex(),
                      "statement": stmt_record(name, k, st, pb, plb), "expect": expect})
 
 
@@ -263,6 +270,11 @@ irefuse("halt_under_parent_family", "A halt under the parent family accord:* (ac
         invocation(A1, "halt-p", 0x79, T0), "family:authorship_undetermined")
 irefuse("halt_as_delegates_to", "A halt under row type delegates_to.", "A1", A1, FAM_CONST,
         invocation(A1, "halt-t", 0x7a, T0), "wrong_row_type", rtype="delegates_to")
+irefuse("halt_sub_not_accord", "A halt whose CWT sub is not the accord's family_key_id.", "A1", A1, FAM_CONST,
+        invocation(A1, "halt-s", 0x7b, T0), "member:sub", sub="the-halted-agents")
+irefuse("halt_valid_until_equals_asserted_at", "A halt whose valid_until equals its asserted_at: not after it.",
+        "A1", A1, FAM_CONST, dict(invocation(A1, "halt-v", 0x7c, T0), valid_until=T0),
+        "valid_until_not_after_asserted_at")
 # The reverse replay: a lifecycle statement presented as an invocation.
 _lc = lifecycles[0]["statements"][0]
 refusals.append({"id": "replay_lifecycle_as_invocation", "description": "A1's confirmed statement presented as "
@@ -310,6 +322,36 @@ latch = [
         {"apply": "halt_constitutional_a1", "at_ms": R0, "outcome": "paused"},
         {"apply": "halt_constitutional_b1", "at_ms": R0 + F // 2, "outcome": "unchanged"},
         {"check": R0 + F, "paused": False}]},
+    # CC 4.2.1.1: "A halt that arrives after its valid_until still fires, unless the node already holds a
+    # resumption that names it." halt_constitutional_a1: asserted_at T0, valid_until T0 + DAY.
+    {"id": "resumption_held_then_late_halt", "description": "lifecycle:active naming the halt is held first (no "
+     "halt in force: unchanged); the halt then arrives after its valid_until and does not fire.", "steps": [
+        {"apply": "active_b1_c1", "at_ms": T0 + 500, "outcome": "unchanged"},
+        {"apply": "halt_constitutional_a1", "at_ms": T0 + DAY + 1, "outcome": "unchanged"},
+        {"check": T0 + DAY + 1, "paused": False}]},
+    {"id": "resumption_held_then_halt_at_valid_until", "description": "The same, the halt arriving at exactly its "
+     "valid_until: not after it, so it fires.", "steps": [
+        {"apply": "active_b1_c1", "at_ms": T0 + 500, "outcome": "unchanged"},
+        {"apply": "halt_constitutional_a1", "at_ms": T0 + DAY, "outcome": "paused"},
+        {"check": T0 + DAY, "paused": True}]},
+    {"id": "resumption_held_then_halt_within_valid_until", "description": "The same resumption held, the halt "
+     "arriving within its valid_until: the text's exception is only for a halt past its valid_until, so it fires; "
+     "the held resumption, applied again, then ends it.", "steps": [
+        {"apply": "active_b1_c1", "at_ms": T0 + 500, "outcome": "unchanged"},
+        {"apply": "halt_constitutional_a1", "at_ms": T0 + 1000, "outcome": "paused"},
+        {"check": T0 + 1000, "paused": True},
+        {"apply": "active_b1_c1", "at_ms": T0 + 2000, "outcome": "resumed"},
+        {"check": T0 + 2000, "paused": False}]},
+    {"id": "late_halt_without_resumption_fires", "description": "A halt after its valid_until with no resumption "
+     "held fires: valid_until bounds the nonce, never the reach of a halt.", "steps": [
+        {"apply": "halt_constitutional_a1", "at_ms": T0 + DAY + 1, "outcome": "paused"},
+        {"check": T0 + DAY + 1, "paused": True}]},
+    {"id": "other_resumption_held_then_late_halt", "description": "A resumption naming another halt is held; a late "
+     "halt it does not name fires.", "steps": [
+        {"apply": "halt_constitutional_a1", "at_ms": T0 + 100, "outcome": "paused"},
+        {"apply": "active_b1_c1", "at_ms": T0 + 200, "outcome": "resumed"},
+        {"apply": "halt_constitutional_b1", "at_ms": T0 + 3000 + DAY + 1, "outcome": "paused"},
+        {"check": T0 + 3000 + DAY + 1, "paused": True}]},
 ]
 
 assert len({c["id"] for c in invocations + lifecycles + refusals}) == len(invocations + lifecycles + refusals)

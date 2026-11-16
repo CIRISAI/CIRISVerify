@@ -25,9 +25,15 @@
 //! is the earlier form's: one holder halts, a lone halt lapses `halt_fuse_secs`
 //! after receipt unless confirmed, and a majority resumes.
 //!
-//! What stays the caller's: the clock, choosing the roster of the bundle a
-//! row names (`accord_root`, and `refs.head` for a lifecycle row), and the
-//! per-kind dedup of `invocation_id` and `nonce` within `valid_until`.
+//! Every accord row's CWT `sub` is the accord's `family_key_id` (=
+//! `accord_root`), and its `valid_until` is after its `asserted_at`.
+//!
+//! The bundle in force is the one the row names: `accord_root` for an
+//! invocation ([`named_accord_root`]) and `refs.head` for a lifecycle row
+//! ([`named_head`], [`HaltRoster::find_by_head`]); the reader refuses a row read
+//! under another (`other_accord`, `other_bundle`). The clock is the caller's,
+//! and the per-kind dedup of `invocation_id` and `nonce` within `valid_until`
+//! is the store's.
 //!
 //! Pure: no clock, no randomness, no I/O.
 
@@ -225,6 +231,30 @@ impl HaltRoster {
         self.holders.len() / 2 + 1
     }
 
+    /// The roster of the bundle a lifecycle row names in `refs.head` (see
+    /// [`named_head`]): the bundle in force is the one named there.
+    #[must_use]
+    pub fn find_by_head<'a>(
+        rosters: impl IntoIterator<Item = &'a HaltRoster>,
+        head: &Digest32,
+    ) -> Option<&'a HaltRoster> {
+        rosters.into_iter().find(|r| r.bundle == *head)
+    }
+
+    /// The roster of the placement whose object id is `head`, from a set of
+    /// valid bundles' placements.
+    #[cfg(feature = "std")]
+    #[must_use]
+    pub fn from_placements_by_head(
+        placements: &[super::genesis::GenesisPlacement],
+        head: &Digest32,
+    ) -> Option<Self> {
+        placements
+            .iter()
+            .find(|p| p.object_id == *head)
+            .map(Self::from_placement)
+    }
+
     fn holder_of_kid(&self, kid: &Digest32) -> Option<&str> {
         self.holders
             .iter()
@@ -281,6 +311,8 @@ pub enum HaltRefusal {
     OtherRow,
     /// No statement was presented.
     NoStatements,
+    /// `valid_until` is not after `asserted_at`: the row is Invalid.
+    ValidUntilNotAfterAssertedAt,
     /// Fewer distinct holders than a strict majority of the roster.
     CountUnmet {
         /// Distinct holders whose statements count.
@@ -318,6 +350,7 @@ impl HaltRefusal {
             Self::TargetNotAHalt => "target_not_a_halt".into(),
             Self::OtherRow => "other_row".into(),
             Self::NoStatements => "no_statements".into(),
+            Self::ValidUntilNotAfterAssertedAt => "valid_until_not_after_asserted_at".into(),
             Self::CountUnmet { .. } => "count_unmet".into(),
         }
     }
@@ -564,6 +597,53 @@ fn read_statement(bytes: &[u8], roster: &HaltRoster) -> Result<VerifiedRow, Halt
     Ok(row)
 }
 
+/// The rules every accord row shares past its members (CC rulings on
+/// rc20 64c5918): `sub` is the accord's `family_key_id` (= `accord_root`),
+/// and `valid_until` is after `asserted_at`. Returns `valid_until`.
+fn sub_and_window(row: &VerifiedRow, roster: &HaltRoster) -> Result<u64, HaltRefusal> {
+    if row.sub != roster.accord_root {
+        return Err(member("sub"));
+    }
+    let valid_until = uint(&row.payload, "valid_until")?;
+    if valid_until <= row.asserted_at {
+        return Err(HaltRefusal::ValidUntilNotAfterAssertedAt);
+    }
+    Ok(valid_until)
+}
+
+/// The decoded payload of a statement, unverified: only for choosing which
+/// roster to verify it under ([`named_head`], [`named_accord_root`]).
+fn unverified_payload(statement: &[u8]) -> Option<Value> {
+    let Value::Tag(18, inner) = crate::cde::decode(statement).ok()? else {
+        return None;
+    };
+    let payload = inner.as_array()?.get(2)?.as_bytes()?;
+    crate::cde::decode(payload).ok()
+}
+
+/// The bundle a lifecycle statement names in `refs.head`, read without
+/// verifying it: the key for choosing the roster ([`HaltRoster::find_by_head`]).
+/// The reader then verifies the statement under that roster, which checks the
+/// head again ([`HaltRefusal::OtherBundle`]).
+#[must_use]
+pub fn named_head(statement: &[u8]) -> Option<Digest32> {
+    unverified_payload(statement)?
+        .get_text("refs")?
+        .get_text("head")
+        .and_then(row_ref)
+}
+
+/// The `accord_root` a statement names, read without verifying it: the key
+/// for choosing the accord whose bundle in force verifies an invocation. The
+/// reader checks it again ([`HaltRefusal::OtherAccord`]).
+#[must_use]
+pub fn named_accord_root(statement: &[u8]) -> Option<String> {
+    unverified_payload(statement)?
+        .get_text("accord_root")?
+        .as_text()
+        .map(str::to_owned)
+}
+
 // ------------------------------------------------------------------ readers
 
 /// Verify one invocation statement (`constitutional`, `notify` or `drill`)
@@ -594,7 +674,7 @@ pub fn verify_invocation_row(
     }
     let invocation_id = text(p, "invocation_id")?.to_owned();
     let nonce = nonce(p)?;
-    let valid_until = uint(p, "valid_until")?;
+    let valid_until = sub_and_window(&row, roster)?;
     let payload_digest = match (kind, p.get_text("payload_digest")) {
         (InvokeKind::Notify, Some(d)) => Some(hash_digest(d).ok_or(member("payload_digest"))?),
         (InvokeKind::Notify, None) | (_, Some(_)) => return Err(member("payload_digest")),
@@ -645,7 +725,7 @@ fn read_lifecycle_statement(
     }
     text(p, "invocation_id")?;
     let nonce = nonce(p)?;
-    let valid_until = uint(p, "valid_until")?;
+    let valid_until = sub_and_window(&row, roster)?;
     let refs = p.get_text("refs").ok_or(member("refs"))?;
     closed(refs, &["head", "target"])?;
     let head = refs

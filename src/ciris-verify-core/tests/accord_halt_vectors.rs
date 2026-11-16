@@ -18,8 +18,8 @@ use ciris_crypto::composite::CompositeSigningKey;
 use ciris_verify_core::accord_halt_latch::{ForwardRow, HaltLatch, LatchOutcome};
 use ciris_verify_core::cde;
 use ciris_verify_core::edition2::accord_halt::{
-    verify_invocation_row, verify_lifecycle_row, HaltRoster, InvocationRow, InvokeKind,
-    LifecycleKind, LifecycleRow, RosterHolder,
+    named_accord_root, named_head, verify_invocation_row, verify_lifecycle_row, HaltRoster,
+    InvocationRow, InvokeKind, LifecycleKind, LifecycleRow, RosterHolder,
 };
 use ciris_verify_core::edition2::{identity_ref, sign_row_statement, thumbprint};
 use serde_json::Value as J;
@@ -300,4 +300,55 @@ fn fuse_default_is_86400() {
     let r = roster(&f);
     let bare = HaltRoster::new(r.accord_root(), *r.bundle(), Vec::new(), None);
     assert_eq!(bare.halt_fuse_secs(), 86_400);
+}
+
+/// The bundle in force is the one a lifecycle row names in `refs.head`: the
+/// reader picks the roster by it, and a row read under another roster is
+/// `other_bundle`; an invocation names its accord by `accord_root`.
+#[test]
+fn the_roster_is_the_one_the_row_names() {
+    let f: J = serde_json::from_str(FILE).unwrap();
+    let real = roster(&f);
+    let holders = |r: &J| -> Vec<RosterHolder> {
+        r["holders"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|h| {
+                let k = key(seed(h));
+                RosterHolder {
+                    identity_ref: identity_ref(&thumbprint(k.public_key())),
+                    key: k.public_key().clone(),
+                }
+            })
+            .collect()
+    };
+    let decoy = HaltRoster::new(real.accord_root(), [0xEE; 32], holders(&f["roster"]), None);
+    let rosters = [decoy.clone(), real.clone()];
+    let halts = read_invocations(&f, &real);
+    let halt = &halts["halt_constitutional_a1"];
+    let halt_bytes = bytes(&f["invocations"][0]["statement"]["statement_hex"]);
+    assert_eq!(
+        named_accord_root(&halt_bytes).as_deref(),
+        Some(real.accord_root())
+    );
+    let conf = f["lifecycles"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "confirmed_a1_b1")
+        .unwrap();
+    let sts = statements(conf);
+    let head = named_head(&sts[0]).unwrap();
+    let chosen = HaltRoster::find_by_head(&rosters, &head).unwrap();
+    assert_eq!(chosen.bundle(), real.bundle());
+    assert!(verify_lifecycle_row(&sts, chosen, halt).is_ok());
+    assert_eq!(
+        verify_lifecycle_row(&sts, &decoy, halt)
+            .unwrap_err()
+            .reason
+            .token(),
+        "other_bundle"
+    );
+    assert!(named_head(&halt_bytes).is_none());
 }
