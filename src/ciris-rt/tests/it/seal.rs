@@ -52,20 +52,21 @@ fn many_in_flight_complete_in_any_order() {
 }
 
 #[test]
-fn generate_kem_decap_wrap_unwrap() {
+fn generate_xwing_decap_wrap_unwrap() {
     let (h, rt) = setup(true);
     let out = Rc::new(RefCell::new(Vec::new()));
     let o = out.clone();
     spawn(async move {
         // First run: public-key says not-found, so generate.
         assert_eq!(seal::public_key("missing"), Err(Errno::NotFound));
-        let pk = seal::generate("transit-kex:v1:t", KeyKind::TransitKex)
+        let pk = seal::generate("transit:v1:t", KeyKind::Transit)
             .await
             .unwrap();
-        let ikm = seal::kem_decap("transit-kex:v1:t", &[9; 32], &[1; 1088])
-            .await
-            .unwrap();
-        let bad = seal::kem_decap("transit-kex:v1:t", &[9; 31], &[1; 1088]).await;
+        assert_eq!(pk.len(), seal::XWING_PUBLIC_KEY_LEN);
+        // CC 5.3.3.10: the transit static decapsulates the peer's X-Wing
+        // encapsulation.
+        let transit_ss = seal::xwing_decap("transit:v1:t", &[1; 1120]).await.unwrap();
+        let bad = seal::xwing_decap("transit:v1:t", &[1; 1119]).await;
         let hop_pk = seal::generate("onion-hop:v1:h", KeyKind::OnionHop)
             .await
             .unwrap();
@@ -75,18 +76,11 @@ fn generate_kem_decap_wrap_unwrap() {
             .unwrap();
         assert_eq!(hop_ss.len(), seal::XWING_SHARED_SECRET_LEN);
         assert_eq!(
-            seal::kem_decap("onion-hop:v1:h", &[9; 32], &[1; 1088])
+            seal::xwing_decap("composite:v1:c", &[3; 1120])
                 .await
                 .map(|_| ()),
             Err(Errno::Invalid),
-            "kem-decap is transit-kex only"
-        );
-        assert_eq!(
-            seal::xwing_decap("transit-kex:v1:t", &[3; 1120])
-                .await
-                .map(|_| ()),
-            Err(Errno::Invalid),
-            "xwing-decap is onion-hop only"
+            "composite keys do not decapsulate"
         );
         let blob = seal::wrap("rns-transport-identity/v1", b"secret")
             .await
@@ -100,12 +94,12 @@ fn generate_kem_decap_wrap_unwrap() {
         o.borrow_mut().push(format!(
             "{} {} {}",
             pk.len(),
-            ikm.len(),
+            transit_ss.len(),
             String::from_utf8(pt.to_vec()).unwrap(),
         ));
     });
     h.drive(&rt, 10_000, 20, || !out.borrow().is_empty());
-    assert_eq!(out.borrow()[0], "1216 64 secret");
+    assert_eq!(out.borrow()[0], "1216 32 secret");
 }
 
 #[test]

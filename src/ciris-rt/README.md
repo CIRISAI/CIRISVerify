@@ -47,7 +47,7 @@ calls `ciris_host_abi::export_node!` on it. On wasm32 that emits the
 | `yield_now`, `blocking`, `spawn_blocking` | `blocking(f).await` and `spawn_blocking(f)` run `f` inline (FSD §5.2) |
 | `time` | `Instant` (std-shaped, µs), `Duration`, `sleep`, `sleep_until`, `timeout`, `timeout_at` → `Result<T, Elapsed>`, `interval`, `interval_at`, `Interval::{tick, poll_tick, reset, period, set_missed_tick_behavior}`, `MissedTickBehavior` |
 | `net` | `dial(..).await -> Connection`, `listen(c, &ListenOptions) -> Listener`, `Listener::accept().await`, `bind(..) -> Datagram`; `Connection::{conn_info, read, write, write_all, send_message, recv_message, close}`, `futures_io::AsyncRead` / `AsyncWrite`; `Datagram::{send_to, recv_from, local_addr, max_datagram, multicast_join, multicast_leave}`; `NetError` |
-| `seal` | `generate(id, kind)`, `sign_composite`, `sign_classical`, `sign_pqc`, `kem_decap` (transit-kex, → `Zeroizing` 64-byte ikm), `xwing_decap` (onion-hop, → `Zeroizing` 32-byte X-Wing secret), `wrap`, `unwrap` (→ `Zeroizing`); `describe`, `public_key` re-exported |
+| `seal` | `generate(id, kind)`, `sign_composite`, `sign_classical`, `sign_pqc`, `xwing_decap` (transit or onion-hop, → `Zeroizing` 32-byte X-Wing secret), `wrap`, `unwrap` (→ `Zeroizing`); `describe`, `public_key` re-exported |
 | `lifecycle` | `current()`, `next().await`, `clock_trusted()`, `wait_clock_trusted().await` |
 | `RtNode`, `node!` | the export helper |
 | `replay` (default feature) | `Session::{record, record_with, replaying, replaying_with, init, tick, on_event, api, log, finish}`, `replay::<N>(&Log) -> Log`, `replay_with::<N>(&Log, impl SecretSource) -> Log`, `Log::{to_jsonl, from_jsonl, entries, import_calls, secrets}`, `SecretSource`, `SecretOp`, `TestSecrets`, `SeededRandom`, `RecordOptions`, `raw_capture_allowed` |
@@ -160,8 +160,8 @@ these values are written as `{"len":<n>,"redacted":true,"sha256":"<hex>"}`
 (SHA-256 of the bytes), never as the bytes:
 
 * the result of `random.fill` (its bytes become ephemeral keys and nonces);
-* the `seal.take` result of a `seal.unwrap`, `seal.kem-decap` or
-  `seal.xwing-decap` (the token is remembered when the operation starts);
+* the `seal.take` result of a `seal.unwrap` or `seal.xwing-decap` (the
+  token is remembered when the operation starts);
 * the `plaintext` argument of `seal.wrap`.
 
 Signatures, public keys, wrapped blobs and everything else stay raw. A node
@@ -179,7 +179,7 @@ source:
 * `SeededRandom` is SHA-256 in counter mode over a seed, the same stream the
   scripted host's `random.fill` drew from. It is test only.
 * `vault` is any `Host` implementing the seal operations, which re-runs
-  each `unwrap`, `kem-decap` or `xwing-decap`.
+  each `unwrap` or `xwing-decap`.
 
 Replaying a redacted log without a source panics, saying it needs one.
 

@@ -212,19 +212,13 @@ pub mod seal {
 
     /// Composite public key length (mldsaPK || ed25519PK).
     pub const PUBLIC_KEY_LEN: usize = 1952 + 32;
-    /// Transit-KEX public key length (x25519PK || mlkem768EK).
-    pub const KEX_PUBLIC_KEY_LEN: usize = 32 + 1184;
-    /// Onion-hop (X-Wing) public key length, pk_M(1184) || pk_X(32): the
-    /// same length as [`KEX_PUBLIC_KEY_LEN`], ML-KEM first.
+    /// X-Wing public key length, pk_M(1184) || pk_X(32), ML-KEM first:
+    /// the `transit` and `onion-hop` kinds.
     pub const XWING_PUBLIC_KEY_LEN: usize = 1184 + 32;
     /// X-Wing ciphertext length `xwing_decap` takes, ct_M || ct_X.
     pub const XWING_CIPHERTEXT_LEN: usize = 1088 + 32;
     /// X-Wing shared secret length `xwing_decap` yields.
     pub const XWING_SHARED_SECRET_LEN: usize = 32;
-    /// ML-KEM-768 ciphertext length `kem_decap` takes.
-    pub const MLKEM768_CIPHERTEXT_LEN: usize = 1088;
-    /// `kem_decap` output: shared_x25519(32) || ss_mlkem768(32).
-    pub const KEM_IKM_LEN: usize = 64;
     /// Composite signature length (mldsaSig || ed25519Sig).
     pub const COMPOSITE_SIGNATURE_LEN: usize = 3309 + 64;
     /// Longest `wrap` / `unwrap` label, in bytes; longer is `invalid`.
@@ -258,21 +252,6 @@ pub mod seal {
     /// The operation never started.
     pub fn generate(id: &str, kind: KeyKind, token: u64) -> Result<(), Errno> {
         crate::sys::seal_generate(id, kind, token)
-    }
-    /// Start key agreement against transit-kex key `id`; after
-    /// `Sealed(token)`, [`take`] returns `shared_x25519 || ss_mlkem768`
-    /// (64 bytes), the `ikm` of `ciris_crypto::transit_kex::respond`.
-    /// Onion-hop keys are `invalid` here: use [`xwing_decap`].
-    ///
-    /// # Errors
-    /// The operation never started.
-    pub fn kem_decap(
-        id: &str,
-        x25519_peer_pub: &[u8],
-        mlkem_ct: &[u8],
-        token: u64,
-    ) -> Result<(), Errno> {
-        crate::sys::seal_kem_decap(id, x25519_peer_pub, mlkem_ct, token)
     }
     /// Start an Ed25519 signature over `msg` as it is.
     ///
@@ -318,9 +297,12 @@ pub mod seal {
     pub fn unwrap(label: &str, wrapped: &[u8], token: u64) -> Result<(), Errno> {
         crate::sys::seal_unwrap(label, wrapped, token)
     }
-    /// Start X-Wing decapsulation of the 1120-byte `ct` against onion-hop
-    /// key `id`; after `Sealed(token)`, [`take`] returns the 32-byte X-Wing
-    /// shared secret. Other key kinds are `invalid`.
+    /// Start X-Wing decapsulation of the 1120-byte `ct` against transit or
+    /// onion-hop key `id`; after `Sealed(token)`, [`take`] returns the
+    /// 32-byte X-Wing shared secret. A transit key serves the CC 5.3.3.10
+    /// handshake (each side decapsulates the other's encapsulation to its
+    /// own static); an onion-hop key peels onion layers. Composite keys
+    /// are `invalid`.
     ///
     /// # Errors
     /// The operation never started.

@@ -228,14 +228,6 @@ pub fn seal_public_key(id: &str) -> Result<Vec<u8>, Errno> {
 pub fn seal_generate(id: &str, kind: KeyKind, token: u64) -> Result<(), Errno> {
     seal::generate(id, kind, token)
 }
-pub fn seal_kem_decap(
-    id: &str,
-    x25519_peer_pub: &[u8],
-    mlkem_ct: &[u8],
-    token: u64,
-) -> Result<(), Errno> {
-    seal::kem_decap(id, x25519_peer_pub, mlkem_ct, token)
-}
 pub fn seal_sign_classical(id: &str, msg: &[u8], token: u64) -> Result<(), Errno> {
     seal::sign_classical(id, msg, token)
 }

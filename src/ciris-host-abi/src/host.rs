@@ -224,19 +224,6 @@ pub trait Host {
     fn seal_generate(&self, _id: &str, _kind: KeyKind, _token: u64) -> Result<(), Errno> {
         Err(Errno::Unsupported)
     }
-    /// `seal.kem-decap`.
-    ///
-    /// # Errors
-    /// Default: `unsupported`.
-    fn seal_kem_decap(
-        &self,
-        _id: &str,
-        _x25519_peer_pub: &[u8],
-        _mlkem_ct: &[u8],
-        _token: u64,
-    ) -> Result<(), Errno> {
-        Err(Errno::Unsupported)
-    }
     /// `seal.xwing-decap`.
     ///
     /// # Errors

@@ -57,7 +57,7 @@ names!(fail_reason, de_fail_reason, FailReason {
     NameNotResolved = "name-not-resolved", Denied = "denied", Error = "error",
 });
 names!(key_kind, de_key_kind, KeyKind {
-    Composite = "composite", TransitKex = "transit-kex", OnionHop = "onion-hop",
+    Composite = "composite", Transit = "transit", OnionHop = "onion-hop",
 });
 names!(metric_kind, de_metric_kind, MetricKind {
     Counter = "counter", Gauge = "gauge", Histogram = "histogram",

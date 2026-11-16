@@ -22,6 +22,7 @@ std::thread_local! {
 const SEED: &[u8] = b"replay test seed";
 const SECRET_PT: &[u8] = b"rns transport identity: SECRET!!";
 const HOP_CT: [u8; 1120] = [0x11; 1120];
+const TRANSIT_CT: [u8; 1120] = [0x22; 1120];
 
 struct Demo;
 impl RtNode for Demo {
@@ -39,8 +40,9 @@ impl RtNode for Demo {
                 .expect("reply in time")
                 .unwrap();
             let sig = seal::sign_composite("node", &buf[..n]).await.unwrap();
-            // Node-held secrets: wrapped at rest, unwrapped, and an X-Wing
-            // decapsulation. None of them may reach the log.
+            // Node-held secrets: wrapped at rest, unwrapped, and X-Wing
+            // decapsulations to an onion-hop and a transit static. None of
+            // them may reach the log.
             let blob = seal::wrap("rns-transport-identity/v1", SECRET_PT)
                 .await
                 .unwrap();
@@ -48,6 +50,9 @@ impl RtNode for Demo {
                 .await
                 .unwrap();
             let ss = seal::xwing_decap("onion-hop:v1:me", &HOP_CT).await.unwrap();
+            let tss = seal::xwing_decap("transit:v1:me", &TRANSIT_CT)
+                .await
+                .unwrap();
             let waited = t0.elapsed().as_micros() as u64;
             OUT.with(|o| {
                 let mut o = o.borrow_mut();
@@ -57,6 +62,7 @@ impl RtNode for Demo {
                 o.extend_from_slice(&blob);
                 o.push(u8::from(&back[..] == SECRET_PT));
                 o.push(u8::try_from(ss.len()).unwrap());
+                o.push(u8::try_from(tss.len()).unwrap());
                 o.extend_from_slice(&waited.to_be_bytes());
             });
         });
@@ -166,9 +172,11 @@ fn the_redacted_log_holds_no_secret_bytes() {
     let draw16 = stream.fill(16);
     let draw4 = stream.fill(4);
     let decap = fake_sig(&HOP_CT, 32);
+    let transit_decap = fake_sig(&TRANSIT_CT, 32);
     for (what, bytes) in [
         ("the wrap plaintext", SECRET_PT.to_vec()),
-        ("the xwing-decap secret", decap),
+        ("the onion-hop xwing-decap secret", decap),
+        ("the transit xwing-decap secret", transit_decap),
         ("the 16-byte random draw", draw16),
         ("the 4-byte random draw", draw4),
     ] {
@@ -188,9 +196,10 @@ fn the_redacted_log_holds_no_secret_bytes() {
             "random.fill",
             "seal.wrap",
             "seal.take",
+            "seal.take",
             "seal.take"
         ],
-        "random.fill results, wrap's plaintext, unwrap's and xwing-decap's take"
+        "random.fill results, wrap's plaintext, unwrap's and both xwing-decaps' take"
     );
     let sig_take = log.entries().iter().find(|e| {
         e.call == "seal.take" && e.ret["ok"].as_str().is_some_and(|h| h.len() == 3373 * 2)

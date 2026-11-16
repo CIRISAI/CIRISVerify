@@ -51,8 +51,8 @@
 //!
 //! * the result of `random.fill` (its bytes become ephemeral keys and
 //!   nonces);
-//! * the `seal.take` result of a `seal.unwrap`, `seal.kem-decap` or
-//!   `seal.xwing-decap` (the token is remembered when the operation starts);
+//! * the `seal.take` result of a `seal.unwrap` or `seal.xwing-decap` (the
+//!   token is remembered when the operation starts);
 //! * the `plaintext` argument of `seal.wrap`.
 //!
 //! Signatures, public keys, wrapped blobs and everything else stay raw.
@@ -159,15 +159,6 @@ pub enum SecretOp {
         label: String,
         /// The wrapped blob.
         wrapped: Vec<u8>,
-    },
-    /// `seal.kem-decap(id, x25519-peer-pub, mlkem-ct)`.
-    KemDecap {
-        /// The key id.
-        id: String,
-        /// The peer's X25519 public key.
-        x25519_peer_pub: Vec<u8>,
-        /// The ML-KEM-768 ciphertext.
-        mlkem_ct: Vec<u8>,
     },
     /// `seal.xwing-decap(id, ct)`.
     XwingDecap {
@@ -276,13 +267,6 @@ impl<V: Host> SecretSource for TestSecrets<V> {
         self.next_token -= 1;
         match op {
             SecretOp::Unwrap { label, wrapped } => self.vault.seal_unwrap(label, wrapped, t)?,
-            SecretOp::KemDecap {
-                id,
-                x25519_peer_pub,
-                mlkem_ct,
-            } => self
-                .vault
-                .seal_kem_decap(id, x25519_peer_pub, mlkem_ct, t)?,
             SecretOp::XwingDecap { id, ct } => self.vault.seal_xwing_decap(id, ct, t)?,
         }
         self.vault.seal_take(t)
@@ -1027,26 +1011,6 @@ impl Host for TapeHost {
             |l, _| c::result(&l.host.seal_generate(id, kind, token), c::unit),
         );
         c::de_result(&v, |_| ())
-    }
-    fn seal_kem_decap(
-        &self,
-        id: &str,
-        x25519_peer_pub: &[u8],
-        mlkem_ct: &[u8],
-        token: u64,
-    ) -> Result<(), Errno> {
-        let op = SecretOp::KemDecap {
-            id: id.to_owned(),
-            x25519_peer_pub: x25519_peer_pub.to_vec(),
-            mlkem_ct: mlkem_ct.to_vec(),
-        };
-        self.tape.start(
-            "seal.kem-decap",
-            json!({"id": id, "x25519-peer-pub": c::bytes(x25519_peer_pub), "mlkem-ct": c::bytes(mlkem_ct), "token": token}),
-            token,
-            Some(op),
-            |l| l.host.seal_kem_decap(id, x25519_peer_pub, mlkem_ct, token),
-        )
     }
     fn seal_xwing_decap(&self, id: &str, ct: &[u8], token: u64) -> Result<(), Errno> {
         let op = SecretOp::XwingDecap {

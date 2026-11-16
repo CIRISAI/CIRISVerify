@@ -124,11 +124,11 @@ fn defaults_are_runtime_answers() {
     assert_eq!(seal::sign_composite("k", b"m", 7), Err(Errno::Unsupported));
     assert_eq!(seal::take(7), Err(Errno::NotFound));
     assert_eq!(
-        seal::generate("k", KeyKind::TransitKex, 8),
+        seal::generate("k", KeyKind::Transit, 8),
         Err(Errno::Unsupported)
     );
     assert_eq!(
-        seal::kem_decap("k", &[1; 32], &[2; seal::MLKEM768_CIPHERTEXT_LEN], 9),
+        seal::xwing_decap("k", &[2; seal::XWING_CIPHERTEXT_LEN], 9),
         Err(Errno::Unsupported)
     );
     assert!(!net::can_datagram());
@@ -311,7 +311,7 @@ mod pipelined {
     use std::collections::BTreeMap;
 
     use ciris_host_abi::host::Host;
-    use ciris_host_abi::seal::{COMPOSITE_SIGNATURE_LEN, KEX_PUBLIC_KEY_LEN};
+    use ciris_host_abi::seal::{COMPOSITE_SIGNATURE_LEN, XWING_PUBLIC_KEY_LEN};
     use ciris_host_abi::types::{Errno, KeyKind};
 
     /// Accepts operations, completes them only when the test says, in the
@@ -351,7 +351,7 @@ mod pipelined {
             self.started.borrow_mut().push(token);
             self.pending
                 .borrow_mut()
-                .insert(token, vec![0xAA; KEX_PUBLIC_KEY_LEN]);
+                .insert(token, vec![0xAA; XWING_PUBLIC_KEY_LEN]);
             Ok(())
         }
         fn seal_take(&self, token: u64) -> Result<Vec<u8>, Errno> {
@@ -401,7 +401,7 @@ fn seal_tokens_pipeline_and_complete_out_of_order() {
         seal::take(2).unwrap(),
         vec![b'b'; seal::COMPOSITE_SIGNATURE_LEN]
     );
-    assert_eq!(seal::take(3).unwrap().len(), seal::KEX_PUBLIC_KEY_LEN);
+    assert_eq!(seal::take(3).unwrap().len(), seal::XWING_PUBLIC_KEY_LEN);
     assert_eq!(seal::take(1), Err(Errno::WouldBlock));
     h.complete(1);
     assert_eq!(
@@ -428,8 +428,9 @@ fn new_event_variants_exist() {
 }
 
 // ---------------------------------------------------------------------------
-// Onion-hop keys are X-Wing: `generate(onion-hop)` returns pk_M || pk_X and
-// `xwing-decap` returns the X-Wing shared secret. A TEST-ONLY vault over
+// Transit and onion-hop keys are X-Wing: `generate(transit | onion-hop)`
+// returns pk_M || pk_X and `xwing-decap` returns the X-Wing shared secret;
+// a composite key is `invalid` there. A TEST-ONLY vault over
 // `ciris_crypto::xwing` (draft -11), checked against edge's draft-06 known
 // answer computed by an independent implementation (libcrux
 // `XWingKemDraft06`, CIRISEdge `src/onion/packet.rs` `kat_outfox_xwing_v1`).
@@ -445,6 +446,7 @@ mod xwing_vault {
 
     #[derive(Default)]
     pub struct XWingVault {
+        /// Transit and onion-hop keys: both are X-Wing seeds.
         hop: RefCell<BTreeMap<String, XWingSecretKey>>,
         other: RefCell<BTreeMap<String, KeyKind>>,
         done: RefCell<BTreeMap<u64, Result<Vec<u8>, Errno>>>,
@@ -486,7 +488,7 @@ mod xwing_vault {
                 .ok_or(Errno::NotFound)
         }
         fn seal_generate(&self, id: &str, kind: KeyKind, token: u64) -> Result<(), Errno> {
-            if kind != KeyKind::OnionHop {
+            if !matches!(kind, KeyKind::Transit | KeyKind::OnionHop) {
                 return Err(Errno::Unsupported);
             }
             if self.hop.borrow().contains_key(id) {
@@ -512,20 +514,6 @@ mod xwing_vault {
             let ss = sk.decapsulate(ct).map_err(|_| Errno::Invalid)?;
             drop(hop);
             self.finish(token, Ok(ss.to_vec()))
-        }
-        fn seal_kem_decap(
-            &self,
-            id: &str,
-            _peer: &[u8],
-            _ct: &[u8],
-            _token: u64,
-        ) -> Result<(), Errno> {
-            // kem-decap is transit-kex only: an onion-hop key is invalid.
-            if self.hop.borrow().contains_key(id) {
-                Err(Errno::Invalid)
-            } else {
-                Err(Errno::NotFound)
-            }
         }
         fn seal_take(&self, token: u64) -> Result<Vec<u8>, Errno> {
             self.done
@@ -615,15 +603,12 @@ fn xwing_decap_reproduces_edges_draft_06_known_answer() {
         fn seal_xwing_decap(&self, id: &str, ct: &[u8], token: u64) -> Result<(), Errno> {
             self.0.seal_xwing_decap(id, ct, token)
         }
-        fn seal_kem_decap(&self, id: &str, p: &[u8], c: &[u8], t: u64) -> Result<(), Errno> {
-            self.0.seal_kem_decap(id, p, c, t)
-        }
         fn seal_take(&self, token: u64) -> Result<Vec<u8>, Errno> {
             self.0.seal_take(token)
         }
     }
     vault.adopt_onion_hop("onion-hop:v1:kat", seed);
-    vault.add_other("transit-kex:v1:t", KeyKind::TransitKex);
+    vault.add_other("composite:v1:c", KeyKind::Composite);
     host::install(Shared(vault.clone()));
 
     // Key generation from the seed matches draft-06 (libcrux): the public
@@ -654,18 +639,15 @@ fn xwing_decap_reproduces_edges_draft_06_known_answer() {
         "draft-06 shared secret (decaps)"
     );
 
-    // Refusals: wrong ct length; a transit-kex id; kem-decap on onion-hop.
+    // Refusals: wrong ct length; a composite id.
     assert_eq!(
         seal::xwing_decap("onion-hop:v1:kat", &ct[..1119], 2),
         Err(Errno::Invalid)
     );
     assert_eq!(
-        seal::xwing_decap("transit-kex:v1:t", &ct, 3),
-        Err(Errno::Invalid)
-    );
-    assert_eq!(
-        seal::kem_decap("onion-hop:v1:kat", &[9; 32], &[0; 1088], 4),
-        Err(Errno::Invalid)
+        seal::xwing_decap("composite:v1:c", &ct, 3),
+        Err(Errno::Invalid),
+        "composite keys do not decapsulate"
     );
 
     // Vault-side generation: X-Wing order, and it decapsulates its own.
@@ -682,5 +664,25 @@ fn xwing_decap_reproduces_edges_draft_06_known_answer() {
         seal::generate("onion-hop:v1:new", KeyKind::OnionHop, 7),
         Err(Errno::Invalid),
         "generate never overwrites"
+    );
+
+    // Transit (CC 5.3.3.10): an X-Wing static exactly like onion-hop,
+    // 1216 bytes ML-KEM first, decapsulating each side's encapsulation.
+    seal::generate("transit:v1:t", KeyKind::Transit, 8).unwrap();
+    let tpk = seal::take(8).unwrap();
+    assert_eq!(tpk.len(), seal::XWING_PUBLIC_KEY_LEN);
+    assert_eq!(tpk.len(), 1216);
+    let txpk = ciris_crypto::xwing::XWingPublicKey::from_bytes(&tpk).unwrap();
+    assert_eq!(txpk.ml_kem_768(), &tpk[..1184], "ML-KEM first");
+    assert_eq!(txpk.x25519(), &tpk[1184..], "X25519 last");
+    let (tct, tss) = txpk.encapsulate().unwrap();
+    assert_eq!(tct.len(), seal::XWING_CIPHERTEXT_LEN);
+    seal::xwing_decap("transit:v1:t", &tct, 9).unwrap();
+    let got = seal::take(9).unwrap();
+    assert_eq!(got.len(), seal::XWING_SHARED_SECRET_LEN);
+    assert_eq!(got, tss.to_vec());
+    assert_eq!(
+        seal::xwing_decap("transit:v1:t", &tct[..1119], 10),
+        Err(Errno::Invalid)
     );
 }

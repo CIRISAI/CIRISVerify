@@ -20,7 +20,7 @@
 //!   on their tokens.
 //! * [`time`] (Instant, sleep, timeout, interval), [`net`] (dial / listen /
 //!   accept / datagram, edge-triggered), [`seal`] (sign, generate,
-//!   kem-decap, wrap), [`lifecycle`], [`blocking`].
+//!   xwing-decap, wrap), [`lifecycle`], [`blocking`].
 //! * [`node!`] wires a node's exports in one line.
 //! * `replay` (default feature): record every import and event at the ABI
 //!   boundary and replay it, failing loudly on divergence (§5.1, §11.4).
