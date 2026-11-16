@@ -102,3 +102,37 @@ fn stream_key_binding_composite() {
     assert_eq!(&enc[body.len()..body.len() + 2], &3373u16.to_be_bytes());
     assert_eq!(&enc[body.len() + 2..], sig.as_slice());
 }
+
+/// StreamKeyBinding v2, THE binding of the cut (Eric's ruling on
+/// CIRISEdge#1007): `gen_stream_key_binding_v2.py`, independent of verify.
+#[test]
+fn stream_key_binding_v2_composite() {
+    let v: Value = serde_json::from_str(include_str!(
+        "vectors/composite/stream_key_binding_v2_composite_v1.json"
+    ))
+    .unwrap();
+    let sk = CompositeSigningKey::from_seeds(&[0x54; 32], &[0x01; 32]);
+    assert_eq!(
+        sk.public_key().as_bytes().as_slice(),
+        h(&v, "publisher_composite_public_key_hex")
+    );
+    for c in v["cases"].as_array().unwrap() {
+        let id = c["id"].as_str().unwrap();
+        let body = h(c, "body_hex");
+        assert_eq!(body[0], 0x02, "{id}");
+        let mut msg = b"ciris-edge:av-stream-key:v2".to_vec();
+        msg.extend_from_slice(&body);
+        assert_eq!(msg, h(c, "signing_bytes_hex"), "{id}");
+        let sig = h(c, "signature_hex");
+        sk.public_key().verify(&msg, &sig).unwrap();
+        assert_eq!(sk.sign(&msg).unwrap(), sig, "{id}");
+        let enc = h(c, "encoding_hex");
+        assert_eq!(&enc[..body.len()], body.as_slice(), "{id}");
+        assert_eq!(
+            &enc[body.len()..body.len() + 2],
+            &3373u16.to_be_bytes(),
+            "{id}"
+        );
+        assert_eq!(&enc[body.len() + 2..], sig.as_slice(), "{id}");
+    }
+}
