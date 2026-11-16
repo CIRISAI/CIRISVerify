@@ -30,14 +30,21 @@ use crate::types::{
 ///
 /// # Security Warning
 ///
-/// This signer stores keys on disk WITHOUT hardware protection. The private
-/// key CAN be extracted by an attacker with system access. Deployments using
-/// this signer are automatically limited to UNLICENSED_COMMUNITY tier.
+/// This signer holds keys WITHOUT hardware protection. The private key CAN be
+/// extracted by an attacker with system access. Deployments using this signer
+/// are automatically limited to UNLICENSED_COMMUNITY tier.
 ///
 /// # Storage
 ///
-/// Keys are persisted to `{key_dir}/{alias}.p256.key` as raw 32-byte scalars.
-/// On creation, the signer loads an existing key or generates and saves a new one.
+/// With the `fs` feature, `Self::new` persists keys to
+/// `{key_dir}/{alias}.p256.key` as raw 32-byte scalars: on creation, the
+/// signer loads an existing key or generates and saves a new one.
+///
+/// [`Self::from_seed_bytes`] and [`Self::generate_in_memory`] hold the key in
+/// process memory only ([`StorageDescriptor::InMemory`]) and are available
+/// without `fs` — the slim profile for browser and UEFI WASM nodes, where the
+/// host supplies and persists the seed. Either way the signer reports
+/// [`HardwareType::SoftwareOnly`] with the same software-key warning.
 ///
 /// # Use Cases
 ///
@@ -45,14 +52,71 @@ use crate::types::{
 /// - CI/CD environments
 /// - Containers without TPM passthrough
 /// - Community deployments
+/// - WASM nodes (seed supplied by the host)
 pub struct SoftwareSigner {
     signing_key: Option<SigningKey>,
     alias: String,
-    /// Path to the key file
-    key_path: std::path::PathBuf,
+    /// Path to the key file; `None` for an in-memory signer.
+    #[cfg(feature = "fs")]
+    key_path: Option<std::path::PathBuf>,
 }
 
 impl SoftwareSigner {
+    /// Create an in-memory signer from a caller-supplied 32-byte P-256 scalar.
+    ///
+    /// Nothing is written anywhere; persisting the seed is the caller's job.
+    ///
+    /// # Errors
+    ///
+    /// [`KeyringError::InvalidKey`] if `seed_bytes` is not 32 bytes or is not a
+    /// valid P-256 scalar (zero, or not below the group order).
+    pub fn from_seed_bytes(
+        seed_bytes: &[u8],
+        alias: impl Into<String>,
+    ) -> Result<Self, KeyringError> {
+        let alias = alias.into();
+        if seed_bytes.len() != 32 {
+            return Err(KeyringError::InvalidKey {
+                reason: format!("P-256 seed must be 32 bytes, got {}", seed_bytes.len()),
+            });
+        }
+        let key = SigningKey::from_slice(seed_bytes).map_err(|e| KeyringError::InvalidKey {
+            reason: format!("not a valid P-256 scalar: {e}"),
+        })?;
+        Ok(Self::in_memory(key, alias))
+    }
+
+    /// Create an in-memory signer around a freshly minted key, drawn through
+    /// the RNG health latch ([`crate::mint_p256_signing_key`]).
+    ///
+    /// The key dies with the signer unless the caller exports it; a consumer
+    /// that needs a stable identity should persist a seed and use
+    /// [`Self::from_seed_bytes`].
+    ///
+    /// # Errors
+    ///
+    /// [`KeyringError::KeyGenerationFailed`] if the RNG health latch has tripped.
+    pub fn generate_in_memory(alias: impl Into<String>) -> Result<Self, KeyringError> {
+        Ok(Self::in_memory(
+            crate::mint_p256_signing_key()?,
+            alias.into(),
+        ))
+    }
+
+    fn in_memory(signing_key: SigningKey, alias: String) -> Self {
+        tracing::warn!(
+            alias = %alias,
+            "SoftwareSigner: NO HARDWARE BINDING (in-memory key) — limited to \
+             UNLICENSED_COMMUNITY tier"
+        );
+        Self {
+            signing_key: Some(signing_key),
+            alias,
+            #[cfg(feature = "fs")]
+            key_path: None,
+        }
+    }
+
     /// Create a new software signer with persistent storage.
     ///
     /// Loads existing key from disk or generates and saves a new one.
@@ -65,6 +129,7 @@ impl SoftwareSigner {
     /// # Errors
     ///
     /// Returns error if key generation or file I/O fails.
+    #[cfg(feature = "fs")]
     pub fn new(
         alias: impl Into<String>,
         key_dir: impl Into<std::path::PathBuf>,
@@ -177,7 +242,7 @@ impl SoftwareSigner {
         Ok(Self {
             signing_key: Some(signing_key),
             alias,
-            key_path,
+            key_path: Some(key_path),
         })
     }
 
@@ -188,53 +253,64 @@ impl SoftwareSigner {
     /// * `signing_key` - Existing ECDSA P-256 signing key
     /// * `alias` - Key alias
     /// * `key_path` - Path where the key would be stored (for reference)
+    #[cfg(feature = "fs")]
     #[must_use]
     pub fn with_key(signing_key: SigningKey, alias: String, key_path: std::path::PathBuf) -> Self {
         Self {
             signing_key: Some(signing_key),
             alias,
-            key_path,
+            key_path: Some(key_path),
         }
     }
 
     /// Generate a new random key and persist it.
+    ///
+    /// An in-memory signer (no key path) keeps the new key in memory only.
+    #[cfg(feature = "fs")]
     pub fn generate_random_key(&mut self) -> Result<(), KeyringError> {
         let key = crate::mint_p256_signing_key()?;
 
-        // Persist to disk
-        let key_bytes = key.to_bytes();
-        std::fs::write(&self.key_path, &*key_bytes).map_err(|e| {
-            tracing::error!("Failed to write key file: {}", e);
-            KeyringError::StorageFailed {
-                reason: format!("Failed to write key file: {}", e),
-            }
-        })?;
+        if let Some(key_path) = &self.key_path {
+            // Persist to disk
+            let key_bytes = key.to_bytes();
+            std::fs::write(key_path, &*key_bytes).map_err(|e| {
+                tracing::error!("Failed to write key file: {}", e);
+                KeyringError::StorageFailed {
+                    reason: format!("Failed to write key file: {}", e),
+                }
+            })?;
+        }
 
         self.signing_key = Some(key);
         tracing::info!(
             alias = %self.alias,
             key_path = ?self.key_path,
-            "SoftwareSigner: new key generated and saved"
+            "SoftwareSigner: new key generated"
         );
         Ok(())
     }
 
-    /// Get the key file path.
+    /// Get the key file path; empty for an in-memory signer.
+    #[cfg(feature = "fs")]
     #[must_use]
     pub fn key_path(&self) -> &std::path::Path {
-        &self.key_path
+        self.key_path
+            .as_deref()
+            .unwrap_or_else(|| std::path::Path::new(""))
     }
 
-    /// Check if the key file exists on disk.
+    /// Check if the key file exists on disk (`false` for an in-memory signer).
+    #[cfg(feature = "fs")]
     #[must_use]
     pub fn key_file_exists(&self) -> bool {
-        self.key_path.exists()
+        self.key_path.as_ref().is_some_and(|p| p.exists())
     }
 
-    /// Delete the key from disk.
+    /// Delete the key from disk (a no-op for an in-memory signer).
+    #[cfg(feature = "fs")]
     pub fn delete_key_file(&self) -> Result<(), KeyringError> {
-        if self.key_path.exists() {
-            std::fs::remove_file(&self.key_path).map_err(|e| {
+        if let Some(key_path) = self.key_path.as_ref().filter(|p| p.exists()) {
+            std::fs::remove_file(key_path).map_err(|e| {
                 tracing::error!("Failed to delete key file: {}", e);
                 KeyringError::StorageFailed {
                     reason: format!("Failed to delete key file: {}", e),
@@ -242,11 +318,20 @@ impl SoftwareSigner {
             })?;
             tracing::info!(
                 alias = %self.alias,
-                key_path = ?self.key_path,
+                key_path = ?key_path,
                 "SoftwareSigner: key file deleted"
             );
         }
         Ok(())
+    }
+
+    /// Where the key lives, for the attestation's `storage` field.
+    fn storage_label(&self) -> String {
+        #[cfg(feature = "fs")]
+        if let Some(path) = &self.key_path {
+            return format!("file:{}", path.display());
+        }
+        "memory".to_string()
     }
 }
 
@@ -284,13 +369,19 @@ impl HardwareSigner for SoftwareSigner {
     }
 
     async fn attestation(&self) -> Result<PlatformAttestation, KeyringError> {
+        let storage = self.storage_label();
+        let held = if storage == "memory" {
+            "Private key held in process memory without hardware protection."
+        } else {
+            "Private key stored on disk without encryption."
+        };
         Ok(PlatformAttestation::Software(SoftwareAttestation {
             key_derivation: "random".to_string(),
-            storage: format!("file:{}", self.key_path.display()),
-            security_warning: "SOFTWARE_ONLY: No hardware binding available. \
-                               Private key stored on disk without encryption. \
-                               This deployment is LIMITED to UNLICENSED_COMMUNITY tier."
-                .to_string(),
+            storage,
+            security_warning: format!(
+                "SOFTWARE_ONLY: No hardware binding available. {held} \
+                 This deployment is LIMITED to UNLICENSED_COMMUNITY tier."
+            ),
         }))
     }
 
@@ -301,11 +392,12 @@ impl HardwareSigner for SoftwareSigner {
             });
         }
 
-        // Key is already generated and persisted in new()
+        // The key is already present: generated (and, with a key path,
+        // persisted) at construction.
         tracing::info!(
             alias = %config.alias,
-            key_path = ?self.key_path,
-            "Software key already generated and persisted"
+            storage = %self.storage_label(),
+            "Software key already generated"
         );
 
         Ok(())
@@ -314,7 +406,10 @@ impl HardwareSigner for SoftwareSigner {
     async fn key_exists(&self, alias: &str) -> Result<bool, KeyringError> {
         // Check both in-memory and on-disk
         let in_memory = self.signing_key.is_some() && self.alias == alias;
-        let on_disk = self.key_path.exists();
+        #[cfg(feature = "fs")]
+        let on_disk = self.key_file_exists();
+        #[cfg(not(feature = "fs"))]
+        let on_disk = false;
         Ok(in_memory || on_disk)
     }
 
@@ -325,17 +420,9 @@ impl HardwareSigner for SoftwareSigner {
             });
         }
 
-        // Delete the key file from disk
-        if self.key_path.exists() {
-            std::fs::remove_file(&self.key_path).map_err(|e| KeyringError::StorageFailed {
-                reason: format!("Failed to delete key file: {}", e),
-            })?;
-            tracing::info!(
-                alias = %alias,
-                key_path = ?self.key_path,
-                "Software key deleted from disk"
-            );
-        }
+        // Delete the key file from disk; an in-memory key goes with the signer.
+        #[cfg(feature = "fs")]
+        self.delete_key_file()?;
 
         Ok(())
     }
@@ -345,19 +432,22 @@ impl HardwareSigner for SoftwareSigner {
     }
 
     fn storage_descriptor(&self) -> StorageDescriptor {
-        StorageDescriptor::SoftwareFile {
-            path: self.key_path.clone(),
+        #[cfg(feature = "fs")]
+        if let Some(path) = &self.key_path {
+            return StorageDescriptor::SoftwareFile { path: path.clone() };
         }
+        StorageDescriptor::InMemory
     }
 }
-
 /// Mutable software signer for testing and development.
 ///
 /// This version allows actual key generation and deletion with persistence.
+#[cfg(feature = "fs")]
 pub struct MutableSoftwareSigner {
     inner: std::sync::RwLock<SoftwareSigner>,
 }
 
+#[cfg(feature = "fs")]
 impl MutableSoftwareSigner {
     /// Create a new mutable software signer with persistent storage.
     ///
@@ -709,14 +799,17 @@ impl HardwareSigner for Ed25519SoftwareSigner {
 
 /// Maximum number of retries for hardware key access
 #[allow(dead_code)]
+#[cfg(feature = "fs")]
 const HW_ACCESS_MAX_RETRIES: u32 = 3;
 
 /// Initial backoff delay in milliseconds
 #[allow(dead_code)]
+#[cfg(feature = "fs")]
 const HW_ACCESS_INITIAL_BACKOFF_MS: u64 = 50;
 
 /// Backoff multiplier (2 = exponential doubling)
 #[allow(dead_code)]
+#[cfg(feature = "fs")]
 const HW_ACCESS_BACKOFF_MULTIPLIER: u64 = 2;
 
 /// Thread-safe mutable Ed25519 software signer with optional persistence.
@@ -747,6 +840,7 @@ const HW_ACCESS_BACKOFF_MULTIPLIER: u64 = 2;
 ///
 /// On platforms without hardware backing, keys are stored in plaintext.
 /// Consider encrypting the storage directory for additional protection.
+#[cfg(feature = "fs")]
 pub struct MutableEd25519Signer {
     inner: std::sync::RwLock<Ed25519SoftwareSigner>,
     /// Path to key storage file (set after first persistence attempt)
@@ -759,6 +853,7 @@ pub struct MutableEd25519Signer {
     hardware_wrapper: Option<crate::platform::ios::SecureEnclaveWrappedEd25519Signer>,
 }
 
+#[cfg(feature = "fs")]
 impl MutableEd25519Signer {
     /// Create a new mutable Ed25519 signer, attempting to load persisted key.
     ///
@@ -2280,9 +2375,11 @@ impl MutableEd25519Signer {
         } else {
             // Hardware-backed key: generate new random wallet seed
             // (Pre-1.3.2 hardware agents couldn't use wallet features anyway)
-            use rand::RngCore;
             let mut new_seed = [0u8; 32];
-            rand::thread_rng().fill_bytes(&mut new_seed);
+            if let Err(e) = crate::mint_key_material(&mut new_seed, "a wallet seed") {
+                tracing::error!(error = %e, "get_wallet_seed: refusing to mint a wallet seed");
+                return None;
+            }
             tracing::info!(
                 "get_wallet_seed: generated new random wallet seed (hardware-backed key)"
             );
@@ -2367,7 +2464,7 @@ impl MutableEd25519Signer {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "fs"))]
 mod tests {
     use super::*;
 
@@ -2580,5 +2677,84 @@ mod tests {
         // Clear key
         signer.clear_key().unwrap();
         assert!(!signer.has_key());
+    }
+}
+
+/// The in-memory signers, which are all the slim (no `fs`) profile has.
+#[cfg(test)]
+mod in_memory_tests {
+    use super::*;
+    use p256::ecdsa::signature::Verifier;
+
+    #[tokio::test]
+    async fn seeded_signer_signs_and_reports_in_memory_software_only() {
+        let seed = [7u8; 32];
+        let signer = SoftwareSigner::from_seed_bytes(&seed, "wasm-node").unwrap();
+        assert_eq!(signer.hardware_type(), HardwareType::SoftwareOnly);
+        assert_eq!(signer.storage_descriptor(), StorageDescriptor::InMemory);
+        assert!(signer.key_exists("wasm-node").await.unwrap());
+
+        let data = b"browser nodes are equal";
+        let sig = Signature::from_slice(&signer.sign(data).await.unwrap()).unwrap();
+        let expected = SigningKey::from_slice(&seed).unwrap();
+        assert!(expected.verifying_key().verify(data, &sig).is_ok());
+
+        // The same seed is the same identity.
+        let again = SoftwareSigner::from_seed_bytes(&seed, "wasm-node").unwrap();
+        assert_eq!(
+            signer.public_key().await.unwrap(),
+            again.public_key().await.unwrap()
+        );
+
+        match signer.attestation().await.unwrap() {
+            PlatformAttestation::Software(sa) => {
+                assert_eq!(sa.storage, "memory");
+                assert!(sa.security_warning.starts_with("SOFTWARE_ONLY"));
+                assert!(sa.security_warning.contains("UNLICENSED_COMMUNITY"));
+            },
+            other => panic!("expected a software attestation, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn seeded_signer_rejects_bad_seeds() {
+        assert!(matches!(
+            SoftwareSigner::from_seed_bytes(&[1u8; 31], "x"),
+            Err(KeyringError::InvalidKey { .. })
+        ));
+        // Zero is not a valid P-256 scalar.
+        assert!(matches!(
+            SoftwareSigner::from_seed_bytes(&[0u8; 32], "x"),
+            Err(KeyringError::InvalidKey { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn generated_in_memory_keys_differ_and_refuse_hardware() {
+        let a = SoftwareSigner::generate_in_memory("a").unwrap();
+        let b = SoftwareSigner::generate_in_memory("b").unwrap();
+        assert_ne!(a.public_key().await.unwrap(), b.public_key().await.unwrap());
+        assert!(matches!(
+            a.generate_key(&KeyGenConfig::new("a").require_hardware(true))
+                .await,
+            Err(KeyringError::HardwareError { .. })
+        ));
+        assert!(a
+            .generate_key(&KeyGenConfig::new("a").require_hardware(false))
+            .await
+            .is_ok());
+        assert!(a.delete_key("a").await.is_ok());
+        assert!(matches!(
+            a.delete_key("other").await,
+            Err(KeyringError::KeyNotFound { .. })
+        ));
+    }
+
+    #[tokio::test]
+    async fn ed25519_signer_from_caller_bytes() {
+        let signer = Ed25519SoftwareSigner::from_bytes(&[9u8; 32], "ed").unwrap();
+        assert_eq!(signer.hardware_type(), HardwareType::SoftwareOnly);
+        assert_eq!(signer.public_key().await.unwrap().len(), 32);
+        assert_eq!(signer.sign(b"m").await.unwrap().len(), 64);
     }
 }

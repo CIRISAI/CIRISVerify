@@ -4,8 +4,11 @@
 //! and creates an appropriate signer. Falls back gracefully to software
 //! signing when hardware is unavailable.
 
+#[cfg(feature = "fs")]
 use crate::error::KeyringError;
+#[cfg(feature = "fs")]
 use crate::signer::HardwareSigner;
+#[cfg(feature = "fs")]
 use crate::software::SoftwareSigner;
 use crate::types::HardwareType;
 
@@ -223,6 +226,7 @@ fn detect_macos_capabilities() -> PlatformCapabilities {
 /// # Errors
 ///
 /// Returns error if hardware is required but unavailable.
+#[cfg(feature = "fs")]
 pub fn create_hardware_signer(
     alias: &str,
     require_hardware: bool,
@@ -328,6 +332,7 @@ pub fn create_hardware_signer(
 /// Some target/feature combinations (Android non-sim, iOS non-sim) never
 /// reach this path — `dead_code` is permitted so the function is
 /// available on the platforms that DO need it without per-target gating.
+#[cfg(feature = "fs")]
 #[allow(dead_code)]
 fn fallback_software_signer(
     alias: &str,
@@ -354,6 +359,7 @@ fn fallback_software_signer(
 /// window perpetually resets → anti-Sybil weight zero) visible at boot
 /// in any deployment running v1.7+, even before consumers wire the
 /// descriptor into their own diagnostics.
+#[cfg(feature = "fs")]
 fn log_storage_descriptor(signer: &dyn HardwareSigner) {
     let descriptor = signer.storage_descriptor();
     tracing::info!(
@@ -375,6 +381,7 @@ fn log_storage_descriptor(signer: &dyn HardwareSigner) {
 /// # Errors
 ///
 /// Returns error if key generation fails.
+#[cfg(feature = "fs")]
 pub fn create_software_signer(alias: &str) -> Result<Box<dyn HardwareSigner>, KeyringError> {
     let key_dir = default_key_dir();
     Ok(Box::new(SoftwareSigner::new(alias, key_dir)?))
@@ -386,6 +393,7 @@ pub fn create_software_signer(alias: &str) -> Result<Box<dyn HardwareSigner>, Ke
 /// 1. `$CIRIS_DATA_DIR` environment variable
 /// 2. Platform-specific data directory (XDG, AppSupport, LocalAppData)
 /// 3. Current directory as fallback
+#[cfg(feature = "fs")]
 fn default_key_dir() -> std::path::PathBuf {
     // Check environment variable first
     if let Ok(dir) = std::env::var("CIRIS_DATA_DIR") {
@@ -438,6 +446,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "fs")]
     #[test]
     fn test_software_signer_creation() {
         // A process-unique alias: the default key dir is shared with every other
