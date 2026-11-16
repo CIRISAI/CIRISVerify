@@ -21,9 +21,32 @@ permissions:
 
 jobs:
   # ==========================================================================
+  # Version guard: the tag MUST equal the workspace and Python package version.
+  # v23.1.2 shipped with every version file still at 23.1.1, and PyPI's
+  # skip-existing turned that into a silent no-op. Fail before anything builds.
+  # ==========================================================================
+  version-guard:
+    name: Version guard (tag == Cargo == pyproject)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check the tag against every version file
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+          CARGO=$(sed -n 's/^version = "\(.*\)"$/\1/p' Cargo.toml | head -1)
+          PY=$(sed -n 's/^version = "\(.*\)"$/\1/p' bindings/python/pyproject.toml | head -1)
+          INIT=$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' bindings/python/ciris_verify/__init__.py | head -1)
+          echo "tag=$TAG cargo=$CARGO pyproject=$PY __init__=$INIT"
+          if [ "$TAG" != "$CARGO" ] || [ "$TAG" != "$PY" ] || { [ -n "$INIT" ] && [ "$TAG" != "$INIT" ]; }; then
+            echo "::error::tag v$TAG does not match the version files (Cargo $CARGO, pyproject $PY, __init__ ${INIT:-unset}); run scripts/bump-version.sh $TAG and commit before tagging"
+            exit 1
+          fi
+  # ==========================================================================
   # Build Release - Native Platforms
   # ==========================================================================
   build-native:
+    needs: version-guard
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -278,6 +301,7 @@ jobs:
   # Build Release - Linux musl (Home Assistant / Alpine Linux)
   # ==========================================================================
   build-musl:
+    needs: version-guard
     name: Build (Linux ARM64 musl)
     runs-on: ubuntu-latest
     steps:
@@ -368,6 +392,7 @@ jobs:
   # Build Release - Android
   # ==========================================================================
   build-android:
+    needs: version-guard
     name: Build (Android ${{ matrix.abi }})
     runs-on: ubuntu-latest
     strategy:
@@ -463,6 +488,7 @@ jobs:
   # Build Release - iOS
   # ==========================================================================
   build-ios:
+    needs: version-guard
     name: Build (iOS ${{ matrix.target }})
     runs-on: macos-latest
     strategy:
@@ -632,6 +658,7 @@ jobs:
   # Generate C Header
   # ==========================================================================
   generate-header:
+    needs: version-guard
     name: Generate C Header
     runs-on: ubuntu-latest
     steps:
@@ -696,6 +723,7 @@ jobs:
   # Build Manifest Tool (runs in parallel with other builds)
   # ==========================================================================
   build-manifest-tool:
+    needs: version-guard
     name: Build Manifest Tool
     runs-on: ubuntu-latest
     steps:
@@ -756,6 +784,7 @@ jobs:
   # them via `pip install ciris-verify` automatically. The matrix below
   # mirrors the publish-pypi platform set so each wheel has a matching binary.
   build-build-tool:
+    needs: version-guard
     name: Build Build Tool (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:

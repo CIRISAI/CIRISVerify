@@ -18,7 +18,11 @@ NC='\033[0m' # No Color
 
 # Get script directory and repo root
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+# Bump the checkout the caller is standing in (a git worktree included), not
+# the one this script happens to live in: v23.1.2 was tagged with every
+# version file at 23.1.1 because the script, run from a worktree, bumped the
+# main checkout instead. Fall back to the script's own tree outside git.
+REPO_ROOT="$(git rev-parse --show-toplevel 2>/dev/null || (cd "$SCRIPT_DIR/.." && pwd))"
 
 # Validate arguments
 if [ -z "$1" ]; then
