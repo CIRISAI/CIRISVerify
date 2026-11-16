@@ -94,6 +94,11 @@ pub const PARTICIPATION_DOMAIN_PREFIX: &str = "ciris.accord_participation.v1\n";
 /// The charter member holding every holder's recovery commitment (CC 2.1,
 /// CC 4.2.6): `{holder_key_id: commitment}`.
 pub const CHARTER_RECOVERY_COMMITMENTS_FIELD: &str = "recovery_commitments";
+/// The member of a **stored** charter row (CIRISPersist's `Attestation`) that
+/// carries [`CHARTER_RECOVERY_COMMITMENTS_FIELD`]: the row's signed envelope.
+/// The `_with_charters` entry points read commitments from
+/// `attestation_envelope.recovery_commitments`, never from the row's top level.
+pub const CHARTER_ROW_ENVELOPE_FIELD: &str = "attestation_envelope";
 /// The roster-record member naming the version it succeeds: the predecessor's
 /// `persist_row_hash` ([`roster_version_digest`]); absent at genesis (CC 3.2 T6,
 /// annex 8.11).
@@ -1208,7 +1213,12 @@ fn walk_commitments(
                                 index,
                                 charter_digest: digest.clone(),
                             })?;
-                    walk.name_from_charter(charter);
+                    // A stored row carries its entries in its signed envelope.
+                    walk.name_from_charter(
+                        charter
+                            .get(CHARTER_ROW_ENVELOPE_FIELD)
+                            .unwrap_or(&Value::Null),
+                    );
                 }
             },
         }
@@ -1274,12 +1284,15 @@ pub fn recovery_commitment_in_force(
 /// [`recovery_commitment_in_force`] following **every** charter version in
 /// link order (CC 4.2.6, rc20).
 ///
-/// `charters` are the charter rows as CIRISPersist stores them; each is
-/// identified by its own `persist_row_hash`, recomputed here, never by a
-/// caller-supplied label. A version is a charter version when it is the
-/// genesis version or names a `charter_digest` other than its predecessor's;
-/// at that point in the walk the row with that digest names its
-/// `recovery_commitments` entries. An empty `charter_digest` adopts none.
+/// `charters` are the charter rows as CIRISPersist stores them (the stored
+/// `Attestation`); each is identified by its own `persist_row_hash`,
+/// recomputed here, never by a caller-supplied label. A version is a charter
+/// version when it is the genesis version or names a `charter_digest` other
+/// than its predecessor's; at that point in the walk the row with that digest
+/// names the entries of its `attestation_envelope.recovery_commitments`
+/// ([`CHARTER_ROW_ENVELOPE_FIELD`]). A row without them names none. An empty
+/// `charter_digest` adopts none. `tests/vectors/accord_lineage/accord_lineage_v2.json`
+/// (persist's) pins the row shape.
 ///
 /// # Errors
 /// As [`recovery_commitment_in_force`], and
@@ -2849,10 +2862,12 @@ mod tests {
         recovery_a2: Holder,
     }
 
+    /// A stored charter row in persist's shape: the commitments ride in the
+    /// row's `attestation_envelope`.
     fn charter_row(entries: Value, version: u32) -> Value {
         json!({
             "charter_version": version,
-            CHARTER_RECOVERY_COMMITMENTS_FIELD: entries,
+            CHARTER_ROW_ENVELOPE_FIELD: { CHARTER_RECOVERY_COMMITMENTS_FIELD: entries },
         })
     }
 
@@ -3016,6 +3031,34 @@ mod tests {
             recover_a1n(&t, &charters, &t.recovery_a2, &spent),
             Err(LiveQuorumError::RecoveryReusesCommitment)
         );
+    }
+
+    #[test]
+    fn a_charter_row_is_read_through_its_envelope() {
+        // Entries at a stored row's top level are not where persist keeps them,
+        // and name nothing: only `attestation_envelope.recovery_commitments` does.
+        let f = recovery_fixture();
+        let entries = f.charter[CHARTER_RECOVERY_COMMITMENTS_FIELD].clone();
+        let top_level = json!({
+            "charter_version": 1,
+            CHARTER_RECOVERY_COMMITMENTS_FIELD: entries.clone(),
+        });
+        let enveloped = charter_row(entries, 1);
+        for (row, expect) in [
+            (top_level, None),
+            (enveloped, Some(f.recovery_a.record().commitment().unwrap())),
+        ] {
+            let mut v0 = f.standing.clone();
+            v0.charter_digest = row_digest(&row);
+            let lineage = [RosterVersion {
+                family: stored(v0),
+                change_envelope: None,
+            }];
+            assert_eq!(
+                recovery_commitment_in_force_with_charters(&[row], &lineage, "A1").unwrap(),
+                expect
+            );
+        }
     }
 
     #[test]
