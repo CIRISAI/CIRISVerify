@@ -897,9 +897,10 @@ fn read_object_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Object
                 .to_owned(),
         ),
     };
-    if let Some(r) = payload.get_text("refs") {
-        check_refs(r)?;
-    }
+    // The payload's members, `refs` included, are the typ's payload rule and
+    // the caller's (a genesis bundle's are its schema, CC 2.6.1.11): a payload
+    // fault is the object's own, shared by every statement over it, never a
+    // reason to refuse one statement apart from the others.
     let pk = match keys.lookup(&kid, iat.map_or(0, |s| s.saturating_mul(1000))) {
         KeyLookup::Held(pk) => pk,
         KeyLookup::NotHeld => {
