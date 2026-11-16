@@ -26,7 +26,7 @@
 //! **Public keys** are refused at the boundary: a wrong length, or an ML-KEM
 //! half that fails the FIPS 203 §7.2 encapsulation-key check (type and modulus),
 //! never becomes an [`XWingPublicKey`]. The two halves are exposed as the
-//! `onion_hop_pubkeys {ml_kem_768, x25519}` binding carries them (CC 3.3.6.2).
+//! the CC 3.3.6.2 bindings carry the whole 1216-byte key as one member (`transit_xwing_pubkey`, `onion_hop_xwing_pubkey`; Eric's ruling), in this same `pk_M ‖ pk_X` order
 //!
 //! **Randomness** is injected ([`XWingPublicKey::encapsulate_with_rng`]), so the
 //! KEM works without `std`. With the `random` feature
@@ -182,7 +182,7 @@ impl XWingPublicKey {
         Ok(Self { bytes: arr, ek })
     }
 
-    /// Assemble from the two halves the `onion_hop_pubkeys` binding carries
+    /// Assemble from the two halves (ML-KEM-768 then X25519) of a 1216-byte binding member
     /// (CC 3.3.6.2): `ml_kem_768` (1184 bytes) and `x25519` (32 bytes).
     ///
     /// # Errors

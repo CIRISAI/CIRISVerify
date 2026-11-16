@@ -136,7 +136,7 @@ interface types {
     /// agreement is `xwing-decap`, which returns the X-Wing shared secret.
     transit,
     /// The onion hop key (CC 5.4.6, `outfox-xwing-v1`), published in
-    /// `onion_hop_pubkeys`, independent of the `transit` pair: X-Wing
+    /// `onion_hop_xwing_pubkey` (one 1216-byte member), independent of the `transit` pair: X-Wing
     /// (draft-connolly-cfrg-xwing-kem; decapsulation is identical in -06 and
     /// -11). Public key: the X-Wing encoding, 1216 bytes,
     /// pk_M = mlkem768EK(1184) || pk_X = x25519PK(32), ML-KEM FIRST. Key
