@@ -63,11 +63,11 @@ charter versions are in v2, below.
 
 `accord_lineage_v2.json` is CIRISPersist's v2 vector, vendored byte for byte
 from persist commit `864b038` (`tests/vectors/accord_lineage/accord_lineage_v2.json`,
-produced by `src/federation/accord_lineage_vector.rs`). That commit is on an
-unpushed persist branch and is to ship in persist v62. **Pending:** re-vendor
-it from persist's v62 tag; the file must keep SHA-256
+produced by `src/federation/accord_lineage_vector.rs`), and ships in persist
+v62, which itself pins this verify release. It is pinned by SHA-256
 `d3ace82cbf7fe3749e51601125efa0012f2af46a27ef542166fa127dec607191`
-(LF line endings), which the harness pins. Do not edit it here.
+(LF line endings), which the harness checks; persist's v62 file must have the
+same digest. Do not edit it here.
 
 It adds to v1:
 
