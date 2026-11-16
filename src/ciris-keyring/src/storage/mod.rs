@@ -71,19 +71,20 @@ pub mod tpm_plugin_storage;
 #[cfg(feature = "tpm-plugin")]
 pub use tpm_plugin_storage::PluginTpmSecureBlobStorage;
 
-#[cfg(target_os = "android")]
+#[cfg(all(feature = "fs", target_os = "android"))]
 pub mod android;
 
-#[cfg(target_os = "android")]
+#[cfg(all(feature = "fs", target_os = "android"))]
 pub use android::AndroidKeystoreSecureBlobStorage;
 
-#[cfg(any(target_os = "ios", target_os = "macos"))]
+#[cfg(all(feature = "fs", any(target_os = "ios", target_os = "macos")))]
 pub mod ios;
 
-#[cfg(any(target_os = "ios", target_os = "macos"))]
+#[cfg(all(feature = "fs", any(target_os = "ios", target_os = "macos")))]
 pub use ios::SecureEnclaveSecureBlobStorage;
 
 use crate::error::KeyringError;
+#[cfg(feature = "fs")]
 use std::path::PathBuf;
 
 /// Trait for platform-agnostic secure blob storage.
@@ -171,6 +172,7 @@ impl std::fmt::Display for StorageBackend {
 ///
 /// Keys are encrypted with a password-derived key (Argon2id) and stored
 /// in individual files. This is the fallback when hardware is unavailable.
+#[cfg(feature = "fs")]
 pub struct SoftwareSecureBlobStorage {
     /// Base directory for storing encrypted blobs
     storage_dir: PathBuf,
@@ -180,6 +182,7 @@ pub struct SoftwareSecureBlobStorage {
     encryption_key: std::sync::RwLock<Option<[u8; 32]>>,
 }
 
+#[cfg(feature = "fs")]
 impl SoftwareSecureBlobStorage {
     /// Create new software storage.
     ///
@@ -230,10 +233,8 @@ impl SoftwareSecureBlobStorage {
     /// The master key is stored in a special file and used to derive
     /// per-blob encryption keys.
     pub fn init_with_random_key(&self) -> Result<(), KeyringError> {
-        use rand::RngCore;
-
         let mut master_key = [0u8; 32];
-        rand::thread_rng().fill_bytes(&mut master_key);
+        crate::mint_key_material(&mut master_key, "a software blob master key")?;
 
         // Store the master key (this is the weak point for software-only mode)
         let master_key_path = self.storage_dir.join(format!("{}.master.key", self.alias));
@@ -358,7 +359,7 @@ impl SoftwareSecureBlobStorage {
     #[allow(deprecated)] // from_slice deprecation warning from aes-gcm
     fn encrypt(&self, key: &[u8; 32], plaintext: &[u8]) -> Result<Vec<u8>, KeyringError> {
         use aes_gcm::{aead::Aead, Aes256Gcm, KeyInit, Nonce};
-        use rand::RngCore;
+        use rand_core::{OsRng, RngCore};
 
         let cipher = Aes256Gcm::new_from_slice(key).map_err(|e| KeyringError::StorageFailed {
             reason: format!("Failed to create cipher: {}", e),
@@ -366,7 +367,7 @@ impl SoftwareSecureBlobStorage {
 
         // Generate random nonce
         let mut nonce_bytes = [0u8; 12];
-        rand::thread_rng().fill_bytes(&mut nonce_bytes);
+        OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
 
         // Encrypt
@@ -412,6 +413,7 @@ impl SoftwareSecureBlobStorage {
     }
 }
 
+#[cfg(feature = "fs")]
 impl SecureBlobStorage for SoftwareSecureBlobStorage {
     fn store(&self, key_id: &str, data: &[u8]) -> Result<(), KeyringError> {
         let master_key = self.ensure_master_key()?;
@@ -528,6 +530,7 @@ impl SecureBlobStorage for SoftwareSecureBlobStorage {
 /// minted a fresh master for the same alias (storage-backend drift between
 /// installs). Non-destructive: the file is renamed, never deleted.
 #[derive(Debug, Clone)]
+#[cfg(feature = "fs")]
 pub struct SupersededLegacyKey {
     /// Where the legacy artifact used to live.
     pub original: PathBuf,
@@ -536,6 +539,7 @@ pub struct SupersededLegacyKey {
 }
 
 /// Suffix appended when archiving a superseded legacy key artifact.
+#[cfg(feature = "fs")]
 const SUPERSEDED_SUFFIX: &str = "superseded-pre-v8";
 
 /// Proof that a higher-tier backend **actually minted into that tier**
@@ -603,6 +607,7 @@ impl<'a> HigherTierMint<'a> {
 /// surface it rather than discard it: the keyring cannot know whether an
 /// archived artifact is a *registered* federation key, but the host can, and
 /// only the host can decide what that means.
+#[cfg(feature = "fs")]
 pub fn archive_superseded_legacy_keys(
     alias: &str,
     storage_dir: &std::path::Path,
@@ -679,6 +684,7 @@ pub fn archive_superseded_legacy_keys(
 /// The tier an alias's key material already lives in, read off the files in
 /// `storage_dir` (CIRISVerify#311).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg(feature = "fs")]
 pub enum ExistingTier {
     /// The TPM plugin tier: a `{alias}.tpmplugin_seal`, with or without blobs.
     PluginTpm,
@@ -691,6 +697,7 @@ pub enum ExistingTier {
     None,
 }
 
+#[cfg(feature = "fs")]
 fn alias_files(alias: &str, storage_dir: &std::path::Path) -> Vec<String> {
     let prefix = format!("{alias}.");
     std::fs::read_dir(storage_dir)
@@ -713,6 +720,7 @@ fn alias_files(alias: &str, storage_dir: &std::path::Path) -> Vec<String> {
 ///   platform secure element;
 /// - otherwise nothing.
 #[must_use]
+#[cfg(feature = "fs")]
 pub fn existing_tier(alias: &str, storage_dir: &std::path::Path) -> ExistingTier {
     let files = alias_files(alias, storage_dir);
     let has = |pred: &dyn Fn(&str) -> bool| files.iter().any(|n| pred(n));
@@ -741,6 +749,7 @@ pub fn existing_tier(alias: &str, storage_dir: &std::path::Path) -> ExistingTier
 /// files are the only copy of the key. Returns the restored paths. A home with
 /// any live blob is left alone: something was written after the archive, and
 /// choosing between them is the host's decision, not this function's.
+#[cfg(feature = "fs")]
 pub fn restore_stranded_software_key(alias: &str, storage_dir: &std::path::Path) -> Vec<PathBuf> {
     let files = alias_files(alias, storage_dir);
     let superseded_master = format!("{alias}.master.key.{SUPERSEDED_SUFFIX}");
@@ -802,6 +811,7 @@ pub fn restore_stranded_software_key(alias: &str, storage_dir: &std::path::Path)
 ///
 /// # Returns
 /// A boxed `SecureBlobStorage` implementation.
+#[cfg(feature = "fs")]
 pub fn create_platform_storage(
     alias: impl Into<String>,
     storage_dir: impl Into<PathBuf>,
@@ -842,6 +852,7 @@ pub fn create_platform_storage(
         },
         ExistingTier::PlatformSecureElement | ExistingTier::None => {},
     }
+    #[cfg(feature = "tpm-plugin")]
     let skip_plugin = existing_tier(&alias, &storage_dir) == ExistingTier::PlatformSecureElement;
 
     // Runtime-loaded TPM plugin (CIRISVerify#130/#141) — the keyring's sole TPM
@@ -949,7 +960,7 @@ pub fn create_platform_storage(
 /// sealed signers able to open keys under it but never create one
 /// (CIRISVerify#288). Checking each backend against ONE definition is what
 /// stops that recurring.
-#[cfg(test)]
+#[cfg(all(test, feature = "fs"))]
 pub(crate) mod contract {
     use super::SecureBlobStorage;
     use crate::error::KeyringError;
@@ -987,7 +998,7 @@ pub(crate) mod contract {
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "fs"))]
 mod tests {
     use super::*;
     use tempfile::TempDir;

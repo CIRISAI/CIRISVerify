@@ -16,6 +16,27 @@
 //! | Linux/Windows | TPM 2.0 | ECDSA P-256 | TPM Quote |
 //! | macOS | Keychain | ECDSA P-256 | (limited) |
 //! | Fallback | Software | ECDSA P-256 / Ed25519 | None (tier-limited) |
+//! | WASM (no `fs`) | Software, in memory | ECDSA P-256 / Ed25519 / ML-DSA-65 | None (tier-limited) |
+//!
+//! ## The `fs` feature and the slim profile
+//!
+//! `fs` (default-on) carries everything that touches the filesystem: path
+//! discovery, the file-backed signers and storage tiers, the platform factory
+//! (`get_platform_signer` and friends) and the hardware backends. Built with
+//! `default-features = false` (optionally plus `software` and `pqc-ml-dsa`) the
+//! crate is the slim profile for browser and UEFI WASM nodes and builds for
+//! `wasm32-unknown-unknown` without wasm-bindgen. It keeps the
+//! [`HardwareSigner`] and `PqcSigner` traits, the custody types
+//! ([`PlatformAttestation`], [`HardwareType`], [`StorageDescriptor`]), the
+//! `hw_token` taxonomy, the [`SecureBlobStorage`] trait and
+//! [`BlobTransportKeystore`] over a caller's storage, and the in-memory
+//! signers built from caller-supplied seeds (`SoftwareSigner::from_seed_bytes`,
+//! `Ed25519SoftwareSigner::from_bytes`, `MlDsa65SoftwareSigner::from_seed_bytes`).
+//! Those report [`HardwareType::SoftwareOnly`] with the usual software-key
+//! warning, like any software node. Randomness still goes through the
+//! `ciris-crypto` RNG health latch; on wasm32 the final binary supplies the
+//! getrandom backend (`getrandom::register_custom_getrandom!` for getrandom
+//! 0.2, and `--cfg getrandom_backend="custom"` for the 0.4 that ML-DSA pulls).
 //!
 //! ## Usage
 //!
@@ -86,7 +107,7 @@ pub mod pqc;
 /// Named `local_seed`, not `steward_seed`: "steward" in CIRIS means a
 /// bootstrap-trusted root identity (`bootstrap_stewards.json`); this
 /// loader loads a deployment's *local* signing identity.
-#[cfg(all(feature = "software", feature = "pqc-ml-dsa"))]
+#[cfg(all(feature = "fs", feature = "pqc-ml-dsa"))]
 pub mod local_seed;
 
 /// Generic secure blob storage abstraction.
@@ -96,6 +117,7 @@ pub mod storage;
 pub mod transport_identity;
 
 /// TPM/SE-sealed Ed25519 federation signing key (CIRISVerify#70).
+#[cfg(feature = "fs")]
 pub mod sealed_ed25519;
 
 /// User-identity hardware custody — the responsible owner's federation key,
@@ -109,20 +131,20 @@ pub mod pkcs11;
 
 /// TPM/SE-sealed ML-DSA-65 federation signing key — the PQC half of
 /// hardware-backed federation custody (CIRISVerify#70 PQC analog).
-#[cfg(feature = "pqc-ml-dsa")]
+#[cfg(all(feature = "fs", feature = "pqc-ml-dsa"))]
 pub mod sealed_mldsa65;
 
 /// Self content-encryption as a **custody capability** (CIRISVerify#183):
 /// hand out enc pubkeys + perform the KEX respond from inside the seal, by
 /// alias, with no private key material crossing any API boundary. Opens over
 /// the same sealed Ed25519 seed the federation signer uses.
-#[cfg(feature = "pqc-ml-dsa")]
+#[cfg(all(feature = "fs", feature = "pqc-ml-dsa"))]
 pub mod self_enc_keys;
 
 /// Portable signature-wrapped ML-DSA-65 custody — the ML-DSA seed on a USB key,
 /// AEAD-wrapped under a YubiKey-Ed25519-signature-derived key (both keys + PIN +
 /// touch required; YubiKey stays signing-only). Accord/high-secure portable mode.
-#[cfg(feature = "pqc-ml-dsa")]
+#[cfg(all(feature = "fs", feature = "pqc-ml-dsa"))]
 pub mod usb_wrapped_mldsa65;
 
 /// Runtime-loaded TPM backend — `dlopen`s `libciris_tpm_plugin.so` over a small
@@ -183,6 +205,25 @@ pub(crate) fn ensure_rng_health_checked() -> Result<(), KeyringError> {
     }
 }
 
+/// Fill `out` with key material from **latch-checked** randomness
+/// (CIRISVerify#207 item 6 / #74).
+///
+/// The same draw [`mint_p256_signing_key`] and the sealed-seed mints make, for
+/// the remaining raw key material (blob master keys, the wallet seed): run the
+/// startup check if nothing has, then draw through
+/// [`ciris_crypto::random::fill`], which refuses on a tripped latch. `what`
+/// names the key in the error.
+///
+/// # Errors
+/// [`KeyringError::KeyGenerationFailed`] if the RNG health latch has tripped.
+#[cfg(feature = "fs")]
+pub(crate) fn mint_key_material(out: &mut [u8], what: &str) -> Result<(), KeyringError> {
+    ensure_rng_health_checked()?;
+    ciris_crypto::random::fill(out).map_err(|e| KeyringError::KeyGenerationFailed {
+        reason: format!("RNG health check failed; refusing to mint {what}: {e}"),
+    })
+}
+
 /// Mint a P-256 signing key from **latch-checked** randomness
 /// (CIRISVerify#207 item 6 / #74).
 ///
@@ -226,34 +267,36 @@ pub use types::{
     TpmAttestation,
 };
 
-pub use platform::{
-    create_hardware_signer, create_software_signer, detect_hardware_type, MaxTier,
-    PlatformCapabilities,
-};
+#[cfg(feature = "fs")]
+pub use platform::{create_hardware_signer, create_software_signer};
+pub use platform::{detect_hardware_type, MaxTier, PlatformCapabilities};
 
-pub use storage::{create_platform_storage, SecureBlobStorage, StorageBackend};
+#[cfg(feature = "fs")]
+pub use storage::create_platform_storage;
+pub use storage::{SecureBlobStorage, StorageBackend};
 
 pub use transport_identity::{
     BlobTransportKeystore, TransportIdentityKeystore, TRANSPORT_IDENTITY_LEN,
 };
 
+#[cfg(feature = "fs")]
 pub use sealed_ed25519::{get_platform_ed25519_signer, SealedEd25519Signer};
 
 #[cfg(feature = "keyring-storage")]
 pub use keyring_storage::{create_keyring_signer, KeyringStorageSigner};
 
 #[cfg(feature = "software")]
-pub use software::{
-    Ed25519SoftwareSigner, MutableEd25519Signer, MutableSoftwareSigner, SoftwareSigner,
-};
+pub use software::{Ed25519SoftwareSigner, SoftwareSigner};
+#[cfg(feature = "fs")]
+pub use software::{MutableEd25519Signer, MutableSoftwareSigner};
 
 #[cfg(feature = "pqc-ml-dsa")]
 pub use pqc::{get_platform_pqc_signer, MlDsa65SoftwareSigner, PqcAlgorithm, PqcSigner};
 
-#[cfg(feature = "pqc-ml-dsa")]
+#[cfg(all(feature = "fs", feature = "pqc-ml-dsa"))]
 pub use sealed_mldsa65::{get_platform_sealed_mldsa65_signer, SealedMlDsa65Signer};
 
-#[cfg(all(feature = "software", feature = "pqc-ml-dsa"))]
+#[cfg(all(feature = "fs", feature = "pqc-ml-dsa"))]
 pub use local_seed::{load_local_seed, LocalSeedConfig};
 
 /// Get the best available hardware signer for the current platform.
@@ -272,6 +315,7 @@ pub use local_seed::{load_local_seed, LocalSeedConfig};
 /// # Errors
 ///
 /// Returns error if no signer can be initialized.
+#[cfg(feature = "fs")]
 pub fn get_platform_signer(alias: &str) -> Result<Box<dyn HardwareSigner>, KeyringError> {
     let caps = detect_hardware_type();
 

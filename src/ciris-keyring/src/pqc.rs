@@ -147,7 +147,7 @@ pub trait PqcSigner: Send + Sync {
 /// **Storage descriptor**: this signer reports [`StorageDescriptor::InMemory`]
 /// or [`StorageDescriptor::SoftwareFile`] depending on construction. If you
 /// load via [`Self::from_seed_bytes`] the seed is in process memory and the
-/// descriptor is `InMemory`; if you load via [`Self::from_seed_file`] the
+/// descriptor is `InMemory`; if you load via `Self::from_seed_file` the
 /// descriptor is `SoftwareFile { path }` and ephemeral-storage heuristics can
 /// fire on it the same way they do for classical software signers.
 pub struct MlDsa65SoftwareSigner {
@@ -174,7 +174,7 @@ impl MlDsa65SoftwareSigner {
     /// Create a new ML-DSA-65 signer with no key loaded.
     ///
     /// Use [`Self::import_seed`], [`Self::from_seed_bytes`], or
-    /// [`Self::from_seed_file`] to load a key.
+    /// `Self::from_seed_file` to load a key.
     #[must_use]
     pub fn new(alias: impl Into<String>) -> Self {
         let alias = alias.into();
@@ -242,6 +242,10 @@ impl MlDsa65SoftwareSigner {
     ///
     /// - [`KeyringError::OperationFailed`] if the file cannot be read.
     /// - [`KeyringError::InvalidKey`] if the file is not exactly 32 bytes.
+    ///
+    /// Needs the `fs` feature; without it, read the seed yourself and call
+    /// [`Self::from_seed_bytes`].
+    #[cfg(feature = "fs")]
     pub fn from_seed_file(
         path: impl Into<PathBuf>,
         alias: impl Into<String>,
@@ -436,14 +440,14 @@ impl PqcSigner for ciris_crypto::MlDsa65Signer {
 /// **Tomorrow (post-quantum HSM era, ~2030+)**: this factory will probe for
 /// hardware backends (post-quantum HSM, secure-enclave PQC primitives) and
 /// fall back to software only when hardware is unavailable — the same
-/// pattern [`crate::get_platform_signer`] uses for classical
+/// pattern `crate::get_platform_signer` uses for classical
 /// algorithms today.
 ///
 /// # Behavior in v1.9.0
 ///
 /// The signer is returned WITHOUT a loaded key. Callers must load via
 /// [`MlDsa65SoftwareSigner::import_seed`], [`MlDsa65SoftwareSigner::from_seed_bytes`],
-/// or [`MlDsa65SoftwareSigner::from_seed_file`] before signing. (This matches
+/// or `MlDsa65SoftwareSigner::from_seed_file` before signing. (This matches
 /// the `Ed25519SoftwareSigner::new` pattern; see [`crate::Ed25519SoftwareSigner`].)
 ///
 /// # Errors
@@ -468,6 +472,7 @@ pub fn get_platform_pqc_signer(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(feature = "fs")]
     use std::io::Write;
 
     fn deterministic_seed() -> [u8; 32] {
@@ -520,6 +525,7 @@ mod tests {
         assert!(matches!(err, KeyringError::InvalidKey { .. }));
     }
 
+    #[cfg(feature = "fs")]
     #[test]
     fn from_seed_file_records_path_in_descriptor() {
         let dir = tempfile::tempdir().unwrap();
@@ -536,6 +542,7 @@ mod tests {
         }
     }
 
+    #[cfg(feature = "fs")]
     #[test]
     fn from_seed_file_rejects_wrong_length() {
         let dir = tempfile::tempdir().unwrap();

@@ -115,8 +115,7 @@ impl PluginTpmSecureBlobStorage {
         } else {
             // Genesis: mint a FRESH TPM master.
             let mut m = [0u8; MASTER_SECRET_SIZE];
-            use rand::RngCore;
-            rand::rngs::OsRng.fill_bytes(&mut m);
+            crate::mint_key_material(&mut m, "a TPM blob master secret")?;
             let sealed = plugin.seal(&m)?;
             write_atomic(&seal_path, &sealed)?;
 
@@ -178,8 +177,8 @@ impl PluginTpmSecureBlobStorage {
             reason: format!("aes init: {e}"),
         })?;
         let mut nonce_bytes = [0u8; AES_GCM_NONCE_SIZE];
-        use rand::RngCore;
-        rand::rngs::OsRng.fill_bytes(&mut nonce_bytes);
+        use rand_core::{OsRng, RngCore};
+        OsRng.fill_bytes(&mut nonce_bytes);
         let nonce = Nonce::from_slice(&nonce_bytes);
         let ciphertext =
             cipher

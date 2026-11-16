@@ -14,21 +14,33 @@ authors.workspace = true
 # (tss-esapi) backend was DELETED. So the default build carries zero tss-esapi /
 # libtss2 on every target (incl. musl + the wheel) and reaches TPM purely at
 # runtime where the plugin .so + a device exist.
-default = ["software", "keyring-storage", "tpm-plugin"]
+default = ["software", "fs", "keyring-storage", "tpm-plugin"]
 software = []
-android = ["jni"]
-ios = []
+# Filesystem-backed custody (verify 23.1.0). Path discovery (`dirs`), every
+# file-backed signer (seed files, the sealed Ed25519 / ML-DSA-65 signers, the
+# USB-wrapped ML-DSA key, `local_seed`), the storage tiers and their factory
+# (`SoftwareSecureBlobStorage`, `create_platform_storage`, the legacy-key
+# archive / restore helpers), the platform signer factory
+# (`get_platform_signer`, `create_hardware_signer`, `create_software_signer`)
+# and the platform hardware backends. Without it the crate is the slim profile
+# for browser and UEFI WASM nodes (CIRISServer FSD/WASM_NODE.md): the signer
+# traits, the in-memory software signers from caller-supplied seeds, the custody
+# types and the `hw_token` taxonomy, building for `wasm32-unknown-unknown` with
+# no wasm-bindgen. Every feature that needs files implies `fs`.
+fs = ["software", "dep:dirs"]
+android = ["jni", "fs"]
+ios = ["fs"]
 # Runtime-loaded TPM backend (CIRISVerify#130/#141): dlopen `libciris_tpm_plugin.so`
 # (seal/unseal + signer + quote over a versioned C ABI) instead of link-binding
 # tss-esapi. Pure-Rust dlopen (`libloading`); builds on EVERY target. TPM is
 # opportunistic where the plugin .so + a device exist at runtime, else the
 # software fallback. This is the keyring's sole TPM backend as of v8.0.0.
-tpm-plugin = ["dep:libloading"]
+tpm-plugin = ["fs", "dep:libloading"]
 # YubiKey / PKCS#11 hardware-token user-identity signer (CIRISVerify#80).
 # Real cryptoki C_Sign behind a physical token; off by default (needs a token).
-pkcs11 = ["dep:cryptoki"]
-tpm-windows = ["windows"]  # Experimental: Windows native TPM via Platform Crypto Provider
-keyring-storage = ["dep:keyring"]
+pkcs11 = ["fs", "dep:cryptoki"]
+tpm-windows = ["fs", "windows"]  # Experimental: Windows native TPM via Platform Crypto Provider
+keyring-storage = ["fs", "dep:keyring"]
 # Post-quantum cryptography: enables ML-DSA-65 software signer + PqcSigner trait.
 # Used by CIRISPersist's cold-path PQC fill-in flow (federation_keys etc.) so
 # downstream consumers don't reach into the ml-dsa crate directly.
@@ -45,7 +57,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 p256 = { workspace = true }
 ed25519-dalek.workspace = true
-rand_core.workspace = true
+rand_core = { workspace = true, features = ["getrandom"] }
 # pkcs11 (cryptoki) builds on ALL targets for feature parity (CIRISVerify#80
 # follow-up — so the wheel/FFI can carry `default = ["pkcs11"]` uniformly across
 # linux/macos/windows/android/ios; coordinated with the ciris-server cut). cryptoki
@@ -66,10 +78,11 @@ libloading = { version = "0.8", optional = true }
 # files keyed to standard triples and fails to link on the Tier-3
 # x86_64-win7-windows-msvc target (CIRISVerify#67 LNK1181). Only uses
 # data_local_dir()/home_dir(), unchanged across the major bump.
-dirs = "6"
+dirs = { version = "6", optional = true }
 
-# Cryptographic primitives for secure blob storage
-rand = "0.8"
+# Cryptographic primitives for secure blob storage. Randomness is
+# `rand_core::OsRng` (above) and, for key material, `ciris_crypto::random::fill`
+# behind the RNG health latch; the `rand` crate is not a dependency (23.1.0).
 aes-gcm = "0.10"
 hkdf = "0.12"
 sha2 = "0.10"
@@ -93,6 +106,14 @@ keyring = { version = "3", optional = true }
 # `rand_core` this crate already pulls — so the light default stays light. The
 # heavier PQC surface is still feature-gated below.
 ciris-crypto = { path = "../ciris-crypto", version = "23", default-features = false, features = ["random"] }
+
+# getrandom 0.2 (under rand_core 0.6) has no default backend on
+# wasm32-unknown-unknown and refuses to compile there. `custom` lets the final
+# binary register one with `getrandom::register_custom_getrandom!` (for a WASM
+# node, `ciris-host-abi`); no wasm-bindgen / `js`. getrandom 0.3+ in the same
+# graph takes `--cfg getrandom_backend="custom"` from the final build instead.
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+getrandom = { version = "0.2", default-features = false, features = ["custom"] }
 
 # Platform-specific
 [target.'cfg(target_os = "android")'.dependencies]
@@ -142,4 +163,5 @@ criterion.workspace = true
 
 [[bench]]
 name = "storage_descriptor"
+required-features = ["fs"]
 harness = false

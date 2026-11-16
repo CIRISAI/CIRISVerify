@@ -455,6 +455,10 @@ jobs:
         run: cargo nextest run -p ciris-verify-core --profile ci --no-default-features --features std,pqc
         env:
           PROPTEST_CASES: 64
+      # verify 23.1.0: the keyring's slim (no `fs`) profile, natively. The
+      # wasm32 build is checked in `pure-half`; this runs its tests.
+      - name: Test ciris-keyring without fs
+        run: cargo nextest run -p ciris-keyring --profile ci --no-default-features --features software,pqc-ml-dsa
 
   # CIRISVerify#325 / CIRISServer#870: the pure half of ciris-verify-core and
   # ciris-crypto is `#![no_std]` + `alloc` (no clock, no RNG, no I/O). These
@@ -489,6 +493,19 @@ jobs:
           done
       - name: ciris-verify-core, std without host
         run: cargo +${{ matrix.toolchain }} check -p ciris-verify-core --no-default-features --features std,pqc
+      # verify 23.1.0: the keyring's slim profile (no `fs`) for browser and UEFI
+      # WASM nodes. It keeps `std` but must not reach for files, paths or a
+      # wasm-bindgen RNG. getrandom 0.2 builds with its `custom` backend (set in
+      # the keyring's Cargo.toml); the 0.4 under ML-DSA takes the cfg below. The
+      # final binary (ciris-host-abi) registers the real backend.
+      - name: ciris-keyring, no fs (wasm32)
+        env:
+          RUSTFLAGS: --cfg getrandom_backend="custom"
+        run: |
+          for f in "" software pqc-ml-dsa software,pqc-ml-dsa; do
+            cargo +${{ matrix.toolchain }} check -p ciris-keyring --no-default-features \
+              --features "$f" --target wasm32-unknown-unknown
+          done
 
   # ==========================================================================
   # Build Matrix - Native Platforms

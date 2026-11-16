@@ -140,14 +140,14 @@ impl PluginTpmSigner {
     /// Build a full TPM attestation with a PCR quote bound to `nonce`, falling
     /// back to a no-quote TPM attestation if the quote path is unavailable.
     fn attest(&self, nonce: Option<&[u8]>) -> PlatformAttestation {
-        use rand::RngCore;
+        use rand_core::{OsRng, RngCore};
 
         if self.plugin.quote_supported() {
             let mut random = [0u8; 32];
             let nonce: &[u8] = match nonce {
                 Some(n) => n,
                 None => {
-                    rand::rngs::OsRng.fill_bytes(&mut random);
+                    OsRng.fill_bytes(&mut random);
                     &random
                 },
             };
