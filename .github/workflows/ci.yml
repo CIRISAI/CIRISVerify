@@ -241,7 +241,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: CIRISAI/CIRISConstitution
-          ref: c742adc8f84254908b67508b4a4d9d6f6446a96c # rc16; CC 3.1.5.5 evidence:{suite} family, signed polarity (#322)
+          ref: d4bd2a6b0583b8bc57c06a89f265557d357a3191 # v1.0-rc20 (released as guidance; cites verify v23.2.0 vectors)
           path: .cc
       - name: CC registry tokens — every emitted family (matcher replay)
         env:
