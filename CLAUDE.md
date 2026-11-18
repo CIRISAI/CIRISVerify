@@ -234,6 +234,7 @@ and concrete review-time examples.
 - No certificate pinning (removed in 23.0.0, #321): trust comes from signatures checked against baked keys, never from the TLS channel. Until the edition-2 signed build record is published, Level 1 and Level 5 read an unsigned registry manifest over TLS; state that limitation (THREAT_MODEL AV-5) rather than claim more
 - Nonces must be 32+ bytes from cryptographic RNG
 - Hybrid signatures must be bound so neither half verifies alone. Every forward-model signature (edition-2 rows and objects, transparency STHs and witness cosignatures, CC Part 6 substrate objects) is the CC 2.6.1.7 ML-DSA-65-Ed25519 composite (`ciris_crypto::composite`), never checked on one half. The bound-hybrid form (PQC covering the classical signature) survives only where objects of the earlier form are read (CC 8.11, 8.11.12): earlier-form JSON rows, and `ciris_verify_core::earlier_form` (`verify_bound_hybrid`, `EarlierSignedTreeHead`), which is verify-only and has no producer
+- A row statement's signing key must be a key of its CWT `iss` (CC 2.6.1.8 step 8, `kid_not_of_iss`; THREAT_MODEL AV-52): never read `iss` as the issuer on the strength of the signature alone
 - Revocation revisions must be monotonically non-decreasing (anti-rollback)
 - Transparency log entries are append-only (never modify or delete)
 
