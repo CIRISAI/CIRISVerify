@@ -1969,11 +1969,14 @@ fn place_rows(
         }),
     };
 
-    // Each seat's binding, under the seat's recorded key.
+    // Each seat's binding, under the seat's recorded key. The bundle places
+    // that key for the seat (it may differ from the seat's identity
+    // reference after a re-seat), and the binding's `iss` is the seat by its
+    // slot (author == iss, `verify_under`), so the key is the seat's here.
     let mut bindings = BTreeMap::new();
     for (seat, (id, bytes)) in &binding_slots {
         let r = &records[*seat];
-        let row = verify_under(*id, bytes, &OneKey(r.rec.kid, &r.rec.key))?;
+        let row = verify_under(*id, bytes, &PlacedKey(r.rec.kid, &r.rec.key))?;
         let (transit, onion) =
             check_seat_binding(&row.payload, &r.rec.key, &r.id).map_err(|f| row_invalid(*id, f))?;
         bindings.insert(
