@@ -1,6 +1,6 @@
 //! The family model's selector arms, read by one rule: a port of
 //! CIRISConstitution's reference evaluator `tools/cc_family_select.py`
-//! (rc20 e08bf05).
+//! (rc20 e08bf05; unchanged at v1.0-rc20 d4bd2a6).
 //!
 //! The port follows the Python, not the prose. It replays CC's
 //! `manifests/family_select_vectors.json` (`tests/family_select_vectors.rs`).
@@ -152,7 +152,10 @@ pub struct SelectContext {
     /// The group's deciding-seat count at the head the row names.
     pub seats: Option<u64>,
     /// How the row is signed, read from its statements and the roster they
-    /// are counted over.
+    /// are counted over. Never a payload member: the family check derives it
+    /// when this is `None` (`own` for a statement of a row with an author,
+    /// `group` for the statements of one counted row read together; see
+    /// `edition2::family`). A supplied value overrides the derivation.
     pub act: Option<Act>,
 }
 

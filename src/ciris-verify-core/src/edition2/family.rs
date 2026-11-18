@@ -14,13 +14,22 @@
 //! are read by [`select`], the port of CC's reference evaluator, against the
 //! row's leaf (its `dimension` bound under the family) and the keys the
 //! caller supplies in a [`SelectContext`] ([`verify_row_in_family_with`]).
+//!
+//! `act` is never a payload member: the reader derives it from the statements
+//! it reads (CC 2.6.1.9). One statement read alone is `own` when its row
+//! carries an `author` ([`statement_act`]): the author's own statement, or a
+//! second signer's consent to the author's row. The statements of one counted
+//! row read together ([`verify_group_row_in_family`]) are `group`. A caller's
+//! `SelectContext::act` overrides the derivation; only
+//! [`verify_row_in_family_as_given`] reads the context with nothing derived
+//! (a harness withholding `act`).
 
 pub mod select;
 
-use super::{verify_row_statement, Invalid, KeyDirectory, Value, Verdict, VerifiedRow};
+use super::{verify_row_statement, Digest32, Invalid, KeyDirectory, Value, Verdict, VerifiedRow};
 use crate::prelude::*;
 pub use select::SelectContext;
-use select::{Arm, Cell, SecondSigner, Select, Selector, Signers};
+use select::{Act, Arm, Cell, SecondSigner, Select, Selector, Signers};
 
 /// Where a second-consent role names its party.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -83,24 +92,28 @@ impl FamilyModel for BTreeMap<String, FamilyRule> {
 
 /// CC's canonical extract of the family model's `authorship` and
 /// `second_signers` cells (`manifests/family_authorship.json`,
-/// CIRISConstitution rc20 e08bf05), vendored at
+/// CIRISConstitution v1.0-rc20 d4bd2a6), vendored at
 /// `data/cc/family_authorship.json`.
 pub const FAMILY_AUTHORSHIP_JSON: &str = include_str!("../../data/cc/family_authorship.json");
 /// The CC commit the extract comes from.
-pub const FAMILY_MODEL_CC_COMMIT: &str = "e08bf05";
+pub const FAMILY_MODEL_CC_COMMIT: &str = "d4bd2a6";
 /// SHA-256 (lowercase hex) of the vendored extract, LF line endings.
 pub const FAMILY_AUTHORSHIP_SHA256: &str =
-    "334027850f9c2d7fd382249b5bb188533a25307082794bce168625d1e5cfaf93";
+    "2732a2de3368bb97750de39e4b44613e40979ad80343dfebe59d8515d28a9c0b";
 /// SHA-256 of the family model the extract is cut from (its
 /// `_meta.source_sha256`).
 pub const FAMILY_MODEL_SHA256: &str =
-    "3c64403a56b0da0138433041af972ee552ead95d5f129f1f5fad26df6a8d1caf";
+    "04446a5b50ee07b94c21139cd770e0de84317fe9e84240e6f0d68ee574b8caa0";
 
 /// Second-signer members the vendored model cannot resolve from the row: a
-/// `gap` (the text names no member), and `owner_of_sub` (the owner the
-/// owner-binding of the row's `sub` names, which only a held binding tells).
-/// A role naming one is never admitted from the vendored model.
-pub const UNRESOLVED_MEMBERS: &[&str] = &["gap", "owner_of_sub"];
+/// `gap` (the text names no member), `owner_of_sub` (the owner the
+/// owner-binding of the row's `sub` names, which only a held binding tells),
+/// and `target` (`key:record`'s `predecessor_key`: the issuer of the row its
+/// `refs.target` names, CC 3.1.3, which only that held row tells). A role
+/// naming one is never admitted from the vendored model; a caller holding
+/// the row or binding admits it through its own [`FamilyModel`]
+/// ([`WithVendored`]).
+pub const UNRESOLVED_MEMBERS: &[&str] = &["gap", "owner_of_sub", "target"];
 
 /// One family of the vendored extract.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -374,7 +387,8 @@ pub fn row_leaf(row: &VerifiedRow) -> Option<String> {
 
 /// Read a row statement and apply its family's rules, with no caller-supplied
 /// selector keys: [`verify_row_in_family_with`] under an empty
-/// [`SelectContext`] (the leaf is still bound from the row's dimension).
+/// [`SelectContext`] (the leaf is still bound from the row's dimension, and
+/// the act derived from the statement, [`statement_act`]).
 #[must_use]
 pub fn verify_row_in_family(
     bytes: &[u8],
@@ -384,10 +398,24 @@ pub fn verify_row_in_family(
     verify_row_in_family_with(bytes, keys, model, &SelectContext::default())
 }
 
+/// The act a reader derives from one statement read alone (CC 2.6.1.9): `own`
+/// when the row carries an `author`, whether the statement is the author's
+/// (`iss` = `author`) or a second signer's consent to the author's row (the
+/// act is still the author's; the role is checked by [`check_family`]). A row
+/// without an author is a voice of a counted row; read alone it gives no act
+/// (`None`, unknown): its act is `group` only when read with the other
+/// statements of its row ([`verify_group_row_in_family`]).
+#[must_use]
+pub fn statement_act(row: &VerifiedRow) -> Option<Act> {
+    row.author.as_ref().map(|_| Act::Own)
+}
+
 /// Read a row statement and apply its family's rules for this row: the
 /// model's [`FamilyModel::rule_for`] with the row's leaf ([`row_leaf`]) and
 /// the caller's `ctx` (`verb`, `identity`, `group`, `seats`, `act`; a key
-/// left `None` reads unknown).
+/// left `None` reads unknown). When `ctx.act` is `None` the act is derived
+/// from the statement ([`statement_act`]); a supplied `ctx.act` is used as
+/// given.
 ///
 /// An undecided authorship is [`FamilyFault::AuthorshipUndetermined`]; an
 /// authorship cell whose every arm reads false is [`FamilyFault::NoArmHolds`].
@@ -398,10 +426,44 @@ pub fn verify_row_in_family_with(
     model: &dyn FamilyModel,
     ctx: &SelectContext,
 ) -> FamilyVerdict {
+    read_in_family(bytes, keys, model, ctx, true)
+}
+
+/// [`verify_row_in_family_with`] with `ctx` read exactly as given: no act is
+/// derived, so a `ctx.act` left `None` reads unknown. A reader always has the
+/// act (CC 2.6.1.9); this is for a harness that withholds it, where a cell
+/// that reads `act` is [`FamilyFault::AuthorshipUndetermined`].
+#[must_use]
+pub fn verify_row_in_family_as_given(
+    bytes: &[u8],
+    keys: &dyn KeyDirectory,
+    model: &dyn FamilyModel,
+    ctx: &SelectContext,
+) -> FamilyVerdict {
+    read_in_family(bytes, keys, model, ctx, false)
+}
+
+fn read_in_family(
+    bytes: &[u8],
+    keys: &dyn KeyDirectory,
+    model: &dyn FamilyModel,
+    ctx: &SelectContext,
+    derive_act: bool,
+) -> FamilyVerdict {
     match verify_row_statement(bytes, keys) {
         Verdict::Invalid(i) => FamilyVerdict::Invalid(i),
         Verdict::Waiting { missing } => FamilyVerdict::Waiting(missing),
         Verdict::Valid(row) => {
+            let derived;
+            let ctx = if derive_act && ctx.act.is_none() {
+                derived = SelectContext {
+                    act: statement_act(&row),
+                    ..ctx.clone()
+                };
+                &derived
+            } else {
+                ctx
+            };
             let leaf = row_leaf(&row);
             let leaf = leaf.as_deref();
             let rule = match model.rule_for(&row.family, leaf, ctx) {
@@ -429,6 +491,65 @@ pub fn verify_row_in_family_with(
             }
         },
     }
+}
+
+/// The statements of one counted row read together (CC 2.6.1.9).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GroupReading {
+    /// The row id every valid statement shares; `None` when none is valid.
+    pub row_id: Option<Digest32>,
+    /// Each statement's verdict, in the order given.
+    pub voices: Vec<FamilyVerdict>,
+}
+
+/// Why statements read as one group are not one row's voices.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum GroupFault {
+    /// No statement was given.
+    NoStatements,
+    /// The valid statements name more than one row (different payloads).
+    SeveralRows,
+}
+
+/// Read several statements over one payload, the voices of one counted row,
+/// and apply the family's rules to each with `act` = `group` (a supplied
+/// `ctx.act` is used as given).
+///
+/// Counting the distinct voices against the roster they name, under its
+/// `consensus_protocol`, is the caller's: this reads the act, not the count.
+///
+/// # Errors
+/// [`GroupFault::NoStatements`] for an empty slice; [`GroupFault::SeveralRows`]
+/// when the valid statements do not share one row id.
+pub fn verify_group_row_in_family(
+    statements: &[&[u8]],
+    keys: &dyn KeyDirectory,
+    model: &dyn FamilyModel,
+    ctx: &SelectContext,
+) -> Result<GroupReading, GroupFault> {
+    if statements.is_empty() {
+        return Err(GroupFault::NoStatements);
+    }
+    let ctx = SelectContext {
+        act: ctx.act.or(Some(Act::Group)),
+        ..ctx.clone()
+    };
+    let voices: Vec<FamilyVerdict> = statements
+        .iter()
+        .map(|s| verify_row_in_family_with(s, keys, model, &ctx))
+        .collect();
+    let mut row_id = None;
+    for v in &voices {
+        if let FamilyVerdict::Valid { row, .. } = v {
+            match row_id {
+                None => row_id = Some(row.row_id),
+                Some(id) if id == row.row_id => {},
+                Some(_) => return Err(GroupFault::SeveralRows),
+            }
+        }
+    }
+    Ok(GroupReading { row_id, voices })
 }
 
 #[cfg(test)]
@@ -490,7 +611,7 @@ mod tests {
     fn vendored_model_cells() {
         // Plain cells.
         assert!(matches!(
-            vendored_rule("key:record"),
+            vendored_rule("evidence:.suite:.kind:.cell:.prefix"),
             Some(VendoredRule::Known(FamilyRule { authored: true, .. }))
         ));
         assert!(matches!(
@@ -500,25 +621,54 @@ mod tests {
                 ..
             }))
         ));
-        // A selector and a gap: the caller decides.
-        assert_eq!(
-            vendored_rule("accord:."),
-            Some(VendoredRule::CallerMustSupply)
-        );
-        assert_eq!(
-            vendored_rule("licensure:.authority_id"),
-            Some(VendoredRule::CallerMustSupply)
-        );
+        // Selectors (rc20: key:record and licensure read `act`): the row's
+        // keys decide.
+        for f in ["accord:.", "key:record", "licensure:.authority_id"] {
+            assert_eq!(
+                vendored_rule(f),
+                Some(VendoredRule::CallerMustSupply),
+                "{f}"
+            );
+        }
         // Roles: `sub` admitted, `gap` dropped.
         let Some(VendoredRule::Known(d)) = vendored_rule("self:delegates_to") else {
             panic!()
         };
         assert_eq!(d.roles, vec![("delegate".to_owned(), RoleParty::Sub)]);
-        // key:record's two roles are both gap.
-        let Some(VendoredRule::Known(k)) = vendored_rule("key:record") else {
+        // key:record's one role, predecessor_key, is by `target` (rc20): the
+        // issuer of the row `refs.target` names, which the row does not carry,
+        // so the vendored model admits no second signer.
+        let kr = vendored_family("key:record").unwrap();
+        assert_eq!(
+            kr.second_signers
+                .iter()
+                .map(|e| (e.role.as_str(), e.member.as_str()))
+                .collect::<Vec<_>>(),
+            vec![("predecessor_key", "target")]
+        );
+        let own = SelectContext {
+            act: Some(select::Act::Own),
+            ..SelectContext::default()
+        };
+        let RuleAnswer::Rule(k) = VendoredFamilyModel.rule_for("key:record", None, &own) else {
             panic!()
         };
+        assert!(k.authored);
         assert!(k.roles.is_empty());
+        // group:roster's listed_member is by `members` (rc20).
+        let Some(VendoredRule::Known(g)) = vendored_rule("group:roster") else {
+            panic!()
+        };
+        assert_eq!(
+            g.roles,
+            vec![(
+                "listed_member".to_owned(),
+                RoleParty::Member("members".into())
+            )]
+        );
+        // The rc20 registry's new families are not in rc20's family model.
+        assert!(vendored_rule("location_proof:.version").is_none());
+        assert!(vendored_rule("trust:blessing").is_none());
         assert!(vendored_rule("nobody:fam").is_none());
     }
 
@@ -556,11 +706,12 @@ mod tests {
             v.rule_for("collection:.kind", Some("x"), &none),
             RuleAnswer::Undetermined
         );
-        // A gap stays undetermined whatever is supplied.
-        assert_eq!(
-            v.rule_for("licensure:.authority_id", Some("x"), &group),
-            RuleAnswer::Undetermined
-        );
+        // key:record and licensure (rc20): group counts, an act withheld
+        // is undetermined.
+        for f in ["key:record", "licensure:.authority_id"] {
+            assert_eq!(authored(v.rule_for(f, None, &group)), Some(false), "{f}");
+            assert_eq!(v.rule_for(f, None, &none), RuleAnswer::Undetermined, "{f}");
+        }
         // `when`-conditioned second signers: admitted when the `when` holds,
         // never `owner_of_sub` or a `gap` member, none while unknown.
         let own = SelectContext {
@@ -580,10 +731,22 @@ mod tests {
             panic!()
         };
         assert!(r.roles.is_empty());
+        // retirement:{state}'s custodian is by `custodian` (rc20) when the
+        // leaf is retired.
         let RuleAnswer::Rule(r) = v.rule_for("retirement:.state", Some("retired"), &none) else {
             panic!()
         };
-        assert!(r.roles.is_empty());
+        assert_eq!(
+            r.roles,
+            vec![(
+                "custodian".to_owned(),
+                RoleParty::Member("custodian".into())
+            )]
+        );
+        // ... and own authors.
+        for f in ["key:record", "licensure:.authority_id"] {
+            assert_eq!(authored(v.rule_for(f, None, &own)), Some(true), "{f}");
+        }
     }
 
     #[test]
@@ -661,6 +824,154 @@ mod tests {
         assert_eq!(
             run(&a, "s", "accord:lifecycle:.kind", p(vec![]), &[&a]),
             FamilyVerdict::FamilyInvalid(FamilyFault::DimensionMissing)
+        );
+    }
+
+    fn signed(signer: &CompositeSigningKey, sub: &str, family: &str, p: &Value) -> Vec<u8> {
+        sign_row_statement(signer, &idr(signer), sub, "scores", family, p, vec![]).unwrap()
+    }
+
+    fn held(keys: &[&CompositeSigningKey]) -> BTreeMap<Digest32, CompositePublicKey> {
+        keys.iter()
+            .map(|k| (thumbprint(k.public_key()), k.public_key().clone()))
+            .collect()
+    }
+
+    /// CC 2.6.1.9: the reader derives `act` from the statements it reads.
+    #[test]
+    fn act_is_derived_from_the_statements() {
+        let (a, b) = (key(1), key(2));
+        let none = SelectContext::default();
+        let v = &VendoredFamilyModel;
+        let authored = Value::Map(vec![
+            (t("asserted_at"), Value::Uint(1)),
+            (t("author"), t(&idr(&a))),
+            (t("target"), t(&idr(&b))),
+        ]);
+        let counted = Value::Map(vec![(t("asserted_at"), Value::Uint(1))]);
+        let ab = held(&[&a, &b]);
+        for f in ["key:record", "licensure:.authority_id"] {
+            // The author's own statement: own, authored.
+            let st = signed(&a, "s", f, &authored);
+            let FamilyVerdict::Valid { row, role: None } = verify_row_in_family(&st, &ab, v) else {
+                panic!("{f}")
+            };
+            assert_eq!(statement_act(&row), Some(Act::Own), "{f}");
+            // Withheld by a harness: undetermined.
+            assert_eq!(
+                verify_row_in_family_as_given(&st, &ab, v, &none),
+                FamilyVerdict::FamilyInvalid(FamilyFault::AuthorshipUndetermined),
+                "{f}"
+            );
+            // A supplied act overrides: group is counted, and the row has an author.
+            let group = SelectContext {
+                act: Some(Act::Group),
+                ..SelectContext::default()
+            };
+            assert_eq!(
+                verify_row_in_family_with(&st, &ab, v, &group),
+                FamilyVerdict::FamilyInvalid(FamilyFault::AuthorColumn),
+                "{f}"
+            );
+            // One voice of a counted row read alone gives no act.
+            let voice = signed(&a, "s", f, &counted);
+            assert_eq!(
+                verify_row_in_family(&voice, &ab, v),
+                FamilyVerdict::FamilyInvalid(FamilyFault::AuthorshipUndetermined),
+                "{f}"
+            );
+            // The voices of one counted row read together: group, one row.
+            let voices = [voice.clone(), signed(&b, "s", f, &counted)];
+            let refs: Vec<&[u8]> = voices.iter().map(Vec::as_slice).collect();
+            let g = verify_group_row_in_family(&refs, &ab, v, &none).unwrap();
+            assert!(g.row_id.is_some(), "{f}");
+            assert!(
+                g.voices
+                    .iter()
+                    .all(|x| matches!(x, FamilyVerdict::Valid { role: None, .. })),
+                "{f}: {g:?}"
+            );
+            // Read as a group, an authored row breaks the author column.
+            let g = verify_group_row_in_family(&[st.as_slice()], &ab, v, &none).unwrap();
+            assert_eq!(
+                g.voices,
+                vec![FamilyVerdict::FamilyInvalid(FamilyFault::AuthorColumn)],
+                "{f}"
+            );
+        }
+        // key:record's predecessor_key is the issuer of the row `refs.target`
+        // names; a payload member `target` naming the signer does not admit
+        // it from the vendored model.
+        let st = signed(&b, "s", "key:record", &authored);
+        assert_eq!(
+            verify_row_in_family(&st, &ab, v),
+            FamilyVerdict::FamilyInvalid(FamilyFault::IssNotInRole)
+        );
+        // A second signer's consent to an authored row still derives own: a
+        // caller model that admits the role (it holds the target row) accepts it.
+        let mut m = BTreeMap::new();
+        m.insert(
+            "key:record".to_owned(),
+            FamilyRule {
+                authored: true,
+                roles: vec![("predecessor_key".into(), RoleParty::Member("target".into()))],
+                scores_dimension: false,
+            },
+        );
+        assert!(matches!(
+            verify_row_in_family(&st, &ab, &m),
+            FamilyVerdict::Valid { role: Some(r), ref row } if r == "predecessor_key"
+                && statement_act(row) == Some(Act::Own)
+        ));
+        // Different payloads are not one row.
+        let other = Value::Map(vec![(t("asserted_at"), Value::Uint(2))]);
+        let two = [
+            signed(&a, "s", "key:record", &counted),
+            signed(&b, "s", "key:record", &other),
+        ];
+        let refs: Vec<&[u8]> = two.iter().map(Vec::as_slice).collect();
+        assert_eq!(
+            verify_group_row_in_family(&refs, &ab, v, &none),
+            Err(GroupFault::SeveralRows)
+        );
+        assert_eq!(
+            verify_group_row_in_family(&[], &ab, v, &none),
+            Err(GroupFault::NoStatements)
+        );
+    }
+
+    /// rc20's registry lists `location_proof:{version}` and `trust:blessing`;
+    /// rc20's family model does not (CC adds them in its next edition, with
+    /// `subject` authorship). Today a `location_proof` row passes the
+    /// statement reader and reads `UnregisteredFamily` under the vendored model.
+    #[test]
+    fn location_proof_is_registered_but_not_in_the_family_model() {
+        use crate::namespace_match::{resolve, Resolved};
+        let id = |d: &str| match resolve(d) {
+            Ok(Resolved::Family { family_id, .. }) => family_id,
+            other => panic!("{d}: {other:?}"),
+        };
+        let fam = id("location_proof:v1");
+        assert_eq!(fam, "location_proof:.version");
+        assert_eq!(id("trust:blessing:v1"), "trust:blessing");
+        assert!(vendored_family(&fam).is_none());
+        assert!(vendored_family("trust:blessing").is_none());
+
+        let a = key(1);
+        let p = Value::Map(vec![
+            (t("asserted_at"), Value::Uint(1)),
+            (t("author"), t(&idr(&a))),
+            (t("dimension"), t("location_proof:v1")),
+        ]);
+        let st = signed(&a, &idr(&a), &fam, &p);
+        let d = held(&[&a]);
+        assert!(matches!(
+            verify_row_statement(&st, &d),
+            Verdict::Valid(ref row) if row.family == fam
+        ));
+        assert_eq!(
+            verify_row_in_family(&st, &d, &VendoredFamilyModel),
+            FamilyVerdict::FamilyInvalid(FamilyFault::UnregisteredFamily)
         );
     }
 }
