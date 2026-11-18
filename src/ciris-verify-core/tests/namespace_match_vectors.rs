@@ -29,7 +29,11 @@ fn vendored_registry_is_the_pinned_one() {
 fn every_cc_vector_agrees() {
     let doc: Value = serde_json::from_str(VECTORS).expect("vectors parse");
     let vectors = doc["vectors"].as_array().expect("vectors array");
-    assert_eq!(vectors.len(), 1299, "CC rc20 ships 1,299 namespace vectors");
+    assert_eq!(
+        vectors.len(),
+        1311,
+        "CC v1.0-rc20 (d4bd2a6) ships 1,311 namespace vectors"
+    );
     let mut failures = Vec::new();
     for (i, v) in vectors.iter().enumerate() {
         let dim = v["dimension"].as_str().expect("dimension");
