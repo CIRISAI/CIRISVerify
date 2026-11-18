@@ -56,7 +56,7 @@
 
 use super::family::VendoredFamilyModel;
 use super::family::{row_leaf, verify_row_in_family, FamilyFault, FamilyVerdict};
-use super::{Digest32, Invalid, KeyDirectory, KeyLookup, MissingKey, Value, VerifiedRow};
+use super::{Digest32, Invalid, KeyDirectory, KeyLookup, KeyOf, MissingKey, Value, VerifiedRow};
 use crate::prelude::*;
 use ciris_crypto::composite::CompositePublicKey;
 
@@ -289,6 +289,19 @@ impl KeyDirectory for HaltRoster {
                 KeyLookup::Held(Box::new(pk.clone()))
             })
     }
+
+    /// A holder's key is its holder's: `iss` must name the holder the
+    /// bundle in force seats at `kid`.
+    fn key_of(&self, kid: &Digest32, iss: &Digest32) -> KeyOf {
+        use subtle::ConstantTimeEq as _;
+        match self
+            .holder_of_kid(kid)
+            .and_then(super::identity_ref_thumbprint)
+        {
+            Some(h) if bool::from(h.ct_eq(iss)) => KeyOf::Yes,
+            _ => KeyOf::No,
+        }
+    }
 }
 
 /// The answer of an accord-row reader: Valid, Waiting, or Refused (CC 2.6.1.8).
@@ -449,6 +462,7 @@ fn invalid_token(i: &Invalid) -> String {
         Invalid::DimensionFamily => "dimension_family".into(),
         Invalid::DimensionRefused { token } => format!("dimension_refused:{token}"),
         Invalid::DimensionUnregistered => "dimension_unregistered".into(),
+        Invalid::KidNotOfIss => "kid_not_of_iss".into(),
     }
 }
 
@@ -668,6 +682,11 @@ impl<T> From<Result<T, HaltRefusal>> for HaltReading<T> {
 fn read_statement(bytes: &[u8], roster: &HaltRoster) -> HaltReading<VerifiedRow> {
     let row = match verify_row_in_family(bytes, roster, &VendoredFamilyModel) {
         FamilyVerdict::Valid { row, .. } => *row,
+
+        // The roster's `key_of`: the key is not the holder `iss` names.
+        FamilyVerdict::Invalid(Invalid::KidNotOfIss) => {
+            return HaltReading::Refused(HaltRefusal::IssNotHolder)
+        },
         FamilyVerdict::Invalid(i) => return HaltReading::Refused(HaltRefusal::Statement(i)),
         FamilyVerdict::FamilyInvalid(f) => return HaltReading::Refused(HaltRefusal::Family(f)),
         // CC 2.6.1.8 step 6: a key the roster does not hold is Waiting on it.
@@ -679,8 +698,10 @@ fn read_statement(bytes: &[u8], roster: &HaltRoster) -> HaltReading<VerifiedRow>
             w.merge(HaltWaiting {
                 kids: missing
                     .iter()
-                    .map(|m| match m {
-                        MissingKey::Kid(k) | MissingKey::CoveringRecord { kid: k, .. } => *k,
+                    .filter_map(|m| match m {
+                        MissingKey::Kid(k) | MissingKey::CoveringRecord { kid: k, .. } => Some(*k),
+                        // A roster holds keys, not records: no record link is missing here.
+                        _ => None,
                     })
                     .collect(),
                 bundles: Vec::new(),

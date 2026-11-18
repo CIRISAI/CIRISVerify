@@ -137,6 +137,22 @@ pub enum Invalid {
     },
     /// `dimension` is open vocabulary: no registered family claims it.
     DimensionUnregistered,
+    /// `kid_not_of_iss`: the signing key is not a key of the CWT `iss`. It is
+    /// neither the key `iss` names (the issuer's genesis key) nor one the key
+    /// directory proves the issuer's by a rotation chain from that genesis
+    /// key ([`KeyDirectory::key_of`]; CC 2.6.1.7, CC 2.4.1.1, CC 3.1.3).
+    KidNotOfIss,
+}
+
+impl Invalid {
+    /// The stable refusal token, where this reader names one.
+    #[must_use]
+    pub fn token(&self) -> Option<&'static str> {
+        match self {
+            Self::KidNotOfIss => Some("kid_not_of_iss"),
+            _ => None,
+        }
+    }
 }
 
 /// The answer for one statement.
@@ -169,6 +185,10 @@ pub enum MissingKey {
         /// The instant to cover, POSIX ms.
         at_ms: u64,
     },
+    /// A key record, by its row id, that a held rotation record names in
+    /// `refs.target` as its predecessor's record: the link of the issuer's
+    /// rotation chain that is not held (CC 2.4.1.1).
+    Record(Digest32),
 }
 
 /// What a reader knows of the key under a `kid`.
@@ -214,11 +234,42 @@ pub struct VerifiedRow {
     pub disclosures: Vec<disclosure::Disclosed>,
 }
 
+/// Whether a held key is a key of an issuer, as a [`KeyDirectory`] knows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum KeyOf {
+    /// The directory proves the key is the issuer's: a rotation chain from
+    /// the issuer's genesis key reaches it, or a roster seats it for that
+    /// issuer.
+    Yes,
+    /// It does not: the key is another identity's, its chain is broken or
+    /// contested, or the directory has nothing to prove it by.
+    No,
+    /// A link of the chain is not held; the statement waits on it.
+    Waiting(Vec<MissingKey>),
+}
+
 /// The keys a reader holds, by thumbprint.
+///
+/// A row statement reads Valid only if its signing key is a key of its
+/// `iss` (`kid_not_of_iss`). The reader checks the self case itself: `kid`
+/// equals the thumbprint inside `iss` (a genesis key, a room key, any key
+/// signing as itself). Every other case is [`KeyDirectory::key_of`]'s.
 pub trait KeyDirectory {
     /// What is known of the key whose RFC 9679 thumbprint is `kid`, for a
     /// statement asserted at `asserted_at` (POSIX ms).
     fn lookup(&self, kid: &Digest32, asserted_at: u64) -> KeyLookup;
+
+    /// Is the key `kid` a key of the issuer whose genesis key's thumbprint is
+    /// `iss` (the thumbprint inside the CWT `iss`, CC 2.6.1.7)? Asked only
+    /// after the signature under `kid` verified, and only when `kid != iss`.
+    ///
+    /// The default answers [`KeyOf::No`]: a directory of raw keys proves no
+    /// key another identity's, so under it a key signs only as itself.
+    fn key_of(&self, kid: &Digest32, iss: &Digest32) -> KeyOf {
+        let _ = (kid, iss);
+        KeyOf::No
+    }
 }
 
 impl KeyDirectory for BTreeMap<Digest32, CompositePublicKey> {
@@ -227,6 +278,7 @@ impl KeyDirectory for BTreeMap<Digest32, CompositePublicKey> {
             .cloned()
             .map_or(KeyLookup::NotHeld, |k| KeyLookup::Held(Box::new(k)))
     }
+    // `key_of`: the default. Raw keys carry no owner, so only the self case holds.
 }
 
 /// The AKP COSE_Key of a composite public key, `{1: 7, 3: -70100, -1: pub}`.
@@ -253,6 +305,19 @@ pub fn identity_ref(thumbprint: &Digest32) -> String {
     let mut s = String::from(IDENTITY_REF_PREFIX);
     s.push_str(&base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(thumbprint));
     s
+}
+
+/// The thumbprint inside an identity reference: the inverse of
+/// [`identity_ref`], `None` for anything [`identity_ref`] would not produce.
+#[must_use]
+pub fn identity_ref_thumbprint(s: &str) -> Option<Digest32> {
+    use base64::Engine as _;
+    let t = s.strip_prefix(IDENTITY_REF_PREFIX)?;
+    let b = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(t)
+        .ok()?;
+    let d: Digest32 = b.try_into().ok()?;
+    (identity_ref(&d) == s).then_some(d)
 }
 
 /// Does `s` match the CDDL `identity-ref`?
@@ -635,6 +700,7 @@ fn read_row_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Verdict, 
         .filter(|s| is_identity_ref(s))
         .ok_or(malformed("iss"))?
         .to_owned();
+    let iss_kid = identity_ref_thumbprint(&iss).ok_or(malformed("iss"))?;
     let sub = cwt
         .get_int(C_SUB)
         .and_then(Value::as_text)
@@ -729,6 +795,17 @@ fn read_row_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Verdict, 
     }
     pk.verify(&sig_structure(prot_bytes, payload_bytes), sig)
         .map_err(|_| Invalid::BadSignature)?;
+
+    // The signing key is a key of `iss` (CC 2.6.1.7: `iss` names the
+    // signer's genesis key, so it stays when the key rotates): the key `iss`
+    // names, or one the directory proves the issuer's. Fail closed.
+    if !bool::from(kid.ct_eq(&iss_kid)) {
+        match keys.key_of(&kid, &iss_kid) {
+            KeyOf::Yes => {},
+            KeyOf::No => return Err(Invalid::KidNotOfIss),
+            KeyOf::Waiting(missing) => return Ok(Verdict::Waiting { missing }),
+        }
+    }
 
     Ok(Verdict::Valid(Box::new(VerifiedRow {
         row_id: row_id(&row_type, &family, &sub, author.as_deref(), payload_bytes),

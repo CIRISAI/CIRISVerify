@@ -21,11 +21,12 @@
 //! a row is retryable).
 
 use super::{
-    cde, thumbprint, verify_row_statement, Digest32, KeyDirectory, KeyLookup, MissingKey, Value,
-    Verdict,
+    cde, identity_ref_thumbprint, row_id, thumbprint, verify_row_statement, Digest32, KeyDirectory,
+    KeyLookup, KeyOf, MissingKey, Value, Verdict, VerifiedRow,
 };
 use crate::prelude::*;
 use ciris_crypto::composite::{CompositePublicKey, COSE_ALG};
+use subtle::ConstantTimeEq;
 
 /// The key-record window of this edition, seconds (CC constants
 /// `key_record_max_secs`). Conformance fixes it; no caller widens it.
@@ -235,9 +236,39 @@ pub fn check_key_record(payload: &Value) -> Result<KeyRecord, KeyRecordError> {
 }
 
 /// A directory of key-record statements, answering by verifying them.
+///
+/// Every statement inserted is filed under the kid of the key its payload
+/// records. Several statements over one record payload (a rotation record's
+/// own statement by the new key and its predecessor's statement) are filed
+/// together and all kept. [`KeyDirectory::lookup`] reads the key's own
+/// latest statement, or, where the key signed none, the latest inserted;
+/// [`KeyDirectory::key_of`] reads them all.
+///
+/// **Whose key it is** ([`KeyDirectory::key_of`]; CC 2.6.1.7, CC 2.4.1.1,
+/// CC 3.1.3): `iss` names the signer's genesis key and stays when the key
+/// rotates, so a key `K` other than the one `iss` names is the issuer's only
+/// through a rotation chain held here:
+///
+/// 1. a statement by `K` itself (proof of possession) over a valid
+///    `key:record` of `K`, whose `iss` is the issuer;
+/// 2. whose payload names the predecessor's record by row-ref in
+///    `refs.target`;
+/// 3. a statement by the predecessor key `P` over the same row, of the same
+///    `iss`, valid here (so `P` is in turn the issuer's: its genesis key, or
+///    the next link down);
+/// 4. the named record held, `P`'s own valid record, covering the rotation
+///    record's `asserted_at` (the old key's signature "made at an instant
+///    inside that record");
+/// 5. no other held rotation of `P` to another key (two rotations of one
+///    key, neither naming the other, hand on nothing).
+///
+/// A record of `K` signed only by another key never makes `K` that key's
+/// issuer's. A link not held is [`KeyOf::Waiting`] (on the predecessor key,
+/// or on [`MissingKey::Record`]); anything else is [`KeyOf::No`].
 #[derive(Debug, Default, Clone)]
 pub struct KeyRecordDirectory {
     records: BTreeMap<Digest32, Vec<u8>>,
+    statements: BTreeMap<Digest32, Vec<Vec<u8>>>,
 }
 
 impl KeyRecordDirectory {
@@ -254,23 +285,38 @@ impl KeyRecordDirectory {
     /// payload `key` to file it under.
     pub fn insert(&mut self, statement: Vec<u8>) -> Option<Digest32> {
         let kid = record_kid(&statement)?;
+        let all = self.statements.entry(kid).or_default();
+        if !all.contains(&statement) {
+            all.push(statement.clone());
+        }
         self.records.insert(kid, statement);
         Some(kid)
+    }
+
+    fn scoped<'a>(&'a self, kid: &Digest32, st: &[u8], depth: usize) -> Scoped<'a> {
+        Scoped {
+            dir: self,
+            depth: depth + 1,
+            own: *kid,
+            own_key: record_key(st),
+        }
     }
 
     fn resolve(&self, kid: &Digest32, at: u64, depth: usize) -> KeyLookup {
         if depth > MAX_RECORD_DEPTH {
             return KeyLookup::Invalid;
         }
-        let Some(st) = self.records.get(kid) else {
+        // The key's own latest statement over a record of it, else the
+        // latest statement filed under it.
+        let own = self.statements.get(kid).and_then(|all| {
+            all.iter()
+                .rev()
+                .find(|s| peek(s).is_some_and(|pk| ct_eq(&pk.kid, kid)))
+        });
+        let Some(st) = own.or_else(|| self.records.get(kid)) else {
             return KeyLookup::NotHeld;
         };
-        let inner = Scoped {
-            dir: self,
-            depth: depth + 1,
-            own: *kid,
-            own_key: record_key(st),
-        };
+        let inner = self.scoped(kid, st, depth);
         match verify_row_statement(st, &inner) {
             Verdict::Valid(row) => {
                 if row.family != KEY_RECORD_FAMILY {
@@ -296,15 +342,162 @@ impl KeyRecordDirectory {
             Verdict::Invalid(_) => KeyLookup::Invalid,
         }
     }
+
+    /// Is `kid` a key of the issuer whose genesis key is `iss`, by a
+    /// rotation chain held here? Asked with `kid != iss`.
+    fn chain(&self, kid: &Digest32, iss: &Digest32, depth: usize) -> KeyOf {
+        if depth > MAX_RECORD_DEPTH {
+            return KeyOf::No;
+        }
+        let Some(all) = self.statements.get(kid) else {
+            return KeyOf::No;
+        };
+        let mut waiting = None;
+        for own in all {
+            let Some(pk) = peek(own) else { continue };
+            if !(ct_eq(&pk.kid, kid) && pk.iss.is_some_and(|i| ct_eq(&i, iss))) {
+                continue;
+            }
+            match self.rotation(kid, own, all, depth) {
+                KeyOf::Yes => return KeyOf::Yes,
+                KeyOf::Waiting(m) => {
+                    waiting.get_or_insert(m);
+                },
+                KeyOf::No => {},
+            }
+        }
+        waiting.map_or(KeyOf::No, KeyOf::Waiting)
+    }
+
+    /// One rotation record of `kid`, from its own statement `own` (steps 1–3).
+    fn rotation(&self, kid: &Digest32, own: &[u8], all: &[Vec<u8>], depth: usize) -> KeyOf {
+        let inner = self.scoped(kid, own, depth);
+        // 1. The new key's own statement over a valid record of it.
+        let Some((row, rec)) = valid_record(own, &inner, kid) else {
+            return KeyOf::No;
+        };
+        // 2. It names its predecessor's record.
+        let Some(target) = target_of(&row) else {
+            return KeyOf::No;
+        };
+        // 3. The predecessor's statement over the same row, of the same iss.
+        let mut waiting = None;
+        for co in all {
+            let Some(pk) = peek(co) else { continue };
+            if ct_eq(&pk.kid, kid) || !ct_eq(&pk.row_id, &row.row_id) {
+                continue;
+            }
+            match verify_row_statement(co, &inner) {
+                Verdict::Valid(c) if ct_eq(&c.row_id, &row.row_id) && c.iss == row.iss => {
+                    match self.predecessor(&c.kid, &target, rec.asserted_at, kid, depth) {
+                        KeyOf::Yes => return KeyOf::Yes,
+                        KeyOf::Waiting(m) => {
+                            waiting.get_or_insert(m);
+                        },
+                        KeyOf::No => {},
+                    }
+                },
+                Verdict::Waiting { missing } => {
+                    waiting.get_or_insert(missing);
+                },
+                _ => {},
+            }
+        }
+        waiting.map_or(KeyOf::No, KeyOf::Waiting)
+    }
+
+    /// Steps 4 and 5: `target` is the predecessor `prev`'s own valid record
+    /// covering `at`, and `prev` has no rival rotation away from `next`.
+    fn predecessor(
+        &self,
+        prev: &Digest32,
+        target: &Digest32,
+        at: u64,
+        next: &Digest32,
+        depth: usize,
+    ) -> KeyOf {
+        let found = self
+            .statements
+            .get(prev)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .any(|p| {
+                peek(p).is_some_and(|pk| ct_eq(&pk.kid, prev) && ct_eq(&pk.row_id, target))
+                    && valid_record(p, &self.scoped(prev, p, depth), prev).is_some_and(
+                        |(_, prec)| {
+                            prec.asserted_at <= at && prec.valid_until.is_none_or(|u| at <= u)
+                        },
+                    )
+            });
+        if !found {
+            // A named row held as something else breaks the chain; one not
+            // held at all is the link the statement waits on.
+            let held = self
+                .statements
+                .values()
+                .flatten()
+                .any(|s| peek(s).is_some_and(|pk| ct_eq(&pk.row_id, target)));
+            return if held {
+                KeyOf::No
+            } else {
+                KeyOf::Waiting(vec![MissingKey::Record(*target)])
+            };
+        }
+        if self.rival_rotation(prev, next, depth) {
+            return KeyOf::No;
+        }
+        KeyOf::Yes
+    }
+
+    /// Does `prev` have a held, valid rotation to a key other than `next`:
+    /// that key's own statement over a record naming a record of `prev` in
+    /// `refs.target`, with `prev`'s statement over the same row?
+    fn rival_rotation(&self, prev: &Digest32, next: &Digest32, depth: usize) -> bool {
+        let is_prev_record = |t: &Digest32| {
+            self.statements.get(prev).is_some_and(|ps| {
+                ps.iter()
+                    .any(|p| peek(p).is_some_and(|pk| ct_eq(&pk.kid, prev) && ct_eq(&pk.row_id, t)))
+            })
+        };
+        self.statements.iter().any(|(k2, sts)| {
+            if ct_eq(k2, prev) || ct_eq(k2, next) {
+                return false;
+            }
+            sts.iter().any(|own| {
+                if !peek(own).is_some_and(|pk| ct_eq(&pk.kid, k2)) {
+                    return false;
+                }
+                let inner = self.scoped(k2, own, depth);
+                let Some((row, _)) = valid_record(own, &inner, k2) else {
+                    return false;
+                };
+                if !target_of(&row).is_some_and(|t| is_prev_record(&t)) {
+                    return false;
+                }
+                sts.iter().any(|co| {
+                    peek(co)
+                        .is_some_and(|pk| ct_eq(&pk.kid, prev) && ct_eq(&pk.row_id, &row.row_id))
+                        && matches!(
+                            verify_row_statement(co, &inner),
+                            Verdict::Valid(c) if c.iss == row.iss
+                        )
+                })
+            })
+        })
+    }
 }
 
 impl KeyDirectory for KeyRecordDirectory {
     fn lookup(&self, kid: &Digest32, asserted_at: u64) -> KeyLookup {
         self.resolve(kid, asserted_at, 0)
     }
+
+    fn key_of(&self, kid: &Digest32, iss: &Digest32) -> KeyOf {
+        self.chain(kid, iss, 0)
+    }
 }
 
-/// The view a key record's own statement is verified through: its own key
+/// The view a key record's own statements are verified through: its own key
 /// (a self-signed record) is taken from its payload, every other key from
 /// the directory one level deeper.
 struct Scoped<'a> {
@@ -324,6 +517,85 @@ impl KeyDirectory for Scoped<'_> {
         }
         self.dir.resolve(kid, asserted_at, self.depth)
     }
+
+    /// A record's own statement names the issuer it claims. Here that claim
+    /// only lets the record read as a record of its key (proof of
+    /// possession); whether the key is the issuer's is the directory's chain
+    /// to prove ([`KeyRecordDirectory`]), never the record's own word. Every
+    /// other key is proved through the directory, one level deeper.
+    fn key_of(&self, kid: &Digest32, iss: &Digest32) -> KeyOf {
+        if *kid == self.own {
+            return KeyOf::Yes;
+        }
+        self.dir.chain(kid, iss, self.depth)
+    }
+}
+
+fn ct_eq(a: &Digest32, b: &Digest32) -> bool {
+    bool::from(a.ct_eq(b))
+}
+
+/// A statement verified as a valid key record of `kid`.
+fn valid_record(
+    st: &[u8],
+    dir: &dyn KeyDirectory,
+    kid: &Digest32,
+) -> Option<(VerifiedRow, KeyRecord)> {
+    let Verdict::Valid(row) = verify_row_statement(st, dir) else {
+        return None;
+    };
+    if row.family != KEY_RECORD_FAMILY {
+        return None;
+    }
+    let rec = check_key_record(&row.payload).ok()?;
+    ct_eq(&rec.kid, kid).then_some((*row, rec))
+}
+
+/// The row id a record's `refs.target` names (`[2, [-16, digest]]`).
+fn target_of(row: &VerifiedRow) -> Option<Digest32> {
+    let t = row.payload.get_text("refs")?.get_text("target")?;
+    match t.as_array()? {
+        [ed, id] if ed.as_u64() == Some(super::EDITION) => match id.as_array()? {
+            [alg, d] if alg.as_i64() == Some(-16) => d.as_bytes()?.try_into().ok(),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// What the chain needs of a statement, read without verifying it: its
+/// signer, the thumbprint inside its `iss`, and its row id.
+struct Peek {
+    kid: Digest32,
+    iss: Option<Digest32>,
+    row_id: Digest32,
+}
+
+fn peek(statement: &[u8]) -> Option<Peek> {
+    let Value::Tag(18, inner) = cde::decode(statement).ok()? else {
+        return None;
+    };
+    let a = inner.as_array()?;
+    let prot = cde::decode(a.first()?.as_bytes()?).ok()?;
+    let payload_bytes = a.get(2)?.as_bytes()?;
+    let payload = cde::decode(payload_bytes).ok()?;
+    // Protected labels: 4 kid, 15 CWT claims (1 iss, 2 sub), -70001 row
+    // type, -70002 family (CC 2.6.1.3).
+    let kid: Digest32 = prot.get_int(4)?.as_bytes()?.try_into().ok()?;
+    let cwt = prot.get_int(15)?;
+    let iss = cwt
+        .get_int(1)
+        .and_then(Value::as_text)
+        .and_then(identity_ref_thumbprint);
+    let sub = cwt.get_int(2)?.as_text()?;
+    let row_type = prot.get_int(-70001)?.as_text()?;
+    let family = prot.get_int(-70002)?.as_text()?;
+    let author = payload.get_text("author").and_then(Value::as_text);
+    Some(Peek {
+        kid,
+        iss,
+        row_id: row_id(row_type, family, sub, author, payload_bytes),
+    })
 }
 
 fn payload_of(statement: &[u8]) -> Option<Value> {

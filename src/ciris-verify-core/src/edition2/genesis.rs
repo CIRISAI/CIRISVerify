@@ -81,8 +81,8 @@
 use super::keys::{check_key_record, KeyRecord, KeyRecordError, PqCustody, KEY_RECORD_FAMILY};
 use super::recovery::recovery_commitment;
 use super::{
-    cde, identity_ref, is_identity_ref, object_id, row_id, thumbprint, verify_object_statement,
-    verify_row_statement, Digest32, Invalid, KeyDirectory, KeyLookup, ObjectVerdict, Value,
+    cde, is_identity_ref, object_id, row_id, thumbprint, verify_object_statement,
+    verify_row_statement, Digest32, Invalid, KeyDirectory, KeyLookup, KeyOf, ObjectVerdict, Value,
     Verdict, VerifiedRow,
 };
 use crate::accord_custody_attestation::{verify_yubikey_piv_attestation, CustodyError};
@@ -892,6 +892,26 @@ impl KeyDirectory for OneKey<'_> {
             KeyLookup::NotHeld
         }
     }
+    // `key_of`: the default (`No`); the key signs only as itself.
+}
+
+/// One key a bundle places: a named key record verified under the key it
+/// records. Whose key it is is the bundle's to place (CC 2.6.1.11: a
+/// holder's key changes only by a bundle), judged by this reader after the
+/// row verifies (`holder_not_genesis_key`, the seat in force, a recovery's
+/// commitment), so `key_of` answers for that one key.
+struct PlacedKey<'a>(Digest32, &'a CompositePublicKey);
+impl KeyDirectory for PlacedKey<'_> {
+    fn lookup(&self, kid: &Digest32, at: u64) -> KeyLookup {
+        OneKey(self.0, self.1).lookup(kid, at)
+    }
+    fn key_of(&self, kid: &Digest32, _: &Digest32) -> KeyOf {
+        if *kid == self.0 {
+            KeyOf::Yes
+        } else {
+            KeyOf::No
+        }
+    }
 }
 
 fn peek_voice(index: usize, bytes: &[u8]) -> Result<Voice, StatementFault> {
@@ -1181,17 +1201,8 @@ fn parse_payload(p: &Value) -> Result<Bundle, Malformed> {
     })
 }
 
-/// The thumbprint an identity reference names.
-#[must_use]
-pub fn identity_ref_thumbprint(s: &str) -> Option<Digest32> {
-    use base64::Engine as _;
-    let t = s.strip_prefix(super::IDENTITY_REF_PREFIX)?;
-    let b = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(t)
-        .ok()?;
-    let d: Digest32 = b.try_into().ok()?;
-    (identity_ref(&d) == s).then_some(d)
-}
+/// The thumbprint an identity reference names (the one decoder, in [`super`]).
+pub use super::identity_ref_thumbprint;
 
 // ------------------------------------------------------------------ one bundle
 
@@ -1830,10 +1841,9 @@ fn row_invalid(row: Digest32, fault: RowFault) -> Inconclusive {
 fn verify_under(
     id: Digest32,
     bytes: &[u8],
-    kid: Digest32,
-    key: &CompositePublicKey,
+    keys: &dyn KeyDirectory,
 ) -> Result<VerifiedRow, Inconclusive> {
-    match verify_row_statement(bytes, &OneKey(kid, key)) {
+    match verify_row_statement(bytes, keys) {
         Verdict::Valid(r) => {
             if r.author.as_deref() != Some(r.iss.as_str()) {
                 return Err(row_invalid(id, RowFault::AuthorNotIss));
@@ -1963,7 +1973,7 @@ fn place_rows(
     let mut bindings = BTreeMap::new();
     for (seat, (id, bytes)) in &binding_slots {
         let r = &records[*seat];
-        let row = verify_under(*id, bytes, r.rec.kid, &r.rec.key)?;
+        let row = verify_under(*id, bytes, &OneKey(r.rec.kid, &r.rec.key))?;
         let (transit, onion) =
             check_seat_binding(&row.payload, &r.rec.key, &r.id).map_err(|f| row_invalid(*id, f))?;
         bindings.insert(
@@ -1992,7 +2002,7 @@ fn verify_record(id: Digest32, bytes: &[u8], pk: &RowPeek) -> Result<KeyRecord, 
         };
         return Err(row_invalid(id, fault));
     };
-    let row = verify_under(id, bytes, thumbprint(key), key)?;
+    let row = verify_under(id, bytes, &PlacedKey(thumbprint(key), key))?;
     check_key_record(&row.payload).map_err(|e| row_invalid(id, RowFault::Record(e)))
 }
 
@@ -2218,6 +2228,7 @@ fn voice_key(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edition2::identity_ref;
 
     #[test]
     fn identity_ref_round_trips() {
