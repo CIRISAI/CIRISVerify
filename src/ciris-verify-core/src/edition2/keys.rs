@@ -258,13 +258,19 @@ pub fn check_key_record(payload: &Value) -> Result<KeyRecord, KeyRecordError> {
 ///    the next link down);
 /// 4. the named record held, `P`'s own valid record, covering the rotation
 ///    record's `asserted_at` (the old key's signature "made at an instant
-///    inside that record");
+///    inside that record"; a record covers `[asserted_at, valid_until)`);
 /// 5. no other held rotation of `P` to another key (two rotations of one
 ///    key, neither naming the other, hand on nothing).
 ///
 /// A record of `K` signed only by another key never makes `K` that key's
-/// issuer's. A link not held is [`KeyOf::Waiting`] (on the predecessor key,
-/// or on [`MissingKey::Record`]); anything else is [`KeyOf::No`].
+/// issuer's. What is not held waits (CC 2.7, CC 2.6.1.9): the named record
+/// ([`MissingKey::Record`]), or a voice of a held row
+/// ([`MissingKey::Voice`]: the new key's own statement, the predecessor's
+/// statement over the rotation, or the predecessor's own statement over the
+/// named record), since a row gains voices without changing its row id. No
+/// is fixed by bytes held: a record naming no predecessor, a named record of
+/// another issuer or not covering the rotation's instant, a voice that fails,
+/// or a rival.
 #[derive(Debug, Default, Clone)]
 pub struct KeyRecordDirectory {
     records: BTreeMap<Digest32, Vec<u8>>,
@@ -330,7 +336,9 @@ impl KeyRecordDirectory {
                 }
                 // The record is valid but ends before the instant: a newer
                 // record of the key may cover it, so the row waits (CC 2.4.1.1).
-                if rec.valid_until.is_some_and(|u| at > u) {
+                // A record covers [asserted_at, valid_until): the end
+                // instant itself is not covered (CC 2.6.2; CWT `exp`).
+                if rec.valid_until.is_some_and(|u| at >= u) {
                     return KeyLookup::Waiting(vec![MissingKey::CoveringRecord {
                         kid: *kid,
                         at_ms: at,
@@ -352,13 +360,17 @@ impl KeyRecordDirectory {
         let Some(all) = self.statements.get(kid) else {
             return KeyOf::No;
         };
+        // Each record of `kid` some voice of which names this issuer, read
+        // once over all of its voices held.
+        let rows: BTreeSet<Digest32> = all
+            .iter()
+            .filter_map(|s| peek(s))
+            .filter(|pk| pk.iss.is_some_and(|i| ct_eq(&i, iss)))
+            .map(|pk| pk.row_id)
+            .collect();
         let mut waiting = None;
-        for own in all {
-            let Some(pk) = peek(own) else { continue };
-            if !(ct_eq(&pk.kid, kid) && pk.iss.is_some_and(|i| ct_eq(&i, iss))) {
-                continue;
-            }
-            match self.rotation(kid, own, all, depth) {
+        for row_id in &rows {
+            match self.rotation(kid, iss, row_id, all, depth) {
                 KeyOf::Yes => return KeyOf::Yes,
                 KeyOf::Waiting(m) => {
                     waiting.get_or_insert(m);
@@ -369,71 +381,123 @@ impl KeyRecordDirectory {
         waiting.map_or(KeyOf::No, KeyOf::Waiting)
     }
 
-    /// One rotation record of `kid`, from its own statement `own` (steps 1–3).
-    fn rotation(&self, kid: &Digest32, own: &[u8], all: &[Vec<u8>], depth: usize) -> KeyOf {
-        let inner = self.scoped(kid, own, depth);
-        // 1. The new key's own statement over a valid record of it.
-        let Some((row, rec)) = valid_record(own, &inner, kid) else {
+    /// One record of `kid` (row `row_id`) as a rotation from its
+    /// predecessor. What is not held waits (a named row, or a voice of a
+    /// held row: CC 2.7, CC 2.6.1.9); No is fixed by bytes held.
+    fn rotation(
+        &self,
+        kid: &Digest32,
+        iss: &Digest32,
+        row_id: &Digest32,
+        all: &[Vec<u8>],
+        depth: usize,
+    ) -> KeyOf {
+        let voices: Vec<&Vec<u8>> = all
+            .iter()
+            .filter(|s| peek(s).is_some_and(|pk| ct_eq(&pk.row_id, row_id)))
+            .collect();
+        // The row's own bytes: what it names and its instant. Every voice
+        // signs the same payload (the row id covers it).
+        let Some(payload) = voices.first().and_then(|s| payload_of(s)) else {
             return KeyOf::No;
         };
-        // 2. It names its predecessor's record.
-        let Some(target) = target_of(&row) else {
+        // A record naming no predecessor is a first record of another key.
+        let Some(target) = target_in(&payload) else {
             return KeyOf::No;
         };
-        // 3. The predecessor's statement over the same row, of the same iss.
+        let Some(at) = payload.get_text("asserted_at").and_then(Value::as_u64) else {
+            return KeyOf::No;
+        };
+        // The named record, not held: the link the statement waits on.
+        let Some(prev) = self.record_key_of_row(&target) else {
+            return KeyOf::Waiting(vec![MissingKey::Record(target)]);
+        };
+        // The named record is the predecessor's own, by its own voice.
+        let prev_own: Vec<&Vec<u8>> = self
+            .statements
+            .get(&prev)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .filter(|s| {
+                peek(s).is_some_and(|pk| ct_eq(&pk.kid, &prev) && ct_eq(&pk.row_id, &target))
+            })
+            .collect();
+        if prev_own.is_empty() {
+            return KeyOf::Waiting(vec![MissingKey::Voice {
+                kid: prev,
+                row: target,
+            }]);
+        }
+        // Of this issuer, and covering the rotation's instant: fixed by the
+        // named record's own bytes (a later record of the predecessor never
+        // puts the instant inside this one).
+        let of_iss = prev_own
+            .iter()
+            .any(|s| peek(s).is_some_and(|pk| pk.iss.is_some_and(|i| ct_eq(&i, iss))));
+        if !of_iss || !self.prev_record_covers(&prev, &target, at, depth) {
+            return KeyOf::No;
+        }
+        // The new key's own voice (possession), of this issuer.
+        let own: Vec<&Vec<u8>> = voices
+            .iter()
+            .copied()
+            .filter(|s| peek(s).is_some_and(|pk| ct_eq(&pk.kid, kid)))
+            .collect();
+        if own.is_empty() {
+            return KeyOf::Waiting(vec![MissingKey::Voice {
+                kid: *kid,
+                row: *row_id,
+            }]);
+        }
+        let Some((row, _rec, inner)) = own.iter().find_map(|o| {
+            let inner = self.scoped(kid, o, depth);
+            valid_record(o, &inner, kid)
+                .filter(|(r, _)| identity_ref_thumbprint(&r.iss).is_some_and(|i| ct_eq(&i, iss)))
+                .map(|(r, rec)| (r, rec, inner))
+        }) else {
+            return KeyOf::No;
+        };
+        // The predecessor's voice over the same row, of the same iss.
+        let co: Vec<&Vec<u8>> = voices
+            .iter()
+            .copied()
+            .filter(|s| peek(s).is_some_and(|pk| ct_eq(&pk.kid, &prev)))
+            .collect();
+        if co.is_empty() {
+            return KeyOf::Waiting(vec![MissingKey::Voice {
+                kid: prev,
+                row: *row_id,
+            }]);
+        }
         let mut waiting = None;
-        for co in all {
-            let Some(pk) = peek(co) else { continue };
-            if ct_eq(&pk.kid, kid) || !ct_eq(&pk.row_id, &row.row_id) {
-                continue;
-            }
-            match verify_row_statement(co, &inner) {
-                Verdict::Valid(c) if ct_eq(&c.row_id, &row.row_id) && c.iss == row.iss => {
-                    match self.predecessor(&c.kid, &target, rec.asserted_at, kid, depth) {
-                        KeyOf::Yes => return KeyOf::Yes,
-                        KeyOf::Waiting(m) => {
-                            waiting.get_or_insert(m);
-                        },
-                        KeyOf::No => {},
-                    }
+        for c in co {
+            match verify_row_statement(c, &inner) {
+                Verdict::Valid(v) if ct_eq(&v.row_id, &row.row_id) && v.iss == row.iss => {
+                    // Two rotations of one key, neither naming the other,
+                    // hand on nothing (CC 2.4.1.1).
+                    return if self.rival_rotation(&prev, kid, depth) {
+                        KeyOf::No
+                    } else {
+                        KeyOf::Yes
+                    };
                 },
                 Verdict::Waiting { missing } => {
                     waiting.get_or_insert(missing);
                 },
+                // A voice that fails is refused alone.
                 _ => {},
             }
         }
         waiting.map_or(KeyOf::No, KeyOf::Waiting)
     }
 
-    /// Steps 4 and 5: `target` is the predecessor `prev`'s own valid record
-    /// covering `at`, and `prev` has no rival rotation away from `next`.
-    fn predecessor(
-        &self,
-        prev: &Digest32,
-        target: &Digest32,
-        at: u64,
-        next: &Digest32,
-        depth: usize,
-    ) -> KeyOf {
-        if !self.prev_record_covers(prev, target, at, depth) {
-            // A named row held as something else breaks the chain; one not
-            // held at all is the link the statement waits on.
-            let held = self
-                .statements
-                .values()
-                .flatten()
-                .any(|s| peek(s).is_some_and(|pk| ct_eq(&pk.row_id, target)));
-            return if held {
-                KeyOf::No
-            } else {
-                KeyOf::Waiting(vec![MissingKey::Record(*target)])
-            };
-        }
-        if self.rival_rotation(prev, next, depth) {
-            return KeyOf::No;
-        }
-        KeyOf::Yes
+    /// The key the record `row` records, if any statement over it is held.
+    fn record_key_of_row(&self, row: &Digest32) -> Option<Digest32> {
+        self.statements
+            .values()
+            .flatten()
+            .find(|s| peek(s).is_some_and(|pk| ct_eq(&pk.row_id, row)))
+            .and_then(|s| record_kid(s))
     }
 
     /// Is `target` a valid record of `prev`, by `prev`'s own statement,
@@ -455,7 +519,7 @@ impl KeyRecordDirectory {
                 peek(p).is_some_and(|pk| ct_eq(&pk.kid, prev) && ct_eq(&pk.row_id, target))
                     && valid_record(p, &self.scoped(prev, p, depth), prev).is_some_and(
                         |(_, prec)| {
-                            prec.asserted_at <= at && prec.valid_until.is_none_or(|u| at <= u)
+                            prec.asserted_at <= at && prec.valid_until.is_none_or(|u| at < u)
                         },
                     )
             })
@@ -563,7 +627,12 @@ fn valid_record(
 
 /// The row id a record's `refs.target` names (`[2, [-16, digest]]`).
 fn target_of(row: &VerifiedRow) -> Option<Digest32> {
-    let t = row.payload.get_text("refs")?.get_text("target")?;
+    target_in(&row.payload)
+}
+
+/// [`target_of`] over a payload.
+fn target_in(payload: &Value) -> Option<Digest32> {
+    let t = payload.get_text("refs")?.get_text("target")?;
     match t.as_array()? {
         [ed, id] if ed.as_u64() == Some(super::EDITION) => match id.as_array()? {
             [alg, d] if alg.as_i64() == Some(-16) => d.as_bytes()?.try_into().ok(),
@@ -769,7 +838,12 @@ mod tests {
             ))
             .unwrap();
         assert!(matches!(d.lookup(&node_kid, T0), KeyLookup::Held(_)));
-        assert!(matches!(d.lookup(&node_kid, T0 + 1000), KeyLookup::Held(_)));
+        assert!(matches!(d.lookup(&node_kid, T0 + 999), KeyLookup::Held(_)));
+        // The end instant is not covered: [asserted_at, valid_until).
+        assert!(matches!(
+            d.lookup(&node_kid, T0 + 1000),
+            KeyLookup::Waiting(_)
+        ));
         // Past valid_until: no held record covers the instant, so the key
         // waits on one that does (CC 2.4.1.1: retryable), never Invalid.
         match d.lookup(&node_kid, T0 + 1001) {

@@ -189,6 +189,17 @@ pub enum MissingKey {
     /// `refs.target` as its predecessor's record: the link of the issuer's
     /// rotation chain that is not held (CC 2.4.1.1).
     Record(Digest32),
+    /// A voice of a held row that is not held: the statement by `kid` over
+    /// the row `row`. A counted row gains voices without changing its row
+    /// id (CC 2.6.1.9), so a voice not held is waited on, never refused:
+    /// a rotation record's new key (possession) or predecessor key, or the
+    /// predecessor's own statement over the record a rotation names.
+    Voice {
+        /// The thumbprint of the key whose statement is missing.
+        kid: Digest32,
+        /// The row id it would be over.
+        row: Digest32,
+    },
 }
 
 /// What a reader knows of the key under a `kid`.
