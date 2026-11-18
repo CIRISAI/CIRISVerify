@@ -416,20 +416,7 @@ impl KeyRecordDirectory {
         next: &Digest32,
         depth: usize,
     ) -> KeyOf {
-        let found = self
-            .statements
-            .get(prev)
-            .map_or(&[][..], Vec::as_slice)
-            .iter()
-            .any(|p| {
-                peek(p).is_some_and(|pk| ct_eq(&pk.kid, prev) && ct_eq(&pk.row_id, target))
-                    && valid_record(p, &self.scoped(prev, p, depth), prev).is_some_and(
-                        |(_, prec)| {
-                            prec.asserted_at <= at && prec.valid_until.is_none_or(|u| at <= u)
-                        },
-                    )
-            });
-        if !found {
+        if !self.prev_record_covers(prev, target, at, depth) {
             // A named row held as something else breaks the chain; one not
             // held at all is the link the statement waits on.
             let held = self
@@ -449,16 +436,35 @@ impl KeyRecordDirectory {
         KeyOf::Yes
     }
 
+    /// Is `target` a valid record of `prev`, by `prev`'s own statement,
+    /// covering the instant `at` (CC 2.4.1.1: the old key's signature is made
+    /// at an instant inside that record)? The one test of a predecessor's
+    /// record, for a rotation and for a rival alike.
+    fn prev_record_covers(
+        &self,
+        prev: &Digest32,
+        target: &Digest32,
+        at: u64,
+        depth: usize,
+    ) -> bool {
+        self.statements
+            .get(prev)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .any(|p| {
+                peek(p).is_some_and(|pk| ct_eq(&pk.kid, prev) && ct_eq(&pk.row_id, target))
+                    && valid_record(p, &self.scoped(prev, p, depth), prev).is_some_and(
+                        |(_, prec)| {
+                            prec.asserted_at <= at && prec.valid_until.is_none_or(|u| at <= u)
+                        },
+                    )
+            })
+    }
+
     /// Does `prev` have a held, valid rotation to a key other than `next`:
     /// that key's own statement over a record naming a record of `prev` in
     /// `refs.target`, with `prev`'s statement over the same row?
     fn rival_rotation(&self, prev: &Digest32, next: &Digest32, depth: usize) -> bool {
-        let is_prev_record = |t: &Digest32| {
-            self.statements.get(prev).is_some_and(|ps| {
-                ps.iter()
-                    .any(|p| peek(p).is_some_and(|pk| ct_eq(&pk.kid, prev) && ct_eq(&pk.row_id, t)))
-            })
-        };
         self.statements.iter().any(|(k2, sts)| {
             if ct_eq(k2, prev) || ct_eq(k2, next) {
                 return false;
@@ -468,10 +474,14 @@ impl KeyRecordDirectory {
                     return false;
                 }
                 let inner = self.scoped(k2, own, depth);
-                let Some((row, _)) = valid_record(own, &inner, k2) else {
+                let Some((row, rec)) = valid_record(own, &inner, k2) else {
                     return false;
                 };
-                if !target_of(&row).is_some_and(|t| is_prev_record(&t)) {
+                // The rival must name a record of `prev` the chain itself
+                // would accept: valid, and covering the rival's instant.
+                if !target_of(&row)
+                    .is_some_and(|t| self.prev_record_covers(prev, &t, rec.asserted_at, depth))
+                {
                     return false;
                 }
                 sts.iter().any(|co| {

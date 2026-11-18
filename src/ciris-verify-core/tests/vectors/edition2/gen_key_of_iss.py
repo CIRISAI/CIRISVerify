@@ -210,6 +210,16 @@ case("rotation_contested", "Signed by B2 with iss B; records: B's self-signed re
      "B3's record naming it, each with its own and B's statements.", B2, B, B, "invalid:kid_not_of_iss",
      records=[st_B, st_B2_own, st_B2_by_B, rot_B3_rival.by(B3, B), rot_B3_rival.by(B, B)])
 
+# A rival rotation whose named record of B is not one covering the rival's instant
+# is no rival: the legitimate rotation still answers (the rule the chain itself
+# applies to a predecessor's record, CC 2.4.1.1).
+rec_B_late, st_B_late = self_record(B, t0=T0 + 50)
+rot_B3_uncovered = rotation(B3, B, rec_B_late, t0=T0 + 11)
+case("rotation_rival_names_uncovered_record", "Signed by B2 with iss B; records: B's self-signed record, B2's "
+     "record naming it (B2's and B's statements), a later self-signed record of B (asserted at T0+50), and B3's "
+     "record (asserted at T0+11) naming that later record, with B3's and B's statements.", B2, B, B, "valid",
+     records=[st_B, st_B2_own, st_B2_by_B, st_B_late, rot_B3_uncovered.by(B3, B), rot_B3_uncovered.by(B, B)])
+
 # A room key signs as itself: iss is its own key's reference.
 rec_R, st_R = self_record(R, roles=("room",))
 case("room_key_self", "Signed by room key R with iss R and author R; records: R's self-signed record "
