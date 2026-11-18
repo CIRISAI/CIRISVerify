@@ -2,7 +2,7 @@
  "_meta": {
   "cells": "count",
   "source": "manifests/family_model.json",
-  "source_sha256": "3c64403a56b0da0138433041af972ee552ead95d5f129f1f5fad26df6a8d1caf"
+  "source_sha256": "04446a5b50ee07b94c21139cd770e0de84317fe9e84240e6f0d68ee574b8caa0"
  },
  "families": {
   "accord:invoke:constitutional:{halt_id}": {
@@ -96,6 +96,34 @@
    ],
    "source": "cc-table",
    "value": "identity=node|agent => none ; identity=user => self_roster_evict@self"
+  },
+  "key:record": {
+   "arms": [
+    {
+     "doors": "accord_majority@accord",
+     "when": "act=group"
+    },
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "act=group => accord_majority@accord ; none"
+  },
+  "licensure:{authority_id}": {
+   "arms": [
+    {
+     "doors": "cosigned_act@dimension_authority",
+     "when": "act=group"
+    },
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "act=group => cosigned_act@dimension_authority ; none"
   },
   "lineage_witness:{stage}": {
    "arms": [

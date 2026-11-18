@@ -30,16 +30,33 @@
 //!
 //! The bundle in force is the one the row names: `accord_root` for an
 //! invocation ([`named_accord_root`]) and `refs.head` for a lifecycle row
-//! ([`named_head`], [`HaltRoster::find_by_head`]); the reader refuses a row read
-//! under another (`other_accord`, `other_bundle`). The clock is the caller's,
-//! and the per-kind dedup of `invocation_id` and `nonce` within `valid_until`
-//! is the store's.
+//! ([`named_head`], [`HaltRoster::find_by_head`]). A row naming another accord
+//! is refused (`other_accord`). The clock is the caller's, and the per-kind
+//! dedup of `invocation_id` and `nonce` within `valid_until` is the store's.
+//!
+//! Every reader answers a [`HaltReading`]: Valid, **Waiting**, or Refused. A
+//! reading Waits, and is never refused, where what it lacks is something the
+//! node does not yet hold (CC 2.6.1.8, CC 2.7.3: "A row waits for what it
+//! names"), because a missed halt is the one unrecoverable failure (CC
+//! 4.2.1.1):
+//!
+//! - a statement whose `kid` the roster does not hold: the reader cannot tell
+//!   a stranger from a holder whose newer bundle (a rotation, a recovery) it
+//!   lacks, so it waits on the key ([`HaltWaiting::kids`]);
+//! - a lifecycle row whose `refs.head` is not the roster's bundle: it is counted
+//!   over the bundle it names, which this reader does not hold, so it waits on
+//!   that bundle ([`HaltWaiting::bundles`]).
+//!
+//! Waiting is retryable: hold the row, and read it again under the roster of
+//! the bundle it waits on once that is held. A caller that drops every
+//! non-Valid reading drops a real holder's halt; [`HaltReading`] is
+//! `#[must_use]` and Waiting is not a [`HaltRefusal`] for that reason.
 //!
 //! Pure: no clock, no randomness, no I/O.
 
 use super::family::VendoredFamilyModel;
 use super::family::{row_leaf, verify_row_in_family, FamilyFault, FamilyVerdict};
-use super::{Digest32, Invalid, KeyDirectory, KeyLookup, Value, VerifiedRow};
+use super::{Digest32, Invalid, KeyDirectory, KeyLookup, KeyOf, MissingKey, Value, VerifiedRow};
 use crate::prelude::*;
 use ciris_crypto::composite::CompositePublicKey;
 
@@ -272,16 +289,91 @@ impl KeyDirectory for HaltRoster {
                 KeyLookup::Held(Box::new(pk.clone()))
             })
     }
+
+    /// A holder's key is its holder's: `iss` must name the holder the
+    /// bundle in force seats at `kid`.
+    fn key_of(&self, kid: &Digest32, iss: &Digest32) -> KeyOf {
+        use subtle::ConstantTimeEq as _;
+        match self
+            .holder_of_kid(kid)
+            .and_then(super::identity_ref_thumbprint)
+        {
+            Some(h) if bool::from(h.ct_eq(iss)) => KeyOf::Yes,
+            _ => KeyOf::No,
+        }
+    }
 }
 
-/// Why an accord row (or one statement of it) is refused.
+/// The answer of an accord-row reader: Valid, Waiting, or Refused (CC 2.6.1.8).
+///
+/// Waiting is not a refusal: the row names something the node does not yet
+/// hold, and it is read again once that is held. Never drop a Waiting halt; a
+/// missed halt is the one unrecoverable failure (CC 4.2.1.1).
+#[must_use = "a Waiting halt must be held and read again, never dropped (CC 4.2.1.1)"]
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum HaltReading<T> {
+    /// The row verifies under the roster.
+    Valid(T),
+    /// The row waits on what [`HaltWaiting`] names; retryable.
+    Waiting(HaltWaiting),
+    /// The row is refused: the statement itself is wrong, or (a lifecycle
+    /// row) its held voices fall short and no unheld one could make up the
+    /// count.
+    Refused(HaltRefusal),
+}
+
+impl<T> HaltReading<T> {
+    /// A stable token for logs and vectors: `valid`, `waiting:{what}`
+    /// ([`HaltWaiting::token`]) or `refused:{token}` ([`HaltRefusal::token`]).
+    #[must_use]
+    pub fn token(&self) -> String {
+        match self {
+            Self::Valid(_) => "valid".into(),
+            Self::Waiting(w) => format!("waiting:{}", w.token()),
+            Self::Refused(r) => format!("refused:{}", r.token()),
+        }
+    }
+}
+
+/// What a Waiting reading lacks: keys the roster does not hold, and bundles a
+/// lifecycle row names in `refs.head` that are not the roster's. Each sorted,
+/// once each; at least one is non-empty.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct HaltWaiting {
+    /// The statements' `kid`s the roster does not hold.
+    pub kids: Vec<Digest32>,
+    /// The bundles named in `refs.head` that are not the roster's.
+    pub bundles: Vec<Digest32>,
+}
+
+impl HaltWaiting {
+    fn merge(&mut self, other: HaltWaiting) {
+        self.kids.extend(other.kids);
+        self.bundles.extend(other.bundles);
+        for v in [&mut self.kids, &mut self.bundles] {
+            v.sort_unstable();
+            v.dedup();
+        }
+    }
+
+    /// A stable token for logs and vectors: `kid`, `bundle` or `kid+bundle`.
+    #[must_use]
+    pub fn token(&self) -> &'static str {
+        match (self.kids.is_empty(), self.bundles.is_empty()) {
+            (false, true) => "kid",
+            (true, false) => "bundle",
+            _ => "kid+bundle",
+        }
+    }
+}
+
+/// Why an accord row (or one statement of it) is refused. A row that waits on
+/// a key or a bundle is never refused ([`HaltReading::Waiting`]).
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum HaltRefusal {
     /// The statement itself is Invalid (CC 2.6.1).
     Statement(Invalid),
-    /// The signer's key is no holder's key in the bundle in force.
-    NotAHolder,
     /// `iss` is not the identity reference of the holder whose key signed.
     IssNotHolder,
     /// The row type is not `scores`.
@@ -301,8 +393,6 @@ pub enum HaltRefusal {
     },
     /// `accord_root` is not the roster's `family_key_id`.
     OtherAccord,
-    /// `refs.head` is not the roster's bundle.
-    OtherBundle,
     /// `refs.target` names another row than the halt presented.
     OtherHalt,
     /// The row `refs.target` names is not a `constitutional` halt.
@@ -313,7 +403,8 @@ pub enum HaltRefusal {
     NoStatements,
     /// `valid_until` is not after `asserted_at`: the row is Invalid.
     ValidUntilNotAfterAssertedAt,
-    /// Fewer distinct holders than a strict majority of the roster.
+    /// Fewer distinct holders than a strict majority of the roster, and no
+    /// statement waiting on a key or a bundle that could make up the count.
     CountUnmet {
         /// Distinct holders whose statements count.
         have: usize,
@@ -328,7 +419,6 @@ impl HaltRefusal {
     pub fn token(&self) -> String {
         match self {
             Self::Statement(i) => format!("statement_invalid:{}", invalid_token(i)),
-            Self::NotAHolder => "not_a_holder".into(),
             Self::IssNotHolder => "iss_not_holder".into(),
             Self::WrongRowType => "wrong_row_type".into(),
             Self::WrongFamily { .. } => "wrong_family".into(),
@@ -345,7 +435,6 @@ impl HaltRefusal {
             ),
             Self::Member { member } => format!("member:{member}"),
             Self::OtherAccord => "other_accord".into(),
-            Self::OtherBundle => "other_bundle".into(),
             Self::OtherHalt => "other_halt".into(),
             Self::TargetNotAHalt => "target_not_a_halt".into(),
             Self::OtherRow => "other_row".into(),
@@ -373,6 +462,7 @@ fn invalid_token(i: &Invalid) -> String {
         Invalid::DimensionFamily => "dimension_family".into(),
         Invalid::DimensionRefused { token } => format!("dimension_refused:{token}"),
         Invalid::DimensionUnregistered => "dimension_unregistered".into(),
+        Invalid::KidNotOfIss => "kid_not_of_iss".into(),
     }
 }
 
@@ -522,16 +612,6 @@ impl LifecycleRow {
     }
 }
 
-/// Why a lifecycle row does not count, with the statements refused.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct LifecycleRefusal {
-    /// The reason: where no statement is valid, the first statement's own
-    /// refusal; otherwise [`HaltRefusal::CountUnmet`].
-    pub reason: HaltRefusal,
-    /// Every statement refused.
-    pub refused: Vec<RefusedStatement>,
-}
-
 // ------------------------------------------------------------------ members
 
 fn member(member: &'static str) -> HaltRefusal {
@@ -578,23 +658,64 @@ fn row_ref(v: &Value) -> Option<Digest32> {
     }
 }
 
+/// Return early from a reader on anything but Valid.
+macro_rules! valid_or_return {
+    ($e:expr) => {
+        match $e {
+            HaltReading::Valid(v) => v,
+            HaltReading::Waiting(w) => return HaltReading::Waiting(w),
+            HaltReading::Refused(r) => return HaltReading::Refused(r),
+        }
+    };
+}
+
+impl<T> From<Result<T, HaltRefusal>> for HaltReading<T> {
+    fn from(r: Result<T, HaltRefusal>) -> Self {
+        match r {
+            Ok(v) => Self::Valid(v),
+            Err(e) => Self::Refused(e),
+        }
+    }
+}
+
 /// One statement through the row reader, the family model and the roster.
-fn read_statement(bytes: &[u8], roster: &HaltRoster) -> Result<VerifiedRow, HaltRefusal> {
+fn read_statement(bytes: &[u8], roster: &HaltRoster) -> HaltReading<VerifiedRow> {
     let row = match verify_row_in_family(bytes, roster, &VendoredFamilyModel) {
         FamilyVerdict::Valid { row, .. } => *row,
-        FamilyVerdict::Invalid(i) => return Err(HaltRefusal::Statement(i)),
-        FamilyVerdict::FamilyInvalid(f) => return Err(HaltRefusal::Family(f)),
-        // The roster is the whole key directory: a key it does not hold is
-        // no holder's.
-        FamilyVerdict::Waiting(_) => return Err(HaltRefusal::NotAHolder),
+
+        // The roster's `key_of`: the key is not the holder `iss` names.
+        FamilyVerdict::Invalid(Invalid::KidNotOfIss) => {
+            return HaltReading::Refused(HaltRefusal::IssNotHolder)
+        },
+        FamilyVerdict::Invalid(i) => return HaltReading::Refused(HaltRefusal::Statement(i)),
+        FamilyVerdict::FamilyInvalid(f) => return HaltReading::Refused(HaltRefusal::Family(f)),
+        // CC 2.6.1.8 step 6: a key the roster does not hold is Waiting on it.
+        // A stranger and a holder seated at a new key by a bundle this node
+        // lacks (a rotation, a recovery) look alike here, and refusing the
+        // second drops a real halt (CC 4.2.1.1).
+        FamilyVerdict::Waiting(missing) => {
+            let mut w = HaltWaiting::default();
+            w.merge(HaltWaiting {
+                kids: missing
+                    .iter()
+                    .filter_map(|m| match m {
+                        MissingKey::Kid(k) | MissingKey::CoveringRecord { kid: k, .. } => Some(*k),
+                        // A roster holds keys, not records: no record link is missing here.
+                        _ => None,
+                    })
+                    .collect(),
+                bundles: Vec::new(),
+            });
+            return HaltReading::Waiting(w);
+        },
     };
     if roster.holder_of_kid(&row.kid) != Some(row.iss.as_str()) {
-        return Err(HaltRefusal::IssNotHolder);
+        return HaltReading::Refused(HaltRefusal::IssNotHolder);
     }
     if row.row_type != ACCORD_ROW_TYPE {
-        return Err(HaltRefusal::WrongRowType);
+        return HaltReading::Refused(HaltRefusal::WrongRowType);
     }
-    Ok(row)
+    HaltReading::Valid(row)
 }
 
 /// The rules every accord row shares past its members (CC rulings on
@@ -624,7 +745,7 @@ fn unverified_payload(statement: &[u8]) -> Option<Value> {
 /// The bundle a lifecycle statement names in `refs.head`, read without
 /// verifying it: the key for choosing the roster ([`HaltRoster::find_by_head`]).
 /// The reader then verifies the statement under that roster, which checks the
-/// head again ([`HaltRefusal::OtherBundle`]).
+/// head again (Waiting on the bundle where it is not the roster's).
 #[must_use]
 pub fn named_head(statement: &[u8]) -> Option<Digest32> {
     unverified_payload(statement)?
@@ -655,13 +776,16 @@ pub fn named_accord_root(statement: &[u8]) -> Option<String> {
 /// `accord_root` the roster's, `nonce` 32 bytes, and `payload_digest` present
 /// on a notify and on nothing else.
 ///
-/// # Errors
-/// [`HaltRefusal`].
-pub fn verify_invocation_row(
-    bytes: &[u8],
-    roster: &HaltRoster,
-) -> Result<InvocationRow, HaltRefusal> {
-    let row = read_statement(bytes, roster)?;
+/// A statement under a key the roster does not hold is
+/// [`HaltReading::Waiting`] on that key, never refused: it may be a holder's
+/// key seated by a bundle this node does not yet hold. Hold it and read it
+/// again under that bundle's roster.
+pub fn verify_invocation_row(bytes: &[u8], roster: &HaltRoster) -> HaltReading<InvocationRow> {
+    let row = valid_or_return!(read_statement(bytes, roster));
+    invocation_members(row, roster).into()
+}
+
+fn invocation_members(row: VerifiedRow, roster: &HaltRoster) -> Result<InvocationRow, HaltRefusal> {
     let kind = InvokeKind::from_family(&row.family).ok_or_else(|| HaltRefusal::WrongFamily {
         family: row.family.clone(),
     })?;
@@ -706,46 +830,80 @@ fn read_lifecycle_statement(
     bytes: &[u8],
     roster: &HaltRoster,
     halt: &InvocationRow,
-) -> Result<LifecycleVoice, HaltRefusal> {
-    let row = read_statement(bytes, roster)?;
-    if row.family != FAMILY_LIFECYCLE {
-        return Err(HaltRefusal::WrongFamily {
-            family: row.family.clone(),
+) -> HaltReading<LifecycleVoice> {
+    match read_statement(bytes, roster) {
+        HaltReading::Valid(row) => lifecycle_members(row, roster, halt),
+        // A key not held: wait on the bundle the statement names too, where it
+        // is not the roster's (read unverified; it only says what to fetch).
+        HaltReading::Waiting(mut w) => {
+            if let Some(head) = named_head(bytes).filter(|h| *h != roster.bundle) {
+                w.merge(HaltWaiting {
+                    kids: Vec::new(),
+                    bundles: vec![head],
+                });
+            }
+            HaltReading::Waiting(w)
+        },
+        HaltReading::Refused(r) => HaltReading::Refused(r),
+    }
+}
+
+fn lifecycle_members(
+    row: VerifiedRow,
+    roster: &HaltRoster,
+    halt: &InvocationRow,
+) -> HaltReading<LifecycleVoice> {
+    let checked = (|| {
+        if row.family != FAMILY_LIFECYCLE {
+            return Err(HaltRefusal::WrongFamily {
+                family: row.family.clone(),
+            });
+        }
+        let p = &row.payload;
+        closed(p, &LIFECYCLE_MEMBERS)?;
+        let kind = match row_leaf(&row).as_deref() {
+            Some("confirmed") => LifecycleKind::Confirmed,
+            Some("active") => LifecycleKind::Active,
+            _ => return Err(member("dimension")),
+        };
+        if text(p, "accord_root")? != roster.accord_root {
+            return Err(HaltRefusal::OtherAccord);
+        }
+        text(p, "invocation_id")?;
+        let nonce = nonce(p)?;
+        let valid_until = sub_and_window(&row, roster)?;
+        let refs = p.get_text("refs").ok_or(member("refs"))?;
+        closed(refs, &["head", "target"])?;
+        let head = refs
+            .get_text("head")
+            .and_then(row_ref)
+            .ok_or(member("head"))?;
+        let target = refs
+            .get_text("target")
+            .and_then(row_ref)
+            .ok_or(member("target"))?;
+        if target != halt.row_id {
+            return Err(HaltRefusal::OtherHalt);
+        }
+        if halt.kind != InvokeKind::Constitutional {
+            return Err(HaltRefusal::TargetNotAHalt);
+        }
+        Ok((kind, head, target, nonce, valid_until))
+    })();
+    let (kind, head, target, nonce, valid_until) = match checked {
+        Ok(v) => v,
+        Err(r) => return HaltReading::Refused(r),
+    };
+    // Counted over the bundle `refs.head` names (CC 4.2.1.1, CC 4.2.1.3);
+    // where that is not this roster's, the statement waits on it. Decided
+    // after every refusal above, which turns on no other row (CC 2.6.1.11).
+    if head != roster.bundle {
+        return HaltReading::Waiting(HaltWaiting {
+            kids: Vec::new(),
+            bundles: vec![head],
         });
     }
-    let p = &row.payload;
-    closed(p, &LIFECYCLE_MEMBERS)?;
-    let kind = match row_leaf(&row).as_deref() {
-        Some("confirmed") => LifecycleKind::Confirmed,
-        Some("active") => LifecycleKind::Active,
-        _ => return Err(member("dimension")),
-    };
-    if text(p, "accord_root")? != roster.accord_root {
-        return Err(HaltRefusal::OtherAccord);
-    }
-    text(p, "invocation_id")?;
-    let nonce = nonce(p)?;
-    let valid_until = sub_and_window(&row, roster)?;
-    let refs = p.get_text("refs").ok_or(member("refs"))?;
-    closed(refs, &["head", "target"])?;
-    let head = refs
-        .get_text("head")
-        .and_then(row_ref)
-        .ok_or(member("head"))?;
-    let target = refs
-        .get_text("target")
-        .and_then(row_ref)
-        .ok_or(member("target"))?;
-    if head != roster.bundle {
-        return Err(HaltRefusal::OtherBundle);
-    }
-    if target != halt.row_id {
-        return Err(HaltRefusal::OtherHalt);
-    }
-    if halt.kind != InvokeKind::Constitutional {
-        return Err(HaltRefusal::TargetNotAHalt);
-    }
-    Ok(LifecycleVoice {
+    HaltReading::Valid(LifecycleVoice {
         kind,
         row,
         target,
@@ -767,28 +925,31 @@ fn read_lifecycle_statement(
 /// than one row: the row with the most voices is counted (on a tie, the
 /// lowest row id) and the others are refused [`HaltRefusal::OtherRow`].
 ///
-/// # Errors
-/// [`LifecycleRefusal`]: the first statement's refusal where none is valid,
-/// [`HaltRefusal::NoStatements`] on none, otherwise
-/// [`HaltRefusal::CountUnmet`].
+/// The answer:
+/// - [`HaltReading::Valid`] where the held voices meet the count, whatever
+///   else was presented;
+/// - otherwise [`HaltReading::Waiting`] where a statement waits on a bundle
+///   (`refs.head` not the roster's), or the held voices and the distinct
+///   keys the roster does not hold could together meet the count, naming
+///   every key and bundle waited on;
+/// - otherwise [`HaltReading::Refused`]: [`HaltRefusal::NoStatements`] on
+///   none, the first statement's own refusal where every statement is
+///   refused, and [`HaltRefusal::CountUnmet`] else. A refused statement never
+///   makes a row wait.
 pub fn verify_lifecycle_row(
     statements: &[Vec<u8>],
     roster: &HaltRoster,
     halt: &InvocationRow,
-) -> Result<LifecycleRow, LifecycleRefusal> {
+) -> HaltReading<LifecycleRow> {
     let mut refused = Vec::new();
+    let mut waiting = HaltWaiting::default();
     let mut voices: Vec<(usize, LifecycleVoice)> = Vec::new();
     for (index, s) in statements.iter().enumerate() {
         match read_lifecycle_statement(s, roster, halt) {
-            Ok(v) => voices.push((index, v)),
-            Err(refusal) => refused.push(RefusedStatement { index, refusal }),
+            HaltReading::Valid(v) => voices.push((index, v)),
+            HaltReading::Waiting(w) => waiting.merge(w),
+            HaltReading::Refused(refusal) => refused.push(RefusedStatement { index, refusal }),
         }
-    }
-    if voices.is_empty() {
-        let reason = refused
-            .first()
-            .map_or(HaltRefusal::NoStatements, |r| r.refusal.clone());
-        return Err(LifecycleRefusal { reason, refused });
     }
     // The row with the most distinct voices; a tie goes to the lowest row id.
     let mut by_row: BTreeMap<Digest32, BTreeSet<&str>> = BTreeMap::new();
@@ -801,11 +962,10 @@ pub fn verify_lifecycle_row(
     let chosen = by_row
         .iter()
         .max_by(|a, b| a.1.len().cmp(&b.1.len()).then(b.0.cmp(a.0)))
-        .map(|(id, _)| *id)
-        .expect("non-empty");
+        .map(|(id, _)| *id);
     let mut counted: Vec<(usize, LifecycleVoice)> = Vec::new();
     for (index, v) in voices {
-        if v.row.row_id == chosen {
+        if Some(v.row.row_id) == chosen {
             counted.push((index, v));
         } else {
             refused.push(RefusedStatement {
@@ -816,22 +976,27 @@ pub fn verify_lifecycle_row(
     }
     refused.sort_by_key(|r| r.index);
     let names: BTreeSet<String> = counted.iter().map(|(_, v)| v.row.iss.clone()).collect();
-    let need = roster.majority();
+    let (have, need) = (names.len(), roster.majority());
     // Strict majority of the standing roster: 2·have > N.
-    if names.len() < need {
-        return Err(LifecycleRefusal {
-            reason: HaltRefusal::CountUnmet {
-                have: names.len(),
-                need,
-            },
-            refused,
+    let Some(chosen) = chosen.filter(|_| have >= need) else {
+        if !waiting.bundles.is_empty() || have + waiting.kids.len() >= need {
+            return HaltReading::Waiting(waiting);
+        }
+        return HaltReading::Refused(if statements.is_empty() {
+            HaltRefusal::NoStatements
+        } else if counted.is_empty() && waiting.kids.is_empty() {
+            refused
+                .first()
+                .map_or(HaltRefusal::NoStatements, |r| r.refusal.clone())
+        } else {
+            HaltRefusal::CountUnmet { have, need }
         });
-    }
+    };
     let first = &counted[0].1;
     let invocation_id = text(&first.row.payload, "invocation_id")
         .map(str::to_owned)
         .unwrap_or_default();
-    Ok(LifecycleRow {
+    HaltReading::Valid(LifecycleRow {
         kind: first.kind,
         row_id: chosen,
         target: first.target,
@@ -909,7 +1074,7 @@ mod tests {
             vec![],
         )
         .unwrap();
-        let halt = verify_invocation_row(&st, &roster).unwrap();
+        let halt = valid(verify_invocation_row(&st, &roster));
         assert_eq!(halt.kind(), InvokeKind::Constitutional);
         let life = Value::Map(vec![
             (
@@ -938,14 +1103,100 @@ mod tests {
             )
             .unwrap()
         };
-        let row = verify_lifecycle_row(&[sign(&a), sign(&b)], &roster, &halt).unwrap();
+        let row = valid(verify_lifecycle_row(&[sign(&a), sign(&b)], &roster, &halt));
         assert_eq!(row.kind(), LifecycleKind::Confirmed);
         assert_eq!(row.voices().len(), 2);
         // One voice is short; the same voice twice is still one.
-        let short = verify_lifecycle_row(&[sign(&a), sign(&a)], &roster, &halt).unwrap_err();
-        assert_eq!(short.reason, HaltRefusal::CountUnmet { have: 1, need: 2 });
+        assert_eq!(
+            verify_lifecycle_row(&[sign(&a), sign(&a)], &roster, &halt),
+            HaltReading::Refused(HaltRefusal::CountUnmet { have: 1, need: 2 })
+        );
         // The halt's bytes presented as a lifecycle row.
-        let replay = verify_lifecycle_row(&[st], &roster, &halt).unwrap_err();
-        assert!(matches!(replay.reason, HaltRefusal::WrongFamily { .. }));
+        assert!(matches!(
+            verify_lifecycle_row(core::slice::from_ref(&st), &roster, &halt),
+            HaltReading::Refused(HaltRefusal::WrongFamily { .. })
+        ));
+
+        // A key the roster does not hold waits, never refuses: here A1's key
+        // rotated to `a2`, which a newer bundle seats and this roster lacks.
+        let a2 = key(11);
+        let a2_kid = super::super::thumbprint(a2.public_key());
+        let rotated_halt = sign_row_statement(
+            &a2,
+            &idr(&a),
+            "humanity-accord",
+            "scores",
+            FAMILY_CONSTITUTIONAL,
+            &halt_p,
+            vec![],
+        )
+        .unwrap();
+        assert_eq!(
+            verify_invocation_row(&rotated_halt, &roster),
+            HaltReading::Waiting(HaltWaiting {
+                kids: vec![a2_kid],
+                bundles: vec![],
+            })
+        );
+        let rotated = HaltRoster::new(
+            "humanity-accord",
+            [8; 32],
+            vec![
+                RosterHolder {
+                    identity_ref: idr(&a),
+                    key: a2.public_key().clone(),
+                },
+                RosterHolder {
+                    identity_ref: idr(&b),
+                    key: b.public_key().clone(),
+                },
+                RosterHolder {
+                    identity_ref: idr(&c),
+                    key: c.public_key().clone(),
+                },
+            ],
+            None,
+        );
+        assert_eq!(
+            valid(verify_invocation_row(&rotated_halt, &rotated)).author(),
+            idr(&a)
+        );
+        // B1 alone plus the unheld key could meet the count: Waiting on it.
+        let sign_a2 = sign_row_statement(
+            &a2,
+            &idr(&a),
+            "humanity-accord",
+            "scores",
+            FAMILY_LIFECYCLE,
+            &life,
+            vec![],
+        )
+        .unwrap();
+        let reading = verify_lifecycle_row(&[sign(&b), sign_a2.clone()], &roster, &halt);
+        assert_eq!(reading.token(), "waiting:kid");
+        // Met by held voices: Valid, the unheld voice not counted.
+        let met = valid(verify_lifecycle_row(
+            &[sign(&b), sign(&c), sign_a2],
+            &roster,
+            &halt,
+        ));
+        assert_eq!(met.voices().len(), 2);
+        // Read under the roster of another bundle: B1's statement waits on the
+        // bundle it names, and A1's (a key that roster no longer seats) on its
+        // key and that bundle.
+        assert_eq!(
+            verify_lifecycle_row(&[sign(&a), sign(&b)], &rotated, &halt),
+            HaltReading::Waiting(HaltWaiting {
+                kids: vec![super::super::thumbprint(a.public_key())],
+                bundles: vec![[7; 32]],
+            })
+        );
+    }
+
+    fn valid<T: core::fmt::Debug>(r: HaltReading<T>) -> T {
+        match r {
+            HaltReading::Valid(v) => v,
+            other => panic!("{other:?}"),
+        }
     }
 }

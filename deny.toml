@@ -22,6 +22,10 @@ unsound = "all"
 ignore = [
     # atty is pulled transitively via cbindgen build dep
     "RUSTSEC-2021-0145",
+    # chrono is unmaintained (2026-11-18): an unmaintained notice, no
+    # vulnerability, and no safe upgrade exists. Used directly in four crates;
+    # replacing it is tracked separately. Drop this ignore with the migration.
+    "RUSTSEC-2026-0543",
 ]
 
 [licenses]

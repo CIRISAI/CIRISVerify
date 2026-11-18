@@ -11,6 +11,16 @@ Two versions live here.
   64c5918 a seat's binding must name its key record in `refs`, which none of v1's bindings does, so v1's
   valid bundles no longer verify.
 
+Beside them, an additive set: `genesis_reseat_v1.json` (cases and their statements in one file), written by
+`gen_genesis_reseat_v1.py` over `gen_genesis_bundles_v2.py`'s machinery (loaded as a module, its own outputs
+sent to a throwaway directory) against rc20 (CC 2.6.1.11, CC 2.6.1.7, CC 3.3.6.2), and replayed by
+`tests/genesis_reseat_vectors.rs`. A later bundle over v2's `first_valid` (repeated as its first case)
+re-seats S1 at a new key S1N (Key 13): S1's new key record and its binding carry `iss` = `author` = S1's
+identity reference and are signed by S1N. `reseat_seat_new_key` is Valid, S1 placed at S1N's key, record,
+binding and X-Wing keys; the same bundle with the binding signed by S1's previous key
+(`reseat_binding_signed_by_old_key`) or by an unrelated key U, Key 14 (`reseat_binding_signed_by_unrelated_key`)
+concludes nothing, `genesis_bundle_row_invalid` / `row_signer`.
+
 Each pool is split by the first hex digit of its keys so every file stays under the repository's 1000 KB
 limit.
 

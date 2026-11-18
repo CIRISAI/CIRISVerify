@@ -1,5 +1,5 @@
-//! Replay CIRISConstitution's `manifests/family_select_vectors.json` (rc20
-//! e08bf05) against verify's port of the reference selector evaluator
+//! Replay CIRISConstitution's `manifests/family_select_vectors.json` (v1.0-rc20
+//! d4bd2a6) against verify's port of the reference selector evaluator
 //! (`edition2::family::select`, from `tools/cc_family_select.py`).
 //!
 //! For each vector: bind the leaf of `dimension` under `family` (null: the leaf
@@ -26,10 +26,10 @@ use std::collections::BTreeMap;
 const VECTORS: &str = include_str!("vectors/cc/family_select_vectors.json");
 const COUNT_CELLS: &str = include_str!("vectors/cc/family_count_cells.json");
 
-/// SHA-256 of `tests/vectors/cc/family_select_vectors.json` (CC e08bf05).
-const VECTORS_SHA256: &str = "d1e5879ae953839fe3723b3db71449976856906532876c5a0b8aadd7376c14a4";
-/// CC ships 157 vectors at e08bf05.
-const VECTOR_COUNT: usize = 157;
+/// SHA-256 of `tests/vectors/cc/family_select_vectors.json` (CC v1.0-rc20 d4bd2a6).
+const VECTORS_SHA256: &str = "da3bfc60023c46fd0e287dd209742c273565edb77c4f01851c30f3b1df52b616";
+/// CC ships 177 vectors at v1.0-rc20 (d4bd2a6).
+const VECTOR_COUNT: usize = 177;
 
 fn lf(s: &str) -> String {
     s.replace("\r\n", "\n")
@@ -111,11 +111,11 @@ fn decided_json(d: Option<Decision>) -> Value {
 
 #[test]
 fn vendored_files_are_the_pinned_ones() {
-    assert_eq!(FAMILY_MODEL_CC_COMMIT, "e08bf05");
+    assert_eq!(FAMILY_MODEL_CC_COMMIT, "d4bd2a6");
     assert_eq!(sha(FAMILY_AUTHORSHIP_JSON), FAMILY_AUTHORSHIP_SHA256);
     assert_eq!(
         FAMILY_AUTHORSHIP_SHA256,
-        "334027850f9c2d7fd382249b5bb188533a25307082794bce168625d1e5cfaf93"
+        "2732a2de3368bb97750de39e4b44613e40979ad80343dfebe59d8515d28a9c0b"
     );
     assert_eq!(sha(VECTORS), VECTORS_SHA256);
     // One family model under all three files.
@@ -149,8 +149,8 @@ fn extract_shape() {
             assert_eq!(parse_cell(text).unwrap(), v.authorship.arms, "{prefix}");
         }
     }
-    // CC's split at e08bf05: 165 generic cells, 18 cc-table cells as arms, 1 gap.
-    assert_eq!((plain, arms, gap), (165, 18, 1));
+    // CC's split at v1.0-rc20 (d4bd2a6): 164 generic cells, 20 cc-table cells as arms, no gap.
+    assert_eq!((plain, arms, gap), (164, 20, 0));
     for (prefix, c) in count_cells() {
         assert_eq!(
             parse_cell(c.value.as_deref().unwrap()).unwrap(),

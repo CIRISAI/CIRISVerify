@@ -1,21 +1,25 @@
 # Edition-2 row statement known answers
 
-`row_statements_v2.json` holds CC 2.6.1 row statements (CIRISConstitution rc20
-0c9e17c, the clean mesh; `manifests/signed_object_v2.cddl`) for
-CIRISVerify#326. `tests/edition2_row_vectors_v2.rs` replays it. It supersedes
-`row_statements_v1.json`, which stays beside it byte for byte for the readers
-that pinned it (see [What changed from v1](#what-changed-from-v1)); v1 is no
-longer replayed.
+`row_statements_v3.json` holds CC 2.6.1 row statements (CIRISConstitution rc20
+0c9e17c, the clean mesh; `manifests/signed_object_v2.cddl`), with its family
+cases read under CC's family model at the released tag v1.0-rc20 (d4bd2a6), for
+CIRISVerify#326. `tests/edition2_row_vectors_v3.rs` replays it. It supersedes
+`row_statements_v2.json` (see [What changed from v2](#what-changed-from-v2)) and
+`row_statements_v1.json` (see [What changed from v1](#what-changed-from-v1)),
+which stay beside it byte for byte, with their generators, for the readers that
+pinned them; neither is replayed.
 
-`gen_row_statements_v2.py` wrote v2 (and `gen_row_statements.py` v1) without
+`gen_row_statements_v3.py` wrote v3 (`gen_row_statements_v2.py` v2 and
+`gen_row_statements.py` v1) without
 verify's code. It has its own CBOR deterministic encoder (RFC 8949 §4.2.1,
 bytewise key order) and signs with the composite ML-DSA-65-Ed25519 through
 dilithium-py (FIPS 204, deterministic variant, the label as the ML-DSA context)
 and pyca/cryptography (Ed25519):
 
     pip install dilithium-py cryptography
-    python3 -I gen_row_statements_v2.py > row_statements_v2.json
-    python3 -I gen_row_statements.py > row_statements_v1.json   # unchanged
+    python3 -I gen_row_statements_v3.py > row_statements_v3.json
+    python3 -I gen_row_statements_v2.py > row_statements_v2.json   # unchanged
+    python3 -I gen_row_statements.py > row_statements_v1.json      # unchanged
 
 Key `n` is ML-DSA-65 seed `[n]*32` and Ed25519 seed `[n+100]*32`; its `kid` is the
 RFC 9679 thumbprint of `{1: 7, 3: -70100, -1: pub}` and its `iss` the identity
@@ -23,13 +27,16 @@ reference of that thumbprint.
 
 ## Levels
 
-Every v2 case states the `level` it is read at:
+Every v3 case states the `level` it is read at:
 
 - `statement`: `edition2::verify_row_statement`, no family model (`valid`,
   `refusals`; `key_directory` through a `KeyRecordDirectory`);
 - `family`: `edition2::family::verify_row_in_family` under the model the case
   names in `model`: `test` (the stated `family_model`) or `vendored`
-  (`VendoredFamilyModel`, CC's `family_authorship.json`);
+  (`VendoredFamilyModel`, CC's `family_authorship.json`); a case with `ctx`
+  through `verify_row_in_family_with`, one with `read: as_given` through
+  `verify_row_in_family_as_given`, and `family_vendored_groups` through
+  `verify_group_row_in_family`;
 - `object`: `verify_object_statement` (non-row object headers);
 - `payload`: `keys::check_key_record` over a key-record payload;
 - `value`: `classify_reference` over a CBOR value.
@@ -70,18 +77,60 @@ Rc20 (the namespace registry vendored at `data/cc/namespace_registry.json`):
 - `references`: values typed by form (`[-16, digest]` a row, an identity
   reference a key), for CIRISKernel's `Obj::from_reference`.
 - `family_vendored` (`model: vendored`): the author column and second-consent
-  roles under CC's own cells (`manifests/family_authorship.json`, rc20
-  e08bf05), read by CC's one selector evaluator (`tools/cc_family_select.py`):
+  roles under CC's own cells (`manifests/family_authorship.json`, v1.0-rc20
+  d4bd2a6), read by CC's one selector evaluator (`tools/cc_family_select.py`):
   the leaf is the row's dimension bound under its family, and `verb` /
-  `identity` / `group` / `seats` / `act` come from the case's optional `ctx`
-  (absent: unknown). The expectations are stated from that evaluator's
+  `identity` / `group` / `seats` come from the case's optional `ctx` (absent:
+  unknown). `act` is never a payload member: the reader derives it when the
+  `ctx` leaves it out (CC 2.6.1.9), `own` for one statement of a row with an
+  `author`, and each `key:record` / `licensure` case states the derived `act`
+  (`own`; `none` for one voice of a counted row read alone; `withheld` where
+  `read: as_given` derives nothing, as a harness withholding it). The expectations are stated from that evaluator's
   answers: a leaf or a caller key that decides, an unknown arm before the
   decider (`authorship_undetermined`), a false test beside an unsupplied one,
-  `when`-conditioned roles that hold, do not hold or are unknown, a `gap`
-  member, and `owner_of_sub` never read from the payload. A row's dimension
+  `when`-conditioned roles that hold, do not hold or are unknown, a role
+  member that names the signer or does not, and `owner_of_sub` and
+  `key:record`'s `target` (the issuer of the row `refs.target` names) never
+  read from the payload. A row's dimension
   must resolve to its own header family, so `accord:*` (a closed family no
   dimension resolves to cleanly) is reached only without a dimension, where its
   first arm is unknown.
+- `family_vendored_groups` (`model: vendored`, `act: group`): the statements of
+  one counted row read together by `verify_group_row_in_family`, which derives
+  `act` = `group` (CC 2.6.1.9); `expect` is each voice's verdict (with the row
+  id they share) or `several_rows`. Counting the voices over the roster they
+  name is the caller's.
+
+## What changed from v2
+
+CC's family model at the released tag v1.0-rc20 (d4bd2a6) makes `key:record`
+and `licensure:{authority_id}` `act=group => counted ; authored` (v2 read them
+as plain authored and as a `gap`), and its rulings make `act` something the
+reader derives, never a payload member (CC 2.6.1.9). Every section other than
+`family_vendored` is byte-identical to v2; `family_vendored_groups` is new.
+In `family_vendored`:
+
+- `v_author_signs` (`key:record`): valid, now as act `own` derived from its one
+  statement.
+- `v_gap_role_not_admitted` → `v_key_record_second_signer_no_target`: the same
+  statement and verdict (`iss_not_in_role`); the role is now `predecessor_key`
+  by `target`, not two `gap` roles.
+- new `v_key_record_predecessor_not_from_payload`: `predecessor_key` is the
+  issuer of the row `refs.target` names (CC 3.1.3), which the row does not
+  carry, so a payload member `target` naming the signer does not admit it.
+- new `v_key_record_voice_alone`: one voice of a counted `key:record` read
+  alone derives no act (`authorship_undetermined`).
+- new `v_key_record_act_withheld`, `v_licensure_act_withheld`, `v_act_withheld`:
+  read as given with `act` withheld, `authorship_undetermined` (v2's
+  `v_act_unsupplied` verdict).
+- `v_gap_undetermined` → `v_licensure_own`: `licensure` is no longer a gap;
+  act `own`, valid (was `authorship_undetermined`).
+- `v_act_unsupplied` → `v_act_derived_own`: `collection:{kind}` with no `ctx`
+  now derives `own`, valid (was `authorship_undetermined`).
+- `v_when_gap_member` → `v_when_role_member_absent`: the same statement and
+  verdict; `retirement`'s `custodian` role is now by the member `custodian`,
+  which the payload does not carry. New `v_when_role_member_named`: the payload
+  names the signer as `custodian`, `valid:role:custodian`.
 
 ## What changed from v1
 
@@ -120,3 +169,16 @@ statement bytes and verdict.
 
 v1 history: the 23.0.0 release shipped it with the first eight
 `family_vendored` cases; 23.1.0 added cases and reworded one description.
+
+## The key of `iss`
+
+`key_of_iss_v1.json` holds 23 cases of the key check in CC 2.6.1's
+verification order (rc20, CC 2.6.1.8 steps 6 to 8): a row statement's signing
+key must be a key of its CWT `iss`, the key `iss` names or one reached from it
+by rotation records (CC 2.6.1.7, CC 2.4.1.1, CC 3.1.3); otherwise
+`kid_not_of_iss`. Each case states its directory (`raw` keys, or `records`
+inserted in order into a key-record directory), its level and its outcome.
+`tests/edition2_key_of_iss_vectors.rs` replays it. `gen_key_of_iss.py` wrote it
+with the same independent encoder and signers:
+
+    python3 -I gen_key_of_iss.py > key_of_iss_v1.json
