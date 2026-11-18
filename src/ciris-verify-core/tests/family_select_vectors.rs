@@ -27,9 +27,9 @@ const VECTORS: &str = include_str!("vectors/cc/family_select_vectors.json");
 const COUNT_CELLS: &str = include_str!("vectors/cc/family_count_cells.json");
 
 /// SHA-256 of `tests/vectors/cc/family_select_vectors.json` (CC v1.0-rc20 d4bd2a6).
-const VECTORS_SHA256: &str = "da3bfc60023c46fd0e287dd209742c273565edb77c4f01851c30f3b1df52b616";
-/// CC ships 177 vectors at v1.0-rc20 (d4bd2a6).
-const VECTOR_COUNT: usize = 177;
+const VECTORS_SHA256: &str = "0c3544e3058e1fb0c447ecaa1ae45ce9468a818319beb5ee9451f7cbcb894d73";
+/// CC ships 225 vectors at v1.0-rc21-wire (e6fd7c6).
+const VECTOR_COUNT: usize = 225;
 
 fn lf(s: &str) -> String {
     s.replace("\r\n", "\n")
@@ -69,7 +69,9 @@ fn context(ctx: &Value) -> SelectContext {
     let o = ctx.as_object().unwrap();
     for k in o.keys() {
         assert!(
-            ["verb", "identity", "group", "seats", "act"].contains(&k.as_str()),
+            // `iss` and `sub` are read from the statement, never selector
+            // keys: they decide only a `subject` answer's `admits`.
+            ["verb", "identity", "group", "seats", "act", "iss", "sub"].contains(&k.as_str()),
             "ctx key {k}"
         );
     }
@@ -111,11 +113,11 @@ fn decided_json(d: Option<Decision>) -> Value {
 
 #[test]
 fn vendored_files_are_the_pinned_ones() {
-    assert_eq!(FAMILY_MODEL_CC_COMMIT, "d4bd2a6");
+    assert_eq!(FAMILY_MODEL_CC_COMMIT, "e6fd7c6");
     assert_eq!(sha(FAMILY_AUTHORSHIP_JSON), FAMILY_AUTHORSHIP_SHA256);
     assert_eq!(
         FAMILY_AUTHORSHIP_SHA256,
-        "2732a2de3368bb97750de39e4b44613e40979ad80343dfebe59d8515d28a9c0b"
+        "423d41222384e5dcb73277d051d77f6f33e38cfe6f3557286034160ad1c7bbe1"
     );
     assert_eq!(sha(VECTORS), VECTORS_SHA256);
     // One family model under all three files.
@@ -125,15 +127,15 @@ fn vendored_files_are_the_pinned_ones() {
     assert_eq!(extract["_meta"]["source_sha256"], FAMILY_MODEL_SHA256);
     assert_eq!(vectors["_meta"]["family_model_sha256"], FAMILY_MODEL_SHA256);
     assert_eq!(counts["_meta"]["source_sha256"], FAMILY_MODEL_SHA256);
-    assert_eq!(extract["_meta"]["cc_version"], "1.0-rc20");
+    assert_eq!(extract["_meta"]["cc_version"], "1.0-rc21");
 }
 
 #[test]
 fn extract_shape() {
     let extract: Value = serde_json::from_str(FAMILY_AUTHORSHIP_JSON).unwrap();
     let fams = extract["families"].as_object().unwrap();
-    assert_eq!(fams.len(), 184);
-    assert_eq!(vendored_family_ids().count(), 184);
+    assert_eq!(fams.len(), 187);
+    assert_eq!(vendored_family_ids().count(), 187);
     let (mut plain, mut arms, mut gap) = (0, 0, 0);
     for (prefix, f) in fams {
         let v = vendored_family(&family_id(prefix)).unwrap();
@@ -149,8 +151,8 @@ fn extract_shape() {
             assert_eq!(parse_cell(text).unwrap(), v.authorship.arms, "{prefix}");
         }
     }
-    // CC's split at v1.0-rc20 (d4bd2a6): 164 generic cells, 20 cc-table cells as arms, no gap.
-    assert_eq!((plain, arms, gap), (164, 20, 0));
+    // CC's split at v1.0-rc21-wire (e6fd7c6): 162 generic cells, 25 cc-table cells as arms, no gap.
+    assert_eq!((plain, arms, gap), (162, 25, 0));
     for (prefix, c) in count_cells() {
         assert_eq!(
             parse_cell(c.value.as_deref().unwrap()).unwrap(),
@@ -221,6 +223,22 @@ fn every_cc_vector_agrees() {
             other => panic!("cell {other}"),
         };
         let want_decided = decided.as_ref().map(|_| v["decided_by"].clone());
+        // A `subject` answer admits a statement exactly when its `iss` is
+        // the attested key `sub` (CC 2.6.1.3; `check_family` under
+        // `AUTHOR_IS_SUBJECT`); unknown when either is absent.
+        if got == "subject" && v.get("admits").is_some() {
+            let admits = match (v["ctx"].get("iss"), v["ctx"].get("sub")) {
+                (Some(i), Some(s)) => Value::Bool(i == s),
+                _ => Value::String("unknown".into()),
+            };
+            if admits != v["admits"] {
+                failures.push(format!(
+                    "#{i} {prefix}: admits {admits}, CC {}",
+                    v["admits"]
+                ));
+                continue;
+            }
+        }
         if got != v["expect"] || decided != want_decided {
             failures.push(format!(
                 "#{i} {prefix} {cell} {:?} {}: got {got} decided {decided:?}; CC {} decided {} ({})",

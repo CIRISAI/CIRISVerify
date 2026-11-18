@@ -11,7 +11,9 @@
 //! - a role outside both groups (steward, witness, pipeline, pseudonym) takes
 //!   no end rule of its own;
 //! - where `valid_until` is present,
-//!   `asserted_at <= valid_until <= asserted_at + KEY_RECORD_MAX_SECS * 1000`.
+//!   `asserted_at < valid_until <= asserted_at + KEY_RECORD_MAX_SECS * 1000`
+//!   (a record covers `[asserted_at, valid_until)`, so an end at its own
+//!   instant would cover nothing).
 //!
 //! [`KeyRecordDirectory`] answers [`KeyLookup`]s from held key-record
 //! statements: a record whose own signer is not held makes the key Waiting on
@@ -185,7 +187,7 @@ pub fn check_key_record(payload: &Value) -> Result<KeyRecord, KeyRecordError> {
     }
     if let Some(u) = valid_until {
         let max = asserted_at.saturating_add(KEY_RECORD_MAX_SECS * 1000);
-        if u < asserted_at || u > max {
+        if u <= asserted_at || u > max {
             return Err(KeyRecordError::OutOfWindow);
         }
     }
@@ -275,6 +277,14 @@ pub fn check_key_record(payload: &Value) -> Result<KeyRecord, KeyRecordError> {
 pub struct KeyRecordDirectory {
     records: BTreeMap<Digest32, Vec<u8>>,
     statements: BTreeMap<Digest32, Vec<Vec<u8>>>,
+    /// Admitted `identity:occurrence` statements, by the occurrence key.
+    occurrences: BTreeMap<Digest32, Vec<Vec<u8>>>,
+    /// `identity:occurrence_revocation` statements.
+    evictions: Vec<Vec<u8>>,
+    /// The bundle in force's seats: issuer thumbprint to the seated key.
+    seats: BTreeMap<Digest32, CompositePublicKey>,
+    /// A bundle in force the caller knows of and does not hold.
+    pending_bundle: Option<Digest32>,
 }
 
 impl KeyRecordDirectory {
@@ -299,6 +309,276 @@ impl KeyRecordDirectory {
         Some(kid)
     }
 
+    /// Hold an admitted `identity:occurrence` statement (CC 3.3.6), filed
+    /// under the key its `occurrence_key_id` names: way (d) of the key check.
+    /// Both voices of the row are inserted this way, the identity's (a live
+    /// roster key's) and the bound key's own (proof of possession).
+    ///
+    /// Admission is the caller's: an occurrence lands under the two paths of
+    /// CC 3.3.6.4, and the lone path turns on when this node first held the
+    /// proposal, which no row carries. The directory checks the row itself
+    /// when a lookup reaches it: its payload, both voices, the guard that a
+    /// machine's key is never a person's, its span over the statement's
+    /// instant, and eviction.
+    ///
+    /// Returns the kid it is filed under, or `None` if `occurrence_key_id`
+    /// names no key.
+    pub fn insert_occurrence(&mut self, statement: Vec<u8>) -> Option<Digest32> {
+        let p = payload_of(&statement)?;
+        let kid = identity_ref_thumbprint(p.get_text("occurrence_key_id")?.as_text()?)?;
+        let all = self.occurrences.entry(kid).or_default();
+        if !all.contains(&statement) {
+            all.push(statement);
+        }
+        Some(kid)
+    }
+
+    /// Hold an `identity:occurrence_revocation` statement: from its
+    /// `effective_at` the occurrence it names binds nothing, where a key of
+    /// the identity signs it.
+    pub fn insert_occurrence_revocation(&mut self, statement: Vec<u8>) {
+        if !self.evictions.contains(&statement) {
+            self.evictions.push(statement);
+        }
+    }
+
+    /// Hold the seats of the bundle in force of an accord lineage, as
+    /// `(issuer's genesis thumbprint, seated key)`: way (c) of the key check
+    /// (CC 2.6.1.7, CC 2.6.1.11). A recovery or a rotation by bundle seats a
+    /// key with no rotation record. Replaces any earlier bundle's seats, so a
+    /// seat ends at the first later bundle in force that does not seat it,
+    /// and clears a pending bundle.
+    pub fn hold_bundle_in_force(
+        &mut self,
+        seats: impl IntoIterator<Item = (Digest32, CompositePublicKey)>,
+    ) {
+        self.seats = seats.into_iter().collect();
+        self.pending_bundle = None;
+    }
+
+    /// The caller knows the bundle in force `bundle` and does not hold it:
+    /// a key no other way proves waits on it ([`MissingKey::Bundle`]).
+    pub fn await_bundle_in_force(&mut self, bundle: Digest32) {
+        self.pending_bundle = Some(bundle);
+    }
+
+    /// Ways (b), (c) and (d) for a statement asserted at `at`.
+    fn key_of_full(&self, kid: &Digest32, iss: &Digest32, at: u64, depth: usize) -> KeyOf {
+        if depth > MAX_RECORD_DEPTH {
+            return KeyOf::No;
+        }
+        let mut waiting = None;
+        for way in [
+            self.chain(kid, iss, depth),
+            self.seat(kid, iss),
+            self.occurrence(kid, iss, at, depth),
+        ] {
+            match way {
+                KeyOf::Yes => return KeyOf::Yes,
+                KeyOf::Waiting(m) => {
+                    waiting.get_or_insert(m);
+                },
+                _ => {},
+            }
+        }
+        waiting.map_or(KeyOf::No, KeyOf::Waiting)
+    }
+
+    /// Way (c): the bundle in force seats `kid` for `iss`.
+    fn seat(&self, kid: &Digest32, iss: &Digest32) -> KeyOf {
+        if self
+            .seats
+            .get(iss)
+            .is_some_and(|k| ct_eq(&thumbprint(k), kid))
+        {
+            return KeyOf::Yes;
+        }
+        self.pending_bundle
+            .map_or(KeyOf::No, |b| KeyOf::Waiting(vec![MissingKey::Bundle(b)]))
+    }
+
+    /// Whether the identity whose genesis key is `iss` is a person (`user`
+    /// or `accord_holder`) by its genesis record; `None` when not held.
+    fn is_person(&self, iss: &Digest32) -> Option<bool> {
+        let rec = check_key_record(&payload_of(self.records.get(iss)?)?).ok()?;
+        Some(
+            rec.identity_type
+                .iter()
+                .any(|t| t == "user" || t == "accord_holder"),
+        )
+    }
+
+    /// Whether `kid`'s own record makes it a machine's key (`node` or
+    /// `agent`); `false` when no record of it is held.
+    fn is_machine(&self, kid: &Digest32) -> bool {
+        self.records
+            .get(kid)
+            .and_then(|r| payload_of(r))
+            .and_then(|p| check_key_record(&p).ok())
+            .is_some_and(|r| r.identity_type.iter().any(|t| t == "node" || t == "agent"))
+    }
+
+    /// Way (d): an admitted `identity:occurrence` of `iss` binds `kid` at `at`.
+    fn occurrence(&self, kid: &Digest32, iss: &Digest32, at: u64, depth: usize) -> KeyOf {
+        let Some(all) = self.occurrences.get(kid) else {
+            return KeyOf::No;
+        };
+        let rows: BTreeSet<Digest32> = all
+            .iter()
+            .filter_map(|s| peek(s))
+            .map(|pk| pk.row_id)
+            .collect();
+        let mut waiting = None;
+        for row_id in &rows {
+            match self.occurrence_row(kid, iss, row_id, all, at, depth) {
+                KeyOf::Yes => return KeyOf::Yes,
+                KeyOf::Waiting(m) => {
+                    waiting.get_or_insert(m);
+                },
+                _ => {},
+            }
+        }
+        waiting.map_or(KeyOf::No, KeyOf::Waiting)
+    }
+
+    fn occurrence_row(
+        &self,
+        kid: &Digest32,
+        iss: &Digest32,
+        row_id: &Digest32,
+        all: &[Vec<u8>],
+        at: u64,
+        depth: usize,
+    ) -> KeyOf {
+        let voices: Vec<&Vec<u8>> = all
+            .iter()
+            .filter(|s| peek(s).is_some_and(|pk| ct_eq(&pk.row_id, row_id)))
+            .collect();
+        let Some(p) = voices.first().and_then(|s| payload_of(s)) else {
+            return KeyOf::No;
+        };
+        let text = |m: &str| p.get_text(m).and_then(Value::as_text);
+        let thumb = |m: &str| text(m).and_then(identity_ref_thumbprint);
+        // The payload (CC 3.3.6): of this identity, binding this key, authored
+        // by the identity, a device class from the closed set.
+        if !thumb("identity_key_id").is_some_and(|i| ct_eq(&i, iss))
+            || !thumb("occurrence_key_id").is_some_and(|k| ct_eq(&k, kid))
+            || text("author") != text("identity_key_id")
+        {
+            return KeyOf::No;
+        }
+        // The family's payload rule, the one the genesis reader applies.
+        if super::check_identity_occurrence(&p).is_err() {
+            return KeyOf::No;
+        }
+        let Some(class) = text("device_class") else {
+            return KeyOf::No;
+        };
+        // A key is a person's or a machine's, never both (CC 2.4.1.1).
+        if class == "agent" || self.is_machine(kid) {
+            match self.is_person(iss) {
+                Some(true) => return KeyOf::No,
+                Some(false) => {},
+                None => return KeyOf::Waiting(vec![MissingKey::Kid(*iss)]),
+            }
+        }
+        // It covers the statement's instant, [asserted_at, valid_until).
+        let Some(from) = p.get_text("asserted_at").and_then(Value::as_u64) else {
+            return KeyOf::No;
+        };
+        if at < from {
+            return KeyOf::No;
+        }
+        if p.get_text("valid_until")
+            .and_then(Value::as_u64)
+            .is_some_and(|u| at >= u)
+        {
+            return KeyOf::Waiting(vec![MissingKey::CoveringRecord {
+                kid: *kid,
+                at_ms: at,
+            }]);
+        }
+        if self.evicted(kid, iss, at, depth) {
+            return KeyOf::No;
+        }
+        // The bound key's own voice (possession), verified under its own key.
+        let Some(own) = voices
+            .iter()
+            .find(|s| peek(s).is_some_and(|pk| ct_eq(&pk.kid, kid)))
+        else {
+            return KeyOf::Waiting(vec![MissingKey::Voice {
+                kid: *kid,
+                row: *row_id,
+            }]);
+        };
+        let own_key = match self.resolve(kid, at, depth + 1) {
+            KeyLookup::Held(k) => *k,
+            KeyLookup::Waiting(m) => return KeyOf::Waiting(m),
+            KeyLookup::NotHeld => return KeyOf::Waiting(vec![MissingKey::Kid(*kid)]),
+            _ => return KeyOf::No,
+        };
+        let inner = Scoped {
+            dir: self,
+            depth: depth + 1,
+            own: *kid,
+            own_key: Some(own_key),
+        };
+        match verify_row_statement(own, &inner) {
+            Verdict::Valid(_) => {},
+            Verdict::Waiting { missing } => return KeyOf::Waiting(missing),
+            Verdict::Invalid(_) => return KeyOf::No,
+        }
+        // The identity's voice: a statement by another key whose `iss` is the
+        // identity, its key proved the identity's by step 8 one level deeper.
+        let deeper = Deeper {
+            dir: self,
+            depth: depth + 1,
+        };
+        let mut waiting = None;
+        for v in voices
+            .iter()
+            .filter(|s| peek(s).is_some_and(|pk| !ct_eq(&pk.kid, kid)))
+        {
+            match verify_row_statement(v, &deeper) {
+                Verdict::Valid(r)
+                    if identity_ref_thumbprint(&r.iss).is_some_and(|i| ct_eq(&i, iss)) =>
+                {
+                    return KeyOf::Yes;
+                },
+                Verdict::Waiting { missing } => {
+                    waiting.get_or_insert(missing);
+                },
+                _ => {},
+            }
+        }
+        KeyOf::Waiting(waiting.unwrap_or_else(|| {
+            vec![MissingKey::Voice {
+                kid: *iss,
+                row: *row_id,
+            }]
+        }))
+    }
+
+    /// An `identity:occurrence_revocation` of (`iss`, `kid`), effective by
+    /// `at`, signed by a key of `iss`.
+    fn evicted(&self, kid: &Digest32, iss: &Digest32, at: u64, depth: usize) -> bool {
+        let deeper = Deeper {
+            dir: self,
+            depth: depth + 1,
+        };
+        self.evictions.iter().any(|e| {
+            let Some(p) = payload_of(e) else { return false };
+            let thumb = |m: &str| p.get_text(m).and_then(Value::as_text).and_then(identity_ref_thumbprint);
+            thumb("identity_key_id").is_some_and(|i| ct_eq(&i, iss))
+                && thumb("occurrence_key_id").is_some_and(|k| ct_eq(&k, kid))
+                && p.get_text("effective_at").and_then(Value::as_u64).is_some_and(|t| t <= at)
+                && matches!(
+                    verify_row_statement(e, &deeper),
+                    Verdict::Valid(r) if identity_ref_thumbprint(&r.iss).is_some_and(|i| ct_eq(&i, iss))
+                )
+        })
+    }
+
     fn scoped<'a>(&'a self, kid: &Digest32, st: &[u8], depth: usize) -> Scoped<'a> {
         Scoped {
             dir: self,
@@ -320,7 +600,13 @@ impl KeyRecordDirectory {
                 .find(|s| peek(s).is_some_and(|pk| ct_eq(&pk.kid, kid)))
         });
         let Some(st) = own.or_else(|| self.records.get(kid)) else {
-            return KeyLookup::NotHeld;
+            // A key the bundle in force seats is held by its seat: that
+            // standing rides no key record (CC 2.6.1.11).
+            return self
+                .seats
+                .values()
+                .find(|k| ct_eq(&thumbprint(k), kid))
+                .map_or(KeyLookup::NotHeld, |k| KeyLookup::Held(Box::new(k.clone())));
         };
         let inner = self.scoped(kid, st, depth);
         match verify_row_statement(st, &inner) {
@@ -567,7 +853,31 @@ impl KeyDirectory for KeyRecordDirectory {
     }
 
     fn key_of(&self, kid: &Digest32, iss: &Digest32) -> KeyOf {
-        self.chain(kid, iss, 0)
+        self.key_of_full(kid, iss, u64::MAX, 0)
+    }
+
+    fn key_of_at(&self, kid: &Digest32, iss: &Digest32, at: u64) -> KeyOf {
+        self.key_of_full(kid, iss, at, 0)
+    }
+}
+
+/// The directory one level deeper, for a voice of a row a lookup is reading.
+struct Deeper<'a> {
+    dir: &'a KeyRecordDirectory,
+    depth: usize,
+}
+
+impl KeyDirectory for Deeper<'_> {
+    fn lookup(&self, kid: &Digest32, asserted_at: u64) -> KeyLookup {
+        self.dir.resolve(kid, asserted_at, self.depth)
+    }
+
+    fn key_of(&self, kid: &Digest32, iss: &Digest32) -> KeyOf {
+        self.dir.key_of_full(kid, iss, u64::MAX, self.depth)
+    }
+
+    fn key_of_at(&self, kid: &Digest32, iss: &Digest32, at: u64) -> KeyOf {
+        self.dir.key_of_full(kid, iss, at, self.depth)
     }
 }
 
@@ -598,10 +908,14 @@ impl KeyDirectory for Scoped<'_> {
     /// to prove ([`KeyRecordDirectory`]), never the record's own word. Every
     /// other key is proved through the directory, one level deeper.
     fn key_of(&self, kid: &Digest32, iss: &Digest32) -> KeyOf {
+        self.key_of_at(kid, iss, u64::MAX)
+    }
+
+    fn key_of_at(&self, kid: &Digest32, iss: &Digest32, at: u64) -> KeyOf {
         if *kid == self.own {
             return KeyOf::Yes;
         }
-        self.dir.chain(kid, iss, self.depth)
+        self.dir.key_of_full(kid, iss, at, self.depth)
     }
 }
 
@@ -746,7 +1060,9 @@ mod tests {
             ok(&["node"], Some(T0 - 1)),
             Err(KeyRecordError::OutOfWindow)
         );
-        assert_eq!(ok(&["node"], Some(T0)), Ok(()));
+        // An end at the record's own instant covers nothing: refused.
+        assert_eq!(ok(&["node"], Some(T0)), Err(KeyRecordError::OutOfWindow));
+        assert_eq!(ok(&["node"], Some(T0 + 1)), Ok(()));
         assert_eq!(ok(&["agent"], None), Err(KeyRecordError::OutOfWindow));
         assert_eq!(ok(&["user"], None), Ok(()));
         assert_eq!(

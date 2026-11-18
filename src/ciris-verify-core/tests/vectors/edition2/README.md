@@ -182,3 +182,21 @@ inserted in order into a key-record directory), its level and its outcome.
 with the same independent encoder and signers:
 
     python3 -I gen_key_of_iss.py > key_of_iss_v1.json
+
+`key_of_iss_v2.json` holds 26 cases of step 8 as CIRISConstitution v1.0-rc21-wire states it, and
+of step 4's end rule: the four ways a key is a key of `iss` ((a) the thumbprint inside `iss`,
+(b) a rotation chain, (c) a key the bundle in force seats, (d) an admitted `identity:occurrence`),
+Waiting on what is not held (a named record, a voice a rotation or an occurrence lacks, the bundle
+in force), half-open coverage `[asserted_at, valid_until)`, `valid_until_not_after_asserted_at`,
+the guard that never binds a machine's key under a person's identity, eviction, and
+`location_proof` authored by its subject alone. Each case states its directory: key records,
+admitted occurrences, evictions, the bundle in force's seats (`[issuer seed, seated key seed]`) and
+a pending bundle. `tests/edition2_key_of_iss_vectors_v2.rs` replays it; `gen_key_of_iss_v2.py`
+(the v1 generator's helpers, copied; independent of verify) wrote it:
+
+    python3 -I gen_key_of_iss_v2.py > key_of_iss_v2.json
+
+`key_of_iss_model.tsv` is the expected output of CIRISConstitution's KeyOfIss model
+(`formal/key_of_iss`, TLA+ and its Python twin); `tests/edition2_key_of_iss_model.rs` signs each
+of its chain world's statement groups and compares `KeyRecordDirectory::key_of` with every row,
+in two arrival orders.

@@ -1,17 +1,23 @@
 //! `ceg-genesis-bundle/2` known answers for a re-seated serve node
-//! (CC 2.6.1.11, CC 2.6.1.7, CC 3.3.6.2, CIRISConstitution v1.0-rc20).
+//! (CC 2.6.1.11, CC 2.6.1.7, CC 3.3.6.2, CIRISConstitution v1.0-rc21-wire e6fd7c6).
 //!
 //! A later bundle may seat a serve node at a new key while the seat keeps its
 //! identity reference: the seat's new key record and its binding carry
 //! `iss = author =` the seat's identity reference and are signed by the new
 //! key, and the binding verifies under the key the bundle places for the seat.
+//! The binding is the seat's own `identity:occurrence` (rc21): its
+//! `identity_key_id` and `occurrence_key_id` are the seat's identity
+//! reference, never the new key's (`reseat_binding_names_new_key`).
 //!
-//! `tests/vectors/edition2/genesis/genesis_reseat_v1.json` was written by
-//! `gen_genesis_reseat_v1.py` beside it, over `gen_genesis_bundles_v2.py`'s
+//! `tests/vectors/edition2/genesis/genesis_reseat_v2.json` was written by
+//! `gen_genesis_reseat_v2.py` beside it, over `gen_genesis_bundles_v3.py`'s
 //! machinery (its own CBOR encoder, dilithium-py, pyca/cryptography and
-//! kyber-py; nothing shared with verify). Its first case repeats v2's
+//! kyber-py; nothing shared with verify). Its first case repeats v3's
 //! `first_valid`, the predecessor of the rest. The replay is
-//! `genesis_bundle_v2_vectors.rs`'s, trimmed to what these cases use.
+//! `genesis_bundle_v3_vectors.rs`'s, trimmed to what these cases use.
+//! `genesis_reseat_v1.json` stays byte-identical and is no longer replayed:
+//! its bindings carry no `identity_key_id`, `occurrence_key_id` or
+//! `device_class`.
 #![cfg(all(feature = "std", feature = "pqc"))]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -24,7 +30,7 @@ use ciris_verify_core::edition2::{thumbprint, Digest32};
 use ciris_verify_core::trust_anchor_store::{environments, single, Purpose, TrustAnchorStore};
 use serde_json::Value as J;
 
-const FILE: &str = include_str!("vectors/edition2/genesis/genesis_reseat_v1.json");
+const FILE: &str = include_str!("vectors/edition2/genesis/genesis_reseat_v2.json");
 
 fn hex32(s: &str) -> Digest32 {
     hex::decode(s).unwrap().try_into().unwrap()
@@ -181,7 +187,7 @@ fn every_reseat_case_gives_its_verdict() {
         .collect();
     let mut valid: BTreeMap<String, Vec<GenesisPlacement>> = BTreeMap::new();
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 4, "the case list");
+    assert_eq!(cases.len(), 5, "the case list");
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let statements: Vec<Vec<u8>> = c["statements"]

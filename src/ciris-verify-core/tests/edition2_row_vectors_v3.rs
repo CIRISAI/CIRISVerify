@@ -283,7 +283,14 @@ fn key_record_end_rule() {
             Ok(_) => "ok",
             Err(e) => e.token(),
         };
-        assert_eq!(got, c["expect"].as_str().unwrap(), "{id}");
+        // CC rc21: a record covers [asserted_at, valid_until), so an end at its
+        // own instant covers nothing and is refused (the file stays as
+        // published; key_of_iss_v2.json carries the rc21 end rule).
+        let want = match id {
+            "node_at_asserted" => "key_record_out_of_window",
+            _ => c["expect"].as_str().unwrap(),
+        };
+        assert_eq!(got, want, "{id}");
     }
 }
 

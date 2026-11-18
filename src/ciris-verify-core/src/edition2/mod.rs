@@ -104,6 +104,10 @@ pub enum Invalid {
         /// Where.
         within: &'static str,
     },
+    /// The payload states a `valid_until` that is not later than its
+    /// `asserted_at` (CC 2.6.1.8 step 4; a span covers
+    /// `[asserted_at, valid_until)`, so it would cover no instant).
+    ValidUntilNotAfterAssertedAt,
     /// `iat` is not `floor(asserted_at / 1000)`, or `nbf` / `exp` disagree
     /// with `valid_from` / `valid_until`.
     TimeDisagreement {
@@ -150,6 +154,7 @@ impl Invalid {
     pub fn token(&self) -> Option<&'static str> {
         match self {
             Self::KidNotOfIss => Some("kid_not_of_iss"),
+            Self::ValidUntilNotAfterAssertedAt => Some("valid_until_not_after_asserted_at"),
             _ => None,
         }
     }
@@ -189,6 +194,10 @@ pub enum MissingKey {
     /// `refs.target` as its predecessor's record: the link of the issuer's
     /// rotation chain that is not held (CC 2.4.1.1).
     Record(Digest32),
+    /// The bundle in force of an accord lineage the reader holds, by its
+    /// object id, when it is not held: a key it may seat for an issuer waits
+    /// on it (CC 2.6.1.7 way (c)).
+    Bundle(Digest32),
     /// A voice of a held row that is not held: the statement by `kid` over
     /// the row `row`. A counted row gains voices without changing its row
     /// id (CC 2.6.1.9), so a voice not held is waited on, never refused:
@@ -280,6 +289,15 @@ pub trait KeyDirectory {
     fn key_of(&self, kid: &Digest32, iss: &Digest32) -> KeyOf {
         let _ = (kid, iss);
         KeyOf::No
+    }
+
+    /// [`KeyDirectory::key_of`] for a statement asserted at `at` (POSIX
+    /// ms), the question step 8 asks. A way that turns on the instant, an
+    /// occurrence covering it (CC 2.6.1.7 way (d)), answers here; the
+    /// default ignores the instant and answers [`KeyDirectory::key_of`].
+    fn key_of_at(&self, kid: &Digest32, iss: &Digest32, at: u64) -> KeyOf {
+        let _ = at;
+        self.key_of(kid, iss)
     }
 }
 
@@ -624,6 +642,9 @@ fn check_envelope(p: &Value) -> Result<(Option<String>, u64), Invalid> {
     for k in ["valid_from", "valid_until", "expires_at", "reason"] {
         opt_u64(p, k)?;
     }
+    if opt_u64(p, "valid_until")?.is_some_and(|u| u <= asserted_at) {
+        return Err(Invalid::ValidUntilNotAfterAssertedAt);
+    }
     if let Some(s) = p.get_text("salt") {
         if s.as_bytes().map(<[u8]>::len) != Some(16) {
             return Err(malformed("salt"));
@@ -811,7 +832,7 @@ fn read_row_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Verdict, 
     // signer's genesis key, so it stays when the key rotates): the key `iss`
     // names, or one the directory proves the issuer's. Fail closed.
     if !bool::from(kid.ct_eq(&iss_kid)) {
-        match keys.key_of(&kid, &iss_kid) {
+        match keys.key_of_at(&kid, &iss_kid, asserted_at) {
             KeyOf::Yes => {},
             KeyOf::No => return Err(Invalid::KidNotOfIss),
             KeyOf::Waiting(missing) => return Ok(Verdict::Waiting { missing }),
@@ -1087,6 +1108,136 @@ pub fn hash_digest_value(d: &Digest32) -> Value {
 #[must_use]
 pub fn row_ref(d: &Digest32) -> Value {
     Value::Array(vec![Value::Uint(EDITION), hash_digest(d)])
+}
+
+/// The closed set of an `identity:occurrence`'s `device_class` (CC 3.3.6.1,
+/// `identity-occurrence` in CC's `family_payloads_v2.cddl`).
+pub const DEVICE_CLASSES: [&str; 6] = ["phone", "laptop", "server", "embedded", "agent", "service"];
+
+/// The members of `transport_destination` (CC 3.3.6.2, CC 3.3.6.3), each
+/// with the byte length it must carry (`None`: its own type).
+const TRANSPORT_DESTINATION: [&str; 5] = [
+    "reticulum_x25519_pubkey",
+    "reticulum_ed25519_pubkey",
+    "app_name",
+    "aspects",
+    "destination_hash",
+];
+
+/// `transport_destination` against its CDDL: a closed map of the five RNS
+/// members, each of its type.
+pub(crate) fn transport_destination_shape(td: &Value) -> Result<(), Invalid> {
+    let bad = || Invalid::Malformed {
+        member: "transport_destination",
+    };
+    let m = td.as_map().ok_or_else(bad)?;
+    if m.len() != TRANSPORT_DESTINATION.len()
+        || m.iter().any(|(k, _)| {
+            !k.as_text()
+                .is_some_and(|t| TRANSPORT_DESTINATION.contains(&t))
+        })
+    {
+        return Err(bad());
+    }
+    let len = |k: &str| td.get_text(k).and_then(Value::as_bytes).map(<[u8]>::len);
+    if len("reticulum_x25519_pubkey") != Some(32)
+        || len("reticulum_ed25519_pubkey") != Some(32)
+        || len("destination_hash") != Some(16)
+        || td.get_text("app_name").and_then(Value::as_text).is_none()
+        || !td
+            .get_text("aspects")
+            .and_then(Value::as_array)
+            .is_some_and(|a| a.iter().all(|x| x.as_text().is_some()))
+    {
+        return Err(bad());
+    }
+    Ok(())
+}
+
+/// The `identity:occurrence` payload rule (CC 3.3.6.1; `identity-occurrence`
+/// in CC's `family_payloads_v2.cddl`, v1.0-rc21-wire e6fd7c6), as the row is alone:
+/// `author`, `identity_key_id` and `occurrence_key_id` are identity
+/// references; `device_class` is one of [`DEVICE_CLASSES`]; `asserted_at` is
+/// a `ms-time`; each optional member stands at its type
+/// (`hardware_attestation` bytes, `transport_destination` the closed RNS map,
+/// `encryption_pubkeys` the closed map of a 32-byte `x25519` and a
+/// 1184-byte `ml_kem_768`, `build_manifest_hash` a SHA-256 `hash-digest`,
+/// `refs` the self-roster's refs (required, with `head`; only `head`,
+/// `further_heads`, `target` and `also`), `valid_until` a `ms-time` later than
+/// `asserted_at`). The open tail (`* tstr => ceg-value`) is admitted as it
+/// stands. A seat's binding also passes the genesis reader's seat rules.
+///
+/// # Errors
+///
+/// [`Invalid::Malformed`] naming the first member off its rule.
+pub fn check_identity_occurrence(p: &Value) -> Result<(), Invalid> {
+    let bad = |member: &'static str| Invalid::Malformed { member };
+    p.as_map().ok_or(bad("identity-occurrence"))?;
+    for m in ["author", "identity_key_id", "occurrence_key_id"] {
+        let ok = p
+            .get_text(m)
+            .and_then(Value::as_text)
+            .is_some_and(is_identity_ref);
+        if !ok {
+            return Err(bad(match m {
+                "author" => "author",
+                "identity_key_id" => "identity_key_id",
+                _ => "occurrence_key_id",
+            }));
+        }
+    }
+    if !p
+        .get_text("device_class")
+        .and_then(Value::as_text)
+        .is_some_and(|c| DEVICE_CLASSES.contains(&c))
+    {
+        return Err(bad("device_class"));
+    }
+    let asserted_at = p
+        .get_text("asserted_at")
+        .and_then(Value::as_u64)
+        .ok_or(bad("asserted_at"))?;
+    if let Some(v) = p.get_text("valid_until") {
+        if !v.as_u64().is_some_and(|u| u > asserted_at) {
+            return Err(bad("valid_until"));
+        }
+    }
+    if let Some(v) = p.get_text("hardware_attestation") {
+        v.as_bytes().ok_or(bad("hardware_attestation"))?;
+    }
+    if let Some(td) = p.get_text("transport_destination") {
+        transport_destination_shape(td)?;
+    }
+    if let Some(e) = p.get_text("encryption_pubkeys") {
+        let len = |k: &str| e.get_text(k).and_then(Value::as_bytes).map(<[u8]>::len);
+        let closed = e.as_map().is_some_and(|m| {
+            m.len() == 2
+                && m.iter()
+                    .all(|(k, _)| matches!(k.as_text(), Some("x25519" | "ml_kem_768")))
+        });
+        if !closed || len("x25519") != Some(32) || len("ml_kem_768") != Some(1184) {
+            return Err(bad("encryption_pubkeys"));
+        }
+    }
+    if let Some(d) = p.get_text("build_manifest_hash") {
+        check_hash_digest(d, "build_manifest_hash")?;
+    }
+    // `refs` is the self-roster's (CC 3.3.6.4): required, a closed map, the
+    // head the signer stood on required.
+    let r = p.get_text("refs").ok_or(bad("refs"))?;
+    check_refs(r)?;
+    let closed = r.as_map().is_some_and(|m| {
+        m.iter().all(|(k, _)| {
+            matches!(
+                k.as_text(),
+                Some("head" | "further_heads" | "target" | "also")
+            )
+        })
+    });
+    if !closed || r.get_text("head").is_none() {
+        return Err(bad("refs"));
+    }
+    Ok(())
 }
 
 #[cfg(test)]

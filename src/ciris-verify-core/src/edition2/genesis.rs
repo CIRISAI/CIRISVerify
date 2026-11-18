@@ -60,10 +60,13 @@
 //!    author (a recovery key's record by the recovery statement's `kid`),
 //!    verified under its own key (a binding under its seat's); each holder's
 //!    record holds the key the bundle in force seats for it; each seat's
-//!    record covers the bundle's `asserted_at` and its binding names that
-//!    record in `refs`; the seat bindings' X-Wing members and in-row
-//!    separation. Then a recovery's own rules, once its records are placed
-//!    and its statement verified;
+//!    record covers the bundle's `asserted_at`; the seat bindings' X-Wing
+//!    members and in-row separation; each binding is the seat's own
+//!    `identity:occurrence` (its family's payload rule as it is alone, then
+//!    `identity_key_id` = `occurrence_key_id` = `author` = the CWT `sub`
+//!    and `device_class` `server`, CC 2.6.1.11 v1.0-rc21-wire e6fd7c6), and it names
+//!    the seat's record in `refs`. Then a recovery's own rules, once its
+//!    records are placed and its statement verified;
 //! 5. the custody gate at each holder seat (CC 4.2.2.1);
 //! 6. the count: a bundle naming a spent commitment concludes nothing; a
 //!    recovery counts on its one statement; a first bundle on every holder; a
@@ -95,6 +98,9 @@ use subtle::ConstantTimeEq;
 pub const GENESIS_BUNDLE_TYP: &str = "ceg-genesis-bundle/2";
 /// The family of a seat's binding (CC 3.3.6.2).
 pub const BINDING_FAMILY: &str = "identity:occurrence";
+/// The `device_class` of a seat's binding (CC 2.6.1.11, v1.0-rc21-wire e6fd7c6).
+pub const SEAT_DEVICE_CLASS: &str = "server";
+pub use super::{check_identity_occurrence, DEVICE_CLASSES};
 /// The length of an X-Wing public key, `pk_M ‖ pk_X`.
 pub const XWING_PUBKEY_LEN: usize = 1216;
 /// The ML-KEM-768 half of an X-Wing public key, bytes `0..1184`.
@@ -1977,8 +1983,8 @@ fn place_rows(
     for (seat, (id, bytes)) in &binding_slots {
         let r = &records[*seat];
         let row = verify_under(*id, bytes, &PlacedKey(r.rec.kid, &r.rec.key))?;
-        let (transit, onion) =
-            check_seat_binding(&row.payload, &r.rec.key, &r.id).map_err(|f| row_invalid(*id, f))?;
+        let (transit, onion) = seat_binding(&row.payload, &r.rec.key, &r.id, Some(&row.sub))
+            .map_err(|f| row_invalid(*id, f))?;
         bindings.insert(
             (*seat).to_owned(),
             PlacedBinding {
@@ -2026,48 +2032,6 @@ fn collect_bytes<'a>(v: &'a Value, skip: &[&str], out: &mut Vec<&'a [u8]>) {
     }
 }
 
-/// The members of `transport_destination` (CC 3.3.6.2, CC 3.3.6.3), each
-/// with the byte length it must carry (`None`: its own type).
-const TRANSPORT_DESTINATION: [&str; 5] = [
-    "reticulum_x25519_pubkey",
-    "reticulum_ed25519_pubkey",
-    "app_name",
-    "aspects",
-    "destination_hash",
-];
-
-/// `transport_destination` against its CDDL: a closed map of the five RNS
-/// members, each of its type.
-fn transport_destination_shape(td: &Value) -> Result<(), RowFault> {
-    let bad = || {
-        RowFault::Row(Invalid::Malformed {
-            member: "transport_destination",
-        })
-    };
-    let m = td.as_map().ok_or_else(bad)?;
-    if m.len() != TRANSPORT_DESTINATION.len()
-        || m.iter().any(|(k, _)| {
-            !k.as_text()
-                .is_some_and(|t| TRANSPORT_DESTINATION.contains(&t))
-        })
-    {
-        return Err(bad());
-    }
-    let len = |k: &str| td.get_text(k).and_then(Value::as_bytes).map(<[u8]>::len);
-    if len("reticulum_x25519_pubkey") != Some(32)
-        || len("reticulum_ed25519_pubkey") != Some(32)
-        || len("destination_hash") != Some(16)
-        || td.get_text("app_name").and_then(Value::as_text).is_none()
-        || !td
-            .get_text("aspects")
-            .and_then(Value::as_array)
-            .is_some_and(|a| a.iter().all(|x| x.as_text().is_some()))
-    {
-        return Err(bad());
-    }
-    Ok(())
-}
-
 /// Does a binding's `refs` name `record` under the `also` role `cites`?
 fn names_record(p: &Value, record: &Digest32) -> bool {
     p.get_text("refs")
@@ -2081,23 +2045,47 @@ fn names_record(p: &Value, record: &Digest32) -> bool {
         })
 }
 
-/// A seat's binding (CC 3.3.6.2): the payload of the seat's
+/// A seat's binding (CC 3.3.6.2, CC 2.6.1.11): the payload of the seat's
 /// `identity:occurrence` row, signed by `signer` (the seat's key), whose
 /// seat key record is `record`. Returns its two X-Wing keys, the 1216-byte
 /// members of the signed payload beside `transport_destination`, once they
 /// pass the in-row separation against each other, every other key on the row
-/// and the signer's Ed25519 half, and the binding names `record` in `refs`.
+/// and the signer's Ed25519 half; the payload passes the `identity:occurrence`
+/// payload rule ([`check_identity_occurrence`]); its `identity_key_id` and
+/// `occurrence_key_id` are its `author` and its `device_class` is `server`
+/// (CC 2.6.1.11, v1.0-rc21-wire e6fd7c6); and it names `record` in `refs`.
+///
+/// The seat's identity reference is the binding's `author`: the bundle reader
+/// places a binding by its author and requires `author` = `iss`, so a binding
+/// checked alone is the seat's where its author is. After a re-seat the
+/// signer's thumbprint is not the seat's identity reference, so the members
+/// are compared with `author`, never with the signer. The bundle reader also
+/// requires the statement's CWT `sub` to be `occurrence_key_id`; this payload
+/// check has no `sub` to compare.
 ///
 /// # Errors
 ///
 /// The [`RowFault`] the binding breaks: `binding_no_transport_destination`,
 /// `row_invalid` (`transport_destination` or `onion_relay` off its CDDL),
 /// `binding_earlier_transit_pair`, `seat_opted_out`, `binding_xwing_member`,
-/// an X-Wing reuse token, or `binding_names_no_record`.
+/// an X-Wing reuse token, `row_invalid` (the `identity:occurrence` payload
+/// rule, or a member not the seat's, or a `device_class` other than
+/// `server`), or `binding_names_no_record`.
 pub fn check_seat_binding(
     p: &Value,
     signer: &CompositePublicKey,
     record: &Digest32,
+) -> Result<([u8; XWING_PUBKEY_LEN], [u8; XWING_PUBKEY_LEN]), RowFault> {
+    seat_binding(p, signer, record, None)
+}
+
+/// [`check_seat_binding`], with the statement's CWT `sub` where the row is
+/// at hand.
+fn seat_binding(
+    p: &Value,
+    signer: &CompositePublicKey,
+    record: &Digest32,
+    sub: Option<&str>,
 ) -> Result<([u8; XWING_PUBKEY_LEN], [u8; XWING_PUBKEY_LEN]), RowFault> {
     let td = p
         .get_text("transport_destination")
@@ -2105,7 +2093,7 @@ pub fn check_seat_binding(
     if td.as_map().is_none() {
         return Err(RowFault::NoTransportDestination);
     }
-    transport_destination_shape(td)?;
+    super::transport_destination_shape(td).map_err(RowFault::Row)?;
     if p.get_text("transit_kex_pubkeys").is_some() {
         return Err(RowFault::EarlierTransitPair);
     }
@@ -2169,10 +2157,42 @@ pub fn check_seat_binding(
             });
         }
     }
+    // The binding is the seat's own `identity:occurrence` (CC 2.6.1.11,
+    // v1.0-rc21-wire e6fd7c6): its family's payload rule as it is alone, then the seat's
+    // members. Checked after the transport rules above (whose details CC
+    // names) and before the record the binding names.
+    check_identity_occurrence(p).map_err(RowFault::Row)?;
+    check_seat_occurrence(p, sub).map_err(RowFault::Row)?;
     if !names_record(p, record) {
         return Err(RowFault::BindingNamesNoRecord);
     }
     Ok((transit, onion))
+}
+
+/// A seat's binding is the seat's own occurrence (CC 2.6.1.11, rc21
+/// v1.0-rc21-wire e6fd7c6): `identity_key_id` and `occurrence_key_id` are the seat's
+/// identity reference, its `author` (and, where the row is at hand, the
+/// statement's CWT `sub`), and `device_class` is `server`. Run after
+/// [`check_identity_occurrence`].
+fn check_seat_occurrence(p: &Value, sub: Option<&str>) -> Result<(), Invalid> {
+    let text = |m: &str| p.get_text(m).and_then(Value::as_text);
+    let author = text("author");
+    if text("identity_key_id") != author {
+        return Err(Invalid::Malformed {
+            member: "identity_key_id",
+        });
+    }
+    if text("occurrence_key_id") != author || sub.is_some_and(|s| Some(s) != author) {
+        return Err(Invalid::Malformed {
+            member: "occurrence_key_id",
+        });
+    }
+    if text("device_class") != Some(SEAT_DEVICE_CLASS) {
+        return Err(Invalid::Malformed {
+            member: "device_class",
+        });
+    }
+    Ok(())
 }
 
 /// The gate at seating (CC 4.2.2.1): the chain verifies to the mechanism's

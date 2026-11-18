@@ -1,16 +1,19 @@
 //! `ceg-genesis-bundle/2` known answers (CC 2.6.1.11, CC 4.2.6,
-//! CIRISConstitution rc20 436b5bc for the cross-check).
+//! CIRISConstitution v1.0-rc21-wire e6fd7c6, also for the cross-check).
 //!
-//! `tests/vectors/edition2/genesis/genesis_bundles_v2.json` was written by
-//! `gen_genesis_bundles_v2.py` beside it: its own CBOR encoder, dilithium-py,
+//! `tests/vectors/edition2/genesis/genesis_bundles_v3.json` was written by
+//! `gen_genesis_bundles_v3.py` beside it: its own CBOR encoder, dilithium-py,
 //! pyca/cryptography and kyber-py, sharing no code with verify. Every case is
 //! replayed through [`read_genesis_bundles`]; the custody gate trusts the
 //! file's mock attestation root, supplied as the reader's trust store. The
 //! file also carries CC's own samples (`tools/build_cc_signed_object_v2.py`)
 //! and the reference reader's answer beside ours for each case it models.
-//! `genesis_bundles_v1.json` (rc20 ae09856, cited by CC) stays byte-identical
-//! and is no longer replayed: rc20 64c5918 requires a seat's binding to name
-//! its record, which none of v1's bindings does.
+//! `genesis_bundles_v1.json` (rc20 ae09856, cited by CC) and
+//! `genesis_bundles_v2.json` (rc20 64c5918) stay byte-identical and are no
+//! longer replayed: rc20 64c5918 requires a seat's binding to name its record,
+//! which none of v1's bindings does, and v1.0-rc21-wire e6fd7c6 requires it to be the
+//! seat's own `identity:occurrence` (`identity_key_id` = `occurrence_key_id`
+//! = the seat, `device_class` `server`), which none of v2's bindings is.
 #![cfg(all(feature = "std", feature = "pqc"))]
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -18,9 +21,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use ciris_crypto::composite::{CompositePublicKey, CompositeSigningKey, COSE_ALG};
 use ciris_verify_core::cde::{self, Value};
 use ciris_verify_core::edition2::genesis::{
-    check_seat_binding, find_forks, follow_to_head, read_genesis_bundles, tips_in_common, Anchor,
-    CustodyFault, Fork, GenesisInput, GenesisPlacement, GenesisVerdict, Head, Inconclusive,
-    Predecessor, GENESIS_BUNDLE_MALFORMED, GENESIS_BUNDLE_TYP,
+    check_identity_occurrence, check_seat_binding, find_forks, follow_to_head,
+    read_genesis_bundles, tips_in_common, Anchor, CustodyFault, Fork, GenesisInput,
+    GenesisPlacement, GenesisVerdict, Head, Inconclusive, Predecessor, GENESIS_BUNDLE_MALFORMED,
+    GENESIS_BUNDLE_TYP,
 };
 use ciris_verify_core::edition2::keys::check_key_record;
 use ciris_verify_core::edition2::recovery::{
@@ -34,17 +38,17 @@ use ciris_verify_core::trust_anchor_store::{
 };
 use serde_json::Value as J;
 
-const FILE: &str = include_str!("vectors/edition2/genesis/genesis_bundles_v2.json");
+const FILE: &str = include_str!("vectors/edition2/genesis/genesis_bundles_v3.json");
 /// The statements, split so each file stays under the repository's size limit.
 const POOL: [&str; 8] = [
-    include_str!("vectors/edition2/genesis/pool_v2_0.json"),
-    include_str!("vectors/edition2/genesis/pool_v2_1.json"),
-    include_str!("vectors/edition2/genesis/pool_v2_2.json"),
-    include_str!("vectors/edition2/genesis/pool_v2_3.json"),
-    include_str!("vectors/edition2/genesis/pool_v2_4.json"),
-    include_str!("vectors/edition2/genesis/pool_v2_5.json"),
-    include_str!("vectors/edition2/genesis/pool_v2_6.json"),
-    include_str!("vectors/edition2/genesis/pool_v2_7.json"),
+    include_str!("vectors/edition2/genesis/pool_v3_0.json"),
+    include_str!("vectors/edition2/genesis/pool_v3_1.json"),
+    include_str!("vectors/edition2/genesis/pool_v3_2.json"),
+    include_str!("vectors/edition2/genesis/pool_v3_3.json"),
+    include_str!("vectors/edition2/genesis/pool_v3_4.json"),
+    include_str!("vectors/edition2/genesis/pool_v3_5.json"),
+    include_str!("vectors/edition2/genesis/pool_v3_6.json"),
+    include_str!("vectors/edition2/genesis/pool_v3_7.json"),
 ];
 
 /// The case file, with the pool merged in under `pool`.
@@ -260,7 +264,7 @@ fn every_case_gives_its_verdict() {
     });
     let mut valid: BTreeMap<String, Vec<GenesisPlacement>> = BTreeMap::new();
     let cases = f["cases"].as_array().unwrap();
-    assert!(cases.len() >= 105, "the case list");
+    assert!(cases.len() >= 116, "the case list");
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let statements: Vec<Vec<u8>> = c["statements"]
@@ -610,14 +614,45 @@ fn cc_samples() {
         );
     }
     // The binding samples (CC 3.3.6.2): the valid one passes the seat-binding rule (naming the record
-    // its refs cite), each broken one is refused.
+    // its refs cite), each broken one is refused. CC's samples carry the CC 3.3.6.2 members alone; a
+    // seat's binding is also its own `identity:occurrence` (rc21), so each is read with the seat's
+    // occurrence members added (author = identity_key_id = occurrence_key_id = the seat, `server`).
     let named: Digest32 = [4; 32];
+    let seat = ciris_verify_core::edition2::identity_ref(&thumbprint(k.public_key()));
     for s in cc["binding_samples"].as_array().unwrap() {
         let p = cde::decode(&hex::decode(s["payload_hex"].as_str().unwrap()).unwrap()).unwrap();
+        let Value::Map(mut m) = p else { panic!() };
+        for (kk, v) in [
+            ("author", Value::Text(seat.clone())),
+            ("identity_key_id", Value::Text(seat.clone())),
+            ("occurrence_key_id", Value::Text(seat.clone())),
+            ("device_class", Value::Text("server".into())),
+            ("asserted_at", Value::Uint(1_763_078_400_000)),
+        ] {
+            m.push((Value::Text(kk.into()), v));
+        }
+        let p = Value::Map(m);
         let got = check_seat_binding(&p, k.public_key(), &named);
         match s["expect"].as_str().unwrap() {
             "ok" => assert!(got.is_ok(), "{}: {got:?}", s["name"]),
             _ => assert!(got.is_err(), "{}", s["name"]),
+        }
+    }
+    // CC's identity:occurrence payload samples (`family_payload_samples`, rc21): the valid one passes
+    // the family's payload rule, each broken one is refused as malformed. A binding off this rule is
+    // `row_invalid` alone (`check_seat_binding`) and inside a bundle.
+    let occ = cc["occurrence_samples"].as_array().unwrap();
+    assert_eq!(occ.len(), 7, "CC's identity:occurrence samples");
+    for s in occ {
+        let p = cde::decode(&hex::decode(s["payload_hex"].as_str().unwrap()).unwrap()).unwrap();
+        let got = check_identity_occurrence(&p);
+        match s["expect"].as_str().unwrap() {
+            "ok" => assert!(got.is_ok(), "{}: {got:?}", s["name"]),
+            _ => assert!(
+                matches!(got, Err(Invalid::Malformed { .. })),
+                "{}: {got:?}",
+                s["name"]
+            ),
         }
     }
     // The key-record samples (CC 4.2.2.1). CC's key is 1984 zero bytes; where verify cannot decode it,
@@ -679,10 +714,10 @@ fn cc_samples() {
         );
     }
     // The reference reader over every case it models (first bundles, and later ones over its own
-    // placement of the predecessor). At rc20 436b5bc it models the seated key, the retired keys and
+    // placement of the predecessor). At v1.0-rc21-wire e6fd7c6 it models the seated key, the retired keys and
     // the Invalid-first order, so every case agrees.
     let reader = cc["reader"].as_array().unwrap();
-    assert!(reader.len() >= 50, "the cases CC's reader models");
+    assert!(reader.len() >= 70, "the cases CC's reader models");
     let disagree: BTreeSet<&str> = reader
         .iter()
         .filter(|r| r["agree"] == false)

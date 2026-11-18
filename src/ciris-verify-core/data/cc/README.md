@@ -2,18 +2,20 @@
 
 | File | CC source | CC commit | SHA-256 (LF) |
 |------|-----------|-----------|--------------|
-| `family_authorship.json` | `manifests/family_authorship.json`, CC's canonical extract of the `authorship` and `second_signers` cells of `manifests/family_model.json` (CC 1.0-rc20) | `d4bd2a6` (tag `v1.0-rc20`) | `2732a2de3368bb97750de39e4b44613e40979ad80343dfebe59d8515d28a9c0b`; source model `04446a5b50ee07b94c21139cd770e0de84317fe9e84240e6f0d68ee574b8caa0` |
-| `namespace_registry.json` | `manifests/namespace_registry.json` (CC 1.0-rc20) | `d4bd2a6b0583b8bc57c06a89f265557d357a3191` (tag `v1.0-rc20`) | `5c8bcf87732b37f9e653e0e45190ae599d6f86f077b5ca02bd6c7a7039806002` |
+| `family_authorship.json` | `manifests/family_authorship.json`, CC's canonical extract of the `authorship` and `second_signers` cells of `manifests/family_model.json` (CC 1.0-rc21) | `e6fd7c6` (tag `v1.0-rc21-wire`) | `423d41222384e5dcb73277d051d77f6f33e38cfe6f3557286034160ad1c7bbe1`; source model `0f635ee125651092e32b2d1b427c791d749d4e4a2460e6154636a8c256edbf6b` |
+| `namespace_registry.json` | `manifests/namespace_registry.json` (CC 1.0-rc21) | `e6fd7c6071ced5d0dcdd7f578e7fa9625e5bf16c` (tag `v1.0-rc21-wire`) | `c6a478d65b8d7040311f989941b7d747de756abf4718ce3bdf7f459bfce41f49` |
 
 `namespace_registry.json` is embedded by `src/namespace_match.rs` (`include_str!`), the
 port of CC's reference matcher `tools/cc_namespace_match.py`. Its replay vectors are
 vendored from the same commit at `tests/vectors/cc/namespace_match_vectors.json`
-(SHA-256 `1312c45ada371caa7217417c5ebbcb81abbb8dcf7c45dff832f3dfa9ae02c00b`, 1,311
+(SHA-256 `46a274d010a37c16c81ef02718b21cbd31d67ba823fbade85317fabad127f7ca`, 1,323
 vectors) and run by `tests/namespace_match_vectors.rs`, which also checks the registry
 digest above. The registry at v1.0-rc20 adds `location_proof:{version}` and
 `trust:blessing` (`trust:blessing:v1` resolves to the literal family `trust:blessing`).
 
-To refresh: `git -C ../CIRISConstitution show <commit>:manifests/namespace_registry.json`
+To refresh every vendored file at once: `python3 -I scripts/revendor_cc.py <commit-or-tag>`
+(it rewrites the pinned digests and commit constants; vector counts asserted by the tests and
+this README are updated by hand). By hand: `git -C ../CIRISConstitution show <commit>:manifests/namespace_registry.json`
 (and the vectors), then update the commit and digests here and the constants in
 `src/namespace_match.rs`.
 
@@ -22,9 +24,9 @@ To refresh: `git -C ../CIRISConstitution show <commit>:manifests/namespace_regis
 evaluated by `edition2::family::select`, the port of CC's reference evaluator
 `tools/cc_family_select.py`, against the row's leaf (its `dimension` bound under the
 family by `namespace_match::bind_leaf`) and the caller's `SelectContext`. CC's replay
-vectors `manifests/family_select_vectors.json` (d4bd2a6, 177 vectors) are vendored at
+vectors `manifests/family_select_vectors.json` (225 vectors) are vendored at
 `tests/vectors/cc/family_select_vectors.json` (SHA-256
-`da3bfc60023c46fd0e287dd209742c273565edb77c4f01851c30f3b1df52b616`) and run by
+`0c3544e3058e1fb0c447ecaa1ae45ce9468a818319beb5ee9451f7cbcb894d73`) and run by
 `tests/family_select_vectors.rs`, which pins both digests, the commit and the source
 model digest. The `count` cells those vectors also exercise are not in CC's extract:
 `tests/vectors/cc/family_count_cells.json` carries the count cells written as arms, cut
@@ -52,10 +54,6 @@ is `own` (`statement_act`), and the statements of one counted row read together
 (`verify_group_row_in_family`) are `group`; `verify_row_in_family_as_given` derives
 nothing (a harness withholding `act`).
 
-Known gap, pending CC's next edition: the v1.0-rc20 registry lists
-`location_proof:{version}` and `trust:blessing`, but its family model does not. CC adds
-them next edition with authorship `subject` (`iss` == `sub`, positive only), and
-`trust:blessing` counted under the conferring family's `consensus_protocol`. Until then a
-`location_proof:v1` row passes the statement reader (the family is registered) and reads
-`FamilyFault::UnregisteredFamily` under `VendoredFamilyModel`
-(`edition2::family::tests::location_proof_is_registered_but_not_in_the_family_model`).
+`location_proof:{version}` reads authorship `subject` (CC 2.6.1.3): the row is authored by the
+attested key, so `author` MUST be the CWT `sub` and `iss` the author, with no second signer. The
+vendored model carries it as the role `edition2::family::AUTHOR_IS_SUBJECT` on an authored rule.

@@ -148,3 +148,78 @@ fn derived_digests() {
         );
     }
 }
+
+/// CIRISConstitution's own known answers for the three derived digests (CC
+/// 2.7.11, `formal/admission/digest_vectors.json` at v1.0-rc21-wire e6fd7c6),
+/// vendored at `tests/vectors/cc/ceg_digest_vectors.json` and pinned by
+/// SHA-256: 18 calls (four refused `call_argument_unrepresentable`), three
+/// reviews and three profiles.
+#[test]
+fn the_constitutions_digest_vectors() {
+    const CC: &str = include_str!("vectors/cc/ceg_digest_vectors.json");
+    assert_eq!(
+        hex::encode(<sha2::Sha256 as sha2::Digest>::digest(
+            CC.replace("\r\n", "\n").as_bytes()
+        )),
+        "10367ac8fccfe800bd6c5c4d6593461763e22ca6229f0c5c6d637ce689416235"
+    );
+    let f: J = serde_json::from_str(CC).unwrap();
+    let digest = |c: &J| c["digest"][1].as_str().unwrap().to_owned();
+    let calls = f["call"].as_array().unwrap();
+    assert_eq!(calls.len(), 18);
+    for c in calls {
+        let args = from_json(s(c, "arguments_json"));
+        if c.get("refused").is_some() {
+            assert_eq!(
+                args,
+                Err(JsonError::NumberUnrepresentable),
+                "{}",
+                s(c, "what")
+            );
+            continue;
+        }
+        let m = [
+            Value::Text(s(c, "verb").into()),
+            Value::Text(s(c, "tool").into()),
+            args.unwrap_or_else(|e| panic!("{}: {e}", s(c, "what"))),
+            Value::Text(s(c, "channel").into()),
+        ];
+        let mut a = vec![Value::Text("CEG-call/2".into())];
+        a.extend_from_slice(&m);
+        assert_eq!(
+            hex::encode(cde::encode(&Value::Array(a))),
+            s(c, "cde_hex"),
+            "{}",
+            s(c, "what")
+        );
+        assert_eq!(
+            hex::encode(ceg_digest("CEG-call/2", &m)),
+            digest(c),
+            "{}",
+            s(c, "what")
+        );
+    }
+    for c in f["review"].as_array().unwrap() {
+        let rec = cde::decode(&hex::decode(s(c, "record_cde_hex")).unwrap()).unwrap();
+        assert_eq!(
+            hex::encode(ceg_digest("CEG-review/2", &[rec])),
+            digest(c),
+            "{}",
+            s(c, "what")
+        );
+    }
+    for c in f["profile"].as_array().unwrap() {
+        let m: Vec<Value> = c["links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| digest_value(&d32(l[1].as_str().unwrap())))
+            .collect();
+        assert_eq!(
+            hex::encode(ceg_digest("CEG-profile/2", &m)),
+            digest(c),
+            "{}",
+            s(c, "what")
+        );
+    }
+}

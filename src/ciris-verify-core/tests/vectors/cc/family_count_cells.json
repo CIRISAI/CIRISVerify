@@ -2,7 +2,7 @@
  "_meta": {
   "cells": "count",
   "source": "manifests/family_model.json",
-  "source_sha256": "04446a5b50ee07b94c21139cd770e0de84317fe9e84240e6f0d68ee574b8caa0"
+  "source_sha256": "0f635ee125651092e32b2d1b427c791d749d4e4a2460e6154636a8c256edbf6b"
  },
  "families": {
   "accord:invoke:constitutional:{halt_id}": {
@@ -28,6 +28,20 @@
    ],
    "source": "cc-table",
    "value": "leaf=confirmed => accord_halt@accord ; leaf=active => accord_majority@accord"
+  },
+  "admission:unit": {
+   "arms": [
+    {
+     "doors": "cosigned_act@subject_group",
+     "when": "act=group"
+    },
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "act=group => cosigned_act@subject_group ; none"
   },
   "ballot:moderator": {
    "arms": [
@@ -135,6 +149,16 @@
    "source": "cc-table",
    "value": "none"
   },
+  "location_proof:{version}": {
+   "arms": [
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "none"
+  },
   "membership:{stage}": {
    "arms": [
     {
@@ -167,6 +191,20 @@
    "source": "cc-table",
    "value": "none"
   },
+  "ownership:{relation}:{target_kind}:{version}": {
+   "arms": [
+    {
+     "doors": "cosigned_act@subject_group",
+     "when": "act=group & group=affiliations"
+    },
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "act=group & group=affiliations => cosigned_act@subject_group ; none"
+  },
   "quarantine:{state}": {
    "arms": [
     {
@@ -194,6 +232,20 @@
    ],
    "source": "cc-table",
    "value": "leaf=custodian_minted => custodian_replace ; none"
+  },
+  "self:delegates_to": {
+   "arms": [
+    {
+     "doors": "cosigned_act@signer_group",
+     "when": "act=group"
+    },
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "act=group => cosigned_act@signer_group ; none"
   },
   "slashing:{outcome}": {
    "arms": [
@@ -236,6 +288,16 @@
    ],
    "source": "cc-table",
    "value": "accord_majority@accord"
+  },
+  "trust:blessing": {
+   "arms": [
+    {
+     "doors": "cosigned_act@conferrer",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "cosigned_act@conferrer"
   }
  }
 }

@@ -77,6 +77,7 @@ fn every_case_gives_its_outcome() {
     let f: J = serde_json::from_str(FILE).unwrap();
     let cases = f["cases"].as_array().unwrap();
     assert!(!cases.is_empty());
+    let (mut bad, mut moved_ids) = (Vec::new(), Vec::new());
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let bytes = hx(&c["statement_hex"]);
@@ -96,8 +97,26 @@ fn every_case_gives_its_outcome() {
             },
             other => panic!("{id}: level {other}"),
         };
-        assert_eq!(got, c["expect"].as_str().unwrap(), "{id}");
+        // CC rc21 (CC 2.7, CC 2.6.1.9): what step 8 does not hold, it waits on
+        // as the row it is, never as a bare key and never by refusing. Two
+        // narrow moves follow, and only these; the file stays as published
+        // and the rc21 answers are in key_of_iss_v2:
+        //  - a rotation whose named record is not held waits on that record
+        //    (`waiting:record:`) where v1 waited on a key (`waiting:kid:`);
+        //  - a rotation lacking a voice waits on it (`waiting:Voice`) where v1
+        //    refused it (`invalid:kid_not_of_iss`).
+        let expect = c["expect"].as_str().unwrap();
+        let moved = (expect.starts_with("waiting:kid:") && got.starts_with("waiting:record:"))
+            || (expect == "invalid:kid_not_of_iss" && got.starts_with("waiting:Voice"));
+        if moved {
+            moved_ids.push(id.to_owned());
+        } else if got != expect {
+            bad.push(format!("{id}: want {expect}, got {got}"));
+        }
     }
+    assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+    // Every move is one of the two above; none of v1's Valid or other refusals moves.
+    assert!(moved_ids.len() <= 6, "moved under rc21: {moved_ids:?}");
 }
 
 /// The token is stable and named.
