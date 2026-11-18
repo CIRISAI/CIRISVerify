@@ -1,0 +1,315 @@
+{
+ "_note": "JSON -> CDE (CC 2.7.11: no floats; integral -> int, else tag-4 decimal from the exact text) and the derived digests; written by gen_cde_json.py, independent of CIRISVerify.",
+ "json": [
+  {
+   "what": "integer",
+   "json": "7",
+   "cde_hex": "07"
+  },
+  {
+   "what": "negative",
+   "json": "-12",
+   "cde_hex": "2b"
+  },
+  {
+   "what": "2^32",
+   "json": "4294967296",
+   "cde_hex": "1b0000000100000000"
+  },
+  {
+   "what": "max",
+   "json": "18446744073709551615",
+   "cde_hex": "1bffffffffffffffff"
+  },
+  {
+   "what": "min",
+   "json": "-18446744073709551616",
+   "cde_hex": "3bffffffffffffffff"
+  },
+  {
+   "what": "over max",
+   "json": "18446744073709551616",
+   "refused": "number_unrepresentable"
+  },
+  {
+   "what": "under min",
+   "json": "-18446744073709551617",
+   "refused": "number_unrepresentable"
+  },
+  {
+   "what": "exponent integral",
+   "json": "1e2",
+   "cde_hex": "1864"
+  },
+  {
+   "what": "integral with fraction text",
+   "json": "2.0",
+   "cde_hex": "02"
+  },
+  {
+   "what": "2^53+1 exact",
+   "json": "9007199254740993.0",
+   "cde_hex": "1b0020000000000001"
+  },
+  {
+   "what": "negative zero",
+   "json": "-0.0",
+   "cde_hex": "00"
+  },
+  {
+   "what": "zero exponent",
+   "json": "0e999999",
+   "cde_hex": "00"
+  },
+  {
+   "what": "half",
+   "json": "0.5",
+   "cde_hex": "c4822005"
+  },
+  {
+   "what": "1.25",
+   "json": "1.25",
+   "cde_hex": "c48221187d"
+  },
+  {
+   "what": "trailing zero",
+   "json": "1.10",
+   "cde_hex": "c482200b"
+  },
+  {
+   "what": "small",
+   "json": "1e-3",
+   "cde_hex": "c4822201"
+  },
+  {
+   "what": "negative fraction",
+   "json": "-2.5",
+   "cde_hex": "c482203818"
+  },
+  {
+   "what": "0.1",
+   "json": "0.1",
+   "cde_hex": "c4822001"
+  },
+  {
+   "what": "halfway above one",
+   "json": "1.00000000000000011102230246251565404236316680908203125",
+   "refused": "number_unrepresentable"
+  },
+  {
+   "what": "1e300",
+   "json": "1e300",
+   "refused": "number_unrepresentable"
+  },
+  {
+   "what": "1e400",
+   "json": "1e400",
+   "refused": "number_unrepresentable"
+  },
+  {
+   "what": "tiny",
+   "json": "1e-400",
+   "cde_hex": "c48239018f01"
+  },
+  {
+   "what": "mantissa max",
+   "json": "0.18446744073709551615",
+   "cde_hex": "c482331bffffffffffffffff"
+  },
+  {
+   "what": "mantissa over",
+   "json": "0.18446744073709551616",
+   "refused": "number_unrepresentable"
+  },
+  {
+   "what": "map, keys out of order",
+   "json": "{\"b\": 1, \"a\": [true, false, null], \"aa\": \"x\"}",
+   "cde_hex": "a3616183f5f4f66162016261616178"
+  },
+  {
+   "what": "nested",
+   "json": "{\"z\": {\"y\": {\"x\": -1.5}}, \"a\": []}",
+   "cde_hex": "a2616180617aa16179a16178c482202e"
+  },
+  {
+   "what": "escapes",
+   "json": "\"tab\\tquote\\\"slash\\/u\\u00e9 pair\\ud83d\\ude00\"",
+   "cde_hex": "781c7461620971756f746522736c6173682f75c3a92070616972f09f9880"
+  },
+  {
+   "what": "empty",
+   "json": "{}",
+   "cde_hex": "a0"
+  }
+ ],
+ "json_refusals": [
+  {
+   "what": "duplicate key",
+   "json": "{\"a\": 1, \"a\": 2}"
+  },
+  {
+   "what": "leading zero",
+   "json": "01"
+  },
+  {
+   "what": "bare dot",
+   "json": "1."
+  },
+  {
+   "what": "plus sign",
+   "json": "+1"
+  },
+  {
+   "what": "NaN",
+   "json": "NaN"
+  },
+  {
+   "what": "Infinity",
+   "json": "Infinity"
+  },
+  {
+   "what": "lone surrogate",
+   "json": "\"\\ud800\""
+  },
+  {
+   "what": "trailing comma",
+   "json": "[1,]"
+  },
+  {
+   "what": "control character",
+   "json": "\"a\nb\""
+  },
+  {
+   "what": "two values",
+   "json": "1 2"
+  }
+ ],
+ "decode_refusals": [
+  {
+   "what": "tag 4, positive exponent",
+   "cde_hex": "c4820105",
+   "refused": "decimal_not_normal"
+  },
+  {
+   "what": "tag 4, zero exponent",
+   "cde_hex": "c4820005",
+   "refused": "decimal_not_normal"
+  },
+  {
+   "what": "tag 4, mantissa divisible by ten",
+   "cde_hex": "c482210a",
+   "refused": "decimal_not_normal"
+  },
+  {
+   "what": "tag 4, zero mantissa",
+   "cde_hex": "c4822000",
+   "refused": "decimal_not_normal"
+  },
+  {
+   "what": "tag 4, not a pair",
+   "cde_hex": "c48120",
+   "refused": "decimal_not_normal"
+  },
+  {
+   "what": "tag 4, bignum mantissa",
+   "cde_hex": "c48220c24101",
+   "refused": "decimal_not_normal"
+  }
+ ],
+ "call": [
+  {
+   "what": "a secret stands as its reference",
+   "verb": "tool",
+   "tool": "http_get",
+   "arguments_json": "{\"url\": \"https://example.org/a\", \"token\": \"{SECRET:7f3c}\"}",
+   "channel": "c1",
+   "cde_hex": "856a4345472d63616c6c2f3264746f6f6c68687474705f676574a26375726c7568747470733a2f2f6578616d706c652e6f72672f6165746f6b656e6d7b5345435245543a376633637d626331",
+   "digest": "8641471506ee86a84289dbcd139dac5f803eafc9da9d4fea73822245e633cde0"
+  },
+  {
+   "what": "numbers of every kind",
+   "verb": "tool",
+   "tool": "calc",
+   "arguments_json": "{\"n\": -3, \"big\": 4294967296, \"x\": 0.5, \"y\": 1.10, \"z\": 2.0}",
+   "channel": "",
+   "cde_hex": "856a4345472d63616c6c2f3264746f6f6c6463616c63a5616e226178c48220056179c482200b617a02636269671b000000010000000060",
+   "digest": "80b7da210c7e2572ea50d0d4217be36dba3b855aef3d741e163040fc5e6ca75f"
+  },
+  {
+   "what": "nested, keys out of order",
+   "verb": "tool",
+   "tool": "write",
+   "arguments_json": "{\"z\": {\"b\": null, \"a\": true}, \"a\": [1, -1.25, \"s\"]}",
+   "channel": "ch",
+   "cde_hex": "856a4345472d63616c6c2f3264746f6f6c657772697465a261618301c48221387c6173617aa26161f56162f6626368",
+   "digest": "2916063b71c12e4b37bdd11883d66b893351205da89283dc1cb223ebe097a0cb"
+  },
+  {
+   "what": "2^53+1 exact",
+   "verb": "tool",
+   "tool": "t",
+   "arguments_json": "{\"id\": 9007199254740993.0}",
+   "channel": "",
+   "cde_hex": "856a4345472d63616c6c2f3264746f6f6c6174a16269641b002000000000000160",
+   "digest": "bdbe8403f48484f838c821a86f960a2328bbd41dc0d5325c7003170fbbbb18d8"
+  },
+  {
+   "what": "unrepresentable",
+   "verb": "tool",
+   "tool": "t",
+   "arguments_json": "{\"n\": 1e300}",
+   "channel": "",
+   "refused": "call_argument_unrepresentable"
+  }
+ ],
+ "review": [
+  {
+   "what": "objection",
+   "record_cde_hex": "a4676f7574636f6d65686f626a65637465646774686f756768746474682d3169666163756c7469657381716f7074696d697a6174696f6e5f7665746f6b66696e6765727072696e74822f58208641471506ee86a84289dbcd139dac5f803eafc9da9d4fea73822245e633cde0",
+   "cde_hex": "826c4345472d7265766965772f32a4676f7574636f6d65686f626a65637465646774686f756768746474682d3169666163756c7469657381716f7074696d697a6174696f6e5f7665746f6b66696e6765727072696e74822f58208641471506ee86a84289dbcd139dac5f803eafc9da9d4fea73822245e633cde0",
+   "digest": "7fe4f7899ade4b90201bcc11705a317c5c5d4dda049f9700668798c3603198b5"
+  },
+  {
+   "what": "pass",
+   "record_cde_hex": "a4676f7574636f6d65667061737365646774686f756768746474682d3169666163756c746965738469636f686572656e636567656e74726f7079726570697374656d69635f68756d696c697479716f7074696d697a6174696f6e5f7665746f6b66696e6765727072696e74822f58208641471506ee86a84289dbcd139dac5f803eafc9da9d4fea73822245e633cde0",
+   "cde_hex": "826c4345472d7265766965772f32a4676f7574636f6d65667061737365646774686f756768746474682d3169666163756c746965738469636f686572656e636567656e74726f7079726570697374656d69635f68756d696c697479716f7074696d697a6174696f6e5f7665746f6b66696e6765727072696e74822f58208641471506ee86a84289dbcd139dac5f803eafc9da9d4fea73822245e633cde0",
+   "digest": "6929fd9afa8780926f4e48a570aaf5b130d6fae495ac5776044e34c93faf7411"
+  },
+  {
+   "what": "pass with discharges, considered, derived_from",
+   "record_cde_hex": "a7676f7574636f6d65667061737365646774686f756768746474682d3169666163756c746965738469636f686572656e636567656e74726f7079726570697374656d69635f68756d696c697479716f7074696d697a6174696f6e5f7665746f6a636f6e7369646572656481822f582049515469234c858ebca238ca7a2ab202efbe51ecd0a9f2b74911ee6ceb8735926a646973636861726765738182822f582049515469234c858ebca238ca7a2ab202efbe51ecd0a9f2b74911ee6ceb8735928202822f58200f719b1f3a428a4dd53c61b3bdc5c2ec279c2e6139f160b3bbb8df8e7efdead86b66696e6765727072696e74822f58208641471506ee86a84289dbcd139dac5f803eafc9da9d4fea73822245e633cde06c646572697665645f66726f6d8267726571756573746b746f6f6c5f6f7574707574",
+   "cde_hex": "826c4345472d7265766965772f32a7676f7574636f6d65667061737365646774686f756768746474682d3169666163756c746965738469636f686572656e636567656e74726f7079726570697374656d69635f68756d696c697479716f7074696d697a6174696f6e5f7665746f6a636f6e7369646572656481822f582049515469234c858ebca238ca7a2ab202efbe51ecd0a9f2b74911ee6ceb8735926a646973636861726765738182822f582049515469234c858ebca238ca7a2ab202efbe51ecd0a9f2b74911ee6ceb8735928202822f58200f719b1f3a428a4dd53c61b3bdc5c2ec279c2e6139f160b3bbb8df8e7efdead86b66696e6765727072696e74822f58208641471506ee86a84289dbcd139dac5f803eafc9da9d4fea73822245e633cde06c646572697665645f66726f6d8267726571756573746b746f6f6c5f6f7574707574",
+   "digest": "23ab342a4bbd596989e36152c9e2d1fc16c82b033fa87b64c199c1ce3157943e"
+  }
+ ],
+ "profile": [
+  {
+   "what": "base alone",
+   "links": [
+    "fc7b7ec8d66d5876b7d12bbee5fe2b6f05b8d92e23a65c98b80e48bbec167fac"
+   ],
+   "cde_hex": "826d4345472d70726f66696c652f32822f5820fc7b7ec8d66d5876b7d12bbee5fe2b6f05b8d92e23a65c98b80e48bbec167fac",
+   "digest": "ed1d0b1ed16e1a7fb398c648a95f11c32cc4c1c526d0c95aa14b62d2f5924a93"
+  },
+  {
+   "what": "base and two",
+   "links": [
+    "fc7b7ec8d66d5876b7d12bbee5fe2b6f05b8d92e23a65c98b80e48bbec167fac",
+    "8e9fa224f488a601af1b14e867eb6bf8496025b1bb5c0a78d1b94d3c7122efec",
+    "ad35fe9f886138cdb26c03bee187ad40a53c20ac773a5eba1b4947b59e44c320"
+   ],
+   "cde_hex": "846d4345472d70726f66696c652f32822f5820fc7b7ec8d66d5876b7d12bbee5fe2b6f05b8d92e23a65c98b80e48bbec167fac822f58208e9fa224f488a601af1b14e867eb6bf8496025b1bb5c0a78d1b94d3c7122efec822f5820ad35fe9f886138cdb26c03bee187ad40a53c20ac773a5eba1b4947b59e44c320",
+   "digest": "6cb3c2bedb510c764d2520ad9781925daefdd3c07a359439f851522bfe346248"
+  },
+  {
+   "what": "reordered",
+   "links": [
+    "ad35fe9f886138cdb26c03bee187ad40a53c20ac773a5eba1b4947b59e44c320",
+    "fc7b7ec8d66d5876b7d12bbee5fe2b6f05b8d92e23a65c98b80e48bbec167fac",
+    "8e9fa224f488a601af1b14e867eb6bf8496025b1bb5c0a78d1b94d3c7122efec"
+   ],
+   "cde_hex": "846d4345472d70726f66696c652f32822f5820ad35fe9f886138cdb26c03bee187ad40a53c20ac773a5eba1b4947b59e44c320822f5820fc7b7ec8d66d5876b7d12bbee5fe2b6f05b8d92e23a65c98b80e48bbec167fac822f58208e9fa224f488a601af1b14e867eb6bf8496025b1bb5c0a78d1b94d3c7122efec",
+   "digest": "41da28fbea68b1fd7c5dc259528470d73195021fcac87f354fd9504e12540be7"
+  }
+ ]
+}
