@@ -39,7 +39,7 @@
 
 use super::family::VendoredFamilyModel;
 use super::family::{row_leaf, verify_row_in_family, FamilyFault, FamilyVerdict};
-use super::{Digest32, Invalid, KeyDirectory, KeyLookup, Value, VerifiedRow};
+use super::{Digest32, Invalid, KeyDirectory, KeyLookup, KeyOf, Value, VerifiedRow};
 use crate::prelude::*;
 use ciris_crypto::composite::CompositePublicKey;
 
@@ -272,6 +272,19 @@ impl KeyDirectory for HaltRoster {
                 KeyLookup::Held(Box::new(pk.clone()))
             })
     }
+
+    /// A holder's key is its holder's: `iss` must name the holder the
+    /// bundle in force seats at `kid`.
+    fn key_of(&self, kid: &Digest32, iss: &Digest32) -> KeyOf {
+        use subtle::ConstantTimeEq as _;
+        match self
+            .holder_of_kid(kid)
+            .and_then(super::identity_ref_thumbprint)
+        {
+            Some(h) if bool::from(h.ct_eq(iss)) => KeyOf::Yes,
+            _ => KeyOf::No,
+        }
+    }
 }
 
 /// Why an accord row (or one statement of it) is refused.
@@ -373,6 +386,7 @@ fn invalid_token(i: &Invalid) -> String {
         Invalid::DimensionFamily => "dimension_family".into(),
         Invalid::DimensionRefused { token } => format!("dimension_refused:{token}"),
         Invalid::DimensionUnregistered => "dimension_unregistered".into(),
+        Invalid::KidNotOfIss => "kid_not_of_iss".into(),
     }
 }
 
@@ -582,6 +596,8 @@ fn row_ref(v: &Value) -> Option<Digest32> {
 fn read_statement(bytes: &[u8], roster: &HaltRoster) -> Result<VerifiedRow, HaltRefusal> {
     let row = match verify_row_in_family(bytes, roster, &VendoredFamilyModel) {
         FamilyVerdict::Valid { row, .. } => *row,
+        // The roster's `key_of`: the key is not the holder `iss` names.
+        FamilyVerdict::Invalid(Invalid::KidNotOfIss) => return Err(HaltRefusal::IssNotHolder),
         FamilyVerdict::Invalid(i) => return Err(HaltRefusal::Statement(i)),
         FamilyVerdict::FamilyInvalid(f) => return Err(HaltRefusal::Family(f)),
         // The roster is the whole key directory: a key it does not hold is

@@ -120,3 +120,16 @@ statement bytes and verdict.
 
 v1 history: the 23.0.0 release shipped it with the first eight
 `family_vendored` cases; 23.1.0 added cases and reworded one description.
+
+## The key of `iss`
+
+`key_of_iss_v1.json` holds 23 cases of the key check in CC 2.6.1's
+verification order (rc20, CC 2.6.1.8 steps 6 to 8): a row statement's signing
+key must be a key of its CWT `iss`, the key `iss` names or one reached from it
+by rotation records (CC 2.6.1.7, CC 2.4.1.1, CC 3.1.3); otherwise
+`kid_not_of_iss`. Each case states its directory (`raw` keys, or `records`
+inserted in order into a key-record directory), its level and its outcome.
+`tests/edition2_key_of_iss_vectors.rs` replays it. `gen_key_of_iss.py` wrote it
+with the same independent encoder and signers:
+
+    python3 -I gen_key_of_iss.py > key_of_iss_v1.json
