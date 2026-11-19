@@ -463,6 +463,7 @@ fn invalid_token(i: &Invalid) -> String {
         Invalid::DimensionRefused { token } => format!("dimension_refused:{token}"),
         Invalid::DimensionUnregistered => "dimension_unregistered".into(),
         Invalid::KidNotOfIss => "kid_not_of_iss".into(),
+        Invalid::ValidUntilNotAfterAssertedAt => "valid_until_not_after_asserted_at".into(),
     }
 }
 
@@ -686,6 +687,11 @@ fn read_statement(bytes: &[u8], roster: &HaltRoster) -> HaltReading<VerifiedRow>
         // The roster's `key_of`: the key is not the holder `iss` names.
         FamilyVerdict::Invalid(Invalid::KidNotOfIss) => {
             return HaltReading::Refused(HaltRefusal::IssNotHolder)
+        },
+        // Step 4 now refuses this span for every row; the halt row's own
+        // refusal keeps its published token (CC 4.2.1.1).
+        FamilyVerdict::Invalid(Invalid::ValidUntilNotAfterAssertedAt) => {
+            return HaltReading::Refused(HaltRefusal::ValidUntilNotAfterAssertedAt);
         },
         FamilyVerdict::Invalid(i) => return HaltReading::Refused(HaltRefusal::Statement(i)),
         FamilyVerdict::FamilyInvalid(f) => return HaltReading::Refused(HaltRefusal::Family(f)),

@@ -10,9 +10,19 @@
 //!
 //! The family-level rules (where `null`, simple(59) and tags may appear) are
 //! the reader's, not this codec's: here `null`, booleans, simple values and
-//! tags decode as themselves.
+//! tags decode as themselves, except that a tag-4 decimal fraction must be
+//! normalised (see [`CdeError::DecimalNotNormal`](crate::cde::CdeError::DecimalNotNormal)).
+//!
+//! [`from_json`](crate::cde::from_json) maps JSON text to a value as CC 2.7.11 does for everything
+//! hashed from JSON, and [`ceg_digest`](crate::cde::ceg_digest) is the derived digest
+//! `SHA-256(CDE([tag, members...]))`.
 
 use crate::prelude::*;
+use sha2::{Digest as _, Sha256};
+
+#[path = "cde_json.rs"]
+mod json;
+pub use json::{from_json, JsonError};
 
 /// Nesting deeper than this is refused, so a hostile input cannot exhaust the stack.
 pub const MAX_DEPTH: usize = 32;
@@ -79,6 +89,11 @@ pub enum CdeError {
     /// Nesting beyond [`MAX_DEPTH`].
     #[error("too deep")]
     TooDeep,
+    /// A tag-4 decimal fraction that is not `[exponent, mantissa]` with a
+    /// negative exponent and a mantissa that is not zero and not divisible by
+    /// ten: the one encoding of a non-integral number (CC 2.7.11).
+    #[error("decimal fraction not normalised")]
+    DecimalNotNormal,
 }
 
 /// Decode `input`, refusing anything that is not the deterministic encoding
@@ -272,7 +287,13 @@ impl Reader<'_> {
                 }
                 Value::Map(m)
             },
-            6 => Value::Tag(n, Box::new(self.item(depth + 1)?)),
+            6 => {
+                let inner = self.item(depth + 1)?;
+                if n == 4 && !decimal_is_normal(&inner) {
+                    return Err(CdeError::DecimalNotNormal);
+                }
+                Value::Tag(n, Box::new(inner))
+            },
             _ => match (ai, n) {
                 (_, 20) => Value::Bool(false),
                 (_, 21) => Value::Bool(true),
@@ -282,6 +303,37 @@ impl Reader<'_> {
             },
         })
     }
+}
+
+/// A tag-4 body `[e, m]` in its one form: `e` negative, `m` an integer that
+/// is not zero and not divisible by ten.
+fn decimal_is_normal(v: &Value) -> bool {
+    let Some([e, m]) = v.as_array() else {
+        return false;
+    };
+    let mag = match m {
+        Value::Uint(n) => u128::from(*n),
+        Value::Nint(n) => u128::from(*n) + 1,
+        _ => return false,
+    };
+    matches!(e, Value::Nint(_)) && mag % 10 != 0
+}
+
+/// The `[-16, digest]` value of a SHA-256 digest (CC 2.6.3).
+#[must_use]
+pub fn digest_value(d: &[u8; 32]) -> Value {
+    Value::Array(vec![Value::Nint(15), Value::Bytes(d.to_vec())])
+}
+
+/// A derived digest: `SHA-256(CDE([tag, members...]))`, as CC 2.7.11 writes
+/// `CEG-call/2`, `CEG-review/2` and `CEG-profile/2`. Wrap it with
+/// [`digest_value`] where it is written `[-16, digest]`.
+#[must_use]
+pub fn ceg_digest(tag: &str, members: &[Value]) -> [u8; 32] {
+    let mut a = Vec::with_capacity(members.len() + 1);
+    a.push(Value::Text(tag.into()));
+    a.extend_from_slice(members);
+    Sha256::digest(encode(&Value::Array(a))).into()
 }
 
 impl Value {
@@ -520,7 +572,10 @@ mod tests {
                             .collect(),
                     )
                 }),
-                (0u64..1000, inner).prop_map(|(t, v)| Value::Tag(t, Box::new(v))),
+                // Any tag but 4: a tag-4 decimal fraction decodes only
+                // normalised (`DecimalNotNormal`); its own vectors cover it.
+                (0u64..1000, inner)
+                    .prop_map(|(t, v)| Value::Tag(if t == 4 { 5 } else { t }, Box::new(v))),
             ]
         })
     }

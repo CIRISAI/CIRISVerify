@@ -40,6 +40,13 @@ pub enum RoleParty {
     Sub,
 }
 
+/// The role marking a family whose authorship cell reads `subject` (CC
+/// 2.6.1.3): the row is authored by the attested key, so `author` MUST be the
+/// CWT `sub` and the statement's `iss` MUST be that author; no second signer
+/// is admitted. Carried as `(AUTHOR_IS_SUBJECT, RoleParty::Sub)` in
+/// [`FamilyRule::roles`] of an authored rule.
+pub const AUTHOR_IS_SUBJECT: &str = "author_is_subject";
+
 /// One family's rules.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FamilyRule {
@@ -92,18 +99,18 @@ impl FamilyModel for BTreeMap<String, FamilyRule> {
 
 /// CC's canonical extract of the family model's `authorship` and
 /// `second_signers` cells (`manifests/family_authorship.json`,
-/// CIRISConstitution v1.0-rc20 d4bd2a6), vendored at
+/// CIRISConstitution v1.0-rc21-wire e6fd7c6), vendored at
 /// `data/cc/family_authorship.json`.
 pub const FAMILY_AUTHORSHIP_JSON: &str = include_str!("../../data/cc/family_authorship.json");
 /// The CC commit the extract comes from.
-pub const FAMILY_MODEL_CC_COMMIT: &str = "d4bd2a6";
+pub const FAMILY_MODEL_CC_COMMIT: &str = "e6fd7c6";
 /// SHA-256 (lowercase hex) of the vendored extract, LF line endings.
 pub const FAMILY_AUTHORSHIP_SHA256: &str =
-    "2732a2de3368bb97750de39e4b44613e40979ad80343dfebe59d8515d28a9c0b";
+    "423d41222384e5dcb73277d051d77f6f33e38cfe6f3557286034160ad1c7bbe1";
 /// SHA-256 of the family model the extract is cut from (its
 /// `_meta.source_sha256`).
 pub const FAMILY_MODEL_SHA256: &str =
-    "04446a5b50ee07b94c21139cd770e0de84317fe9e84240e6f0d68ee574b8caa0";
+    "0f635ee125651092e32b2d1b427c791d749d4e4a2460e6154636a8c256edbf6b";
 
 /// Second-signer members the vendored model cannot resolve from the row: a
 /// `gap` (the text names no member), `owner_of_sub` (the owner the
@@ -250,14 +257,21 @@ impl FamilyModel for VendoredFamilyModel {
         let Some(f) = vendored_family(family_id) else {
             return RuleAnswer::Unregistered;
         };
+        let mut subject = false;
         let authored = match f.authorship.answer(leaf, ctx).0 {
             Select::Value(v) if v == "authored" => true,
             Select::Value(v) if v == "counted" => false,
+            Select::Value(v) if v == "subject" => {
+                subject = true;
+                true
+            },
             Select::Null => return RuleAnswer::NoArmHolds,
             // unknown, gap, or a value outside the authorship vocabulary
             _ => return RuleAnswer::Undetermined,
         };
         let roles = match select::second_signers(&f.second_signers, leaf, ctx) {
+            // Authored by the attested key alone: no second signer.
+            _ if subject => vec![(AUTHOR_IS_SUBJECT.to_owned(), RoleParty::Sub)],
             Signers::Roles(rs) => rs
                 .into_iter()
                 .filter(|r| !UNRESOLVED_MEMBERS.contains(&r.member.as_str()))
@@ -356,6 +370,18 @@ pub fn check_family(row: &VerifiedRow, rule: &FamilyRule) -> Result<Option<Strin
     }
     if rule.scores_dimension && row.payload.get_text("dimension").is_none() {
         return Err(FamilyFault::DimensionMissing);
+    }
+    // A `subject` family (CC 2.6.1.3): the author is the CWT `sub`, and only
+    // the author signs.
+    if rule
+        .roles
+        .iter()
+        .any(|(r, p)| r == AUTHOR_IS_SUBJECT && *p == RoleParty::Sub)
+    {
+        return match &row.author {
+            Some(a) if *a == row.sub && *a == row.iss => Ok(None),
+            _ => Err(FamilyFault::IssNotInRole),
+        };
     }
     match &row.author {
         Some(a) if *a == row.iss => Ok(None),
@@ -623,17 +649,29 @@ mod tests {
         ));
         // Selectors (rc20: key:record and licensure read `act`): the row's
         // keys decide.
-        for f in ["accord:.", "key:record", "licensure:.authority_id"] {
+        for f in [
+            "accord:.",
+            "key:record",
+            "licensure:.authority_id",
+            "self:delegates_to",
+        ] {
             assert_eq!(
                 vendored_rule(f),
                 Some(VendoredRule::CallerMustSupply),
                 "{f}"
             );
         }
-        // Roles: `sub` admitted, `gap` dropped.
-        let Some(VendoredRule::Known(d)) = vendored_rule("self:delegates_to") else {
+        // Roles (rc21-wire: self:delegates_to's read `act`): under `act=own`,
+        // `sub` admitted and the unresolved `owner_of_sub` dropped.
+        let own = SelectContext {
+            act: Some(Act::Own),
+            ..SelectContext::default()
+        };
+        let RuleAnswer::Rule(d) = VendoredFamilyModel.rule_for("self:delegates_to", None, &own)
+        else {
             panic!()
         };
+        assert!(d.authored);
         assert_eq!(d.roles, vec![("delegate".to_owned(), RoleParty::Sub)]);
         // key:record's one role, predecessor_key, is by `target` (rc20): the
         // issuer of the row `refs.target` names, which the row does not carry,
@@ -666,9 +704,23 @@ mod tests {
                 RoleParty::Member("members".into())
             )]
         );
-        // The rc20 registry's new families are not in rc20's family model.
-        assert!(vendored_rule("location_proof:.version").is_none());
-        assert!(vendored_rule("trust:blessing").is_none());
+        // rc21 adds the two families rc20's registry listed: location_proof is
+        // authored by its subject alone, trust:blessing counted.
+        let Some(VendoredRule::Known(lp)) = vendored_rule("location_proof:.version") else {
+            panic!()
+        };
+        assert!(lp.authored);
+        assert_eq!(
+            lp.roles,
+            vec![(AUTHOR_IS_SUBJECT.to_owned(), RoleParty::Sub)]
+        );
+        assert!(matches!(
+            vendored_rule("trust:blessing"),
+            Some(VendoredRule::Known(FamilyRule {
+                authored: false,
+                ..
+            }))
+        ));
         assert!(vendored_rule("nobody:fam").is_none());
     }
 
@@ -941,11 +993,10 @@ mod tests {
     }
 
     /// rc20's registry lists `location_proof:{version}` and `trust:blessing`;
-    /// rc20's family model does not (CC adds them in its next edition, with
-    /// `subject` authorship). Today a `location_proof` row passes the
-    /// statement reader and reads `UnregisteredFamily` under the vendored model.
+    /// rc21's family model reads `location_proof` as authored by its
+    /// subject (CC 2.6.1.3): `author` is the CWT `sub` and the only signer.
     #[test]
-    fn location_proof_is_registered_but_not_in_the_family_model() {
+    fn location_proof_is_authored_by_its_subject() {
         use crate::namespace_match::{resolve, Resolved};
         let id = |d: &str| match resolve(d) {
             Ok(Resolved::Family { family_id, .. }) => family_id,
@@ -954,8 +1005,8 @@ mod tests {
         let fam = id("location_proof:v1");
         assert_eq!(fam, "location_proof:.version");
         assert_eq!(id("trust:blessing:v1"), "trust:blessing");
-        assert!(vendored_family(&fam).is_none());
-        assert!(vendored_family("trust:blessing").is_none());
+        assert!(vendored_family(&fam).is_some());
+        assert!(vendored_family("trust:blessing").is_some());
 
         let a = key(1);
         let p = Value::Map(vec![
@@ -969,9 +1020,16 @@ mod tests {
             verify_row_statement(&st, &d),
             Verdict::Valid(ref row) if row.family == fam
         ));
+        assert!(matches!(
+            verify_row_in_family(&st, &d, &VendoredFamilyModel),
+            FamilyVerdict::Valid { role: None, .. }
+        ));
+        // About another subject: the author is not the subject, refused.
+        let b = key(2);
+        let st = signed(&a, &idr(&b), &fam, &p);
         assert_eq!(
             verify_row_in_family(&st, &d, &VendoredFamilyModel),
-            FamilyVerdict::FamilyInvalid(FamilyFault::UnregisteredFamily)
+            FamilyVerdict::FamilyInvalid(FamilyFault::IssNotInRole)
         );
     }
 }
