@@ -146,6 +146,9 @@ pub enum Invalid {
     /// directory proves the issuer's by a rotation chain from that genesis
     /// key ([`KeyDirectory::key_of`]; CC 2.6.1.7, CC 2.4.1.1, CC 3.1.3).
     KidNotOfIss,
+    /// `body_number_unrepresentable`: a number in the payload outside
+    /// `body-decimal` and CBOR's integer range, such as a bignum (CC 2.6.1.4).
+    BodyNumberUnrepresentable,
 }
 
 impl Invalid {
@@ -155,6 +158,7 @@ impl Invalid {
         match self {
             Self::KidNotOfIss => Some("kid_not_of_iss"),
             Self::ValidUntilNotAfterAssertedAt => Some("valid_until_not_after_asserted_at"),
+            Self::BodyNumberUnrepresentable => Some("body_number_unrepresentable"),
             _ => None,
         }
     }
@@ -454,8 +458,14 @@ fn check_labels(
     Ok(())
 }
 
-/// `ceg-value`: no null, no tag except 60 over a 32-byte digest as an array
-/// element, simple(59) only as a map key over a non-empty array of digests.
+/// `ceg-value`: no null; no tag except 60 over a 32-byte digest as an array
+/// element and 4, a `body-decimal` `[exponent: nint, mantissa: int]` with a
+/// mantissa not divisible by 10 (CC 2.6.1.4); simple(59) only as a map key
+/// over a non-empty array of digests. A bignum (tag 2 or 3) beyond eight
+/// bytes, alone or as a decimal's mantissa, is a number outside CBOR's
+/// integer range: `body_number_unrepresentable`; a smaller one is refused as
+/// any other tag. A tag 4 that is not normalised never
+/// reaches here: it is a second encoding, refused at decode (step 3).
 fn check_ceg_value(v: &Value, in_array: bool) -> Result<(), Invalid> {
     match v {
         Value::Uint(_) | Value::Nint(_) | Value::Bytes(_) | Value::Text(_) | Value::Bool(_) => {
@@ -466,6 +476,12 @@ fn check_ceg_value(v: &Value, in_array: bool) -> Result<(), Invalid> {
         Value::Tag(TAG_REDACTED_ELEMENT, x) if in_array => {
             digest32(x, "redacted-element").map(|_| ())
         },
+        Value::Tag(cde::TAG_DECIMAL, x) if cde::decimal_is_normal(x) => Ok(()),
+        Value::Tag(cde::TAG_DECIMAL, x) if cde::decimal_is_bignum(x) => {
+            Err(Invalid::BodyNumberUnrepresentable)
+        },
+        Value::Tag(cde::TAG_DECIMAL, _) => Err(malformed("body-decimal")),
+        x if cde::is_big_bignum(x) => Err(Invalid::BodyNumberUnrepresentable),
         Value::Tag(..) | Value::Null | Value::Simple(_) => Err(malformed("ceg-value")),
     }
 }

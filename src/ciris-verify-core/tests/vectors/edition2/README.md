@@ -1,23 +1,25 @@
 # Edition-2 row statement known answers
 
-`row_statements_v3.json` holds CC 2.6.1 row statements (CIRISConstitution rc20
+`row_statements_v4.json` holds CC 2.6.1 row statements (CIRISConstitution rc20
 0c9e17c, the clean mesh; `manifests/signed_object_v2.cddl`), with its family
 cases read under CC's family model at the released tag v1.0-rc20 (d4bd2a6), for
-CIRISVerify#326. `tests/edition2_row_vectors_v3.rs` replays it. It supersedes
-`row_statements_v2.json` (see [What changed from v2](#what-changed-from-v2)) and
+CIRISVerify#326, and two rc21 rulings (see [What changed from v3](#what-changed-from-v3)).
+`tests/edition2_row_vectors_v4.rs` replays it. It supersedes
+`row_statements_v3.json`, `row_statements_v2.json` (see [What changed from v2](#what-changed-from-v2)) and
 `row_statements_v1.json` (see [What changed from v1](#what-changed-from-v1)),
 which stay beside it byte for byte, with their generators, for the readers that
-pinned them; neither is replayed.
+pinned them; none is replayed.
 
-`gen_row_statements_v3.py` wrote v3 (`gen_row_statements_v2.py` v2 and
-`gen_row_statements.py` v1) without
+`gen_row_statements_v4.py` wrote v4 (`gen_row_statements_v3.py` v3,
+`gen_row_statements_v2.py` v2 and `gen_row_statements.py` v1) without
 verify's code. It has its own CBOR deterministic encoder (RFC 8949 §4.2.1,
 bytewise key order) and signs with the composite ML-DSA-65-Ed25519 through
 dilithium-py (FIPS 204, deterministic variant, the label as the ML-DSA context)
 and pyca/cryptography (Ed25519):
 
     pip install dilithium-py cryptography
-    python3 -I gen_row_statements_v3.py > row_statements_v3.json
+    python3 -I gen_row_statements_v4.py > row_statements_v4.json
+    python3 -I gen_row_statements_v3.py > row_statements_v3.json   # unchanged
     python3 -I gen_row_statements_v2.py > row_statements_v2.json   # unchanged
     python3 -I gen_row_statements.py > row_statements_v1.json      # unchanged
 
@@ -27,7 +29,7 @@ reference of that thumbprint.
 
 ## Levels
 
-Every v3 case states the `level` it is read at:
+Every v4 case states the `level` it is read at:
 
 - `statement`: `edition2::verify_row_statement`, no family model (`valid`,
   `refusals`; `key_directory` through a `KeyRecordDirectory`);
@@ -100,6 +102,22 @@ Rc20 (the namespace registry vendored at `data/cc/namespace_registry.json`):
   `act` = `group` (CC 2.6.1.9); `expect` is each voice's verdict (with the row
   id they share) or `several_rows`. Counting the voices over the roster they
   name is the caller's.
+
+## What changed from v3
+
+- **Each key's own holder signs its record** (CC 2.4.1.1, rc21: "no third
+  party ends a key and no third party revives one"). Every `key_directory`
+  record is signed by the key it records. A record only another key signed
+  makes the key live nowhere: the statement waits on the key's own voice,
+  `waiting:voice:<kid>`. v3's `held_through_chain` (B's record signed by A
+  alone: Valid) is `record_not_own_voice`, and `deep_waiting` (signed by an
+  unheld G alone: waiting on G) is `record_by_stranger`, both waiting on B.
+- **Body decimals** (CC 2.6.1.4): `body_decimal` carries `4([-2, 12345])` and
+  `4([-1, -5])` and is valid; a tag 4 not normalised (`[-1, 10]`, `[0, 7]`,
+  `[-1, 0]`) is a second encoding, `not_deterministic:payload`; a bignum, alone
+  or as a decimal's mantissa, is `body_number_unrepresentable`.
+- `node_at_asserted` (a `valid_until` equal to `asserted_at`) is
+  `key_record_out_of_window`: a record covers `[asserted_at, valid_until)`.
 
 ## What changed from v2
 
@@ -183,7 +201,14 @@ with the same independent encoder and signers:
 
     python3 -I gen_key_of_iss.py > key_of_iss_v1.json
 
-`key_of_iss_v2.json` holds 26 cases of step 8 as CIRISConstitution v1.0-rc21-wire states it, and
+`key_of_iss_v3.json` is v2 with an occurrence key's proof of possession signed as itself (CIRISConstitution
+rc21 90d537b: way (a), `iss` the occurrence key, since it is not yet an occurrence; CC 3.3.6, 3.3.6.4),
+plus `possession_signed_as_identity` (v2's form, which waits on the key's own voice). 32 cases.
+`tests/edition2_key_of_iss_vectors_v3.rs` replays it; `gen_key_of_iss_v3.py` wrote it:
+
+    python3 -I gen_key_of_iss_v3.py > key_of_iss_v3.json
+
+`key_of_iss_v2.json` (no longer replayed) holds 31 cases of step 8 as CIRISConstitution v1.0-rc21-wire states it, and
 of step 4's end rule: the four ways a key is a key of `iss` ((a) the thumbprint inside `iss`,
 (b) a rotation chain, (c) a key the bundle in force seats, (d) an admitted `identity:occurrence`),
 Waiting on what is not held (a named record, a voice a rotation or an occurrence lacks, the bundle
@@ -191,7 +216,7 @@ in force), half-open coverage `[asserted_at, valid_until)`, `valid_until_not_aft
 the guard that never binds a machine's key under a person's identity, eviction, and
 `location_proof` authored by its subject alone. Each case states its directory: key records,
 admitted occurrences, evictions, the bundle in force's seats (`[issuer seed, seated key seed]`) and
-a pending bundle. `tests/edition2_key_of_iss_vectors_v2.rs` replays it; `gen_key_of_iss_v2.py`
+a pending bundle. `gen_key_of_iss_v2.py`
 (the v1 generator's helpers, copied; independent of verify) wrote it:
 
     python3 -I gen_key_of_iss_v2.py > key_of_iss_v2.json

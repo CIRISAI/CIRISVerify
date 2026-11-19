@@ -27,6 +27,10 @@ pub use json::{from_json, JsonError};
 /// Nesting deeper than this is refused, so a hostile input cannot exhaust the stack.
 pub const MAX_DEPTH: usize = 32;
 
+/// Tag 4, a decimal fraction `[exponent, mantissa]` (RFC 8949 3.4.4), the
+/// one non-integral number CDE carries here.
+pub const TAG_DECIMAL: u64 = 4;
+
 /// A decoded CBOR data item.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Value {
@@ -289,7 +293,7 @@ impl Reader<'_> {
             },
             6 => {
                 let inner = self.item(depth + 1)?;
-                if n == 4 && !decimal_is_normal(&inner) {
+                if n == TAG_DECIMAL && !decimal_is_normal(&inner) && !decimal_is_bignum(&inner) {
                     return Err(CdeError::DecimalNotNormal);
                 }
                 Value::Tag(n, Box::new(inner))
@@ -307,7 +311,8 @@ impl Reader<'_> {
 
 /// A tag-4 body `[e, m]` in its one form: `e` negative, `m` an integer that
 /// is not zero and not divisible by ten.
-fn decimal_is_normal(v: &Value) -> bool {
+#[must_use]
+pub fn decimal_is_normal(v: &Value) -> bool {
     let Some([e, m]) = v.as_array() else {
         return false;
     };
@@ -317,6 +322,22 @@ fn decimal_is_normal(v: &Value) -> bool {
         _ => return false,
     };
     matches!(e, Value::Nint(_)) && mag % 10 != 0
+}
+
+/// Whether `v` is a bignum (tag 2 or 3) whose magnitude is outside CBOR's
+/// integer range: more than eight bytes with no leading zero. A bignum that
+/// fits a CBOR integer is a second encoding of that integer, not this.
+#[must_use]
+pub fn is_big_bignum(v: &Value) -> bool {
+    matches!(v, Value::Tag(2 | 3, b) if b.as_bytes().is_some_and(|b| b.len() > 8 && b[0] != 0))
+}
+
+/// A tag-4 content `[exponent: nint, mantissa]` whose mantissa is a bignum
+/// outside CBOR's integer range ([`is_big_bignum`]): left for the reader's
+/// grammar to refuse by name (CC 2.6.1.4, `body_number_unrepresentable`).
+#[must_use]
+pub fn decimal_is_bignum(v: &Value) -> bool {
+    matches!(v.as_array(), Some([Value::Nint(_), m]) if is_big_bignum(m))
 }
 
 /// The `[-16, digest]` value of a SHA-256 digest (CC 2.6.3).
