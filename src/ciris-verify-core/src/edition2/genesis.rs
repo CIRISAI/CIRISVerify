@@ -91,7 +91,7 @@ use super::{
 use crate::accord_custody_attestation::{verify_yubikey_piv_attestation, CustodyError};
 use crate::prelude::*;
 use crate::trust_anchor_store::{environments, Purpose, TrustAnchorStore};
-use ciris_crypto::composite::{CompositePublicKey, MLDSA65_PK_LEN};
+use ciris_crypto::composite::CompositePublicKey;
 use subtle::ConstantTimeEq;
 
 /// The `typ` of the genesis bundle.
@@ -2133,7 +2133,7 @@ fn seat_binding(
         &["transit_xwing_pubkey", "onion_hop_xwing_pubkey", "refs"],
         &mut others,
     );
-    let ed = &signer.as_bytes()[MLDSA65_PK_LEN..];
+    let ed = signer.ed25519_half().as_slice();
     others.push(ed);
     for o in others {
         if o == om {
@@ -2206,7 +2206,7 @@ fn custody_gate(rec: &KeyRecord, roots: &TrustAnchorStore) -> Result<(), Custody
         // verify yet: unattested, not seated.
         return Err(CustodyFault::Unattested);
     }
-    let ed = &rec.key.as_bytes()[MLDSA65_PK_LEN..];
+    let ed = rec.key.ed25519_half().as_slice();
     let (leaf, above) = rec.chain.split_first().expect("non-empty");
     let above: Vec<&[u8]> = above.iter().map(Vec::as_slice).collect();
     let mut fault = CustodyFault::ChainInvalid;

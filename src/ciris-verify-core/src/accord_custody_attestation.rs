@@ -44,10 +44,13 @@
 //! `x509_parser::verify_signature`.
 //!
 //! **PKI note (load-bearing for the pin):** Yubico's 2024-12 overhaul made the
-//! chain 4 levels — `9c → f9 (CN=Yubico PIV Attestation) → CN=Yubico PIV
-//! Attestation B 1 → CN=Yubico Attestation Root 1`. Pin the durable **root**
-//! (`Yubico Attestation Root 1`, `developers.yubico.com/PKI/yubico-ca-1.pem`),
-//! not the rotating `B 1` intermediate; the bundle carries `[f9, B 1]`. Pre-5.7
+//! chain 5 levels — `9c → f9 (CN=Yubico PIV Attestation) → CN=Yubico PIV
+//! Attestation B 1 → CN=Yubico Attestation Intermediate B 1 → CN=Yubico
+//! Attestation Root 1` (as the accord holders' real chains carry it). Pin the
+//! durable **root** (`Yubico Attestation Root 1`,
+//! `developers.yubico.com/PKI/yubico-ca-1.pem`), not the rotating `B 1`
+//! intermediates; the bundle carries `[f9, PIV Attestation B 1, Attestation
+//! Intermediate B 1]`. Pre-5.7
 //! keys still verify with `[f9]` under the old `Yubico PIV Root CA Serial 263751`.
 //!
 //! ## Tiers (CIRISVerify#325)
@@ -260,7 +263,8 @@ fn custody_envelope(
 /// chain. `attestation_9c_der` is the slot-9c attestation (e.g. from
 /// `ykman piv keys attest 9c`); `attestation_chain_ders` is the path above it,
 /// leaf-first — `[f9]` for the pre-fw-5.7 PKI, `[f9, "Yubico PIV Attestation B
-/// 1"]` for the 2024-12 PKI — excluding the pinned root the verifier holds.
+/// 1", "Yubico Attestation Intermediate B 1"]` for the 2024-12 PKI — excluding
+/// the pinned root the verifier holds.
 ///
 /// # Errors
 ///
@@ -688,7 +692,8 @@ fn inner_octet_string(raw: &[u8]) -> &[u8] {
 /// signs the 9c leaf and carries the FIPS `.10` extension; the last entry is
 /// verified against `pinned_root_der`. For the pre-fw-5.7 PKI this is a single
 /// `[f9]` and `pinned_root_der` is `Yubico PIV Root CA Serial 263751`; for the
-/// 2024-12 PKI it is `[f9, "Yubico PIV Attestation B 1"]` and `pinned_root_der`
+/// 2024-12 PKI it is `[f9, "Yubico PIV Attestation B 1", "Yubico Attestation
+/// Intermediate B 1"]` and `pinned_root_der`
 /// is the durable `Yubico Attestation Root 1`. Every link is a real signature
 /// verification; no name/CA-flag trust is inferred.
 ///

@@ -243,7 +243,9 @@ pub fn check_key_record(payload: &Value) -> Result<KeyRecord, KeyRecordError> {
 /// records. Several statements over one record payload (a rotation record's
 /// own statement by the new key and its predecessor's statement) are filed
 /// together and all kept. [`KeyDirectory::lookup`] reads the key's own
-/// latest statement, or, where the key signed none, the latest inserted;
+/// latest statement: each key's own holder signs its record (CC 2.4.1.1), so
+/// a record only other keys signed makes the key live nowhere, and the
+/// lookup waits on the key's own voice ([`MissingKey::Voice`]).
 /// [`KeyDirectory::key_of`] reads them all.
 ///
 /// **Whose key it is** ([`KeyDirectory::key_of`]; CC 2.6.1.7, CC 2.4.1.1,
@@ -520,11 +522,13 @@ impl KeyRecordDirectory {
         if matches!(self.evicted(kid, iss, at, depth), KeyOf::Yes) {
             return KeyOf::No;
         }
-        // The bound key's own voice (possession), verified under its own key.
-        let Some(own) = voices
-            .iter()
-            .find(|s| peek(s).is_some_and(|pk| ct_eq(&pk.kid, kid)))
-        else {
+        // The bound key's own voice (possession), signed as itself: its
+        // `iss` is the occurrence key, way (a) of step 8, since it is not yet
+        // an occurrence (CC 3.3.6, CC 3.3.6.4). A statement by the key under
+        // the identity's `iss` is no proof of possession.
+        let Some(own) = voices.iter().find(|s| {
+            peek(s).is_some_and(|pk| ct_eq(&pk.kid, kid) && pk.iss.is_some_and(|i| ct_eq(&i, kid)))
+        }) else {
             return KeyOf::Waiting(vec![MissingKey::Voice {
                 kid: *kid,
                 row: *row_id,
@@ -644,8 +648,9 @@ impl KeyRecordDirectory {
         if depth > MAX_RECORD_DEPTH {
             return KeyLookup::Invalid;
         }
-        // The key's own latest statement over a record of it, else the
-        // latest statement filed under it.
+        // The key's own latest statement over a record of it. Each key's own
+        // holder signs its record, and no third party revives a key (CC
+        // 2.4.1.1), so a record only other keys signed makes it live nowhere.
         let own = self.statements.get(kid).and_then(|all| {
             all.iter()
                 .rev()
@@ -657,8 +662,15 @@ impl KeyRecordDirectory {
         if let Some(k) = self.seats.values().find(|k| ct_eq(&thumbprint(k), kid)) {
             return KeyLookup::Held(Box::new(k.clone()));
         }
-        let Some(st) = own.or_else(|| self.records.get(kid)) else {
-            return KeyLookup::NotHeld;
+        let Some(st) = own else {
+            // A record held without its key's own voice waits on that voice.
+            return match self.records.get(kid).and_then(|s| peek(s)) {
+                Some(pk) => KeyLookup::Waiting(vec![MissingKey::Voice {
+                    kid: *kid,
+                    row: pk.row_id,
+                }]),
+                None => KeyLookup::NotHeld,
+            };
         };
         let inner = self.scoped(kid, st, depth);
         match verify_row_statement(st, &inner) {
@@ -1197,14 +1209,19 @@ mod tests {
         // Root: self-signed user record.
         d.insert(signed_record(&root, &root, &rec(&root, &["user"], None)))
             .unwrap();
-        // Node: recorded by root.
-        let node_kid = d
-            .insert(signed_record(
-                &root,
-                &node,
-                &rec(&node, &["node"], Some(T0 + 1000)),
-            ))
-            .unwrap();
+        // Node: recorded by root alone. No third party makes a key live (CC
+        // 2.4.1.1): the lookup waits on the node's own voice over that row.
+        let node_rec = rec(&node, &["node"], Some(T0 + 1000));
+        let node_kid = d.insert(signed_record(&root, &node, &node_rec)).unwrap();
+        match d.lookup(&node_kid, T0) {
+            KeyLookup::Waiting(m) => assert!(
+                matches!(m.as_slice(), [MissingKey::Voice { kid, .. }] if *kid == node_kid),
+                "{m:?}"
+            ),
+            other => panic!("{other:?}"),
+        }
+        // The node's own statement over its record makes it live.
+        d.insert(signed_record(&node, &node, &node_rec)).unwrap();
         assert!(matches!(d.lookup(&node_kid, T0), KeyLookup::Held(_)));
         assert!(matches!(d.lookup(&node_kid, T0 + 999), KeyLookup::Held(_)));
         // The end instant is not covered: [asserted_at, valid_until).
@@ -1226,7 +1243,7 @@ mod tests {
         }
         // A newer record of the same key, covering the instant, answers it.
         d.insert(signed_record(
-            &root,
+            &node,
             &node,
             &Value::Map(vec![
                 (t("key"), cose_key(node.public_key())),
@@ -1238,7 +1255,8 @@ mod tests {
         .unwrap();
         assert!(matches!(d.lookup(&node_kid, T0 + 1001), KeyLookup::Held(_)));
 
-        // A record signed by a key nobody holds: Waiting on that deeper key.
+        // A record signed only by a key nobody holds: Waiting on the recorded
+        // key's own voice, never on the stranger.
         let ghost = key(9);
         let orphan = key(3);
         let mut d2 = KeyRecordDirectory::new();
@@ -1249,13 +1267,13 @@ mod tests {
                 &rec(&orphan, &["node"], Some(T0 + 10)),
             ))
             .unwrap();
+        let waits_on_orphan =
+            |m: &[MissingKey]| matches!(m, [MissingKey::Voice { kid, .. }] if *kid == o);
         match d2.lookup(&o, T0) {
-            KeyLookup::Waiting(m) => {
-                assert_eq!(m, vec![MissingKey::Kid(thumbprint(ghost.public_key()))])
-            },
+            KeyLookup::Waiting(m) => assert!(waits_on_orphan(&m), "{m:?}"),
             other => panic!("{other:?}"),
         }
-        // A statement under the orphan is Waiting on the ghost, the deepest key.
+        // A statement under the orphan waits on the orphan's own voice.
         let p = Value::Map(vec![(t("asserted_at"), Value::Uint(T0))]);
         let iss = identity_ref(&thumbprint(orphan.public_key()));
         let st = sign_row_statement(
@@ -1268,17 +1286,15 @@ mod tests {
             vec![],
         )
         .unwrap();
-        assert_eq!(
-            verify_row_statement(&st, &d2),
-            Verdict::Waiting {
-                missing: vec![MissingKey::Kid(thumbprint(ghost.public_key()))]
-            }
-        );
+        match verify_row_statement(&st, &d2) {
+            Verdict::Waiting { missing } => assert!(waits_on_orphan(&missing), "{missing:?}"),
+            other => panic!("{other:?}"),
+        }
 
         // A record breaking the end rule makes its key, and statements under it, Invalid.
         let bad = key(4);
         let b = d
-            .insert(signed_record(&root, &bad, &rec(&bad, &["node"], None)))
+            .insert(signed_record(&bad, &bad, &rec(&bad, &["node"], None)))
             .unwrap();
         assert!(matches!(d.lookup(&b, T0), KeyLookup::Invalid));
         let iss = identity_ref(&b);

@@ -464,6 +464,7 @@ fn invalid_token(i: &Invalid) -> String {
         Invalid::DimensionUnregistered => "dimension_unregistered".into(),
         Invalid::KidNotOfIss => "kid_not_of_iss".into(),
         Invalid::ValidUntilNotAfterAssertedAt => "valid_until_not_after_asserted_at".into(),
+        Invalid::BodyNumberUnrepresentable => "body_number_unrepresentable".into(),
     }
 }
 

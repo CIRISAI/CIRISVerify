@@ -339,6 +339,22 @@ impl CompositePublicKey {
         &self.bytes
     }
 
+    /// The 1952-byte ML-DSA-65 half, the first part of the encoding (v23.3.2).
+    #[must_use]
+    pub fn mldsa65_half(&self) -> &[u8; MLDSA65_PK_LEN] {
+        self.bytes
+            .first_chunk::<MLDSA65_PK_LEN>()
+            .expect("the encoding starts with the ML-DSA-65 key")
+    }
+
+    /// The 32-byte Ed25519 half, the last part of the encoding (v23.3.2).
+    #[must_use]
+    pub fn ed25519_half(&self) -> &[u8; 32] {
+        self.bytes
+            .last_chunk::<32>()
+            .expect("the encoding ends with the Ed25519 key")
+    }
+
     /// Verify a composite signature over `msg`. Both halves must verify; the
     /// result does not say which one failed.
     ///
@@ -398,6 +414,20 @@ mod tests {
             assert!(pk.verify(b"row", &bad).is_err(), "byte {i}");
         }
         assert!(pk.verify(b"row", &sig[..SIGNATURE_LEN - 1]).is_err());
+    }
+
+    #[test]
+    fn halves_by_name() {
+        let k = CompositeSigningKey::from_seeds(&[7; 32], &[9; 32]);
+        let pk = k.public_key();
+        assert_eq!(
+            pk.ed25519_half(),
+            EdSigningKey::from_bytes(&[9; 32])
+                .verifying_key()
+                .as_bytes()
+        );
+        let again = CompositePublicKey::from_halves(pk.mldsa65_half(), pk.ed25519_half()).unwrap();
+        assert_eq!(again.as_bytes(), pk.as_bytes());
     }
 
     #[test]
