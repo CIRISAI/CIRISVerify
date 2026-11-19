@@ -572,7 +572,10 @@ mod tests {
                             .collect(),
                     )
                 }),
-                (0u64..1000, inner).prop_map(|(t, v)| Value::Tag(t, Box::new(v))),
+                // Any tag but 4: a tag-4 decimal fraction decodes only
+                // normalised (`DecimalNotNormal`); its own vectors cover it.
+                (0u64..1000, inner)
+                    .prop_map(|(t, v)| Value::Tag(if t == 4 { 5 } else { t }, Box::new(v))),
             ]
         })
     }

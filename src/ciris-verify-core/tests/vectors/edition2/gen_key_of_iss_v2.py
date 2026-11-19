@@ -212,6 +212,25 @@ case("eviction_by_stranger", "An eviction signed by B (not A's key) evicts nothi
 oDnh = occ_row(A, D, head=False)
 case("occurrence_names_no_head", "An occurrence whose refs name no self-roster head breaks its family's payload rule.",
      D, A, "invalid:kid_not_of_iss", records=[recA, recD], occurrences=[oDnh.by(A, A), oDnh.by(D, A)])
+# Review findings (PR #350): an eviction whose signer is not held; a record filed under A's key by another
+# key; a seated key with a bad record of its own; an occurrence payload keyed by an integer.
+Z = Key(40)
+case("eviction_signer_not_held", "An eviction of D signed by a key whose record is not held has not concluded; a "
+     "Waiting row counts for nothing (CC 2.7), so D still signs as A. The caller sees it as a pending eviction.",
+     D, A, "valid",
+     records=[recA, recD], occurrences=[oD.by(A, A), oD.by(D, A)], evictions=[evict_row(A, D, T0 + 50).by(Z, A)])
+forged = Row(KR, A.iss, krec(A, ["agent"], until=T0 + 10_000_000)).by(S_ := Key(5), S_)
+case("forged_record_does_not_unperson", "S files a record of A's key saying agent; the guard reads only A's own "
+     "verified record, so an agent occurrence under A stays refused.", E, A, "invalid:kid_not_of_iss",
+     records=[recA, forged, recE], occurrences=[oE.by(A, A), oE.by(E, A)])
+badR = rec_row(R, ["user"], until=T0 + 10_000_000).by(R, R)   # a user record may not state an end: refused
+case("seat_shadows_bad_record", "R is seated for A, and R's own record breaks the end rule: the seat holds R.", R, A,
+     "valid", records=[recA, badR], seats=[(A, R)])
+oDint = occ_row(A, D)
+oDint.payload[7] = 1
+oDint.id = row_id("scores", OCC, oDint.sub, A.iss, oDint.payload)
+case("occurrence_integer_key", "An occurrence payload with an integer-keyed member: its open tail admits text keys "
+     "only.", D, A, "invalid:kid_not_of_iss", records=[recA, recD], occurrences=[oDint.by(A, A), oDint.by(D, A)])
 oDB = occ_row(B, D)
 case("occurrence_of_other_identity", "B's occurrence binds D; D signs as A: kid_not_of_iss.", D, A,
      "invalid:kid_not_of_iss", records=[recA, recB, recD], occurrences=[oDB.by(B, B), oDB.by(D, B)])

@@ -290,7 +290,21 @@ fn key_record_directory_agrees_with_the_model() {
 
     let mut checked = 0usize;
     let mut diffs: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    for line in lines {
+    // Every row in a release build (about 70 s). An unoptimised build (CI's
+    // test profile) replays every STRIDE-th held set, both arrival orders, to
+    // stay inside the runner's timeout; KEY_OF_ISS_MODEL_STRIDE=1 forces the
+    // full table anywhere.
+    let stride: usize = std::env::var("KEY_OF_ISS_MODEL_STRIDE")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(if cfg!(debug_assertions) { 8 } else { 1 })
+        .max(1);
+    let mut replayed = 0usize;
+    for (n, line) in lines.enumerate() {
+        if n % stride != 0 {
+            continue;
+        }
+        replayed += 1;
         let f: Vec<&str> = line.split('\t').collect();
         let held: Vec<&str> = if f[2] == "-" {
             vec![]
@@ -322,7 +336,8 @@ fn key_record_directory_agrees_with_the_model() {
             }
         }
     }
-    assert_eq!(checked, (1 << ENTRIES.len()) * stmts.len() * 2);
+    assert_eq!(replayed, (1usize << ENTRIES.len()).div_ceil(stride));
+    assert_eq!(checked, replayed * stmts.len() * 2);
     if !diffs.is_empty() {
         let mut msg = String::new();
         for (k, v) in &diffs {

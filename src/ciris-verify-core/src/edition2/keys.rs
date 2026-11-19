@@ -397,25 +397,39 @@ impl KeyRecordDirectory {
             .map_or(KeyOf::No, |b| KeyOf::Waiting(vec![MissingKey::Bundle(b)]))
     }
 
-    /// Whether the identity whose genesis key is `iss` is a person (`user`
-    /// or `accord_holder`) by its genesis record; `None` when not held.
-    fn is_person(&self, iss: &Digest32) -> Option<bool> {
-        let rec = check_key_record(&payload_of(self.records.get(iss)?)?).ok()?;
-        Some(
-            rec.identity_type
-                .iter()
-                .any(|t| t == "user" || t == "accord_holder"),
-        )
+    /// The records of `kid` that `kid` itself signed and that verify: the
+    /// only ones the guard reads. A statement filed under `kid` and signed by
+    /// another key never speaks for `kid`'s roles (insertion defers checking).
+    fn own_records(&self, kid: &Digest32, depth: usize) -> Vec<KeyRecord> {
+        self.statements
+            .get(kid)
+            .map_or(&[][..], Vec::as_slice)
+            .iter()
+            .filter(|s| peek(s).is_some_and(|pk| ct_eq(&pk.kid, kid)))
+            .filter_map(|s| valid_record(s, &self.scoped(kid, s, depth), kid).map(|(_, r)| r))
+            .collect()
     }
 
-    /// Whether `kid`'s own record makes it a machine's key (`node` or
-    /// `agent`); `false` when no record of it is held.
-    fn is_machine(&self, kid: &Digest32) -> bool {
-        self.records
-            .get(kid)
-            .and_then(|r| payload_of(r))
-            .and_then(|p| check_key_record(&p).ok())
-            .is_some_and(|r| r.identity_type.iter().any(|t| t == "node" || t == "agent"))
+    /// Whether the identity whose genesis key is `iss` is a person (`user`
+    /// or `accord_holder`) by its genesis key's own verified record; `None`
+    /// when none is held. Any such record naming a person role makes it one.
+    fn is_person(&self, iss: &Digest32, depth: usize) -> Option<bool> {
+        let recs = self.own_records(iss, depth);
+        (!recs.is_empty()).then(|| {
+            recs.iter().any(|r| {
+                r.identity_type
+                    .iter()
+                    .any(|t| t == "user" || t == "accord_holder")
+            })
+        })
+    }
+
+    /// Whether `kid`'s own verified record makes it a machine's key (`node`
+    /// or `agent`); `false` when none is held.
+    fn is_machine(&self, kid: &Digest32, depth: usize) -> bool {
+        self.own_records(kid, depth)
+            .iter()
+            .any(|r| r.identity_type.iter().any(|t| t == "node" || t == "agent"))
     }
 
     /// Way (d): an admitted `identity:occurrence` of `iss` binds `kid` at `at`.
@@ -475,8 +489,8 @@ impl KeyRecordDirectory {
             return KeyOf::No;
         };
         // A key is a person's or a machine's, never both (CC 2.4.1.1).
-        if class == "agent" || self.is_machine(kid) {
-            match self.is_person(iss) {
+        if class == "agent" || self.is_machine(kid, depth) {
+            match self.is_person(iss, depth) {
                 Some(true) => return KeyOf::No,
                 Some(false) => {},
                 None => return KeyOf::Waiting(vec![MissingKey::Kid(*iss)]),
@@ -498,7 +512,12 @@ impl KeyRecordDirectory {
                 at_ms: at,
             }]);
         }
-        if self.evicted(kid, iss, at, depth) {
+        // Evicted only by an eviction that has concluded. One whose signer is
+        // not held is itself Waiting, and a Waiting row counts for nothing (CC
+        // 2.7), so the occurrence stands; a caller sees it through
+        // [`KeyRecordDirectory::pending_evictions`]. Waiting here would let a
+        // stranger stall any device key with an eviction that never resolves.
+        if matches!(self.evicted(kid, iss, at, depth), KeyOf::Yes) {
             return KeyOf::No;
         }
         // The bound key's own voice (possession), verified under its own key.
@@ -559,24 +578,57 @@ impl KeyRecordDirectory {
         }))
     }
 
+    /// The keys an eviction of the occurrence (`iss`, `kid`), effective by
+    /// `at`, waits on: an `identity:occurrence_revocation` held whose signer
+    /// is not. It has not concluded, so it evicts nothing and the occurrence
+    /// still binds (CC 2.7, CC 2.7.9: a withheld row); a caller may act on it,
+    /// for instance by fetching the signer's records. Empty when none waits
+    /// or when one has concluded.
+    #[must_use]
+    pub fn pending_evictions(&self, kid: &Digest32, iss: &Digest32, at: u64) -> Vec<MissingKey> {
+        match self.evicted(kid, iss, at, 0) {
+            KeyOf::Waiting(m) => m,
+            _ => Vec::new(),
+        }
+    }
+
     /// An `identity:occurrence_revocation` of (`iss`, `kid`), effective by
-    /// `at`, signed by a key of `iss`.
-    fn evicted(&self, kid: &Digest32, iss: &Digest32, at: u64, depth: usize) -> bool {
+    /// `at`: [`KeyOf::Yes`] when one is signed by a key of `iss`,
+    /// [`KeyOf::Waiting`] when one waits on its signer, else [`KeyOf::No`].
+    fn evicted(&self, kid: &Digest32, iss: &Digest32, at: u64, depth: usize) -> KeyOf {
         let deeper = Deeper {
             dir: self,
             depth: depth + 1,
         };
-        self.evictions.iter().any(|e| {
-            let Some(p) = payload_of(e) else { return false };
-            let thumb = |m: &str| p.get_text(m).and_then(Value::as_text).and_then(identity_ref_thumbprint);
-            thumb("identity_key_id").is_some_and(|i| ct_eq(&i, iss))
+        let mut waiting = None;
+        for e in &self.evictions {
+            let Some(p) = payload_of(e) else { continue };
+            let thumb = |m: &str| {
+                p.get_text(m)
+                    .and_then(Value::as_text)
+                    .and_then(identity_ref_thumbprint)
+            };
+            let names = thumb("identity_key_id").is_some_and(|i| ct_eq(&i, iss))
                 && thumb("occurrence_key_id").is_some_and(|k| ct_eq(&k, kid))
-                && p.get_text("effective_at").and_then(Value::as_u64).is_some_and(|t| t <= at)
-                && matches!(
-                    verify_row_statement(e, &deeper),
-                    Verdict::Valid(r) if identity_ref_thumbprint(&r.iss).is_some_and(|i| ct_eq(&i, iss))
-                )
-        })
+                && p.get_text("effective_at")
+                    .and_then(Value::as_u64)
+                    .is_some_and(|t| t <= at);
+            if !names {
+                continue;
+            }
+            match verify_row_statement(e, &deeper) {
+                Verdict::Valid(r)
+                    if identity_ref_thumbprint(&r.iss).is_some_and(|i| ct_eq(&i, iss)) =>
+                {
+                    return KeyOf::Yes;
+                },
+                Verdict::Waiting { missing } => {
+                    waiting.get_or_insert(missing);
+                },
+                _ => {},
+            }
+        }
+        waiting.map_or(KeyOf::No, KeyOf::Waiting)
     }
 
     fn scoped<'a>(&'a self, kid: &Digest32, st: &[u8], depth: usize) -> Scoped<'a> {
@@ -599,14 +651,14 @@ impl KeyRecordDirectory {
                 .rev()
                 .find(|s| peek(s).is_some_and(|pk| ct_eq(&pk.kid, kid)))
         });
+        // A key the bundle in force seats is held by its seat, ahead of any
+        // record filed under it: that standing rides no key record (CC
+        // 2.6.1.11), so a bad record never shadows the seat.
+        if let Some(k) = self.seats.values().find(|k| ct_eq(&thumbprint(k), kid)) {
+            return KeyLookup::Held(Box::new(k.clone()));
+        }
         let Some(st) = own.or_else(|| self.records.get(kid)) else {
-            // A key the bundle in force seats is held by its seat: that
-            // standing rides no key record (CC 2.6.1.11).
-            return self
-                .seats
-                .values()
-                .find(|k| ct_eq(&thumbprint(k), kid))
-                .map_or(KeyLookup::NotHeld, |k| KeyLookup::Held(Box::new(k.clone())));
+            return KeyLookup::NotHeld;
         };
         let inner = self.scoped(kid, st, depth);
         match verify_row_statement(st, &inner) {

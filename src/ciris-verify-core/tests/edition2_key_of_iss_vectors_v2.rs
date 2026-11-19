@@ -121,7 +121,7 @@ fn label_family(v: &FamilyVerdict) -> String {
 fn every_case_gives_its_outcome() {
     let f: J = serde_json::from_str(FILE).unwrap();
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 27);
+    assert_eq!(cases.len(), 31);
     let mut bad = Vec::new();
     for c in cases {
         let d = directory(c);
@@ -139,4 +139,27 @@ fn every_case_gives_its_outcome() {
         }
     }
     assert!(bad.is_empty(), "\n{}", bad.join("\n"));
+
+    // The eviction whose signer is not held evicts nothing, yet a caller sees
+    // it: `pending_evictions` names the key it waits on (CC 2.7.9).
+    let c = cases
+        .iter()
+        .find(|c| c["id"] == "eviction_signer_not_held")
+        .unwrap();
+    let d = directory(c);
+    let (dev, ident) = (
+        thumbprint(key(20).public_key()),
+        thumbprint(key(1).public_key()),
+    );
+    let at = 1_763_200_000_000 + 100;
+    assert_eq!(
+        d.pending_evictions(&dev, &ident, at),
+        vec![MissingKey::Kid(thumbprint(key(40).public_key()))]
+    );
+    // A concluded eviction is no pending one.
+    let c = cases
+        .iter()
+        .find(|c| c["id"] == "occurrence_evicted")
+        .unwrap();
+    assert!(directory(c).pending_evictions(&dev, &ident, at).is_empty());
 }

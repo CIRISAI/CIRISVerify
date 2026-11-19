@@ -1172,7 +1172,11 @@ pub(crate) fn transport_destination_shape(td: &Value) -> Result<(), Invalid> {
 /// [`Invalid::Malformed`] naming the first member off its rule.
 pub fn check_identity_occurrence(p: &Value) -> Result<(), Invalid> {
     let bad = |member: &'static str| Invalid::Malformed { member };
-    p.as_map().ok_or(bad("identity-occurrence"))?;
+    // Every member is named by text: the open tail is `* tstr => ceg-value`.
+    let m = p.as_map().ok_or(bad("identity-occurrence"))?;
+    if m.iter().any(|(k, _)| k.as_text().is_none()) {
+        return Err(bad("identity-occurrence"));
+    }
     for m in ["author", "identity_key_id", "occurrence_key_id"] {
         let ok = p
             .get_text(m)
