@@ -291,13 +291,13 @@ fn key_record_directory_agrees_with_the_model() {
     let mut checked = 0usize;
     let mut diffs: BTreeMap<String, Vec<String>> = BTreeMap::new();
     // Every row in a release build (about 70 s). An unoptimised build (CI's
-    // test profile) replays every STRIDE-th held set, both arrival orders, to
-    // stay inside the runner's timeout; KEY_OF_ISS_MODEL_STRIDE=1 forces the
+    // test profile, where ML-DSA verification is slow) replays every 64th
+    // held set, both arrival orders, to stay inside the runner's timeout; KEY_OF_ISS_MODEL_STRIDE=1 forces the
     // full table anywhere.
     let stride: usize = std::env::var("KEY_OF_ISS_MODEL_STRIDE")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(if cfg!(debug_assertions) { 8 } else { 1 })
+        .unwrap_or(if cfg!(debug_assertions) { 64 } else { 1 })
         .max(1);
     let mut replayed = 0usize;
     for (n, line) in lines.enumerate() {
