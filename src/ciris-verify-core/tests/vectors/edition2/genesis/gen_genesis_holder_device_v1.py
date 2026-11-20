@@ -34,7 +34,7 @@ def der_uint(n):
     return b"\x02" + bytes([len(b)]) + b
 
 
-def chain(ed_pub, n, serial=None, f9n=None):
+def chain(ed_pub, n, serial=None, f9n=None, serial_raw=None):
     """[9c leaf, f9] as v3's yubikey_chain, the leaf carrying `serial` in .3.7 when given; `f9n` picks the f9
     (default: the holder's own, n), so holders given one f9n share one f9 certificate and attestation key."""
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
@@ -44,6 +44,7 @@ def chain(ed_pub, n, serial=None, f9n=None):
     f9 = g.cert(f9cn, g.ROOT.cn, f9k.public_key(), g.ROOT.key, 100 + f9n, [(g.OID_FIPS, b"")])
     exts = [(g.OID_FW, b"\x04\x03\x05\x07\x04"), (g.OID_TOUCH, b"\x04\x02\x01\x02")]
     if serial is not None: exts.append((OID_SERIAL, der_uint(serial)))
+    if serial_raw is not None: exts.append((OID_SERIAL, serial_raw))
     leaf = g.cert("YubiKey PIV Attestation 9c (MOCK %d)" % n, f9cn, Ed25519PublicKey.from_public_bytes(ed_pub), f9k,
                   200 + n, exts)
     return [leaf, f9]
@@ -53,20 +54,22 @@ A, B, C = g.A, g.B, g.C
 an = g.TPS((A, B, C))
 
 
-def device_case(cid, desc, devices, expect):
-    """devices: holder -> (serial or None, f9n or None). Each holder's record is swapped for one whose chain
+def device_case(cid, desc, devices, expect, raw=None):
+    """devices: holder -> (serial or None, f9n or None); raw: holder -> the .3.7 value as bytes. Each holder's record is swapped for one whose chain
     names that device; seats and their bindings stay v3's."""
     recs, extra = {}, []
     for h, (serial, f9n) in devices.items():
         r = g.holder_record(h, ev={"hardware_class": "YubiKey_5_FIPS", "pq_custody": "removable_offline",
-                                   "chain": chain(h.ed_pk, h.n, serial, f9n)})
+                                   "chain": chain(h.ed_pk, h.n, serial, f9n, (raw or {}).get(h))})
         recs[h] = (r[1], h)
         extra.append({"id": r[1].hex(), "statement": g.put(r[0])})
     swapped = {"rec_%d" % h.n for h in devices}
     names = [n for n in g.ALL if n not in swapped]
     p = g.payload(rows=g.ids(names) + [r for r, _ in recs.values()])
     oid = g.object_id(g.enc(p))
-    if expect == "valid":
+    if isinstance(expect, tuple):
+        e = g.bundle(oid, "nothing", *expect)
+    elif expect == "valid":
         e = g.bundle(oid, "valid", placement=g.placement_of(p, (A, B, C), (g.S1, g.S2), (), (A, B, C), recs=recs))
     else:
         e = g.bundle(oid, "invalid", "genesis_bundle_malformed", expect)
@@ -92,6 +95,11 @@ device_case("one_leaf_names_no_device", "A's leaf carries no serial extension; B
 device_case("two_leaves_name_no_device", "A's and B's leaves carry no serial; C names its own: Valid (no device "
             "is named twice).", {A: (None, None), B: (None, None), C: (JULY[C], None)}, "valid")
 
+device_case("serial_not_integer", "A's leaf carries the serial extension as an OCTET STRING, not a DER INTEGER: a "
+            "present member that fails its type is refused, never read as no device. A fails the custody gate "
+            "(the chain and the attested key verify first).", {A: (None, None), B: (JULY[B], None), C: (JULY[C], None)},
+            ("genesis_holder_custody", "custody_serial_malformed"), raw={A: b"\x04\x04" + JULY[A].to_bytes(4, "big")})
+
 out = {
     "_meta": {
         "spec": "CC 4.2.3 One device per holder; CC 2.6.1.11 refusal holder_device_shared; "
@@ -99,7 +107,8 @@ out = {
         "generator": "gen_genesis_holder_device_v1.py over gen_genesis_bundles_v3.py (independent of verify)",
         "keys": "as genesis_bundles_v3.json: holders A,B,C = keys 1,2,3; seats 11,12. The serial is a DER INTEGER "
                 "in extension 1.3.6.1.4.1.41482.3.7 of the 9c leaf.",
-        "verdicts": "valid | invalid (token genesis_bundle_malformed, detail = reason)",
+        "verdicts": "valid | invalid (token genesis_bundle_malformed, detail = reason) | nothing (token "
+                    "genesis_holder_custody, detail = the custody fault)",
     },
     "attestation_root_der": g.ROOT.der.hex(),
     "untrusted_root_der": g.UNTRUSTED.der.hex(),

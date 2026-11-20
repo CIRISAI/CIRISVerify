@@ -176,11 +176,11 @@ the seat's occurrence members added).
 ## One device per holder (`genesis_holder_device_v1.json`)
 
 `gen_genesis_holder_device_v1.py` writes `genesis_holder_device_v1.json` (SHA-256
-`fe81400c4a04a8362ac4209ff35a0e48ea1d9fa4b9e3a70a0fdac39c3d9bddb6`). The rule is CC 4.2.3 "One device per holder", with
+`25b96ebfd1f17087c0b0aab27144dcc8c8b20eb358d60b35ebee5ea2f3c45886`). The rule is CC 4.2.3 "One device per holder", with
 refusal `holder_device_shared`, from CIRISConstitution v1.0-rc21 b016df4. The generator loads
 `gen_genesis_bundles_v3.py` beside it, runs it into a scratch directory and discards that output, then
 reuses its encoder, signer, mock PKI and case machinery. To that it adds only the 9c leaf's serial
-extension (`1.3.6.1.4.1.41482.3.7`, a DER INTEGER) and seven first-bundle cases:
+extension (`1.3.6.1.4.1.41482.3.7`, a DER INTEGER) and eight first-bundle cases:
 
 | Case | Leaves | Verdict |
 |------|--------|---------|
@@ -191,9 +191,10 @@ extension (`1.3.6.1.4.1.41482.3.7`, a DER INTEGER) and seven first-bundle cases:
 | `shared_f9_shared_serial` | One f9; A and C share a serial | `holder_device_shared` |
 | `one_leaf_names_no_device` | A's leaf has no serial | Valid |
 | `two_leaves_name_no_device` | A's and B's leaves have no serial | Valid |
+| `serial_not_integer` | A's serial extension is an OCTET STRING | nothing: `genesis_holder_custody` / `custody_serial_malformed` |
 
 The device is read only from a leaf that passed the custody gate. A leaf that names no device is not
-compared, because CC 4.2.3 binds only where a leaf names one. The file has the v3 case file's shape,
+compared, because CC 4.2.3 binds only where a leaf names one. A serial extension that is present but is not one DER INTEGER fitting u32 is not read as naming no device: it fails the custody gate. The file has the v3 case file's shape,
 with its statements inline under `pool`. `holder_device_cases` in `tests/genesis_bundle_v3_vectors.rs`
 replays it.
 

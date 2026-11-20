@@ -488,6 +488,10 @@ pub enum CustodyFault {
     FloorNotMet,
     /// `pq_custody` is not `removable_offline` (CC 4.2.3).
     PqCustody,
+    /// The leaf carries the device serial extension but it is not one DER
+    /// INTEGER fitting `u32` (CC 4.2.3: a present member that fails its type
+    /// is refused, not read as naming no device).
+    SerialMalformed,
 }
 
 impl CustodyFault {
@@ -501,6 +505,7 @@ impl CustodyFault {
             Self::AttestedKeyMismatch => "custody_attested_key_mismatch",
             Self::FloorNotMet => "custody_floor_not_met",
             Self::PqCustody => "custody_pq_not_removable_offline",
+            Self::SerialMalformed => "custody_serial_malformed",
         }
     }
 }
@@ -2239,6 +2244,7 @@ fn custody_gate(rec: &KeyRecord, roots: &TrustAnchorStore) -> Result<Option<u32>
             Ok(_) => fault = CustodyFault::Unattested,
             Err(CustodyError::AttestedKeyMismatch) => fault = CustodyFault::AttestedKeyMismatch,
             Err(CustodyError::FloorNotMet { .. }) => fault = CustodyFault::FloorNotMet,
+            Err(CustodyError::SerialMalformed) => fault = CustodyFault::SerialMalformed,
             Err(_) => {},
         }
     }

@@ -187,6 +187,10 @@ pub enum CustodyError {
         /// Why.
         detail: String,
     },
+    /// The 9c leaf carries the serial extension (`1.3.6.1.4.1.41482.3.7`) but
+    /// its value is not one DER INTEGER fitting `u32`. A present member that
+    /// fails its type is refused, never read as absent (CC 4.2.3).
+    SerialMalformed,
 }
 
 impl std::fmt::Display for CustodyError {
@@ -206,6 +210,10 @@ impl std::fmt::Display for CustodyError {
                 )
             },
             Self::FloorNotMet { detail } => write!(f, "custody floor not met: {detail}"),
+            Self::SerialMalformed => write!(
+                f,
+                "the 9c serial extension is not a DER INTEGER fitting u32"
+            ),
         }
     }
 }
@@ -776,9 +784,13 @@ pub fn verify_yubikey_piv_attestation(
                 }
             },
             OID_YUBICO_SERIAL => {
-                if let Ok((_, n)) = x509_parser::der_parser::asn1_rs::Integer::from_der(ext.value) {
-                    serial = n.as_u32().ok();
-                }
+                // Present means it names the device: one DER INTEGER, nothing
+                // after it, fitting u32. Anything else is refused, so a bad
+                // extension cannot skip the one-device check (CC 4.2.3).
+                serial = match x509_parser::der_parser::asn1_rs::Integer::from_der(ext.value) {
+                    Ok(([], n)) => Some(n.as_u32().map_err(|_| CustodyError::SerialMalformed)?),
+                    _ => return Err(CustodyError::SerialMalformed),
+                };
             },
             OID_YUBICO_PIN_TOUCH_POLICY => {
                 let v = inner_octet_string(ext.value);

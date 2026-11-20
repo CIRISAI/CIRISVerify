@@ -264,7 +264,7 @@ fn holder_device_cases() {
         "vectors/edition2/genesis/genesis_holder_device_v1.json"
     ))
     .unwrap();
-    replay(&f, 7);
+    replay(&f, 8);
 }
 
 /// Replays every case of a case file of v3's shape (`pool` merged in).
