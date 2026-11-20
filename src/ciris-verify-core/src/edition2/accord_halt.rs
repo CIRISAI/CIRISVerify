@@ -245,7 +245,7 @@ impl HaltRoster {
     /// A strict majority of the roster: `floor(N / 2) + 1`.
     #[must_use]
     pub fn majority(&self) -> usize {
-        self.holders.len() / 2 + 1
+        super::strict_majority(self.holders.len())
     }
 
     /// The roster of the bundle a lifecycle row names in `refs.head` (see

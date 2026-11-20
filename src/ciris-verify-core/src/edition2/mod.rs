@@ -79,6 +79,21 @@ const SIMPLE_REDACTED_KEYS: u8 = 59;
 /// A 32-byte digest named in the `[-16, digest]` form.
 pub type Digest32 = [u8; 32];
 
+/// The strict majority of a standing roster of `n` (CC 4.2.6): the least
+/// count `m` with `2·m > n`, that is `floor(n / 2) + 1`. There is no minimum
+/// roster.
+#[must_use]
+pub const fn strict_majority(n: usize) -> usize {
+    n / 2 + 1
+}
+
+/// Whether `yes` distinct voices are a strict majority of a standing roster
+/// of `n` (CC 4.2.6): `2·yes > n`.
+#[must_use]
+pub const fn is_strict_majority(yes: usize, n: usize) -> bool {
+    yes > n / 2
+}
+
 /// Why a statement is Invalid. Structural reasons are named so a producer can
 /// find its fault; a failed signature is one reason and does not say which
 /// half failed.

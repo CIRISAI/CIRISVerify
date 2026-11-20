@@ -359,6 +359,14 @@ pub enum Malformed {
     /// `1.3.6.1.4.1.41482.3.7` of the 9c leaf. A leaf that names no device is
     /// not compared; sharing an f9 or an intermediate is allowed.
     HolderDeviceShared,
+    /// Two holders the bundle seats carry one recovery commitment: one
+    /// recovery key set would recover more than one seat (CC 4.2.6, each
+    /// holder's own recovery key).
+    RecoveryCommitmentShared,
+    /// A holder's recovery commitment commits to a signing key the bundle
+    /// seats, its own or another holder's: the recovery key is held apart
+    /// from the signing key (CC 4.2.6).
+    RecoveryCommitmentIsHolderKey,
 }
 
 impl Malformed {
@@ -380,6 +388,8 @@ impl Malformed {
             Self::RecoveryChangesOtherSeat => "recovery_changes_other_seat",
             Self::HolderKeyRetired => "holder_key_retired",
             Self::HolderDeviceShared => "holder_device_shared",
+            Self::RecoveryCommitmentShared => "recovery_commitment_shared",
+            Self::RecoveryCommitmentIsHolderKey => "recovery_commitment_is_holder_key",
         }
     }
 }
@@ -1438,6 +1448,14 @@ fn read_one(
         }
     }
 
+    // Every bundle, the first included: no two holders share a recovery
+    // commitment, and no commitment is over a signing key the bundle seats.
+    // A commitment hashes a key set, so only an equal set is visible here;
+    // overlapping sets are the ceremony's to refuse at mint.
+    if let Err(m) = check_commitments(&b, &rows) {
+        return GenesisVerdict::Invalid(m);
+    }
+
     // 4 (continued). A holder re-seated under a new key by a roster bundle:
     // only where its own statement, under the key the predecessor seats for
     // it, verified and counts. A statement that does not verify counts for
@@ -1534,7 +1552,7 @@ fn read_one(
                         b.charter.recovery_commitments.get(*h) != Some(&ph.recovery_commitment)
                     })
                 });
-                2 * valid > n
+                super::is_strict_majority(valid, n)
                     && added.iter().all(|h| counted.contains(*h))
                     && changed.into_iter().all(|h| counted.contains(h))
             },
@@ -1705,6 +1723,29 @@ fn check_retired(b: &Bundle, pp: &GenesisPlacement, rows: &Rows) -> Result<(), M
             if bool::from(c.ct_eq(&x.recovery_commitment)) {
                 return Err(Malformed::HolderKeyRetired);
             }
+        }
+    }
+    Ok(())
+}
+
+/// No two holders share a recovery commitment, and none commits to a signing
+/// key the bundle seats (CC 4.2.6). Read from the payload and its named
+/// records only.
+fn check_commitments(b: &Bundle, rows: &Rows) -> Result<(), Malformed> {
+    let mut seen = BTreeSet::new();
+    for h in &b.holders {
+        if !seen.insert(b.charter.recovery_commitments[h]) {
+            return Err(Malformed::RecoveryCommitmentShared);
+        }
+    }
+    for h in &b.holders {
+        let own = recovery_commitment(core::slice::from_ref(&rows.records[h].rec.key));
+        if b.charter
+            .recovery_commitments
+            .values()
+            .any(|c| bool::from(c.ct_eq(&own)))
+        {
+            return Err(Malformed::RecoveryCommitmentIsHolderKey);
         }
     }
     Ok(())

@@ -267,6 +267,18 @@ fn holder_device_cases() {
     replay(&f, 8);
 }
 
+/// Recovery commitments (CC 4.2.6), first and later bundles:
+/// `genesis_commitments_v1.json`, written by `gen_genesis_commitments_v1.py`
+/// over v3's generator, with its statements inline.
+#[test]
+fn recovery_commitment_cases() {
+    let f: J = serde_json::from_str(include_str!(
+        "vectors/edition2/genesis/genesis_commitments_v1.json"
+    ))
+    .unwrap();
+    replay(&f, 7);
+}
+
 /// Replays every case of a case file of v3's shape (`pool` merged in).
 fn replay(f: &J, min_cases: usize) {
     let f = f.clone();

@@ -199,3 +199,19 @@ with its statements inline under `pool`. `holder_device_cases` in `tests/genesis
 replays it.
 
     python3 -I gen_genesis_holder_device_v1.py > genesis_holder_device_v1.json
+
+## Recovery commitments (`genesis_commitments_v1.json`)
+
+`gen_genesis_commitments_v1.py` writes `genesis_commitments_v1.json`, SHA-256
+`f8ecd5f46f4d0b4db81594eb78b7df0466c7b16045c3755a7fea30e3ff98c254`. It is built over the v3
+generator in the same way as the holder-device file. It covers two CC 4.2.6 rules that apply to
+every bundle, the first one included:
+- `recovery_commitment_shared`: two seated holders carry one commitment.
+- `recovery_commitment_is_holder_key`: a commitment is over a signing key the bundle seats, the
+  holder's own or another holder's.
+
+CIRISServer's trust-root audit found the gap. It has 7 cases: a valid first bundle, three
+first-bundle refusals, a valid later bundle that moves a commitment to a fresh key, and two
+later-bundle refusals. A commitment hashes a key set, so a reader sees only an equal set;
+overlapping sets are for the ceremony to refuse when the bundle is minted. `recovery_commitment_cases`
+in `tests/genesis_bundle_v3_vectors.rs` replays it.
