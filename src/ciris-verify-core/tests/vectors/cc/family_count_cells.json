@@ -2,7 +2,7 @@
  "_meta": {
   "cells": "count",
   "source": "manifests/family_model.json",
-  "source_sha256": "0f635ee125651092e32b2d1b427c791d749d4e4a2460e6154636a8c256edbf6b"
+  "source_sha256": "9b48d5960ad0f6243f1f361a987aebe68e131a5ae6563a34417278b64f824610"
  },
  "families": {
   "accord:invoke:constitutional:{halt_id}": {

@@ -32,7 +32,7 @@ fn every_cc_vector_agrees() {
     assert_eq!(
         vectors.len(),
         1323,
-        "CC v1.0-rc21-wire (e6fd7c6) ships 1,323 namespace vectors"
+        "CC v1.0-rc21 (b016df4) ships 1,323 namespace vectors"
     );
     let mut failures = Vec::new();
     for (i, v) in vectors.iter().enumerate() {
