@@ -76,13 +76,44 @@ fn jose_06_cose_example() {
 }
 
 /// StreamKeyBinding v2, THE binding of the cut (Eric's ruling on
-/// CIRISEdge#1007): `gen_stream_key_binding_v2.py`, independent of verify.
+/// CIRISEdge#1007), second set: CC rc21's v3 stream id and a member publisher
+/// (CC 5.3.3.5, 815050d / 544755a). `gen_stream_key_binding_v2_composite_v2.py`,
+/// independent of verify. The first set (`_v1.json`, v2 stream id, node
+/// publisher) stays byte-identical and is no longer replayed.
 #[test]
 fn stream_key_binding_v2_composite() {
+    use ciris_crypto::stream_seal::{call_stream_id, StreamIdError};
     let v: Value = serde_json::from_str(include_str!(
-        "vectors/composite/stream_key_binding_v2_composite_v1.json"
+        "vectors/composite/stream_key_binding_v2_composite_v2.json"
     ))
     .unwrap();
+    let text = |c: &Value, k: &str| String::from_utf8(h(c, k)).unwrap();
+    for c in v["stream_ids"].as_array().unwrap() {
+        let id = c["id"].as_str().unwrap();
+        let nonce: [u8; 32] = h(c, "join_nonce_hex").try_into().unwrap();
+        let sid = call_stream_id(&text(c, "room_hex"), &text(c, "publisher_hex"), &nonce).unwrap();
+        assert_eq!(sid.as_slice(), h(c, "stream_id_hex"), "{id}");
+    }
+    let ab_c = call_stream_id("ab", "c", &[0; 32]).unwrap();
+    assert_ne!(ab_c, call_stream_id("a", "bc", &[0; 32]).unwrap());
+    let big = "r".repeat(1025);
+    assert_eq!(
+        call_stream_id("", "p", &[0; 32]),
+        Err(StreamIdError::FieldLength("room"))
+    );
+    assert_eq!(
+        call_stream_id("r", &big, &[0; 32]),
+        Err(StreamIdError::FieldLength("publisher"))
+    );
+    // The binding's own stream id, and the one its full case replaces, are v3.
+    let room = "room-kat";
+    let publisher = "member-kat-a";
+    assert_eq!(
+        call_stream_id(room, publisher, &[7; 32])
+            .unwrap()
+            .as_slice(),
+        h(&v, "stream_id_hex")
+    );
     let sk = CompositeSigningKey::from_seeds(&[0x54; 32], &[0x01; 32]);
     assert_eq!(
         sk.public_key().as_bytes().as_slice(),
@@ -98,6 +129,23 @@ fn stream_key_binding_v2_composite() {
         let sig = h(c, "signature_hex");
         sk.public_key().verify(&msg, &sig).unwrap();
         assert_eq!(sk.sign(&msg).unwrap(), sig, "{id}");
+        // body: 0x02, u16 len room, room, u16 len publisher, publisher, nonce, stream_id
+        let off = 1 + 2 + room.len() + 2 + publisher.len() + 32;
+        assert_eq!(&body[3..3 + room.len()], room.as_bytes(), "{id}");
+        assert_eq!(
+            &body[off..off + 32],
+            call_stream_id(room, publisher, &[7; 32])
+                .unwrap()
+                .as_slice(),
+            "{id}"
+        );
+        if id == "v2_full" {
+            let replaced = call_stream_id(room, publisher, &[8; 32]).unwrap();
+            assert!(
+                body.windows(33).any(|w| w[0] == 1 && w[1..] == replaced),
+                "{id}"
+            );
+        }
         let enc = h(c, "encoding_hex");
         assert_eq!(&enc[..body.len()], body.as_slice(), "{id}");
         assert_eq!(
