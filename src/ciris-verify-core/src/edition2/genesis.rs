@@ -67,7 +67,9 @@
 //!    and `device_class` `server`, CC 2.6.1.11 v1.0-rc21-wire e6fd7c6), and it names
 //!    the seat's record in `refs`. Then a recovery's own rules, once its
 //!    records are placed and its statement verified;
-//! 5. the custody gate at each holder seat (CC 4.2.2.1);
+//! 5. the custody gate at each holder seat (CC 4.2.2.1); then one device
+//!    per holder (CC 4.2.3): two seated holders whose verified leaves name one
+//!    token serial make the bundle Invalid, `holder_device_shared`;
 //! 6. the count: a bundle naming a spent commitment concludes nothing; a
 //!    recovery counts on its one statement; a first bundle on every holder; a
 //!    later one on a strict majority of the predecessor's holders, plus each
@@ -352,6 +354,11 @@ pub enum Malformed {
     /// key the holder was seated at and left, or a spent recovery key), or
     /// a key the holder's recovery commitment in force commits to.
     HolderKeyRetired,
+    /// Two holders the bundle seats name one device in their attestation
+    /// leaves (CC 4.2.3): for `YubiKey_5_FIPS`, one token serial in extension
+    /// `1.3.6.1.4.1.41482.3.7` of the 9c leaf. A leaf that names no device is
+    /// not compared; sharing an f9 or an intermediate is allowed.
+    HolderDeviceShared,
 }
 
 impl Malformed {
@@ -372,6 +379,7 @@ impl Malformed {
             Self::RecoveryReusesSigningKey => "recovery_reuses_signing_key",
             Self::RecoveryChangesOtherSeat => "recovery_changes_other_seat",
             Self::HolderKeyRetired => "holder_key_retired",
+            Self::HolderDeviceShared => "holder_device_shared",
         }
     }
 }
@@ -1439,13 +1447,22 @@ fn read_one(
     }
 
     // 5. The custody gate at each holder seat.
+    let mut devices = BTreeSet::new();
+    let mut shared = false;
     for h in &b.holders {
-        if let Err(fault) = custody_gate(&rows.records[h].rec, input.attestation_roots) {
-            return GenesisVerdict::Nothing(Inconclusive::HolderCustody {
-                holder: h.clone(),
-                fault,
-            });
+        match custody_gate(&rows.records[h].rec, input.attestation_roots) {
+            Ok(device) => shared |= device.is_some_and(|d| !devices.insert(d)),
+            Err(fault) => {
+                return GenesisVerdict::Nothing(Inconclusive::HolderCustody {
+                    holder: h.clone(),
+                    fault,
+                })
+            },
         }
+    }
+    // One device per holder (CC 4.2.3): read from leaves that verified.
+    if shared {
+        return GenesisVerdict::Invalid(Malformed::HolderDeviceShared);
     }
 
     // 6. The count.
@@ -2198,8 +2215,9 @@ fn check_seat_occurrence(p: &Value, sub: Option<&str>) -> Result<(), Invalid> {
 /// The gate at seating (CC 4.2.2.1): the chain verifies to the mechanism's
 /// attestation root, the attested key is the record's Ed25519 half, and only
 /// then are the class and `pq_custody` accepted; a seated holder carries
-/// `removable_offline`.
-fn custody_gate(rec: &KeyRecord, roots: &TrustAnchorStore) -> Result<(), CustodyFault> {
+/// `removable_offline`. `Ok` carries the device the verified leaf names (the
+/// token serial, CC 4.2.3), if it names one.
+fn custody_gate(rec: &KeyRecord, roots: &TrustAnchorStore) -> Result<Option<u32>, CustodyFault> {
     let class = rec.hardware_class.as_deref().ok_or(CustodyFault::NoClass)?;
     if class != CLASS_YUBIKEY_5_FIPS || rec.chain.is_empty() {
         // Apple_Secure_Enclave and TPM_2_0 have chains this reader does not
@@ -2214,7 +2232,7 @@ fn custody_gate(rec: &KeyRecord, roots: &TrustAnchorStore) -> Result<(), Custody
         match verify_yubikey_piv_attestation(leaf, &above, root, ed) {
             Ok(v) if v.hardware_class == class => {
                 return match rec.pq_custody {
-                    Some(PqCustody::RemovableOffline) => Ok(()),
+                    Some(PqCustody::RemovableOffline) => Ok(v.serial),
                     _ => Err(CustodyFault::PqCustody),
                 };
             },

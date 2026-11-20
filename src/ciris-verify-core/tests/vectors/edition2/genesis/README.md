@@ -172,3 +172,29 @@ samples to Valid cases, and its three cross-bundle checks to cases. CC's genesis
 one now in set order), key-record samples, recovery inputs and broken row statements are replayed as in v1;
 its five broken binding samples are each refused by `check_seat_binding`, and its valid one passes (v3: with
 the seat's occurrence members added).
+
+## One device per holder (`genesis_holder_device_v1.json`)
+
+`gen_genesis_holder_device_v1.py` writes `genesis_holder_device_v1.json` (SHA-256
+`fe81400c4a04a8362ac4209ff35a0e48ea1d9fa4b9e3a70a0fdac39c3d9bddb6`). The rule is CC 4.2.3 "One device per holder", with
+refusal `holder_device_shared`, from CIRISConstitution v1.0-rc21 b016df4. The generator loads
+`gen_genesis_bundles_v3.py` beside it, runs it into a scratch directory and discards that output, then
+reuses its encoder, signer, mock PKI and case machinery. To that it adds only the 9c leaf's serial
+extension (`1.3.6.1.4.1.41482.3.7`, a DER INTEGER) and seven first-bundle cases:
+
+| Case | Leaves | Verdict |
+|------|--------|---------|
+| `distinct_serials` | Each holder names its own serial (the July serials) under its own f9 | Valid |
+| `shared_serial` | A and B name one serial | `holder_device_shared` |
+| `shared_serial_all` | All three name one serial | `holder_device_shared` |
+| `shared_f9_distinct_serials` | One f9 signs all three leaves; distinct serials | Valid |
+| `shared_f9_shared_serial` | One f9; A and C share a serial | `holder_device_shared` |
+| `one_leaf_names_no_device` | A's leaf has no serial | Valid |
+| `two_leaves_name_no_device` | A's and B's leaves have no serial | Valid |
+
+The device is read only from a leaf that passed the custody gate. A leaf that names no device is not
+compared, because CC 4.2.3 binds only where a leaf names one. The file has the v3 case file's shape,
+with its statements inline under `pool`. `holder_device_cases` in `tests/genesis_bundle_v3_vectors.rs`
+replays it.
+
+    python3 -I gen_genesis_holder_device_v1.py > genesis_holder_device_v1.json

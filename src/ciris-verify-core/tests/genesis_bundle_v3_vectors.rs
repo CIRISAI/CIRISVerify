@@ -252,7 +252,24 @@ fn check_placement(id: &str, p: &GenesisPlacement, e: &J) {
 
 #[test]
 fn every_case_gives_its_verdict() {
-    let f = file();
+    replay(&file(), 116);
+}
+
+/// One device per holder (CC 4.2.3, `holder_device_shared`):
+/// `genesis_holder_device_v1.json`, written by `gen_genesis_holder_device_v1.py`
+/// over v3's generator, with its statements inline.
+#[test]
+fn holder_device_cases() {
+    let f: J = serde_json::from_str(include_str!(
+        "vectors/edition2/genesis/genesis_holder_device_v1.json"
+    ))
+    .unwrap();
+    replay(&f, 7);
+}
+
+/// Replays every case of a case file of v3's shape (`pool` merged in).
+fn replay(f: &J, min_cases: usize) {
+    let f = f.clone();
     let roots = store(f["attestation_root_der"].as_str().unwrap());
     SEAT_XWING.with(|m| {
         for v in f["seat_xwing"].as_object().unwrap().values() {
@@ -264,7 +281,7 @@ fn every_case_gives_its_verdict() {
     });
     let mut valid: BTreeMap<String, Vec<GenesisPlacement>> = BTreeMap::new();
     let cases = f["cases"].as_array().unwrap();
-    assert!(cases.len() >= 116, "the case list");
+    assert!(cases.len() >= min_cases, "the case list");
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let statements: Vec<Vec<u8>> = c["statements"]
