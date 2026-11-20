@@ -246,6 +246,10 @@ pub struct PlacedSeat {
     pub record: Digest32,
     /// The named binding's row id.
     pub binding: Digest32,
+    /// The binding's `dial_hints`, ordered as signed, most preferred first
+    /// (CC 3.3.6.1): at least one tcp hint; unknown types carried for a
+    /// dialler to skip. A fresh node holding only this genesis dials these.
+    pub dial_hints: Vec<super::fedcode::Hint>,
 }
 
 /// A witness in the charter's directory.
@@ -456,6 +460,11 @@ pub enum RowFault {
     /// A seat's binding does not name the seat's key record by row id in
     /// `refs`, under the `also` role `cites` (CC 3.3.6.2).
     BindingNamesNoRecord,
+    /// A seat's binding carries no `dial_hints` with a tcp hint, so a fresh
+    /// node holding only the genesis cannot make its first dial (CC 3.3.6.1).
+    SeatDialHintsMissing,
+    /// A seat's `dial_hints` entry of a known type has a bad body.
+    DialHintMalformed,
 }
 
 impl RowFault {
@@ -477,6 +486,8 @@ impl RowFault {
             Self::SeatOptedOut => "seat_opted_out",
             Self::SeatRecordEnded => "seat_record_ended",
             Self::BindingNamesNoRecord => "binding_names_no_record",
+            Self::SeatDialHintsMissing => "seat_dial_hints_missing",
+            Self::DialHintMalformed => "dial_hint_malformed",
         }
     }
 }
@@ -1626,6 +1637,7 @@ fn read_one(
                     onion_hop_xwing_pubkey: x.onion,
                     record: r.id,
                     binding: x.id,
+                    dial_hints: x.dial_hints.clone(),
                 }
             })
             .collect(),
@@ -1873,6 +1885,7 @@ struct PlacedBinding {
     id: Digest32,
     transit: [u8; XWING_PUBKEY_LEN],
     onion: [u8; XWING_PUBKEY_LEN],
+    dial_hints: Vec<super::fedcode::Hint>,
 }
 
 struct Rows {
@@ -2048,12 +2061,21 @@ fn place_rows(
         let row = verify_under(*id, bytes, &PlacedKey(r.rec.kid, &r.rec.key))?;
         let (transit, onion) = seat_binding(&row.payload, &r.rec.key, &r.id, Some(&row.sub))
             .map_err(|f| row_invalid(*id, f))?;
+        // `seat_binding` has read them already: present and well-formed.
+        let dial_hints = row
+            .payload
+            .get_text("dial_hints")
+            .map(super::read_dial_hints)
+            .transpose()
+            .map_err(|e| row_invalid(*id, RowFault::Row(e)))?
+            .unwrap_or_default();
         bindings.insert(
             (*seat).to_owned(),
             PlacedBinding {
                 id: *id,
                 transit,
                 onion,
+                dial_hints,
             },
         );
     }
@@ -2224,8 +2246,19 @@ fn seat_binding(
     // v1.0-rc21-wire e6fd7c6): its family's payload rule as it is alone, then the seat's
     // members. Checked after the transport rules above (whose details CC
     // names) and before the record the binding names.
-    check_identity_occurrence(p).map_err(RowFault::Row)?;
+    check_identity_occurrence(p).map_err(|e| match e {
+        Invalid::DialHintMalformed => RowFault::DialHintMalformed,
+        e => RowFault::Row(e),
+    })?;
     check_seat_occurrence(p, sub).map_err(RowFault::Row)?;
+    // A serve seat is dialled cold from the genesis alone (CC 3.3.6.1).
+    let hints = match p.get_text("dial_hints") {
+        Some(h) => super::read_dial_hints(h).map_err(RowFault::Row)?,
+        None => Vec::new(),
+    };
+    if !super::has_tcp_hint(&hints) {
+        return Err(RowFault::SeatDialHintsMissing);
+    }
     if !names_record(p, record) {
         return Err(RowFault::BindingNamesNoRecord);
     }

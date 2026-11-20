@@ -7,20 +7,20 @@
 #   holder_device_shared. Two holders' chains may share an intermediate or an attestation key [...].
 #   The leaf's device decides, and each leaf still verifies through its own chain.
 #
-# It reuses gen_genesis_bundles_v3.py's encoder, signer, mock PKI and case machinery (loaded beside it and run
+# It reuses gen_genesis_bundles_v4.py's encoder, signer, mock PKI and case machinery (loaded beside it and run
 # into a scratch directory, whose output is discarded), and adds only the serial extension and the cases.
 # It shares no code with verify. Run from this directory:
 #
 #   python3 -I gen_genesis_holder_device_v1.py > genesis_holder_device_v1.json
 #
-# The file has the v3 case file's shape, with the statements inline under `pool`.
+# The file has the v4 case file's shape, with the statements inline under `pool`.
 import importlib.util, json, os, sys, tempfile
 
 here = os.path.dirname(os.path.abspath(__file__))
 argv = sys.argv
 with tempfile.TemporaryDirectory() as scratch:
-    sys.argv = ["gen_genesis_bundles_v3.py", "--out", scratch]
-    spec = importlib.util.spec_from_file_location("g3", os.path.join(here, "gen_genesis_bundles_v3.py"))
+    sys.argv = ["gen_genesis_bundles_v4.py", "--out", scratch]
+    spec = importlib.util.spec_from_file_location("g4", os.path.join(here, "gen_genesis_bundles_v4.py"))
     g = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(g)
 sys.argv = argv
@@ -35,7 +35,7 @@ def der_uint(n):
 
 
 def chain(ed_pub, n, serial=None, f9n=None, serial_raw=None):
-    """[9c leaf, f9] as v3's yubikey_chain, the leaf carrying `serial` in .3.7 when given; `f9n` picks the f9
+    """[9c leaf, f9] as v4's yubikey_chain, the leaf carrying `serial` in .3.7 when given; `f9n` picks the f9
     (default: the holder's own, n), so holders given one f9n share one f9 certificate and attestation key."""
     from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey, Ed25519PublicKey
     f9n = n if f9n is None else f9n
@@ -56,7 +56,7 @@ an = g.TPS((A, B, C))
 
 def device_case(cid, desc, devices, expect, raw=None):
     """devices: holder -> (serial or None, f9n or None); raw: holder -> the .3.7 value as bytes. Each holder's record is swapped for one whose chain
-    names that device; seats and their bindings stay v3's."""
+    names that device; seats and their bindings stay v4's."""
     recs, extra = {}, []
     for h, (serial, f9n) in devices.items():
         r = g.holder_record(h, ev={"hardware_class": "YubiKey_5_FIPS", "pq_custody": "removable_offline",
@@ -104,8 +104,8 @@ out = {
     "_meta": {
         "spec": "CC 4.2.3 One device per holder; CC 2.6.1.11 refusal holder_device_shared; "
                 "CIRISConstitution v1.0-rc21 b016df4",
-        "generator": "gen_genesis_holder_device_v1.py over gen_genesis_bundles_v3.py (independent of verify)",
-        "keys": "as genesis_bundles_v3.json: holders A,B,C = keys 1,2,3; seats 11,12. The serial is a DER INTEGER "
+        "generator": "gen_genesis_holder_device_v1.py over gen_genesis_bundles_v4.py (independent of verify)",
+        "keys": "as genesis_bundles_v4.json: holders A,B,C = keys 1,2,3; seats 11,12. The serial is a DER INTEGER "
                 "in extension 1.3.6.1.4.1.41482.3.7 of the 9c leaf.",
         "verdicts": "valid | invalid (token genesis_bundle_malformed, detail = reason) | nothing (token "
                     "genesis_holder_custody, detail = the custody fault)",

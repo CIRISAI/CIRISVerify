@@ -9,7 +9,7 @@
 # A commitment hashes a key set (CC 3.2 T3), so only an equal set is visible to a reader; overlapping sets are
 # the ceremony's to refuse at mint.
 #
-# It reuses gen_genesis_bundles_v3.py (loaded beside it, run into a scratch directory whose output is
+# It reuses gen_genesis_bundles_v4.py (loaded beside it, run into a scratch directory whose output is
 # discarded), as gen_genesis_holder_device_v1.py does, and shares no code with verify:
 #
 #   python3 -I gen_genesis_commitments_v1.py > genesis_commitments_v1.json
@@ -18,8 +18,8 @@ import importlib.util, json, os, sys, tempfile
 here = os.path.dirname(os.path.abspath(__file__))
 argv = sys.argv
 with tempfile.TemporaryDirectory() as scratch:
-    sys.argv = ["gen_genesis_bundles_v3.py", "--out", scratch]
-    spec = importlib.util.spec_from_file_location("g3", os.path.join(here, "gen_genesis_bundles_v3.py"))
+    sys.argv = ["gen_genesis_bundles_v4.py", "--out", scratch]
+    spec = importlib.util.spec_from_file_location("g4", os.path.join(here, "gen_genesis_bundles_v4.py"))
     g = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(g)
 sys.argv = argv
@@ -77,8 +77,8 @@ later("later_shared_commitment", "Version 2, every holder signs: C's new commitm
 out = {
     "_meta": {
         "spec": "CC 4.2.6 pre-committed recovery keys; CC 2.6.1.11; CIRISConstitution v1.0-rc21 b016df4",
-        "generator": "gen_genesis_commitments_v1.py over gen_genesis_bundles_v3.py (independent of verify)",
-        "keys": "as genesis_bundles_v3.json; recovery key of holder n = n+50; a fresh recovery key 81.",
+        "generator": "gen_genesis_commitments_v1.py over gen_genesis_bundles_v4.py (independent of verify)",
+        "keys": "as genesis_bundles_v4.json; recovery key of holder n = n+50; a fresh recovery key 81.",
         "verdicts": "valid | invalid (token genesis_bundle_malformed, detail = reason)",
     },
     "attestation_root_der": g.ROOT.der.hex(),

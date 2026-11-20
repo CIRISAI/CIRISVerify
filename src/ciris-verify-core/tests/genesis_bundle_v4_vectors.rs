@@ -1,8 +1,9 @@
 //! `ceg-genesis-bundle/2` known answers (CC 2.6.1.11, CC 4.2.6,
-//! CIRISConstitution v1.0-rc21-wire e6fd7c6, also for the cross-check).
+//! CIRISConstitution v1.0-rc21 b016df4, also for the cross-check; seat
+//! `dial_hints` as proposed for rc22).
 //!
-//! `tests/vectors/edition2/genesis/genesis_bundles_v3.json` was written by
-//! `gen_genesis_bundles_v3.py` beside it: its own CBOR encoder, dilithium-py,
+//! `tests/vectors/edition2/genesis/genesis_bundles_v4.json` was written by
+//! `gen_genesis_bundles_v4.py` beside it: its own CBOR encoder, dilithium-py,
 //! pyca/cryptography and kyber-py, sharing no code with verify. Every case is
 //! replayed through [`read_genesis_bundles`]; the custody gate trusts the
 //! file's mock attestation root, supplied as the reader's trust store. The
@@ -38,17 +39,17 @@ use ciris_verify_core::trust_anchor_store::{
 };
 use serde_json::Value as J;
 
-const FILE: &str = include_str!("vectors/edition2/genesis/genesis_bundles_v3.json");
+const FILE: &str = include_str!("vectors/edition2/genesis/genesis_bundles_v4.json");
 /// The statements, split so each file stays under the repository's size limit.
 const POOL: [&str; 8] = [
-    include_str!("vectors/edition2/genesis/pool_v3_0.json"),
-    include_str!("vectors/edition2/genesis/pool_v3_1.json"),
-    include_str!("vectors/edition2/genesis/pool_v3_2.json"),
-    include_str!("vectors/edition2/genesis/pool_v3_3.json"),
-    include_str!("vectors/edition2/genesis/pool_v3_4.json"),
-    include_str!("vectors/edition2/genesis/pool_v3_5.json"),
-    include_str!("vectors/edition2/genesis/pool_v3_6.json"),
-    include_str!("vectors/edition2/genesis/pool_v3_7.json"),
+    include_str!("vectors/edition2/genesis/pool_v4_0.json"),
+    include_str!("vectors/edition2/genesis/pool_v4_1.json"),
+    include_str!("vectors/edition2/genesis/pool_v4_2.json"),
+    include_str!("vectors/edition2/genesis/pool_v4_3.json"),
+    include_str!("vectors/edition2/genesis/pool_v4_4.json"),
+    include_str!("vectors/edition2/genesis/pool_v4_5.json"),
+    include_str!("vectors/edition2/genesis/pool_v4_6.json"),
+    include_str!("vectors/edition2/genesis/pool_v4_7.json"),
 ];
 
 /// The case file, with the pool merged in under `pool`.
@@ -236,6 +237,21 @@ fn check_placement(id: &str, p: &GenesisPlacement, e: &J) {
             sha_hex(&x.onion_hop_xwing_pubkey),
             y["onion_hop_xwing_pubkey_sha256"].as_str().unwrap()
         );
+        // The seat's dial hints, ordered as signed (CC 3.3.6.1).
+        let got: Vec<J> = x
+            .dial_hints
+            .iter()
+            .map(|h| {
+                let (t, b) = match h {
+                    ciris_verify_core::edition2::fedcode::Hint::Unknown { tag, body } => {
+                        (*tag, body.clone())
+                    },
+                    h => ciris_verify_core::edition2::fedcode::hint_parts(h).unwrap(),
+                };
+                serde_json::json!({"type": t, "body_hex": hex::encode(b)})
+            })
+            .collect();
+        assert_eq!(J::Array(got), y["dial_hints"], "{id}: dial_hints");
         assert!(SEAT_XWING.with(|m| m.borrow().contains(&(
             hex::encode(x.transit_xwing_pubkey),
             hex::encode(x.onion_hop_xwing_pubkey)
@@ -252,7 +268,7 @@ fn check_placement(id: &str, p: &GenesisPlacement, e: &J) {
 
 #[test]
 fn every_case_gives_its_verdict() {
-    replay(&file(), 116);
+    replay(&file(), 128);
 }
 
 /// One device per holder (CC 4.2.3, `holder_device_shared`):
@@ -657,6 +673,14 @@ fn cc_samples() {
             ("occurrence_key_id", Value::Text(seat.clone())),
             ("device_class", Value::Text("server".into())),
             ("asserted_at", Value::Uint(1_763_078_400_000)),
+            // CC's samples predate `dial_hints` (CC 3.3.6.1, rc22): a seat's binding carries one.
+            (
+                "dial_hints",
+                Value::Array(vec![Value::Array(vec![
+                    Value::Uint(1),
+                    Value::Bytes(b"\x10\x92seat.example.net".to_vec()),
+                ])]),
+            ),
         ] {
             m.push((Value::Text(kk.into()), v));
         }

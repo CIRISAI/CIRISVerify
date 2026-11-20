@@ -9,12 +9,12 @@
 //! `identity_key_id` and `occurrence_key_id` are the seat's identity
 //! reference, never the new key's (`reseat_binding_names_new_key`).
 //!
-//! `tests/vectors/edition2/genesis/genesis_reseat_v2.json` was written by
-//! `gen_genesis_reseat_v2.py` beside it, over `gen_genesis_bundles_v3.py`'s
+//! `tests/vectors/edition2/genesis/genesis_reseat_v3.json` was written by
+//! `gen_genesis_reseat_v3.py` beside it, over `gen_genesis_bundles_v4.py`'s
 //! machinery (its own CBOR encoder, dilithium-py, pyca/cryptography and
-//! kyber-py; nothing shared with verify). Its first case repeats v3's
+//! kyber-py; nothing shared with verify). Its first case repeats v4's
 //! `first_valid`, the predecessor of the rest. The replay is
-//! `genesis_bundle_v3_vectors.rs`'s, trimmed to what these cases use.
+//! `genesis_bundle_v4_vectors.rs`'s, trimmed to what these cases use.
 //! `genesis_reseat_v1.json` stays byte-identical and is no longer replayed:
 //! its bindings carry no `identity_key_id`, `occurrence_key_id` or
 //! `device_class`.
@@ -30,7 +30,7 @@ use ciris_verify_core::edition2::{thumbprint, Digest32};
 use ciris_verify_core::trust_anchor_store::{environments, single, Purpose, TrustAnchorStore};
 use serde_json::Value as J;
 
-const FILE: &str = include_str!("vectors/edition2/genesis/genesis_reseat_v2.json");
+const FILE: &str = include_str!("vectors/edition2/genesis/genesis_reseat_v3.json");
 
 fn hex32(s: &str) -> Digest32 {
     hex::decode(s).unwrap().try_into().unwrap()

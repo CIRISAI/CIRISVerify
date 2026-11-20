@@ -165,6 +165,9 @@ pub enum Invalid {
     /// `body_number_unrepresentable`: a number in the payload outside
     /// `body-decimal` and CBOR's integer range, such as a bignum (CC 2.6.1.4).
     BodyNumberUnrepresentable,
+    /// `dial_hint_malformed`: a `dial_hints` entry of a known type whose body
+    /// breaks that type's rule (CC 3.3.6.1, the CC 2.6.8 hint bodies).
+    DialHintMalformed,
 }
 
 impl Invalid {
@@ -175,6 +178,7 @@ impl Invalid {
             Self::KidNotOfIss => Some("kid_not_of_iss"),
             Self::ValidUntilNotAfterAssertedAt => Some("valid_until_not_after_asserted_at"),
             Self::BodyNumberUnrepresentable => Some("body_number_unrepresentable"),
+            Self::DialHintMalformed => Some("dial_hint_malformed"),
             _ => None,
         }
     }
@@ -1186,6 +1190,76 @@ pub(crate) fn transport_destination_shape(td: &Value) -> Result<(), Invalid> {
     Ok(())
 }
 
+/// The most entries `dial_hints` carries.
+pub const DIAL_HINTS_MAX: usize = fedcode::FEDCODE_E2_MAX_HINTS;
+
+/// Read an occurrence's `dial_hints` (CC 3.3.6.1):
+/// `[ 1*4 [ type: uint .le 255, body: bstr .size (0..255) ] ]`, ordered, most
+/// preferred first, each body the CC 2.6.8 CIRIS-V4 hint body. An unknown type
+/// is carried as [`fedcode::Hint::Unknown`] (a dialler skips it).
+///
+/// # Errors
+///
+/// [`Invalid::Malformed`] (`dial_hints`) for the shape: not an array, empty,
+/// over [`DIAL_HINTS_MAX`], or an entry that is not `[uint ≤ 255, bstr ≤ 255]`;
+/// [`Invalid::DialHintMalformed`] for a known type with a bad body.
+pub fn read_dial_hints(v: &Value) -> Result<Vec<fedcode::Hint>, Invalid> {
+    let bad = Invalid::Malformed {
+        member: "dial_hints",
+    };
+    let a = v
+        .as_array()
+        .filter(|a| (1..=DIAL_HINTS_MAX).contains(&a.len()))
+        .ok_or(bad.clone())?;
+    a.iter()
+        .map(|e| {
+            let (t, b) = match e.as_array() {
+                Some([t, b]) => (t, b),
+                _ => return Err(bad.clone()),
+            };
+            let t = t
+                .as_u64()
+                .and_then(|t| u8::try_from(t).ok())
+                .ok_or(bad.clone())?;
+            let b = b.as_bytes().filter(|b| b.len() <= 255).ok_or(bad.clone())?;
+            fedcode::parse_hint(t, b).map_err(|_| Invalid::DialHintMalformed)
+        })
+        .collect()
+}
+
+/// The `dial_hints` value for a list of hints, built through the same rules
+/// [`read_dial_hints`] applies (a producer cannot mint what a reader refuses;
+/// an [`fedcode::Hint::Unknown`] is not minted).
+///
+/// # Errors
+///
+/// As [`read_dial_hints`].
+pub fn dial_hints_value(hints: &[fedcode::Hint]) -> Result<Value, Invalid> {
+    if !(1..=DIAL_HINTS_MAX).contains(&hints.len()) {
+        return Err(Invalid::Malformed {
+            member: "dial_hints",
+        });
+    }
+    let entries = hints
+        .iter()
+        .map(|h| {
+            let (t, b) = fedcode::hint_parts(h).map_err(|_| Invalid::DialHintMalformed)?;
+            Ok(Value::Array(vec![
+                Value::Uint(u64::from(t)),
+                Value::Bytes(b),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Invalid>>()?;
+    Ok(Value::Array(entries))
+}
+
+/// Whether a list carries a tcp hint a fresh node can cold-dial (CC 3.3.6.1:
+/// a genesis serve seat's binding must).
+#[must_use]
+pub fn has_tcp_hint(hints: &[fedcode::Hint]) -> bool {
+    hints.iter().any(|h| matches!(h, fedcode::Hint::Tcp { .. }))
+}
+
 /// The `identity:occurrence` payload rule (CC 3.3.6.1; `identity-occurrence`
 /// in CC's `family_payloads_v2.cddl`, v1.0-rc21-wire e6fd7c6), as the row is alone:
 /// `author`, `identity_key_id` and `occurrence_key_id` are identity
@@ -1243,6 +1317,9 @@ pub fn check_identity_occurrence(p: &Value) -> Result<(), Invalid> {
     }
     if let Some(td) = p.get_text("transport_destination") {
         transport_destination_shape(td)?;
+    }
+    if let Some(h) = p.get_text("dial_hints") {
+        read_dial_hints(h)?;
     }
     if let Some(e) = p.get_text("encryption_pubkeys") {
         let len = |k: &str| e.get_text(k).and_then(Value::as_bytes).map(<[u8]>::len);

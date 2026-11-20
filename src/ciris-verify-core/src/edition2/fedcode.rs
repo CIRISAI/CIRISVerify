@@ -550,6 +550,22 @@ fn read_endpoint(r: &mut Reader<'_>) -> Result<Endpoint, FedCodeE2Error> {
     })
 }
 
+/// A hint's type byte and body, checked by reading them back. A
+/// [`Hint::Unknown`] is not minted.
+///
+/// # Errors
+///
+/// [`FedCodeE2Error::HintMalformed`] for a hint the reader would refuse, or
+/// an unknown one.
+pub fn hint_parts(h: &Hint) -> Result<(u8, Vec<u8>), FedCodeE2Error> {
+    let (tag, body) = hint_body(h)?;
+    if body.len() > 255 {
+        return Err(FedCodeE2Error::HintMalformed);
+    }
+    parse_hint(tag, &body)?;
+    Ok((tag, body))
+}
+
 fn write_endpoint(out: &mut Vec<u8>, e: &Endpoint) -> Result<(), FedCodeE2Error> {
     if e.hints.len() > FEDCODE_E2_MAX_HINTS {
         return Err(FedCodeE2Error::HintCount);
@@ -557,11 +573,9 @@ fn write_endpoint(out: &mut Vec<u8>, e: &Endpoint) -> Result<(), FedCodeE2Error>
     out.extend_from_slice(&e.transport_identity);
     out.push(e.hints.len() as u8);
     for h in &e.hints {
-        let (tag, body) = hint_body(h)?;
-        // Re-read what was written, so the encoder holds the decoder's rules.
-        parse_hint(tag, &body)?;
+        let (tag, body) = hint_parts(h)?;
         out.push(tag);
-        out.push(u8::try_from(body.len()).map_err(|_| FedCodeE2Error::HintMalformed)?);
+        out.push(body.len() as u8);
         out.extend_from_slice(&body);
     }
     Ok(())
@@ -607,7 +621,13 @@ fn text(b: &[u8], lo: usize, hi: usize) -> Result<String, FedCodeE2Error> {
     }
 }
 
-fn parse_hint(tag: u8, body: &[u8]) -> Result<Hint, FedCodeE2Error> {
+/// Read one hint from its type byte and body, under the rules above. An
+/// unassigned type is [`Hint::Unknown`].
+///
+/// # Errors
+///
+/// [`FedCodeE2Error::HintMalformed`] for a known type with a bad body.
+pub fn parse_hint(tag: u8, body: &[u8]) -> Result<Hint, FedCodeE2Error> {
     let bad = FedCodeE2Error::HintMalformed;
     let host_port = |body: &[u8]| -> Result<(String, u16), FedCodeE2Error> {
         let (p, h) = body.split_at_checked(2).ok_or(bad)?;

@@ -4,7 +4,7 @@ Three versions live here.
 
 - **v3** (replayed): `genesis_bundles_v3.json` (the cases) and `pool_v3_0.json` .. `pool_v3_7.json` (the
   statements they name), written by `gen_genesis_bundles_v3.py` against CIRISConstitution v1.0-rc21-wire e6fd7c6
-  (CC 2.6.1.11, CC 4.2.6, CC 4.2.2.1, CC 3.3.6.2, CC 3.2 T3, CC 5.3.4). `tests/genesis_bundle_v3_vectors.rs`
+  (CC 2.6.1.11, CC 4.2.6, CC 4.2.2.1, CC 3.3.6.2, CC 3.2 T3, CC 5.3.4). `tests/genesis_bundle_v4_vectors.rs`
   replays them through `ciris_verify_core::edition2::genesis::read_genesis_bundles`.
 - **v2** (kept byte-identical, no longer replayed): `genesis_bundles_v2.json` and `pool_v2_0.json` ..
   `pool_v2_7.json`, written by `gen_genesis_bundles_v2.py` against rc20 64c5918. At v1.0-rc21-wire e6fd7c6 a seat's
@@ -176,9 +176,9 @@ the seat's occurrence members added).
 ## One device per holder (`genesis_holder_device_v1.json`)
 
 `gen_genesis_holder_device_v1.py` writes `genesis_holder_device_v1.json` (SHA-256
-`25b96ebfd1f17087c0b0aab27144dcc8c8b20eb358d60b35ebee5ea2f3c45886`). The rule is CC 4.2.3 "One device per holder", with
+`e7800ed3aef61586152e830fdf573e649ce4342e3477f511a71929c80ba9fd5b`). The rule is CC 4.2.3 "One device per holder", with
 refusal `holder_device_shared`, from CIRISConstitution v1.0-rc21 b016df4. The generator loads
-`gen_genesis_bundles_v3.py` beside it, runs it into a scratch directory and discards that output, then
+`gen_genesis_bundles_v4.py` beside it, runs it into a scratch directory and discards that output, then
 reuses its encoder, signer, mock PKI and case machinery. To that it adds only the 9c leaf's serial
 extension (`1.3.6.1.4.1.41482.3.7`, a DER INTEGER) and eight first-bundle cases:
 
@@ -194,8 +194,8 @@ extension (`1.3.6.1.4.1.41482.3.7`, a DER INTEGER) and eight first-bundle cases:
 | `serial_not_integer` | A's serial extension is an OCTET STRING | nothing: `genesis_holder_custody` / `custody_serial_malformed` |
 
 The device is read only from a leaf that passed the custody gate. A leaf that names no device is not
-compared, because CC 4.2.3 binds only where a leaf names one. A serial extension that is present but is not one DER INTEGER fitting u32 is not read as naming no device: it fails the custody gate. The file has the v3 case file's shape,
-with its statements inline under `pool`. `holder_device_cases` in `tests/genesis_bundle_v3_vectors.rs`
+compared, because CC 4.2.3 binds only where a leaf names one. A serial extension that is present but is not one DER INTEGER fitting u32 is not read as naming no device: it fails the custody gate. The file has the v4 case file's shape,
+with its statements inline under `pool`. `holder_device_cases` in `tests/genesis_bundle_v4_vectors.rs`
 replays it.
 
     python3 -I gen_genesis_holder_device_v1.py > genesis_holder_device_v1.json
@@ -203,7 +203,7 @@ replays it.
 ## Recovery commitments (`genesis_commitments_v1.json`)
 
 `gen_genesis_commitments_v1.py` writes `genesis_commitments_v1.json`, SHA-256
-`f8ecd5f46f4d0b4db81594eb78b7df0466c7b16045c3755a7fea30e3ff98c254`. It is built over the v3
+`f461ec24079d9e449787e3fd7b5e9f9a93e02e4a2d155ca2d3de5946d432fd11`. It is built over the v4
 generator in the same way as the holder-device file. It covers two CC 4.2.6 rules that apply to
 every bundle, the first one included:
 - `recovery_commitment_shared`: two seated holders carry one commitment.
@@ -214,4 +214,30 @@ CIRISServer's trust-root audit found the gap. It has 7 cases: a valid first bund
 first-bundle refusals, a valid later bundle that moves a commitment to a fresh key, and two
 later-bundle refusals. A commitment hashes a key set, so a reader sees only an equal set;
 overlapping sets are for the ceremony to refuse when the bundle is minted. `recovery_commitment_cases`
-in `tests/genesis_bundle_v3_vectors.rs` replays it.
+in `tests/genesis_bundle_v4_vectors.rs` replays it.
+
+## Version 4 (`genesis_bundles_v4.json`, `pool_v4_*.json`)
+
+`gen_genesis_bundles_v4.py` writes `genesis_bundles_v4.json` (SHA-256
+`567899d79c3e4ceb6bda3bd3f617ed845eb29a48cf9ba3edfe8e3dd1372151c6`) and `pool_v4_0.json` … `pool_v4_7.json`.
+It is version 3 with every seat binding carrying `dial_hints`, the CC 3.3.6.1 member that verify proposes for
+rc22: `[ 1*4 [type, body] ]`, ordered, each body the CC 2.6.8 CIRIS-V4 hint body. The baseline seats carry
+the hints a cold dial needs:
+- seat 1: a DNS-name tcp hint, then a udp hint;
+- seat 2: an IP-literal tcp hint, an unknown type 6 (carried and skipped), then an auto hint.
+
+Each placement pins the seat's hints in the order signed. Twelve new cases break each rule:
+- `seat_dial_hints_missing`: no hints, no tcp hint, or only an unknown type;
+- `dial_hint_malformed`: port 0, a host with a space, http that is not https, a short rnode hint;
+- `row_invalid`: an empty list, five entries, an entry that is not a pair, a text body, type 256.
+
+That makes 128 cases. CC's reference reader (`tools/build_cc_signed_object_v2.py` at v1.0-rc21 b016df4, run
+with `--cc`) agrees on all 70 cases it models.
+
+`gen_genesis_reseat_v3.py` writes `genesis_reseat_v3.json` (SHA-256
+`b68583252a60ee91b1394adef5b9b4b06c763c2a0330ef52bb1cd8757841c710`): version 2's cases, over v4. The
+holder-device and commitment files are now built over v4. v3 and reseat v2 stay byte-identical and are no
+longer replayed.
+
+    python3 -I gen_genesis_bundles_v4.py --cc /path/to/build_cc_signed_object_v2.py --out .
+    python3 -I gen_genesis_reseat_v3.py --out .
