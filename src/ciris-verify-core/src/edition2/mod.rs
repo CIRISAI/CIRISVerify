@@ -26,6 +26,7 @@
 pub mod accord_halt;
 pub mod disclosure;
 pub mod family;
+pub mod fedcode;
 // The `ceg-genesis-bundle/2` reader (CC 2.6.1.11). `std` tier: its custody
 // gate parses X.509 attestation chains.
 #[cfg(feature = "std")]
