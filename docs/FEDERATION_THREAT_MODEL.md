@@ -1,7 +1,7 @@
 # CIRIS Federation Threat Model
 
 **Version**: 1.6
-**Last updated:** 2026-10-28 (CIRISVerify v21.0.0). Earlier revisions are in git history.
+**Last updated:** 2026-11-20 (CIRISVerify v23.3.3): `doc_integrity` (the pair-signed doc primitive, never called) and `verify_jcs_hybrid_signature` are removed; Phase 2 of F-AV-MAINT is open again, as a composite-signed edition-2 row. Earlier: 2026-10-28 (CIRISVerify v21.0.0). Earlier revisions are in git history.
 **Audience**: CIRIS engineering, RATCHET evaluator, federation-protocol stakeholders, external reviewers
 **Scope**: federation-emergent threats; cross-references per-repo threat models for substrate threats
 **Substrate (CC 6.1)**: see [`SUBSTRATE.md`](SUBSTRATE.md) — wholeness witness (CC 6.1.1), noise floor and aggregation (CC 6.1.2), replication (CC 6.1.5) verifiers and their guardrails.
@@ -324,7 +324,7 @@ Classical fallback (`wrap_algorithm: classical-x25519-hkdf-sha256-v1`) drops the
 
 **At-rest counterpart (`key_grant` wrap_algorithm v2)**: the same harvest-now-decrypt-later exposure exists for the **at-rest DEK wrap** that protects content which may persist indefinitely (the streaming epoch-DEK cascade, CEG 0.15 §10.5.3). `ciris_crypto::key_grant::wrap_dek_for_recipient_v2` — `x25519_mlkem768_aes256_gcm_hkdf_sha256` (CC 5.1) — combining an ephemeral X25519 DH with an ML-KEM-768 encapsulation (`IKM = shared_x ‖ shared_mlkem`, HKDF salt-bound to all public material) before the AES-256-GCM DEK seal. CEG §10.5.3 makes v2 **mandatory** for the streaming epoch-DEK cascade — a consumer MUST reject a streaming epoch grant carrying the X25519-only `v1`. So both halves of the harvest-now exposure — transport (Gap C hybrid KEX) and at-rest (key_grant v2) — are now PQC-hybrid; the only classical-only crypto remaining is forward secrecy ratcheting (deferred, below).
 
-**Cross-implementation signing-bytes (JCS / RFC 8785)**: a separate-but-related closure. CEG 0.15 §0.9 makes the canonical signing bytes for every federation Contribution **JCS (RFC 8785)**, with the omit-vs-materialize rule normative. If implementations disagree on the byte encoding (e.g. Python's `json.dumps` vs Rust's framing), hybrid signatures fail to verify across the four-impl boundary — a silent availability-and-trust failure. The one blessed canonicalizer is `ciris_verify_core::jcs::canonicalize` (RFC 8785, KAT-locked), plus `verify_jcs_hybrid_signature` for the Conforming-Consumer recompute path, plus a `jcs_canonicalize` Python binding so the agent producer is byte-identical to the Rust verifiers (Python's `json.dumps` diverges on all non-ASCII content).
+**Cross-implementation signing-bytes (JCS / RFC 8785)**: a separate-but-related closure. CEG 0.15 §0.9 makes the canonical signing bytes for every federation Contribution **JCS (RFC 8785)**, with the omit-vs-materialize rule normative. If implementations disagree on the byte encoding (e.g. Python's `json.dumps` vs Rust's framing), hybrid signatures fail to verify across the four-impl boundary — a silent availability-and-trust failure. The one blessed canonicalizer is `ciris_verify_core::jcs::canonicalize` (RFC 8785, KAT-locked), plus a `jcs_canonicalize` Python binding so the agent producer is byte-identical to the Rust verifiers (Python's `json.dumps` diverges on all non-ASCII content).
 
 **What remains aspirational**: the long-term federation signing remains Ed25519 + ML-DSA-65 hybrid (already PQ-secure). Forward secrecy with ratcheting (Signal-style Double Ratchet on top of the KEX session key) is not in scope — the session key is single-use per handshake. Ratcheting may be layered if multi-message transport sessions need it.
 
@@ -342,9 +342,9 @@ The **substrate** for multi-party succession exists. CEG 0.11's `cohort_subkind:
 
 **Gap G: Threat-model artifact integrity — Phases 1-2 implemented; Phase 3 operational ceremony pending.**
 
-The "markdown with no signing" exposure (§6.7 F-AV-MAINT) is structurally closed at two of three layers:
+The "markdown with no signing" exposure (§6.7 F-AV-MAINT) is structurally closed at one of three layers:
 - **Phase 1 (two-person rule)** — `.github/CODEOWNERS` requires an explicit reviewer on every edit to this document, `THREAT_MODEL.md`, `MISSION.md`, and the embedded `bootstrap_stewards.json`; a CI `threat-model-changelog` job rejects an authoritative-doc edit that lacks a changelog delta near the top (making a silent F-AV-status downgrade diffable-by-construction).
-- **Phase 2 (cryptographic substrate)** — `ciris_verify_core::doc_integrity`: a hybrid Ed25519 + ML-DSA-65 signed content-hash attestation (`DocSignature`) over a domain-separated SHA-256 of `(doc_path_label, doc_version_label, content)`. A one-byte edit flips the hash and fails verification; the version label binds the signature to a specific version so it can't be replayed across releases.
+- **Phase 2 (cryptographic substrate)** — open. The pair-signed `doc_integrity` primitive was never called and was removed in 23.3.3 (the forward model has no separate Ed25519 + ML-DSA pair). A signed doc version would be an edition-2 row under the CC 2.6.1.7 composite, binding path, version and content hash.
 - **Phase 3 (operational)** — signing each released version of this doc + publishing the `DocSignature` to the transparency log. Composes with the `threshold` M-of-N (Gap F) so the doc signature can be an M-of-N quorum. Pending — operational, not code.
 
 **Gap H: C0 RNG startup health-check — CLOSED.**
@@ -1395,7 +1395,7 @@ Attacks on the threat model itself, the artifacts that influence trust verdicts,
 **Substrate assumptions**. None — this is meta to the substrate.
 
 **Mitigation surface**:
-- **Document signing requirement**: every published version of this document is signed (`doc_integrity::DocSignature`, hybrid Ed25519 + ML-DSA-65, version-bound) and the signature is published in the federation transparency log.
+- **Document signing requirement**: every published version of this document is signed (an edition-2 composite-signed row, version-bound) and the signature is published in the federation transparency log.
 - **Hash-in-release-tarball**: the federation's release artifacts include a hash of the threat-model document; peers can verify the doc they consult matches the released version.
 - **Two-person-rule on edits**: PRs to this document require review + approval by at least one threat-model peer reviewer.
 - **External adversarial review**: annual third-party adversarial review (per §1.3) provides independent validation that the document is honest.
@@ -1404,7 +1404,7 @@ Attacks on the threat model itself, the artifacts that influence trust verdicts,
 **Cost-asymmetry argument**. Compromising the threat-model maintainer is structurally similar to F-AV-8 (steward compromise) but with weaker defense today (edits are gated by CODEOWNERS and the CI changelog guard; released versions are not yet signed). Defense: lift the integrity guarantees to match S2 row standards.
 
 **Known weaknesses**:
-- Two-person rule (CODEOWNERS) and the CI changelog guard are in place, and the `doc_integrity` signing primitive exists; operational signing of released versions and hash-in-release-tarball are not.
+- Two-person rule (CODEOWNERS) and the CI changelog guard are in place, but no signing primitive exists (`doc_integrity` was removed in 23.3.3); a signing primitive, operational signing of released versions and hash-in-release-tarball are not.
 - The threat-model maintainer is currently the same person as the steward (Bridge), so F-AV-MAINT is correlated with F-AV-8 — single point of compromise covers both.
 
 **RATCHET signal**: not detectable by RATCHET (the threat model defines RATCHET's job; RATCHET cannot validate its own job specification). Detection is external (third-party review, signed-version verification, hash mismatch).
@@ -2034,7 +2034,7 @@ CAP class: **bounded-staleness with τ-bound** (closed). Quorum-write ⌈2N/3⌉
 
 ### 11.8 Threat-model artifact integrity
 
-Edits are gated by CODEOWNERS and the CI changelog guard, and `doc_integrity` provides the signing primitive (§3.3 Gap G). **Open**: operational signing of each released version and publication to the transparency log. F-AV-MAINT is partially mitigated.
+Edits are gated by CODEOWNERS and the CI changelog guard, and no signing primitive exists (§3.3 Gap G; the pair-signed `doc_integrity` was removed in 23.3.3). **Open**: a composite-signed doc row, operational signing of each released version and publication to the transparency log. F-AV-MAINT is partially mitigated.
 
 ### 11.9 Cross-federation peering (out of scope; stubbed)
 
@@ -2064,7 +2064,7 @@ F-AV-4 / F-AV-5 / F-AV-7 depend on RATCHET measurement evolving with attacker te
 
 **Threat-model integrity** (per F-AV-MAINT / §11.8 specification):
 
-1. Each published version of this document is signed with a `doc_integrity::DocSignature` (hybrid Ed25519 + ML-DSA-65 over a domain-separated hash of path label, version label and content).
+1. Each published version of this document is signed as an edition-2 row under the CC 2.6.1.7 composite, over its path label, version label and content hash.
 2. The signature is published as an S2 policy row + a transparency-log entry (per §8.1 external-anchoring pattern).
 3. Federation release tarballs include the document hash; peers can verify the doc they're consulting matches the released version.
 4. Edits require PR review by ≥1 threat-model peer reviewer before merge.

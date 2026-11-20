@@ -14,7 +14,7 @@
 # body that changes under an unchanged name fails CI: re-read the claim, then
 # record the new span with `python3 tools/check_evidence.py --update-hashes`.
 decimal_id	claim_id	repo	path#symbol	crate@version	span_sha256
-8.11.2	CLM-round-trip	CIRISVerify	src/ciris-verify-core/src/jcs.rs#verify_jcs_hybrid_signature	ciris-verify-core@v12.5.0	592594a0c899b64eeab6c07a67a3807a77652e3348bd7731ff18c19466380d75
+8.11.2	CLM-round-trip	CIRISVerify	src/ciris-verify-core/src/jcs.rs#canonicalize	ciris-verify-core@v23.3.3	ed67d37517fe734f0919b95cd384a35fe4a4e893fffbb9f72ba3a6b75f2d9576
 8.11.3	CLM-canonicalization-array	CIRISVerify	src/ciris-verify-core/src/operational_admit.rs#check_set_semantics_sorted	ciris-verify-core@v12.5.0	f8699b6078e1dd595b62f182315dc29b46804025688ef8620270520e280a0b42
 8.11.10	CLM-canonicalization	CIRISVerify	src/ciris-verify-core/src/skill_import.rs#check_canonical_rfc3339	ciris-verify-core@v12.5.0	173f64b9303a210e409c6913fc46c4c9c52b89106d8f00870406a0bf88109f9a
 8.11.11	CLM-canonicalization-hexadecimal	CIRISVerify	src/ciris-verify-core/src/skill_import.rs#check_canonical_hex64	ciris-verify-core@v12.5.0	5f08cfc43cc6b54212beb35e00c788dbc073f39ace9a398944806bf8bb71368a
@@ -61,7 +61,7 @@ decimal_id	claim_id	repo	path#symbol	crate@version	span_sha256
 4.2.2	CLM-presenter-binding-producer	CIRISVerify	src/ciris-verify-core/src/build_attestation_bundle.rs#produce_build_attestation_bundle	ciris-verify-core@v13.0.0	64c5213d3702b79b8cb682032584c5d670918c00856e1a0a6d2308e8489244e1
 4.2.2.1	CLM-hardware-class-android	CIRISVerify	src/ciris-verify-core/src/device_attestation.rs#verify_android_key_attestation	ciris-verify-core@v13.0.0	79158215977512749c7fe93d86de60013b59b08abbf6fad55b741d255f68e719
 4.2.2.1	CLM-hardware-class-apple	CIRISVerify	src/ciris-verify-core/src/device_attestation.rs#verify_apple_app_attest	ciris-verify-core@v13.0.0	a800a0652527377fba82e975aaf689a496d30279666fb8b4b5d2370933c7ede2
-4.2.2.1	CLM-hardware-class-yubikey	CIRISVerify	src/ciris-verify-core/src/accord_custody_attestation.rs#verify_yubikey_piv_attestation	ciris-verify-core@v13.0.0	8637f6303b800bba212a1527abbbc0da0bc6f97da1500d9ad4c01ac57298a9b2
+4.2.2.1	CLM-hardware-class-yubikey	CIRISVerify	src/ciris-verify-core/src/accord_custody_attestation.rs#verify_yubikey_piv_attestation	ciris-verify-core@v13.0.0	d07f8ffe9ee456209dc019e24450f1222865766338b22ae8b1cefca575a14093
 4.2.2.1	CLM-trust-anchor-store	CIRISVerify	src/ciris-verify-core/src/trust_anchor_store.rs#ConciseTaStore	ciris-verify-core@v13.0.0	16e8b6f1e2b87f8a35e14d7d86e81e9343bb6aad1ed61459df4b3b7e6b0aaeaa
 4.2.2.1	CLM-trust-anchor-baked	CIRISVerify	src/ciris-verify-core/src/trust_anchor_store.rs#yubico_attestation_root	ciris-verify-core@v13.0.0	c3f00f865ad1f079560e92cdc5f1a66247143cd7cddfd1be95290a28c11af8d7
 3.1.2	CLM-dimension-registry	CIRISVerify	src/ciris-verify-core/src/federation_provenance.rs#DimensionSpec	ciris-verify-core@v13.0.0	e1162cd389ce5240d5b1f1497fabf21eb03ad9c367a385bdee5133340d17d8ee

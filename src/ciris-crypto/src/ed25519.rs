@@ -217,8 +217,8 @@ impl ClassicalVerifier for Ed25519Verifier {
     /// workspace reaches Ed25519 through this trait method: the M-of-N
     /// threshold verifier and everything that inherits it, the provenance
     /// chain walk, the license JWT gate, binary self-verification, and
-    /// `HybridVerifier`'s classical half (so doc_integrity, jcs,
-    /// federation_envelope and the transparency STH too). `verify_strict`
+    /// `HybridVerifier`'s classical half (so federation_envelope and
+    /// `earlier_form` too). `verify_strict`
     /// shipped in v10.4.0 for a *downstream's* trace floor and was called by
     /// nothing inside this workspace — the stricter primitive existed and was
     /// not invoked on the decisions that matter.

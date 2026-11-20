@@ -111,7 +111,6 @@ pub mod config;
 /// pinned vendor root. Hardware is a trust signal, never a requirement.
 #[cfg(feature = "host")]
 pub mod device_attestation;
-pub mod doc_integrity;
 /// Verify-only readers for objects of the earlier, bound-hybrid form (CC
 /// 8.11.12): `verify_bound_hybrid` and `EarlierSignedTreeHead`. No producers.
 #[cfg(feature = "pqc")]

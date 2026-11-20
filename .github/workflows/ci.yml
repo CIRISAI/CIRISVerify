@@ -77,8 +77,7 @@ jobs:
   # A PR that edits an authoritative governance / threat-model doc MUST
   # also record WHAT changed and WHY in that doc's changelog block near
   # the top. This is the cheap structural half of F-AV-MAINT mitigation
-  # (paired with the CODEOWNERS two-person rule + the doc_integrity
-  # crypto substrate). It makes a silent F-AV-status downgrade visible:
+  # (paired with the CODEOWNERS two-person rule). It makes a silent F-AV-status downgrade visible:
   # you can't change the doc without leaving a diffable provenance line.
   # Only runs on pull_request (needs the base ref for the diff).
   # ==========================================================================
