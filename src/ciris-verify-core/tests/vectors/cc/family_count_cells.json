@@ -2,7 +2,7 @@
  "_meta": {
   "cells": "count",
   "source": "manifests/family_model.json",
-  "source_sha256": "9b48d5960ad0f6243f1f361a987aebe68e131a5ae6563a34417278b64f824610"
+  "source_sha256": "fb83686b4c2d9334f4e0d7b48cdfda6cb879db2090753c770e3ced26e8ce5673"
  },
  "families": {
   "accord:invoke:constitutional:{halt_id}": {
@@ -72,6 +72,16 @@
    ],
    "source": "cc-table",
    "value": "leaf=reported => moderation_action@subject_group"
+  },
+  "contribution:{subject_kind}": {
+   "arms": [
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "none"
   },
   "cosign:{state}": {
    "arms": [
@@ -260,6 +270,16 @@
    ],
    "source": "cc-table",
    "value": "group=affiliations & seats=one => affiliation_member_action@subject_group ; none"
+  },
+  "stream:head": {
+   "arms": [
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "none"
   },
   "takedown_notice:{basis}": {
    "arms": [
