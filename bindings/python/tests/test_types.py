@@ -221,3 +221,50 @@ class TestSourceDetails:
         details = SourceDetails(validation_status=ValidationStatus.VALIDATION_ERROR)
         assert details.trust_root is None
         assert details.sources == []
+
+
+class TestSelfVerificationResult:
+    """CIRISVerify#210: embedded-install measurement fields."""
+
+    def test_parses_embedded_payload(self):
+        from ciris_verify.types import SelfVerificationResult, EMBEDDED_NO_MANIFEST
+
+        sv = SelfVerificationResult.model_validate({
+            "binary_valid": False,
+            "functions_valid": False,
+            "valid": False,
+            "binary_version": "23.4.1",
+            "target": "x86_64-unknown-linux-gnu",
+            "binary_hash": "ab" * 32,
+            "expected_hash": "cd" * 32,
+            "functions_checked": 0,
+            "functions_passed": 0,
+            "registry_reachable": True,
+            "error": EMBEDDED_NO_MANIFEST,
+            "module_path": "/srv/ciris_server/_native.abi3.so",
+            "embedded_in_host": True,
+        })
+        assert sv.embedded_in_host
+        assert sv.module_path == "/srv/ciris_server/_native.abi3.so"
+        assert sv.is_embedded_without_manifest()
+        assert not sv.valid
+
+    def test_parses_payload_without_new_fields(self):
+        from ciris_verify.types import SelfVerificationResult
+
+        sv = SelfVerificationResult.model_validate({
+            "binary_valid": True,
+            "functions_valid": True,
+            "valid": True,
+            "binary_version": "23.4.0",
+            "target": "x86_64-unknown-linux-gnu",
+            "binary_hash": "ab" * 32,
+            "expected_hash": "ab" * 32,
+            "functions_checked": 10,
+            "functions_passed": 10,
+            "registry_reachable": True,
+            "error": None,
+        })
+        assert sv.module_path is None
+        assert sv.embedded_in_host is False
+        assert not sv.is_embedded_without_manifest()

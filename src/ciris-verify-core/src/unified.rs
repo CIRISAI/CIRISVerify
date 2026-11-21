@@ -194,9 +194,30 @@ pub struct SelfVerificationResult {
     pub functions_passed: usize,
     /// Registry reachable for manifest fetch.
     pub registry_reachable: bool,
-    /// Error message if failed.
+    /// Error message if failed. When verify runs embedded in a host binary
+    /// that the registry has no manifest for, exactly
+    /// [`EMBEDDED_NO_MANIFEST`].
     pub error: Option<String>,
+    /// The file verify's code runs from, found by address
+    /// (`registry::self_module_path`): the standalone library, the
+    /// `ciris-verify` executable, or a host binary that folds verify in.
+    /// `None` when it could not be located. Absent in payloads before 22.2.3 / 23.4.1.
+    #[serde(default)]
+    pub module_path: Option<String>,
+    /// `module_path` is not one of verify's own artifacts
+    /// (`registry::is_embedded_in_host`): verify is statically folded into a
+    /// host binary (CIRISVerify#210, CIRISServer#232). `false` when
+    /// `module_path` is `None`. A measurement, not a pass: `binary_valid` /
+    /// `functions_valid` are unchanged by it.
+    #[serde(default)]
+    pub embedded_in_host: bool,
 }
+
+/// [`SelfVerificationResult::error`] when verify is embedded in a host binary
+/// and the registry, which answered, has no manifest for that binary. Not a
+/// pass (`binary_valid` / `functions_valid` stay `false`), and not reported
+/// as a failure of verify's own artifact either.
+pub const EMBEDDED_NO_MANIFEST: &str = "embedded_in_host: no manifest for host binary";
 
 /// Key attestation result.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1175,6 +1196,8 @@ impl UnifiedAttestationEngine {
             "VERIFY STEP 1/6 COMPLETE: {} (binary={}, functions={}/{})",
             if self_verification.valid {
                 "OK"
+            } else if self_verification.error.as_deref() == Some(EMBEDDED_NO_MANIFEST) {
+                "EMBEDDED (no manifest for host binary)"
             } else {
                 "FAILED"
             },
@@ -1274,15 +1297,30 @@ impl UnifiedAttestationEngine {
         }
 
         // Detailed self-verification diagnostics
+        let embedded_no_manifest = self_verification.error.as_deref() == Some(EMBEDDED_NO_MANIFEST);
         diagnostics.push_str("=== SELF-VERIFICATION (Level 1) ===\n");
         diagnostics.push_str(&format!(
             "  Target: {}\n  Version: {}\n",
             self_verification.target, self_verification.binary_version
         ));
         diagnostics.push_str(&format!(
+            "  Module: {}{}\n",
+            self_verification
+                .module_path
+                .as_deref()
+                .unwrap_or("unknown"),
+            if self_verification.embedded_in_host {
+                " (embedded in host)"
+            } else {
+                ""
+            }
+        ));
+        diagnostics.push_str(&format!(
             "  Binary: {} (registry={})\n",
             if self_verification.binary_valid {
                 "✓ OK"
+            } else if embedded_no_manifest {
+                "- NO MANIFEST (embedded in host)"
             } else {
                 "✗ FAIL"
             },
@@ -1313,13 +1351,18 @@ impl UnifiedAttestationEngine {
             "  Functions: {} ({}/{} passed)\n",
             if self_verification.functions_valid {
                 "✓ OK"
+            } else if embedded_no_manifest {
+                "- SKIPPED (embedded in host)"
             } else {
                 "✗ FAIL"
             },
             self_verification.functions_passed,
             self_verification.functions_checked
         ));
-        if !self_verification.functions_valid && self_verification.functions_checked == 0 {
+        if !self_verification.functions_valid
+            && self_verification.functions_checked == 0
+            && !embedded_no_manifest
+        {
             diagnostics.push_str("    └─ No function manifest found for this target in registry\n");
         }
         if let Some(ref err) = self_verification.error {
@@ -2169,12 +2212,22 @@ impl UnifiedAttestationEngine {
         let version = env!("CARGO_PKG_VERSION");
         let target = current_target();
 
+        // Which file verify runs from, and whether that is a host binary
+        // that folds verify in (CIRISVerify#210).
+        let module = crate::registry::self_module_path();
+        let embedded_in_host = module
+            .as_deref()
+            .is_some_and(crate::registry::is_embedded_in_host);
+        let module_path = module.map(|p| p.display().to_string());
+
         // Compute our own binary hash
         let binary_hash = match compute_self_hash() {
             Ok(h) => h,
             Err(e) => {
                 warn!("Failed to compute self hash: {}", e);
                 return SelfVerificationResult {
+                    module_path,
+                    embedded_in_host,
                     binary_valid: false,
                     functions_valid: false,
                     valid: false,
@@ -2198,52 +2251,84 @@ impl UnifiedAttestationEngine {
         );
 
         // Binary hash verification using pre-fetched manifest
-        let (binary_valid, expected_hash, available_targets) =
-            if let Some(manifest) = binary_manifest {
-                let available_targets: Vec<String> = manifest.binaries.keys().cloned().collect();
-                if let Some(expected) = manifest.binaries.get(target) {
-                    let expected_clean = expected.strip_prefix("sha256:").unwrap_or(expected);
-                    let matches = binary_hash == expected_clean;
-                    info!(
-                        "Binary check (pre-fetched): target={}, matches={}",
-                        target, matches
-                    );
-                    (matches, Some(expected_clean.to_string()), available_targets)
+        let (binary_valid, expected_hash, available_targets) = if let Some(manifest) =
+            binary_manifest
+        {
+            let available_targets: Vec<String> = manifest.binaries.keys().cloned().collect();
+            if let Some(expected) = manifest.binaries.get(target) {
+                let expected_clean = expected.strip_prefix("sha256:").unwrap_or(expected);
+                let matches = binary_hash == expected_clean;
+                info!(
+                    "Binary check (pre-fetched): target={}, matches={}",
+                    target, matches
+                );
+                (matches, Some(expected_clean.to_string()), available_targets)
+            } else {
+                if embedded_in_host {
+                    debug!(
+                            "Binary check (pre-fetched): no hash for target={}, available={:?} (embedded in host)",
+                            target, available_targets
+                        );
                 } else {
                     warn!(
                         "Binary check (pre-fetched): no hash for target={}, available={:?}",
                         target, available_targets
                     );
-                    (false, None, available_targets)
                 }
+                (false, None, available_targets)
+            }
+        } else {
+            warn!("Binary check (pre-fetched): no manifest available");
+            (false, None, vec![])
+        };
+
+        // Embedded in a host binary the registry (which answered) has no
+        // manifest for: the registry's manifests describe verify's own
+        // artifact, not this file, so neither check can pass and the function
+        // offsets would be read against the wrong image. Not a pass, but not
+        // a FAILED of verify's artifact either (CIRISVerify#210).
+        let embedded_no_manifest = embedded_in_host && !binary_valid && binary_manifest.is_some();
+        if embedded_no_manifest {
+            static LOGGED: std::sync::atomic::AtomicBool =
+                std::sync::atomic::AtomicBool::new(false);
+            if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                info!(
+                    module_path = module_path.as_deref().unwrap_or("unknown"),
+                    binary_hash = %&binary_hash[..std::cmp::min(16, binary_hash.len())],
+                    "Self-verification: {}; Level 1 not passed, function check skipped",
+                    EMBEDDED_NO_MANIFEST
+                );
             } else {
-                warn!("Binary check (pre-fetched): no manifest available");
-                (false, None, vec![])
-            };
+                debug!("Self-verification: {}", EMBEDDED_NO_MANIFEST);
+            }
+        }
 
         // Function integrity verification using pre-fetched manifest
-        let (functions_valid, functions_checked, functions_passed) =
-            if let Some(manifest) = function_manifest {
-                let result = function_integrity::verify_functions(manifest);
-                info!(
-                    "Function check (pre-fetched): {}/{} passed, valid={}",
-                    result.functions_passed, result.functions_checked, result.integrity_valid
-                );
-                (
-                    result.integrity_valid,
-                    result.functions_checked,
-                    result.functions_passed,
-                )
-            } else {
-                warn!("Function check (pre-fetched): no manifest available");
-                (false, 0, 0)
-            };
+        let (functions_valid, functions_checked, functions_passed) = if embedded_no_manifest {
+            (false, 0, 0)
+        } else if let Some(manifest) = function_manifest {
+            let result = function_integrity::verify_functions(manifest);
+            info!(
+                "Function check (pre-fetched): {}/{} passed, valid={}",
+                result.functions_passed, result.functions_checked, result.integrity_valid
+            );
+            (
+                result.integrity_valid,
+                result.functions_checked,
+                result.functions_passed,
+            )
+        } else {
+            warn!("Function check (pre-fetched): no manifest available");
+            (false, 0, 0)
+        };
 
         let valid = binary_valid && functions_valid;
 
         // Build detailed error message
         let error = if valid {
             None
+        } else if embedded_no_manifest {
+            Some(EMBEDDED_NO_MANIFEST.to_string())
         } else {
             let mut errors = Vec::new();
             if !binary_valid {
@@ -2281,6 +2366,8 @@ impl UnifiedAttestationEngine {
             functions_passed,
             registry_reachable: binary_manifest.is_some() || function_manifest.is_some(),
             error,
+            module_path,
+            embedded_in_host,
         }
     }
 
@@ -2809,6 +2896,55 @@ impl FullAttestationResult {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sample_self_verification() -> SelfVerificationResult {
+        SelfVerificationResult {
+            binary_valid: false,
+            functions_valid: false,
+            valid: false,
+            binary_version: "23.4.1".into(),
+            target: "x86_64-unknown-linux-gnu".into(),
+            binary_hash: "ab".repeat(32),
+            expected_hash: Some("cd".repeat(32)),
+            functions_checked: 0,
+            functions_passed: 0,
+            registry_reachable: true,
+            error: Some(EMBEDDED_NO_MANIFEST.into()),
+            module_path: Some("/srv/ciris_server/_native.abi3.so".into()),
+            embedded_in_host: true,
+        }
+    }
+
+    /// The two measurement fields serialize under their own names and survive
+    /// a round trip.
+    #[test]
+    fn self_verification_round_trips_with_module_fields() {
+        let sv = sample_self_verification();
+        let j = serde_json::to_value(&sv).unwrap();
+        assert_eq!(j["module_path"], "/srv/ciris_server/_native.abi3.so");
+        assert_eq!(j["embedded_in_host"], true);
+        assert_eq!(j["error"], "embedded_in_host: no manifest for host binary");
+        let back: SelfVerificationResult = serde_json::from_value(j).unwrap();
+        assert_eq!(back.module_path, sv.module_path);
+        assert!(back.embedded_in_host);
+        assert!(!back.binary_valid && !back.functions_valid && !back.valid);
+    }
+
+    /// A payload from before 22.2.3 (no `module_path` / `embedded_in_host`)
+    /// still parses, to `None` / `false`.
+    #[test]
+    fn self_verification_parses_without_module_fields() {
+        let mut j = serde_json::to_value(sample_self_verification()).unwrap();
+        let obj = j.as_object_mut().unwrap();
+        obj.remove("module_path");
+        obj.remove("embedded_in_host");
+        let back: SelfVerificationResult = serde_json::from_value(j).unwrap();
+        assert_eq!(back.module_path, None);
+        assert!(!back.embedded_in_host);
+        let again = serde_json::to_value(&back).unwrap();
+        assert!(again["module_path"].is_null());
+        assert_eq!(again["embedded_in_host"], false);
+    }
 
     #[test]
     fn test_source_check_result() {

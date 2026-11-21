@@ -65,6 +65,16 @@ macro_rules! logcat {
     }};
 }
 
+/// An address inside this crate's code. `#[inline(never)]` so the function has
+/// a body of its own in whichever module verify is linked into: the standalone
+/// `libciris_verify_ffi`, the `ciris-verify` executable, or a host extension
+/// that folds verify in statically (CIRISVerify#210, CIRISServer#232). Every
+/// platform's code-base lookup resolves the loaded module containing it.
+#[inline(never)]
+pub(crate) fn self_code_address() -> usize {
+    self_code_address as *const () as usize
+}
+
 /// Function-level integrity manifest for a specific platform.
 ///
 /// Generated at build time by `ciris-manifest-tool`, this manifest contains
@@ -1161,10 +1171,15 @@ struct LinuxCodeBaseInfo {
     image_size: usize,
 }
 
-/// Get the base address and image size of libciris_verify_ffi.so on Linux.
+/// Get the base address and image size of the loaded object holding
+/// CIRISVerify's code on Linux.
 ///
-/// Uses `dl_iterate_phdr` to find our library's load address and to compute
-/// the high-water mark of its PT_LOAD segments.
+/// Uses `dl_iterate_phdr` and picks the object one of whose PT_LOAD segments
+/// `[dlpi_addr + p_vaddr, + p_memsz)` contains [`self_code_address`], so the
+/// standalone `libciris_verify_ffi.so`, the `ciris-verify` executable and a
+/// host extension that folds verify in statically are all found (the object's
+/// name is not consulted). It then computes the high-water mark of that
+/// object's PT_LOAD segments.
 #[cfg(all(target_os = "linux", not(target_os = "android")))]
 fn get_code_base_linux() -> Option<LinuxCodeBaseInfo> {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -1172,8 +1187,6 @@ fn get_code_base_linux() -> Option<LinuxCodeBaseInfo> {
     static BASE: AtomicUsize = AtomicUsize::new(0);
     static IMAGE_SIZE: AtomicUsize = AtomicUsize::new(0);
     static FOUND: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-    const LIB_NAME: &str = "libciris_verify_ffi.so";
 
     // Only compute once
     if FOUND.load(Ordering::Relaxed) {
@@ -1187,9 +1200,10 @@ fn get_code_base_linux() -> Option<LinuxCodeBaseInfo> {
         return Some(LinuxCodeBaseInfo { base, image_size });
     }
 
+    let target = self_code_address();
     tracing::info!(
-        "get_code_base_linux: searching for {} via dl_iterate_phdr",
-        LIB_NAME
+        "get_code_base_linux: searching via dl_iterate_phdr for the object containing 0x{:x}",
+        target
     );
 
     // ELF program header structure (64-bit)
@@ -1218,9 +1232,10 @@ fn get_code_base_linux() -> Option<LinuxCodeBaseInfo> {
         // Additional fields exist but we don't need them
     }
 
-    // Result struct: dlpi_addr, exec segment p_vaddr, image span.
+    // In: the address to locate. Out: dlpi_addr, exec segment p_vaddr, image span.
     #[repr(C)]
     struct CallbackResult {
+        target: usize,
         dlpi_addr: usize,
         exec_segment_vaddr: usize,
         image_size: usize,
@@ -1240,45 +1255,46 @@ fn get_code_base_linux() -> Option<LinuxCodeBaseInfo> {
         data: *mut std::ffi::c_void,
     ) -> i32 {
         unsafe {
-            let name_ptr = (*info).dlpi_name;
-            if name_ptr.is_null() {
+            let result_ptr = data as *mut CallbackResult;
+            let target = (*result_ptr).target;
+            let dlpi_addr = (*info).dlpi_addr;
+            let phdr = (*info).dlpi_phdr;
+            let phnum = (*info).dlpi_phnum as usize;
+            if phdr.is_null() {
                 return 0; // Continue
             }
 
-            // Convert C string to Rust &str
-            let name_cstr = std::ffi::CStr::from_ptr(name_ptr);
-            let name = name_cstr.to_str().unwrap_or("");
-
-            // Look for our library
-            if name.contains("libciris_verify_ffi.so") {
-                let result_ptr = data as *mut CallbackResult;
-
-                // Find the executable LOAD segment AND compute the high-water
-                // mark across every PT_LOAD so we can bounds-check reads.
-                let phdr = (*info).dlpi_phdr;
-                let phnum = (*info).dlpi_phnum as usize;
-
-                let mut exec_vaddr: u64 = 0;
-                let mut max_end: u64 = 0;
-                for i in 0..phnum {
-                    let ph = &*phdr.add(i);
-                    if ph.p_type != PT_LOAD {
-                        continue;
-                    }
-                    if exec_vaddr == 0 && (ph.p_flags & PF_X) != 0 {
-                        exec_vaddr = ph.p_vaddr;
-                    }
-                    let end = ph.p_vaddr.saturating_add(ph.p_memsz);
-                    if end > max_end {
-                        max_end = end;
-                    }
+            // Find the executable LOAD segment, compute the high-water mark
+            // across every PT_LOAD so we can bounds-check reads, and note
+            // whether any PT_LOAD of this object contains `target`.
+            let mut exec_vaddr: u64 = 0;
+            let mut max_end: u64 = 0;
+            let mut contains = false;
+            for i in 0..phnum {
+                let ph = &*phdr.add(i);
+                if ph.p_type != PT_LOAD {
+                    continue;
                 }
+                if exec_vaddr == 0 && (ph.p_flags & PF_X) != 0 {
+                    exec_vaddr = ph.p_vaddr;
+                }
+                let end = ph.p_vaddr.saturating_add(ph.p_memsz);
+                if end > max_end {
+                    max_end = end;
+                }
+                let seg_start = (dlpi_addr as u64).wrapping_add(ph.p_vaddr);
+                let seg_end = seg_start.saturating_add(ph.p_memsz);
+                if (seg_start..seg_end).contains(&(target as u64)) {
+                    contains = true;
+                }
+            }
 
+            if contains {
                 // image_size is measured from the exec segment's vaddr
                 // because our manifest offsets are relative to that.
                 let image_size = max_end.saturating_sub(exec_vaddr) as usize;
 
-                (*result_ptr).dlpi_addr = (*info).dlpi_addr;
+                (*result_ptr).dlpi_addr = dlpi_addr;
                 (*result_ptr).exec_segment_vaddr = exec_vaddr as usize;
                 (*result_ptr).image_size = image_size;
                 (*result_ptr).found = true;
@@ -1289,6 +1305,7 @@ fn get_code_base_linux() -> Option<LinuxCodeBaseInfo> {
     }
 
     let mut result = CallbackResult {
+        target,
         dlpi_addr: 0,
         exec_segment_vaddr: 0,
         image_size: 0,
@@ -1309,8 +1326,8 @@ fn get_code_base_linux() -> Option<LinuxCodeBaseInfo> {
         // we need: runtime_addr = dlpi_addr + segment_vaddr + offset
         let code_base = result.dlpi_addr + result.exec_segment_vaddr;
         tracing::info!(
-            "get_code_base_linux: found {} dlpi_addr=0x{:x}, exec_segment_vaddr=0x{:x}, code_base=0x{:x}, image_size=0x{:x}",
-            LIB_NAME,
+            "get_code_base_linux: found object containing 0x{:x}: dlpi_addr=0x{:x}, exec_segment_vaddr=0x{:x}, code_base=0x{:x}, image_size=0x{:x}",
+            target,
             result.dlpi_addr,
             result.exec_segment_vaddr,
             code_base,
@@ -1325,24 +1342,25 @@ fn get_code_base_linux() -> Option<LinuxCodeBaseInfo> {
         })
     } else {
         tracing::warn!(
-            "get_code_base_linux: {} not found in loaded libraries",
-            LIB_NAME
+            "get_code_base_linux: no loaded object contains 0x{:x}",
+            target
         );
         None
     }
 }
 
-/// Get the base address and file offset of libciris_verify_ffi.so on Android.
+/// Get the base address and file offset of the module holding CIRISVerify's
+/// code on Android.
 ///
 /// On Android, the "main executable" is app_process64 (Android runtime), not our library.
-/// We need to find libciris_verify_ffi.so's load address from /proc/self/maps.
+/// The module is found in /proc/self/maps by the address of a function in this
+/// crate ([`self_code_address`], [`module_in_maps`]), not by file name, so a host
+/// library that folds verify in statically is found too.
 ///
 /// Returns both the memory base address AND the maps file offset, which is needed
 /// to calculate the adjustment between segment start and .text section start.
 #[cfg(target_os = "android")]
 fn get_code_base_android() -> Option<CodeBaseInfo> {
-    use std::fs::File;
-    use std::io::{BufRead, BufReader};
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     static BASE: AtomicUsize = AtomicUsize::new(0);
@@ -1368,124 +1386,161 @@ fn get_code_base_android() -> Option<CodeBaseInfo> {
         });
     }
 
-    const LIB_NAME: &str = "libciris_verify_ffi.so";
+    let target = self_code_address();
     tracing::info!(
-        "get_code_base_android: searching for {} in /proc/self/maps",
-        LIB_NAME
+        "get_code_base_android: searching /proc/self/maps for the module containing 0x{:x}",
+        target
     );
     logcat!(
         ANDROID_LOG_INFO,
-        "get_code_base_android: searching for {} in /proc/self/maps",
-        LIB_NAME
+        "get_code_base_android: searching /proc/self/maps for the module containing 0x{:x}",
+        target
     );
 
-    let maps_file = match File::open("/proc/self/maps") {
-        Ok(f) => f,
+    let maps = match std::fs::read_to_string("/proc/self/maps") {
+        Ok(m) => m,
         Err(e) => {
-            tracing::error!("get_code_base_android: cannot open /proc/self/maps: {}", e);
+            tracing::error!("get_code_base_android: cannot read /proc/self/maps: {}", e);
             logcat!(
                 ANDROID_LOG_ERROR,
-                "get_code_base_android: cannot open /proc/self/maps: {}",
+                "get_code_base_android: cannot read /proc/self/maps: {}",
                 e
             );
             return None;
         },
     };
 
-    let reader = BufReader::new(maps_file);
-
-    // First pass: find the r-xp (executable) line for our lib AND the
-    // high-water end address across every line that names it. The end
-    // address minus the executable base = the maximum offset we can safely
-    // dereference inside our library.
-    let mut exec_base: Option<usize> = None;
-    let mut exec_maps_file_offset: u64 = 0;
-    let mut max_end: usize = 0;
-
-    for line in reader.lines() {
-        let line = match line {
-            Ok(l) => l,
-            Err(_) => continue,
-        };
-
-        if !line.contains(LIB_NAME) {
-            continue;
-        }
-
-        // /proc/self/maps format:
-        // 7f1234567000-7f123456a000 r-xp 00000000 fd:01 1234567 /path/to/lib.so
-        let parts: Vec<&str> = line.split_whitespace().collect();
-        let addr_range = match line.split_whitespace().next() {
-            Some(s) => s,
-            None => continue,
-        };
-        let mut bounds = addr_range.split('-');
-        let (start_str, end_str) = match (bounds.next(), bounds.next()) {
-            (Some(s), Some(e)) => (s, e),
-            _ => continue,
-        };
-        let start = match usize::from_str_radix(start_str, 16) {
-            Ok(v) => v,
-            Err(_) => continue,
-        };
-        let end = usize::from_str_radix(end_str, 16).unwrap_or(start);
-        if end > max_end {
-            max_end = end;
-        }
-
-        // Permissions live at parts[1]; "r-xp" marks the code segment.
-        let perms = parts.get(1).copied().unwrap_or("");
-        if perms.contains("x") && exec_base.is_none() {
-            tracing::info!("get_code_base_android: exec entry: {}", line);
-            logcat!(ANDROID_LOG_INFO, "exec entry: {}", line);
-
-            exec_base = Some(start);
-            exec_maps_file_offset = parts
-                .get(2)
-                .and_then(|s| u64::from_str_radix(s, 16).ok())
-                .unwrap_or(0);
-        }
-    }
-
-    if let Some(base) = exec_base {
-        let image_size = max_end.saturating_sub(base);
+    if let Some(m) = module_in_maps(&maps, target) {
+        let image_size = m.max_end.saturating_sub(m.exec_base);
         tracing::info!(
             "get_code_base_android: found {} base=0x{:x}, maps_file_offset=0x{:x}, image_size=0x{:x}",
-            LIB_NAME,
-            base,
-            exec_maps_file_offset,
+            m.path,
+            m.exec_base,
+            m.exec_file_offset,
             image_size,
         );
         logcat!(
             ANDROID_LOG_INFO,
-            "get_code_base_android: FOUND base=0x{:x}, maps_file_offset=0x{:x}, image_size=0x{:x}",
-            base,
-            exec_maps_file_offset,
+            "get_code_base_android: FOUND {} base=0x{:x}, maps_file_offset=0x{:x}, image_size=0x{:x}",
+            m.path,
+            m.exec_base,
+            m.exec_file_offset,
             image_size,
         );
 
-        BASE.store(base, Ordering::Relaxed);
-        MAPS_FILE_OFFSET.store(exec_maps_file_offset, Ordering::Relaxed);
+        BASE.store(m.exec_base, Ordering::Relaxed);
+        MAPS_FILE_OFFSET.store(m.exec_file_offset, Ordering::Relaxed);
         IMAGE_SIZE.store(image_size, Ordering::Relaxed);
         FOUND.store(true, Ordering::Relaxed);
 
         return Some(CodeBaseInfo {
-            base,
-            maps_file_offset: exec_maps_file_offset,
+            base: m.exec_base,
+            maps_file_offset: m.exec_file_offset,
             image_size,
         });
     }
 
     tracing::warn!(
-        "get_code_base_android: {} not found in /proc/self/maps with executable permissions",
-        LIB_NAME
+        "get_code_base_android: no executable file mapping in /proc/self/maps contains 0x{:x}",
+        target
     );
     logcat!(
         ANDROID_LOG_WARN,
-        "get_code_base_android: {} NOT FOUND in /proc/self/maps with x perms",
-        LIB_NAME
+        "get_code_base_android: no executable file mapping contains 0x{:x}",
+        target
     );
     None
+}
+
+/// The module a `/proc/self/maps` address belongs to.
+#[cfg(any(target_os = "android", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct MapsModule {
+    /// Pathname of the mapping that contains the address.
+    path: String,
+    /// Start of the module's first executable mapping.
+    exec_base: usize,
+    /// File offset (maps column 3) of that executable mapping.
+    exec_file_offset: u64,
+    /// High-water end address across the module's mappings.
+    max_end: usize,
+}
+
+/// Locate the module whose mapping contains `addr` in `/proc/self/maps`
+/// text, by address rather than by name (CIRISVerify#210).
+///
+/// The module is the run of mappings around the containing one that name the
+/// same file; anonymous mappings (no pathname, e.g. alignment gaps or
+/// `[anon:.bss]`) between them are skipped, and a mapping of a different file
+/// ends the run. Limiting it to the contiguous run keeps two libraries mapped
+/// out of one APK apart. `None` if no file mapping contains `addr` or the run
+/// has no executable mapping.
+#[cfg(any(target_os = "android", test))]
+fn module_in_maps(maps: &str, addr: usize) -> Option<MapsModule> {
+    struct Line<'a> {
+        start: usize,
+        end: usize,
+        exec: bool,
+        offset: u64,
+        path: &'a str,
+    }
+
+    let lines: Vec<Line<'_>> = maps
+        .lines()
+        .filter_map(|line| {
+            // `start-end perms offset dev inode<spaces>pathname`; the pathname
+            // may contain spaces, so it is the remainder after the fifth field.
+            let mut rest = line;
+            let mut fields = [""; 5];
+            for f in &mut fields {
+                rest = rest.trim_start();
+                let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+                *f = &rest[..end];
+                rest = &rest[end..];
+            }
+            let (start, end) = fields[0].split_once('-')?;
+            Some(Line {
+                start: usize::from_str_radix(start, 16).ok()?,
+                end: usize::from_str_radix(end, 16).ok()?,
+                exec: fields[1].contains('x'),
+                offset: u64::from_str_radix(fields[2], 16).unwrap_or(0),
+                path: rest.trim(),
+            })
+        })
+        .collect();
+
+    let hit = lines
+        .iter()
+        .position(|l| (l.start..l.end).contains(&addr))?;
+    let path = lines[hit].path;
+    if path.is_empty() || path.starts_with('[') {
+        return None;
+    }
+    let same_or_anon = |l: &Line<'_>| l.path == path || l.path.is_empty();
+
+    let mut first = hit;
+    while first > 0 && same_or_anon(&lines[first - 1]) {
+        first -= 1;
+    }
+    let mut last = hit;
+    while last + 1 < lines.len() && same_or_anon(&lines[last + 1]) {
+        last += 1;
+    }
+    let run = &lines[first..=last];
+
+    let exec = run.iter().find(|l| l.exec && l.path == path)?;
+    let max_end = run
+        .iter()
+        .filter(|l| l.path == path)
+        .map(|l| l.end)
+        .max()
+        .unwrap_or(exec.end);
+    Some(MapsModule {
+        path: path.to_string(),
+        exec_base: exec.start,
+        exec_file_offset: exec.offset,
+        max_end,
+    })
 }
 
 /// macOS/iOS module info: runtime base + total mapped image span.
@@ -1583,13 +1638,65 @@ unsafe fn macho_image_size(header: *const std::ffi::c_void) -> usize {
     (max_end - header_vmaddr) as usize
 }
 
-/// Get the base address and image size of `libciris_verify_ffi` on macOS/iOS.
+/// Get the base address and image size of the image holding CIRISVerify's
+/// code on macOS/iOS.
 ///
-/// Iterates loaded dyld images to find our library. When loaded as a
-/// framework/dylib, image 0 is the main executable (wrong base).
-/// Falls back to image 0 if our library name isn't found (statically linked).
+/// `dladdr` on [`self_code_address`] gives `dli_fbase`, the Mach-O header of
+/// the image containing that address: the `libciris_verify_ffi` dylib, the
+/// `CIRISVerify` framework, or a host image that links verify statically
+/// (CIRISVerify#210). Only if `dladdr` fails does it fall back to the old
+/// name search over the dyld images, then to image 0.
 #[cfg(any(target_os = "macos", target_os = "ios"))]
 fn get_code_base_macos() -> Option<MachoCodeBaseInfo> {
+    // `Dl_info` from <dlfcn.h>; declared here because this module is in the
+    // `std` tier, which does not depend on `libc`.
+    #[repr(C)]
+    #[allow(dead_code)]
+    struct DlInfo {
+        dli_fname: *const std::ffi::c_char,
+        dli_fbase: *mut std::ffi::c_void,
+        dli_sname: *const std::ffi::c_char,
+        dli_saddr: *mut std::ffi::c_void,
+    }
+    extern "C" {
+        fn dladdr(addr: *const std::ffi::c_void, info: *mut DlInfo) -> i32;
+    }
+
+    let target = self_code_address();
+    let mut info = DlInfo {
+        dli_fname: std::ptr::null(),
+        dli_fbase: std::ptr::null_mut(),
+        dli_sname: std::ptr::null(),
+        dli_saddr: std::ptr::null_mut(),
+    };
+    // SAFETY: `info` is a valid out-pointer; the loader only compares `target`.
+    let rc = unsafe { dladdr(target as *const std::ffi::c_void, &mut info) };
+    if rc != 0 && !info.dli_fbase.is_null() {
+        let header = info.dli_fbase as *const std::ffi::c_void;
+        // SAFETY: `dli_fbase` is the mapped Mach-O header of a loaded image.
+        let image_size = unsafe { macho_image_size(header) };
+        tracing::info!(
+            "get_code_base_macos: image containing 0x{:x} has base=0x{:x}, image_size=0x{:x}",
+            target,
+            header as usize,
+            image_size
+        );
+        return Some(MachoCodeBaseInfo {
+            base: header as usize,
+            image_size,
+        });
+    }
+    tracing::warn!(
+        "get_code_base_macos: dladdr found no image containing 0x{:x}; searching dyld images by name",
+        target
+    );
+    get_code_base_macos_by_name()
+}
+
+/// The pre-#210 lookup: the dyld image named `libciris_verify_ffi` or
+/// `CIRISVerify`, else image 0. Used only when `dladdr` fails.
+#[cfg(any(target_os = "macos", target_os = "ios"))]
+fn get_code_base_macos_by_name() -> Option<MachoCodeBaseInfo> {
     extern "C" {
         fn _dyld_image_count() -> u32;
         fn _dyld_get_image_header(image_index: u32) -> *const std::ffi::c_void;
@@ -1725,9 +1832,9 @@ fn get_code_base_windows() -> Option<WindowsModuleInfo> {
     }
 
     unsafe {
-        // Address inside our own module — `get_code_base_windows` itself is
-        // guaranteed to live in the DLL/EXE that ships CIRISVerify.
-        let addr_in_module = get_code_base_windows as *const () as *const u16;
+        // Address inside our own module: the DLL/EXE that holds CIRISVerify's
+        // code, whatever its name (CIRISVerify#210).
+        let addr_in_module = self_code_address() as *const u16;
         let mut handle: *mut std::ffi::c_void = ptr::null_mut();
         let ok = GetModuleHandleExW(
             GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
@@ -1862,6 +1969,109 @@ fn current_timestamp() -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // ---- CIRISVerify#210: the code base is the module holding our code ----
+
+    /// `dl_iterate_phdr` resolves the object containing this crate's code
+    /// (here the test executable, which is not named `libciris_verify_ffi.so`),
+    /// and that address lies in `[base, base + image_size)`.
+    #[cfg(all(target_os = "linux", not(target_os = "android")))]
+    #[test]
+    fn get_code_base_linux_returns_the_module_holding_our_code() {
+        let info = get_code_base_linux().expect("object containing our code found");
+        let addr = self_code_address();
+        assert!(info.base != 0 && info.image_size > 0, "{info:?}");
+        assert!(
+            addr >= info.base && addr < info.base + info.image_size,
+            "0x{addr:x} not in [0x{:x}..0x{:x})",
+            info.base,
+            info.base + info.image_size
+        );
+        // Cached second call agrees.
+        let again = get_code_base_linux().unwrap();
+        assert_eq!((again.base, again.image_size), (info.base, info.image_size));
+    }
+
+    /// On macOS/iOS `dladdr` gives the image containing our code.
+    #[cfg(any(target_os = "macos", target_os = "ios"))]
+    #[test]
+    fn get_code_base_macos_returns_the_module_holding_our_code() {
+        let info = get_code_base_macos().expect("image containing our code found");
+        let addr = self_code_address();
+        assert!(
+            addr >= info.base && addr < info.base + info.image_size,
+            "0x{addr:x} not in [0x{:x}..0x{:x})",
+            info.base,
+            info.base + info.image_size
+        );
+    }
+
+    /// The maps parser behind the Android lookup picks the module by address:
+    /// a host library that folds verify in, not the name-matching library, and
+    /// keeps two libraries mapped from one APK apart.
+    #[test]
+    fn module_in_maps_finds_the_module_by_address() {
+        let maps = "\
+5500000000-5500001000 r--p 00000000 fd:01 100 /system/bin/app_process64
+7000000000-7000010000 r--p 00000000 fd:01 200 /data/app/x/lib/arm64/libhost_native.so
+7000010000-7000050000 r-xp 00010000 fd:01 200 /data/app/x/lib/arm64/libhost_native.so
+7000050000-7000051000 ---p 00000000 00:00 0
+7000051000-7000058000 rw-p 00050000 fd:01 200 /data/app/x/lib/arm64/libhost_native.so
+7000058000-7000060000 rw-p 00000000 00:00 0
+7100000000-7100004000 r--p 00000000 fd:01 300 /data/app/x/lib/arm64/libciris_verify_ffi.so
+7100004000-7100020000 r-xp 00004000 fd:01 300 /data/app/x/lib/arm64/libciris_verify_ffi.so
+7100020000-7100022000 rw-p 00020000 fd:01 300 /data/app/x/lib/arm64/libciris_verify_ffi.so
+7200000000-7200002000 r--p 00100000 fd:01 400 /data/app/x/base.apk
+7200002000-7200008000 r-xp 00102000 fd:01 400 /data/app/x/base.apk
+7200008000-7200009000 r--p 00000000 fd:01 500 /data/app/x/lib/arm64/libother.so
+7200009000-720000a000 r--p 00200000 fd:01 400 /data/app/x/base.apk
+7200010000-7200018000 r-xp 00202000 fd:01 400 /data/app/x/base.apk
+7ffd000000-7ffd021000 rw-p 00000000 00:00 0 [stack]
+";
+        // Inside the host library's code: the host, with its high-water end
+        // across the anonymous gap.
+        assert_eq!(
+            module_in_maps(maps, 0x70_0002_0000),
+            Some(MapsModule {
+                path: "/data/app/x/lib/arm64/libhost_native.so".into(),
+                exec_base: 0x70_0001_0000,
+                exec_file_offset: 0x10000,
+                max_end: 0x70_0005_8000,
+            })
+        );
+        // The standalone library: unchanged from the name lookup's answer.
+        assert_eq!(
+            module_in_maps(maps, 0x71_0000_8000),
+            Some(MapsModule {
+                path: "/data/app/x/lib/arm64/libciris_verify_ffi.so".into(),
+                exec_base: 0x71_0000_4000,
+                exec_file_offset: 0x4000,
+                max_end: 0x71_0002_2000,
+            })
+        );
+        // Two libraries mapped out of one APK stay apart.
+        let first_apk_lib = module_in_maps(maps, 0x72_0000_3000).unwrap();
+        assert_eq!(
+            (first_apk_lib.exec_base, first_apk_lib.max_end),
+            (0x72_0000_2000, 0x72_0000_8000)
+        );
+        let second_apk_lib = module_in_maps(maps, 0x72_0001_0010).unwrap();
+        assert_eq!(second_apk_lib.exec_base, 0x72_0001_0000);
+        // No file mapping: nothing.
+        assert_eq!(module_in_maps(maps, 0x70_0005_0010), None);
+        assert_eq!(module_in_maps(maps, 0x7f_fd00_0010), None);
+        assert_eq!(module_in_maps(maps, 0x1000), None);
+    }
+
+    /// The live maps of this process resolve the module containing our code.
+    #[cfg(any(target_os = "linux", target_os = "android"))]
+    #[test]
+    fn module_in_maps_resolves_this_process() {
+        let maps = std::fs::read_to_string("/proc/self/maps").unwrap();
+        let addr = self_code_address();
+        let m = module_in_maps(&maps, addr).expect("module containing our code");
+        assert!(addr >= m.exec_base && addr < m.max_end, "{m:?}");
+    }
 
     #[test]
     fn test_function_entry_serialization() {

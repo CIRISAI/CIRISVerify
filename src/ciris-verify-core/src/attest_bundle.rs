@@ -776,6 +776,8 @@ mod tests {
                 functions_passed: 10,
                 registry_reachable: true,
                 error: None,
+                module_path: Some("/usr/lib/libciris_verify_ffi.so".into()),
+                embedded_in_host: false,
             }),
             key_attestation: Some(KeyAttestationResult {
                 key_type: "portal".into(),

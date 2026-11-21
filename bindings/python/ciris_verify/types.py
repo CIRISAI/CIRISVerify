@@ -467,6 +467,47 @@ class BinaryIntegrityStatus(BaseModel):
         return self.status not in ("unavailable", "not_found", "pending")
 
 
+class SelfVerificationResult(BaseModel):
+    """Level 1 self-verification, the `self_verification` member of
+    `run_attestation`'s result (`SelfVerificationResult` in Rust).
+
+    `module_path` and `embedded_in_host` (22.2.3+ and 23.4.1+, CIRISVerify#210) are
+    measurements: `embedded_in_host` is true when verify runs statically folded
+    into a host binary rather than from its own library or executable. When
+    the registry has no manifest for that host binary, `error` is
+    `EMBEDDED_NO_MANIFEST` and `binary_valid` / `functions_valid` stay false:
+    not a pass. Payloads from earlier libraries lack both fields and parse to
+    `None` / `False`.
+    """
+    model_config = ConfigDict(frozen=True, extra="ignore")
+
+    binary_valid: bool = False
+    functions_valid: bool = False
+    valid: bool = False
+    binary_version: str = ""
+    target: str = ""
+    binary_hash: str = ""
+    expected_hash: Optional[str] = None
+    functions_checked: int = 0
+    functions_passed: int = 0
+    registry_reachable: bool = False
+    error: Optional[str] = None
+    module_path: Optional[str] = Field(
+        default=None, description="File verify's code runs from (found by address)"
+    )
+    embedded_in_host: bool = Field(
+        default=False, description="module_path is a host binary, not verify's own artifact"
+    )
+
+    def is_embedded_without_manifest(self) -> bool:
+        """Embedded in a host binary the registry has no manifest for."""
+        return self.error == EMBEDDED_NO_MANIFEST
+
+
+EMBEDDED_NO_MANIFEST = "embedded_in_host: no manifest for host binary"
+"""`SelfVerificationResult.error` for an embedded install without a manifest."""
+
+
 class PythonModuleHashes(BaseModel):
     """Python module hashes for Android/mobile code integrity (v0.8.1).
 
