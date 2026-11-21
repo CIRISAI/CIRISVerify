@@ -2,8 +2,8 @@
 //! CIRISConstitution v1.0-rc21 b016df4, also for the cross-check; seat
 //! `dial_hints` as proposed for rc22).
 //!
-//! `tests/vectors/edition2/genesis/genesis_bundles_v5.json` was written by
-//! `gen_genesis_bundles_v5.py` beside it: its own CBOR encoder, dilithium-py,
+//! `tests/vectors/edition2/genesis/genesis_bundles_v6.json` was written by
+//! `gen_genesis_bundles_v6.py` beside it: its own CBOR encoder, dilithium-py,
 //! pyca/cryptography and kyber-py, sharing no code with verify. Every case is
 //! replayed through [`read_genesis_bundles`]; the custody gate trusts the
 //! file's mock attestation root, supplied as the reader's trust store. The
@@ -39,17 +39,17 @@ use ciris_verify_core::trust_anchor_store::{
 };
 use serde_json::Value as J;
 
-const FILE: &str = include_str!("vectors/edition2/genesis/genesis_bundles_v5.json");
+const FILE: &str = include_str!("vectors/edition2/genesis/genesis_bundles_v6.json");
 /// The statements, split so each file stays under the repository's size limit.
 const POOL: [&str; 8] = [
-    include_str!("vectors/edition2/genesis/pool_v5_0.json"),
-    include_str!("vectors/edition2/genesis/pool_v5_1.json"),
-    include_str!("vectors/edition2/genesis/pool_v5_2.json"),
-    include_str!("vectors/edition2/genesis/pool_v5_3.json"),
-    include_str!("vectors/edition2/genesis/pool_v5_4.json"),
-    include_str!("vectors/edition2/genesis/pool_v5_5.json"),
-    include_str!("vectors/edition2/genesis/pool_v5_6.json"),
-    include_str!("vectors/edition2/genesis/pool_v5_7.json"),
+    include_str!("vectors/edition2/genesis/pool_v6_0.json"),
+    include_str!("vectors/edition2/genesis/pool_v6_1.json"),
+    include_str!("vectors/edition2/genesis/pool_v6_2.json"),
+    include_str!("vectors/edition2/genesis/pool_v6_3.json"),
+    include_str!("vectors/edition2/genesis/pool_v6_4.json"),
+    include_str!("vectors/edition2/genesis/pool_v6_5.json"),
+    include_str!("vectors/edition2/genesis/pool_v6_6.json"),
+    include_str!("vectors/edition2/genesis/pool_v6_7.json"),
 ];
 
 /// The case file, with the pool merged in under `pool`.
@@ -257,9 +257,16 @@ fn check_placement(id: &str, p: &GenesisPlacement, e: &J) {
             hex::encode(x.onion_hop_xwing_pubkey)
         ))));
     }
-    let ew = e["witnesses"].as_array().unwrap();
-    assert_eq!(p.witnesses.len(), ew.len(), "{id}");
-    for (x, y) in p.witnesses.iter().zip(ew) {
+    // The expected directory: `transparency_services` in v6; the
+    // holder-device and commitments files (written over v5's machinery, which
+    // they still pin) name it `witnesses`. An expectation key, not a wire name.
+    let ew = e
+        .get("transparency_services")
+        .or_else(|| e.get("witnesses"))
+        .and_then(J::as_array)
+        .unwrap();
+    assert_eq!(p.transparency_services.len(), ew.len(), "{id}");
+    for (x, y) in p.transparency_services.iter().zip(ew) {
         assert_eq!(x.identity_ref, y["identity_ref"].as_str().unwrap(), "{id}");
         assert_eq!(h(&x.kid), y["kid"].as_str().unwrap(), "{id}");
         assert_eq!(h(&x.record), y["record"].as_str().unwrap(), "{id}");

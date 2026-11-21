@@ -240,7 +240,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           repository: CIRISAI/CIRISConstitution
-          ref: 8c436b8bf88e055c637b72d4d8d98d92a3bfa625 # rc22 8c436b8 (the commit 23.4.0 vendors)
+          ref: bab36531a36473d8c29f9c4023cbe821ae16311d # v1.0-rc22-pre2 bab3653 (the commit 23.4.1 vendors)
           path: .cc
       - name: CC registry tokens — every emitted family (matcher replay)
         env:

@@ -2,8 +2,8 @@
 
 | File | CC source | CC commit | SHA-256 (LF) |
 |------|-----------|-----------|--------------|
-| `family_authorship.json` | `manifests/family_authorship.json`, CC's canonical extract of the `authorship` and `second_signers` cells of `manifests/family_model.json` (CC 1.0-rc22) | `8c436b8` (rc22 branch) | `4a3304165c6cfbe5247cad2195c0f284a434789354c462da0e67638e8d2b79a6`; source model `43f8ad5378aa70cdacf4287445789dfc3611c8a29204c66444cbce6ffe1a2f95` |
-| `namespace_registry.json` | `manifests/namespace_registry.json` (CC 1.0-rc22) | `8c436b8` (rc22 branch) | `01f6c39b14de1ca068a26b18ee5ddddb4a5989e4394829ab4d5e5a20bfee3645` |
+| `family_authorship.json` | `manifests/family_authorship.json`, CC's canonical extract of the `authorship` and `second_signers` cells of `manifests/family_model.json` (CC 1.0-rc22) | `bab3653` (v1.0-rc22-pre2) | `91acd612cba54afe558fc8e92c6a79f4231e28bbf6bf947341e51da52443ad5d`; source model `6749922415f8e431724ec834c2fa37d1c971e8d48e18f74da35c046e765b2b96` |
+| `namespace_registry.json` | `manifests/namespace_registry.json` (CC 1.0-rc22) | `bab3653` (v1.0-rc22-pre2) | `054ed9efc3c3f88dbe89f53453bdd43905b95592273d0e30742cf157389927bb` |
 
 `namespace_registry.json` is embedded by `src/namespace_match.rs` (`include_str!`), the
 port of CC's reference matcher `tools/cc_namespace_match.py`. Its replay vectors are
@@ -26,13 +26,13 @@ evaluated by `edition2::family::select`, the port of CC's reference evaluator
 family by `namespace_match::bind_leaf`) and the caller's `SelectContext`. CC's replay
 vectors `manifests/family_select_vectors.json` (246 vectors) are vendored at
 `tests/vectors/cc/family_select_vectors.json` (SHA-256
-`9b221e7b314aeac891b31ef90f35f10fcf2995391c70c6db0485591c2d26049b`) and run by
+`e6a0fdba0afac3d809702077a7ec4980bb9a2190eec6e2bd9915493b70ad1469`) and run by
 `tests/family_select_vectors.rs`, which pins both digests, the commit and the source
 model digest. The `count` cells those vectors also exercise are not in CC's extract:
 `tests/vectors/cc/family_count_cells.json` carries the count cells written as arms, cut
 from the same model (test-only; not embedded):
 
-    git -C ../CIRISConstitution show 8c436b8:manifests/family_model.json > /tmp/fm.json
+    git -C ../CIRISConstitution show bab3653:manifests/family_model.json > /tmp/fm.json
     python3 -I -c 'import hashlib,json,sys; raw=open(sys.argv[1],"rb").read(); m=json.loads(raw); print(json.dumps({"_meta":{"source":"manifests/family_model.json","source_sha256":hashlib.sha256(raw).hexdigest(),"cells":"count"},"families":{r["family"]:{"value":r["count"].get("value"),"source":r["count"].get("source"),"arms":[{"when":a["when"],"doors":a["doors"]} for a in r["count"]["arms"]]} for r in m["rows"] if r["count"].get("arms")}},indent=1,sort_keys=True))' /tmp/fm.json > family_count_cells.json
 
 To refresh the family files: `git -C ../CIRISConstitution show <commit>:manifests/family_authorship.json`

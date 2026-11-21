@@ -152,7 +152,7 @@ fn check_placement(id: &str, p: &GenesisPlacement, e: &J, seat_xwing: &BTreeSet<
             hex::encode(x.onion_hop_xwing_pubkey)
         )));
     }
-    assert!(p.witnesses.is_empty(), "{id}");
+    assert!(p.transparency_services.is_empty(), "{id}");
 }
 
 fn refused(r: &[(usize, &str)], e: &J) {
