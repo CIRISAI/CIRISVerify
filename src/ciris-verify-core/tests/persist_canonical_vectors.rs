@@ -8,8 +8,8 @@
 //! the version's `persist_row_hash`; every canonicalizer probe and instant
 //! truncation reproduces.
 
-use chrono::{DateTime, Utc};
 use ciris_verify_core::persist_canonical;
+use ciris_verify_core::utc::UtcDateTime;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
@@ -98,7 +98,7 @@ fn every_instant_truncation_reproduces() {
     assert_eq!(instants.len(), 7);
     for i in instants {
         let raw = i["raw"].as_str().unwrap();
-        let t: DateTime<Utc> = raw.parse().unwrap();
+        let t: UtcDateTime = raw.parse().unwrap();
         let serde = serde_json::to_value(t).unwrap();
         assert_eq!(serde, i["serde"], "{raw}: serde rendering");
         let mut truncated = serde.clone();

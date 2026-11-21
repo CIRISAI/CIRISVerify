@@ -42,7 +42,7 @@
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use chrono::{DateTime, Duration, Utc};
+use crate::utc::UtcDateTime;
 use serde::{Deserialize, Serialize};
 
 use crate::edition2::accord_halt::{InvocationRow, InvokeKind, LifecycleKind, LifecycleRow};
@@ -58,7 +58,7 @@ pub struct LatchedHalt {
     /// The halt's `invocation_id`.
     pub halt_id: String,
     /// When THIS node received it — the fuse's origin.
-    pub received_at: DateTime<Utc>,
+    pub received_at: UtcDateTime,
     /// Whether a strict majority confirmed it before the fuse ran out.
     pub confirmed: bool,
     /// The halt's row id (its lifecycle rows name it by this). `None` only in
@@ -106,7 +106,7 @@ impl HaltLatch {
     /// The halt in force at `now`, if any. A lone halt past its fuse is not in
     /// force.
     #[must_use]
-    pub fn active_halt(&self, now: DateTime<Utc>, halt_fuse_secs: u64) -> Option<&LatchedHalt> {
+    pub fn active_halt(&self, now: UtcDateTime, halt_fuse_secs: u64) -> Option<&LatchedHalt> {
         self.halt
             .as_ref()
             .filter(|h| h.confirmed || now < lapses_at(h, halt_fuse_secs))
@@ -115,13 +115,13 @@ impl HaltLatch {
     /// **The act gate's question:** are agents paused at `now`? Read before
     /// every effectful act (CC 4.2.1.1, CC 1.13.6).
     #[must_use]
-    pub fn is_paused(&self, now: DateTime<Utc>, halt_fuse_secs: u64) -> bool {
+    pub fn is_paused(&self, now: UtcDateTime, halt_fuse_secs: u64) -> bool {
         self.active_halt(now, halt_fuse_secs).is_some()
     }
 
     /// When the latched halt lapses — `None` if clear or confirmed.
     #[must_use]
-    pub fn lapses_at(&self, halt_fuse_secs: u64) -> Option<DateTime<Utc>> {
+    pub fn lapses_at(&self, halt_fuse_secs: u64) -> Option<UtcDateTime> {
         self.halt
             .as_ref()
             .filter(|h| !h.confirmed)
@@ -145,7 +145,7 @@ impl HaltLatch {
     pub fn apply_forward(
         &mut self,
         row: ForwardRow<'_>,
-        now: DateTime<Utc>,
+        now: UtcDateTime,
         halt_fuse_secs: u64,
     ) -> LatchOutcome {
         let step = match row {
@@ -180,7 +180,7 @@ impl HaltLatch {
     }
 
     /// The one state machine.
-    fn step(&mut self, step: Step<'_>, now: DateTime<Utc>, halt_fuse_secs: u64) -> LatchOutcome {
+    fn step(&mut self, step: Step<'_>, now: UtcDateTime, halt_fuse_secs: u64) -> LatchOutcome {
         // A lone halt whose fuse has run is gone before anything else is judged:
         // a fresh halt may then pause again, and a late confirmation finds
         // nothing to confirm.
@@ -269,23 +269,23 @@ fn names(target: Digest32, h: &LatchedHalt) -> bool {
 }
 
 /// Was `now` after `valid_until_ms` (POSIX ms)?
-fn received_after(now: DateTime<Utc>, valid_until_ms: u64) -> bool {
+fn received_after(now: UtcDateTime, valid_until_ms: u64) -> bool {
     u64::try_from(now.timestamp_millis()).is_ok_and(|n| n > valid_until_ms)
 }
 
-fn lapses_at(h: &LatchedHalt, halt_fuse_secs: u64) -> DateTime<Utc> {
+fn lapses_at(h: &LatchedHalt, halt_fuse_secs: u64) -> UtcDateTime {
     let secs = i64::try_from(halt_fuse_secs).unwrap_or(i64::MAX);
     h.received_at
-        .checked_add_signed(Duration::try_seconds(secs).unwrap_or(Duration::MAX))
-        .unwrap_or(DateTime::<Utc>::MAX_UTC)
+        .checked_add_secs(secs)
+        .unwrap_or(UtcDateTime::MAX)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    fn t(s: &str) -> DateTime<Utc> {
-        DateTime::parse_from_rfc3339(s).unwrap().with_timezone(&Utc)
+    fn t(s: &str) -> UtcDateTime {
+        UtcDateTime::parse_from_rfc3339(s).unwrap()
     }
 
     /// Steps are driven directly here: the latch's transitions are what is
@@ -353,7 +353,10 @@ mod tests {
             apply(&mut l, halt("h2", 2), late, FUSE),
             LatchOutcome::Paused
         );
-        assert_eq!(l.lapses_at(FUSE), Some(t(late) + Duration::seconds(86_400)));
+        assert_eq!(
+            l.lapses_at(FUSE),
+            Some(t(late).checked_add_secs(86_400).unwrap())
+        );
     }
 
     /// A majority resumption ends a lone halt too (a stolen sealed row need not

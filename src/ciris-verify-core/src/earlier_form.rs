@@ -34,7 +34,7 @@
 #[allow(unused_imports)]
 use crate::prelude::*;
 
-use chrono::{DateTime, Utc};
+use crate::utc::UtcDateTime;
 use ciris_crypto::{
     ClassicalVerifier, Ed25519Verifier, HybridSignature, HybridVerifier, MlDsa65Verifier,
     PqcVerifier,
@@ -139,7 +139,7 @@ pub struct EarlierSignedTreeHead {
     /// Merkle root at `tree_size`.
     pub root_hash: [u8; 32],
     /// Wall-clock time the STH was signed.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: UtcDateTime,
     /// The operator's bound hybrid signature over [`Self::signing_bytes_of`].
     pub signature: HybridSignature,
     /// Witness cosignatures of the earlier form.
@@ -398,7 +398,7 @@ mod tests {
 
     /// An STH signed the way v22's `TransparencyLog::sign_head` did.
     fn sth(operator: &Signer) -> EarlierSignedTreeHead {
-        let ts = DateTime::from_timestamp(1_700_000_000, 12_345).unwrap();
+        let ts = UtcDateTime::from_timestamp(1_700_000_000, 12_345).unwrap();
         let root = [0x42; 32];
         let bytes = SignedTreeHead::signing_bytes("audit-log", 4, &root, ts);
         EarlierSignedTreeHead {

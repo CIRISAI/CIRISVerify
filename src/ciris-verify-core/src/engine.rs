@@ -573,7 +573,7 @@ impl LicenseEngine {
             pqc_signature,
             merkle_root: self.transparency_log.merkle_root().unwrap_or([0u8; 32]),
             log_entry_count: self.transparency_log.entry_count().unwrap_or(0),
-            generated_at: chrono::Utc::now().timestamp(),
+            generated_at: crate::utc::UtcDateTime::now().timestamp(),
             binary_version: env!("CARGO_PKG_VERSION").to_string(),
             hardware_type: format!("{:?}", self.hw_signer.hardware_type()),
             running_in_vm,
@@ -594,7 +594,7 @@ impl LicenseEngine {
     async fn verify_binary_integrity_from_registry(&self) -> BinaryIntegrityStatus {
         let version = env!("CARGO_PKG_VERSION");
         let target = registry::current_target();
-        let now = chrono::Utc::now().timestamp();
+        let now = crate::utc::UtcDateTime::now().timestamp();
 
         // Check cache first
         if let Ok(cache) = self.binary_integrity_cache.read() {
@@ -972,7 +972,7 @@ impl LicenseEngine {
         match license {
             Some(lic) => {
                 // Check expiration
-                let now = chrono::Utc::now().timestamp();
+                let now = crate::utc::UtcDateTime::now().timestamp();
                 if now > lic.expires_at {
                     warn!("License expired");
                     return (LicenseStatus::ErrorLicenseExpired, Some(lic));
@@ -1142,14 +1142,14 @@ impl LicenseEngine {
                 signature_mode: sig_mode,
             },
             integrity_valid: self.integrity_valid,
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: crate::utc::UtcDateTime::now().timestamp(),
         }
     }
 
     /// Build validation results: one entry per trust-root host, plus the
     /// selected root.
     fn build_validation_results(&self, validation: &ValidationResult) -> ValidationResults {
-        validation.to_validation_results(chrono::Utc::now().timestamp())
+        validation.to_validation_results(crate::utc::UtcDateTime::now().timestamp())
     }
 
     /// Build empty validation results (validation not performed).
@@ -1166,7 +1166,7 @@ impl LicenseEngine {
         ResponseMetadata {
             protocol_version: "2.0.0".to_string(),
             binary_version: env!("CARGO_PKG_VERSION").to_string(),
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: crate::utc::UtcDateTime::now().timestamp(),
             cache_ttl: self.config.cache_ttl.as_secs() as u32,
             request_id: generate_request_id(),
         }
@@ -1395,8 +1395,9 @@ fn generate_request_id() -> String {
 
 /// Format a Unix timestamp.
 fn format_timestamp(ts: i64) -> String {
-    chrono::DateTime::from_timestamp(ts, 0)
-        .map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+    // `Display` is chrono's `%Y-%m-%d %H:%M:%S UTC` at a whole second.
+    crate::utc::UtcDateTime::from_timestamp(ts, 0)
+        .map(|dt| dt.to_string())
         .unwrap_or_else(|| "Unknown".to_string())
 }
 

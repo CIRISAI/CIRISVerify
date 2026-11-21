@@ -731,7 +731,7 @@ pub fn generate_manifest(agent_root: &Path, version: &str) -> Result<FileManifes
     }
     let manifest_hash = hex::encode(hasher.finalize());
 
-    let generated_at = chrono::Utc::now().to_rfc3339();
+    let generated_at = crate::utc::UtcDateTime::now().to_rfc3339();
 
     Ok(FileManifest {
         version: version.to_string(),

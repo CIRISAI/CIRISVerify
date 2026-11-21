@@ -742,10 +742,11 @@ impl<'a> Validity<'a> {
         let bad = |what: &str, v: &str| VerifyError::IntegrityError {
             message: format!("{what} must be an RFC-3339 instant, got {v:?}"),
         };
-        let start =
-            chrono::DateTime::parse_from_rfc3339(from).map_err(|_| bad("valid_from", from))?;
+        let start = crate::utc::UtcDateTime::parse_from_rfc3339(from)
+            .map_err(|_| bad("valid_from", from))?;
         if let Some(u) = until {
-            let end = chrono::DateTime::parse_from_rfc3339(u).map_err(|_| bad("valid_until", u))?;
+            let end = crate::utc::UtcDateTime::parse_from_rfc3339(u)
+                .map_err(|_| bad("valid_until", u))?;
             if end <= start {
                 return Err(VerifyError::IntegrityError {
                     message: format!(
@@ -765,16 +766,27 @@ impl<'a> Validity<'a> {
             // about a record nobody tampered with.
             //
             // A caller may pass any RFC-3339 form; what is PINNED is what gets
-            // signed: UTC, `Z`, second precision.
+            // signed: UTC, `Z`, millisecond precision, always `.sssZ` (CC 2.6.2).
             //
             // Deliberately NOT applied to `valid_from`: it is an existing
             // signed member, so rewriting it would change the canonical bytes
             // of every record already produced. That asymmetry is a
             // compatibility fact rather than a preference.
+            // CC 2.6.2's signed form is millisecond-exact, always `.sssZ`
+            // (CIRISPersist#659): an input finer than a millisecond is
+            // refused, never truncated.
+            if end.timestamp_subsec_nanos() % 1_000_000 != 0 {
+                return Err(VerifyError::IntegrityError {
+                    message: format!(
+                        "valid_until ({u}) carries sub-millisecond precision; the signed \
+                         form is millisecond-exact (CC 2.6.2)"
+                    ),
+                });
+            }
             return Ok(Self {
                 from,
                 until: Some(
-                    // `AutoSi`, NOT `Secs`. Truncating to whole seconds could
+                    // Millisecond form, NOT `Secs`. Truncating to whole seconds could
                     // move the expiry EARLIER than `valid_from` — for
                     // `from = ...00.100Z` and `until = ...00.900Z` the
                     // ordering check above passes on the parsed instants and
@@ -782,8 +794,7 @@ impl<'a> Validity<'a> {
                     // inverted window that this very validator would reject
                     // (#268 round 9). Normalizing the REPRESENTATION must not
                     // change the INSTANT.
-                    end.with_timezone(&chrono::Utc)
-                        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+                    end.to_rfc3339_opts(crate::utc::SecondsFormat::Millis, true),
                 ),
             });
         }
@@ -986,12 +997,13 @@ mod tests {
 
     /// Cross-impl drift guard: verify emits the RFC-3339 timestamp fields as
     /// `String`, but CIRISPersist's `KeyRecord` deserializes them into
-    /// `chrono::DateTime<Utc>`. A same-impl round-trip can't catch a value that
+    /// `DateTime<Utc>` (chrono's serde, which `UtcDateTime` reproduces). A
+    /// same-impl round-trip can't catch a value that
     /// verify emits but Persist's stricter types reject — so deserialize the
     /// produced JSON into a Persist-shaped struct here.
     #[tokio::test]
     async fn produced_json_deserializes_into_persist_datetime_shape() {
-        use chrono::{DateTime, Utc};
+        use crate::utc::UtcDateTime;
 
         // Mirrors CIRISPersist `federation::types::KeyRecord`'s typed fields
         // (the security-bearing subset) — same field names, `DateTime<Utc>`
@@ -1006,18 +1018,18 @@ mod tests {
             algorithm: String,
             identity_type: String,
             identity_ref: String,
-            valid_from: DateTime<Utc>,
+            valid_from: UtcDateTime,
             #[serde(default)]
-            valid_until: Option<DateTime<Utc>>,
+            valid_until: Option<UtcDateTime>,
             registration_envelope: Value,
             original_content_hash: String,
             scrub_signature_classical: String,
             #[serde(default)]
             scrub_signature_pqc: Option<String>,
             scrub_key_id: String,
-            scrub_timestamp: DateTime<Utc>,
+            scrub_timestamp: UtcDateTime,
             #[serde(default)]
-            pqc_completed_at: Option<DateTime<Utc>>,
+            pqc_completed_at: Option<UtcDateTime>,
             persist_row_hash: String,
             #[serde(default)]
             roles: Vec<String>,
@@ -1056,7 +1068,7 @@ mod tests {
         // valid_from parsed as a real timestamp (not a bare/offsetless string).
         assert_eq!(
             parsed.valid_from,
-            "2026-06-18T00:00:00Z".parse::<DateTime<Utc>>().unwrap()
+            "2026-06-18T00:00:00Z".parse::<UtcDateTime>().unwrap()
         );
 
         // #174: a 2-scrub canonical record round-trips too — the extra anchor
@@ -1559,7 +1571,7 @@ mod expiry {
     use crate::self_at_login::HybridSigningIdentity;
 
     const FROM: &str = "2026-08-19T00:00:00Z";
-    const UNTIL: &str = "2027-08-19T00:00:00Z";
+    const UNTIL: &str = "2027-08-19T00:00:00.000Z"; // the CC 2.6.2 form the producers sign
 
     /// **The security property.** An expiry outside the signed bytes is
     /// strippable — anyone could drop it and the record would still verify.
@@ -1600,7 +1612,7 @@ mod expiry {
         let a = Validity::checked(FROM, Some("2027-08-19T00:00:00+02:00")).unwrap();
         let b = Validity::checked(FROM, Some("2027-08-18T22:00:00Z")).unwrap();
         assert_eq!(a.until(), b.until(), "same instant must sign identically");
-        assert_eq!(a.until(), Some("2027-08-18T22:00:00Z"));
+        assert_eq!(a.until(), Some("2027-08-18T22:00:00.000Z"));
 
         // And the pinned form is what reaches the signed envelope.
         let id = HybridSigningIdentity::generate("node-1").unwrap();
@@ -1609,8 +1621,23 @@ mod expiry {
             .unwrap();
         assert_eq!(
             signed.record.valid_until_in_envelope().as_deref(),
-            Some("2027-08-18T22:00:00Z")
+            Some("2027-08-18T22:00:00.000Z")
         );
+    }
+
+    /// **CIRISPersist#659 — a whole-second expiry keeps its fraction.**
+    /// `AutoSi` wrote `…:15Z` for an instant on a whole second, which persist's
+    /// subject binding refuses as not CC 2.6.2's `.sssZ` form. The signed form
+    /// always carries three fraction digits, and an input finer than a
+    /// millisecond is refused rather than truncated.
+    #[tokio::test]
+    async fn whole_second_expiry_keeps_milliseconds() {
+        use crate::federation_self_record::Validity;
+        let v = Validity::checked(FROM, Some("2026-11-21T09:26:15Z")).unwrap();
+        assert_eq!(v.until(), Some("2026-11-21T09:26:15.000Z"));
+        let v = Validity::checked(FROM, Some("2026-11-21T09:26:15.250Z")).unwrap();
+        assert_eq!(v.until(), Some("2026-11-21T09:26:15.250Z"));
+        assert!(Validity::checked(FROM, Some("2026-11-21T09:26:15.250001Z")).is_err());
     }
 
     /// **#268 round 9 — the producers must SIGN the canonical form.**
@@ -1628,12 +1655,12 @@ mod expiry {
                 .unwrap();
         assert_eq!(
             signed.record.valid_until_in_envelope().as_deref(),
-            Some("2027-08-18T22:00:00Z"),
+            Some("2027-08-18T22:00:00.000Z"),
             "the canonical form must reach the SIGNED envelope, not the caller's spelling"
         );
         assert_eq!(
             signed.record.valid_until.as_deref(),
-            Some("2027-08-18T22:00:00Z")
+            Some("2027-08-18T22:00:00.000Z")
         );
         // …and the record still satisfies its own binding.
         assert!(signed.record.check_subject_binding().is_ok());
@@ -1650,8 +1677,8 @@ mod expiry {
         let v = Validity::checked(from, Some("2026-08-19T00:00:00.900Z")).unwrap();
         let until = v.until().unwrap();
 
-        let f = chrono::DateTime::parse_from_rfc3339(from).unwrap();
-        let u = chrono::DateTime::parse_from_rfc3339(until).unwrap();
+        let f = crate::utc::UtcDateTime::parse_from_rfc3339(from).unwrap();
+        let u = crate::utc::UtcDateTime::parse_from_rfc3339(until).unwrap();
         assert!(
             u > f,
             "canonicalization must not invert the window: {until} vs {from}"
@@ -1663,7 +1690,7 @@ mod expiry {
             .await
             .unwrap();
         let signed_until = signed.record.valid_until_in_envelope().unwrap();
-        assert!(chrono::DateTime::parse_from_rfc3339(&signed_until).unwrap() > f);
+        assert!(crate::utc::UtcDateTime::parse_from_rfc3339(&signed_until).unwrap() > f);
     }
 
     /// **#268 — the low-level producers validate too.** Sealing `Validity`

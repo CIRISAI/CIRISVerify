@@ -981,7 +981,7 @@ async fn run_agent_files_check(
             // Convert registry manifest to file integrity manifest
             let manifest = AgentFileManifest {
                 version: build.version.clone(),
-                generated_at: chrono::Utc::now().to_rfc3339(),
+                generated_at: ciris_verify_core::utc::UtcDateTime::now().to_rfc3339(),
                 files: build
                     .file_manifest_json
                     .files()
@@ -1833,7 +1833,7 @@ async fn run_identity_create(args: IdentityCreateArgs, json_output: bool) {
     // "Validate before custody work" was the stated rule two rounds ago; it
     // was applied to the seal and not to the provisioning above it. Cheap,
     // reversible checks go first, always.
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = ciris_verify_core::utc::UtcDateTime::now().to_rfc3339();
     let validity = match Validity::checked(&now, args.valid_until.as_deref()) {
         Ok(v) => v,
         Err(e) => {
