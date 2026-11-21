@@ -20,6 +20,7 @@ use serde::{Deserialize, Serialize};
 use tracing::{debug, info, instrument, warn};
 
 use crate::error::VerifyError;
+use crate::security::function_integrity::self_code_address;
 
 // Use shared mobile_http module for Android/iOS
 #[cfg(any(target_os = "android", target_os = "ios"))]
@@ -1436,11 +1437,62 @@ pub fn compute_self_hash() -> Result<String, VerifyError> {
     Ok(hex::encode(hash))
 }
 
-/// An address inside this crate's code. `#[inline(never)]` so the function has
-/// a body of its own in whichever module verify is linked into.
-#[inline(never)]
-fn self_code_address() -> usize {
-    self_code_address as *const () as usize
+/// Whether the module at `path` (from [`self_module_path`]) is a host binary
+/// that folds verify in, rather than one of verify's own artifacts
+/// (CIRISVerify#210, CIRISServer#232).
+///
+/// Verify's own artifacts are named by the file name alone, compared without
+/// case: the standalone library `libciris_verify_ffi.so` /
+/// `libciris_verify_ffi.dylib` / `ciris_verify_ffi.dll` (also
+/// `libciris_verify_ffi.dll`), the `ciris-verify` / `ciris-verify.exe`
+/// executable, and the binary `CIRISVerify` directly inside a
+/// `CIRISVerify.framework` (or its `Versions/*`). Any other file is a host.
+/// No host is named, so this does not key on one host's name.
+#[must_use]
+pub fn is_embedded_in_host(path: &std::path::Path) -> bool {
+    !is_verify_artifact(path)
+}
+
+fn is_verify_artifact(path: &std::path::Path) -> bool {
+    const OWN_FILES: &[&str] = &[
+        "libciris_verify_ffi.so",
+        "libciris_verify_ffi.dylib",
+        "ciris_verify_ffi.dll",
+        "libciris_verify_ffi.dll",
+        "ciris-verify",
+        "ciris-verify.exe",
+    ];
+    let Some(name) = path
+        .file_name()
+        .map(|n| n.to_string_lossy().to_ascii_lowercase())
+    else {
+        return false;
+    };
+    if OWN_FILES.contains(&name.as_str()) {
+        return true;
+    }
+    // Apple framework: `CIRISVerify.framework/CIRISVerify` or
+    // `CIRISVerify.framework/Versions/A/CIRISVerify`.
+    if name == "cirisverify" {
+        let framework = |p: Option<&std::path::Path>| {
+            p.and_then(std::path::Path::file_name).is_some_and(|n| {
+                n.to_string_lossy()
+                    .eq_ignore_ascii_case("CIRISVerify.framework")
+            })
+        };
+        let parent = path.parent();
+        if framework(parent) {
+            return true;
+        }
+        let versions = parent.and_then(std::path::Path::parent);
+        let is_versions = versions
+            .and_then(std::path::Path::file_name)
+            .is_some_and(|n| n.eq_ignore_ascii_case("Versions"));
+        if is_versions && framework(versions.and_then(std::path::Path::parent)) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Path of the loaded file (executable or shared library) that contains
@@ -2600,6 +2652,48 @@ mod tests {
             std::fs::canonicalize(&via_dladdr).unwrap(),
             std::fs::canonicalize(&path).unwrap()
         );
+    }
+
+    #[test]
+    fn embedded_classifier_names_only_verify_artifacts_as_own() {
+        use std::path::Path;
+        let own = [
+            "/usr/lib/libciris_verify_ffi.so",
+            "/site-packages/ciris_verify/libciris_verify_ffi.so",
+            "/data/app/x/lib/arm64/libciris_verify_ffi.so",
+            "/usr/local/lib/libciris_verify_ffi.dylib",
+            "/c/Program Files/CIRIS/ciris_verify_ffi.dll",
+            "/opt/ciris/CIRIS_VERIFY_FFI.DLL",
+            "/usr/local/bin/ciris-verify",
+            "/opt/ciris/ciris-verify.exe",
+            "/App.app/Frameworks/CIRISVerify.framework/CIRISVerify",
+            "/Library/Frameworks/CIRISVerify.framework/Versions/A/CIRISVerify",
+        ];
+        for p in own {
+            assert!(!is_embedded_in_host(Path::new(p)), "{p} is verify's own");
+        }
+        let hosts = [
+            "/srv/site-packages/ciris_server/_native.abi3.so",
+            "/srv/site-packages/ciris_server/_native.cpython-312-x86_64-linux-gnu.so",
+            "/usr/bin/python3.12",
+            "/opt/other/libciris_verify_ffi.so.bak",
+            "/opt/other/libciris_verify_ffi_shim.so",
+            "/App.app/CIRISVerify",
+            "/App.app/Frameworks/Host.framework/CIRISVerify",
+            "/target/debug/deps/ciris_verify_core-0123abcd",
+        ];
+        for p in hosts {
+            assert!(is_embedded_in_host(Path::new(p)), "{p} is a host");
+        }
+    }
+
+    /// The test binary is not one of verify's artifacts, so it reads as a host:
+    /// exactly the embedded case.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn test_binary_reads_as_embedded_in_host() {
+        let path = self_module_path().expect("own module located");
+        assert!(is_embedded_in_host(&path), "{}", path.display());
     }
 
     #[cfg(target_os = "linux")]
