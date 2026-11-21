@@ -12,7 +12,7 @@ use serde_json::Value as J;
 
 const FILE: &str = include_str!("vectors/edition2/receipts/stream_heads_v1.json");
 /// SHA-256 of the file, pinned so a regeneration is a visible change.
-const FILE_SHA256: &str = "537c5c68fe70c2cf17c3994fb97c3adbbcb44fbfe3686d6f29a6f00d91ea3a35";
+const FILE_SHA256: &str = "a8e88d02039c3631244ad191b482b59a601d0ac2e8470098d42883c077df3da2";
 
 fn h32(v: &J) -> [u8; 32] {
     hex::decode(v.as_str().unwrap())
@@ -34,7 +34,7 @@ fn file_is_pinned() {
 fn the_door() {
     let f: J = serde_json::from_str(FILE).unwrap();
     let cases = f["door"].as_array().unwrap();
-    assert_eq!(cases.len(), 13);
+    assert_eq!(cases.len(), 15);
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let p = cde::decode(&hex::decode(c["payload_hex"].as_str().unwrap()).unwrap()).unwrap();

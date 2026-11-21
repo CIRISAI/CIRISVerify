@@ -5,7 +5,7 @@
 //! ```text
 //! family   stream:head          (authored by the producer, no second signer)
 //! CWT sub  "stream:" ‖ stream id (the stream id is text, "av-" ‖ 64 lowercase hex for A/V; never bare 64-hex)
-//! payload  { "author": identity-ref, "asserted_at": ms-time, "epoch": uint, "tree_size": uint ≥ 1,
+//! payload  { "dimension": "stream:head:v1", "author": identity-ref, "asserted_at": ms-time, "epoch": uint, "tree_size": uint ≥ 1,
 //!            "root": hash-digest, ? "sealed": true, ? "room": tstr, ? "refs": { "prev": row-ref } }
 //! ```
 //!
@@ -31,6 +31,8 @@ use crate::cde::Value;
 
 /// The family of a stream head.
 pub const STREAM_HEAD_FAMILY: &str = "stream:head";
+/// The dimension a stream head carries (its family's wire form, v1).
+pub const STREAM_HEAD_DIMENSION: &str = "stream:head:v1";
 /// The `sub` prefix of a stream head.
 pub const STREAM_SUB_PREFIX: &str = "stream:";
 
@@ -74,7 +76,8 @@ fn is_bare_hex64(s: &str) -> bool {
 /// [`Invalid::Malformed`] naming the member off its rule.
 pub fn check_stream_head(payload: &Value, sub: &str) -> Result<StreamHead, Invalid> {
     let m = payload.as_map().ok_or(bad("stream-head"))?;
-    const MEMBERS: [&str; 8] = [
+    const MEMBERS: [&str; 9] = [
+        "dimension",
         "author",
         "asserted_at",
         "epoch",
@@ -97,6 +100,11 @@ pub fn check_stream_head(payload: &Value, sub: &str) -> Result<StreamHead, Inval
         .ok_or(bad("sub"))?
         .to_owned();
     let text = |k: &'static str| payload.get_text(k).and_then(Value::as_text);
+    // A scores row names its family by its dimension (CC rc22 7b4a55e: wire
+    // `stream:head:v1`).
+    if text("dimension") != Some(STREAM_HEAD_DIMENSION) {
+        return Err(bad("dimension"));
+    }
     let uint = |k: &'static str| payload.get_text(k).and_then(Value::as_u64).ok_or(bad(k));
     let author = text("author")
         .filter(|a| is_identity_ref(a))

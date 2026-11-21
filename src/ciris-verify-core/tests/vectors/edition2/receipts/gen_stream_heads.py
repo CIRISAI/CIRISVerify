@@ -63,7 +63,7 @@ rref = lambda d: [2, hd(d)]
 
 
 def payload(size, epoch=1, sealed=None, room=ROOM, prev=None, edit=None):
-    p = {"author": PRODUCER, "asserted_at": 1767312000000 + size, "epoch": epoch, "tree_size": size, "root": hd(root(size))}
+    p = {"dimension": "stream:head:v1", "author": PRODUCER, "asserted_at": 1767312000000 + size, "epoch": epoch, "tree_size": size, "root": hd(root(size))}
     if sealed is not None: p["sealed"] = sealed
     if room is not None: p["room"] = room
     if prev is not None: p["refs"] = {"prev": rref(prev)}
@@ -96,6 +96,10 @@ dcase("unknown_member", "A profile member: not in the closed payload.", payload(
       SUB, "unexpected:stream-head")
 dcase("root_raw", "root as raw bytes, not a hash-digest.", payload(4, edit=lambda p: p.__setitem__("root", root(4))), SUB,
       "malformed:root")
+dcase("dimension_missing", "No dimension: a scores row names its family by its dimension.",
+      payload(4, edit=lambda p: p.pop("dimension")), SUB, "malformed:dimension")
+dcase("dimension_other_version", "dimension stream:head:v2.", payload(4, edit=lambda p: p.__setitem__("dimension", "stream:head:v2")),
+      SUB, "malformed:dimension")
 dcase("author_label", "author as a bare label, not an identity reference.",
       payload(4, edit=lambda p: p.__setitem__("author", "producer")), SUB, "malformed:author")
 
