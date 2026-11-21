@@ -27,8 +27,8 @@ const VECTORS: &str = include_str!("vectors/cc/family_select_vectors.json");
 const COUNT_CELLS: &str = include_str!("vectors/cc/family_count_cells.json");
 
 /// SHA-256 of `tests/vectors/cc/family_select_vectors.json` (CC v1.0-rc20 d4bd2a6).
-const VECTORS_SHA256: &str = "d9bc84bccea0e28927fc396f8f210d75294e890f071c1acedc77c045de705467";
-/// CC ships 246 vectors at rc22 (7b4a55e).
+const VECTORS_SHA256: &str = "56d394610a2eedccd1d36ba32366ff27217a45b966d6de81f19b89adca52d7d1";
+/// CC ships 246 vectors at rc22 (a8c429f).
 const VECTOR_COUNT: usize = 246;
 
 fn lf(s: &str) -> String {
@@ -113,11 +113,11 @@ fn decided_json(d: Option<Decision>) -> Value {
 
 #[test]
 fn vendored_files_are_the_pinned_ones() {
-    assert_eq!(FAMILY_MODEL_CC_COMMIT, "7b4a55e");
+    assert_eq!(FAMILY_MODEL_CC_COMMIT, "a8c429f");
     assert_eq!(sha(FAMILY_AUTHORSHIP_JSON), FAMILY_AUTHORSHIP_SHA256);
     assert_eq!(
         FAMILY_AUTHORSHIP_SHA256,
-        "aa087d14538bc4e2c65ddbd1031e85ffea8f0c754abbdeba2fa3671f26720d9a"
+        "bf56a3c424cc7be678358848301ac549069a4f93a02cf79ae0c1db93d96767bb"
     );
     assert_eq!(sha(VECTORS), VECTORS_SHA256);
     // One family model under all three files.
@@ -151,7 +151,7 @@ fn extract_shape() {
             assert_eq!(parse_cell(text).unwrap(), v.authorship.arms, "{prefix}");
         }
     }
-    // CC's split at rc22 (7b4a55e): 164 generic cells, 25 cc-table cells as arms, no gap.
+    // CC's split at rc22 (a8c429f): 164 generic cells, 25 cc-table cells as arms, no gap.
     assert_eq!((plain, arms, gap), (164, 25, 0));
     for (prefix, c) in count_cells() {
         assert_eq!(

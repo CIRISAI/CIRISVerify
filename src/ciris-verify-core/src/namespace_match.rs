@@ -27,7 +27,7 @@
 //! # Vendored registry
 //!
 //! `data/cc/namespace_registry.json` is CIRISConstitution rc22 (branch) at commit
-//! `7b4a55ee3d2c5c546037360a4f947dea9e563db5`, SHA-256
+//! `a8c429f`, SHA-256
 //! `a021657ed5120d0e5102c8d0c208b0a8ed5c8836b1fbf83662d0971a8782009f`
 //! (`data/cc/README.md`).
 
@@ -41,7 +41,7 @@ use serde::Deserialize;
 pub const NAMESPACE_REGISTRY_JSON: &str = include_str!("../data/cc/namespace_registry.json");
 
 /// The CIRISConstitution commit the vendored registry was taken from.
-pub const NAMESPACE_REGISTRY_CC_COMMIT: &str = "7b4a55ee3d2c5c546037360a4f947dea9e563db5";
+pub const NAMESPACE_REGISTRY_CC_COMMIT: &str = "a8c429ff9754c0befb0ec8dfec501cf595c8dbb1";
 
 /// SHA-256 (lowercase hex) of the vendored registry file, LF line endings.
 pub const NAMESPACE_REGISTRY_SHA256: &str =

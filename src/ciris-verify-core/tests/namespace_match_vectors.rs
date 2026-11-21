@@ -32,7 +32,7 @@ fn every_cc_vector_agrees() {
     assert_eq!(
         vectors.len(),
         1336,
-        "CC rc22 (7b4a55e) ships 1,336 namespace vectors"
+        "CC rc22 (a8c429f) ships 1,336 namespace vectors"
     );
     let mut failures = Vec::new();
     for (i, v) in vectors.iter().enumerate() {
