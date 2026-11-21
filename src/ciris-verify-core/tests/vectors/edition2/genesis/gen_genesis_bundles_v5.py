@@ -3,6 +3,9 @@
 # Signed Statement about its lineage, RFC 9943). A statement whose `sub` is absent or another value is refused on
 # its own (statement_sub_not_family). New cases break it.
 #
+# The hint list follows CC 2.6.8 as ruled for rc22: up to 8 hints, types 1..8 (i2p, kiss and ble added); the
+# baseline's unknown type is 9.
+#
 # Version 4's header follows.
 # Independent generator of `ceg-genesis-bundle/2` known answers, version 4: version 3 (below, kept as it was in
 # gen_genesis_bundles_v3.py) with every seat's binding carrying `dial_hints` (CC 3.3.6.1, as verify proposes it
@@ -263,7 +266,7 @@ def dh_hostport(t, host, port): return dh(t, port.to_bytes(2, "big") + host.enco
 
 
 SEAT_HINTS = {11: [dh_hostport(1, "seat1.genesis.example.net", 4242), dh_hostport(2, "seat1.genesis.example.net", 4243)],
-              12: [dh_hostport(1, "203.0.113.12", 4242), dh(6, b"\x01\x02\x03"),
+              12: [dh_hostport(1, "203.0.113.12", 4242), dh(9, b"\x01\x02\x03"),
                    dh(3, b"\x00" + b"reticulum")]}
 
 
@@ -697,7 +700,7 @@ bind_case("binding_dial_hints_no_tcp", "Seat 1's binding carries udp and http hi
           binding(S1, edit=setk("dial_hints", [dh_hostport(2, "seat1.genesis.example.net", 4243),
                                                dh(5, b"https://seat1.genesis.example.net/rns")])), "seat_dial_hints_missing")
 bind_case("binding_dial_hints_unknown_only", "Seat 1's binding carries only an unknown hint type: skipped, so no tcp.",
-          binding(S1, edit=setk("dial_hints", [dh(6, b"\x01")])), "seat_dial_hints_missing")
+          binding(S1, edit=setk("dial_hints", [dh(9, b"\x01")])), "seat_dial_hints_missing")
 bind_case("binding_dial_hint_port_zero", "Seat 1's tcp hint has port 0: a known type with a bad body.",
           binding(S1, edit=setk("dial_hints", [dh_hostport(1, "seat1.genesis.example.net", 0)])), "dial_hint_malformed")
 bind_case("binding_dial_hint_host_space", "Seat 1's tcp hint host carries a space.",
@@ -708,10 +711,13 @@ bind_case("binding_dial_hint_http_not_https", "Seat 1's http hint is not https (
 bind_case("binding_dial_hint_rnode_short", "Seat 1's rnode hint body is 9 bytes, not 10.",
           binding(S1, edit=setk("dial_hints", [dh_hostport(1, "seat1.genesis.example.net", 4242), dh(4, bytes(9))])),
           "dial_hint_malformed")
+bind_case("binding_dial_hint_ble_body", "Seat 1's ble hint carries an identifier: the body must be empty.",
+          binding(S1, edit=setk("dial_hints", [dh_hostport(1, "seat1.genesis.example.net", 4242), dh(8, bytes(6))])),
+          "dial_hint_malformed")
 bind_case("binding_dial_hints_empty", "Seat 1's dial_hints is an empty array (absence is the one encoding of none).",
           binding(S1, edit=setk("dial_hints", [])), "row_invalid")
-bind_case("binding_dial_hints_five", "Seat 1's dial_hints carries five entries (the bound is 4).",
-          binding(S1, edit=setk("dial_hints", [dh_hostport(1, "seat1.genesis.example.net", 4242 + i) for i in range(5)])),
+bind_case("binding_dial_hints_nine", "Seat 1's dial_hints carries nine entries (the bound is 8).",
+          binding(S1, edit=setk("dial_hints", [dh_hostport(1, "seat1.genesis.example.net", 4242 + i) for i in range(9)])),
           "row_invalid")
 bind_case("binding_dial_hint_not_pair", "Seat 1's dial_hints entry is [1], not [type, body].",
           binding(S1, edit=setk("dial_hints", [[1]])), "row_invalid")

@@ -11,7 +11,7 @@ use serde_json::Value as J;
 
 const FILE: &str = include_str!("vectors/fedcode/fedcode_e2_v1.json");
 /// SHA-256 of the file, pinned so a regeneration is a visible change.
-const FILE_SHA256: &str = "f1529fbb388a94539e61ddcdcc63ce31b68cb9ccc27d21b29c994e8d6c3cf8c5";
+const FILE_SHA256: &str = "f00bae960c2a498171b7eb3ff461cb09624c72832af001bdfd7590511db3b386";
 
 fn file() -> J {
     serde_json::from_str(FILE).unwrap()
@@ -51,6 +51,16 @@ fn hint_json(h: &Hint) -> J {
             "type": "rnode", "frequency_hz": frequency_hz, "bandwidth_hz": bandwidth_hz,
             "spreading_factor": spreading_factor, "coding_rate": coding_rate}),
         Hint::Http { url } => json!({"type": "http", "url": url}),
+        Hint::I2p { destination } => {
+            json!({"type": "i2p", "destination_hex": hex::encode(destination)})
+        },
+        Hint::Kiss {
+            frequency_hz,
+            bitrate,
+            callsign,
+        } => json!({
+            "type": "kiss", "frequency_hz": frequency_hz, "bitrate": bitrate, "callsign": callsign}),
+        Hint::Ble => json!({"type": "ble"}),
         Hint::Unknown { tag, body } => {
             json!({"type": "unknown", "tag": tag, "body_hex": hex::encode(body)})
         },
@@ -148,7 +158,7 @@ fn valid_codes_decode_and_reencode() {
 fn refusals_give_their_tokens() {
     let f = file();
     let refusals = f["refusals"].as_array().unwrap();
-    assert_eq!(refusals.len(), 25);
+    assert_eq!(refusals.len(), 31);
     for r in refusals {
         let id = r["id"].as_str().unwrap();
         let err = FedCodeE2::decode(r["code"].as_str().unwrap()).expect_err(id);

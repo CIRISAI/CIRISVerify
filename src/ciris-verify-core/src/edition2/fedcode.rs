@@ -9,7 +9,7 @@
 //!   kind=user                     body = node_count(1) 0..=4 | node_count × (node_kid(32) | endpoint)
 //!   kind=node                     body = endpoint            (of the node the kid names)
 //!   kind=agent/family/community   body = empty
-//! endpoint = transport_identity(64: x25519(32) | ed25519(32)) | hint_count(1) 0..=4 | hint_count × hint
+//! endpoint = transport_identity(64: x25519(32) | ed25519(32)) | hint_count(1) 0..=8 | hint_count × hint
 //! hint     = type(1) | len(1) | body(len)     ordered, most preferred first
 //! code     = "CIRIS-V4-" ‖ base32(payload ‖ crc16_ccitt(payload) as 2 bytes BE), no padding,
 //!            displayed in dash-separated groups of 4; payload ≤ 1024 bytes
@@ -20,7 +20,11 @@
 //! 3 `auto` (scope u8 0..=4 link/admin/site/organisation/global, group id
 //! 1..=64 bytes), 4 `rnode` (frequency u32, bandwidth u32, spreading factor
 //! 7..=12, coding rate 5..=8; exactly 10 bytes), 5 `http` (an `https://` URL,
-//! ≤ 255 bytes). Text carries no space or control character. Every other type
+//! ≤ 255 bytes), 6 `i2p` (the 32-byte destination hash), 7 `kiss` (frequency
+//! u32 ≠ 0, bit rate u32 ≠ 0, then an AX.25 callsign-SSID of 0..=9 bytes,
+//! uppercase alphanumerics and at most one inner '-'), 8 `ble` (an EMPTY body:
+//! a static BLE identifier in a code would be a tracking handle). Text carries
+//! no space or control character. Every other type
 //! is carried as [`Hint::Unknown`] and skipped by a dialler, never refused, so
 //! a new interface kind does not break an old parser; a known type whose body
 //! fails its rule is refused. A hint is a dial hint only: unsigned, never a
@@ -53,7 +57,7 @@ pub const FEDCODE_E2_MAX_PAYLOAD: usize = 1024;
 /// The most nodes a user code embeds.
 pub const FEDCODE_E2_MAX_NODES: usize = 4;
 /// The most hints an endpoint carries.
-pub const FEDCODE_E2_MAX_HINTS: usize = 4;
+pub const FEDCODE_E2_MAX_HINTS: usize = 8;
 
 const EARLIER_PREFIXES: [&str; 3] = ["CIRISV1", "CIRISV2", "CIRISV3"];
 const B32: &[u8; 32] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZ234567";
@@ -62,6 +66,9 @@ const HINT_UDP: u8 = 2;
 const HINT_AUTO: u8 = 3;
 const HINT_RNODE: u8 = 4;
 const HINT_HTTP: u8 = 5;
+const HINT_I2P: u8 = 6;
+const HINT_KISS: u8 = 7;
+const HINT_BLE: u8 = 8;
 
 /// The entity a code names (CC 2.6.8: `kind` as in the earlier form).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -158,6 +165,22 @@ pub enum Hint {
         /// The URL, ≤ 255 bytes.
         url: String,
     },
+    /// An I2P destination.
+    I2p {
+        /// The 32-byte destination hash.
+        destination: [u8; 32],
+    },
+    /// A KISS TNC (packet radio, serial).
+    Kiss {
+        /// Hz, not 0.
+        frequency_hz: u32,
+        /// Bits per second, not 0.
+        bitrate: u32,
+        /// AX.25 callsign-SSID, if named (1..=9 bytes).
+        callsign: Option<String>,
+    },
+    /// Bluetooth LE, discovered locally: no identifier is carried.
+    Ble,
     /// A type this parser does not know: carried in order, skipped by a dialler.
     Unknown {
         /// The type byte.
@@ -240,7 +263,7 @@ pub enum FedCodeE2Error {
     NodesNotUser,
     /// More than four nodes.
     NodeCount,
-    /// More than four hints on one endpoint.
+    /// More than eight hints on one endpoint.
     HintCount,
     /// A known hint type whose body breaks its rule.
     HintMalformed,
@@ -608,6 +631,20 @@ fn hint_body(h: &Hint) -> Result<(u8, Vec<u8>), FedCodeE2Error> {
             (HINT_RNODE, b)
         },
         Hint::Http { url } => (HINT_HTTP, url.as_bytes().to_vec()),
+        Hint::I2p { destination } => (HINT_I2P, destination.to_vec()),
+        Hint::Kiss {
+            frequency_hz,
+            bitrate,
+            callsign,
+        } => {
+            let mut b = frequency_hz.to_be_bytes().to_vec();
+            b.extend_from_slice(&bitrate.to_be_bytes());
+            if let Some(c) = callsign {
+                b.extend_from_slice(c.as_bytes());
+            }
+            (HINT_KISS, b)
+        },
+        Hint::Ble => (HINT_BLE, Vec::new()),
         Hint::Unknown { .. } => return Err(FedCodeE2Error::HintMalformed),
     })
 }
@@ -693,6 +730,42 @@ pub fn parse_hint(tag: u8, body: &[u8]) -> Result<Hint, FedCodeE2Error> {
                 return Err(bad);
             }
             Hint::Http { url }
+        },
+        HINT_I2P => Hint::I2p {
+            destination: body.try_into().map_err(|_| bad)?,
+        },
+        HINT_KISS => {
+            let (head, cs) = body.split_at_checked(8).ok_or(bad)?;
+            let frequency_hz = u32::from_be_bytes([head[0], head[1], head[2], head[3]]);
+            let bitrate = u32::from_be_bytes([head[4], head[5], head[6], head[7]]);
+            if frequency_hz == 0 || bitrate == 0 || cs.len() > 9 {
+                return Err(bad);
+            }
+            let callsign = if cs.is_empty() {
+                None
+            } else {
+                let ok = cs
+                    .iter()
+                    .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || *b == b'-')
+                    && cs.iter().filter(|b| **b == b'-').count() <= 1
+                    && cs[0] != b'-'
+                    && cs[cs.len() - 1] != b'-';
+                if !ok {
+                    return Err(bad);
+                }
+                Some(String::from_utf8(cs.to_vec()).map_err(|_| bad)?)
+            };
+            Hint::Kiss {
+                frequency_hz,
+                bitrate,
+                callsign,
+            }
+        },
+        HINT_BLE => {
+            if !body.is_empty() {
+                return Err(bad);
+            }
+            Hint::Ble
         },
         tag => Hint::Unknown {
             tag,

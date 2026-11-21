@@ -268,7 +268,7 @@ fn check_placement(id: &str, p: &GenesisPlacement, e: &J) {
 
 #[test]
 fn every_case_gives_its_verdict() {
-    replay(&file(), 130);
+    replay(&file(), 131);
 }
 
 /// One device per holder (CC 4.2.3, `holder_device_shared`):

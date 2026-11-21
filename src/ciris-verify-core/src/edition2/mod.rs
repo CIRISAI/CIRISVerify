@@ -1206,7 +1206,7 @@ pub(crate) fn transport_destination_shape(td: &Value) -> Result<(), Invalid> {
 pub const DIAL_HINTS_MAX: usize = fedcode::FEDCODE_E2_MAX_HINTS;
 
 /// Read an occurrence's `dial_hints` (CC 3.3.6.1):
-/// `[ 1*4 [ type: uint .le 255, body: bstr .size (0..255) ] ]`, ordered, most
+/// `[ 1*8 [ type: uint .le 255, body: bstr .size (0..255) ] ]`, ordered, most
 /// preferred first, each body the CC 2.6.8 CIRIS-V4 hint body. An unknown type
 /// is carried as [`fedcode::Hint::Unknown`] (a dialler skips it).
 ///

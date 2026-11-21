@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 const FILE: &str = include_str!("vectors/edition2/receipts/receipts_v1.json");
 /// SHA-256 of the file, pinned so a regeneration is a visible change.
-const FILE_SHA256: &str = "025b06ad2908efcd46d0306a70e3a13ef7cc24f691b475845ed04151498597fb";
+const FILE_SHA256: &str = "23c08c0374e5a09305420879ec6e8ead1874af1e221ca3ff8b537cc1c92193ae";
 
 fn file() -> J {
     serde_json::from_str(FILE).unwrap()
@@ -159,6 +159,8 @@ fn head_receipts_count_distinct_services() {
         let got: Vec<String> = head_receipt_services(&hx(&c["head_payload_hex"]), &refs, &services)
             .into_iter()
             .map(|r| ids[&r].clone())
+            .collect::<std::collections::BTreeSet<String>>()
+            .into_iter()
             .collect();
         let want: Vec<String> = c["expect"]
             .as_array()

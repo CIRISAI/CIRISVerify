@@ -23,9 +23,9 @@ from cryptography.hazmat.primitives import serialization as ser
 from dilithium_py.ml_dsa import ML_DSA_65
 
 RAW = (ser.Encoding.Raw, ser.PublicFormat.Raw)
-VERSION, PREFIX, MAX_PAYLOAD, MAX_NODES, MAX_HINTS = 4, "CIRIS-V4-", 1024, 4, 4
+VERSION, PREFIX, MAX_PAYLOAD, MAX_NODES, MAX_HINTS = 4, "CIRIS-V4-", 1024, 4, 8
 KINDS = {"user": 1, "agent": 2, "node": 3, "family": 4, "community": 5}
-TCP, UDP, AUTO, RNODE, HTTP = 1, 2, 3, 4, 5
+TCP, UDP, AUTO, RNODE, HTTP, I2P, KISS, BLE = 1, 2, 3, 4, 5, 6, 7, 8
 SCOPES = ["link", "admin", "site", "organisation", "global"]
 
 
@@ -73,6 +73,9 @@ def tcp(host, port, t=TCP): return hint(t, port.to_bytes(2, "big") + host.encode
 def auto(scope, group): return hint(AUTO, bytes([SCOPES.index(scope)]) + group.encode())
 def rnode(f, bw, sf, cr): return hint(RNODE, f.to_bytes(4, "big") + bw.to_bytes(4, "big") + bytes([sf, cr]))
 def http(url): return hint(HTTP, url.encode())
+def i2p(dest): return hint(I2P, dest)
+def kiss(f, br, cs=b""): return hint(KISS, f.to_bytes(4, "big") + br.to_bytes(4, "big") + cs)
+def ble(): return hint(BLE, b"")
 
 
 def endpoint(transport, hints): return transport + bytes([len(hints)]) + b"".join(hints)
@@ -92,6 +95,11 @@ def hint_json(h):
         return {"type": "rnode", "frequency_hz": int.from_bytes(body[:4], "big"), "bandwidth_hz": int.from_bytes(body[4:8], "big"),
                 "spreading_factor": body[8], "coding_rate": body[9]}
     if t == HTTP: return {"type": "http", "url": body.decode()}
+    if t == I2P: return {"type": "i2p", "destination_hex": body.hex()}
+    if t == KISS:
+        return {"type": "kiss", "frequency_hz": int.from_bytes(body[:4], "big"), "bitrate": int.from_bytes(body[4:8], "big"),
+                "callsign": body[8:].decode() if body[8:] else None}
+    if t == BLE: return {"type": "ble"}
     return {"type": "unknown", "tag": t, "body_hex": body.hex()}
 
 
@@ -133,8 +141,10 @@ ok("node_two_hints", "One node with two hints, most preferred first: its own lis
    user([node_entry(N[0], TWO)]),
    {"kind": "user", "kid_hex": U.kid.hex(), "nodes": [{"kid_hex": N[0].kid.hex(), **ep_json(N[0].transport, TWO)}]})
 FOUR = [http("https://node1.example.org/rns"), tcp("relay.example.net", 4242), tcp("10.0.0.7", 4242, UDP),
-        rnode(868_000_000, 125_000, 8, 5)]
-ok("node_max_hints", "One node with the maximum four hints, one of each of http, tcp, udp and rnode.",
+        rnode(868_000_000, 125_000, 8, 5), i2p(bytes(range(32))), kiss(144_390_000, 1200, b"N0CALL-7"), kiss(433_000_000, 9600),
+        ble()]
+ok("node_max_hints", "One node with the maximum eight hints: http, tcp, udp, rnode, i2p, kiss with and without a callsign, "
+   "ble.",
    user([node_entry(N[0], FOUR)]),
    {"kind": "user", "kid_hex": U.kid.hex(), "nodes": [{"kid_hex": N[0].kid.hex(), **ep_json(N[0].transport, FOUR)}]})
 MAXN = [node_entry(N[i], [tcp("relay%d.example.net" % i, 4242 + i)]) for i in range(MAX_NODES)]
@@ -142,8 +152,8 @@ ok("user_max_nodes", "A user code with the maximum four nodes, one hint each.", 
    {"kind": "user", "kid_hex": U.kid.hex(),
     "nodes": [{"kid_hex": N[i].kid.hex(), **ep_json(N[i].transport, [tcp("relay%d.example.net" % i, 4242 + i)])}
               for i in range(MAX_NODES)]})
-UNK = [hint(0x06, b"\x01\x02\x03"), RELAY]
-ok("unknown_hint_skipped", "A hint of an unassigned type (0x06, reserved for i2p) is carried as unknown and skipped by "
+UNK = [hint(0x09, b"\x01\x02\x03"), RELAY]
+ok("unknown_hint_skipped", "A hint of an unassigned type (0x09) is carried as unknown and skipped by "
    "a dialler, never refused; the tcp hint after it stands.", user([node_entry(N[0], UNK)]),
    {"kind": "user", "kid_hex": U.kid.hex(), "nodes": [{"kid_hex": N[0].kid.hex(), **ep_json(N[0].transport, UNK)}]})
 V6 = [tcp("::1", 4242), tcp("2001:db8::7", 4242)]
@@ -185,7 +195,17 @@ bad_payload("agent_embeds_nodes", "A kind=agent code followed by a node list: on
 bad_payload("community_embeds_nodes", "A kind=community code followed by an empty node list: nothing follows a "
             "group's kid.", bytes([VERSION, 5]) + COM.kid + b"\x00", "fedcode_nodes_not_user")
 bad_payload("too_many_nodes", "node_count 5.", user([node_entry(N[i], []) for i in range(5)]), "fedcode_node_count")
-bad_payload("too_many_hints", "A node with five hints.", user([node_entry(N[0], [RELAY] * 5)]), "fedcode_hint_count")
+bad_payload("too_many_hints", "A node with nine hints.", user([node_entry(N[0], [RELAY] * 9)]), "fedcode_hint_count")
+bad_payload("hint_i2p_short", "An i2p hint of 31 bytes.", user([node_entry(N[0], [i2p(bytes(31))])]), "fedcode_hint_malformed")
+bad_payload("hint_kiss_lowercase", "A kiss callsign in lowercase.", user([node_entry(N[0], [kiss(144_390_000, 1200, b"n0call")])]),
+            "fedcode_hint_malformed")
+bad_payload("hint_kiss_two_dashes", "A kiss callsign with two dashes.",
+            user([node_entry(N[0], [kiss(144_390_000, 1200, b"N0-CA-7")])]), "fedcode_hint_malformed")
+bad_payload("hint_kiss_long", "A kiss callsign of 10 bytes.", user([node_entry(N[0], [kiss(144_390_000, 1200, b"N0CALLS-15")])]),
+            "fedcode_hint_malformed")
+bad_payload("hint_kiss_zero_rate", "A kiss bit rate of 0.", user([node_entry(N[0], [kiss(144_390_000, 0)])]), "fedcode_hint_malformed")
+bad_payload("hint_ble_body", "A ble hint carrying a device identifier: the body must be empty.",
+            user([node_entry(N[0], [hint(BLE, bytes(6))])]), "fedcode_hint_malformed")
 bad_payload("hint_host_empty", "A tcp hint with an empty host.",
             user([node_entry(N[0], [tcp("", 4242)])]), "fedcode_hint_malformed")
 bad_payload("hint_host_space", "A tcp hint whose host carries a space.",
