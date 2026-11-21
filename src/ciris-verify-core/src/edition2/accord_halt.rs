@@ -421,17 +421,7 @@ impl HaltRefusal {
             Self::IssNotHolder => "iss_not_holder".into(),
             Self::WrongRowType => "wrong_row_type".into(),
             Self::WrongFamily { .. } => "wrong_family".into(),
-            Self::Family(f) => format!(
-                "family:{}",
-                match f {
-                    FamilyFault::UnregisteredFamily => "unregistered_family",
-                    FamilyFault::AuthorColumn => "author_column",
-                    FamilyFault::IssNotInRole => "iss_not_in_role",
-                    FamilyFault::DimensionMissing => "dimension_missing",
-                    FamilyFault::AuthorshipUndetermined => "authorship_undetermined",
-                    FamilyFault::NoArmHolds => "no_arm_holds",
-                }
-            ),
+            Self::Family(f) => format!("family:{}", f.token()),
             Self::Member { member } => format!("member:{member}"),
             Self::OtherAccord => "other_accord".into(),
             Self::OtherHalt => "other_halt".into(),

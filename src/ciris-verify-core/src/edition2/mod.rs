@@ -58,6 +58,16 @@ pub const ROW_TYPES: [&str; 5] = [
     "withdraws",
     "recants",
 ];
+/// The composer row types: a row that acts on the row it names in
+/// `refs.target`. A composer scores nothing and carries no `dimension`; its
+/// leaf, and so its authorship, are its target's (CC rc22 db989df).
+pub const COMPOSER_ROW_TYPES: [&str; 3] = ["supersedes", "withdraws", "recants"];
+
+/// Whether `row_type` is a composer ([`COMPOSER_ROW_TYPES`]).
+#[must_use]
+pub fn is_composer(row_type: &str) -> bool {
+    COMPOSER_ROW_TYPES.contains(&row_type)
+}
 
 const H_ALG: i64 = 1;
 const H_CTY: i64 = 3;
@@ -224,6 +234,10 @@ pub enum MissingKey {
     /// object id, when it is not held: a key it may seat for an issuer waits
     /// on it (CC 2.6.1.7 way (c)).
     Bundle(Digest32),
+    /// A row, by its row id, that a composer names in `refs.target` and whose
+    /// leaf decides the composer's authorship, when the caller supplies no
+    /// [`family::TargetRow`] for it.
+    Row(Digest32),
     /// A voice of a held row that is not held: the statement by `kid` over
     /// the row `row`. A counted row gains voices without changing its row
     /// id (CC 2.6.1.9), so a voice not held is waited on, never refused:
@@ -836,6 +850,10 @@ fn read_row_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Verdict, 
         return Err(Invalid::UnregisteredFamily);
     }
     if let Some(d) = payload.get_text("dimension") {
+        // A composer scores nothing: its leaf is its target's.
+        if is_composer(&row_type) {
+            return Err(malformed("dimension"));
+        }
         let d = d.as_text().ok_or(malformed("dimension"))?;
         match crate::namespace_match::resolve(d) {
             Ok(crate::namespace_match::Resolved::Family { family_id, .. })

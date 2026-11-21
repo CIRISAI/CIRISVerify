@@ -91,6 +91,7 @@ fn context(ctx: &Value) -> SelectContext {
         act: o
             .get("act")
             .map(|v| Act::parse(v.as_str().unwrap()).unwrap()),
+        target: None,
     }
 }
 

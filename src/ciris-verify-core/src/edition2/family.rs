@@ -331,6 +331,38 @@ pub enum FamilyFault {
     /// The family's authorship cell answers null for this row: every arm
     /// reads false.
     NoArmHolds,
+    /// A composer's [`SelectContext::target`] is not the row its
+    /// `refs.target` names (or the composer names no target).
+    TargetMismatch,
+}
+
+impl FamilyFault {
+    /// The stable token.
+    #[must_use]
+    pub fn token(&self) -> &'static str {
+        match self {
+            Self::UnregisteredFamily => "unregistered_family",
+            Self::AuthorColumn => "author_column",
+            Self::IssNotInRole => "iss_not_in_role",
+            Self::DimensionMissing => "dimension_missing",
+            Self::AuthorshipUndetermined => "authorship_undetermined",
+            Self::NoArmHolds => "no_arm_holds",
+            Self::TargetMismatch => "target_mismatch",
+        }
+    }
+}
+
+/// The row a composer names, as the caller holds it: its row id, its family
+/// id (header -70002) and its payload. The composer's leaf is
+/// [`dimension_leaf`] over these.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TargetRow {
+    /// The target's row id.
+    pub row_id: Digest32,
+    /// The target's family id.
+    pub family_id: String,
+    /// The target's payload.
+    pub payload: crate::cde::Value,
 }
 
 /// A row read under its family's rules.
@@ -500,10 +532,31 @@ fn read_in_family(
             } else {
                 ctx
             };
-            let leaf = row_leaf(&row);
+            // A composer's leaf is its target's (CC rc22 db989df).
+            let composer_target =
+                super::is_composer(&row.row_type).then(|| super::keys::target_in(&row.payload));
+            let leaf = match (&composer_target, &ctx.target) {
+                (None, _) => row_leaf(&row),
+                (Some(named), Some(t)) => {
+                    if *named != Some(t.row_id) {
+                        return FamilyVerdict::FamilyInvalid(FamilyFault::TargetMismatch);
+                    }
+                    dimension_leaf(&t.family_id, &t.payload)
+                },
+                (Some(_), None) => None,
+            };
+            let waits_on = match composer_target {
+                Some(Some(id)) if ctx.target.is_none() => Some(super::MissingKey::Row(id)),
+                _ => None,
+            };
             let leaf = leaf.as_deref();
             let rule = match model.rule_for(&row.family, leaf, ctx) {
                 RuleAnswer::Rule(r) => r,
+                // A composer whose rule reads the leaf waits on the target
+                // it names rather than answering undetermined.
+                RuleAnswer::Undetermined if waits_on.is_some() => {
+                    return FamilyVerdict::Waiting(waits_on.into_iter().collect());
+                },
                 RuleAnswer::Undetermined => {
                     return FamilyVerdict::FamilyInvalid(FamilyFault::AuthorshipUndetermined)
                 },
