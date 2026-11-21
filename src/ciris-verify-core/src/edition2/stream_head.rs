@@ -218,6 +218,11 @@ pub enum StreamHeadRefusal {
     /// The head's `room` is not the binding's (or a profile-0 stream's head
     /// names one).
     RoomMismatch,
+    /// The head's author is not the publisher of the binding it is judged
+    /// under.
+    AuthorNotPublisher,
+    /// The head's stream is not the binding's.
+    StreamMismatch,
 }
 
 impl StreamHeadRefusal {
@@ -232,6 +237,8 @@ impl StreamHeadRefusal {
             Self::EpochRegressed => "stream_head_epoch_regressed",
             Self::Inconsistent => "stream_head_inconsistent",
             Self::RoomMismatch => "stream_head_room_mismatch",
+            Self::AuthorNotPublisher => "stream_head_author_not_publisher",
+            Self::StreamMismatch => "stream_head_stream_mismatch",
         }
     }
 }
@@ -305,4 +312,32 @@ pub fn check_against_binding(
         (0, None) => Ok(()),
         _ => Err(StreamHeadRefusal::RoomMismatch),
     }
+}
+
+/// A verifier holding the stream's verified StreamKeyBinding (the holder at
+/// the first chunk, a head's door, a Transparency Service): the head is
+/// admitted only where its stream is the binding's (`av-{hex}`, which the
+/// binding recomputed from room, publisher and join nonce), its author is the
+/// binding's publisher, and [`check_against_binding`] holds for the binding's
+/// profile and room. The caller verifies the binding first
+/// ([`ciris_crypto::stream_binding::verify_stream_key_binding`]).
+///
+/// # Errors
+///
+/// [`StreamHeadRefusal::StreamMismatch`], [`StreamHeadRefusal::AuthorNotPublisher`]
+/// or [`StreamHeadRefusal::RoomMismatch`], in that order.
+pub fn check_against_stream_binding(
+    head: &StreamHead,
+    binding: &ciris_crypto::stream_binding::StreamKeyBinding,
+) -> Result<(), StreamHeadRefusal> {
+    let mut want = String::with_capacity(67);
+    want.push_str("av-");
+    want.push_str(&hex::encode(binding.stream_id));
+    if head.stream_id != want {
+        return Err(StreamHeadRefusal::StreamMismatch);
+    }
+    if head.author != binding.publisher {
+        return Err(StreamHeadRefusal::AuthorNotPublisher);
+    }
+    check_against_binding(head, binding.profile, &binding.room)
 }

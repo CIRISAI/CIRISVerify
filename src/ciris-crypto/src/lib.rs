@@ -139,6 +139,10 @@ pub mod hpke;
 // Composite ML-DSA-65 with Ed25519, the edition-2 signature (CC 2.6.1.7, #326).
 #[cfg(feature = "composite")]
 pub mod composite;
+// The StreamKeyBinding reader (CC 5.3.3.5): layout, stream id and the
+// publisher's composite signature.
+#[cfg(feature = "composite")]
+pub mod stream_binding;
 
 #[cfg(feature = "scope-privacy")]
 pub mod scope_privacy;

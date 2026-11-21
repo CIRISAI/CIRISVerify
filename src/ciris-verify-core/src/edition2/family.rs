@@ -401,11 +401,21 @@ pub fn check_family(row: &VerifiedRow, rule: &FamilyRule) -> Result<Option<Strin
 
 /// A row's leaf: its `dimension` bound under its own family (header -70002)
 /// by [`crate::namespace_match::bind_leaf`]. `None` (unknown) when the row
-/// carries no dimension.
+/// carries no dimension. [`dimension_leaf`] over the row's family and payload.
 #[must_use]
 pub fn row_leaf(row: &VerifiedRow) -> Option<String> {
-    let dimension = row.payload.get_text("dimension")?.as_text()?;
-    let prefix = crate::namespace_match::prefix_of_family_id(&row.family)?;
+    dimension_leaf(&row.family, &row.payload)
+}
+
+/// The leaf of a payload's `dimension` under a family id (header -70002),
+/// for a caller that holds the family and the payload before, or without, a
+/// verdict: the dimension bound by [`crate::namespace_match::bind_leaf`], its
+/// version stripped. `None` when there is no text `dimension`, the family id
+/// names no registered prefix, or the dimension does not bind under it.
+#[must_use]
+pub fn dimension_leaf(family_id: &str, payload: &crate::cde::Value) -> Option<String> {
+    let dimension = payload.get_text("dimension")?.as_text()?;
+    let prefix = crate::namespace_match::prefix_of_family_id(family_id)?;
     crate::namespace_match::bind_leaf(prefix, dimension)
         .ok()
         .map(|b| b.leaf)
