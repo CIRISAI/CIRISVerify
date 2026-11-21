@@ -1450,7 +1450,7 @@ mod expiry {
     use crate::self_at_login::HybridSigningIdentity;
 
     const FROM: &str = "2026-08-19T00:00:00Z";
-    const UNTIL: &str = "2027-08-19T00:00:00Z";
+    const UNTIL: &str = "2027-08-19T00:00:00.000Z"; // the CC 2.6.2 form the producers sign
 
     /// **The security property.** An expiry outside the signed bytes is
     /// strippable — anyone could drop it and the record would still verify.
@@ -1489,9 +1489,9 @@ mod expiry {
     async fn equivalent_instants_canonicalize_to_one_form() {
         use crate::federation_identity::Validity;
         let a = Validity::checked(FROM, Some("2027-08-19T00:00:00+02:00")).unwrap();
-        let b = Validity::checked(FROM, Some("2027-08-18T22:00:00Z")).unwrap();
+        let b = Validity::checked(FROM, Some("2027-08-18T22:00:00.000Z")).unwrap();
         assert_eq!(a.until(), b.until(), "same instant must sign identically");
-        assert_eq!(a.until(), Some("2027-08-18T22:00:00Z"));
+        assert_eq!(a.until(), Some("2027-08-18T22:00:00.000Z"));
 
         // And the pinned form is what reaches the signed envelope.
         let id = HybridSigningIdentity::generate("node-1").unwrap();
@@ -1500,7 +1500,7 @@ mod expiry {
             .unwrap();
         assert_eq!(
             signed.record.valid_until_in_envelope().as_deref(),
-            Some("2027-08-18T22:00:00Z")
+            Some("2027-08-18T22:00:00.000Z")
         );
     }
 
@@ -1519,12 +1519,12 @@ mod expiry {
                 .unwrap();
         assert_eq!(
             signed.record.valid_until_in_envelope().as_deref(),
-            Some("2027-08-18T22:00:00Z"),
+            Some("2027-08-18T22:00:00.000Z"),
             "the canonical form must reach the SIGNED envelope, not the caller's spelling"
         );
         assert_eq!(
             signed.record.valid_until.as_deref(),
-            Some("2027-08-18T22:00:00Z")
+            Some("2027-08-18T22:00:00.000Z")
         );
         // …and the record still satisfies its own binding.
         assert!(signed.record.check_subject_binding().is_ok());
@@ -1555,6 +1555,21 @@ mod expiry {
             .unwrap();
         let signed_until = signed.record.valid_until_in_envelope().unwrap();
         assert!(chrono::DateTime::parse_from_rfc3339(&signed_until).unwrap() > f);
+    }
+
+    /// **CIRISPersist#659 — a whole-second expiry keeps its fraction.**
+    /// `AutoSi` wrote `…:15Z` for an instant on a whole second, which persist's
+    /// subject binding refuses as not CC 2.6.2's `.sssZ` form (about one boot
+    /// in a thousand). The signed form always carries three fraction digits,
+    /// and an input finer than a millisecond is refused rather than truncated.
+    #[tokio::test]
+    async fn whole_second_expiry_keeps_milliseconds() {
+        use crate::federation_identity::Validity;
+        let v = Validity::checked(FROM, Some("2026-11-21T09:26:15Z")).unwrap();
+        assert_eq!(v.until(), Some("2026-11-21T09:26:15.000Z"));
+        let v = Validity::checked(FROM, Some("2026-11-21T09:26:15.250Z")).unwrap();
+        assert_eq!(v.until(), Some("2026-11-21T09:26:15.250Z"));
+        assert!(Validity::checked(FROM, Some("2026-11-21T09:26:15.250001Z")).is_err());
     }
 
     /// **#268 — the low-level producers validate too.** Sealing `Validity`

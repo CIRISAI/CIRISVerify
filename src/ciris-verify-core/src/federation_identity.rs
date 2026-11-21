@@ -116,16 +116,29 @@ impl<'a> Validity<'a> {
             // about a record nobody tampered with.
             //
             // A caller may pass any RFC-3339 form; what is PINNED is what gets
-            // signed: UTC, `Z`, second precision.
+            // signed: UTC, `Z`, millisecond precision, always three fraction
+            // digits (CC 2.6.2 `YYYY-MM-DDTHH:MM:SS.sssZ`). A whole-second
+            // instant is `….000Z`, never `…Z` (CIRISPersist#659).
             //
             // Deliberately NOT applied to `valid_from`: it is an existing
             // signed member, so rewriting it would change the canonical bytes
             // of every record already produced. That asymmetry is a
             // compatibility fact rather than a preference.
+            // Millisecond precision is the pinned form, so an input finer
+            // than a millisecond would be truncated and move the instant:
+            // refuse it rather than sign a different expiry.
+            if end.timestamp_subsec_nanos() % 1_000_000 != 0 {
+                return Err(VerifyError::IntegrityError {
+                    message: format!(
+                        "valid_until ({u}) carries sub-millisecond precision; the signed \
+                         form is millisecond-exact (CC 2.6.2)"
+                    ),
+                });
+            }
             return Ok(Self {
                 from,
                 until: Some(
-                    // `AutoSi`, NOT `Secs`. Truncating to whole seconds could
+                    // `Millis`, NOT `Secs` or `AutoSi`. Truncating to whole seconds could
                     // move the expiry EARLIER than `valid_from` — for
                     // `from = ...00.100Z` and `until = ...00.900Z` the
                     // ordering check above passes on the parsed instants and
@@ -134,7 +147,7 @@ impl<'a> Validity<'a> {
                     // (#268 round 9). Normalizing the REPRESENTATION must not
                     // change the INSTANT.
                     end.with_timezone(&chrono::Utc)
-                        .to_rfc3339_opts(chrono::SecondsFormat::AutoSi, true),
+                        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
                 ),
             });
         }
