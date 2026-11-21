@@ -250,8 +250,10 @@ jobs:
       # CC's own repo-wide audit (CC 3.1.7: an emitted literal that resolves as
       # open vocabulary is a defect). Sees literals only — the replay above
       # covers dimensions built by the `dim` constructors.
+      # --allow: ciris:file-stream:v1 is the file stream id's SHA-256 domain
+      # label (CC 5.3.3.8, stream_seal::FILE_STREAM_ID_LABEL), not a dimension.
       - name: CC audit — no unregistered emitted dimension
-        run: python3 .cc/tools/audit_emitted_dimensions.py "$GITHUB_WORKSPACE/src" "$GITHUB_WORKSPACE/bindings"
+        run: python3 .cc/tools/audit_emitted_dimensions.py --allow ciris:file-stream:v1 "$GITHUB_WORKSPACE/src" "$GITHUB_WORKSPACE/bindings"
       # Six review rounds each found one more way past that guard. This is the
       # matrix, so a future narrowing fails here rather than silently
       # un-catching a case someone already paid to find (#268).
