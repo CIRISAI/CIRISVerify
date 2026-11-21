@@ -12,7 +12,7 @@ use serde_json::Value as J;
 
 const FILE: &str = include_str!("vectors/edition2/receipts/stream_heads_v1.json");
 /// SHA-256 of the file, pinned so a regeneration is a visible change.
-const FILE_SHA256: &str = "2be616eb4bcdac0091e14f05ad9ac411f1215a0b7795188f2bea7742299cb1bd";
+const FILE_SHA256: &str = "537c5c68fe70c2cf17c3994fb97c3adbbcb44fbfe3686d6f29a6f00d91ea3a35";
 
 fn h32(v: &J) -> [u8; 32] {
     hex::decode(v.as_str().unwrap())

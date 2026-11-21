@@ -70,7 +70,7 @@ enum AccordGenesisError {
     /// Two members carry the **same public key** under different `member_id`s —
     /// one key occupying multiple seats.
     DuplicateFounderKey,
-    /// The CEG object is not an [`ACCORD_FAMILY_GENESIS_KIND`].
+    /// The CEG object is not an `accord_family_genesis`.
     WrongKind,
     /// A family member's `key_id` has no entry in the pinned directory.
     MemberNotInDirectory,
@@ -185,7 +185,7 @@ const FOUNDER_PUBKEYS_JSON: &str = include_str!("genesis/founder_pubkeys.json");
 ///
 /// Returns `Some(genesis)` once baked (parsed once, cached); `None` until then —
 /// **absence means "not yet pinned"; a cold-start consumer MUST NOT fall back to
-/// fetching it from a peer.** Parses to a [`ACCORD_FAMILY_GENESIS_KIND`] object or
+/// fetching it from a peer.** Parses to an `accord_family_genesis` object or
 /// stays `None` (a malformed bake is treated as not-baked, fail-closed).
 #[must_use]
 pub fn humanity_accord_genesis() -> Option<&'static SignedCegObject> {

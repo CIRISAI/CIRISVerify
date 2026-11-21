@@ -1,0 +1,4 @@
+# Vectors are compared byte for byte (some by a pinned SHA-256); a CRLF checkout must not change them.
+*.json text eol=lf
+*.md text eol=lf
+*.py text eol=lf

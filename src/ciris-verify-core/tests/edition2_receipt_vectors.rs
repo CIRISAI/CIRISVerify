@@ -16,7 +16,7 @@ use std::collections::BTreeMap;
 
 const FILE: &str = include_str!("vectors/edition2/receipts/receipts_v1.json");
 /// SHA-256 of the file, pinned so a regeneration is a visible change.
-const FILE_SHA256: &str = "23c08c0374e5a09305420879ec6e8ead1874af1e221ca3ff8b537cc1c92193ae";
+const FILE_SHA256: &str = "d7e8cb35191c2094fa1cac744d8b28a0aa650e8d786e78be7689cbd8dbe474e8";
 
 fn file() -> J {
     serde_json::from_str(FILE).unwrap()
@@ -272,6 +272,7 @@ fn mint_matches_the_independent_receipt() {
     let refs: Vec<&[u8]> = log.iter().map(Vec::as_slice).collect();
     let sk = CompositeSigningKey::from_seeds(&h32(&m["ml_seed_hex"]), &h32(&m["ed_seed_hex"]));
     let claims = ReceiptClaims {
+        iss: m["iss"].as_str().map(str::to_owned),
         iat: m["iat"].as_u64(),
         ..ReceiptClaims::default()
     };

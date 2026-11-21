@@ -52,7 +52,7 @@ def subproof(m, d, b):
 
 
 IREF = "urn:ietf:params:oauth:ckt:sha-256:"
-PRODUCER = IREF + "P" * 43
+PRODUCER = IREF + "A" * 43
 STREAM = "av-" + "ab" * 32
 SUB = "stream:" + STREAM
 ROOM = "community-kat-room"

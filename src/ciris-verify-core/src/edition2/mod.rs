@@ -584,6 +584,15 @@ fn check_refs(v: &Value) -> Result<(), Invalid> {
                 for (role, set) in roles {
                     match role.as_text() {
                         Some("ack" | "cites") => check_row_ref_set(set, "also")?,
+                        // A deputization names the edge it hangs from (CC rc22):
+                        // a set of exactly one row-ref. Which families may carry
+                        // it, and what the named row must be, are the door's.
+                        Some("under") => {
+                            check_row_ref_set(set, "also")?;
+                            if set.as_array().map(<[Value]>::len) != Some(1) {
+                                return Err(malformed("under"));
+                            }
+                        },
                         _ => return Err(Invalid::UnexpectedMember { within: "also" }),
                     }
                 }
@@ -1683,6 +1692,21 @@ mod tests {
             )])),
             Verdict::Valid(_)
         ));
+        // `under` (CC rc22): exactly one row-ref.
+        assert!(matches!(
+            mk(Value::Map(vec![(
+                t("also"),
+                Value::Map(vec![(t("under"), Value::Array(vec![a.clone()]))])
+            )])),
+            Verdict::Valid(_)
+        ));
+        assert_eq!(
+            mk(Value::Map(vec![(
+                t("also"),
+                Value::Map(vec![(t("under"), Value::Array(vec![a.clone(), b.clone()]))])
+            )])),
+            Verdict::Invalid(Invalid::Malformed { member: "under" })
+        );
         // No row of this form names an object of the earlier form (CC 2.6.1.3,
         // 2.6.1.12): an edition-1 row-ref is refused wherever it stands.
         let earlier = Value::Array(vec![Value::Uint(1), hash_digest(&[1; 32])]);

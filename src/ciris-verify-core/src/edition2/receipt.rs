@@ -98,11 +98,14 @@ fn int_key(n: i64) -> Value {
 }
 
 fn sorted_map(mut m: Vec<(Value, Value)>) -> Value {
-    m.sort_by(|a, b| cde::encode(&a.0).cmp(&cde::encode(&b.0)));
+    m.sort_by_key(|a| cde::encode(&a.0));
     Value::Map(m)
 }
 
 /// A Transparency Service's key, as a reader holds it, with its exact `alg`.
+// The composite variant is the large one; keys are few and short-lived on a
+// reader's stack, so boxing would buy nothing but an allocation.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone)]
 pub enum ReceiptKey {
     /// The CC 2.6.1.7 composite (alg -70100); its `kid` is its thumbprint.
@@ -323,7 +326,7 @@ pub struct ReceiptHeader {
     pub kid: Option<Vec<u8>>,
     /// CWT `iss` (15 / 1).
     pub iss: Option<String>,
-    /// CWT `sub` (15 / 2): the log identifier, where one is named.
+    /// CWT `sub` (15 / 2): the registered statement's own `sub` (RFC 9943).
     pub sub: Option<String>,
     /// CWT `iat` (15 / 6), seconds.
     pub iat: Option<u64>,
@@ -917,7 +920,8 @@ pub struct ReceiptClaims {
     pub kid: Option<Vec<u8>>,
     /// CWT `iss` (15 / 1).
     pub iss: Option<String>,
-    /// CWT `sub` (15 / 2), the log identifier where one is named.
+    /// CWT `sub` (15 / 2): the statement's own `sub`; [`mint_receipt`] sets it
+    /// from the statement, whatever this says.
     pub sub: Option<String>,
     /// CWT `iat` (15 / 6), seconds.
     pub iat: Option<u64>,
@@ -1000,7 +1004,7 @@ pub fn mint_receipt(
         .collect::<Result<Vec<_>, _>>()?;
     let proof = inclusion_proof(index, &hashes).ok_or(ReceiptError::Malformed)?;
     let mut claims = claims.clone();
-    claims.kid = Some(super::thumbprint(&key.public_key()).to_vec());
+    claims.kid = Some(super::thumbprint(key.public_key()).to_vec());
     claims.sub = statement_sub(statements[index]);
     let pb = receipt_protected(ALG_COMPOSITE, &claims);
     let sig = key

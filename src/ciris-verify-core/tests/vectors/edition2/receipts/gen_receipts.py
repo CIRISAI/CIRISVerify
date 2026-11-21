@@ -221,7 +221,7 @@ hdr = receipt(LOG, ix, S1, iss="https://ts.example/log", sub="log-2026", iat=176
 header = [{"id": "named", "receipt_hex": hdr.hex(),
            "expect": {"alg": -70100, "vds": 1, "kid_hex": S1.kid.hex(), "iss": "https://ts.example/log", "sub": "log-2026",
                       "iat": 1767312345}},
-          {"id": "unnamed_vds_2", "receipt_hex": receipt(LOG, ix, ED, vds=2, drop_iat=True, kid=False).hex(),
+          {"id": "unnamed_vds_2", "receipt_hex": receipt(LOG, ix, ED, vds=2, drop_iat=True, kid=False, sub=None).hex(),
            "expect": {"alg": -8, "vds": 2, "kid_hex": None, "iss": None, "sub": None, "iat": None}}]
 
 # ---------------------------------------------------------------- merges
