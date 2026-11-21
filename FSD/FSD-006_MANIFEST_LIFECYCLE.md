@@ -8,7 +8,18 @@
 | CIRISPersist | admission, row mirror, blob store, `holds_bytes`, capability walk |
 | CIRISServer / CIRISRegistry | the `/v1/builds` submit and read doors |
 | CIRISEdge | blob fetch, presenter-bundle gate |
-| CIRISVerify | producer, signature + shape verifier, presenter bundle |
+| CIRISVerify | none since 23.3.3 (see the note below) |
+
+> **23.3.3:** verify's earlier-form (bound Ed25519 + ML-DSA-65 pair) surfaces in this lifecycle were
+> removed: the manifest Contribution producer and verifier (`manifest_contribution`,
+> `sign_build_manifest_contribution`, `verify_build_manifest_contribution`, FFI
+> `ciris_verify_build_manifest_contribution`, wheel `verify_build_manifest_contribution`,
+> `ciris-verify manifest sign`, `ciris-build-sign sign --emit-contribution` and `release.yml`'s
+> `CIRIS_EMIT_BUILD_CONTRIBUTION` outbox upload), the presenter bundle (`build_attestation_bundle`,
+> FFI `ciris_verify_build_attestation_bundle_{envelope,assemble,verify}`, wheel equivalents) and the
+> grant producer (`ciris-verify delegate`, `self_at_login::sign_delegation_grant`). On edition 2 a
+> presented build is one `attestation:agent_integrity` row (CC). The stages and owners below are
+> kept as the lifecycle's specification; rows that name a removed Verify surface are marked.
 
 ---
 
@@ -39,18 +50,18 @@ the serving node.**
 | 1 | Bytes | the canonical file manifest (JSON) | article body, media, package | producer | 3.1.2.1 | ✅ |
 | 2 | Address | `manifest_hash` = sha256(bytes), bare lowercase hex | `content_sha256` | producer | 5.3.2.11 | ✅ |
 | 3 | Claim | `scores` on `provenance:build_manifest:{target}:v1`, `evidence_refs: [manifest_hash]` | `scores` on `encyclopedia:article:{…}:v1`, `evidence_refs: [sha]` | producer | 2.1, 3.1.7 R3 | ✅ |
-| 4 | Sign | bound-hybrid over JCS(envelope); **row mirror + `asserted_at` inside the bytes** | same | Verify (`sign_build_manifest_contribution`) | 2.6.1, 5.3.2.6 | ✅ |
+| 4 | Sign | bound-hybrid over JCS(envelope); **row mirror + `asserted_at` inside the bytes** | same | Verify (`sign_build_manifest_contribution`, removed in 23.3.3) | 2.6.1, 5.3.2.6 | ❌ no Verify producer |
 | 5 | Admit | `put_attestation`: R3, row↔column binding, instant binding, hybrid; pipeline key registered on the admitting node; `attestation_id` a UUID; `asserted_at` not future-dated. No admission gate checks standing | same door | Persist | 5.3.2.8 | ✅ |
 | 6 | Store bytes | `put_blob_signing(sha, bytes, …, author_key_id)`: `author` is whose content it is; the holder claim is the **serving node's**, signed by it | same | Persist (via submit door) | 3.1.9.1 | ✅ holder is the serving node; body ≤ 1 MiB; holder row carries `size` |
 | 7 | Announce holder | `holds_bytes:sha256:{prefix}` auto-emitted | same | Persist | 3.1.9.1, 5.3.2.1 | ✅ |
 | 8 | Replicate | claim + holder rows via anti-entropy | same | Persist / Edge | 5.3.2.3 | ⚠️ **conditional**: crosses only if (a) the consent grant covers `provenance:` (persist projects a non-root author's row as Cohort), (b) both owners accept a common root, else edge withholds it as "Attributed but not Rooted", (c) the pipeline's key record and grant replicate too |
 | 9 | **Standing** | accord role on the pipeline's key record (production), or a `trust:confers:v1` grant the reader's walk finds | the author's standing for the family (editor-consensus for `encyclopedia:*`) | Persist (`is_infra_attest_effective` / `capability_roots_to_trusted_root`) | 3.2 T2, 4.2.1 | ✅ §5 |
-| 9a | Grant producer | `ciris-verify delegate` mints the blessing | the root's conferral for any content family | Verify (`sign_delegation_grant`) | 3.2 T2 | ❌ **not counted by the walk** — §8 |
+| 9a | Grant producer | `ciris-verify delegate` mints the blessing | the root's conferral for any content family | Verify (`sign_delegation_grant`, removed in 23.3.3) | 3.2 T2 | ❌ no producer — §8 |
 | 10 | Discover | `holds_bytes` directory → `list_holders` (persist) / `resolve_holders` (edge) | same | Persist / Edge | 5.3.2 | ✅ |
 | 11 | Fetch | `ContentFetch`, ≤2 holders in parallel, `ContentMiss` → `withdraws` | same | Edge | 5.3.2.1 | ⚠️ `ContentMiss`→`withdraws` is implemented; edge does not enforce the ≤2-holder cap, and its chunked path is an adaptive multi-peer scheduler. Edge declines commons blobs unless the operator consents and the holder is allow-listed, so only registry-conferred nodes hold manifest bytes and **an agent reads them over HTTP from a registry node, not over the swarm** |
 | 12 | Check | **size first**, then full SHA, before any consumer sees a byte | same | consumer | 5.3.2.11 | ✅ `build.manifest_size`; registry submit door refuses `manifest_size_mismatch` before hashing |
 | 13 | Consume | agent loader / L4 file integrity; render tier from sniffed bytes | renderer, render tier | consumer | 5.3.2.12 | ⚠️ the read door returns the claim + `standing` (§6); Verify has no agent-side consumer of it |
-| 14 | Present | presenter bundle: node K's trust-ladder attestation citing M's claim | citing an article in a downstream claim | Verify (`build_attestation_bundle`) | 3.1.2.1 | ✅ §7 |
+| 14 | Present | presenter bundle: node K's trust-ladder attestation citing M's claim | citing an article in a downstream claim | Verify (`build_attestation_bundle`, removed in 23.3.3) | 3.1.2.1 | ❌ §7 |
 | 15 | Retire | `supersedes` (rebuild, rotation) · `withdraws` (bad build, compromise) · quorum role withdrawal | `supersedes` revision chain, takedown | producer / root | 2.3, 2.4.1.1, 3.2 T2, 4.5.3 | ✅ §5 |
 
 ## 3. The wire object (normative)
@@ -147,7 +158,7 @@ both. For the accord-role standing, retirement is the quorum role withdrawal on 
 **Reach.** A pipeline blessed only by delegation has its manifests projected to Cohort; Global reach
 needs the accord-co-scrubbed `infra:attest` role on the pipeline's key record.
 
-**Verify:** `verify_build_manifest_contribution(obj, pipeline_member, &PipelineBlessing)`,
+**Verify (removed in 23.3.3):** `verify_build_manifest_contribution(obj, pipeline_member, &PipelineBlessing)`,
 where `PipelineBlessing { pipeline_key_id, standing: Conferred { root_key_id,
 grant_attestation_id, plane: Delegation | FamilyQuorum } | AccordRole }`. The walk's
 co-scrub arm is unrepresentable. Verify checks the signature and shape and that the blessing
@@ -177,7 +188,7 @@ A node's "I run build M" is the trust-ladder attestation it already carries (CC 
 agent's tree, signed by the running node about itself and citing the manifest's Contribution. It
 does not reuse `provenance:build_manifest:{target}`, which is the pipeline's claim. The citation
 is `references_attestation_id` = the manifest Contribution's row id and `evidence_refs` = the
-manifest blob's digest. `build_attestation_bundle` implements it with `PresentedBuild { SelfVerify,
+manifest blob's digest. `build_attestation_bundle` (removed in 23.3.3) implemented it with `PresentedBuild { SelfVerify,
 AgentIntegrity }` (closed); the bundle carries its own row mirror, and both scoring projections use
 the ladder dimension. A target no ladder row fits is a ladder gap for CC, not a presenter's choice.
 
@@ -187,7 +198,8 @@ roots are minted with `witness_quorum: 0`, so a consumer does not expect a witne
 
 ## 8. Known gap: the grant producer
 
-`ciris-verify delegate` → `self_at_login::sign_delegation_grant` emits `dimension: "delegates_to"`
+There is no grant producer in Verify since 23.3.3. The removed one, `ciris-verify delegate` →
+`self_at_login::sign_delegation_grant`, emitted `dimension: "delegates_to"`
 (refused by R3 as `missing_version_segment`), `delegated_scope: […]`, top-level `subject_key_ids`,
 and no row mirror. Persist's walk counts a conferral only as `row.attestation_type: delegates_to`,
 attesting = root, `row.attested_key_id` = the subject, federation tier, `scope` (string or array)
@@ -198,6 +210,8 @@ and `operational_admit`'s role chain read `delegated_scope`, so moving the produ
 `trust:confers:v1` + `scope` + row mirror changes those consumers too. Tracked as CIRISVerify#300.
 
 ## 9. Verify's surface
+
+Removed in 23.3.3 except the first bullet; listed as the shape the earlier surface had.
 
 - `dim::DIMENSION_VERSION` on every emitted family; `attest_bundle` splits the tail once and
   projects only the emitted rule version.

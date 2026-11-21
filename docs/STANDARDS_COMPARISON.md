@@ -204,16 +204,13 @@ identity anchored in hardware*. Different questions, not competing answers.
 
 in-toto ITE-6/DSSE attestations; SLSA provenance levels.
 
-Verify's `manifest_contribution` and `build_attestation_bundle` occupy the same
-conceptual space — signed build provenance — with one addition worth naming:
-the **presenter binding**. in-toto proves a build happened as described; it does
-not bind *the entity presenting the evidence* to it. Verify's bundle requires
-the presenter's `attesting_key_id` to equal a pinned member resolved from the
-caller's directory and never from the object, which refuses a relayed bundle.
-
-**Honest boundary, carried in verify's own module docs:** this does **not**
-prove remote execution, which is unprovable. It proves an *attributable,
-falsifiable* assertion over independently-rooted evidence.
+Verify's signed build provenance is the pipeline-signed `BuildManifest`
+(`security::build_manifest`). The pair-signed manifest Contribution and the
+presenter bundle (`manifest_contribution`, `build_attestation_bundle`), which
+added a **presenter binding** in-toto lacks, were removed in 23.3.3; on edition 2
+a presented build is one `attestation:agent_integrity` row (CC), which verify does
+not yet produce or read. Either way, nothing here proves remote execution, which
+is unprovable.
 
 **Where verify loses:** no SLSA level self-assessment, no DSSE compatibility, no
 predicate ecosystem. in-toto and SLSA are standards with real adoption; verify's
@@ -274,9 +271,11 @@ format, so the upgrade is a format addition rather than a re-issuance event
 
 ### 12. WebAuthn / passkeys
 
-Verify implements assertion verification (cross-checked against `webauthn-rs`,
-origin exact-match, `signCount` surfaced) and uses it strictly as an **unlock**
-factor — never as the owner-binding signature. The split matters: a passkey
+Verify verified passkey assertions (cross-checked against `webauthn-rs`,
+origin exact-match, `signCount` surfaced) strictly as an **unlock** factor for
+the self-at-login ceremony — never as the owner-binding signature. That
+verifier went with the ceremony in 23.3.3; the `ES256` primitive remains
+(`P256Verifier::verify_webauthn_es256`). The split still matters: a passkey
 proves presence, not custody of the federation key.
 
 ---

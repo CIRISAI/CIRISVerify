@@ -22,6 +22,12 @@ seizure shapes (one-key-quorum, double-seating-via-spare, lifting entrenchment,
 
 ## Resolution status — verify-core machinery IMPLEMENTED
 
+> **23.3.3:** `ciris_verify_core::accord_live_quorum` and `humanity_accord` were removed. The
+> findings below describe the earlier-form machinery as it was built; on edition 2 the accord is
+> read by `edition2::genesis` (roster changes and recovery as later bundles) and
+> `edition2::accord_halt` + `accord_halt_latch::HaltLatch::apply_forward` (halt, confirm, resume).
+> This review is kept as the record of the design's red-team.
+
 The stateless verify-core obligations are built in `ciris_verify_core::accord_live_quorum`
 (`AccordProposal` / `AccordParticipation` / `AccordDecision`, `tally_live_quorum`,
 `verify_fire_by_live_quorum`, `verify_membership_change_by_live_quorum`,

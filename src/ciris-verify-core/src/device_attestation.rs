@@ -3,10 +3,9 @@
 //!
 //! ## The rule, and the half this closes
 //!
-//! [`crate::build_attestation_bundle`] refuses to believe a
-//! peer's *build* string; it walks a chain to a pinned trust root instead. CC
-//! 4.2.2.1 applies the same rule to the other claim a peer makes about itself —
-//! its **hardware class**. A peer asserting `StrongBox` is asserting a string
+//! A peer's *build* string is not believed; a reader walks a chain to a pinned
+//! trust root instead. CC 4.2.2.1 applies the same rule to the other claim a
+//! peer makes about itself — its **hardware class**. A peer asserting `StrongBox` is asserting a string
 //! until someone walks its attestation chain to a **pinned vendor root**.
 //!
 //! The Yubico Attestation Root is consumed by

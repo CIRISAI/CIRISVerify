@@ -1,18 +1,15 @@
-"""Operational-data admission — Python binding (CIRISVerify#65, v5.1.0+).
+"""Delegation scope split — Python binding (CIRISVerify#77).
 
-Exposes :func:`resolve_role_authority` and
-:func:`verify_partner_record_quorum`, thin wrappers over the FFI symbols
-``ciris_verify_resolve_role_authority`` and
-``ciris_verify_partner_record_quorum`` which call
-``ciris_verify_core::operational_admit`` — the CEG 1.0-RC2 §5.6.8.13
-admit-verification surface (CIRISRegistry#70).
+Exposes :func:`verify_delegation_scope_split`, a thin wrapper over the FFI
+symbol ``ciris_verify_delegation_scope_split``, which calls
+``ciris_verify_core::operational_admit::verify_delegation_scope_split``: a
+``node``-only delegate carrying any ``agency:*`` scope is rejected, and an
+unknown scope fails closed. A pure evaluator — no I/O — and **fail-closed**: a
+negative verdict is a successful call, never an exception.
 
-There is exactly one blessed implementation of each check; the wheel
-reaches it rather than reimplementing the role-chain walk or the
-steward-quorum count (RC2 §5.6.8.13 forbids a third bespoke path). Both
-functions are pure evaluators — no I/O — and **fail-closed**: a negative
-admission is a successful call returning ``authorized``/``admitted`` =
-``False``, never an exception.
+``resolve_role_authority`` and ``verify_partner_record_quorum`` checked the
+pair-signed ``organization`` / ``org_membership`` / ``partner_record`` rows,
+which CC 3.3.9 retired; they were removed in 23.3.3.
 """
 
 from __future__ import annotations
@@ -24,11 +21,7 @@ import threading as _threading
 from pathlib import Path
 from typing import Any, Optional
 
-__all__ = [
-    "resolve_role_authority",
-    "verify_partner_record_quorum",
-    "verify_delegation_scope_split",
-]
+__all__ = ["verify_delegation_scope_split"]
 
 _lib: Optional[ctypes.CDLL] = None
 _lib_lock = _threading.Lock()
@@ -76,8 +69,6 @@ def _load_lib() -> ctypes.CDLL:
                 continue
             try:
                 lib = ctypes.CDLL(path)
-                _wire(lib.ciris_verify_resolve_role_authority)
-                _wire(lib.ciris_verify_partner_record_quorum)
                 _wire(lib.ciris_verify_delegation_scope_split)
             except (OSError, AttributeError) as exc:
                 last_err = exc
@@ -113,101 +104,6 @@ def _call(symbol: str, request: dict) -> dict:
     finally:
         lib.ciris_verify_free(ctypes.cast(out_ptr, ctypes.c_void_p))
     return _json.loads(raw)
-
-
-def resolve_role_authority(
-    actor_key_id: str,
-    org_id: str,
-    required_role: str,
-    current_memberships: list[dict],
-    key_directory: list[dict],
-    root_stewards: list[str],
-) -> dict:
-    """Resolve ``organization`` / ``org_membership`` role-gated admission
-    (CEG 1.0-RC2 §5.6.8.13, the §8.1.12.7.1 ``delegates_to`` resolver).
-
-    Args:
-        actor_key_id: the key that signed the operation being admitted.
-        org_id: the target organization id.
-        required_role: ``"org_admin"`` | ``"key_manager"`` | ``"operator"``
-            | ``"viewer"``.
-        current_memberships: caller-resolved *current state* — the latest
-            non-superseded/non-withdrawn ``org_membership`` grants for this
-            org. Each: ``{"signed_envelope": {...},
-            "ed25519_signature_base64": "...",
-            "mldsa65_signature_base64": "..."}``. The signed envelope MUST
-            carry ``user_id`` / ``org_id`` / ``role`` / ``status`` /
-            ``attesting_key_id``.
-        key_directory: pinned hybrid pubkeys per key_id (from
-            ``federation_keys``). Each: ``{"member_id": "...",
-            "ed25519_public_key_base64": "...",
-            "mldsa65_public_key_base64": "..."}``.
-        root_stewards: key_ids recognized as org-creation root authority.
-
-    Returns:
-        ``{"authorized": bool, "established_by": str|None,
-        "root_anchored": bool, "reason": str}``. Fail-closed: any
-        ambiguity yields ``authorized: False``.
-
-    Raises:
-        ValueError: the request itself is malformed (a caller error, NOT a
-            negative verdict).
-        RuntimeError: the shared library / FFI symbols are unavailable.
-    """
-    return _call(
-        "ciris_verify_resolve_role_authority",
-        {
-            "actor_key_id": actor_key_id,
-            "org_id": org_id,
-            "required_role": required_role,
-            "current_memberships": current_memberships,
-            "key_directory": key_directory,
-            "root_stewards": root_stewards,
-        },
-    )
-
-
-def verify_partner_record_quorum(
-    partner_record: Any,
-    steward_roster: list[dict],
-    signatures: list[dict],
-    threshold: int,
-) -> dict:
-    """Verify the ``partner_record`` M-of-N steward quorum (CEG 1.0-RC2
-    §5.6.8.13 / §5.6.8.10; CIRISVerify#31).
-
-    Set-semantics arrays in ``partner_record`` (``capabilities_granted``
-    etc.) MUST already be lexicographically sorted (§0.9.2.1 rule 1) — JCS
-    preserves array order, so the M stewards must converge on identical
-    canonical bytes *before* the quorum can evaluate.
-
-    Args:
-        partner_record: the signed envelope (a JSON-able value).
-        steward_roster: the N stewards (``role: "founder"``), same entry
-            shape as ``key_directory`` above plus the role.
-        signatures: the submitted signature set — each ``{"member_id":
-            "...", "ed25519_signature_base64": "...",
-            "mldsa65_signature_base64": "..."}``.
-        threshold: M (the minimum distinct valid steward signatures).
-
-    Returns:
-        ``{"admitted": bool, "valid_count": int, "error": str?}``.
-        Fail-closed: an unmet quorum is ``admitted: False`` with a reason,
-        not an exception.
-
-    Raises:
-        ValueError: the request itself is malformed.
-        RuntimeError: the shared library / FFI symbols are unavailable.
-    """
-    return _call(
-        "ciris_verify_partner_record_quorum",
-        {
-            "partner_record": partner_record,
-            "steward_roster": steward_roster,
-            "signatures": signatures,
-            "threshold": threshold,
-        },
-    )
 
 
 def verify_delegation_scope_split(

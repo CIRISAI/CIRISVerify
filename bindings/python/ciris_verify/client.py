@@ -693,14 +693,6 @@ class CIRISVerify:
             ]
             self._lib.ciris_verify_admit_attestation.restype = ctypes.c_int
 
-            self._lib.ciris_verify_invocation_canonical_bytes.argtypes = [
-                ctypes.c_char_p,                                  # invocation_json
-                ctypes.c_size_t,                                  # invocation_len
-                ctypes.POINTER(ctypes.POINTER(ctypes.c_uint8)),   # result_out
-                ctypes.POINTER(ctypes.c_size_t),                  # result_len_out
-            ]
-            self._lib.ciris_verify_invocation_canonical_bytes.restype = ctypes.c_int
-
             self._lib.ciris_verify_sth_cosignature_consistency_proof.argtypes = [
                 ctypes.c_char_p,                                  # proof_json
                 ctypes.c_size_t,                                  # proof_len
@@ -2398,41 +2390,6 @@ class CIRISVerify:
         except Exception:
             return None
 
-    def invocation_canonical_bytes(self, invocation: dict) -> Optional[bytes]:
-        """CEG §9.2.1 HUMANITY_ACCORD canonical-bytes producer
-        (CIRISVerify#41, v4.2.0+).
-
-        Args:
-            invocation: Invocation dict with `invocation_kind`,
-                `invocation_id`, `nonce`, `asserted_at`, `valid_until`,
-                `payload_sha256`. Timestamps must be §0.5 canonical RFC 3339;
-                `payload_sha256` must be §0.6 canonical lowercase hex.
-
-        Returns:
-            Canonical bytes to sign (raw `bytes`), or None on failure.
-            The hybrid signature scheme per §5.2.1 signs Ed25519 over these
-            bytes and ML-DSA-65 over `bytes || ed25519_sig`.
-        """
-        if not self._has_v4_2_conformance_support:
-            return None
-        inv_bytes = json.dumps(invocation).encode("utf-8")
-        result_ptr = ctypes.POINTER(ctypes.c_uint8)()
-        result_len = ctypes.c_size_t()
-        ret = self._lib.ciris_verify_invocation_canonical_bytes(
-            inv_bytes,
-            len(inv_bytes),
-            ctypes.byref(result_ptr),
-            ctypes.byref(result_len),
-        )
-        if ret != 0:
-            return None
-        try:
-            data = ctypes.string_at(result_ptr, result_len.value)
-            self._lib.ciris_verify_free(result_ptr)
-            return data
-        except Exception:
-            return None
-
     def verify_sth_cosignature_consistency_proof(
         self,
         proof: dict,
@@ -4001,10 +3958,8 @@ from ._wheel_hybrid_kex import attach_to as _attach_hybrid_kex  # noqa: E402
 from ._wheel_key_grant import attach_to as _attach_key_grant  # noqa: E402
 from ._wheel_locale_merkle import attach_to as _attach_locale_merkle  # noqa: E402
 from ._wheel_reconsider_dos import attach_to as _attach_reconsider_dos  # noqa: E402
-from ._wheel_skill_import import attach_to as _attach_skill_import  # noqa: E402
 
 _attach_hybrid_kex(CIRISVerify)
 _attach_key_grant(CIRISVerify)
 _attach_locale_merkle(CIRISVerify)
 _attach_reconsider_dos(CIRISVerify)
-_attach_skill_import(CIRISVerify)

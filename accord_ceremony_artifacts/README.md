@@ -16,8 +16,9 @@ hardware.** These artifacts are that public proof, and the proof is
 cargo test -p ciris-verify-core --test accord_ceremony_custody -- --nocapture
 ```
 
-That test re-runs the exact CIRISServer admission-gate verifier
-(`verify_accord_custody_attestation`) over all 6 custody attestations here,
+That test runs the custody verifier the edition-2 genesis reader's custody gate
+uses (`verify_yubikey_piv_attestation`) over the YubiKey attestation certs that all
+6 custody attestations here carry,
 against the pinned **Yubico Attestation Root 1** (`yubico-attestation-root-1.pem`,
 SHA-256 `62760C6A6EF91679F454C8902B80FD009825B3F25DA90F1FBACE2EC6586CD5A8`), and
 asserts for every key: the 9c PIV attestation chains `9c → f9 → … → root`, the
@@ -49,8 +50,10 @@ test is a loud signal the audit trail no longer verifies.
 `humanity_accord_genesis()` / `HUMANITY_ACCORD_GENESIS_JSON` returns — the no-TOFU
 accord recognition root. The seated roster is the 3 primaries (A1/B1/C1),
 `quorum:2/3`; the 3 spares (A2/B2/C2) are vaulted, not seated. The custody
-attestations convert to CIRISPersist `attestation_evidence` through
-`custody_attestation_to_platform_attestation`.
+attestation objects are the earlier, holder-signed bundle form; verify's reader of
+that bundle (`verify_accord_custody_attestation`) and its
+`custody_attestation_to_platform_attestation` bridge were removed in 23.3.3, and
+the test reads only the certificate chain each bundle carries.
 
 ## Safety
 

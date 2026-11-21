@@ -16,17 +16,12 @@
 decimal_id	claim_id	repo	path#symbol	crate@version	span_sha256
 8.11.2	CLM-round-trip	CIRISVerify	src/ciris-verify-core/src/jcs.rs#canonicalize	ciris-verify-core@v23.3.3	ed67d37517fe734f0919b95cd384a35fe4a4e893fffbb9f72ba3a6b75f2d9576
 8.11.3	CLM-canonicalization-array	CIRISVerify	src/ciris-verify-core/src/operational_admit.rs#check_set_semantics_sorted	ciris-verify-core@v12.5.0	f8699b6078e1dd595b62f182315dc29b46804025688ef8620270520e280a0b42
-8.11.10	CLM-canonicalization	CIRISVerify	src/ciris-verify-core/src/skill_import.rs#check_canonical_rfc3339	ciris-verify-core@v12.5.0	173f64b9303a210e409c6913fc46c4c9c52b89106d8f00870406a0bf88109f9a
-8.11.11	CLM-canonicalization-hexadecimal	CIRISVerify	src/ciris-verify-core/src/skill_import.rs#check_canonical_hex64	ciris-verify-core@v12.5.0	5f08cfc43cc6b54212beb35e00c788dbc073f39ace9a398944806bf8bb71368a
-3.3.6.2	CLM-transport-authenticated	CIRISVerify	src/ciris-verify-core/src/transport_binding.rs#verify_transport_binding	ciris-verify-core@v12.5.0	84da52afde7db1072d7eda57124778b4bd06e23ec12ec53254e1df3c62f782bb
+3.3.6.2	CLM-transport-authenticated	CIRISVerify	src/ciris-verify-core/src/edition2/genesis.rs#check_seat_binding	ciris-verify-core@v23.3.3	6e6b3bb091183563568eb1bb90f8b1312ee320eb0a9d9b63abad1bd2cb0ae51f
 3.3.6.3	CLM-rns	CIRISVerify	src/ciris-verify-core/src/transport_binding.rs#compute_destination_hash	ciris-verify-core@v12.5.0	e52da34983d43cb2d3905da3013bcaa1c450d232a3b512bd3b8c764831e0cfac
-4.2.1.1	CLM-invocation	CIRISVerify	src/ciris-verify-core/src/humanity_accord.rs#Invocation::canonical_bytes	ciris-verify-core@v12.5.0	ed112668148018b7355e82c7b29cff6e869bb36fc8b9c1bbbf003d2b6010c2ab
-4.2.1.3	CLM-lifecycle	CIRISVerify	src/ciris-verify-core/src/humanity_accord.rs#verify_invocation	ciris-verify-core@v12.5.0	13d3ff9c3c2ab5763a83b3ba93f443c5d1b9661df95a594316bba18a863eb2d5
+4.2.1.1	CLM-invocation	CIRISVerify	src/ciris-verify-core/src/edition2/accord_halt.rs#verify_invocation_row	ciris-verify-core@v23.3.3	47a5cea65213e54261b32c584cddad93c35d7539d70e6ff4dd34abfe2a55a153
 4.2.2	CLM-hardware-class	CIRISVerify	src/ciris-keyring/src/hw_token.rs#hardware_class_table	ciris-keyring@v10.1.1	bfcad5af15db3c637c7e98a55f906c5882685b155fffbe377b7e58471fc65dc7
-4.2.6	CLM-accord-livequorum	CIRISVerify	src/ciris-verify-core/src/accord_live_quorum.rs#verify_membership_change_by_live_quorum	ciris-verify-core@v12.5.0	d9ac398f66d3e6b093fd879e8719b756e74bb814201492959c78de8823e99ae0
-4.2.6	CLM-accord-livequorum	CIRISVerify	src/ciris-verify-core/src/accord_live_quorum.rs#verify_holder_recovery	ciris-verify-core@v23.0.0	17144dd2d06c286b241d1ff8ee5383885d7539140e00f725d5ba62e43006b310
-4.4.3.19	CLM-cohort	CIRISVerify	src/ciris-verify-core/src/self_at_login.rs#perform_self_at_login	ciris-verify-core@v12.5.0	b70f6d2a856a48ca9f26a5fb92d014333e0c40d315f0057624b719002e87c0a8
-8.11.23	CLM-canonicalization-signing	CIRISVerify	src/ciris-verify-core/src/self_at_login.rs#sign_partnership_grant	ciris-verify-core@v12.5.0	8e95a3c88fb7d530c9a44ce0348b1bf017f28b09934973f97f2062e5979f2947
+4.2.6	CLM-accord-livequorum	CIRISVerify	src/ciris-verify-core/src/edition2/genesis.rs#read_genesis_bundles	ciris-verify-core@v23.3.3	b079a46f4555a38de11e7f21322b9151a9a79a8b413ab1dfcad6b27d602a1775
+4.2.6	CLM-accord-livequorum	CIRISVerify	src/ciris-verify-core/src/edition2/recovery.rs#recovery_commitment	ciris-verify-core@v23.3.3	0aad3a828789900749d7f34f1bff22a6218dfb233948149c34e54b4c29542d8f
 5.3.1	CLM-witness	CIRISVerify	src/ciris-verify-core/src/transparency.rs#SignedTreeHead::cosign	ciris-verify-core@v12.5.0	50aa3cffb3b93d8850fb371a3f096c9b2e27f872f27444584b29d9c0470e56a9
 5.3.1.1	CLM-consistency-proof	CIRISVerify	src/ciris-verify-core/src/transparency.rs#verify_consistency	ciris-verify-core@v12.5.0	bf21ef6c3d33963dffc39217e1187479a71441f8bc021072bb4ea2197e70316b
 5.3.2.11	CLM-full-sha	CIRISVerify	src/ciris-verify-core/src/holds_bytes.rs#verify_holds_bytes	ciris-verify-core@v12.5.0	b8fb0352036d912b86f757cd568dd3ca17036d3e9edc3bcece68189b46cce319
@@ -57,11 +52,9 @@ decimal_id	claim_id	repo	path#symbol	crate@version	span_sha256
 # against a proposal. The `UNASSIGNED` marker is not a decimal; tools/check_evidence.py
 # still resolves the symbol, so these cannot rot while they wait.
 # Proposed CLM names are suggestions, not claims.
-4.2.2	CLM-presenter-binding	CIRISVerify	src/ciris-verify-core/src/build_attestation_bundle.rs#verify_build_attestation_bundle	ciris-verify-core@v13.0.0	4d7df4216d137f06d16b78bdfe2c6e9cf4387d299f49a8c4fcbecf0e577ccea4
-4.2.2	CLM-presenter-binding-producer	CIRISVerify	src/ciris-verify-core/src/build_attestation_bundle.rs#produce_build_attestation_bundle	ciris-verify-core@v13.0.0	64c5213d3702b79b8cb682032584c5d670918c00856e1a0a6d2308e8489244e1
 4.2.2.1	CLM-hardware-class-android	CIRISVerify	src/ciris-verify-core/src/device_attestation.rs#verify_android_key_attestation	ciris-verify-core@v13.0.0	79158215977512749c7fe93d86de60013b59b08abbf6fad55b741d255f68e719
 4.2.2.1	CLM-hardware-class-apple	CIRISVerify	src/ciris-verify-core/src/device_attestation.rs#verify_apple_app_attest	ciris-verify-core@v13.0.0	a800a0652527377fba82e975aaf689a496d30279666fb8b4b5d2370933c7ede2
-4.2.2.1	CLM-hardware-class-yubikey	CIRISVerify	src/ciris-verify-core/src/accord_custody_attestation.rs#verify_yubikey_piv_attestation	ciris-verify-core@v13.0.0	d07f8ffe9ee456209dc019e24450f1222865766338b22ae8b1cefca575a14093
+4.2.2.1	CLM-hardware-class-yubikey	CIRISVerify	src/ciris-verify-core/src/accord_custody_attestation.rs#verify_yubikey_piv_attestation	ciris-verify-core@v13.0.0	df40ba58d2743e29aa2b1cec8447bdd2e22b0c024e7960e96df709d1a540f62c
 4.2.2.1	CLM-trust-anchor-store	CIRISVerify	src/ciris-verify-core/src/trust_anchor_store.rs#ConciseTaStore	ciris-verify-core@v13.0.0	16e8b6f1e2b87f8a35e14d7d86e81e9343bb6aad1ed61459df4b3b7e6b0aaeaa
 4.2.2.1	CLM-trust-anchor-baked	CIRISVerify	src/ciris-verify-core/src/trust_anchor_store.rs#yubico_attestation_root	ciris-verify-core@v13.0.0	c3f00f865ad1f079560e92cdc5f1a66247143cd7cddfd1be95290a28c11af8d7
 3.1.2	CLM-dimension-registry	CIRISVerify	src/ciris-verify-core/src/federation_provenance.rs#DimensionSpec	ciris-verify-core@v13.0.0	e1162cd389ce5240d5b1f1497fabf21eb03ad9c367a385bdee5133340d17d8ee
@@ -82,9 +75,6 @@ decimal_id	claim_id	repo	path#symbol	crate@version	span_sha256
 2.6.8	CLM-fedcode-owned-nodes	CIRISVerify	src/ciris-verify-core/src/fedcode.rs#OwnedNode	ciris-verify-core@v14.1.0	ef0649dc97464b3f4e896fc93d1b3498c0f70d94ef578363e139a55d07728584
 4.2.2	CLM-keyring-rng-latch	CIRISVerify	src/ciris-keyring/src/lib.rs#mint_p256_signing_key	ciris-keyring@v14.1.0	eb666fdb05f5c12faa0ed4ad5e1aa1a2c5387721b6a801ab46d4e3e2c07945cb
 2.6.8	CLM-fedcode-pqc-commitment	CIRISVerify	src/ciris-verify-core/src/fedcode.rs#verify_pulled_ml_dsa_65_pubkey	ciris-verify-core@v14.2.0	bb004f7a086053f357baef9d00410e00f8fd3a6869038abf053bb9e4fa9875b4
-4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/humanity_accord.rs#InvocationKind::required_signatures	ciris-verify-core@v20.0.0	2812f6bc912d9c586faa2feab37886528d4ad267ddd3d165bc603fba235e00d0
-4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/accord_halt_latch.rs#HaltLatch::apply	ciris-verify-core@v20.0.0	bf1f3c9ab7bb6c0ba2762b48d54f6e6d1ac12886d711101b506eee2b990c1382
-4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/accord_halt_latch.rs#verify_for_latch	ciris-verify-core@v20.0.0	f3dc17eff9cc4bef16f376a1944c078b8c0d0883bccd62e5ff10cdfc1228df90
 3.3.6.2	CLM-transit-kex-binding	CIRISVerify	src/ciris-crypto/src/transit.rs#Initiator::start	ciris-crypto@v23.1.0	4d42562bbc391b2c6640866e4e5ade3b0c702306c495c860049a94694e89deb6
 3.3.6.2	CLM-transit-kex-binding	CIRISVerify	src/ciris-crypto/src/transit.rs#Responder::accept	ciris-crypto@v23.1.0	1860a470ad1eb4707726009755898118acb442c0173de6000fbcbfe19c3e15c1
 3.3.6.2	CLM-transit-kex-binding	CIRISVerify	src/ciris-crypto/src/transit.rs#derive_session_keys	ciris-crypto@v23.1.0	c133bfd4e8a4e346c00143d5ebd5761ec69ac381c9621070f0b1b40ca21f71b6
@@ -92,10 +82,10 @@ decimal_id	claim_id	repo	path#symbol	crate@version	span_sha256
 5.3.4	CLM-multi-steward	CIRISVerify	src/ciris-verify-core/src/genesis_bundle.rs#authorization_digest	ciris-verify-core@v21.0.0	0ab994f37f75b911fec74260bba56e6d6384e224ab919ed7ddc87d7e73b12f4a
 5.3.4	CLM-multi-steward	CIRISVerify	src/ciris-verify-core/src/validation.rs#select_trust_root	ciris-verify-core@v21.0.0	0e8394564c1adbe2ee033641794b402f157b067f5df8f7c6a264c14a334e3711
 5.1	CLM-stream-dek-per-stream	CIRISVerify	src/ciris-crypto/src/stream_dek.rs#stream_dek	ciris-crypto@v23.0.0	0af021e7c4283c433b6a4f88b982d3977134528b3d542e735049a490af771767
-4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/accord_halt_latch.rs#HaltLatch::step	ciris-verify-core@v23.3.0	2ef5f22426c4a69380721d27e043dac4b6d43c38daf53554908ccede6eed5375
+4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/accord_halt_latch.rs#HaltLatch::step	ciris-verify-core@v23.3.0	a3e8cf7f5c75b4ef93ba3aa916014c584656bf5ebdd5943cfc50f58f1142f2f1
 4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/edition2/accord_halt.rs#verify_invocation_row	ciris-verify-core@v23.3.0	47a5cea65213e54261b32c584cddad93c35d7539d70e6ff4dd34abfe2a55a153
 4.2.1.3	CLM-lifecycle	CIRISVerify	src/ciris-verify-core/src/edition2/accord_halt.rs#verify_lifecycle_row	ciris-verify-core@v23.3.0	3e15f059048f441b51a813c62d490c2b21c8e43e2d84ae29eb692a9da0a42af2
-4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/accord_halt_latch.rs#HaltLatch::apply_forward	ciris-verify-core@v23.3.0	9f5f1498f2ee9d57f85e1a982189056a730528a7d0c060a0c92fccc7a8aabf22
+4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/accord_halt_latch.rs#HaltLatch::apply_forward	ciris-verify-core@v23.3.0	6f1dbd8d025b217f6369f9af74072c9decee9884c3173180a2ebcac6c5b83db0
 # 2.6.1 verification order (CC 2.6.1.8, steps 6-8): read_row_statement checks, after the
 # signature, that the signing key is a key of the CWT iss (kid_not_of_iss); KeyRecordDirectory::chain
 # proves a rotated key the issuer's (CC 2.6.1.7, CC 2.4.1.1, CC 3.1.3).

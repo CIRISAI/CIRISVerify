@@ -22,7 +22,8 @@
 //!   passkeys, a platform authenticator). A passkey signs WebAuthn's assertion
 //!   format over a challenge — it **authenticates presence and gates/unlocks**
 //!   the signing key, but does **not** itself produce the federation owner-binding
-//!   signature. Its assertion is verified by `ciris_crypto::webauthn`.
+//!   signature. (Verify's assertion verifier was removed in 23.3.3; the
+//!   `ES256` primitive is `ciris_crypto::P256Verifier::verify_webauthn_es256`.)
 //!
 //! ## Multiple hardware keys per identity (redundancy)
 //!

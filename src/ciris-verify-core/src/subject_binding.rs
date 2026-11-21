@@ -8,7 +8,8 @@
 //! not compared against those bytes, the same valid signature applies to any
 //! subject.
 //!
-//! Concretely, the shape that shipped here: a `ProvenanceLink` declares a
+//! Concretely, the shape that shipped here (the provenance walk, removed in
+//! 23.3.3): a `ProvenanceLink` declared a
 //! `key_id` and pubkeys *outside* the signed envelope, and the verifier
 //! canonicalized the envelope, hashed it, and verified signatures over it —
 //! without ever reading the `key_id` **inside**. An attacker wraps a victim's
@@ -322,21 +323,12 @@ mod tests {
     }
 }
 
-/// **Cross-plane agreement** — verify's own planes must not drift apart
-/// (CIRISVerify#254).
-///
-/// The projections live in separate `.require(…)` chains on three types.
-/// Nothing forced them to agree, and a consumer produces ONE envelope that has
-/// to satisfy whichever plane it reaches. CIRISPersist's conformance probe was
-/// asserting this on verify's behalf; verify should hold its own invariant.
+/// The projection [`crate::federation_self_record::KeyRecord`] exposes is the
+/// one it checks (CIRISVerify#254). The cross-plane agreement tests that
+/// compared it with `ProvenanceLink` went with the provenance walk in 23.3.3.
 #[cfg(test)]
-mod cross_plane {
-    /// Members `KeyRecord` binds that `ProvenanceLink` has no field for. The
-    /// list is deliberately explicit: widening it is a declared act.
-    const VALIDITY: &[&str] = &["valid_until"];
-
+mod key_record_plane {
     use crate::federation_self_record::KeyRecord;
-    use crate::provenance::ProvenanceLink;
     use serde_json::json;
 
     fn envelope(key_id: &str) -> serde_json::Value {
@@ -348,28 +340,10 @@ mod cross_plane {
         })
     }
 
-    fn link() -> ProvenanceLink {
-        ProvenanceLink {
-            key_id: "k1".into(),
-            pubkey_ed25519_base64: "ED".into(),
-            pubkey_ml_dsa_65_base64: Some("PQ".into()),
-            identity_type: "steward".into(),
-            identity_ref: "ref".into(),
-            registration_envelope: envelope("k1"),
-            original_content_hash: String::new(),
-            scrub_signature_classical: String::new(),
-            scrub_signature_pqc: None,
-            scrub_key_id: "k1".into(),
-            scrub_timestamp: String::new(),
-            is_self_signed: true,
-        }
-    }
-
-    /// The registration-envelope planes bind the SAME member set. A member
-    /// added to one and not the other means one envelope satisfies the
-    /// provenance walk and fails `KeyRecord`, or the reverse.
+    /// The projection a plane exposes is the one it CHECKS — otherwise the
+    /// exported list is a documentation comment with extra steps.
     #[test]
-    fn provenance_and_key_record_bind_the_same_members() {
+    fn the_exposed_projection_is_the_one_enforced() {
         let rec: KeyRecord = serde_json::from_value(json!({
             "key_id": "k1",
             "algorithm": "hybrid",
@@ -386,90 +360,17 @@ mod cross_plane {
             "persist_row_hash": "",
         }))
         .expect("KeyRecord fixture must deserialize");
-
-        let (lb, rb) = (link().subject_binding(), rec.subject_binding());
-        let a: Vec<&String> = lb.members().keys().collect();
-        let b: Vec<&String> = rb.members().keys().collect();
-
-        // The IDENTITY core must be identical across planes: a member added to
-        // one only would mean the same envelope passes one plane and fails the
-        // other.
-        assert_eq!(
-            a,
-            b.iter()
-                .filter(|k| !VALIDITY.contains(&k.as_str()))
-                .copied()
-                .collect::<Vec<_>>(),
-            "the identity core must match across planes"
-        );
-
-        // KeyRecord legitimately binds MORE: `valid_until` is a decision-driving
-        // sibling that `ProvenanceLink` has no field for (#267/#268). Asserted
-        // rather than tolerated, so a future divergence still has to be
-        // declared here instead of silently widening.
-        let extra: Vec<&String> = b
-            .iter()
-            .filter(|k| VALIDITY.contains(&k.as_str()))
-            .copied()
-            .collect();
-        assert_eq!(
-            extra,
-            vec![&"valid_until".to_string()],
-            "the only sanctioned cross-plane difference is the validity window"
-        );
-    }
-
-    /// …and on the same VALUES for the same underlying row, not merely the
-    /// same names. Equal key sets with divergent values is the subtler drift.
-    #[test]
-    fn the_two_planes_agree_on_values_too() {
-        let l = link();
-        let rec: KeyRecord = serde_json::from_value(json!({
-            "key_id": "k1",
-            "algorithm": "hybrid",
-            "identity_type": "steward",
-            "identity_ref": "ref",
-            "pubkey_ed25519_base64": "ED",
-            "pubkey_ml_dsa_65_base64": "PQ",
-            "valid_from": "2026-01-01T00:00:00Z",
-            "registration_envelope": envelope("k1"),
-            "original_content_hash": "",
-            "scrub_signature_classical": "",
-            "scrub_key_id": "k1",
-            "scrub_timestamp": "",
-            "persist_row_hash": "",
-        }))
-        .unwrap();
-        let (lb, rb) = (l.subject_binding(), rec.subject_binding());
-        // Compare the shared identity core value-for-value; equal key sets with
-        // divergent VALUES is the subtler drift, and the reason this test
-        // exists alongside the key-set one.
-        for (k, v) in lb.members() {
-            assert_eq!(
-                rb.members().get(k),
-                Some(v),
-                "planes disagree on the value of `{k}`"
-            );
-        }
-    }
-
-    /// The projection a plane exposes is the one it CHECKS — otherwise the
-    /// exported list is a documentation comment with extra steps.
-    #[test]
-    fn the_exposed_projection_is_the_one_enforced() {
-        let l = link();
+        let mut env = envelope("k1");
+        env["valid_until"] = serde_json::Value::Null;
+        let proj = rec.subject_binding();
         // Satisfied by the coherent envelope …
-        assert!(l
-            .subject_binding()
-            .check("t", &l.registration_envelope)
-            .is_ok());
+        assert!(proj.check("t", &env).is_ok());
         // … and every exposed member is actually enforced: flip each in turn.
-        let proj = l.subject_binding();
         for member in proj.members().keys() {
-            let mut tampered = l.registration_envelope.clone();
+            let mut tampered = env.clone();
             tampered[member] = json!("TAMPERED");
             assert!(
-                l.subject_binding().check("t", &tampered).is_err(),
+                proj.check("t", &tampered).is_err(),
                 "exposed member `{member}` is not enforced — the projection would be advisory"
             );
         }

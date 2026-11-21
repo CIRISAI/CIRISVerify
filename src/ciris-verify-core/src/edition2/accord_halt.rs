@@ -2,8 +2,8 @@
 //! (CC 4.2.1.1, CC 4.2.1.3, CC 4.2.6; CIRISConstitution rc20 64c5918).
 //!
 //! Every accord row is an ordinary row of the signed object (CC 2.6.1). There
-//! is no inner signature and no text preimage; the text preimage is the earlier
-//! form ([`crate::humanity_accord`], CC 8.11.29), which this module never reads.
+//! is no inner signature and no text preimage (the text preimage was the
+//! earlier form, CC 8.11.29, whose reader was removed in 23.3.3).
 //!
 //! - An **invocation** (`constitutional`, `notify`, `drill`) is ONE statement:
 //!   its holder's composite `COSE_Sign1` over the payload. The kind is the
@@ -21,8 +21,7 @@
 //! composite keys directly); keys are never taken from the statement.
 //!
 //! The rows feed the latch through
-//! [`crate::accord_halt_latch::HaltLatch::apply_forward`], whose state machine
-//! is the earlier form's: one holder halts, a lone halt lapses `halt_fuse_secs`
+//! [`crate::accord_halt_latch::HaltLatch::apply_forward`]: one holder halts, a lone halt lapses `halt_fuse_secs`
 //! after receipt unless confirmed, and a majority resumes.
 //!
 //! Every accord row's CWT `sub` is the accord's `family_key_id` (=

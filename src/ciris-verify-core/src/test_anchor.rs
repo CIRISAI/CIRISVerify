@@ -60,11 +60,10 @@ pub const fn test_anchor_compiled_in() -> bool {
 /// (feature on) AND enabled at runtime (`CIRIS_TESTING_MODE == "true"`) AND no
 /// production environment signal is set.
 ///
-/// This is the single gate both the trust-root override
-/// ([`crate::accord_genesis::accord_holder_bootstrap_anchor`]) and the
-/// software-only custody path
-/// ([`crate::accord_custody_attestation::verify_accord_custody_attestation`])
-/// consult, so the two can never diverge on what "test mode" means.
+/// This is the single gate the trust-root override
+/// ([`crate::accord_genesis::accord_holder_bootstrap_anchor`]) consults. (The
+/// software-only custody path it also gated went with the earlier-form custody
+/// bundle in 23.3.3.)
 #[cfg(feature = "test-anchor")]
 #[must_use]
 pub fn test_anchor_active() -> bool {
@@ -104,8 +103,8 @@ pub fn test_anchor_active() -> bool {
 /// `None` when the mode is off or the var is unset/undecodable, so the caller
 /// falls through to the baked path.
 ///
-/// Because [`crate::provenance::verify_provenance_chain`] roots on 1-of-N
-/// set-membership, a single software key here is a valid rooting anchor.
+/// Rooting against the anchor is 1-of-N set-membership, so a single software
+/// key here is a valid rooting anchor.
 #[cfg(feature = "test-anchor")]
 #[must_use]
 pub fn test_trust_root_override() -> Option<Vec<[u8; 32]>> {
