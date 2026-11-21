@@ -7,8 +7,8 @@ release artifact.
 
 The `test-anchor` Cargo feature enables a **test-only** relaxation of the
 constitutional trust root — a software single-key accord anchor
-(`CIRIS_TEST_TRUST_ROOT`) and a software-only accord holder with **no** YubiKey /
-FIPS / touch custody floor. It exists solely for the local two-node mesh
+(`CIRIS_TEST_TRUST_ROOT`). (The software-only accord holder it also admitted went
+with the earlier-form custody bundle verifier in 23.3.3.) It exists solely for the local two-node mesh
 reproduction harness.
 
 Because the production `ciris-server` container is **zero-env by design** (all

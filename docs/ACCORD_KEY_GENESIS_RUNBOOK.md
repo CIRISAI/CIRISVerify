@@ -8,6 +8,18 @@ notes are marked **[harden]**.
 This runbook is the operational counterpart; where it and the spec disagree,
 the spec wins.
 
+> **Tooling status (23.3.3).** This runbook records the 2026-06 genesis ceremony, which was run with
+> verify's earlier-form (bound Ed25519 + ML-DSA-65 pair) producers: the `ciris-verify accord ...`
+> CLI (incl. `--portable-usb`), `accord_genesis::{produce_accord_holder_record, co_sign_accord_family,
+> assemble_accord_family_genesis, build_membership_change, verify_membership_change}`,
+> `humanity_accord::{Invocation, verify_invocation}` and `accord_live_quorum::FamilyRecord`. All of
+> them were removed in 23.3.3. The ceremony's output (the baked genesis,
+> `humanity_accord_genesis()`, and the holders' pubkeys) is unchanged and still verified. The next
+> ceremony is edition 2: a `ceg-genesis-bundle/2` read by `edition2::genesis`, holder custody checked
+> by `verify_yubikey_piv_attestation`, the halt read by `edition2::accord_halt`; its tooling and
+> runbook are not written yet. The hardware and air-gap steps below (§1–§4, §8, §12) still apply;
+> the commands and verify calls named in §5–§11 are historical.
+
 ---
 
 ## 0. What you're provisioning, in one paragraph
@@ -29,8 +41,8 @@ quorum is a **strict majority** of the live member count — `quorum:2/3` at the
 3-holder genesis, `quorum:3/5` once grown to five, etc. The threshold is read off
 the family object's `consensus_protocol`, not hardcoded; a member is added (grow)
 or a primary swapped for a spare via a **`supersedes`** signed by the *current*
-roster's strict-majority quorum (verify: `accord_genesis::build_membership_change` /
-`verify_membership_change`, §10). A roster change carries on yes-cosigns from a
+roster's strict-majority quorum (§10; on edition 2, a later genesis bundle read by
+`edition2::genesis`). A roster change carries on yes-cosigns from a
 strict majority of the **standing** roster (`2·yes > N_standing`, CC 4.2.6) and keeps
 the entrenched `consensus_protocol` unchanged.
 
@@ -200,7 +212,8 @@ The CIRISServer admission gate pins **`Yubico Attestation Root 1`**
   *signature* (so the YubiKey stays signing-only — no decrypt capability added),
   requiring **both** the USB and the YubiKey + PIN + touch to unwrap, and making
   the identity **portable** rather than machine-TPM-bound. Provision it during §5
-  (`accord holder --portable-usb …`).
+  (`accord holder --portable-usb …`; the CLI was removed in 23.3.3, the
+  `UsbWrappedMlDsa65Signer` keyring type remains).
 - Export the **public** key → `mldsa65_pub` (1952 bytes).
 - The encrypted ML-DSA-65 private key is this identity's most sensitive artifact.
   For a **primary**, it lives on the holder's signing machine (encrypted). For a
@@ -239,9 +252,9 @@ but **the kill-switch quorum roster is the family `members` set, NOT "every
 accord_holder row."** This is load-bearing:
 
 - The quorum roster = the entrenched family object's `members` (the live primaries
-  `A1`/`B1`/`C1`). Resolve it with `accord_genesis::accord_roster_from_family`
-  (members → pinned pubkeys) and the threshold with `accord_quorum_from_family`
-  (the strict-majority `M` from `consensus_protocol`). **Never** assemble the
+  `A1`/`B1`/`C1`), resolved by `accord_genesis::baked_accord_roster` (members →
+  pinned pubkeys); the threshold is `strict_majority` of that roster (the
+  public roster/quorum readers were removed in 23.3.3). **Never** assemble the
   kill-switch roster by listing all `accord_holder` rows.
 - **Why:** the distinct-key gate is per-*key* (it stops one key filling two seats).
   It does **not** stop one *human* holding two distinct keys — a primary `A1` and a
@@ -304,7 +317,8 @@ object (CEG §9.1):
   the substrate will reject any future `supersedes` that weakens the protocol or
   moves admission off the founders — that's the entrenchment gate.
 - Roster integrity at genesis is the **distinct-key gate** (no key may fill two
-  seats — `assemble_accord_family_genesis` enforces distinct Ed25519/ML-DSA
+  seats — `assemble_accord_family_genesis` (removed in 23.3.3; `baked_accord_roster`
+  keeps the gate) enforced distinct Ed25519/ML-DSA
   pubkeys, since a single key could otherwise meet 2/3 alone) **plus** the §6
   steward cross-attestation (key↔human binding) — not unanimity.
 
@@ -317,6 +331,9 @@ it can be swapped in fast without re-running attestation. `[harden]` split the
 ML-DSA-65 decryption secret across two custodians.
 
 ## 9. Acceptance test (before declaring genesis complete)
+
+(As run in 2026-06 with the earlier-form verifier, removed in 23.3.3. On edition 2 the drill and
+resumption checks are `edition2::accord_halt::verify_invocation_row` / `verify_lifecycle_row`.)
 
 1. **Drill invocation.** Have one primary sign an `accord:invoke:drill` over the
    §9.2.1 canonical bytes (use `humanity_accord::Invocation::canonical_bytes`).
@@ -346,7 +363,8 @@ the entrenched-family `supersedes` ceremony — **CEG §9.2 /
 entrenched, a `supersedes` is the *only* path to change the roster, and it must be
 signed by the **current** roster's strict-majority quorum (the existing holders
 authorize who joins/leaves; an incoming/spare key never authorizes its own
-admission). Tooled in CIRISVerify:
+admission). Tooled in CIRISVerify until 23.3.3 (removed; on edition 2 a roster change is a later
+genesis bundle read by `edition2::genesis`), as follows:
 
 ```text
 # The roster records are CIRISPersist's `Family` versions (accord_live_quorum::FamilyRecord);
@@ -380,7 +398,8 @@ accord_genesis::verify_membership_change(&standing, &draft.next, &draft.change_e
 
 ## 11. What's tooled vs. manual
 
-- **Tooled (CIRISVerify ships it):** hybrid sign/verify (`ciris_crypto`),
+- **Tooled (as of the 2026-06 ceremony; the producers and the `accord` CLI were removed in
+  23.3.3):** hybrid sign/verify (`ciris_crypto`),
   `jcs::canonicalize` (+ `jcs_canonicalize` Python binding) for the Contribution
   signing bytes, `threshold::verify_founder_quorum`, `humanity_accord::{Invocation,
   verify_invocation, InvocationDedup}` for §9.2.1, the `boundary_degraded` /
@@ -400,7 +419,7 @@ accord_genesis::verify_membership_change(&standing, &draft.next, &draft.change_e
   read-back, vaulting. The CLI tools the *signing + assembly* (§5/§7); the
   hardware/air-gap/vault steps remain hands-on by design.
 
-### 11.1 CLI — the `ciris-verify accord` ceremony commands
+### 11.1 CLI — the `ciris-verify accord` ceremony commands (removed in 23.3.3)
 
 ```bash
 # §5 — each holder, on their own machine, produces their accord_holder genesis

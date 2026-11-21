@@ -2,10 +2,13 @@
 
 **Status:** Normative. Tracks CIRIS Constitution **1.0-rc19, CC 4.2.6** (`live-quorum`, entrenched),
 with CC 4.2.1 (invocation, halt fuse, resumption), CC 2.7.4 (a count is over the members at the head
-its row names) and CC 3.2 T3 (the recovery-key commitment). Implemented in
-`ciris_verify_core::accord_live_quorum` (roster changes and holder recovery), `humanity_accord`
-(invocations) and `accord_halt_latch` (the halt latch). Server-side authoritative recompute is
-CIRISServer's.
+its row names) and CC 3.2 T3 (the recovery-key commitment). On edition 2 (verify 23.3.3) the rules
+are read by `ciris_verify_core::edition2::genesis` (roster changes and holder recovery as later
+genesis bundles; `edition2::recovery::recovery_commitment`), `edition2::accord_halt` (invocation and
+lifecycle rows) and `accord_halt_latch` (the halt latch, `HaltLatch::apply_forward`). The
+earlier-form modules this FSD first specified (`accord_live_quorum`, `humanity_accord`, the
+`accord_genesis` roster-change producers) were removed in 23.3.3; §4.6 and §7 describe their shapes
+as history. Server-side authoritative recompute is CIRISServer's.
 
 **Builds on:** FSD-001 (protocol), FSD-005 (the accord), the growable M-of-N accord family and
 membership-change `supersedes` in `ciris_verify_core::accord_genesis`.
@@ -21,8 +24,9 @@ membership-change `supersedes` in `ciris_verify_core::accord_genesis`.
 | **Holder recovery** | the holder alone, under their pre-committed recovery key | a new roster version changing only that holder's seat (its signing key), carried by a recovery statement naming the next recovery commitment; no quorum |
 
 The fuse counts from receipt, never from the signed `asserted_at`, so a pre-signed halt is not dead
-on arrival and a future-dated one cannot pause agents indefinitely. The per-kind thresholds live in
-one function, `InvocationKind::required_signatures`.
+on arrival and a future-dated one cannot pause agents indefinitely. On edition 2 an invocation is
+one holder's statement and a lifecycle row is counted at a strict majority
+(`edition2::accord_halt::verify_lifecycle_row`).
 
 ### What changed (rc19, verify 23.0.0)
 
@@ -205,7 +209,9 @@ bytes: the two differ on any non-ASCII character, on key order above U+FFFF and 
 sub-microsecond instants. `roster_version_digest` returns it, and an `accord_proposal`'s
 `prior_family_digest` is the standing head's.
 
-The change that carries a version is persist's shape, and its signers sign its JCS bytes:
+The change that carries a version is persist's shape, and its signers sign its JCS bytes (the
+earlier form; verify's builders and verifiers of these shapes were removed in 23.3.3, and verify
+now keeps only `persist_canonical` and the `accord_lineage_v1.json` replay of `persist_row_hash`):
 
 - a **roster change** (`accord_genesis::build_membership_change` /
   `verify_membership_change`) is `{kind: "ciris.accord_roster_change.v1", family_key_id,
@@ -379,49 +385,29 @@ All hybrid-signed (Ed25519 + ML-DSA-65, bound). None exists on the fire path.
 
 ## 7. Verification logic
 
-All **fail-closed**.
+All **fail-closed**. As of verify 23.3.3:
 
-1. `accord_live_quorum::tally_live_quorum` — each participation resolves to a member of
-   the standing roster in the pinned directory, its signature verifies over its
-   canonical bytes bound to the proposal digest, a member counts once; `L` = distinct
-   valid participants; votes tallied.
-2. `accord_live_quorum::verify_membership_change_by_live_quorum(proposal,
-   participations, standing, change, directory)` — the proposal binds the seat change
-   (`payload_sha256 = seat_change_digest`) and the standing head (`prior_family_digest =`
-   its `persist_row_hash`); the change applies to the standing roster; signers resolve
-   only among the members at the standing head; no minimum roster size applies.
-   `authorized = 2·yes > N_standing` (`roster_change_carries`), reported with
-   `standing_count`.
-3. `accord_genesis::verify_membership_change(standing, offered, change_envelope,
-   quorum_signatures, decisions, directory, now)` — persist's roster-change door: the
-   envelope binds the family, the standing head and the offered version by
-   `persist_row_hash`; the offered record changes only the seats, the charter it names and
-   the head link; each change is covered by a distinct authorized, closed decision on the
-   standing head binding exactly it, and applied in order they give the offered roster;
-   a strict majority of the standing roster cosigned the envelope's JCS bytes; the offered
-   roster resolves to distinct pubkeys. Returns the seated keys.
-4. `accord_live_quorum::verify_holder_recovery(charter, lineage, offered, statement,
-   recovery_key, signatures, directory)` — the statement binds the family, the head of
-   `lineage` and the offered version by `persist_row_hash`; the old key is seated, the new
-   key is a different, unseated, registered key with its own pubkey (d); the offered record
-   is the standing one with only that seat swapped; a well-formed next commitment; the
-   commitment in force is resolved by `recovery_commitment_in_force` over `lineage` (a);
-   the next commitment differs from it (c); the recovery key hashes to it (constant time)
-   and is unspent; exactly one signature, by the recovery key, hybrid, over the
-   statement's JCS bytes.
-5. `accord_live_quorum::decisions_equivocate` — two decisions off one standing head
-   into different rosters are a fork (CC 3.2 T6).
-6. `humanity_accord::verify_invocation` — verifies a `constitutional` / `notify` /
-   `drill` / `lifecycle:confirmed` / `lifecycle:active` row at
-   `InvocationKind::required_signatures`.
-7. `accord_halt_latch::HaltLatch` — the halt state machine (pause, idempotent second
-   halt that does not reset the fuse, confirm-before-lapse, resume-by-name, lapse),
-   fed only a `VerifiedInvocation` minted by `verify_for_latch`. Exposed on the FFI
-   (`ciris_verify_accord_invocation_verify` / `_latch_apply` / `_latch_status`) and the
-   wheel.
+1. `edition2::genesis::read_genesis_bundles` — a roster change or a holder recovery is a later
+   genesis bundle: counted at a strict majority of the standing roster plus each added or
+   re-committed holder, or, for a recovery, one statement under the recovery key whose
+   `edition2::recovery::recovery_commitment` equals the predecessor's commitment in force
+   (constant time); spent commitments and retired keys never return. No minimum roster size.
+2. `edition2::accord_halt::verify_invocation_row` — a `constitutional` / `notify` / `drill` row is
+   one holder's composite statement; `verify_lifecycle_row` counts a `confirmed` / `active` row at a
+   strict majority of the roster its `refs.head` names. A key or bundle the reader does not yet
+   hold makes the row wait, never refused.
+3. `accord_halt_latch::HaltLatch::apply_forward` — the halt state machine (pause, idempotent second
+   halt that does not reset the fuse, confirm-before-lapse, resume-by-row-id, lapse), fed only rows
+   the edition-2 readers produced. The FFI / wheel expose the act gate's read,
+   `ciris_verify_accord_latch_status` / `accord_latch_status`.
 
-The roster-change and recovery verifiers have no FFI, wheel or CLI surface yet. The
-**authoritative** tally is CIRISServer recomputing over pinned `federation_keys`; the
+The earlier-form verifiers (`accord_live_quorum::tally_live_quorum`,
+`verify_membership_change_by_live_quorum`, `verify_holder_recovery[_with_charters]`,
+`recovery_commitment_in_force[_with_charters]`, `decisions_equivocate`,
+`accord_genesis::verify_membership_change`, `humanity_accord::verify_invocation`,
+`accord_halt_latch::verify_for_latch` / `HaltLatch::apply`, FFI
+`ciris_verify_accord_invocation_verify` / `ciris_verify_accord_latch_apply`) were removed in
+23.3.3. The **authoritative** tally is CIRISServer recomputing over pinned `federation_keys`; the
 local objects are advisory. The window gate (arrival within `W`) is the caller's.
 
 ## 8. Security analysis
@@ -466,8 +452,13 @@ spec. Each holder's recovery key is held offline and apart from the signing key.
 
 ## 11. Relationship to existing modules
 
+- **Removed in 23.3.3:** `accord_live_quorum` entirely (`FamilyRecord`, the proposal /
+  participation / decision objects, the tally, the roster-change and recovery verifiers,
+  `decisions_equivocate`), its v2 lineage and recovery-refusal vectors, `humanity_accord`, and the
+  `accord_genesis` producers (`build_membership_change`, `verify_membership_change`,
+  `co_sign_invocation`, `concur_accord_invocation`). The edition-2 readers above replace them.
 - **Records are CIRISPersist's.** The roster version is persist's `Family`
-  (`accord_live_quorum::FamilyRecord`), its identity `persist_row_hash`
+  (earlier `accord_live_quorum::FamilyRecord`), its identity `persist_row_hash`
   (`persist_canonical`), and the roster-change envelope and recovery statement are
   persist's shapes (§4.6). `accord_genesis::validate_membership_change_structure`, the
   `supersedes`-envelope builders `build_accord_membership_change` /

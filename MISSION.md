@@ -6,7 +6,7 @@
 > file. Methodology: `~/CIRISAgent/FSD/MISSION_DRIVEN_DEVELOPMENT.md`
 > and the overview at [ciris.ai/mdd](https://ciris.ai/mdd).
 
-**Version**: 1.3 (2026-11-15, v23.0.0: the accord roster change is described in CIRISPersist's shape, `FamilyRecord` versions linked by `persist_row_hash`, CC 3.2 T6)
+**Version**: 1.4 (2026-11-20, v23.3.3: the earlier-form accord surfaces are removed — `humanity_accord`, `accord_live_quorum`, the `accord_genesis` roster-change and co-sign producers, the pair-signed custody bundle, the fixed `quorum:2/3` constants and the WebAuthn presence verifier; the accord is read on edition 2 by `edition2::genesis`, `edition2::accord_halt` and `HaltLatch::apply_forward`, and custody by `verify_yubikey_piv_attestation`). Earlier: 1.3 (2026-11-15, v23.0.0: the accord roster change in CIRISPersist's shape, CC 3.2 T6)
 **Status**: Active — tracking `main` at v6.11.0. v1.2 adds the HUMANITY_ACCORD
 kill-switch as a first-class mission pillar (§1.7) — the most direct realization
 of the Accord's halt mandate, which had grown from a one-line M-of-N use to a
@@ -268,24 +268,26 @@ accord keys cannot sign grants, licenses, or amendments). Verify owns the
 verification half, in three layers, each anchored:
 
 - **Custody** — `src/ciris-verify-core/src/accord_custody_attestation.rs`
-  (`verify_accord_custody_attestation` / `verify_yubikey_piv_attestation`):
+  (`verify_yubikey_piv_attestation`, run by the edition-2 genesis reader's
+  custody gate):
   hardware-unforgeable proof a holder's signing key lives on a genuine FIPS
   YubiKey, the 9c→f9→pinned-Yubico-root chain (#91, **validated on real
   hardware**). Pure §1.4 discipline — it *authenticates custody*, never confers
   trust or admits a verdict.
 - **Roster** — `src/ciris-verify-core/src/accord_genesis.rs`: the growable
-  **M-of-N** family (`accord_consensus_protocol`/`strict_majority`), the
-  roster change in CIRISPersist's shape (`build_membership_change` /
-  `verify_membership_change` over `FamilyRecord` versions linked by
-  `persist_row_hash`, CC 3.2 T6), **roster = `family.members`**
-  (`accord_roster_from_family` — one-seat-per-human, #96), and the **no-TOFU
-  pinned recognition root** `humanity_accord_genesis()` (#107).
-- **Invocation** — `src/ciris-verify-core/src/humanity_accord.rs`
-  (`Invocation`, `InvocationKind`): the closed `CONSTITUTIONAL | notify | drill`
-  vocabulary (CC §4.2.1.1) **plus** the wire-isolated `accord:lifecycle:active`
-  resumption (#95 Gap 1) — each signing its **own** canonical-bytes domain
-  (`INVOCATION_DOMAIN_PREFIX` vs `LIFECYCLE_DOMAIN_PREFIX`) so no signature
-  crosses scopes.
+  **M-of-N** family (the threshold is always `strict_majority` of the
+  standing roster), **roster = `family.members`**
+  (`baked_accord_roster` — one-seat-per-human, #96), and the **no-TOFU
+  pinned recognition root** `humanity_accord_genesis()` (#107). On edition 2 a
+  roster change or a holder recovery is a later genesis bundle read by
+  `src/ciris-verify-core/src/edition2/genesis.rs`.
+- **Invocation** — `src/ciris-verify-core/src/edition2/accord_halt.rs`
+  (`verify_invocation_row`, `verify_lifecycle_row`): the closed
+  `constitutional | notify | drill` vocabulary (CC §4.2.1.1) as each row's
+  family, **plus** the counted `accord:lifecycle:{confirmed,active}` rows — the
+  kind is the row's family, so no signature crosses scopes; the latch is
+  `accord_halt_latch::HaltLatch::apply_forward`. (The earlier text-preimage form,
+  `humanity_accord.rs`, was removed in 23.3.3.)
 
 The kill-switch is the **sharpest expression of §1.6 fail-secure**: under
 catastrophic loss the design **leans toward firing** (`FSD-004` — the only
@@ -364,17 +366,12 @@ peer claims something an entity never said.
   `bootstrap_keyset/v1.json`, embedded via `include_bytes!`.
 - **`FederationEnvelope`** (incoming — CIRISVerify#27) — the federation
   message envelope's canonical signing-bytes.
-- **Accord invocation + lifecycle canonical bytes** (`humanity_accord.rs`) —
-  `Invocation::canonical_bytes` binds the discriminator AND a per-invocation
-  nonce (CC §4.2.1.1 anti-replay: a `notify`/`drill` signature can never replay
-  onto a `CONSTITUTIONAL` kill). The closed `accord:invoke:*` vocabulary signs
-  `INVOCATION_DOMAIN_PREFIX`; the **separate** `accord:lifecycle:active`
-  resumption signs `LIFECYCLE_DOMAIN_PREFIX` — distinct domains so no signature
-  crosses the invoke↔lifecycle scope boundary ("wire-isolated AND scope-isolated",
-  CC 4.2.1). The lifecycle layout is verify-authored (first impl) and **flagged
-  for CEG ratification** (CIRISRegistry#109) before freeze — exactly the §3
-  mandate: a new signed-byte layout is a coordinated wire definition, never a
-  casual edit.
+- **Accord invocation + lifecycle rows** (`edition2/accord_halt.rs`) — on
+  edition 2 the kind is the row's family (COSE header -70002) and the row id
+  reads it, so a `notify`/`drill` statement can never verify as a
+  `constitutional` halt or a lifecycle row. The earlier text preimages
+  (`humanity_accord.rs`, `INVOCATION_DOMAIN_PREFIX` / `LIFECYCLE_DOMAIN_PREFIX`)
+  were removed in 23.3.3.
 
 **The mandate:** a canonical-bytes change is a coordinated, versioned
 wire break — `schema_version` tag, flag-day, never a casual edit. The
@@ -422,17 +419,15 @@ discipline is enforced by known-answer tests (NIST GCM vectors in
 - **The HUMANITY_ACCORD kill-switch surface** (v6.x, §1.7) — the Accord's halt
   mandate as logic, on the threshold primitive:
   - `accord_custody_attestation.rs` — hardware-unforgeable holder custody
-    (#91, real-hardware-validated); fail-closed `CustodyError`.
-  - `accord_genesis.rs` — growable M-of-N family genesis + the roster change
-    in CIRISPersist's shape (`build/verify_membership_change`, linked by
-    `persist_row_hash`), `roster = family.members`
+    (`verify_yubikey_piv_attestation`, #91, real-hardware-validated);
+    fail-closed `CustodyError`.
+  - `accord_genesis.rs` — growable M-of-N family genesis readers,
+    `roster = family.members`
     one-seat-per-human (#96), and the no-TOFU pinned `humanity_accord_genesis()`
     recognition root (#107).
-  - `humanity_accord.rs` — `verify_invocation` over the 2/3 quorum, the closed
-    invocation vocabulary + the wire-isolated `accord:lifecycle:active`
-    resumption (#95 Gap 1).
-  - Forward: `FSD/FSD-004` (live-quorum decimation recovery) — designed, gated
-    on CC ratification (CIRISRegistry#108), **not on `main`**.
+  - `edition2/accord_halt.rs` + `accord_halt_latch.rs` — the halt, confirm
+    and resume rows and the latch; `edition2/genesis.rs` — roster changes and
+    holder recovery as later bundles (FSD-004).
 - **`BuildManifest::to_attestation_entries`** (v3.4.0,
   `src/ciris-verify-core/src/security/build_manifest.rs`) — emits the
   `provenance:build_manifest:{target}` PASS entry after

@@ -1,20 +1,13 @@
-"""HUMANITY_ACCORD invocation verification — Python binding
-(CIRISVerify#305, v19.1.0+).
+"""HUMANITY_ACCORD halt latch status — Python binding (CIRISVerify#305).
 
-Exposes :func:`verify_accord_invocation`, a thin wrapper over the FFI symbol
-``ciris_verify_accord_invocation_verify``, which calls
-``ciris_verify_core::humanity_accord::verify_invocation``. There is one blessed
-implementation of the CC 4.2.1.1 canonical bytes, the hybrid signature check and
-the per-kind thresholds; a consumer reaches it rather than re-deriving any of
-them in Python.
+Exposes :func:`accord_latch_status`, a thin wrapper over the FFI symbol
+``ciris_verify_accord_latch_status``: the act gate's question, is this node
+paused at ``now``, over a latch a node persisted from
+``ciris_verify_core::accord_halt_latch::HaltLatch::apply_forward`` (edition-2
+rows read by ``edition2::accord_halt``).
 
-The thresholds are the steward's (CIRISConstitution#146, CC 4.2.1.1 rc7):
-**one** holder for ``constitutional``, ``drill`` and ``notify``; a **strict
-majority of the standing roster** for ``lifecycle:active``. A constitutional
-halt fires on receipt of one valid row.
-
-**Fail-closed:** a rejection is a successful call returning
-``verified: False`` with a ``reason``; only a malformed request raises.
+``verify_accord_invocation`` and ``accord_latch_apply`` read the earlier,
+pair-signed invocation form and were removed in 23.3.3.
 """
 
 from __future__ import annotations
@@ -26,7 +19,7 @@ import threading as _threading
 from pathlib import Path
 from typing import Any, Optional
 
-__all__ = ["verify_accord_invocation", "accord_latch_apply", "accord_latch_status"]
+__all__ = ["accord_latch_status"]
 
 _lib: Optional[ctypes.CDLL] = None
 _lib_lock = _threading.Lock()
@@ -74,8 +67,6 @@ def _load_lib() -> ctypes.CDLL:
                 continue
             try:
                 lib = ctypes.CDLL(path)
-                _wire(lib.ciris_verify_accord_invocation_verify)
-                _wire(lib.ciris_verify_accord_latch_apply)
                 _wire(lib.ciris_verify_accord_latch_status)
             except (OSError, AttributeError) as exc:
                 last_err = exc
@@ -85,7 +76,7 @@ def _load_lib() -> ctypes.CDLL:
             _lib = lib
             return _lib
     raise RuntimeError(
-        "accord-invocation verify FFI symbol not available — could not load the "
+        "accord latch FFI symbol not available — could not load the "
         f"CIRISVerify shared library (last error: {last_err}). The library "
         "must be built with the wheel (>= v19.1.0)."
     )
@@ -113,87 +104,12 @@ def _call(symbol: str, request: dict) -> dict:
     return _json.loads(raw)
 
 
-def verify_accord_invocation(invocation: dict, roster: list, signatures: list) -> dict:
-    """Verify an accord invocation against your pinned holder roster.
-
-    Args:
-        invocation: the invocation dict (``invocation_kind``, ``invocation_id``,
-            ``nonce``, ``asserted_at``, ``valid_until``, ``payload_sha256``, and
-            ``resumes_halt_id`` for ``lifecycle:active`` only).
-        roster: the accord holders from **your own pinned bundle** —
-            ``[{"member_id", "ed25519_public_key_base64",
-            "mldsa65_public_key_base64"}, ...]``. Never a roster taken from the
-            object you are verifying: that lets its producer choose who counts.
-        signatures: ``[{"member_id", "ed25519_signature_base64",
-            "mldsa65_signature_base64"}, ...]``.
-
-    Returns:
-        ``{"verified": bool, "invocation_kind", "invocation_id", "valid",
-        "required"}``, plus ``"reason"`` when not verified.
-
-    Not done here, and yours to do (CC 4.2.1.1 / 4.2.1.3): refuse a duplicate
-    ``invocation_id`` within ``valid_until``; latch a verified constitutional
-    halt idempotently and check the latch before every effectful act; clear it
-    only by a verified ``lifecycle:active`` whose ``resumes_halt_id`` names the
-    halt actually in force.
-
-    Raises:
-        ValueError: the request itself is malformed (a caller error, NOT a
-            negative verdict).
-        RuntimeError: the shared library / FFI symbol is unavailable.
-    """
-    return _call(
-        "ciris_verify_accord_invocation_verify",
-        {"invocation": invocation, "roster": roster, "signatures": signatures},
-    )
-
-
-def accord_latch_apply(
-    latch: Optional[dict],
-    invocation: dict,
-    roster: list,
-    signatures: list,
-    now: str,
-    halt_fuse_secs: Optional[int] = None,
-) -> dict:
-    """Verify an accord row and apply it to the node's halt latch, in one call.
-
-    The CC 4.2.1.1 / 4.2.1.3 rules (CIRISConstitution#146 as amended): one
-    holder's ``constitutional`` row pauses agents; the pause lapses
-    ``halt_fuse_secs`` (default 86400) after **this node's receipt** unless a
-    majority ``lifecycle:confirmed`` naming it arrives first; a majority
-    ``lifecycle:active`` naming it ends it, confirmed or not. Verification and
-    latching are one call, so an unverified row can never touch the latch.
-
-    Args:
-        latch: the state returned by the previous call (``None`` when clear).
-            Persist it: the latch must survive a restart.
-        invocation, roster, signatures: as for :func:`verify_accord_invocation`;
-            ``roster`` is your own pinned roster.
-        now: this node's clock, RFC 3339 — the receipt time for a new halt.
-        halt_fuse_secs: the charter's value; omit for the 86400 default.
-
-    Returns:
-        ``{"outcome": "paused"|"confirmed"|"resumed"|"unchanged"|"refused",
-        "reason"?, "latch", "paused", "halt_id", "confirmed", "lapses_at"}``.
-        A refused row returns ``latch`` exactly as given.
-    """
-    req: dict = {
-        "latch": latch,
-        "invocation": invocation,
-        "roster": roster,
-        "signatures": signatures,
-        "now": now,
-    }
-    if halt_fuse_secs is not None:
-        req["halt_fuse_secs"] = halt_fuse_secs
-    return _call("ciris_verify_accord_latch_apply", req)
-
-
 def accord_latch_status(latch: Optional[dict], now: str, halt_fuse_secs: Optional[int] = None) -> dict:
     """The act gate's question: is this node paused at ``now``?
 
-    Call it before every effectful act (CC 4.2.1.1). Returns
+    Call it before every effectful act (CC 4.2.1.1). ``latch`` is the state
+    the node persisted (``None`` when clear); ``halt_fuse_secs`` is the bundle
+    in force's (omit for the 86400 default). Returns
     ``{"paused", "halt_id", "confirmed", "lapses_at", "latch"}``.
     """
     req: dict = {"latch": latch, "now": now}
