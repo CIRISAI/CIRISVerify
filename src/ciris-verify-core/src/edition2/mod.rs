@@ -26,12 +26,15 @@
 pub mod accord_halt;
 pub mod disclosure;
 pub mod family;
+pub mod fedcode;
 // The `ceg-genesis-bundle/2` reader (CC 2.6.1.11). `std` tier: its custody
 // gate parses X.509 attestation chains.
 #[cfg(feature = "std")]
 pub mod genesis;
 pub mod keys;
+pub mod receipt;
 pub mod recovery;
+pub mod stream_head;
 
 use crate::cde::{self, Value};
 use crate::prelude::*;
@@ -77,6 +80,21 @@ const SIMPLE_REDACTED_KEYS: u8 = 59;
 
 /// A 32-byte digest named in the `[-16, digest]` form.
 pub type Digest32 = [u8; 32];
+
+/// The strict majority of a standing roster of `n` (CC 4.2.6): the least
+/// count `m` with `2·m > n`, that is `floor(n / 2) + 1`. There is no minimum
+/// roster.
+#[must_use]
+pub const fn strict_majority(n: usize) -> usize {
+    n / 2 + 1
+}
+
+/// Whether `yes` distinct voices are a strict majority of a standing roster
+/// of `n` (CC 4.2.6): `2·yes > n`.
+#[must_use]
+pub const fn is_strict_majority(yes: usize, n: usize) -> bool {
+    yes > n / 2
+}
 
 /// Why a statement is Invalid. Structural reasons are named so a producer can
 /// find its fault; a failed signature is one reason and does not say which
@@ -149,6 +167,9 @@ pub enum Invalid {
     /// `body_number_unrepresentable`: a number in the payload outside
     /// `body-decimal` and CBOR's integer range, such as a bignum (CC 2.6.1.4).
     BodyNumberUnrepresentable,
+    /// `dial_hint_malformed`: a `dial_hints` entry of a known type whose body
+    /// breaks that type's rule (CC 3.3.6.1, the CC 2.6.8 hint bodies).
+    DialHintMalformed,
 }
 
 impl Invalid {
@@ -159,6 +180,7 @@ impl Invalid {
             Self::KidNotOfIss => Some("kid_not_of_iss"),
             Self::ValidUntilNotAfterAssertedAt => Some("valid_until_not_after_asserted_at"),
             Self::BodyNumberUnrepresentable => Some("body_number_unrepresentable"),
+            Self::DialHintMalformed => Some("dial_hint_malformed"),
             _ => None,
         }
     }
@@ -562,6 +584,15 @@ fn check_refs(v: &Value) -> Result<(), Invalid> {
                 for (role, set) in roles {
                     match role.as_text() {
                         Some("ack" | "cites") => check_row_ref_set(set, "also")?,
+                        // A deputization names the edge it hangs from (CC rc22):
+                        // a set of exactly one row-ref. Which families may carry
+                        // it, and what the named row must be, are the door's.
+                        Some("under") => {
+                            check_row_ref_set(set, "also")?;
+                            if set.as_array().map(<[Value]>::len) != Some(1) {
+                                return Err(malformed("under"));
+                            }
+                        },
                         _ => return Err(Invalid::UnexpectedMember { within: "also" }),
                     }
                 }
@@ -994,7 +1025,17 @@ fn read_object_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Object
     let kid = digest32(prot.get_int(H_KID).expect("checked"), "kid")?;
     let cwt = prot.get_int(H_CWT).expect("checked");
     let cm = cwt.as_map().ok_or(malformed("object-claims"))?;
-    check_labels(cm, &[C_ISS, C_EDITION], &[C_IAT], "object-claims")?;
+    // `sub` (CC rc22): the subject a Transparency Service groups the
+    // object's statements by (a genesis bundle's `family_key_id`, a
+    // snapshot's signer, a boot manifest's `build:<target>`); RFC 9943
+    // requires it of a Signed Statement. Text when present; its value is the
+    // typ's rule.
+    check_labels(cm, &[C_ISS, C_EDITION], &[C_IAT, C_SUB], "object-claims")?;
+    if let Some(s) = cwt.get_int(C_SUB) {
+        if s.as_text().is_none() {
+            return Err(malformed("sub"));
+        }
+    }
     let iss = cwt
         .get_int(C_ISS)
         .and_then(Value::as_text)
@@ -1170,6 +1211,76 @@ pub(crate) fn transport_destination_shape(td: &Value) -> Result<(), Invalid> {
     Ok(())
 }
 
+/// The most entries `dial_hints` carries.
+pub const DIAL_HINTS_MAX: usize = fedcode::FEDCODE_E2_MAX_HINTS;
+
+/// Read an occurrence's `dial_hints` (CC 3.3.6.1):
+/// `[ 1*8 [ type: uint .le 255, body: bstr .size (0..255) ] ]`, ordered, most
+/// preferred first, each body the CC 2.6.8 CIRIS-V4 hint body. An unknown type
+/// is carried as [`fedcode::Hint::Unknown`] (a dialler skips it).
+///
+/// # Errors
+///
+/// [`Invalid::Malformed`] (`dial_hints`) for the shape: not an array, empty,
+/// over [`DIAL_HINTS_MAX`], or an entry that is not `[uint ≤ 255, bstr ≤ 255]`;
+/// [`Invalid::DialHintMalformed`] for a known type with a bad body.
+pub fn read_dial_hints(v: &Value) -> Result<Vec<fedcode::Hint>, Invalid> {
+    let bad = Invalid::Malformed {
+        member: "dial_hints",
+    };
+    let a = v
+        .as_array()
+        .filter(|a| (1..=DIAL_HINTS_MAX).contains(&a.len()))
+        .ok_or(bad.clone())?;
+    a.iter()
+        .map(|e| {
+            let (t, b) = match e.as_array() {
+                Some([t, b]) => (t, b),
+                _ => return Err(bad.clone()),
+            };
+            let t = t
+                .as_u64()
+                .and_then(|t| u8::try_from(t).ok())
+                .ok_or(bad.clone())?;
+            let b = b.as_bytes().filter(|b| b.len() <= 255).ok_or(bad.clone())?;
+            fedcode::parse_hint(t, b).map_err(|_| Invalid::DialHintMalformed)
+        })
+        .collect()
+}
+
+/// The `dial_hints` value for a list of hints, built through the same rules
+/// [`read_dial_hints`] applies (a producer cannot mint what a reader refuses;
+/// an [`fedcode::Hint::Unknown`] is not minted).
+///
+/// # Errors
+///
+/// As [`read_dial_hints`].
+pub fn dial_hints_value(hints: &[fedcode::Hint]) -> Result<Value, Invalid> {
+    if !(1..=DIAL_HINTS_MAX).contains(&hints.len()) {
+        return Err(Invalid::Malformed {
+            member: "dial_hints",
+        });
+    }
+    let entries = hints
+        .iter()
+        .map(|h| {
+            let (t, b) = fedcode::hint_parts(h).map_err(|_| Invalid::DialHintMalformed)?;
+            Ok(Value::Array(vec![
+                Value::Uint(u64::from(t)),
+                Value::Bytes(b),
+            ]))
+        })
+        .collect::<Result<Vec<_>, Invalid>>()?;
+    Ok(Value::Array(entries))
+}
+
+/// Whether a list carries a tcp hint a fresh node can cold-dial (CC 3.3.6.1:
+/// a genesis serve seat's binding must).
+#[must_use]
+pub fn has_tcp_hint(hints: &[fedcode::Hint]) -> bool {
+    hints.iter().any(|h| matches!(h, fedcode::Hint::Tcp { .. }))
+}
+
 /// The `identity:occurrence` payload rule (CC 3.3.6.1; `identity-occurrence`
 /// in CC's `family_payloads_v2.cddl`, v1.0-rc21-wire e6fd7c6), as the row is alone:
 /// `author`, `identity_key_id` and `occurrence_key_id` are identity
@@ -1227,6 +1338,9 @@ pub fn check_identity_occurrence(p: &Value) -> Result<(), Invalid> {
     }
     if let Some(td) = p.get_text("transport_destination") {
         transport_destination_shape(td)?;
+    }
+    if let Some(h) = p.get_text("dial_hints") {
+        read_dial_hints(h)?;
     }
     if let Some(e) = p.get_text("encryption_pubkeys") {
         let len = |k: &str| e.get_text(k).and_then(Value::as_bytes).map(<[u8]>::len);
@@ -1578,6 +1692,21 @@ mod tests {
             )])),
             Verdict::Valid(_)
         ));
+        // `under` (CC rc22): exactly one row-ref.
+        assert!(matches!(
+            mk(Value::Map(vec![(
+                t("also"),
+                Value::Map(vec![(t("under"), Value::Array(vec![a.clone()]))])
+            )])),
+            Verdict::Valid(_)
+        ));
+        assert_eq!(
+            mk(Value::Map(vec![(
+                t("also"),
+                Value::Map(vec![(t("under"), Value::Array(vec![a.clone(), b.clone()]))])
+            )])),
+            Verdict::Invalid(Invalid::Malformed { member: "under" })
+        );
         // No row of this form names an object of the earlier form (CC 2.6.1.3,
         // 2.6.1.12): an edition-1 row-ref is refused wherever it stands.
         let earlier = Value::Array(vec![Value::Uint(1), hash_digest(&[1; 32])]);

@@ -58,3 +58,22 @@ the payload bytes the file carries are an independent reading of the codec's
 output.
 
 Issues: CIRISVerify#329, CIRISVerify#331.
+
+## Edition-2 FedCode (`fedcode_e2_v1.json`)
+
+`gen_fedcode_e2.py` writes `fedcode_e2_v1.json`, SHA-256
+`f00bae960c2a498171b7eb3ff461cb09624c72832af001bdfd7590511db3b386`. It covers the `CIRIS-V4-` code
+that verify proposes for CC 2.6.8 in rc22, with the layout in the generator's header and in
+`src/edition2/fedcode.rs`. The generator is independent of verify: it has its own CRC-16, base32
+and COSE_Key thumbprint, and uses dilithium-py and pyca/cryptography for the keys.
+
+The file holds three sets:
+- 13 valid codes. Each one is decoded, re-encoded to the same display and QR text, and its
+  fields compared.
+- 31 refusals, each with its `fedcode_*` token.
+- 4 transport-key checks at resolution (constraint 1), with the composite keys supplied.
+
+`tests/fedcode_e2_vectors.rs` replays the file and pins its hash. Its `qr_sizes` test prints the QR
+version of every code.
+
+    python3 -I gen_fedcode_e2.py > fedcode_e2_v1.json

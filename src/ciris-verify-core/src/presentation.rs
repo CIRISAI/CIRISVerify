@@ -97,10 +97,12 @@ pub struct PresentationIdentifier {
 /// **The audited inventory of identifiers on person-presentation surfaces.**
 ///
 /// Person-presentation means an envelope a *human or their agent* presents
-/// about themselves — `self_at_login`'s delegation / partnership / occurrence
-/// envelopes. Node- and artifact-claim surfaces (`manifest_contribution`,
-/// `build_attestation_bundle`, `transport_binding`) are deliberately **out of
-/// scope**: the differential-uptake rationale is about parties who cannot
+/// about themselves — the delegation / partnership / occurrence envelopes.
+/// (Verify's earlier-form producers of those, in `self_at_login`, were removed
+/// in 23.3.3; the inventory stays as the classification an edition-2 or
+/// unlinkable producer must honour.) Node- and artifact-claim surfaces (build
+/// manifests, build attestations, transport destinations) are deliberately
+/// **out of scope**: the differential-uptake rationale is about parties who cannot
 /// manage key hygiene, and a build server is not one.
 ///
 /// This inventory exists so a future unlinkable format knows exactly which
@@ -165,8 +167,9 @@ pub fn must_be_omittable() -> Vec<&'static str> {
 /// Verify satisfies this by construction: key material lives in
 /// [`crate::self_at_login::HybridSigningIdentity`] /
 /// `ciris_keyring::UserIdentityKeyset`, and every envelope is produced by a
-/// separate `sign_*` function taking the identity as an argument. A new
-/// `sign_unlinkable_*` producer over the same identity is an additive change.
+/// separate function taking the identity (a [`crate::self_at_login::SelfSigner`])
+/// as an argument. A new unlinkable producer over the same identity is an
+/// additive change.
 ///
 /// This function documents and pins the property; the accompanying tests
 /// exercise it against the real producers so it cannot rot into an assertion.
@@ -252,18 +255,20 @@ mod tests {
     /// envelope formats, identity unchanged throughout.
     #[tokio::test]
     async fn adding_a_presentation_format_needs_no_re_issuance() {
-        use crate::self_at_login::{sign_delegation_async, HybridSigningIdentity};
+        use crate::federation_self_record::produce_self_key_record;
+        use crate::self_at_login::{HybridSigningIdentity, SelfSigner};
 
         let user = HybridSigningIdentity::generate("user-1").unwrap();
         let before = user.directory_member().unwrap();
 
-        // Format A — a delegation envelope.
-        let a = sign_delegation_async(&user, "agent-occurrence-1", "org-1", "member", "active")
+        // Format A — a self-signed key record.
+        let a = produce_self_key_record(&user, "user", "2026-06-19T00:00:00Z", None, &[])
             .await
             .unwrap();
 
         // Format B — a different envelope, SAME identity, no re-key.
-        let b = sign_delegation_async(&user, "agent-occurrence-2", "org-1", "member", "active")
+        let b = user
+            .sign_bound(&crate::jcs::canonicalize(&serde_json::json!({"format": "b"})).unwrap())
             .await
             .unwrap();
 
@@ -277,7 +282,7 @@ mod tests {
             "nor the PQC half — ZK-wrapping proves over these same signatures"
         );
         assert_ne!(
-            a.signed_envelope, b.signed_envelope,
+            a.record.scrub_signature_classical, b.0,
             "distinct presentations, one identity"
         );
         assert!(identity_is_separable_from_format());
@@ -288,8 +293,8 @@ mod tests {
     /// pseudonym and breaking provenance for no safety gain.
     #[test]
     fn node_surfaces_are_out_of_scope_by_design() {
-        // The inventory names only person-presentation members; nothing from
-        // manifest_contribution / build_attestation_bundle appears.
+        // The inventory names only person-presentation members; no build
+        // manifest or build attestation member appears.
         let known: Vec<&str> = PERSON_PRESENTATION_IDENTIFIERS
             .iter()
             .map(|i| i.member)

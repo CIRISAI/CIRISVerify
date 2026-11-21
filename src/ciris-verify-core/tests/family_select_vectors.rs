@@ -27,9 +27,9 @@ const VECTORS: &str = include_str!("vectors/cc/family_select_vectors.json");
 const COUNT_CELLS: &str = include_str!("vectors/cc/family_count_cells.json");
 
 /// SHA-256 of `tests/vectors/cc/family_select_vectors.json` (CC v1.0-rc20 d4bd2a6).
-const VECTORS_SHA256: &str = "0c3544e3058e1fb0c447ecaa1ae45ce9468a818319beb5ee9451f7cbcb894d73";
-/// CC ships 225 vectors at v1.0-rc21-wire (e6fd7c6).
-const VECTOR_COUNT: usize = 225;
+const VECTORS_SHA256: &str = "9b221e7b314aeac891b31ef90f35f10fcf2995391c70c6db0485591c2d26049b";
+/// CC ships 246 vectors at rc22 (8c436b8).
+const VECTOR_COUNT: usize = 246;
 
 fn lf(s: &str) -> String {
     s.replace("\r\n", "\n")
@@ -113,11 +113,11 @@ fn decided_json(d: Option<Decision>) -> Value {
 
 #[test]
 fn vendored_files_are_the_pinned_ones() {
-    assert_eq!(FAMILY_MODEL_CC_COMMIT, "e6fd7c6");
+    assert_eq!(FAMILY_MODEL_CC_COMMIT, "8c436b8");
     assert_eq!(sha(FAMILY_AUTHORSHIP_JSON), FAMILY_AUTHORSHIP_SHA256);
     assert_eq!(
         FAMILY_AUTHORSHIP_SHA256,
-        "423d41222384e5dcb73277d051d77f6f33e38cfe6f3557286034160ad1c7bbe1"
+        "4a3304165c6cfbe5247cad2195c0f284a434789354c462da0e67638e8d2b79a6"
     );
     assert_eq!(sha(VECTORS), VECTORS_SHA256);
     // One family model under all three files.
@@ -127,15 +127,15 @@ fn vendored_files_are_the_pinned_ones() {
     assert_eq!(extract["_meta"]["source_sha256"], FAMILY_MODEL_SHA256);
     assert_eq!(vectors["_meta"]["family_model_sha256"], FAMILY_MODEL_SHA256);
     assert_eq!(counts["_meta"]["source_sha256"], FAMILY_MODEL_SHA256);
-    assert_eq!(extract["_meta"]["cc_version"], "1.0-rc21");
+    assert_eq!(extract["_meta"]["cc_version"], "1.0-rc22");
 }
 
 #[test]
 fn extract_shape() {
     let extract: Value = serde_json::from_str(FAMILY_AUTHORSHIP_JSON).unwrap();
     let fams = extract["families"].as_object().unwrap();
-    assert_eq!(fams.len(), 187);
-    assert_eq!(vendored_family_ids().count(), 187);
+    assert_eq!(fams.len(), 189);
+    assert_eq!(vendored_family_ids().count(), 189);
     let (mut plain, mut arms, mut gap) = (0, 0, 0);
     for (prefix, f) in fams {
         let v = vendored_family(&family_id(prefix)).unwrap();
@@ -151,8 +151,8 @@ fn extract_shape() {
             assert_eq!(parse_cell(text).unwrap(), v.authorship.arms, "{prefix}");
         }
     }
-    // CC's split at v1.0-rc21-wire (e6fd7c6): 162 generic cells, 25 cc-table cells as arms, no gap.
-    assert_eq!((plain, arms, gap), (162, 25, 0));
+    // CC's split at rc22 (8c436b8): 164 generic cells, 25 cc-table cells as arms, no gap.
+    assert_eq!((plain, arms, gap), (164, 25, 0));
     for (prefix, c) in count_cells() {
         assert_eq!(
             parse_cell(c.value.as_deref().unwrap()).unwrap(),

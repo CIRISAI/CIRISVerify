@@ -67,7 +67,9 @@
 //!    and `device_class` `server`, CC 2.6.1.11 v1.0-rc21-wire e6fd7c6), and it names
 //!    the seat's record in `refs`. Then a recovery's own rules, once its
 //!    records are placed and its statement verified;
-//! 5. the custody gate at each holder seat (CC 4.2.2.1);
+//! 5. the custody gate at each holder seat (CC 4.2.2.1); then one device
+//!    per holder (CC 4.2.3): two seated holders whose verified leaves name one
+//!    token serial make the bundle Invalid, `holder_device_shared`;
 //! 6. the count: a bundle naming a spent commitment concludes nothing; a
 //!    recovery counts on its one statement; a first bundle on every holder; a
 //!    later one on a strict majority of the predecessor's holders, plus each
@@ -244,6 +246,10 @@ pub struct PlacedSeat {
     pub record: Digest32,
     /// The named binding's row id.
     pub binding: Digest32,
+    /// The binding's `dial_hints`, ordered as signed, most preferred first
+    /// (CC 3.3.6.1): at least one tcp hint; unknown types carried for a
+    /// dialler to skip. A fresh node holding only this genesis dials these.
+    pub dial_hints: Vec<super::fedcode::Hint>,
 }
 
 /// A witness in the charter's directory.
@@ -352,6 +358,19 @@ pub enum Malformed {
     /// key the holder was seated at and left, or a spent recovery key), or
     /// a key the holder's recovery commitment in force commits to.
     HolderKeyRetired,
+    /// Two holders the bundle seats name one device in their attestation
+    /// leaves (CC 4.2.3): for `YubiKey_5_FIPS`, one token serial in extension
+    /// `1.3.6.1.4.1.41482.3.7` of the 9c leaf. A leaf that names no device is
+    /// not compared; sharing an f9 or an intermediate is allowed.
+    HolderDeviceShared,
+    /// Two holders the bundle seats carry one recovery commitment: one
+    /// recovery key set would recover more than one seat (CC 4.2.6, each
+    /// holder's own recovery key).
+    RecoveryCommitmentShared,
+    /// A holder's recovery commitment commits to a signing key the bundle
+    /// seats, its own or another holder's: the recovery key is held apart
+    /// from the signing key (CC 4.2.6).
+    RecoveryCommitmentIsHolderKey,
 }
 
 impl Malformed {
@@ -372,6 +391,9 @@ impl Malformed {
             Self::RecoveryReusesSigningKey => "recovery_reuses_signing_key",
             Self::RecoveryChangesOtherSeat => "recovery_changes_other_seat",
             Self::HolderKeyRetired => "holder_key_retired",
+            Self::HolderDeviceShared => "holder_device_shared",
+            Self::RecoveryCommitmentShared => "recovery_commitment_shared",
+            Self::RecoveryCommitmentIsHolderKey => "recovery_commitment_is_holder_key",
         }
     }
 }
@@ -438,6 +460,11 @@ pub enum RowFault {
     /// A seat's binding does not name the seat's key record by row id in
     /// `refs`, under the `also` role `cites` (CC 3.3.6.2).
     BindingNamesNoRecord,
+    /// A seat's binding carries no `dial_hints` with a tcp hint, so a fresh
+    /// node holding only the genesis cannot make its first dial (CC 3.3.6.1).
+    SeatDialHintsMissing,
+    /// A seat's `dial_hints` entry of a known type has a bad body.
+    DialHintMalformed,
 }
 
 impl RowFault {
@@ -459,6 +486,8 @@ impl RowFault {
             Self::SeatOptedOut => "seat_opted_out",
             Self::SeatRecordEnded => "seat_record_ended",
             Self::BindingNamesNoRecord => "binding_names_no_record",
+            Self::SeatDialHintsMissing => "seat_dial_hints_missing",
+            Self::DialHintMalformed => "dial_hint_malformed",
         }
     }
 }
@@ -480,6 +509,10 @@ pub enum CustodyFault {
     FloorNotMet,
     /// `pq_custody` is not `removable_offline` (CC 4.2.3).
     PqCustody,
+    /// The leaf carries the device serial extension but it is not one DER
+    /// INTEGER fitting `u32` (CC 4.2.3: a present member that fails its type
+    /// is refused, not read as naming no device).
+    SerialMalformed,
 }
 
 impl CustodyFault {
@@ -493,6 +526,7 @@ impl CustodyFault {
             Self::AttestedKeyMismatch => "custody_attested_key_mismatch",
             Self::FloorNotMet => "custody_floor_not_met",
             Self::PqCustody => "custody_pq_not_removable_offline",
+            Self::SerialMalformed => "custody_serial_malformed",
         }
     }
 }
@@ -628,6 +662,10 @@ pub enum StatementFault {
     KidNotIss,
     /// Its `iss` is neither in the counting roster nor an added holder.
     NoRole,
+    /// Its CWT `sub` is absent or is not the payload's `family_key_id`
+    /// (CC rc22: a bundle statement is a SCITT Signed Statement about its
+    /// lineage).
+    SubNotFamily,
 }
 
 impl StatementFault {
@@ -641,6 +679,7 @@ impl StatementFault {
             Self::IatMismatch => "iat_mismatch",
             Self::KidNotIss => "statement_kid_not_iss",
             Self::NoRole => "statement_no_role",
+            Self::SubNotFamily => "statement_sub_not_family",
         }
     }
 }
@@ -956,6 +995,15 @@ fn peek_voice(index: usize, bytes: &[u8]) -> Result<Voice, StatementFault> {
         .and_then(Value::as_u64)
         .ok_or(StatementFault::IatMissing)?;
     let payload = cde::decode(&payload_bytes).map_err(|_| bad())?;
+    // The statement's subject is its lineage: CWT `sub` = `family_key_id`
+    // (CC rc22). A payload with no text `family_key_id` is the object's own
+    // fault, read later; here only the statement's claim is judged.
+    let sub = cwt.get_int(C_SUB).and_then(Value::as_text);
+    if let Some(f) = payload.get_text("family_key_id").and_then(Value::as_text) {
+        if sub != Some(f) {
+            return Err(StatementFault::SubNotFamily);
+        }
+    }
     let author = payload.get_text("author").and_then(Value::as_text);
     Ok(Voice {
         index,
@@ -1425,6 +1473,14 @@ fn read_one(
         }
     }
 
+    // Every bundle, the first included: no two holders share a recovery
+    // commitment, and no commitment is over a signing key the bundle seats.
+    // A commitment hashes a key set, so only an equal set is visible here;
+    // overlapping sets are the ceremony's to refuse at mint.
+    if let Err(m) = check_commitments(&b, &rows) {
+        return GenesisVerdict::Invalid(m);
+    }
+
     // 4 (continued). A holder re-seated under a new key by a roster bundle:
     // only where its own statement, under the key the predecessor seats for
     // it, verified and counts. A statement that does not verify counts for
@@ -1439,13 +1495,22 @@ fn read_one(
     }
 
     // 5. The custody gate at each holder seat.
+    let mut devices = BTreeSet::new();
+    let mut shared = false;
     for h in &b.holders {
-        if let Err(fault) = custody_gate(&rows.records[h].rec, input.attestation_roots) {
-            return GenesisVerdict::Nothing(Inconclusive::HolderCustody {
-                holder: h.clone(),
-                fault,
-            });
+        match custody_gate(&rows.records[h].rec, input.attestation_roots) {
+            Ok(device) => shared |= device.is_some_and(|d| !devices.insert(d)),
+            Err(fault) => {
+                return GenesisVerdict::Nothing(Inconclusive::HolderCustody {
+                    holder: h.clone(),
+                    fault,
+                })
+            },
         }
+    }
+    // One device per holder (CC 4.2.3): read from leaves that verified.
+    if shared {
+        return GenesisVerdict::Invalid(Malformed::HolderDeviceShared);
     }
 
     // 6. The count.
@@ -1512,7 +1577,7 @@ fn read_one(
                         b.charter.recovery_commitments.get(*h) != Some(&ph.recovery_commitment)
                     })
                 });
-                2 * valid > n
+                super::is_strict_majority(valid, n)
                     && added.iter().all(|h| counted.contains(*h))
                     && changed.into_iter().all(|h| counted.contains(h))
             },
@@ -1586,6 +1651,7 @@ fn read_one(
                     onion_hop_xwing_pubkey: x.onion,
                     record: r.id,
                     binding: x.id,
+                    dial_hints: x.dial_hints.clone(),
                 }
             })
             .collect(),
@@ -1683,6 +1749,29 @@ fn check_retired(b: &Bundle, pp: &GenesisPlacement, rows: &Rows) -> Result<(), M
             if bool::from(c.ct_eq(&x.recovery_commitment)) {
                 return Err(Malformed::HolderKeyRetired);
             }
+        }
+    }
+    Ok(())
+}
+
+/// No two holders share a recovery commitment, and none commits to a signing
+/// key the bundle seats (CC 4.2.6). Read from the payload and its named
+/// records only.
+fn check_commitments(b: &Bundle, rows: &Rows) -> Result<(), Malformed> {
+    let mut seen = BTreeSet::new();
+    for h in &b.holders {
+        if !seen.insert(b.charter.recovery_commitments[h]) {
+            return Err(Malformed::RecoveryCommitmentShared);
+        }
+    }
+    for h in &b.holders {
+        let own = recovery_commitment(core::slice::from_ref(&rows.records[h].rec.key));
+        if b.charter
+            .recovery_commitments
+            .values()
+            .any(|c| bool::from(c.ct_eq(&own)))
+        {
+            return Err(Malformed::RecoveryCommitmentIsHolderKey);
         }
     }
     Ok(())
@@ -1810,6 +1899,7 @@ struct PlacedBinding {
     id: Digest32,
     transit: [u8; XWING_PUBKEY_LEN],
     onion: [u8; XWING_PUBKEY_LEN],
+    dial_hints: Vec<super::fedcode::Hint>,
 }
 
 struct Rows {
@@ -1985,12 +2075,21 @@ fn place_rows(
         let row = verify_under(*id, bytes, &PlacedKey(r.rec.kid, &r.rec.key))?;
         let (transit, onion) = seat_binding(&row.payload, &r.rec.key, &r.id, Some(&row.sub))
             .map_err(|f| row_invalid(*id, f))?;
+        // `seat_binding` has read them already: present and well-formed.
+        let dial_hints = row
+            .payload
+            .get_text("dial_hints")
+            .map(super::read_dial_hints)
+            .transpose()
+            .map_err(|e| row_invalid(*id, RowFault::Row(e)))?
+            .unwrap_or_default();
         bindings.insert(
             (*seat).to_owned(),
             PlacedBinding {
                 id: *id,
                 transit,
                 onion,
+                dial_hints,
             },
         );
     }
@@ -2161,8 +2260,19 @@ fn seat_binding(
     // v1.0-rc21-wire e6fd7c6): its family's payload rule as it is alone, then the seat's
     // members. Checked after the transport rules above (whose details CC
     // names) and before the record the binding names.
-    check_identity_occurrence(p).map_err(RowFault::Row)?;
+    check_identity_occurrence(p).map_err(|e| match e {
+        Invalid::DialHintMalformed => RowFault::DialHintMalformed,
+        e => RowFault::Row(e),
+    })?;
     check_seat_occurrence(p, sub).map_err(RowFault::Row)?;
+    // A serve seat is dialled cold from the genesis alone (CC 3.3.6.1).
+    let hints = match p.get_text("dial_hints") {
+        Some(h) => super::read_dial_hints(h).map_err(RowFault::Row)?,
+        None => Vec::new(),
+    };
+    if !super::has_tcp_hint(&hints) {
+        return Err(RowFault::SeatDialHintsMissing);
+    }
     if !names_record(p, record) {
         return Err(RowFault::BindingNamesNoRecord);
     }
@@ -2198,8 +2308,9 @@ fn check_seat_occurrence(p: &Value, sub: Option<&str>) -> Result<(), Invalid> {
 /// The gate at seating (CC 4.2.2.1): the chain verifies to the mechanism's
 /// attestation root, the attested key is the record's Ed25519 half, and only
 /// then are the class and `pq_custody` accepted; a seated holder carries
-/// `removable_offline`.
-fn custody_gate(rec: &KeyRecord, roots: &TrustAnchorStore) -> Result<(), CustodyFault> {
+/// `removable_offline`. `Ok` carries the device the verified leaf names (the
+/// token serial, CC 4.2.3), if it names one.
+fn custody_gate(rec: &KeyRecord, roots: &TrustAnchorStore) -> Result<Option<u32>, CustodyFault> {
     let class = rec.hardware_class.as_deref().ok_or(CustodyFault::NoClass)?;
     if class != CLASS_YUBIKEY_5_FIPS || rec.chain.is_empty() {
         // Apple_Secure_Enclave and TPM_2_0 have chains this reader does not
@@ -2214,13 +2325,14 @@ fn custody_gate(rec: &KeyRecord, roots: &TrustAnchorStore) -> Result<(), Custody
         match verify_yubikey_piv_attestation(leaf, &above, root, ed) {
             Ok(v) if v.hardware_class == class => {
                 return match rec.pq_custody {
-                    Some(PqCustody::RemovableOffline) => Ok(()),
+                    Some(PqCustody::RemovableOffline) => Ok(v.serial),
                     _ => Err(CustodyFault::PqCustody),
                 };
             },
             Ok(_) => fault = CustodyFault::Unattested,
             Err(CustodyError::AttestedKeyMismatch) => fault = CustodyFault::AttestedKeyMismatch,
             Err(CustodyError::FloorNotMet { .. }) => fault = CustodyFault::FloorNotMet,
+            Err(CustodyError::SerialMalformed) => fault = CustodyFault::SerialMalformed,
             Err(_) => {},
         }
     }

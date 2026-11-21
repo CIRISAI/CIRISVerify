@@ -302,8 +302,8 @@ itself owned merely by reading your pubkey. So:
 3. **Appears in the device list.** `U`'s client lists pending occurrences that
    name `U` as owner.
 4. **One-tap owner-binding.** `U` taps approve; their YubiKey-rooted key signs
-   the `delegates_to(U → node)` grant (the existing `self_at_login` /
-   `sign_delegation` producer). `is_owner_bound(node)` now holds.
+   the `delegates_to(U → node)` grant (verify's earlier `self_at_login::sign_delegation`
+   producer was removed in 23.3.3; the grant is signed by the client). `is_owner_bound(node)` now holds.
 
 No PIN, no QR exchange — the only human action is one approval tap, which is
 exactly where CC wants the human signature. The pending-until-approved window is

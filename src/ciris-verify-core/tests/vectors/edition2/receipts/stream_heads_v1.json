@@ -1,0 +1,475 @@
+{
+ "_meta": {
+  "chunks": "leaf hash i = SHA-256(0x00 || 'chunk i'), i = 0..11",
+  "generator": "gen_stream_heads.py (independent of verify)",
+  "spec": "CC rc22 5.3.3.8 stream:head, as agreed by verify, Edge, persist and CC",
+  "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+ },
+ "binding": [
+  {
+   "binding_room": "community-kat-room",
+   "expect": "ok",
+   "id": "accountable_match",
+   "payload_hex": "a764726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "profile": 1
+  },
+  {
+   "binding_room": "another-room",
+   "expect": "stream_head_room_mismatch",
+   "id": "accountable_other_room",
+   "payload_hex": "a764726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "profile": 1
+  },
+  {
+   "binding_room": "community-kat-room",
+   "expect": "stream_head_room_mismatch",
+   "id": "accountable_no_room",
+   "payload_hex": "a664726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "profile": 1
+  },
+  {
+   "binding_room": "community-kat-room",
+   "expect": "ok",
+   "id": "best_effort_ok",
+   "payload_hex": "a664726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "profile": 0
+  },
+  {
+   "binding_room": "community-kat-room",
+   "expect": "stream_head_room_mismatch",
+   "id": "best_effort_names_room",
+   "payload_hex": "a764726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "profile": 0
+  }
+ ],
+ "door": [
+  {
+   "description": "An accountable head: a room names its receipt policy.",
+   "expect": "ok",
+   "id": "accountable",
+   "payload_hex": "a764726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "A best-effort head: no room.",
+   "expect": "ok",
+   "id": "best_effort",
+   "payload_hex": "a664726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "A sealing head naming its previous head.",
+   "expect": "ok",
+   "id": "with_prev_sealed",
+   "payload_hex": "a96472656673a164707265768202822f58201a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a64726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820b0d8dd6ce55d3206f0997527f1b23ee40b3db463b1cf2fbc9add079886df72eb6565706f63680266617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a41414141414141414141414141414141414141414141414141414141414141414141414141414141414141667365616c6564f56964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65086b61737365727465645f61741b0000019b7c010408",
+   "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "A file delivery stream's head: its own id spelling under stream:, no room.",
+   "expect": "ok",
+   "id": "file_stream",
+   "payload_hex": "a664726f6f74822f58208ba70465be7bb83b3312bd74a8c3241cc7d96089c8c72ee7940d53b422b114746565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65016b61737365727465645f61741b0000019b7c010401",
+   "sub": "stream:file-cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"
+  },
+  {
+   "description": "sub names a bare 64-hex id: that space is the inline-blob log's.",
+   "expect": "malformed:sub",
+   "id": "sub_bare_hex",
+   "payload_hex": "a764726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "sub": "stream:abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "sub without the stream: prefix.",
+   "expect": "malformed:sub",
+   "id": "sub_no_prefix",
+   "payload_hex": "a764726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "sub": "av-abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "tree_size 0.",
+   "expect": "malformed:tree_size",
+   "id": "tree_size_zero",
+   "payload_hex": "a764726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65006b61737365727465645f61741b0000019b7c010404",
+   "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "sealed is only ever true.",
+   "expect": "malformed:sealed",
+   "id": "sealed_false",
+   "payload_hex": "a864726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a41414141414141414141414141414141414141414141414141414141414141414141414141414141414141667365616c6564f46964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "An empty room.",
+   "expect": "malformed:room",
+   "id": "room_empty",
+   "payload_hex": "a764726f6f6d6064726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "refs carries a target.",
+   "expect": "unexpected:refs",
+   "id": "refs_target",
+   "payload_hex": "a86472656673a1667461726765748202822f58201a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a64726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "A profile member: not in the closed payload.",
+   "expect": "unexpected:stream-head",
+   "id": "unknown_member",
+   "payload_hex": "a864726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416770726f66696c65016964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "root as raw bytes, not a hash-digest.",
+   "expect": "malformed:root",
+   "id": "root_raw",
+   "payload_hex": "a764726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f745820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "No dimension: a scores row names its family by its dimension.",
+   "expect": "malformed:dimension",
+   "id": "dimension_missing",
+   "payload_hex": "a664726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a4141414141414141414141414141414141414141414141414141414141414141414141414141414141414169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "dimension stream:head:v2.",
+   "expect": "malformed:dimension",
+   "id": "dimension_other_version",
+   "payload_hex": "a764726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f72784d75726e3a696574663a706172616d733a6f617574683a636b743a7368612d3235363a414141414141414141414141414141414141414141414141414141414141414141414141414141414141416964696d656e73696f6e6e73747265616d3a686561643a763269747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+  },
+  {
+   "description": "author as a bare label, not an identity reference.",
+   "expect": "malformed:author",
+   "id": "author_label",
+   "payload_hex": "a764726f6f6d72636f6d6d756e6974792d6b61742d726f6f6d64726f6f74822f5820d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd776836565706f63680166617574686f726870726f64756365726964696d656e73696f6e6e73747265616d3a686561643a763169747265655f73697a65046b61737365727465645f61741b0000019b7c010404",
+   "sub": "stream:av-abababababababababababababababababababababababababababababababab"
+  }
+ ],
+ "successor": [
+  {
+   "description": "No last head: the service registers this as its first, with any prev.",
+   "expect": "ok",
+   "head": {
+    "epoch": 1,
+    "prev": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "root": "b0d8dd6ce55d3206f0997527f1b23ee40b3db463b1cf2fbc9add079886df72eb",
+    "sealed": false,
+    "tree_size": 8
+   },
+   "holds": [],
+   "id": "first",
+   "last": null,
+   "proof": [
+    "72d6fd950bba3583df756454a0a740f02b65bd482b17240291311eb0f1639158"
+   ]
+  },
+  {
+   "description": "Size 4 -> 8, consistency proof, prev names the last head.",
+   "expect": "ok",
+   "head": {
+    "epoch": 1,
+    "prev": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "root": "b0d8dd6ce55d3206f0997527f1b23ee40b3db463b1cf2fbc9add079886df72eb",
+    "sealed": false,
+    "tree_size": 8
+   },
+   "holds": [
+    "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a"
+   ],
+   "id": "extends",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "proof": [
+    "72d6fd950bba3583df756454a0a740f02b65bd482b17240291311eb0f1639158"
+   ]
+  },
+  {
+   "description": "The producer's prev is a head the service never saw: carried, not judged; consistency decides.",
+   "expect": "ok",
+   "head": {
+    "epoch": 1,
+    "prev": "7e495b09e8598342dee4e57cdcafab138e95a8a5891646b8e27f5bc9955aa2fa",
+    "root": "5f4499cc4ecd8cdd6d4763185caff1a53feac0a96181caf91d4cd4537c12482d",
+    "sealed": false,
+    "tree_size": 12
+   },
+   "holds": [
+    "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a"
+   ],
+   "id": "missed_one",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "proof": [
+    "72d6fd950bba3583df756454a0a740f02b65bd482b17240291311eb0f1639158",
+    "329d29ad2c2c06699041b85a5e25a04e02da3792f659860223f5cf8d9688f9e5"
+   ]
+  },
+  {
+   "description": "prev names a held head that is not the service's last.",
+   "expect": "stream_head_prev_not_last",
+   "head": {
+    "epoch": 1,
+    "prev": "7e495b09e8598342dee4e57cdcafab138e95a8a5891646b8e27f5bc9955aa2fa",
+    "root": "b0d8dd6ce55d3206f0997527f1b23ee40b3db463b1cf2fbc9add079886df72eb",
+    "sealed": false,
+    "tree_size": 8
+   },
+   "holds": [
+    "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "7e495b09e8598342dee4e57cdcafab138e95a8a5891646b8e27f5bc9955aa2fa"
+   ],
+   "id": "prev_not_last",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "proof": [
+    "72d6fd950bba3583df756454a0a740f02b65bd482b17240291311eb0f1639158"
+   ]
+  },
+  {
+   "description": "The epoch drops from 1 to 0.",
+   "expect": "stream_head_epoch_regressed",
+   "head": {
+    "epoch": 0,
+    "prev": null,
+    "root": "b0d8dd6ce55d3206f0997527f1b23ee40b3db463b1cf2fbc9add079886df72eb",
+    "sealed": false,
+    "tree_size": 8
+   },
+   "holds": [],
+   "id": "epoch_regressed",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "proof": [
+    "72d6fd950bba3583df756454a0a740f02b65bd482b17240291311eb0f1639158"
+   ]
+  },
+  {
+   "description": "The sealing head repeats size 4 with the identical root.",
+   "expect": "ok",
+   "head": {
+    "epoch": 1,
+    "prev": null,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "sealed": true,
+    "tree_size": 4
+   },
+   "holds": [],
+   "id": "sealing_repeat",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "proof": []
+  },
+  {
+   "description": "Size 4 again with the identical root, not sealing.",
+   "expect": "stream_head_repeated",
+   "head": {
+    "epoch": 1,
+    "prev": null,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "holds": [],
+   "id": "repeat_not_sealed",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "proof": []
+  },
+  {
+   "description": "Size 4 again with another root.",
+   "expect": "stream_head_equivocation",
+   "head": {
+    "epoch": 1,
+    "prev": null,
+    "root": "d9298a10d1b0735837dc4bd85dac641b0f3cef27a47e5d53a54f2f3f5b2fcffa",
+    "sealed": true,
+    "tree_size": 4
+   },
+   "holds": [],
+   "id": "equivocation",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "proof": []
+  },
+  {
+   "description": "A head at size 3 after size 4.",
+   "expect": "stream_head_inconsistent",
+   "head": {
+    "epoch": 1,
+    "prev": null,
+    "root": "bd3cf76e51ab8727a501fac86c9a7dcf4f95b433acd2caaf45ccd6e3482ec180",
+    "sealed": false,
+    "tree_size": 3
+   },
+   "holds": [],
+   "id": "smaller",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "proof": []
+  },
+  {
+   "description": "Size 8 with a proof for 5 -> 8.",
+   "expect": "stream_head_inconsistent",
+   "head": {
+    "epoch": 1,
+    "prev": null,
+    "root": "b0d8dd6ce55d3206f0997527f1b23ee40b3db463b1cf2fbc9add079886df72eb",
+    "sealed": false,
+    "tree_size": 8
+   },
+   "holds": [],
+   "id": "bad_proof",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "proof": [
+    "d60c7c2d5e91e9efe1779c9dcac3710dbd79d9cc699edb0b39bff419eefd3cfa",
+    "01f45f6d2a5439c1028b32635ef9333b72e5b338497a9c2cab94c5db1158d489",
+    "137dd8956496faa4ddef4ad928f2ee3ef5c29f2dab0b9dc95f28f861de85ac4d",
+    "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683"
+   ]
+  },
+  {
+   "description": "Size 8 with a root that does not extend the last.",
+   "expect": "stream_head_inconsistent",
+   "head": {
+    "epoch": 1,
+    "prev": null,
+    "root": "bf7b09ca0c1d71cbe8a77cdc549d3fbc882b37e1d8e23e30c3d9ba26edf1ee3b",
+    "sealed": false,
+    "tree_size": 8
+   },
+   "holds": [],
+   "id": "forked_root",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "proof": [
+    "72d6fd950bba3583df756454a0a740f02b65bd482b17240291311eb0f1639158"
+   ]
+  },
+  {
+   "description": "The service registered the sealing head at size 4: a later head at size 8 is refused.",
+   "expect": "stream_head_after_seal",
+   "head": {
+    "epoch": 1,
+    "prev": null,
+    "root": "b0d8dd6ce55d3206f0997527f1b23ee40b3db463b1cf2fbc9add079886df72eb",
+    "sealed": false,
+    "tree_size": 8
+   },
+   "holds": [],
+   "id": "after_seal",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": true,
+    "tree_size": 4
+   },
+   "proof": [
+    "72d6fd950bba3583df756454a0a740f02b65bd482b17240291311eb0f1639158"
+   ]
+  },
+  {
+   "description": "A holder recomputed both roots from its chunks.",
+   "expect": "ok",
+   "head": {
+    "epoch": 1,
+    "prev": null,
+    "root": "b0d8dd6ce55d3206f0997527f1b23ee40b3db463b1cf2fbc9add079886df72eb",
+    "sealed": false,
+    "tree_size": 8
+   },
+   "holds": [],
+   "id": "recomputed_ok",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "recomputed": [
+    "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "b0d8dd6ce55d3206f0997527f1b23ee40b3db463b1cf2fbc9add079886df72eb"
+   ]
+  },
+  {
+   "description": "A holder's own root for size 8 differs from the head's.",
+   "expect": "stream_head_inconsistent",
+   "head": {
+    "epoch": 1,
+    "prev": null,
+    "root": "b0d8dd6ce55d3206f0997527f1b23ee40b3db463b1cf2fbc9add079886df72eb",
+    "sealed": false,
+    "tree_size": 8
+   },
+   "holds": [],
+   "id": "recomputed_differs",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "recomputed": [
+    "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "72938de7eea5db59d78bf635028769775f91d34394058a6574ab5269549b8432"
+   ]
+  }
+ ]
+}

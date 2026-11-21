@@ -61,25 +61,16 @@ pub(crate) mod prelude {
     pub(crate) use alloc::vec::Vec;
 }
 
-/// Accord-holder custody attestation — the hardware-unforgeable YubiKey PIV
-/// attestation the CIRISServer admission gate verifies (the safe-mesh floor,
-/// CIRISVerify#91 / CIRISServer#41) before admitting an accord kill-switch key.
-/// The verifiers are `std` tier; the producers need `host`.
+/// Accord-holder custody verification — the YubiKey PIV attestation chain the
+/// edition-2 genesis reader's custody gate runs (CIRISVerify#91, CC 4.2.2).
 #[cfg(feature = "std")]
 pub mod accord_custody_attestation;
-/// HUMANITY_ACCORD genesis producer (CEG §9.1, CIRISVerify#82-followup) — holder
-/// `accord_holder` records + the entrenched-`family` 2-of-3 genesis, round-tripped
-/// through `threshold::verify_founder_quorum`.
+/// The baked HUMANITY_ACCORD family genesis and the roster read from it
+/// (CEG §9.1, CIRISVerify#107).
 pub mod accord_genesis;
 /// The constitutional halt latch: pause, fuse, confirm, resume
 /// (CIRISVerify#305, CIRISConstitution#146).
 pub mod accord_halt_latch;
-/// HUMANITY_ACCORD live-quorum decimation-recovery objects (FSD-004 / CC §4.2.6)
-/// — Phase 1, step 1: the `AccordProposal` / `AccordParticipation` preimages with
-/// the adversarial-review CRITICAL bindings (vote + proposal digest + member +
-/// family + window in the signed bytes). The tally / fire / membership-change
-/// surfaces are step 2.
-pub mod accord_live_quorum;
 pub mod announce_policy;
 pub mod app_attest;
 #[cfg(feature = "host")]
@@ -90,10 +81,6 @@ pub mod attest_heartbeat;
 pub mod audit;
 #[cfg(feature = "host")]
 pub mod binary_format;
-/// Peer-presentable build-attestation bundle (#181) — binds the presenting
-/// node's federation key to the pipeline-signed manifest it claims to run.
-#[cfg(feature = "std")]
-pub mod build_attestation_bundle;
 #[cfg(feature = "host")]
 pub mod cache;
 /// CC 2.3.2.1 canonical-hash subject codec (#201) — tagged subjects, bare hex rejected.
@@ -111,7 +98,6 @@ pub mod config;
 /// pinned vendor root. Hardware is a trust signal, never a requirement.
 #[cfg(feature = "host")]
 pub mod device_attestation;
-pub mod doc_integrity;
 /// Verify-only readers for objects of the earlier, bound-hybrid form (CC
 /// 8.11.12): `verify_bound_hybrid` and `EarlierSignedTreeHead`. No producers.
 #[cfg(feature = "pqc")]
@@ -137,7 +123,6 @@ pub mod holds_bytes;
 pub mod http_client;
 #[cfg(feature = "host")]
 pub mod https;
-pub mod humanity_accord;
 pub mod infrastructure_community;
 pub mod jcs;
 #[cfg(feature = "host")]
@@ -146,8 +131,6 @@ pub mod license;
 pub mod locale_merkle;
 #[cfg(feature = "host")]
 pub mod manifest_cache;
-#[cfg(feature = "std")]
-pub mod manifest_contribution;
 #[cfg(all(feature = "host", any(target_os = "android", target_os = "ios")))]
 pub mod mobile_http;
 /// CC 3.1.7 R3 dimension matcher: a wire `dimension` resolved to its registry family (port of CC's `cc_namespace_match.py`).
@@ -161,7 +144,6 @@ pub mod play_integrity;
 /// Presentation-surface identifier scope (CIRISConstitution#80) — keeps the
 /// reserved unlinkable-presentation slot reachable.
 pub mod presentation;
-pub mod provenance;
 pub mod reconsider_dos;
 /// Redactable commitments (#241) — distinguishing 'redacted by authority'
 /// from 'tampered', cryptographically rather than by assertion.
@@ -169,12 +151,8 @@ pub mod redactable;
 #[cfg(feature = "host")]
 pub mod registry;
 #[cfg(feature = "std")]
-pub mod safety_evidence;
-#[cfg(feature = "std")]
 pub mod security;
 pub mod self_at_login;
-#[cfg(feature = "std")]
-pub mod skill_import;
 pub mod subject_binding;
 /// §19 Holonomic substrate verifiers (CEG 1.0-RC11, CIRISVerify#78) — ALM
 /// capacity authenticity, durable-storage holding claims, WholenessWitness
@@ -203,10 +181,6 @@ pub mod unified;
 pub mod validation;
 #[cfg(feature = "host")]
 pub mod watchdog;
-/// WebAuthn / FIDO2 passkey assertion verification — the presence/unlock factor
-/// for a user identity (authenticator apps: Google, Microsoft, Apple/Android).
-/// CIRISVerify#80.
-pub mod webauthn;
 pub mod witness_relation;
 
 #[cfg(feature = "host")]
@@ -241,10 +215,6 @@ pub use federation_provenance::{
     AttestationEntry, FederationProvenance, FederationProvenanceBuilder, Score,
 };
 pub use holds_bytes::{verify_holds_bytes, HoldsBytesError};
-pub use humanity_accord::{
-    verify_invocation, Invocation, InvocationDedup, InvocationError, InvocationKind,
-    INVOCATION_DOMAIN_PREFIX, LIFECYCLE_DOMAIN_PREFIX,
-};
 #[cfg(feature = "host")]
 pub use keys::{
     derive_symmetric_key, derive_transport_identity, DERIVED_KEY_LEN, TRANSPORT_SEED_LEN,
@@ -254,11 +224,6 @@ pub use locale_merkle::{
     locale_leaf_to_attestation_entries, merkle_root, parent_hash, verify_locale_inclusion,
     LocaleInclusionProof, LocaleLeaf, LOCALE_LEAF_DOMAIN_V2, RFC6962_LEAF_PREFIX,
     RFC6962_PARENT_PREFIX,
-};
-pub use provenance::{
-    verify_provenance_chain, verify_provenance_chain_with_policy,
-    verify_provenance_chain_with_policy_and_terminus, ProvenanceChain, ProvenanceError,
-    ProvenanceLink, MAX_PROVENANCE_DEPTH, STEWARD_IDENTITY_TYPE,
 };
 pub use reconsider_dos::{
     ActorBudget, ActorBudgetExhausted, EventRateLimit, EventRateLimited, FilingOutcome,
@@ -274,10 +239,6 @@ pub use security::file_integrity::{
 };
 #[cfg(feature = "host")]
 pub use security::{IntegrityChecker, IntegrityStatus};
-#[cfg(feature = "std")]
-pub use skill_import::{
-    verify_skill_import_manifest, SkillImportManifest, SourceType, SKILL_IMPORT_DOMAIN_V2,
-};
 pub use threshold::{
     verify_threshold_signatures, verify_threshold_signatures_with_policy, HybridPolicy,
     ThresholdError, ThresholdMember, ThresholdSignature,

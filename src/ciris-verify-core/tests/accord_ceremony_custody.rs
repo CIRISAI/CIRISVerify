@@ -2,14 +2,13 @@
 //!
 //! The constitutional kill-switch's legitimacy rests on anyone being able to
 //! **independently verify** that its keys are held on real, FIPS-certified,
-//! touch-required hardware — not on trusting an assertion. This test re-runs the
-//! exact CIRISServer admission-gate verifier
-//! ([`verify_accord_custody_attestation`]) over the committed ceremony artifacts
-//! in `accord_ceremony_artifacts/`, against the pinned **Yubico Attestation
-//! Root 1**, and asserts for every one of the 6 keys (3 seated primaries +
-//! 3 vaulted spares):
+//! touch-required hardware — not on trusting an assertion. This test runs the
+//! custody verifier the edition-2 genesis reader's gate uses
+//! ([`verify_yubikey_piv_attestation`]) over the YubiKey attestation certs in
+//! the committed ceremony artifacts in `accord_ceremony_artifacts/`, against
+//! the pinned **Yubico Attestation Root 1**, and asserts for every one of the 6
+//! keys (3 seated primaries + 3 vaulted spares):
 //!
-//! - the bundle is holder-hybrid-signed (Ed25519 + ML-DSA-65),
 //! - the YubiKey PIV slot-9c attestation chains `9c → f9 → … → pinned root`,
 //! - the attested key equals the holder's federation Ed25519 key,
 //! - the FIPS-certified extension is present and the touch policy is "always",
@@ -21,9 +20,7 @@
 #![cfg(feature = "host")]
 
 use base64::Engine;
-use ciris_verify_core::accord_custody_attestation::verify_accord_custody_attestation;
-use ciris_verify_core::ceg_outbox::SignedCegObject;
-use ciris_verify_core::threshold::ThresholdMember;
+use ciris_verify_core::accord_custody_attestation::verify_yubikey_piv_attestation;
 use serde_json::Value;
 
 /// The 6 ceremony keys: 3 seated primaries (A1/B1/C1) + 3 vaulted spares
@@ -66,30 +63,33 @@ fn every_ceremony_key_has_a_valid_fips_hardware_custody_chain() {
     let root_der = pem_to_der(&root_pem);
 
     for key in KEYS {
-        // Holder record → the holder's pinned hybrid federation pubkeys.
+        // Holder record → the holder's federation Ed25519 key.
         let holder = read_json(&dir.join(format!("holders/{key}.json")));
-        let record = &holder["holder_record"]["record"];
-        let ed = record["pubkey_ed25519_base64"]
-            .as_str()
-            .unwrap_or_else(|| panic!("{key}: holder ed25519 pubkey"));
-        let mldsa = record["pubkey_ml_dsa_65_base64"]
-            .as_str()
-            .unwrap_or_else(|| panic!("{key}: holder ml-dsa pubkey"));
-        let member = ThresholdMember {
-            member_id: key.to_string(),
-            ed25519_public_key_base64: ed.to_string(),
-            mldsa65_public_key_base64: Some(mldsa.to_string()),
-            role: None,
+        let ed = base64::engine::general_purpose::STANDARD
+            .decode(
+                holder["holder_record"]["record"]["pubkey_ed25519_base64"]
+                    .as_str()
+                    .unwrap_or_else(|| panic!("{key}: holder ed25519 pubkey")),
+            )
+            .unwrap_or_else(|e| panic!("{key}: holder ed25519 pubkey base64: {e}"));
+
+        // The YubiKey attestation certs the ceremony's custody object carries
+        // as evidence: the slot-9c leaf and the chain above it, leaf-first.
+        let att = read_json(&dir.join(format!("custody_attestations/{key}.json")));
+        let hex_of = |v: &Value| {
+            hex::decode(v.as_str().unwrap_or_else(|| panic!("{key}: cert hex")))
+                .unwrap_or_else(|e| panic!("{key}: cert hex: {e}"))
         };
+        let c9 = hex_of(&att["body"]["yubikey_piv_attestation_9c_hex"]);
+        let chain: Vec<Vec<u8>> = att["body"]["yubikey_attestation_chain_hex"]
+            .as_array()
+            .unwrap_or_else(|| panic!("{key}: chain"))
+            .iter()
+            .map(hex_of)
+            .collect();
+        let chain: Vec<&[u8]> = chain.iter().map(Vec::as_slice).collect();
 
-        // The standalone custody attestation object (the FIPS-YubiKey PIV proof).
-        let att: SignedCegObject = serde_json::from_value(read_json(
-            &dir.join(format!("custody_attestations/{key}.json")),
-        ))
-        .unwrap_or_else(|e| panic!("{key}: custody attestation deserialize: {e}"));
-
-        // Re-run the exact admission-gate verifier against the pinned root.
-        let verdict = verify_accord_custody_attestation(&att, &member, &root_der)
+        let verdict = verify_yubikey_piv_attestation(&c9, &chain, &root_der, &ed)
             .unwrap_or_else(|e| panic!("{key}: custody attestation FAILED to verify: {e:?}"));
 
         // The floor the CIRISServer#41 safe-mesh gate enforces.
@@ -104,10 +104,6 @@ fn every_ceremony_key_has_a_valid_fips_hardware_custody_chain() {
         assert_eq!(
             verdict.hardware_class, "YubiKey_5_FIPS",
             "{key}: unexpected hardware_class"
-        );
-        assert_eq!(
-            verdict.custody_tier, "portable_2fa",
-            "{key}: unexpected custody tier"
         );
 
         println!(

@@ -428,7 +428,7 @@ impl TrustAnchorStore {
 /// what the fleet trusts. Same discipline as the #107 accord genesis bake — the
 /// bake is *validated*, not pasted.
 pub mod baked {
-    use super::{environments, single, ConciseTaStore, Purpose, TrustAnchorStore};
+    use super::{environments, ConciseTaStore, Purpose, TrustAnchorStore};
     #[allow(unused_imports)]
     use crate::prelude::*;
 
@@ -1029,13 +1029,6 @@ pub mod baked {
         }
 
         store
-    }
-
-    /// A single-anchor store for `environment`, for callers supplying their own
-    /// reviewed root (e.g. the Google Hardware Attestation Root).
-    #[must_use]
-    pub fn anchor_for(environment: &str, der: Vec<u8>) -> ConciseTaStore {
-        single(environment, Purpose::KeyAttestation, vec![der])
     }
 }
 

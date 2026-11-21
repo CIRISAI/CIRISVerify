@@ -29,6 +29,12 @@
 //! a length-prefixed `stream_id`. The two are not interchangeable and neither
 //! is a variant of the other.
 //!
+//! ## The call stream id
+//!
+//! [`call_stream_id`](crate::stream_seal::call_stream_id) is the CC 5.3.3.5 v3 derivation of the 32-byte stream id
+//! from room, publisher and join nonce (length-prefixed since rc21). Known
+//! answers: `tests/vectors/composite/stream_key_binding_v2_composite_v2.json`.
+//!
 //! ## The A/V inner seal
 //!
 //! The realtime A/V inner seal is this STREAM nonce, so live and stored streams
@@ -116,6 +122,58 @@ pub fn parse_stream_nonce(nonce: &[u8; STREAM_NONCE_LEN]) -> Option<(u32, bool)>
         _ => return None,
     };
     Some((u32::from_be_bytes(c), last))
+}
+
+/// Why a call stream id was not derived.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[non_exhaustive]
+pub enum StreamIdError {
+    /// `room` or `publisher` is not 1 to 1024 bytes of UTF-8 (CC 5.3.3.5).
+    #[error("{0} is not 1 to 1024 bytes")]
+    FieldLength(&'static str),
+}
+
+/// The domain label of the 32-byte call stream id (CC 5.3.3.5, rc21 815050d).
+pub const CALL_STREAM_ID_LABEL: &[u8] = b"ciris-edge:call-stream:v3";
+/// The largest `room` or `publisher` a StreamKeyBinding carries, in bytes.
+pub const CALL_STREAM_FIELD_MAX: usize = 1024;
+
+/// The 32-byte stream id of a call stream (CC 5.3.3.5), the `stream_id` a
+/// StreamKeyBinding carries and `crate::stream_dek::av_stream_id` spells:
+///
+/// ```text
+/// SHA-256("ciris-edge:call-stream:v3" ‖ u16_be(len room) ‖ room
+///         ‖ u16_be(len publisher) ‖ publisher ‖ join_nonce[32])
+/// ```
+///
+/// `room` is the community key id and `publisher` the publishing member's
+/// federation key id (the member's key on the producing device, never a node
+/// key). The length prefixes keep `("ab", "c")` and `("a", "bc")` apart, which
+/// the v2 concatenation did not.
+///
+/// # Errors
+///
+/// [`StreamIdError::FieldLength`] when `room` or `publisher` is empty or over
+/// [`CALL_STREAM_FIELD_MAX`] bytes.
+pub fn call_stream_id(
+    room: &str,
+    publisher: &str,
+    join_nonce: &[u8; 32],
+) -> Result<[u8; 32], StreamIdError> {
+    use sha2::Digest;
+    let len = |f: &str, name: &'static str| match u16::try_from(f.len()) {
+        Ok(n) if (1..=CALL_STREAM_FIELD_MAX).contains(&f.len()) => Ok(n.to_be_bytes()),
+        _ => Err(StreamIdError::FieldLength(name)),
+    };
+    let (rl, pl) = (len(room, "room")?, len(publisher, "publisher")?);
+    let mut h = Sha256::new();
+    h.update(CALL_STREAM_ID_LABEL);
+    h.update(rl);
+    h.update(room.as_bytes());
+    h.update(pl);
+    h.update(publisher.as_bytes());
+    h.update(join_nonce);
+    Ok(h.finalize().into())
 }
 
 #[cfg(test)]

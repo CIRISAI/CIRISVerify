@@ -2,13 +2,13 @@
 
 | File | CC source | CC commit | SHA-256 (LF) |
 |------|-----------|-----------|--------------|
-| `family_authorship.json` | `manifests/family_authorship.json`, CC's canonical extract of the `authorship` and `second_signers` cells of `manifests/family_model.json` (CC 1.0-rc21) | `e6fd7c6` (tag `v1.0-rc21-wire`) | `423d41222384e5dcb73277d051d77f6f33e38cfe6f3557286034160ad1c7bbe1`; source model `0f635ee125651092e32b2d1b427c791d749d4e4a2460e6154636a8c256edbf6b` |
-| `namespace_registry.json` | `manifests/namespace_registry.json` (CC 1.0-rc21) | `e6fd7c6071ced5d0dcdd7f578e7fa9625e5bf16c` (tag `v1.0-rc21-wire`) | `c6a478d65b8d7040311f989941b7d747de756abf4718ce3bdf7f459bfce41f49` |
+| `family_authorship.json` | `manifests/family_authorship.json`, CC's canonical extract of the `authorship` and `second_signers` cells of `manifests/family_model.json` (CC 1.0-rc22) | `8c436b8` (rc22 branch) | `4a3304165c6cfbe5247cad2195c0f284a434789354c462da0e67638e8d2b79a6`; source model `43f8ad5378aa70cdacf4287445789dfc3611c8a29204c66444cbce6ffe1a2f95` |
+| `namespace_registry.json` | `manifests/namespace_registry.json` (CC 1.0-rc22) | `8c436b8` (rc22 branch) | `01f6c39b14de1ca068a26b18ee5ddddb4a5989e4394829ab4d5e5a20bfee3645` |
 
 `namespace_registry.json` is embedded by `src/namespace_match.rs` (`include_str!`), the
 port of CC's reference matcher `tools/cc_namespace_match.py`. Its replay vectors are
 vendored from the same commit at `tests/vectors/cc/namespace_match_vectors.json`
-(SHA-256 `46a274d010a37c16c81ef02718b21cbd31d67ba823fbade85317fabad127f7ca`, 1,323
+(SHA-256 `6bed6efa3b4d95d63cfc07844cc4c2eacd68511097fcf72c970962895646f198`, 1,336
 vectors) and run by `tests/namespace_match_vectors.rs`, which also checks the registry
 digest above. The registry at v1.0-rc20 adds `location_proof:{version}` and
 `trust:blessing` (`trust:blessing:v1` resolves to the literal family `trust:blessing`).
@@ -24,15 +24,15 @@ this README are updated by hand). By hand: `git -C ../CIRISConstitution show <co
 evaluated by `edition2::family::select`, the port of CC's reference evaluator
 `tools/cc_family_select.py`, against the row's leaf (its `dimension` bound under the
 family by `namespace_match::bind_leaf`) and the caller's `SelectContext`. CC's replay
-vectors `manifests/family_select_vectors.json` (225 vectors) are vendored at
+vectors `manifests/family_select_vectors.json` (246 vectors) are vendored at
 `tests/vectors/cc/family_select_vectors.json` (SHA-256
-`0c3544e3058e1fb0c447ecaa1ae45ce9468a818319beb5ee9451f7cbcb894d73`) and run by
+`9b221e7b314aeac891b31ef90f35f10fcf2995391c70c6db0485591c2d26049b`) and run by
 `tests/family_select_vectors.rs`, which pins both digests, the commit and the source
 model digest. The `count` cells those vectors also exercise are not in CC's extract:
 `tests/vectors/cc/family_count_cells.json` carries the count cells written as arms, cut
 from the same model (test-only; not embedded):
 
-    git -C ../CIRISConstitution show v1.0-rc20:manifests/family_model.json > /tmp/fm.json
+    git -C ../CIRISConstitution show 8c436b8:manifests/family_model.json > /tmp/fm.json
     python3 -I -c 'import hashlib,json,sys; raw=open(sys.argv[1],"rb").read(); m=json.loads(raw); print(json.dumps({"_meta":{"source":"manifests/family_model.json","source_sha256":hashlib.sha256(raw).hexdigest(),"cells":"count"},"families":{r["family"]:{"value":r["count"].get("value"),"source":r["count"].get("source"),"arms":[{"when":a["when"],"doors":a["doors"]} for a in r["count"]["arms"]]} for r in m["rows"] if r["count"].get("arms")}},indent=1,sort_keys=True))' /tmp/fm.json > family_count_cells.json
 
 To refresh the family files: `git -C ../CIRISConstitution show <commit>:manifests/family_authorship.json`

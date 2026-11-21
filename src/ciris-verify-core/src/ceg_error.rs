@@ -41,8 +41,6 @@ pub enum CegErrorCode {
     #[serde(rename = "MALFORMED_REQUEST")]
     MalformedRequest,
     /// 400 — Date-time / hex / encoding doesn't match §0.5 / §0.6.
-    /// THIS is the code v4.0.0-rc1's canonicalization checks
-    /// (`check_canonical_rfc3339`, `check_canonical_hex64`) map to.
     #[serde(rename = "CANONICAL_BYTES_VIOLATION")]
     CanonicalBytesViolation,
     /// 401 — Bearer token missing or invalid.

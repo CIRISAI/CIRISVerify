@@ -29,3 +29,26 @@ never under the empty one:
 `tests/composite_vectors.rs` runs the same checks against `ciris_crypto::composite`.
 In COSE the application context is always empty (JOSE -06 §2), so the LAMPS
 `sWithContext` signature is expected to be refused.
+
+## StreamKeyBinding v2
+
+`stream_key_binding_v2_composite_v2.json` (SHA-256
+`4668ef04c3a2c718334c4a6f2ffc5d7f581608a20cf42cf23971f4b7140263eb`) comes from
+`gen_stream_key_binding_v2_composite_v2.py` and follows CC 1.0-rc21 5.3.3.5
+(815050d, 544755a). The binding layout and its signing label `av-stream-key:v2`
+are unchanged. Two things change from the first set:
+
+- `stream_id` is `SHA-256("ciris-edge:call-stream:v3" ‖ u16be len ‖ room ‖ u16be len ‖ publisher ‖ join_nonce[32])`.
+- The publisher is a member key (`member-kat-a`), never a node key.
+
+`stream_ids` adds known answers for the derivation alone. Among them,
+`split_ab_c` and `split_a_bc` show the case that motivated the change: under
+v2's bare concatenation those two inputs gave the same id. The file is replayed
+by `stream_key_binding_v2_composite` against `stream_seal::call_stream_id`.
+
+`stream_key_binding_v2_composite_v1.json` and `gen_stream_key_binding_v2.py`
+are the first set (v2 stream id, node publisher). They are kept byte-identical
+and are no longer replayed. Regenerate either file with dilithium-py and
+pyca/cryptography:
+
+    python3 -I gen_stream_key_binding_v2_composite_v2.py > stream_key_binding_v2_composite_v2.json

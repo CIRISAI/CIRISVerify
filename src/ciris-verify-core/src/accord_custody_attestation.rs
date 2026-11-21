@@ -1,34 +1,33 @@
-//! Accord-holder **custody attestation** — the hardware-unforgeable evidence the
-//! CIRISServer admission gate verifies before admitting an accord holder
-//! (the CIRISServer safe-mesh floor).
+//! Accord-holder **custody verification** — the YubiKey PIV attestation chain
+//! that proves an accord holder's signing key lives on a genuine FIPS YubiKey
+//! with touch required (CIRISVerify#91, CC 4.2.2, CC 4.2.3).
 //!
 //! The accord kill-switch is only as trustworthy as the custody of its keys, so
-//! a holder is admitted **only** with proof its signing key lives on a genuine
-//! FIPS YubiKey under 2-factor (YubiKey + USB) custody — never a self-claim a
-//! patched verify could forge. This is the **combined 2+3** design:
+//! a holder is seated **only** with proof its signing key lives on a genuine
+//! FIPS YubiKey — never a self-claim a patched verify could forge. The proof is
+//! the YubiKey PIV slot-9c attestation certificate, signed *inside* the YubiKey
+//! by its slot-f9 attestation key and chaining to **Yubico's pinned PIV
+//! attestation root**. Only a real YubiKey produces a valid 9c attestation, and
+//! the cert's Yubico extensions (`1.3.6.1.4.1.41482.3.*`) carry firmware, FIPS
+//! status, touch policy and serial.
 //!
-//! - **(3) a separate signed CEG object** (`ACCORD_CUSTODY_ATTESTATION_KIND`),
-//!   so the Persist `federation_keys` record stays byte-exact — the attestation
-//!   is a sibling artifact, not a row field.
-//! - **(2) carrying the YubiKey PIV slot-9c attestation certificate** — signed
-//!   *inside* the YubiKey by its slot-f9 attestation key, chaining to **Yubico's
-//!   pinned PIV attestation root**. Unforgeable: only a real YubiKey produces a
-//!   valid 9c attestation, and the cert's Yubico extensions
-//!   (`1.3.6.1.4.1.41482.3.*`) carry firmware, FIPS status, touch policy, and
-//!   on-device generation — so one artifact proves the whole floor.
+//! [`crate::accord_custody_attestation::verify_yubikey_piv_attestation`] is what the edition-2 genesis reader's
+//! custody gate ([`crate::edition2::genesis`]) runs over a holder's
+//! `key:record` chain, and what CIRISPersist calls. The earlier, pair-signed
+//! custody bundle (`accord_holder_custody_attestation`, its producers and
+//! verifier) was removed in 23.3.3.
 //!
 //! ## What the verifier proves
 //!
-//! 1. The bundle's bound-hybrid signature verifies against the holder's pinned
-//!    pubkeys (the holder authored it).
-//! 2. The 9c cert chains `9c → f9 → [intermediate(s)…] → ` the **pinned Yubico
+//! 1. The 9c cert chains `9c → f9 → [intermediate(s)…] → ` the **pinned Yubico
 //!    root** — a variable-length path (3 certs for the pre-fw-5.7 PKI, 4 for the
 //!    2024-12 PKI), every link a real signature verification.
-//! 3. The key the 9c cert *attests* equals the holder's federation Ed25519 key
-//!    (the attestation is for *this* holder's signing key, not a borrowed one).
-//! 4. The Yubico extensions show **FIPS-certified** (slot-f9 `.10`) **+
+//! 2. The key the 9c cert *attests* equals the holder's Ed25519 key (the
+//!    attestation is for *this* holder's signing key, not a borrowed one).
+//! 3. The Yubico extensions show **FIPS-certified** (slot-f9 `.10`) **+
 //!    touch=always** (slot-9c `.8`) → `hardware_class: YubiKey_5_FIPS`. Firmware
-//!    (`.3`) is recorded, not floored.
+//!    (`.3`) is recorded, not floored; a present serial (`.7`) must be a DER
+//!    INTEGER fitting `u32`.
 //!
 //! ## Confirmed against a real key
 //!
@@ -55,74 +54,14 @@
 //!
 //! ## Tiers (CIRISVerify#325)
 //!
-//! The verifiers (`verify_accord_custody_attestation`,
-//! `verify_yubikey_piv_attestation`) and their verdict and error types are in
+//! `verify_yubikey_piv_attestation` and its verdict and error types are in
 //! the `std` tier: they parse X.509 and read no clock, keyring or network, so a
 //! browser or UEFI node built with `default-features = false, features =
-//! ["std", "pqc"]` verifies custody. The producers
-//! (`produce_accord_custody_attestation`, `_validated`) and
-//! `custody_attestation_to_platform_attestation`, which returns a
-//! `ciris_keyring` type, need `host`. `test_support` needs only `std` (plus its
+//! ["std", "pqc"]` verifies custody. `test_support` needs only `std` (plus its
 //! own `test-support` feature).
 
-use base64::Engine;
-#[cfg(any(feature = "host", feature = "test-support", test))]
-use serde_json::json;
-use serde_json::Value;
-use sha2::{Digest, Sha256};
 use x509_parser::der_parser::asn1_rs::FromDer;
 use x509_parser::prelude::*;
-
-use crate::ceg_outbox::SignedCegObject;
-#[cfg(any(feature = "host", feature = "test-support", test))]
-use crate::error::VerifyError;
-use crate::jcs;
-#[cfg(any(feature = "host", feature = "test-support", test))]
-use crate::self_at_login::SelfSigner;
-use crate::threshold::{verify_threshold_signatures, ThresholdMember, ThresholdSignature};
-#[cfg(feature = "host")]
-use ciris_keyring::{ExternalSecureElementAttestation, PlatformAttestation};
-
-/// CEG `kind` of an accord-holder custody attestation in the outbox.
-pub const ACCORD_CUSTODY_ATTESTATION_KIND: &str = "accord_holder_custody_attestation";
-
-/// The custody tier asserted by the portable USB-wrapped mode (#91 / v6.6.0).
-pub const CUSTODY_TIER_PORTABLE_2FA: &str = "portable_2fa";
-
-/// CIRISVerify#202 — TEST-ONLY custody tier: a **software-only** accord holder
-/// with **no** YubiKey PIV chain / FIPS / touch floor, for the local mesh
-/// harness. Admitted ONLY in a `test-anchor` build with the runtime AND-gate
-/// active ([`crate::test_anchor::test_anchor_active`]); a production verifier
-/// (feature absent) never recognizes it and rejects the tier fail-closed.
-pub const CUSTODY_TIER_SOFTWARE_TEST: &str = "software_test";
-
-/// The §9.4 `hardware_class` a software test holder resolves to — deliberately
-/// unmistakable so a tier-gating consumer can never confuse it with real hardware.
-pub const HARDWARE_CLASS_SOFTWARE_TEST: &str = "SoftwareOnly_TEST";
-
-// #113 — the attestation certs are signed by COMMITMENT, not inline. A YubiKey
-// `CKM_EDDSA` is single-part with a bounded input; the old inline multi-KB hex
-// chain overran it (`CKR_DATA_LEN_RANGE`). The signed envelope carries the
-// sha256 of each cert; the cert DERs themselves ride in the (unsigned) outer
-// `SignedCegObject.body` as hash-bound evidence the verifier recomputes.
-/// Signed-envelope field: hex sha256 of the slot-9c attestation cert DER.
-const COMMIT_9C_SHA256: &str = "yubikey_piv_attestation_9c_sha256";
-/// Signed-envelope field: hex sha256 of each chain cert DER, leaf-first.
-const COMMIT_CHAIN_SHA256: &str = "yubikey_attestation_chain_sha256";
-/// Outer-body evidence field: the slot-9c attestation cert DER, hex.
-const EVIDENCE_9C_HEX: &str = "yubikey_piv_attestation_9c_hex";
-/// Outer-body evidence field: each chain cert DER, hex, leaf-first.
-const EVIDENCE_CHAIN_HEX: &str = "yubikey_attestation_chain_hex";
-
-/// Hex sha256 of `bytes` — the cert commitment encoding (#113).
-fn sha256_hex(bytes: &[u8]) -> String {
-    hex::encode(Sha256::digest(bytes))
-}
-
-/// The custody tiers the verifier recognizes. A holder-signed bundle asserting
-/// any other tier is rejected — the tier is an attested self-claim, so it must
-/// be allowlisted rather than echoed verbatim to a tier-gating consumer.
-const ALLOWED_CUSTODY_TIERS: &[&str] = &[CUSTODY_TIER_PORTABLE_2FA];
 
 // Yubico PIV attestation extension OIDs (arc 1.3.6.1.4.1.41482.3.*).
 const OID_YUBICO_FIRMWARE: &str = "1.3.6.1.4.1.41482.3.3";
@@ -142,8 +81,6 @@ const TOUCH_POLICY_ALWAYS: u8 = 0x02;
 pub struct CustodyVerdict {
     /// The §9.4 hardware_class established by the attestation.
     pub hardware_class: String,
-    /// The custody tier from the bundle (`portable_2fa`, …).
-    pub custody_tier: String,
     /// YubiKey firmware `major.minor.patch` from the `…3.3` extension.
     pub firmware: String,
     /// YubiKey serial from the `…3.7` extension, if present.
@@ -158,18 +95,6 @@ pub struct CustodyVerdict {
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum CustodyError {
-    /// Object is not an [`ACCORD_CUSTODY_ATTESTATION_KIND`].
-    WrongKind {
-        /// Kind found.
-        kind: String,
-    },
-    /// A field is missing or ill-typed.
-    Malformed {
-        /// Which field.
-        field: String,
-    },
-    /// The bundle's bound-hybrid signature did not verify against the holder.
-    SignatureInvalid,
     /// A certificate (9c / f9 / root) could not be parsed.
     CertParse {
         /// Which cert.
@@ -180,23 +105,22 @@ pub enum CustodyError {
         /// Link that failed.
         detail: String,
     },
-    /// The key the 9c cert attests is not the holder's federation Ed25519 key.
+    /// The key the 9c cert attests is not the holder's Ed25519 key.
     AttestedKeyMismatch,
     /// The floor was not met (not FIPS, or touch not always, or firmware too old).
     FloorNotMet {
         /// Why.
         detail: String,
     },
+    /// The 9c leaf carries the serial extension (`1.3.6.1.4.1.41482.3.7`) but
+    /// its value is not one DER INTEGER fitting `u32`. A present member that
+    /// fails its type is refused, never read as absent (CC 4.2.3).
+    SerialMalformed,
 }
 
 impl std::fmt::Display for CustodyError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::WrongKind { kind } => write!(f, "not a custody attestation: kind {kind:?}"),
-            Self::Malformed { field } => {
-                write!(f, "malformed custody attestation: field {field:?}")
-            },
-            Self::SignatureInvalid => write!(f, "bundle hybrid signature did not verify"),
             Self::CertParse { which } => write!(f, "could not parse {which} certificate"),
             Self::ChainInvalid { detail } => write!(f, "attestation chain invalid: {detail}"),
             Self::AttestedKeyMismatch => {
@@ -206,462 +130,15 @@ impl std::fmt::Display for CustodyError {
                 )
             },
             Self::FloorNotMet { detail } => write!(f, "custody floor not met: {detail}"),
+            Self::SerialMalformed => write!(
+                f,
+                "the 9c serial extension is not a DER INTEGER fitting u32"
+            ),
         }
     }
 }
 
 impl std::error::Error for CustodyError {}
-
-/// The canonical custody-attestation envelope. The holder hybrid-signs the JCS
-/// bytes of this, binding their identity to the YubiKey attestation.
-#[cfg(any(feature = "host", feature = "test-support", test))]
-fn custody_envelope(
-    holder_key_id: &str,
-    ed25519_pubkey_b64: &str,
-    mldsa65_pubkey_sha256: &str,
-    attestation_9c_sha256: &str,
-    attestation_chain_sha256: &[String],
-    custody_tier: &str,
-    signed_at: &str,
-) -> Value {
-    // Built as an explicit map so the #113 commitment field names can be the
-    // shared consts (the json! macro only accepts literal keys). JCS sorts keys
-    // at signing, so insertion order is immaterial to the signed bytes.
-    let mut m = serde_json::Map::new();
-    m.insert("holder_key_id".to_string(), json!(holder_key_id));
-    m.insert(
-        "ed25519_public_key_base64".to_string(),
-        json!(ed25519_pubkey_b64),
-    );
-    // The ML-DSA-65 public key is 1952 B (~2604 b64 chars) — embedding it inline
-    // blew the hardware-Ed25519 preimage past the YubiKey's PKCS#11 EdDSA input
-    // ceiling once the (also-committed) cert chain grew. The verifier resolves the
-    // holder's ML-DSA key out-of-band (the `holder_member`) and never reads this
-    // field, so we COMMIT to its sha256 instead — same pattern as the cert hashes
-    // (#113) — keeping the preimage small while preserving a tamper-evident binding.
-    m.insert(
-        "mldsa65_public_key_sha256".to_string(),
-        json!(mldsa65_pubkey_sha256),
-    );
-    // #113: sign a COMMITMENT to the certs, not the certs. The slot-9c cert hash;
-    // and the chain above the 9c leaf, leaf-first: sha256 of each of [f9,
-    // …intermediates…] up to but excluding the pinned root (the verifier pins the
-    // root out-of-band). The cert DERs themselves ride as hash-bound evidence in
-    // the outer body — keeping the hardware-Ed25519 preimage small.
-    m.insert(COMMIT_9C_SHA256.to_string(), json!(attestation_9c_sha256));
-    m.insert(
-        COMMIT_CHAIN_SHA256.to_string(),
-        json!(attestation_chain_sha256),
-    );
-    m.insert("custody_tier".to_string(), json!(custody_tier));
-    m.insert("signed_at".to_string(), json!(signed_at));
-    Value::Object(m)
-}
-
-/// Produce a signed accord-holder custody attestation — the holder hybrid-signs
-/// an envelope binding their identity + pubkeys to the YubiKey PIV attestation
-/// chain. `attestation_9c_der` is the slot-9c attestation (e.g. from
-/// `ykman piv keys attest 9c`); `attestation_chain_ders` is the path above it,
-/// leaf-first — `[f9]` for the pre-fw-5.7 PKI, `[f9, "Yubico PIV Attestation B
-/// 1", "Yubico Attestation Intermediate B 1"]` for the 2024-12 PKI — excluding
-/// the pinned root the verifier holds.
-///
-/// # Errors
-///
-/// [`VerifyError`] on a signer or canonicalization fault.
-#[cfg(feature = "host")]
-pub async fn produce_accord_custody_attestation(
-    holder: &dyn SelfSigner,
-    attestation_9c_der: &[u8],
-    attestation_chain_ders: &[&[u8]],
-    custody_tier: &str,
-    signed_at: &str,
-) -> Result<SignedCegObject, VerifyError> {
-    sign_custody_attestation(
-        holder,
-        attestation_9c_der,
-        attestation_chain_ders,
-        custody_tier,
-        signed_at,
-    )
-    .await
-}
-
-/// The body of [`produce_accord_custody_attestation`], shared with
-/// `test_support` and the `std`-tier tests so all three mint the same bytes.
-/// It needs only [`SelfSigner`] (no keyring).
-#[cfg(any(feature = "host", feature = "test-support", test))]
-async fn sign_custody_attestation(
-    holder: &dyn SelfSigner,
-    attestation_9c_der: &[u8],
-    attestation_chain_ders: &[&[u8]],
-    custody_tier: &str,
-    signed_at: &str,
-) -> Result<SignedCegObject, VerifyError> {
-    let b64 = base64::engine::general_purpose::STANDARD;
-    let ed_pub = holder.ed25519_public_key().await?;
-    let mldsa_pub = holder.mldsa65_public_key().await?;
-    // #113: the holder signs a commitment (sha256 per cert), not the cert bytes.
-    let chain_sha256: Vec<String> = attestation_chain_ders
-        .iter()
-        .map(|d| sha256_hex(d))
-        .collect();
-    let envelope = custody_envelope(
-        holder.key_id(),
-        &b64.encode(&ed_pub),
-        &sha256_hex(&mldsa_pub),
-        &sha256_hex(attestation_9c_der),
-        &chain_sha256,
-        custody_tier,
-        signed_at,
-    );
-    let signed = holder.sign_envelope_async(envelope).await?;
-    let mut body = serde_json::to_value(&signed).map_err(|e| VerifyError::IntegrityError {
-        message: format!("serialize custody attestation: {e}"),
-    })?;
-    // Attach the attestation certs as hash-bound evidence in the (unsigned) outer
-    // body — bound to the holder signature through the sha256 commitments in the
-    // signed envelope, so tampering breaks verification, while the actual
-    // multi-KB cert bytes never enter the hardware-Ed25519 preimage (#113).
-    let chain_hex: Vec<String> = attestation_chain_ders.iter().map(hex::encode).collect();
-    if let Some(map) = body.as_object_mut() {
-        map.insert(
-            EVIDENCE_9C_HEX.to_string(),
-            json!(hex::encode(attestation_9c_der)),
-        );
-        map.insert(EVIDENCE_CHAIN_HEX.to_string(), json!(chain_hex));
-    }
-    Ok(SignedCegObject::new(
-        ACCORD_CUSTODY_ATTESTATION_KIND,
-        holder.key_id(),
-        signed_at,
-        body,
-    ))
-}
-
-/// Produce a custody attestation **and immediately verify it with the real
-/// verifier** before handing it back (CIRISVerify#227).
-///
-/// ## Why generation-time self-validation
-///
-/// Verify owns both halves — it mints attestations and it checks them — so
-/// producer↔verifier coherence is a property we can prove at mint time instead
-/// of discovering when a peer rejects us. This repo has the scar that motivates
-/// it: v10.4.0 found that `verify_provenance_chain` **rejected every record its
-/// own producers emitted**, and it went undetected because the test fixture
-/// signed the same wrong bytes. Running the *real* verifier here closes that
-/// whole cargo-green/artifact-broken class for this path — a ceremony fails
-/// loudly at the operator's terminal rather than producing an artifact that
-/// only fails later, in the field, on someone else's gate.
-///
-/// The holder member is reconstructed from the signer's **own** public keys, so
-/// this proves the object verifies against the identity that actually signed it.
-///
-/// Anchors come from `store` at
-/// `(Purpose::KeyAttestation, environments::YUBIKEY_PIV)`. If the store holds
-/// no PIV anchor, the attestation is returned **unvalidated with `None`** —
-/// absence of a pinned root is *no hardware evidence*, not a failure (hardware
-/// is a signal, not a requirement). Callers that require validation should
-/// treat `None` as "could not self-check" and decide their own policy.
-///
-/// # Errors
-///
-/// [`VerifyError`] on a signer/serialization fault, or — the point of this
-/// function — if the freshly-minted attestation does **not** verify.
-#[cfg(feature = "host")]
-pub async fn produce_accord_custody_attestation_validated(
-    holder: &dyn SelfSigner,
-    attestation_9c_der: &[u8],
-    attestation_chain_ders: &[&[u8]],
-    custody_tier: &str,
-    signed_at: &str,
-    store: &crate::trust_anchor_store::TrustAnchorStore,
-) -> Result<(SignedCegObject, Option<CustodyVerdict>), VerifyError> {
-    use crate::trust_anchor_store::{environments, Purpose};
-
-    let obj = produce_accord_custody_attestation(
-        holder,
-        attestation_9c_der,
-        attestation_chain_ders,
-        custody_tier,
-        signed_at,
-    )
-    .await?;
-
-    let anchors = store.resolve_x509(Purpose::KeyAttestation, environments::YUBIKEY_PIV);
-    if anchors.is_empty() {
-        return Ok((obj, None));
-    }
-
-    let b64 = base64::engine::general_purpose::STANDARD;
-    let member = ThresholdMember {
-        member_id: holder.key_id().to_string(),
-        ed25519_public_key_base64: b64.encode(holder.ed25519_public_key().await?),
-        mldsa65_public_key_base64: Some(b64.encode(holder.mldsa65_public_key().await?)),
-        role: None,
-    };
-
-    let mut last = None;
-    for root in anchors {
-        match verify_accord_custody_attestation(&obj, &member, root) {
-            Ok(v) => return Ok((obj, Some(v))),
-            Err(e) => last = Some(e),
-        }
-    }
-    Err(VerifyError::IntegrityError {
-        message: format!(
-            "self-validation FAILED at generation — this attestation would be rejected by peers: {}",
-            last.map_or_else(|| "no anchor validated it".to_string(), |e| e.to_string())
-        ),
-    })
-}
-
-fn str_field<'a>(v: &'a Value, field: &str) -> Result<&'a str, CustodyError> {
-    v.get(field)
-        .and_then(Value::as_str)
-        .ok_or(CustodyError::Malformed {
-            field: field.to_string(),
-        })
-}
-
-/// Verify an accord-holder custody attestation end-to-end (CIRISVerify#91). The
-/// CIRISServer admission gate calls this and admits only on `Ok` with the
-/// required tier.
-///
-/// `holder_member` is the holder's pinned pubkeys (resolved by the caller from
-/// its directory by the bundle's `holder_key_id`). `yubico_root_der` is the
-/// pinned Yubico PIV attestation root (the consumer pins it — verify provides
-/// the verification, not the trust root). Fail-closed: see [`CustodyError`].
-///
-/// # Errors
-///
-/// [`CustodyError`] naming the first failing step.
-pub fn verify_accord_custody_attestation(
-    obj: &SignedCegObject,
-    holder_member: &ThresholdMember,
-    yubico_root_der: &[u8],
-) -> Result<CustodyVerdict, CustodyError> {
-    if obj.kind != ACCORD_CUSTODY_ATTESTATION_KIND {
-        return Err(CustodyError::WrongKind {
-            kind: obj.kind.clone(),
-        });
-    }
-    let env = obj
-        .body
-        .get("signed_envelope")
-        .ok_or(CustodyError::Malformed {
-            field: "signed_envelope".to_string(),
-        })?;
-    let ed_sig = str_field(&obj.body, "ed25519_signature_base64")?;
-    let mldsa_sig = obj
-        .body
-        .get("mldsa65_signature_base64")
-        .and_then(Value::as_str);
-
-    // 1. The bundle is authored by the holder (bound-hybrid, RequireHybrid).
-    let bytes = jcs::canonicalize(env).map_err(|_| CustodyError::Malformed {
-        field: "signed_envelope (jcs)".to_string(),
-    })?;
-    let sig = ThresholdSignature {
-        member_id: holder_member.member_id.clone(),
-        ed25519_signature_base64: ed_sig.to_string(),
-        mldsa65_signature_base64: mldsa_sig.map(str::to_string),
-    };
-    if verify_threshold_signatures(&bytes, std::slice::from_ref(holder_member), &[sig], 1) != Ok(1)
-    {
-        return Err(CustodyError::SignatureInvalid);
-    }
-
-    // The holder signs its own identity into the envelope; bind that self-claim
-    // to the caller-resolved `holder_member` so the signed fields are
-    // load-bearing, not decorative — a holder cannot sign a bundle whose
-    // embedded key_id / pubkey disagree with the key the gate verified against
-    // (closes the confused-deputy / record-drift surface).
-    if str_field(env, "holder_key_id")? != holder_member.member_id {
-        return Err(CustodyError::Malformed {
-            field: "holder_key_id (≠ resolved member_id)".to_string(),
-        });
-    }
-    if str_field(env, "ed25519_public_key_base64")? != holder_member.ed25519_public_key_base64 {
-        return Err(CustodyError::Malformed {
-            field: "ed25519_public_key_base64 (≠ resolved member key)".to_string(),
-        });
-    }
-    // The ML-DSA-65 half is hash-COMMITTED (not inline) to keep the hardware
-    // Ed25519 preimage under the YubiKey's EdDSA input ceiling (#116). Keep it
-    // load-bearing anyway: bind the committed sha256 to the resolved member's
-    // ML-DSA key (RequireHybrid guarantees the member has one once the signature
-    // verified above), so a holder can't commit a different PQC half than the one
-    // the gate trusts — the same record-drift gate the ed25519 field gets.
-    if let Some(member_mldsa_b64) = &holder_member.mldsa65_public_key_base64 {
-        let member_mldsa = base64::engine::general_purpose::STANDARD
-            .decode(member_mldsa_b64)
-            .map_err(|_| CustodyError::Malformed {
-                field: "holder mldsa65 pubkey (base64)".to_string(),
-            })?;
-        if !sha256_hex(&member_mldsa)
-            .eq_ignore_ascii_case(str_field(env, "mldsa65_public_key_sha256")?)
-        {
-            return Err(CustodyError::Malformed {
-                field: "mldsa65_public_key_sha256 (≠ resolved member key)".to_string(),
-            });
-        }
-    }
-
-    // `custody_tier` is a holder self-claim — allowlist it so a holder cannot
-    // assert a stronger tier than the one verify recognizes (a consumer that
-    // gates on tier would otherwise inherit an unbounded, unverified string).
-    let custody_tier = str_field(env, "custody_tier")?.to_string();
-
-    // TEST-ONLY (CIRISVerify#202): a software-only accord holder. Reached only in
-    // a `test-anchor` build with the runtime AND-gate active; a prod verifier does
-    // not compile this and falls through to the allowlist, which rejects the tier.
-    // The holder's OWN hybrid signature + identity binding are already proven above
-    // (self-consistency is kept) — we drop ONLY the YubiKey PIV chain / FIPS / touch
-    // hardware floor. Placed before the allowlist check so `software_test` is
-    // admitted here rather than rejected there.
-    if custody_tier == CUSTODY_TIER_SOFTWARE_TEST && crate::test_anchor::test_anchor_active() {
-        tracing::warn!(
-            holder_key_id = %holder_member.member_id,
-            "CIRIS_TESTING_MODE: admitting a SOFTWARE-ONLY accord holder — NO YubiKey / \
-             FIPS / touch floor. hardware_class={HARDWARE_CLASS_SOFTWARE_TEST}. This MUST \
-             NOT appear in a production deployment."
-        );
-        return Ok(CustodyVerdict {
-            hardware_class: HARDWARE_CLASS_SOFTWARE_TEST.to_string(),
-            custody_tier,
-            firmware: String::new(),
-            serial: None,
-            fips_certified: false,
-            touch_always: false,
-        });
-    }
-
-    if !ALLOWED_CUSTODY_TIERS.contains(&custody_tier.as_str()) {
-        return Err(CustodyError::FloorNotMet {
-            detail: format!("unrecognized custody_tier {custody_tier:?}"),
-        });
-    }
-    // #113: the certs travel as hash-bound evidence in the OUTER body (unsigned),
-    // committed to by the sha256 fields INSIDE the signed envelope. Recompute the
-    // digest of each supplied cert and require it to equal the signed commitment —
-    // this binds the (large) certs to the (small) holder signature without ever
-    // putting them in the Ed25519 preimage. A swapped cert breaks the equality.
-    let attest_9c = hex::decode(str_field(&obj.body, EVIDENCE_9C_HEX)?)
-        .map_err(|_| CustodyError::CertParse { which: "9c" })?;
-    if !sha256_hex(&attest_9c).eq_ignore_ascii_case(str_field(env, COMMIT_9C_SHA256)?) {
-        return Err(CustodyError::Malformed {
-            field: "yubikey_piv_attestation_9c (evidence ≠ signed sha256 commitment)".to_string(),
-        });
-    }
-    let commit_chain = env
-        .get(COMMIT_CHAIN_SHA256)
-        .and_then(Value::as_array)
-        .ok_or(CustodyError::Malformed {
-            field: COMMIT_CHAIN_SHA256.to_string(),
-        })?;
-    let evidence_chain = obj
-        .body
-        .get(EVIDENCE_CHAIN_HEX)
-        .and_then(Value::as_array)
-        .ok_or(CustodyError::Malformed {
-            field: EVIDENCE_CHAIN_HEX.to_string(),
-        })?;
-    if evidence_chain.len() != commit_chain.len() {
-        return Err(CustodyError::Malformed {
-            field: "chain evidence length ≠ signed commitment length".to_string(),
-        });
-    }
-    let mut chain: Vec<Vec<u8>> = Vec::with_capacity(evidence_chain.len());
-    for (ev, com) in evidence_chain.iter().zip(commit_chain.iter()) {
-        let der = hex::decode(ev.as_str().ok_or(CustodyError::Malformed {
-            field: format!("{EVIDENCE_CHAIN_HEX}[]"),
-        })?)
-        .map_err(|_| CustodyError::CertParse { which: "chain" })?;
-        let com = com.as_str().ok_or(CustodyError::Malformed {
-            field: format!("{COMMIT_CHAIN_SHA256}[]"),
-        })?;
-        if !sha256_hex(&der).eq_ignore_ascii_case(com) {
-            return Err(CustodyError::Malformed {
-                field: "yubikey_attestation_chain (evidence ≠ signed sha256 commitment)"
-                    .to_string(),
-            });
-        }
-        chain.push(der);
-    }
-    let chain_refs: Vec<&[u8]> = chain.iter().map(Vec::as_slice).collect();
-    let holder_ed = base64::engine::general_purpose::STANDARD
-        .decode(&holder_member.ed25519_public_key_base64)
-        .map_err(|_| CustodyError::Malformed {
-            field: "holder ed25519 pubkey".to_string(),
-        })?;
-
-    // 2-4: the YubiKey PIV attestation — chain to the pinned Yubico root, the
-    // attested key == the holder's Ed25519, and the FIPS/touch floor.
-    let mut verdict =
-        verify_yubikey_piv_attestation(&attest_9c, &chain_refs, yubico_root_der, &holder_ed)?;
-    verdict.custody_tier = custody_tier;
-    Ok(verdict)
-}
-
-/// Convert a **verified** accord-holder custody attestation into a
-/// [`PlatformAttestation::ExternalSecureElement`] (CIRISVerify#117) — the bridge
-/// from a verify-side custody attestation to CIRISPersist's `attestation_evidence`
-/// shape, so a registrar can admit/entrench an `accord_holder` **non-interactively**
-/// from the outbox artifacts (no human / YubiKey in the loop once the ceremony is
-/// done).
-///
-/// Call [`verify_accord_custody_attestation`] FIRST and pass its `obj` plus the
-/// returned [`CustodyVerdict`] here. This does **not** re-verify — the caller's
-/// prior `Ok(verdict)` is the proof; it reads the (already hash-bound) attestation
-/// cert DERs back out of the bundle's evidence and packages them with the verdict's
-/// hardware floor. The consumer re-validates the chain to its own pinned root.
-///
-/// # Errors
-///
-/// [`CustodyError`] if the bundle's evidence certs are missing or malformed.
-#[cfg(feature = "host")]
-pub fn custody_attestation_to_platform_attestation(
-    obj: &SignedCegObject,
-    verdict: &CustodyVerdict,
-) -> Result<PlatformAttestation, CustodyError> {
-    let attestation_cert_der = hex::decode(str_field(&obj.body, EVIDENCE_9C_HEX)?)
-        .map_err(|_| CustodyError::CertParse { which: "9c" })?;
-    let chain_vals = obj
-        .body
-        .get(EVIDENCE_CHAIN_HEX)
-        .and_then(Value::as_array)
-        .ok_or(CustodyError::Malformed {
-            field: EVIDENCE_CHAIN_HEX.to_string(),
-        })?;
-    let attestation_chain_der = chain_vals
-        .iter()
-        .map(|v| {
-            v.as_str()
-                .ok_or(CustodyError::Malformed {
-                    field: format!("{EVIDENCE_CHAIN_HEX}[]"),
-                })
-                .and_then(|s| {
-                    hex::decode(s).map_err(|_| CustodyError::CertParse { which: "chain" })
-                })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(PlatformAttestation::ExternalSecureElement(
-        ExternalSecureElementAttestation {
-            hardware_class: verdict.hardware_class.clone(),
-            attestation_cert_der,
-            attestation_chain_der,
-            firmware: if verdict.firmware.is_empty() {
-                None
-            } else {
-                Some(verdict.firmware.clone())
-            },
-            serial: verdict.serial,
-            fips_certified: verdict.fips_certified,
-            touch_always: verdict.touch_always,
-        },
-    ))
-}
 
 /// Unwrap a short-form DER OCTET STRING (`0x04 len content`), returning its
 /// content when the bytes are exactly one OCTET STRING covering the whole
@@ -776,9 +253,13 @@ pub fn verify_yubikey_piv_attestation(
                 }
             },
             OID_YUBICO_SERIAL => {
-                if let Ok((_, n)) = x509_parser::der_parser::asn1_rs::Integer::from_der(ext.value) {
-                    serial = n.as_u32().ok();
-                }
+                // Present means it names the device: one DER INTEGER, nothing
+                // after it, fitting u32. Anything else is refused, so a bad
+                // extension cannot skip the one-device check (CC 4.2.3).
+                serial = match x509_parser::der_parser::asn1_rs::Integer::from_der(ext.value) {
+                    Ok(([], n)) => Some(n.as_u32().map_err(|_| CustodyError::SerialMalformed)?),
+                    _ => return Err(CustodyError::SerialMalformed),
+                };
             },
             OID_YUBICO_PIN_TOUCH_POLICY => {
                 let v = inner_octet_string(ext.value);
@@ -813,7 +294,6 @@ pub fn verify_yubikey_piv_attestation(
 
     Ok(CustodyVerdict {
         hardware_class: "YubiKey_5_FIPS".to_string(),
-        custody_tier: String::new(), // filled by the bundle caller
         firmware: firmware.unwrap_or_default(),
         serial,
         fips_certified,
@@ -827,13 +307,14 @@ pub fn verify_yubikey_piv_attestation(
 /// own `#[cfg(test)]` tests). Lets a downstream FIPS-floor gate — CIRISPersist's
 /// canonical-admission anti-Sybil floor (#513), CIRISServer's `accord.rs` — build
 /// a *synthetic* hardware-attested member and drive the full positive
-/// mint/rotation path through the strict gate, instead of only refusal paths.
+/// path through [`verify_yubikey_piv_attestation`], instead of only refusal
+/// paths.
 ///
 /// ## Security posture — why exporting this is safe
 ///
 /// Every artifact chains to a **mock** Yubico root that this module mints. A
 /// production gate pins the **real** Yubico Attestation Root, against which these
-/// artifacts are **inert** — [`verify_accord_custody_attestation`] rejects them
+/// artifacts are **inert** — [`verify_yubikey_piv_attestation`] rejects them
 /// unless the caller *also* injects [`test_support::MockYubicoCa::root_der`] as
 /// the pinned root, which is a test-only affordance. So you cannot forge a
 /// real-gate pass with this. It is still fenced behind an opt-in feature (never
@@ -841,8 +322,7 @@ pub fn verify_yubikey_piv_attestation(
 /// fabrication code are physically absent from production artifacts.
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support {
-    use super::{sign_custody_attestation, CUSTODY_TIER_PORTABLE_2FA, TOUCH_POLICY_ALWAYS};
-    use crate::ceg_outbox::SignedCegObject;
+    use super::TOUCH_POLICY_ALWAYS;
     use crate::self_at_login::HybridSigningIdentity;
     use crate::threshold::ThresholdMember;
     use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
@@ -862,16 +342,17 @@ pub mod test_support {
     }
 
     /// A fabricated FIPS-attested member: the directory entry a gate resolves the
-    /// holder against, the custody `SignedCegObject`
-    /// [`verify_accord_custody_attestation`](super::verify_accord_custody_attestation)
+    /// holder against, the attestation chain
+    /// [`verify_yubikey_piv_attestation`](super::verify_yubikey_piv_attestation)
     /// admits (when the CA's root is the pinned one), and the **full hybrid
-    /// signer** so a downstream can actually SIGN as the member — co-scrub a
-    /// canonical, cast a quorum vote — not just present pubkeys (CIRISVerify#221).
+    /// signer** so a downstream can actually sign as the member (CIRISVerify#221).
     pub struct MockAttestedMember {
-        /// The holder's pinned pubkeys — pass as `holder_member` to the verifier.
+        /// The holder's pinned pubkeys.
         pub member: ThresholdMember,
-        /// The custody attestation bundle to verify.
-        pub attestation: SignedCegObject,
+        /// The slot-9c attestation cert DER (attests `member`'s Ed25519 key).
+        pub attest_9c_der: Vec<u8>,
+        /// The chain above the 9c leaf, leaf-first (`[f9]`).
+        pub chain_ders: Vec<Vec<u8>>,
         /// The member's hybrid signer (Ed25519 + ML-DSA-65), both halves
         /// deterministically derived from `seed`. `holder.directory_member()`
         /// equals [`Self::member`]. Use it to produce the hybrid-Strict
@@ -903,7 +384,7 @@ pub mod test_support {
 
     /// An rcgen `KeyPair` from a raw 32-byte Ed25519 seed (PKCS#8 v1 wrapper), so
     /// the mock 9c leaf key equals the holder's `Ed25519Signer::from_seed(seed)`
-    /// key — the binding [`verify_accord_custody_attestation`](super::verify_accord_custody_attestation)
+    /// key — the binding [`verify_yubikey_piv_attestation`](super::verify_yubikey_piv_attestation)
     /// checks (attested key == holder Ed25519).
     fn keypair_from_seed(seed: &[u8; 32]) -> KeyPair {
         use base64::Engine as _;
@@ -950,24 +431,19 @@ pub mod test_support {
         /// 5.7.4 — the shape the strict floor accepts. `seed` makes it
         /// deterministic; distinct `seed`/`key_id` give distinct members for a
         /// quorum.
-        pub async fn attest_member(
-            &self,
-            seed: [u8; 32],
-            key_id: &str,
-            signed_at: &str,
-        ) -> MockAttestedMember {
-            self.attest_member_with(seed, key_id, signed_at, true, TOUCH_POLICY_ALWAYS)
-                .await
+        #[must_use]
+        pub fn attest_member(&self, seed: [u8; 32], key_id: &str) -> MockAttestedMember {
+            self.attest_member_with(seed, key_id, true, TOUCH_POLICY_ALWAYS)
         }
 
         /// Full control for refusal-path coverage: set `fips=false` or a `touch`
-        /// other than [`TOUCH_POLICY_ALWAYS`](super::) to build a member the floor
+        /// other than `TOUCH_POLICY_ALWAYS` to build a member the floor
         /// MUST reject even though the chain is otherwise valid.
-        pub async fn attest_member_with(
+        #[must_use]
+        pub fn attest_member_with(
             &self,
             seed: [u8; 32],
             key_id: &str,
-            signed_at: &str,
             fips: bool,
             touch: u8,
         ) -> MockAttestedMember {
@@ -1008,21 +484,10 @@ pub mod test_support {
             let holder = HybridSigningIdentity::new(key_id, ed, mldsa);
             let member = holder.directory_member().expect("directory member");
 
-            // The producer's own body (`produce_accord_custody_attestation`
-            // delegates to it), so the mock needs no `host`.
-            let attestation = sign_custody_attestation(
-                &holder,
-                cert_9c.der().as_ref(),
-                &[f9.der().as_ref()],
-                CUSTODY_TIER_PORTABLE_2FA,
-                signed_at,
-            )
-            .await
-            .expect("produce custody attestation");
-
             MockAttestedMember {
                 member,
-                attestation,
+                attest_9c_der: cert_9c.der().to_vec(),
+                chain_ders: vec![f9.der().to_vec()],
                 holder,
                 seed,
             }
@@ -1033,10 +498,6 @@ pub mod test_support {
 #[cfg(test)]
 mod tests {
     use super::*;
-    // Without `host` the public producer is absent; its body is not, so the
-    // producer-path tests run in the `std` tier against the same bytes.
-    #[cfg(not(feature = "host"))]
-    use super::sign_custody_attestation as produce_accord_custody_attestation;
     use rcgen::{
         CertificateParams, CustomExtension, DistinguishedName, DnType, KeyPair, PKCS_ED25519,
     };
@@ -1231,36 +692,27 @@ mod tests {
         ));
     }
 
-    /// PKCS#8-PEM for an Ed25519 `seed`, so rcgen and `Ed25519Signer::from_seed`
-    /// derive the *same* keypair — letting the mock 9c cert attest the holder's
-    /// real federation Ed25519 key.
-    fn ed25519_pkcs8_pem(seed: &[u8; 32]) -> (String, KeyPair) {
-        let mut der = vec![
-            0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22,
-            0x04, 0x20,
-        ];
-        der.extend_from_slice(seed);
-        let b64 = base64::engine::general_purpose::STANDARD.encode(&der);
-        let pem = format!("-----BEGIN PRIVATE KEY-----\n{b64}\n-----END PRIVATE KEY-----\n");
-        let kp = KeyPair::from_pkcs8_pem_and_sign_algo(&pem, &PKCS_ED25519).unwrap();
-        (pem, kp)
+    fn member_ed(m: &crate::threshold::ThresholdMember) -> Vec<u8> {
+        use base64::Engine as _;
+        base64::engine::general_purpose::STANDARD
+            .decode(&m.ed25519_public_key_base64)
+            .unwrap()
     }
 
     /// The CIRISPersist shape (`default-features = false, features = ["std",
-    /// "pqc"]`): the verifier resolves the pinned root from the baked store with
-    /// no `host`, and a mock-CA member, valid under its own root, is refused
-    /// under every real Yubico root (#325).
-    #[tokio::test]
-    async fn mock_member_is_refused_under_the_baked_yubico_roots() {
+    /// "pqc"]`): a mock-CA member, valid under its own root, is refused under
+    /// every baked Yubico root (#325).
+    #[test]
+    fn mock_member_is_refused_under_the_baked_yubico_roots() {
         use super::test_support::MockYubicoCa;
         use crate::trust_anchor_store::{baked, environments, Purpose};
 
         let ca = MockYubicoCa::new();
-        let m = ca
-            .attest_member([7; 32], "A1", "2026-11-15T00:00:00Z")
-            .await;
+        let m = ca.attest_member([7; 32], "A1");
+        let chain: Vec<&[u8]> = m.chain_ders.iter().map(Vec::as_slice).collect();
+        let ed = member_ed(&m.member);
         assert!(
-            verify_accord_custody_attestation(&m.attestation, &m.member, ca.root_der()).is_ok()
+            verify_yubikey_piv_attestation(&m.attest_9c_der, &chain, ca.root_der(), &ed).is_ok()
         );
 
         let store = baked::default_store();
@@ -1268,635 +720,47 @@ mod tests {
         assert!(!roots.is_empty(), "the baked store pins a Yubico PIV root");
         for root in roots {
             assert!(matches!(
-                verify_accord_custody_attestation(&m.attestation, &m.member, root),
+                verify_yubikey_piv_attestation(&m.attest_9c_der, &chain, root, &ed),
                 Err(CustodyError::ChainInvalid { .. })
             ));
         }
     }
 
     /// #219: the exported `test_support` machinery must produce members the REAL
-    /// verifier admits under the CA's injected root — this is the affordance
-    /// CIRISPersist's FIPS floor drives. Also proves a whole quorum verifies
-    /// against ONE root, and that the refusal knob works.
-    #[tokio::test]
-    async fn test_support_mints_members_the_real_verifier_admits() {
+    /// verifier admits under the CA's injected root — the affordance
+    /// CIRISPersist's FIPS floor drives — and the refusal knob works.
+    #[test]
+    fn test_support_mints_members_the_real_verifier_admits() {
         use super::test_support::MockYubicoCa;
 
         let ca = MockYubicoCa::new();
+        let verify = |m: &super::test_support::MockAttestedMember, root: &[u8]| {
+            let chain: Vec<&[u8]> = m.chain_ders.iter().map(Vec::as_slice).collect();
+            verify_yubikey_piv_attestation(&m.attest_9c_der, &chain, root, &member_ed(&m.member))
+        };
         // Three distinct FIPS-attested members under one root (the A1/B1/C1 shape).
         for (i, kid) in [(1u8, "A1"), (2, "B1"), (3, "C1")] {
-            let m = ca.attest_member([i; 32], kid, "2026-07-26T00:00:00Z").await;
-            let v = verify_accord_custody_attestation(&m.attestation, &m.member, ca.root_der())
+            let m = ca.attest_member([i; 32], kid);
+            let v = verify(&m, ca.root_der())
                 .expect("mock FIPS member must verify against the CA's injected root");
             assert_eq!(v.hardware_class, "YubiKey_5_FIPS");
             assert!(v.fips_certified && v.touch_always);
         }
 
         // Refusal knob: a non-FIPS member is rejected by the floor even though
-        // its chain is otherwise valid — so downstream can cover the reject path.
-        let bad = ca
-            .attest_member_with(
-                [9; 32],
-                "X",
-                "2026-07-26T00:00:00Z",
-                false,
-                TOUCH_POLICY_ALWAYS,
-            )
-            .await;
+        // its chain is otherwise valid.
+        let bad = ca.attest_member_with([9; 32], "X", false, TOUCH_POLICY_ALWAYS);
         assert!(matches!(
-            verify_accord_custody_attestation(&bad.attestation, &bad.member, ca.root_der()),
+            verify(&bad, ca.root_der()),
             Err(CustodyError::FloorNotMet { .. })
         ));
 
         // Inertness: a member minted by one CA does NOT verify against a
-        // DIFFERENT (e.g. the real pinned) root — you can't forge a real-gate pass.
-        let other_root = MockYubicoCa::new();
-        let m = ca
-            .attest_member([1; 32], "A1", "2026-07-26T00:00:00Z")
-            .await;
-        assert!(verify_accord_custody_attestation(
-            &m.attestation,
-            &m.member,
-            other_root.root_der()
-        )
-        .is_err());
+        // DIFFERENT root — you can't forge a real-gate pass.
+        let m = ca.attest_member([1; 32], "A1");
+        assert!(verify(&m, MockYubicoCa::new().root_der()).is_err());
 
-        // #221: the returned holder is a USABLE hybrid signer, not just pubkeys —
-        // it can sign, and its bound-hybrid signature verifies against the
-        // member's pinned keys (so a downstream can co-scrub / cast a quorum vote
-        // as this member, completing the hardware-free mesh simulation).
-        let (ed_sig_b64, pqc_sig_b64) = m
-            .holder
-            .sign_bound(b"canonical quorum bytes")
-            .await
-            .unwrap();
-        let sig = ThresholdSignature {
-            member_id: m.member.member_id.clone(),
-            ed25519_signature_base64: ed_sig_b64,
-            mldsa65_signature_base64: Some(pqc_sig_b64),
-        };
-        assert_eq!(
-            verify_threshold_signatures(
-                b"canonical quorum bytes",
-                std::slice::from_ref(&m.member),
-                std::slice::from_ref(&sig),
-                1,
-            ),
-            Ok(1),
-            "the mock holder's hybrid signature must verify against its own member"
-        );
-
-        // Determinism: the same seed reproduces the SAME member — pubkeys and
-        // signer — so rotation/idempotency tests are stable (the ML-DSA half is
-        // seed-derived, not random).
-        let again = ca
-            .attest_member([1; 32], "A1", "2026-07-26T00:00:00Z")
-            .await;
-        assert_eq!(m.member, again.member);
-    }
-
-    #[tokio::test]
-    async fn producer_verifier_round_trip_is_coherent() {
-        // The discipline: the bundle a holder *produces* must be exactly what the
-        // admission gate *verifies* — no field/hex drift between produce + verify.
-        use crate::self_at_login::HybridSigningIdentity;
-        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
-
-        let seed = [7u8; 32];
-        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
-        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
-
-        // Holder's Ed25519 == the attested leaf key (same seed); any ML-DSA half.
-        let ed = Ed25519Signer::from_seed(&seed).unwrap();
-        let mldsa = MlDsa65Signer::new().unwrap();
-        let holder = HybridSigningIdentity::new("accord-holder-a1", ed, mldsa);
-        let member = holder.directory_member().unwrap();
-
-        let obj = produce_accord_custody_attestation(
-            &holder,
-            &c9,
-            &[f9.as_slice()],
-            CUSTODY_TIER_PORTABLE_2FA,
-            "2026-06-20T00:00:00Z",
-        )
-        .await
-        .unwrap();
-        assert_eq!(obj.kind, ACCORD_CUSTODY_ATTESTATION_KIND);
-
-        let v = verify_accord_custody_attestation(&obj, &member, &root)
-            .expect("the holder-produced bundle must verify at the gate");
-        assert_eq!(v.custody_tier, CUSTODY_TIER_PORTABLE_2FA);
-        assert_eq!(v.hardware_class, "YubiKey_5_FIPS");
-        assert!(v.fips_certified && v.touch_always);
-
-        // A bundle from a *different* holder key (wrong attested key) is refused
-        // even though the chain itself is valid — the attestation must bind to
-        // the holder the gate resolved.
-        let other = HybridSigningIdentity::new(
-            "accord-holder-a1",
-            Ed25519Signer::from_seed(&[8u8; 32]).unwrap(),
-            MlDsa65Signer::new().unwrap(),
-        );
-        let other_member = other.directory_member().unwrap();
-        // Re-sign the same certs under the other holder; gate resolves other_member.
-        let obj2 = produce_accord_custody_attestation(
-            &other,
-            &c9,
-            &[f9.as_slice()],
-            CUSTODY_TIER_PORTABLE_2FA,
-            "2026-06-20T00:00:00Z",
-        )
-        .await
-        .unwrap();
-        assert_eq!(
-            verify_accord_custody_attestation(&obj2, &other_member, &root).unwrap_err(),
-            CustodyError::AttestedKeyMismatch
-        );
-    }
-
-    /// #202: a software-only accord holder (no YubiKey / FIPS / touch) is admitted
-    /// ONLY under the test-anchor runtime gate, and the SAME bundle is rejected
-    /// (unrecognized tier) with the gate off. The holder's own hybrid signature +
-    /// identity binding are still enforced — only the hardware floor is dropped.
-    #[tokio::test]
-    #[cfg(feature = "test-anchor")]
-    // Single-threaded test runtime: holding the env lock across the produce await
-    // is intentional (env must stay set through it), no deadlock risk.
-    #[allow(clippy::await_holding_lock)]
-    async fn software_only_holder_admitted_in_test_mode_only() {
-        use crate::self_at_login::HybridSigningIdentity;
-        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
-
-        let _g = crate::test_anchor::ENV_LOCK
-            .lock()
-            .unwrap_or_else(|p| p.into_inner());
-        let saved = std::env::var("CIRIS_TESTING_MODE").ok();
-        let saved_env = std::env::var("ENVIRONMENT").ok();
-        std::env::remove_var("ENVIRONMENT");
-
-        let holder = HybridSigningIdentity::new(
-            "accord-holder-sw",
-            Ed25519Signer::from_seed(&[3u8; 32]).unwrap(),
-            MlDsa65Signer::new().unwrap(),
-        );
-        let member = holder.directory_member().unwrap();
-        // The SW-test verify path returns before touching the cert evidence, so
-        // placeholder cert bytes are fine — they're never chained to a root.
-        let dummy: Vec<u8> = vec![0x30, 0x00];
-        let obj = produce_accord_custody_attestation(
-            &holder,
-            &dummy,
-            &[dummy.as_slice()],
-            CUSTODY_TIER_SOFTWARE_TEST,
-            "2026-07-14T00:00:00Z",
-        )
-        .await
-        .unwrap();
-
-        // Gate ON ⇒ admitted as SoftwareOnly_TEST, no hardware claims.
-        std::env::set_var("CIRIS_TESTING_MODE", "true");
-        let v = verify_accord_custody_attestation(&obj, &member, &[])
-            .expect("test-mode admits a software-only holder");
-        assert_eq!(v.hardware_class, HARDWARE_CLASS_SOFTWARE_TEST);
-        assert_eq!(v.custody_tier, CUSTODY_TIER_SOFTWARE_TEST);
-        assert!(!v.fips_certified && !v.touch_always);
-
-        // Gate OFF ⇒ the SAME bundle is rejected: `software_test` is not in the
-        // production allowlist (fail-closed).
-        std::env::remove_var("CIRIS_TESTING_MODE");
-        assert!(matches!(
-            verify_accord_custody_attestation(&obj, &member, &[]),
-            Err(CustodyError::FloorNotMet { .. })
-        ));
-
-        // A tampered holder identity is still rejected even in test mode — the
-        // hybrid signature + binding are NOT relaxed, only the hardware floor is.
-        std::env::set_var("CIRIS_TESTING_MODE", "true");
-        let other = HybridSigningIdentity::new(
-            "accord-holder-sw",
-            Ed25519Signer::from_seed(&[4u8; 32]).unwrap(),
-            MlDsa65Signer::new().unwrap(),
-        );
-        let other_member = other.directory_member().unwrap();
-        assert!(
-            verify_accord_custody_attestation(&obj, &other_member, &[]).is_err(),
-            "test mode drops the hardware floor, NOT the holder identity binding"
-        );
-
-        match saved {
-            Some(v) => std::env::set_var("CIRIS_TESTING_MODE", v),
-            None => std::env::remove_var("CIRIS_TESTING_MODE"),
-        }
-        if let Some(v) = saved_env {
-            std::env::set_var("ENVIRONMENT", v);
-        }
-    }
-
-    #[tokio::test]
-    async fn unrecognized_custody_tier_rejected() {
-        // `custody_tier` is a holder self-claim — a tier outside the allowlist
-        // must be refused, so a tier-gating consumer can't inherit an inflated
-        // unverified claim.
-        use crate::self_at_login::HybridSigningIdentity;
-        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
-
-        let seed = [11u8; 32];
-        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
-        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
-        let holder = HybridSigningIdentity::new(
-            "accord-holder-c1",
-            Ed25519Signer::from_seed(&seed).unwrap(),
-            MlDsa65Signer::new().unwrap(),
-        );
-        let member = holder.directory_member().unwrap();
-        let obj = produce_accord_custody_attestation(
-            &holder,
-            &c9,
-            &[f9.as_slice()],
-            "machine_bound_5fa", // a tier verify does not recognize
-            "2026-06-20T00:00:00Z",
-        )
-        .await
-        .unwrap();
-        assert!(matches!(
-            verify_accord_custody_attestation(&obj, &member, &root).unwrap_err(),
-            CustodyError::FloorNotMet { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn envelope_identity_must_match_resolved_member() {
-        // The holder signs its key_id into the envelope; if the gate resolves a
-        // member whose member_id disagrees, admission is refused — the signed
-        // self-claim is load-bearing, not decorative.
-        use crate::self_at_login::HybridSigningIdentity;
-        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
-
-        let seed = [12u8; 32];
-        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
-        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
-        let holder = HybridSigningIdentity::new(
-            "accord-holder-d1",
-            Ed25519Signer::from_seed(&seed).unwrap(),
-            MlDsa65Signer::new().unwrap(),
-        );
-        let obj = produce_accord_custody_attestation(
-            &holder,
-            &c9,
-            &[f9.as_slice()],
-            CUSTODY_TIER_PORTABLE_2FA,
-            "2026-06-20T00:00:00Z",
-        )
-        .await
-        .unwrap();
-        // Same pubkeys, different member_id than the envelope's holder_key_id.
-        let mut mismatched = holder.directory_member().unwrap();
-        mismatched.member_id = "accord-holder-IMPOSTER".to_string();
-        assert!(matches!(
-            verify_accord_custody_attestation(&obj, &mismatched, &root).unwrap_err(),
-            CustodyError::Malformed { .. } | CustodyError::SignatureInvalid
-        ));
-    }
-
-    #[tokio::test]
-    async fn committed_mldsa_must_match_resolved_member(/* #116 */) {
-        // The ML-DSA half is hash-committed (not inline) so it fits the token's
-        // EdDSA ceiling — but it must stay load-bearing: a member whose ML-DSA key
-        // hashes to something other than the committed value is refused, even with
-        // a matching ed25519 half. (Else the commitment would be decorative.)
-        use crate::self_at_login::HybridSigningIdentity;
-        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
-
-        let seed = [19u8; 32];
-        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
-        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
-        let holder = HybridSigningIdentity::new(
-            "accord-holder-a1",
-            Ed25519Signer::from_seed(&seed).unwrap(),
-            MlDsa65Signer::new().unwrap(),
-        );
-        let obj = produce_accord_custody_attestation(
-            &holder,
-            &c9,
-            &[f9.as_slice()],
-            CUSTODY_TIER_PORTABLE_2FA,
-            "2026-06-20T00:00:00Z",
-        )
-        .await
-        .unwrap();
-
-        // Resolve a member with the SAME ed25519 half but a DIFFERENT ML-DSA key.
-        let mut swapped = holder.directory_member().unwrap();
-        let other_mldsa = HybridSigningIdentity::new(
-            "accord-holder-a1",
-            Ed25519Signer::from_seed(&seed).unwrap(),
-            MlDsa65Signer::new().unwrap(),
-        )
-        .directory_member()
-        .unwrap();
-        swapped.mldsa65_public_key_base64 = other_mldsa.mldsa65_public_key_base64;
-        assert!(matches!(
-            verify_accord_custody_attestation(&obj, &swapped, &root).unwrap_err(),
-            CustodyError::Malformed { .. } | CustodyError::SignatureInvalid
-        ));
-    }
-
-    #[cfg(feature = "host")]
-    #[tokio::test]
-    async fn custody_attestation_wraps_to_external_se_platform_attestation(/* #117 */) {
-        // The registration bridge: a verified custody attestation must convert to
-        // a PlatformAttestation::ExternalSecureElement carrying the cert chain +
-        // hardware floor, so persist can admit/entrench the accord_holder
-        // non-interactively. The cert DERs must round-trip out of the evidence.
-        use crate::self_at_login::HybridSigningIdentity;
-        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
-
-        let seed = [33u8; 32];
-        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
-        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
-        let holder = HybridSigningIdentity::new(
-            "accord-holder-a1",
-            Ed25519Signer::from_seed(&seed).unwrap(),
-            MlDsa65Signer::new().unwrap(),
-        );
-        let member = holder.directory_member().unwrap();
-        let obj = produce_accord_custody_attestation(
-            &holder,
-            &c9,
-            &[f9.as_slice()],
-            CUSTODY_TIER_PORTABLE_2FA,
-            "2026-06-20T00:00:00Z",
-        )
-        .await
-        .unwrap();
-
-        let verdict = verify_accord_custody_attestation(&obj, &member, &root).unwrap();
-        let pa = custody_attestation_to_platform_attestation(&obj, &verdict).unwrap();
-        match pa {
-            PlatformAttestation::ExternalSecureElement(ese) => {
-                assert_eq!(ese.hardware_class, "YubiKey_5_FIPS");
-                assert!(ese.fips_certified && ese.touch_always);
-                assert_eq!(ese.attestation_cert_der, c9, "9c cert DER must round-trip");
-                assert_eq!(
-                    ese.attestation_chain_der,
-                    vec![f9.clone()],
-                    "chain must round-trip as [f9]"
-                );
-                assert!(ese.firmware.is_some(), "firmware should be carried");
-            },
-            other => panic!("expected ExternalSecureElement, got {other:?}"),
-        }
-    }
-
-    // =======================================================================
-    // Generation-time self-validation (#227). Verify owns produce AND verify,
-    // so producer↔verifier coherence is provable at mint time — the systemic
-    // guard against the v10.4.0 class where a verifier rejected every record
-    // its own producers emitted.
-    // =======================================================================
-
-    /// Helper: a holder + its mock chain, plus a store carrying that mock root
-    /// under the PIV environment.
-    #[cfg(feature = "host")]
-    fn self_validation_fixture(
-        seed: [u8; 32],
-    ) -> (
-        crate::self_at_login::HybridSigningIdentity,
-        Vec<u8>,
-        Vec<u8>,
-        Vec<u8>,
-    ) {
-        use crate::self_at_login::HybridSigningIdentity;
-        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
-
-        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
-        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
-        let holder = HybridSigningIdentity::new(
-            "accord-holder-a1",
-            Ed25519Signer::from_seed(&seed).unwrap(),
-            MlDsa65Signer::new().unwrap(),
-        );
-        (holder, c9, f9, root)
-    }
-
-    /// A good mint self-validates and returns its own verdict.
-    #[cfg(feature = "host")]
-    #[tokio::test]
-    async fn generation_self_validates_against_the_store() {
-        use crate::trust_anchor_store::{baked, TrustAnchorStore};
-
-        let (holder, c9, f9, root) = self_validation_fixture([44u8; 32]);
-        let store = TrustAnchorStore::new().with_store(baked::anchor_for(
-            crate::trust_anchor_store::environments::YUBIKEY_PIV,
-            root,
-        ));
-
-        let (obj, verdict) = produce_accord_custody_attestation_validated(
-            &holder,
-            &c9,
-            &[f9.as_slice()],
-            CUSTODY_TIER_PORTABLE_2FA,
-            "2026-08-01T00:00:00Z",
-            &store,
-        )
-        .await
-        .expect("a well-formed mint must self-validate");
-
-        assert_eq!(obj.kind, ACCORD_CUSTODY_ATTESTATION_KIND);
-        let v = verdict.expect("anchor present → verdict present");
-        assert_eq!(v.hardware_class, "YubiKey_5_FIPS");
-        assert!(v.fips_certified && v.touch_always);
-    }
-
-    /// THE point: a mint whose chain does not root at the store's anchor FAILS
-    /// AT GENERATION, rather than producing an artifact that only fails later
-    /// on someone else's gate.
-    #[cfg(feature = "host")]
-    #[tokio::test]
-    async fn generation_fails_loudly_when_the_mint_would_not_verify() {
-        use crate::trust_anchor_store::{baked, environments, TrustAnchorStore};
-
-        let (holder, c9, f9, _root) = self_validation_fixture([45u8; 32]);
-        // A store holding a DIFFERENT root — the mint cannot root at it.
-        let (_h2, _c2, _f2, foreign_root) = self_validation_fixture([46u8; 32]);
-        let store = TrustAnchorStore::new()
-            .with_store(baked::anchor_for(environments::YUBIKEY_PIV, foreign_root));
-
-        let err = produce_accord_custody_attestation_validated(
-            &holder,
-            &c9,
-            &[f9.as_slice()],
-            CUSTODY_TIER_PORTABLE_2FA,
-            "2026-08-01T00:00:00Z",
-            &store,
-        )
-        .await
-        .expect_err("a mint that would be rejected by peers must fail at generation");
-
-        assert!(
-            err.to_string().contains("self-validation FAILED"),
-            "the error must name the failure plainly, got: {err}"
-        );
-    }
-
-    /// No pinned anchor is "could not self-check", NOT a failure — hardware is
-    /// a signal, not a requirement.
-    #[cfg(feature = "host")]
-    #[tokio::test]
-    async fn generation_without_an_anchor_is_unvalidated_not_failed() {
-        use crate::trust_anchor_store::TrustAnchorStore;
-
-        let (holder, c9, f9, _root) = self_validation_fixture([47u8; 32]);
-
-        let (obj, verdict) = produce_accord_custody_attestation_validated(
-            &holder,
-            &c9,
-            &[f9.as_slice()],
-            CUSTODY_TIER_PORTABLE_2FA,
-            "2026-08-01T00:00:00Z",
-            &TrustAnchorStore::new(),
-        )
-        .await
-        .expect("an empty store must not turn minting into an error");
-
-        assert_eq!(obj.kind, ACCORD_CUSTODY_ATTESTATION_KIND);
-        assert!(verdict.is_none(), "no anchor → no self-check verdict");
-    }
-
-    #[test]
-    fn wrong_kind_object_rejected() {
-        let obj = SignedCegObject::new("something_else", "k", "t", serde_json::json!({}));
-        let m = ThresholdMember {
-            member_id: "k".into(),
-            ed25519_public_key_base64: String::new(),
-            mldsa65_public_key_base64: None,
-            role: None,
-        };
-        assert!(matches!(
-            verify_accord_custody_attestation(&obj, &m, &[]).unwrap_err(),
-            CustodyError::WrongKind { .. }
-        ));
-    }
-
-    #[tokio::test]
-    async fn signed_preimage_is_independent_of_chain_size(/* #113 */) {
-        // The bug: the holder's hardware Ed25519 (YubiKey CKM_EDDSA, single-part,
-        // bounded input) was handed the full attestation chain INLINE → a preimage
-        // that grew with every cert (several KB) → CKR_DATA_LEN_RANGE. The fix
-        // signs a per-cert sha256 commitment, so the signed preimage no longer
-        // depends on cert size at all — it stays in the same small class as a
-        // normal accord holder record (whose ~2.6 KB is the ML-DSA-65 pubkey, not
-        // the certs, and which signs fine on the token). Lock the *invariant*:
-        // blowing the chain up by ~10 KB must NOT change the signed preimage.
-        // (No token needed — we measure the JCS bytes the signer would consume.)
-        use crate::self_at_login::HybridSigningIdentity;
-        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
-
-        let seed = [21u8; 32];
-        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
-        let (c9, f9, _root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
-        let holder = HybridSigningIdentity::new(
-            "accord-holder-a1",
-            Ed25519Signer::from_seed(&seed).unwrap(),
-            MlDsa65Signer::new().unwrap(),
-        );
-        let preimage_len = |obj: &SignedCegObject| {
-            jcs::canonicalize(obj.body.get("signed_envelope").unwrap())
-                .unwrap()
-                .len()
-        };
-
-        let obj_small = produce_accord_custody_attestation(
-            &holder,
-            &c9,
-            &[f9.as_slice()],
-            CUSTODY_TIER_PORTABLE_2FA,
-            "2026-06-20T00:00:00Z",
-        )
-        .await
-        .unwrap();
-        let len_small = preimage_len(&obj_small);
-
-        // A pathologically large chain — 10 KB of extra "cert" bytes.
-        let huge = vec![0xABu8; 10 * 1024];
-        let obj_huge = produce_accord_custody_attestation(
-            &holder,
-            &c9,
-            &[f9.as_slice(), huge.as_slice()],
-            CUSTODY_TIER_PORTABLE_2FA,
-            "2026-06-20T00:00:00Z",
-        )
-        .await
-        .unwrap();
-        let len_huge = preimage_len(&obj_huge);
-
-        // The commitment is fixed-width (64 hex chars per cert), so one extra cert
-        // adds only its 64-char hash to the signed bytes — NOT its 10 KB. The
-        // preimage must not balloon with cert size.
-        assert!(
-            len_huge.saturating_sub(len_small) < 256,
-            "signed preimage grew {} bytes for a 10 KB cert — it must be cert-size-independent (#113)",
-            len_huge.saturating_sub(len_small)
-        );
-        // #116: with the certs AND the ML-DSA-65 pubkey (2604 b64 chars) all
-        // hash-committed, the whole signed preimage is now a few hundred bytes —
-        // well under any YubiKey's single-shot EdDSA input ceiling. Lock an
-        // absolute ceiling (the inline-ML-DSA preimage was ~3 KB and failed).
-        assert!(
-            len_small < 1024,
-            "signed preimage is {len_small} bytes — must stay small (was ~3 KB with the ML-DSA pubkey inline, #116)"
-        );
-        // And the raw certs ARE carried — but only as outer-body evidence, never
-        // inside the signed envelope (that is what kept them out of the preimage).
-        assert!(obj_small.body.get(EVIDENCE_9C_HEX).is_some());
-        let env_small = obj_small.body.get("signed_envelope").unwrap();
-        assert!(!env_small.as_object().unwrap().contains_key(EVIDENCE_9C_HEX));
-        assert!(!env_small
-            .as_object()
-            .unwrap()
-            .contains_key(EVIDENCE_CHAIN_HEX));
-    }
-
-    #[tokio::test]
-    async fn tampered_evidence_cert_breaks_the_commitment(/* #113 */) {
-        // The certs live in the unsigned outer body — so prove they are *bound*:
-        // swapping an evidence cert that no longer matches the signed sha256
-        // commitment must fail closed (else the hash-commitment would be hollow).
-        use crate::self_at_login::HybridSigningIdentity;
-        use ciris_crypto::{Ed25519Signer, MlDsa65Signer};
-
-        let seed = [22u8; 32];
-        let (_pem, leaf_kp) = ed25519_pkcs8_pem(&seed);
-        let (c9, f9, root) = mock_chain(&leaf_kp, true, TOUCH_POLICY_ALWAYS);
-        let holder = HybridSigningIdentity::new(
-            "accord-holder-a1",
-            Ed25519Signer::from_seed(&seed).unwrap(),
-            MlDsa65Signer::new().unwrap(),
-        );
-        let member = holder.directory_member().unwrap();
-        let mut obj = produce_accord_custody_attestation(
-            &holder,
-            &c9,
-            &[f9.as_slice()],
-            CUSTODY_TIER_PORTABLE_2FA,
-            "2026-06-20T00:00:00Z",
-        )
-        .await
-        .unwrap();
-        // Baseline: it verifies.
-        assert!(verify_accord_custody_attestation(&obj, &member, &root).is_ok());
-
-        // Flip a byte of the 9c evidence cert (still valid hex) — commitment mismatch.
-        let mut tampered = c9.clone();
-        let last = tampered.len() - 1;
-        tampered[last] ^= 0x01;
-        obj.body.as_object_mut().unwrap().insert(
-            EVIDENCE_9C_HEX.to_string(),
-            serde_json::json!(hex::encode(&tampered)),
-        );
-        assert!(matches!(
-            verify_accord_custody_attestation(&obj, &member, &root).unwrap_err(),
-            CustodyError::Malformed { .. }
-        ));
+        // Determinism: the same seed reproduces the SAME member.
+        assert_eq!(m.member, ca.attest_member([1; 32], "A1").member);
     }
 }

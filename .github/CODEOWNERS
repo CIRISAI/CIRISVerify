@@ -12,15 +12,14 @@
 # This file is Phase 1 (the cheap structural half): require an explicit
 # reviewer on every change to the authoritative docs. Pair it with a
 # branch-protection rule ("Require review from Code Owners") on `main`.
-# Phase 2 is the cryptographic half — `ciris_verify_core::doc_integrity`
-# (hybrid-signed content hash). Phase 3 composes the M-of-N steward
-# threshold (CIRISVerify#31) over the doc signature.
+# A cryptographic half (signing each released doc) is not implemented: the
+# pair-signed `doc_integrity` primitive had no caller and was removed in
+# 23.3.3; a signed doc would be an edition-2 composite row.
 
 # Authoritative threat-model + governance documents — two-person rule.
 /docs/FEDERATION_THREAT_MODEL.md   @emooreatx
 /docs/THREAT_MODEL.md              @emooreatx
 /MISSION.md                        @emooreatx
 
-# The document-integrity substrate itself + the bootstrap trust anchor.
-/src/ciris-verify-core/src/doc_integrity.rs      @emooreatx
+# The bootstrap trust anchor.
 /src/ciris-verify-ffi/data/bootstrap_stewards.json   @emooreatx
