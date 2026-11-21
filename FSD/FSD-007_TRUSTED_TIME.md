@@ -156,9 +156,10 @@ adds zero across it). `CLOCK_MONOTONIC` is not used on Linux: it stops during su
   and its own persisted latch. Output gains `elapsed_ms` and `remaining_ms` and drops `lapses_at`
   (a wall instant the fuse does not use). A request that still carries `now` is accepted and `now`
   is ignored.
-- A persisted latch of the 23.4.0 shape (`received_at`, no `elapsed_ms`) is read once with
-  `elapsed_ms = 0` and rewritten in the new shape. This departs from the 23.0.0 hard-cut rule on
-  purpose: dropping an old shape here could drop a live halt.
+- A latch of the 23.4.0 shape (`received_at`, no `elapsed_ms`) is refused as a serialization
+  error, like any other replaced wire form (the 23.0.0 hard-cut rule; ruled 2026-11-21). A host that
+  upgrades with a halt latched re-applies its held accord rows (§3.2 rule 4), which re-latches the
+  halt with `elapsed_ms = 0`.
 - The latch module header cites `formal/accord_halt/AccordHaltFuse.tla`, which exists in neither
   repository (CC's `formal/accord_halt/` holds `AccordHaltRow.tla` and `AccordHaltReach.tla`). Phase 0
   corrects the citation and adds the fuse model with the accumulator as a variable and checks two
