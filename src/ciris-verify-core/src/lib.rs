@@ -177,6 +177,7 @@ pub mod trust_anchor_store;
 pub mod types;
 #[cfg(feature = "host")]
 pub mod unified;
+pub mod utc;
 #[cfg(feature = "host")]
 pub mod validation;
 #[cfg(feature = "host")]
