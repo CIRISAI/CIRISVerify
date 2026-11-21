@@ -32,7 +32,9 @@ pub mod fedcode;
 #[cfg(feature = "std")]
 pub mod genesis;
 pub mod keys;
+pub mod receipt;
 pub mod recovery;
+pub mod stream_head;
 
 use crate::cde::{self, Value};
 use crate::prelude::*;
@@ -1014,7 +1016,17 @@ fn read_object_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Object
     let kid = digest32(prot.get_int(H_KID).expect("checked"), "kid")?;
     let cwt = prot.get_int(H_CWT).expect("checked");
     let cm = cwt.as_map().ok_or(malformed("object-claims"))?;
-    check_labels(cm, &[C_ISS, C_EDITION], &[C_IAT], "object-claims")?;
+    // `sub` (CC rc22): the subject a Transparency Service groups the
+    // object's statements by (a genesis bundle's `family_key_id`, a
+    // snapshot's signer, a boot manifest's `build:<target>`); RFC 9943
+    // requires it of a Signed Statement. Text when present; its value is the
+    // typ's rule.
+    check_labels(cm, &[C_ISS, C_EDITION], &[C_IAT, C_SUB], "object-claims")?;
+    if let Some(s) = cwt.get_int(C_SUB) {
+        if s.as_text().is_none() {
+            return Err(malformed("sub"));
+        }
+    }
     let iss = cwt
         .get_int(C_ISS)
         .and_then(Value::as_text)

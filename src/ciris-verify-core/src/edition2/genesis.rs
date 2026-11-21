@@ -662,6 +662,10 @@ pub enum StatementFault {
     KidNotIss,
     /// Its `iss` is neither in the counting roster nor an added holder.
     NoRole,
+    /// Its CWT `sub` is absent or is not the payload's `family_key_id`
+    /// (CC rc22: a bundle statement is a SCITT Signed Statement about its
+    /// lineage).
+    SubNotFamily,
 }
 
 impl StatementFault {
@@ -675,6 +679,7 @@ impl StatementFault {
             Self::IatMismatch => "iat_mismatch",
             Self::KidNotIss => "statement_kid_not_iss",
             Self::NoRole => "statement_no_role",
+            Self::SubNotFamily => "statement_sub_not_family",
         }
     }
 }
@@ -990,6 +995,15 @@ fn peek_voice(index: usize, bytes: &[u8]) -> Result<Voice, StatementFault> {
         .and_then(Value::as_u64)
         .ok_or(StatementFault::IatMissing)?;
     let payload = cde::decode(&payload_bytes).map_err(|_| bad())?;
+    // The statement's subject is its lineage: CWT `sub` = `family_key_id`
+    // (CC rc22). A payload with no text `family_key_id` is the object's own
+    // fault, read later; here only the statement's claim is judged.
+    let sub = cwt.get_int(C_SUB).and_then(Value::as_text);
+    if let Some(f) = payload.get_text("family_key_id").and_then(Value::as_text) {
+        if sub != Some(f) {
+            return Err(StatementFault::SubNotFamily);
+        }
+    }
     let author = payload.get_text("author").and_then(Value::as_text);
     Ok(Voice {
         index,
