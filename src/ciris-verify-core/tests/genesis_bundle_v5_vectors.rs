@@ -2,8 +2,8 @@
 //! CIRISConstitution v1.0-rc21 b016df4, also for the cross-check; seat
 //! `dial_hints` as proposed for rc22).
 //!
-//! `tests/vectors/edition2/genesis/genesis_bundles_v4.json` was written by
-//! `gen_genesis_bundles_v4.py` beside it: its own CBOR encoder, dilithium-py,
+//! `tests/vectors/edition2/genesis/genesis_bundles_v5.json` was written by
+//! `gen_genesis_bundles_v5.py` beside it: its own CBOR encoder, dilithium-py,
 //! pyca/cryptography and kyber-py, sharing no code with verify. Every case is
 //! replayed through [`read_genesis_bundles`]; the custody gate trusts the
 //! file's mock attestation root, supplied as the reader's trust store. The
@@ -39,17 +39,17 @@ use ciris_verify_core::trust_anchor_store::{
 };
 use serde_json::Value as J;
 
-const FILE: &str = include_str!("vectors/edition2/genesis/genesis_bundles_v4.json");
+const FILE: &str = include_str!("vectors/edition2/genesis/genesis_bundles_v5.json");
 /// The statements, split so each file stays under the repository's size limit.
 const POOL: [&str; 8] = [
-    include_str!("vectors/edition2/genesis/pool_v4_0.json"),
-    include_str!("vectors/edition2/genesis/pool_v4_1.json"),
-    include_str!("vectors/edition2/genesis/pool_v4_2.json"),
-    include_str!("vectors/edition2/genesis/pool_v4_3.json"),
-    include_str!("vectors/edition2/genesis/pool_v4_4.json"),
-    include_str!("vectors/edition2/genesis/pool_v4_5.json"),
-    include_str!("vectors/edition2/genesis/pool_v4_6.json"),
-    include_str!("vectors/edition2/genesis/pool_v4_7.json"),
+    include_str!("vectors/edition2/genesis/pool_v5_0.json"),
+    include_str!("vectors/edition2/genesis/pool_v5_1.json"),
+    include_str!("vectors/edition2/genesis/pool_v5_2.json"),
+    include_str!("vectors/edition2/genesis/pool_v5_3.json"),
+    include_str!("vectors/edition2/genesis/pool_v5_4.json"),
+    include_str!("vectors/edition2/genesis/pool_v5_5.json"),
+    include_str!("vectors/edition2/genesis/pool_v5_6.json"),
+    include_str!("vectors/edition2/genesis/pool_v5_7.json"),
 ];
 
 /// The case file, with the pool merged in under `pool`.
@@ -268,28 +268,28 @@ fn check_placement(id: &str, p: &GenesisPlacement, e: &J) {
 
 #[test]
 fn every_case_gives_its_verdict() {
-    replay(&file(), 128);
+    replay(&file(), 130);
 }
 
 /// One device per holder (CC 4.2.3, `holder_device_shared`):
-/// `genesis_holder_device_v1.json`, written by `gen_genesis_holder_device_v1.py`
+/// `genesis_holder_device_v2.json`, written by `gen_genesis_holder_device_v2.py`
 /// over v3's generator, with its statements inline.
 #[test]
 fn holder_device_cases() {
     let f: J = serde_json::from_str(include_str!(
-        "vectors/edition2/genesis/genesis_holder_device_v1.json"
+        "vectors/edition2/genesis/genesis_holder_device_v2.json"
     ))
     .unwrap();
     replay(&f, 8);
 }
 
 /// Recovery commitments (CC 4.2.6), first and later bundles:
-/// `genesis_commitments_v1.json`, written by `gen_genesis_commitments_v1.py`
+/// `genesis_commitments_v2.json`, written by `gen_genesis_commitments_v2.py`
 /// over v3's generator, with its statements inline.
 #[test]
 fn recovery_commitment_cases() {
     let f: J = serde_json::from_str(include_str!(
-        "vectors/edition2/genesis/genesis_commitments_v1.json"
+        "vectors/edition2/genesis/genesis_commitments_v2.json"
     ))
     .unwrap();
     replay(&f, 7);
@@ -589,20 +589,27 @@ fn recovery_commitment_known_answers() {
 /// One statement over raw payload bytes (CC's samples are payloads only).
 fn voice_over(k: &CompositeSigningKey, payload: &[u8], iat: u64) -> Vec<u8> {
     let iss = ciris_verify_core::edition2::identity_ref(&thumbprint(k.public_key()));
+    // The statement's subject is its lineage (CC rc22): the payload's family_key_id.
+    let sub = cde::decode(payload).ok().and_then(|p| {
+        p.get_text("family_key_id")
+            .and_then(Value::as_text)
+            .map(str::to_owned)
+    });
+    let mut claims = vec![
+        (Value::int(1), Value::Text(iss)),
+        (Value::int(6), Value::Uint(iat)),
+        (Value::int(-70003), Value::Uint(2)),
+    ];
+    if let Some(s) = sub {
+        claims.insert(1, (Value::int(2), Value::Text(s)));
+    }
     let protected = cde::encode(&Value::Map(vec![
         (Value::int(1), Value::int(COSE_ALG)),
         (
             Value::int(4),
             Value::Bytes(thumbprint(k.public_key()).to_vec()),
         ),
-        (
-            Value::int(15),
-            Value::Map(vec![
-                (Value::int(1), Value::Text(iss)),
-                (Value::int(6), Value::Uint(iat)),
-                (Value::int(-70003), Value::Uint(2)),
-            ]),
-        ),
+        (Value::int(15), Value::Map(claims)),
         (Value::int(16), Value::Text(GENESIS_BUNDLE_TYP.into())),
     ]));
     let sig = k.sign(&sig_structure(&protected, payload)).unwrap();

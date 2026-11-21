@@ -76,15 +76,16 @@ fn jose_06_cose_example() {
 }
 
 /// StreamKeyBinding v2, THE binding of the cut (Eric's ruling on
-/// CIRISEdge#1007), second set: CC rc21's v3 stream id and a member publisher
-/// (CC 5.3.3.5, 815050d / 544755a). `gen_stream_key_binding_v2_composite_v2.py`,
-/// independent of verify. The first set (`_v1.json`, v2 stream id, node
-/// publisher) stays byte-identical and is no longer replayed.
+/// CIRISEdge#1007), third set: CC rc21's v3 stream id, a member publisher
+/// (CC 5.3.3.5, 815050d / 544755a), and for profile 1 the `head_interval_s`
+/// after the profile byte (CC rc22 5.3.3.5 / 5.3.3.8).
+/// `gen_stream_key_binding_v2_composite_v3.py`, independent of verify. The
+/// first and second sets stay byte-identical and are no longer replayed.
 #[test]
 fn stream_key_binding_v2_composite() {
     use ciris_crypto::stream_seal::{call_stream_id, StreamIdError};
     let v: Value = serde_json::from_str(include_str!(
-        "vectors/composite/stream_key_binding_v2_composite_v2.json"
+        "vectors/composite/stream_key_binding_v2_composite_v3.json"
     ))
     .unwrap();
     let text = |c: &Value, k: &str| String::from_utf8(h(c, k)).unwrap();
