@@ -58,10 +58,12 @@ pub const ROW_TYPES: [&str; 5] = [
     "withdraws",
     "recants",
 ];
-/// The composer row types: a row that acts on the row it names in
-/// `refs.target`. A composer scores nothing and carries no `dimension`; its
-/// leaf, and so its authorship, are its target's (CC rc22 db989df).
-pub const COMPOSER_ROW_TYPES: [&str; 3] = ["supersedes", "withdraws", "recants"];
+/// The composer row types (CC 2.4.1): a row that acts on the row it names in
+/// `refs.target` and carries no content of its own. A composer scores nothing
+/// and carries no `dimension`; its leaf, and so its authorship, are its
+/// target's. `supersedes` is not one: it replaces its target with a full
+/// statement of its own, `dimension` included, and is read by its own leaf.
+pub const COMPOSER_ROW_TYPES: [&str; 2] = ["withdraws", "recants"];
 
 /// Whether `row_type` is a composer ([`COMPOSER_ROW_TYPES`]).
 #[must_use]

@@ -157,7 +157,7 @@ pub struct SelectContext {
     /// `group` for the statements of one counted row read together; see
     /// `edition2::family`). A supplied value overrides the derivation.
     pub act: Option<Act>,
-    /// For a composer (`supersedes` / `withdraws` / `recants`), the row it
+    /// For a composer (`withdraws` / `recants`), the row it
     /// names in `refs.target`, held by the caller: the composer's leaf is the
     /// target's. Ignored for any other row.
     pub target: Option<super::TargetRow>,

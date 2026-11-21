@@ -532,7 +532,7 @@ fn read_in_family(
             } else {
                 ctx
             };
-            // A composer's leaf is its target's (CC rc22 db989df).
+            // A composer's leaf is its target's (CC 2.4.1).
             let composer_target =
                 super::is_composer(&row.row_type).then(|| super::keys::target_in(&row.payload));
             let leaf = match (&composer_target, &ctx.target) {

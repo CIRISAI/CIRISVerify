@@ -1,6 +1,7 @@
 //! Replays `tests/vectors/edition2/composer_v1.json` (`gen_composer_v1.py`,
 //! independent of verify): a composer carries no `dimension`, and its leaf,
-//! so its authorship, is the target's the caller supplies (CC rc22 db989df).
+//! so its authorship, is the target's the caller supplies (CC 2.4.1); a
+//! supersedes reads its own.
 #![cfg(feature = "pqc")]
 
 use std::collections::BTreeMap;
@@ -15,7 +16,7 @@ use serde_json::Value as J;
 
 const FILE: &str = include_str!("vectors/edition2/composer_v1.json");
 /// SHA-256 of the file, pinned so a regeneration is a visible change.
-const FILE_SHA256: &str = "3ae2d6fef968d2ae9fd168df3e504b155ca30f3bd8a584f62df50099b753aa81";
+const FILE_SHA256: &str = "a795e8a8cb0200d87d913882ce90dfcf9ce349232602f085036922bc9f0b6d08";
 
 fn hx(v: &J) -> Vec<u8> {
     hex::decode(v.as_str().unwrap()).unwrap()
@@ -63,7 +64,7 @@ fn file_is_pinned() {
 fn composers_read_their_targets_leaf() {
     let f: J = serde_json::from_str(FILE).unwrap();
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 13);
+    assert_eq!(cases.len(), 15);
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let target = c.get("target").map(|t| TargetRow {
