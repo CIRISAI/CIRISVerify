@@ -27,8 +27,8 @@
 //! # Vendored registry
 //!
 //! `data/cc/namespace_registry.json` is CIRISConstitution rc22 (branch) at commit
-//! `a8c429f`, SHA-256
-//! `a021657ed5120d0e5102c8d0c208b0a8ed5c8836b1fbf83662d0971a8782009f`
+//! `8c436b8`, SHA-256
+//! `01f6c39b14de1ca068a26b18ee5ddddb4a5989e4394829ab4d5e5a20bfee3645`
 //! (`data/cc/README.md`).
 
 use crate::prelude::*;
@@ -41,11 +41,11 @@ use serde::Deserialize;
 pub const NAMESPACE_REGISTRY_JSON: &str = include_str!("../data/cc/namespace_registry.json");
 
 /// The CIRISConstitution commit the vendored registry was taken from.
-pub const NAMESPACE_REGISTRY_CC_COMMIT: &str = "a8c429ff9754c0befb0ec8dfec501cf595c8dbb1";
+pub const NAMESPACE_REGISTRY_CC_COMMIT: &str = "8c436b8bf88e055c637b72d4d8d98d92a3bfa625";
 
 /// SHA-256 (lowercase hex) of the vendored registry file, LF line endings.
 pub const NAMESPACE_REGISTRY_SHA256: &str =
-    "a021657ed5120d0e5102c8d0c208b0a8ed5c8836b1fbf83662d0971a8782009f";
+    "01f6c39b14de1ca068a26b18ee5ddddb4a5989e4394829ab4d5e5a20bfee3645";
 
 /// A dimension resolved without refusal.
 #[derive(Debug, Clone, PartialEq, Eq)]
