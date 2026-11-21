@@ -11,7 +11,7 @@ use serde_json::Value as J;
 
 const FILE: &str = include_str!("vectors/fedcode/fedcode_e2_v1.json");
 /// SHA-256 of the file, pinned so a regeneration is a visible change.
-const FILE_SHA256: &str = "6ba1623267b9ef442354e8c3d8aa22b3a7567ddc4121a525d66ef8b73cc18717";
+const FILE_SHA256: &str = "f1529fbb388a94539e61ddcdcc63ce31b68cb9ccc27d21b29c994e8d6c3cf8c5";
 
 fn file() -> J {
     serde_json::from_str(FILE).unwrap()
@@ -112,7 +112,7 @@ fn file_is_pinned() {
 fn valid_codes_decode_and_reencode() {
     let f = file();
     let valid = f["valid"].as_array().unwrap();
-    assert_eq!(valid.len(), 12);
+    assert_eq!(valid.len(), 13);
     for v in valid {
         let id = v["id"].as_str().unwrap();
         let code = v["code"].as_str().unwrap();
@@ -148,7 +148,7 @@ fn valid_codes_decode_and_reencode() {
 fn refusals_give_their_tokens() {
     let f = file();
     let refusals = f["refusals"].as_array().unwrap();
-    assert_eq!(refusals.len(), 23);
+    assert_eq!(refusals.len(), 25);
     for r in refusals {
         let id = r["id"].as_str().unwrap();
         let err = FedCodeE2::decode(r["code"].as_str().unwrap()).expect_err(id);

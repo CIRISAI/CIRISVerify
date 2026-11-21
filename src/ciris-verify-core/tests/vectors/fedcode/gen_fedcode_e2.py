@@ -146,6 +146,10 @@ UNK = [hint(0x06, b"\x01\x02\x03"), RELAY]
 ok("unknown_hint_skipped", "A hint of an unassigned type (0x06, reserved for i2p) is carried as unknown and skipped by "
    "a dialler, never refused; the tcp hint after it stands.", user([node_entry(N[0], UNK)]),
    {"kind": "user", "kid_hex": U.kid.hex(), "nodes": [{"kid_hex": N[0].kid.hex(), **ep_json(N[0].transport, UNK)}]})
+V6 = [tcp("::1", 4242), tcp("2001:db8::7", 4242)]
+ok("ipv6_hosts", "IPv6 hosts as CC 2.6.8 writes them: no brackets, no zone id (the port is its own field).",
+   user([node_entry(N[0], V6)]),
+   {"kind": "user", "kid_hex": U.kid.hex(), "nodes": [{"kid_hex": N[0].kid.hex(), **ep_json(N[0].transport, V6)}]})
 ok("node_code", "A kind=node code names one node: its kid, then its endpoint.",
    bytes([VERSION, 3]) + N[0].kid + endpoint(N[0].transport, H1),
    {"kind": "node", "kid_hex": N[0].kid.hex(), "endpoint": ep_json(N[0].transport, H1)})
@@ -186,6 +190,10 @@ bad_payload("hint_host_empty", "A tcp hint with an empty host.",
             user([node_entry(N[0], [tcp("", 4242)])]), "fedcode_hint_malformed")
 bad_payload("hint_host_space", "A tcp hint whose host carries a space.",
             user([node_entry(N[0], [tcp("relay example.net", 4242)])]), "fedcode_hint_malformed")
+bad_payload("hint_host_bracketed_ipv6", "A tcp host [::1]: IPv6 is written without brackets.",
+            user([node_entry(N[0], [tcp("[::1]", 4242)])]), "fedcode_hint_malformed")
+bad_payload("hint_host_zone_id", "A tcp host fe80::1%eth0: no zone id.",
+            user([node_entry(N[0], [tcp("fe80::1%eth0", 4242)])]), "fedcode_hint_malformed")
 bad_payload("hint_port_zero", "A tcp hint with port 0.", user([node_entry(N[0], [tcp("relay.example.net", 0)])]),
             "fedcode_hint_malformed")
 bad_payload("hint_http_not_https", "An http hint whose URL is not https.",

@@ -15,7 +15,8 @@
 //!            displayed in dash-separated groups of 4; payload ≤ 1024 bytes
 //! ```
 //!
-//! Hint types: 1 `tcp` (port u16 ≠ 0, host 1..=253 bytes), 2 `udp` (the same),
+//! Hint types: 1 `tcp` (port u16 ≠ 0, host 1..=253 bytes: a DNS name or an IP
+//! literal, IPv6 with no brackets and no zone id), 2 `udp` (the same),
 //! 3 `auto` (scope u8 0..=4 link/admin/site/organisation/global, group id
 //! 1..=64 bytes), 4 `rnode` (frequency u32, bandwidth u32, spreading factor
 //! 7..=12, coding rate 5..=8; exactly 10 bytes), 5 `http` (an `https://` URL,
@@ -635,7 +636,13 @@ pub fn parse_hint(tag: u8, body: &[u8]) -> Result<Hint, FedCodeE2Error> {
         if port == 0 {
             return Err(bad);
         }
-        Ok((text(h, 1, 253)?, port))
+        let host = text(h, 1, 253)?;
+        // CC 2.6.8 (rc22): a DNS name or an IP literal in text form; IPv6
+        // without brackets or a zone id, the port being its own field.
+        if host.contains(['[', ']', '%']) {
+            return Err(bad);
+        }
+        Ok((host, port))
     };
     Ok(match tag {
         HINT_TCP => {
