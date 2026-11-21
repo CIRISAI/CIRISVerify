@@ -173,8 +173,20 @@ impl Default for IntegrityChecker {
 /// Returns `None` if the binary cannot be read (which is itself
 /// an integrity failure).
 fn compute_self_hash() -> Option<[u8; 32]> {
-    // Get path to current executable
-    let exe_path = std::env::current_exe().ok()?;
+    // The file holding this crate's code, found by address (CIRISVerify#210);
+    // current_exe() is the last resort and names the host when verify is a
+    // library.
+    let exe_path = match crate::registry::self_module_path() {
+        Some(p) => p,
+        None => {
+            let exe = std::env::current_exe().ok()?;
+            tracing::warn!(
+                fallback = %exe.display(),
+                "integrity self-hash: module holding CIRISVerify code not found; hashing current_exe()"
+            );
+            exe
+        },
+    };
 
     // Read binary contents
     let binary_data = std::fs::read(&exe_path).ok()?;
