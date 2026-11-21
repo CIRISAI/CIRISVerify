@@ -171,6 +171,7 @@
     "epoch": 1,
     "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
     "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
     "tree_size": 4
    },
    "proof": [
@@ -195,6 +196,7 @@
     "epoch": 1,
     "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
     "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
     "tree_size": 4
    },
    "proof": [
@@ -221,6 +223,7 @@
     "epoch": 1,
     "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
     "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
     "tree_size": 4
    },
    "proof": [
@@ -243,6 +246,7 @@
     "epoch": 1,
     "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
     "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
     "tree_size": 4
    },
    "proof": [
@@ -265,6 +269,7 @@
     "epoch": 1,
     "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
     "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
     "tree_size": 4
    },
    "proof": []
@@ -285,6 +290,7 @@
     "epoch": 1,
     "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
     "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
     "tree_size": 4
    },
    "proof": []
@@ -305,6 +311,7 @@
     "epoch": 1,
     "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
     "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
     "tree_size": 4
    },
    "proof": []
@@ -325,6 +332,7 @@
     "epoch": 1,
     "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
     "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
     "tree_size": 4
    },
    "proof": []
@@ -345,6 +353,7 @@
     "epoch": 1,
     "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
     "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
     "tree_size": 4
    },
    "proof": [
@@ -370,6 +379,30 @@
     "epoch": 1,
     "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
     "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
+    "tree_size": 4
+   },
+   "proof": [
+    "72d6fd950bba3583df756454a0a740f02b65bd482b17240291311eb0f1639158"
+   ]
+  },
+  {
+   "description": "The service registered the sealing head at size 4: a later head at size 8 is refused.",
+   "expect": "stream_head_after_seal",
+   "head": {
+    "epoch": 1,
+    "prev": null,
+    "root": "b0d8dd6ce55d3206f0997527f1b23ee40b3db463b1cf2fbc9add079886df72eb",
+    "sealed": false,
+    "tree_size": 8
+   },
+   "holds": [],
+   "id": "after_seal",
+   "last": {
+    "epoch": 1,
+    "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
+    "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": true,
     "tree_size": 4
    },
    "proof": [
@@ -392,6 +425,7 @@
     "epoch": 1,
     "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
     "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
     "tree_size": 4
    },
    "recomputed": [
@@ -415,6 +449,7 @@
     "epoch": 1,
     "root": "d9b59b3301f4c19daad08c8f5a75e3bdaed4ce068d9336b834045e42abd77683",
     "row_id": "1a031286963ae31ff2c75986fb0c03349115ee94c429b59b7f13f0f145d56d1a",
+    "sealed": false,
     "tree_size": 4
    },
    "recomputed": [

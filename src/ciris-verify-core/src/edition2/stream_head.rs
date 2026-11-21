@@ -170,6 +170,8 @@ pub struct LastHead {
     pub tree_size: u64,
     /// Its root.
     pub root: Digest32,
+    /// Whether it is the sealing head: then it is the last head of its `sub`.
+    pub sealed: bool,
 }
 
 /// How the caller establishes that the new head's tree extends the last.
@@ -196,6 +198,8 @@ pub enum StreamHeadRefusal {
     PrevNotLast,
     /// A head at a size the service registered, with another root.
     Equivocation,
+    /// The service registered the stream's sealing head: nothing follows it.
+    AfterSeal,
     /// The same size and root again, not as the sealing head.
     Repeated,
     /// The epoch is below the last head's.
@@ -215,6 +219,7 @@ impl StreamHeadRefusal {
         match self {
             Self::PrevNotLast => "stream_head_prev_not_last",
             Self::Equivocation => "stream_head_equivocation",
+            Self::AfterSeal => "stream_head_after_seal",
             Self::Repeated => "stream_head_repeated",
             Self::EpochRegressed => "stream_head_epoch_regressed",
             Self::Inconsistent => "stream_head_inconsistent",
@@ -230,7 +235,7 @@ impl StreamHeadRefusal {
 ///
 /// # Errors
 ///
-/// [`StreamHeadRefusal`], in the order: prev, epoch, size, consistency.
+/// [`StreamHeadRefusal`], in the order: seal, prev, epoch, size, consistency.
 pub fn check_successor(
     last: Option<&LastHead>,
     head: &StreamHead,
@@ -238,6 +243,9 @@ pub fn check_successor(
     consistency: &Consistency,
 ) -> Result<(), StreamHeadRefusal> {
     let Some(last) = last else { return Ok(()) };
+    if last.sealed {
+        return Err(StreamHeadRefusal::AfterSeal);
+    }
     if let Some(p) = &head.prev {
         if holds(p) && !bool::from(p.ct_eq(&last.row_id)) {
             return Err(StreamHeadRefusal::PrevNotLast);

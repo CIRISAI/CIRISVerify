@@ -12,7 +12,7 @@ use serde_json::Value as J;
 
 const FILE: &str = include_str!("vectors/edition2/receipts/stream_heads_v1.json");
 /// SHA-256 of the file, pinned so a regeneration is a visible change.
-const FILE_SHA256: &str = "cc722da814f323b8ddc17407a4a99d98772a0afdef2259492061254db8d6598c";
+const FILE_SHA256: &str = "2be616eb4bcdac0091e14f05ad9ac411f1215a0b7795188f2bea7742299cb1bd";
 
 fn h32(v: &J) -> [u8; 32] {
     hex::decode(v.as_str().unwrap())
@@ -53,7 +53,7 @@ fn the_door() {
 fn a_services_successor_rule() {
     let f: J = serde_json::from_str(FILE).unwrap();
     let cases = f["successor"].as_array().unwrap();
-    assert_eq!(cases.len(), 13);
+    assert_eq!(cases.len(), 14);
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let last = (!c["last"].is_null()).then(|| LastHead {
@@ -61,6 +61,7 @@ fn a_services_successor_rule() {
             epoch: c["last"]["epoch"].as_u64().unwrap(),
             tree_size: c["last"]["tree_size"].as_u64().unwrap(),
             root: h32(&c["last"]["root"]),
+            sealed: c["last"]["sealed"].as_bool().unwrap(),
         });
         let h = &c["head"];
         let head = StreamHead {

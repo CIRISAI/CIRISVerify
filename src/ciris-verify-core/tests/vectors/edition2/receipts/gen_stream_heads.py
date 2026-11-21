@@ -100,7 +100,8 @@ dcase("author_label", "author as a bare label, not an identity reference.",
       payload(4, edit=lambda p: p.__setitem__("author", "producer")), SUB, "malformed:author")
 
 succ = []
-L4 = {"row_id": H4.hex(), "epoch": 1, "tree_size": 4, "root": root(4).hex()}
+L4 = {"row_id": H4.hex(), "epoch": 1, "tree_size": 4, "root": root(4).hex(), "sealed": False}
+L4S = dict(L4, sealed=True)
 
 
 def scase(cid, desc, last, size, epoch=1, sealed=False, prev=None, holds=(), proof=None, recomputed=None, new_root=None,
@@ -129,6 +130,8 @@ scase("smaller", "A head at size 3 after size 4.", L4, 3, expect="stream_head_in
 scase("bad_proof", "Size 8 with a proof for 5 -> 8.", L4, 8, proof=subproof(5, CHUNKS[:8], True), expect="stream_head_inconsistent")
 scase("forked_root", "Size 8 with a root that does not extend the last.", L4, 8, new_root=mth(CHUNKS[:3] + [lh(b"x")] + CHUNKS[4:8]),
       expect="stream_head_inconsistent")
+scase("after_seal", "The service registered the sealing head at size 4: a later head at size 8 is refused.", L4S, 8,
+      expect="stream_head_after_seal")
 scase("recomputed_ok", "A holder recomputed both roots from its chunks.", L4, 8, recomputed=(root(4), root(8)))
 scase("recomputed_differs", "A holder's own root for size 8 differs from the head's.", L4, 8,
       recomputed=(root(4), mth(CHUNKS[:7] + [lh(b"y")])), expect="stream_head_inconsistent")
