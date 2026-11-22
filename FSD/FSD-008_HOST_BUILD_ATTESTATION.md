@@ -714,8 +714,8 @@ Settled with Server (2026-11-22):
     row on `provenance:build_manifest:{target}` for the build the node booted. It is required once
     such a row exists for (project, version, target); a node whose build has none (a dev build, or
     before the grant ceremony) omits the member and never writes a placeholder. A reader goes from
-    the boot statement to the manifest row to the blob, one step each. Its encoding (a row-ref, as
-    every other edition-2 reference to a row, or hex text) is between Server and CC.
+    the boot statement to the manifest row to the blob, one step each. It is a row-ref
+    (`[2, [-16, digest]]`), the form every other payload uses to cite a row.
 
 Open for CC:
 
