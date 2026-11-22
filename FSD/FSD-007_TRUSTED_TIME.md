@@ -5,7 +5,7 @@ component reads instead of its own clock. Tracks CIRIS Constitution 1.0-rc20: CC
 clocks), CC 4.2.1.1 (the halt fuse counts from receipt), CC 3.2 T4 / T4a (liveness is not validity;
 attaching is gated on witness freshness), CC 5.3.1 (witness cosignature `signed_at`), CC 5.3.6
 (`X-CEG-Server-Time`) and CC 5.3.6.1 (`CLOCK_SKEW_VIOLATION`). Nothing in it is implemented yet;
-§10 gives the phases, and Phase 0 (the halt fuse) ships first, in 23.4.1.
+§10 gives the phases, and Phase 0 (the halt fuse) ships first, in 23.5.0.
 
 **Builds on:** FSD-001 (protocol), FSD-004 (the accord's "always lean toward firing" posture),
 FSD-005 (the halt latch), the host ABI `ciris:node@0.1.0` (`src/ciris-host-abi/wit/ciris-node.wit`,
@@ -73,7 +73,7 @@ The fuse runs on elapsed monotonic time, which no wall-clock change can move (§
 **P6. The pure tier reads no clock.** Every pure function takes its instants as parameters. Only
 the host tier reads clocks, opens sockets or touches storage, as for every other pure-tier module.
 
-## 3. Phase 0 — the halt fuse on monotonic elapsed time (23.4.1)
+## 3. Phase 0 — the halt fuse on monotonic elapsed time (23.5.0)
 
 ### 3.1 The defect
 
@@ -143,33 +143,44 @@ honest lapse).
 Where the platform gives no boot identity, every process start is treated as a new boot (rule 2
 adds zero across it). `CLOCK_MONOTONIC` is not used on Linux: it stops during suspend.
 
-### 3.4 Shape changes (23.4.1)
+### 3.4 Shape changes (23.5.0, as built)
 
-- `LatchedHalt { halt_id, halt_row, received_wall_ms: Option<u64>, elapsed_ms: u64, confirmed }`;
-  `HaltLatch` gains `checkpoint: Option<FuseCheckpoint { monotonic_ms: u64, boot: [u8; 16] }>`.
-- Pure tier: `HaltLatch::advance(&mut self, reading: MonotonicReading)` applies rule 2;
+- `LatchedHalt { halt_id, halt_row: Digest32, elapsed_ms: u64, received_wall_ms: Option<u64>,
+  confirmed }`; `HaltLatch` gains `checkpoint: Option<MonotonicReading>`, and
+  `MonotonicReading { monotonic_ms: u64, boot: [u8; 16] }` (the boot as 32 hex digits in JSON). All
+  three are `deny_unknown_fields`.
+- Pure tier: `HaltLatch::advance(&mut self, now: MonotonicReading) -> Option<FuseSignal>` applies
+  rule 2 (`FuseSignal::MonotonicRegressed`, token `monotonic_regressed`);
   `active_halt(fuse)` / `is_paused(fuse)` / `remaining_ms(fuse)` take no instant;
-  `apply_forward(row, reading, received_wall_ms, fuse)`. `chrono` leaves the module.
-- Host tier: `FuseMeter` reads the platform clock and boot identity of §3.3 and calls `advance`;
-  the FFI calls it on the latch state it is handed. No new storage in Phase 0.
-- FFI: `ciris_verify_accord_latch_status` no longer takes `now`; verify reads the monotonic clock
-  and its own persisted latch. Output gains `elapsed_ms` and `remaining_ms` and drops `lapses_at`
-  (a wall instant the fuse does not use). A request that still carries `now` is accepted and `now`
-  is ignored.
-- A latch of the 23.4.0 shape (`received_at`, no `elapsed_ms`) is refused as a serialization
-  error, like any other replaced wire form (the 23.0.0 hard-cut rule; ruled 2026-11-21). A host that
+  `apply_forward(row, now: MonotonicReading, received_wall_ms: Option<u64>, fuse)`. An unknown
+  `received_wall_ms` reads as within the halt's `valid_until`, so it fires. A fuse too large to
+  state in milliseconds never lapses. The module reads no clock.
+- Host tier (`host` feature): `FuseMeter::read()` gives a `MonotonicReading` from the clock and boot
+  identity of §3.3: `CLOCK_BOOTTIME` and `/proc/sys/kernel/random/boot_id` on Linux and Android,
+  `CLOCK_MONOTONIC` (which counts sleep on Apple) and SHA-256 of `kern.boottime` on macOS and iOS,
+  and elsewhere (Windows included) `std::time::Instant` from process start under a boot identity
+  drawn once per process. No new storage in Phase 0.
+- FFI: `ciris_verify_accord_latch_status` takes `{latch, halt_fuse_secs}` and no time; verify reads
+  `FuseMeter`, advances the latch it is handed and returns it for the caller to persist. Output:
+  `paused`, `halt_id`, `confirmed`, `elapsed_ms`, `remaining_ms`, `signal`, `latch`. `lapses_at`
+  (a wall instant the fuse does not use) is gone. A request carrying `now` is refused (hard cut).
+  Python `accord_latch_status(latch, halt_fuse_secs=None)`.
+- A latch of the 23.4 shape (`received_at`, no `elapsed_ms`) is refused as a serialization error,
+  like any other replaced wire form (the 23.0.0 hard-cut rule; ruled 2026-11-21). A host that
   upgrades with a halt latched re-applies its held accord rows (§3.2 rule 4), which re-latches the
   halt with `elapsed_ms = 0`.
-- The latch module header cites `formal/accord_halt/AccordHaltFuse.tla`, which exists in neither
-  repository (CC's `formal/accord_halt/` holds `AccordHaltRow.tla` and `AccordHaltReach.tla`). Phase 0
-  corrects the citation and adds the fuse model with the accumulator as a variable and checks two
-  properties: no wall-clock action changes `paused`, and no sequence of restarts makes a lone halt
-  lapse before `halt_fuse_secs` of counted time.
+- The latch module header cited `formal/accord_halt/AccordHaltFuse.tla`, which exists in neither
+  repository; it now cites CC's `AccordHaltRow.tla` and `AccordHaltReach.tla` and this section. CC
+  will add the fuse model to its `formal/` after the ceremony (the accumulator as a variable; no
+  wall-clock action changes `paused`; no sequence of restarts lapses a lone halt before
+  `halt_fuse_secs` of counted time). CC 4.2.1.1 carries the fuse sentence (CC `bab3653`).
 
-Tests: a halt latched and the wall clock set forward 48 h stays paused; a halt restarted under a
-new boot id after 20 h of counted time stays paused for 4 h more counted time, whatever the gap; a
-deleted blob re-latches from the held row at zero; a rolled-back blob extends; `m` going back adds
-zero and records `monotonic_regressed`.
+Tests (`accord_halt_latch`, the FFI and `tests/accord_halt_vectors_v2.rs`): a halt latched with the
+wall clock set forward stays paused on counted time; after 20 h counted, a restart under a new boot
+leaves 4 h to count, whatever the gap; a latch rolled back to an earlier copy extends the halt; `m`
+going back adds zero and reports `monotonic_regressed`; a 23.4-shaped latch and a request carrying
+`now` are refused; the 13 latch sequences of `accord_halt_v2.json` replay unchanged, each instant read
+as one boot's monotonic reading.
 
 ## 4. The pure core
 
@@ -632,7 +643,7 @@ host keeps returning the last Trusted `mid_ms` extrapolated, with a radius that 
 
 | Phase | Release | Scope |
 |---|---|---|
-| 0 | 23.4.1 | §3: halt fuse on accumulated monotonic time, persisted in custody storage; latch shape and FFI change; TLA+ fuse model; agent act gate unchanged in shape |
+| 0 | 23.5.0 | §3: halt fuse on accumulated monotonic time, carried in the caller's latch state; latch shape and FFI change (no caller time); agent act gate unchanged in shape; the TLA+ fuse model is CC's, after the ceremony |
 | 1 | 23.5 | §4 pure core (samples, Marzullo, state, helpers); OS clock and monotonic sources; §6.1 wall/monotonic, §6.2 high-water mark; TPM plugin ABI v4 (`read_clock`, NV counter) and §6.3; §7 report; FFI and Python surface; `stamp()`; agent `TimeService` replacement (P1 enforced: drift fabrication removed) |
 | 2 | 23.6 | Roughtime client with chaining and malfeasance proofs; baked Roughtime set (per Q3); §5.3 lower-bound samples from receipts, STHs, cosignatures and verified rows; persist switches its admission checks to the helpers; `halt_received_after` on trusted time |
 | 3 | 24.x | NTS-NTPv4 client; peer time and seat time once CC has the object (Q1, Q2); WIT 0.2.0 `clock-untrusted` |

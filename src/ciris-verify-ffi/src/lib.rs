@@ -3710,31 +3710,41 @@ fn write_json_out(json: &str, result_out: *mut *mut u8, result_len_out: *mut usi
     CirisVerifyError::Success as i32
 }
 
-/// The halt latch's view at `now`, as JSON.
-fn latch_view(
-    latch: &ciris_verify_core::accord_halt_latch::HaltLatch,
-    now: ciris_verify_core::utc::UtcDateTime,
+/// The halt latch advanced to `reading`, and its view, as JSON.
+fn latch_status(
+    mut latch: ciris_verify_core::accord_halt_latch::HaltLatch,
+    reading: ciris_verify_core::accord_halt_latch::MonotonicReading,
     fuse: u64,
 ) -> serde_json::Value {
-    let active = latch.active_halt(now, fuse);
+    let signal = latch.advance(reading);
+    let active = latch.active_halt(fuse).cloned();
     serde_json::json!({
-        "latch": latch,
         "paused": active.is_some(),
-        "halt_id": active.map(|h| h.halt_id.clone()),
-        "confirmed": active.map(|h| h.confirmed),
-        "lapses_at": latch.lapses_at(fuse).filter(|_| active.is_some()).map(|t| t.to_rfc3339()),
+        "halt_id": active.as_ref().map(|h| h.halt_id.clone()),
+        "confirmed": active.as_ref().map(|h| h.confirmed),
+        "elapsed_ms": active.as_ref().map(|h| h.elapsed_ms),
+        "remaining_ms": latch.remaining_ms(fuse),
+        "signal": signal.map(|s| s.token()),
+        "latch": latch,
     })
 }
 
-/// The act gate's question (CC 4.2.1.1): is the node paused at `now`?
+/// The act gate's question (CC 4.2.1.1): is the node paused?
 ///
 /// `latch` is the state a node persisted from
 /// `ciris_verify_core::accord_halt_latch::HaltLatch::apply_forward` (edition-2
-/// rows read by `edition2::accord_halt`).
+/// rows read by `edition2::accord_halt`) or from this call's own output. The
+/// fuse is elapsed time (FSD-007 §3): verify reads the platform's monotonic
+/// clock itself (`FuseMeter`), counts the time since the latch's checkpoint
+/// (zero across a reboot), and returns the advanced latch, which the caller
+/// persists in place of the one it passed. No time is taken from the caller;
+/// a request carrying `now` is refused.
 ///
-/// Input JSON: `{"latch": <state or null>, "now": "<rfc3339>",
-/// "halt_fuse_secs": <u64, optional, default 86400>}`. Output JSON:
-/// `{"paused", "halt_id", "confirmed", "lapses_at", "latch"}`.
+/// Input JSON: `{"latch": <state or null>, "halt_fuse_secs": <u64, optional,
+/// default 86400>}`. Output JSON: `{"paused", "halt_id", "confirmed",
+/// "elapsed_ms", "remaining_ms", "signal", "latch"}`; `signal` is
+/// `"monotonic_regressed"` when the clock read lower than at the checkpoint
+/// within one boot (nothing was counted), else null.
 ///
 /// # Safety
 ///
@@ -3748,13 +3758,12 @@ pub unsafe extern "C" fn ciris_verify_accord_latch_status(
     result_len_out: *mut usize,
 ) -> i32 {
     ffi_guard!("ciris_verify_accord_latch_status", {
-        use ciris_verify_core::accord_halt_latch::{HaltLatch, DEFAULT_HALT_FUSE_SECS};
+        use ciris_verify_core::accord_halt_latch::{FuseMeter, HaltLatch, DEFAULT_HALT_FUSE_SECS};
 
         #[derive(serde::Deserialize)]
         #[serde(deny_unknown_fields)]
         struct Req {
             latch: Option<HaltLatch>,
-            now: String,
             #[serde(default)]
             halt_fuse_secs: Option<u64>,
         }
@@ -3766,12 +3775,8 @@ pub unsafe extern "C" fn ciris_verify_accord_latch_status(
         let Ok(req) = serde_json::from_slice::<Req>(bytes) else {
             return CirisVerifyError::SerializationError as i32;
         };
-        let Ok(now) = ciris_verify_core::utc::UtcDateTime::parse_from_rfc3339(&req.now) else {
-            return CirisVerifyError::SerializationError as i32;
-        };
-        let latch = req.latch.unwrap_or_default();
         let fuse = req.halt_fuse_secs.unwrap_or(DEFAULT_HALT_FUSE_SECS);
-        let out = latch_view(&latch, now, fuse);
+        let out = latch_status(req.latch.unwrap_or_default(), FuseMeter::new().read(), fuse);
         write_json_out(&out.to_string(), result_out, result_len_out)
     })
 }
@@ -10518,41 +10523,78 @@ mod tests {
     /// is not paused.
     #[test]
     fn accord_latch_status_reads_a_persisted_latch() {
-        let call = |body: serde_json::Value| -> serde_json::Value {
+        use ciris_verify_core::accord_halt_latch::{HaltLatch, MonotonicReading};
+        const FUSE_MS: u64 = 86_400_000;
+        let call_raw = |body: serde_json::Value| -> (i32, Option<serde_json::Value>) {
             let b = body.to_string();
             let mut out: *mut u8 = std::ptr::null_mut();
             let mut len = 0usize;
-            assert_eq!(
-                unsafe {
-                    ciris_verify_accord_latch_status(b.as_ptr(), b.len(), &mut out, &mut len)
-                },
-                CirisVerifyError::Success as i32
-            );
+            let rc = unsafe {
+                ciris_verify_accord_latch_status(b.as_ptr(), b.len(), &mut out, &mut len)
+            };
+            if rc != CirisVerifyError::Success as i32 {
+                return (rc, None);
+            }
             let v = unsafe { std::slice::from_raw_parts(out, len) }.to_vec();
             unsafe { libc::free(out.cast()) };
-            serde_json::from_slice(&v).unwrap()
+            (rc, Some(serde_json::from_slice(&v).unwrap()))
         };
-        let latch = |confirmed: bool| {
+        let call = |body| call_raw(body).1.unwrap();
+        let latch = |confirmed: bool, elapsed_ms: u64| {
             serde_json::json!({"halt": {
                 "halt_id": "h1",
-                "received_at": "2026-10-05T12:00:00Z",
-                "confirmed": confirmed,
                 "halt_row": vec![7u8; 32],
+                "elapsed_ms": elapsed_ms,
+                "confirmed": confirmed,
             }})
         };
 
-        let s = call(serde_json::json!({"latch": latch(false), "now": "2026-10-05T13:00:00Z"}));
+        // Through the FFI, on this host's own meter: the first call has no
+        // checkpoint, so nothing is counted yet.
+        let s = call(serde_json::json!({ "latch": latch(false, 3_600_000) }));
         assert_eq!(s["paused"], true, "{s}");
         assert_eq!(s["halt_id"], "h1");
-        assert_eq!(s["lapses_at"], "2026-10-06T12:00:00+00:00");
-        let s = call(serde_json::json!({"latch": latch(false), "now": "2026-10-06T12:00:00Z"}));
-        assert_eq!(s["paused"], false, "a lone halt lapses at receipt + 86400");
+        assert_eq!(s["remaining_ms"], FUSE_MS - 3_600_000);
+        assert!(s["latch"]["checkpoint"].is_object(), "{s}");
+        // The returned latch, passed back, keeps counting from its checkpoint.
+        let s2 = call(serde_json::json!({ "latch": s["latch"] }));
+        assert!(s2["remaining_ms"].as_u64().unwrap() <= FUSE_MS - 3_600_000);
 
-        let s = call(serde_json::json!({"latch": latch(true), "now": "2027-01-01T00:00:00Z"}));
+        let s = call(serde_json::json!({ "latch": latch(false, FUSE_MS) }));
+        assert_eq!(
+            s["paused"], false,
+            "a lone halt lapses once its fuse is counted"
+        );
+        let s = call(serde_json::json!({ "latch": latch(true, FUSE_MS * 10) }));
         assert_eq!(s["paused"], true);
-        assert_eq!(s["lapses_at"], serde_json::Value::Null);
+        assert_eq!(s["remaining_ms"], serde_json::Value::Null);
+        let s = call(serde_json::json!({ "latch": null }));
+        assert_eq!(s["paused"], false);
 
-        let s = call(serde_json::json!({"latch": null, "now": "2027-01-01T00:00:00Z"}));
+        // Hard cut: `now` is refused, as is a latch of the 23.4 shape.
+        let (rc, _) = call_raw(serde_json::json!({"latch": null, "now": "2026-10-05T13:00:00Z"}));
+        assert_eq!(rc, CirisVerifyError::SerializationError as i32);
+        let old = serde_json::json!({"halt": {"halt_id": "h1", "received_at": "2026-10-05T12:00:00Z",
+            "confirmed": false, "halt_row": vec![7u8; 32]}});
+        let (rc, _) = call_raw(serde_json::json!({ "latch": old }));
+        assert_eq!(rc, CirisVerifyError::SerializationError as i32);
+
+        // The counting itself, with stated readings.
+        let r = |ms, b: u8| MonotonicReading {
+            monotonic_ms: ms,
+            boot: [b; 16],
+        };
+        let l: HaltLatch = serde_json::from_value(latch(false, 0)).unwrap();
+        let s = latch_status(l, r(1_000, 1), 86_400);
+        let l: HaltLatch = serde_json::from_value(s["latch"].clone()).unwrap();
+        let s = latch_status(l, r(1_000 + FUSE_MS - 1, 1), 86_400);
+        assert_eq!(s["paused"], true);
+        assert_eq!(s["remaining_ms"], 1);
+        let l: HaltLatch = serde_json::from_value(s["latch"].clone()).unwrap();
+        let s = latch_status(l.clone(), r(5, 1), 86_400);
+        assert_eq!(s["signal"], "monotonic_regressed");
+        assert_eq!(s["paused"], true);
+        let s = latch_status(l, r(1_000 + FUSE_MS, 1), 86_400);
         assert_eq!(s["paused"], false);
     }
 

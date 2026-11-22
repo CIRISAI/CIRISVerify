@@ -2,7 +2,7 @@
 
 Exposes :func:`accord_latch_status`, a thin wrapper over the FFI symbol
 ``ciris_verify_accord_latch_status``: the act gate's question, is this node
-paused at ``now``, over a latch a node persisted from
+paused, over a latch a node persisted from
 ``ciris_verify_core::accord_halt_latch::HaltLatch::apply_forward`` (edition-2
 rows read by ``edition2::accord_halt``).
 
@@ -104,15 +104,24 @@ def _call(symbol: str, request: dict) -> dict:
     return _json.loads(raw)
 
 
-def accord_latch_status(latch: Optional[dict], now: str, halt_fuse_secs: Optional[int] = None) -> dict:
-    """The act gate's question: is this node paused at ``now``?
+def accord_latch_status(latch: Optional[dict], halt_fuse_secs: Optional[int] = None) -> dict:
+    """The act gate's question: is this node paused?
 
     Call it before every effectful act (CC 4.2.1.1). ``latch`` is the state
     the node persisted (``None`` when clear); ``halt_fuse_secs`` is the bundle
-    in force's (omit for the 86400 default). Returns
-    ``{"paused", "halt_id", "confirmed", "lapses_at", "latch"}``.
+    in force's (omit for the 86400 default).
+
+    The fuse is elapsed time (FSD-007 §3): verify reads the platform's
+    monotonic clock itself and counts the time since the latch's checkpoint
+    (none across a reboot), so no wall-clock setting can shorten a halt. The
+    returned ``latch`` is the advanced state: persist it in place of the one
+    passed in. Returns ``{"paused", "halt_id", "confirmed", "elapsed_ms",
+    "remaining_ms", "signal", "latch"}``; ``signal`` is
+    ``"monotonic_regressed"`` when the clock read lower than at the checkpoint
+    (nothing was counted), else ``None``. A latch of the 23.4 shape is
+    refused (``ValueError``); re-apply the held accord rows instead.
     """
-    req: dict = {"latch": latch, "now": now}
+    req: dict = {"latch": latch}
     if halt_fuse_secs is not None:
         req["halt_fuse_secs"] = halt_fuse_secs
     return _call("ciris_verify_accord_latch_status", req)
