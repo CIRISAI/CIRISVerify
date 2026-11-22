@@ -183,11 +183,12 @@ A pipeline's standing is `infra:attest` conferred by **one** kind of act (ruling
 - carrying `projects`, a set under CC 2.6.1.2 (sorted, no duplicates, non-empty when present) beside
   `scope` in the grant's payload; a narrowed onward grant lists a subset; a grant with no `projects`
   grants no project (accepted by CC, 2026-11-22);
-- **plus the owner's acceptance** (CC 3.2 T3, CC 3.1.1; ruled by CC 2026-11-22): a pipeline key is
-  a machine identity bound to its owner (a person) by an owner-binding, and the acceptance is that
-  owner's `trust:accepts:v1` edge to the root whose holders granted, "a person's row that every node
-  and agent they own reads". It is **one edge per root, not one per grant**, and the pipeline's own
-  key never accepts. A pipeline with no owner has no acceptance, and its grant confers nothing.
+- **plus the owner's acceptance naming this grant** (confirmed by CC 2026-11-22): a conferral is
+  two consents, and the second is the pipeline's **owner's** (a person's)
+  `membership:acceptance:v1` row at federation scope that names the grant. The pipeline's own key
+  never accepts, and a pipeline with no owner has no acceptance, so its grant confers nothing. The
+  owner's `trust:accepts:v1` edge is a separate thing: it roots the owner's nodes in the root and
+  is not consent to any grant. (CC 3.2's sentence that read otherwise is being fixed.)
 
 **Scope matching (CC 4.5.5, normative).** The check asks "may this key attest family F". A held
 `infra:attest` satisfies it; a held `infra:attest:F` satisfies it; nothing else does. A child never
@@ -207,9 +208,8 @@ it is Eric's (§13).
 
 **How a grant ends (CC 2.4.1.1, Q10).** A grant is two consents, and either ends it: (a) a counted
 `withdraws` of the grant row by a strict majority of the holders of the bundle in force, naming the
-head it acts from; or (b) the owner's withdrawal of the `trust:accepts` edge, which gives up
-everything that root confers on everything the owner owns. An owner who gives up one grant and keeps
-the root ends the pipeline's key or its owner-binding instead. Revoking the pipeline's **key** is a separate act that ends what the
+head it acts from; or (b) the owner's decline, or withdrawal of the acceptance that names it, which
+ends that one grant from the grantee's side; other grants and the root stay. Revoking the pipeline's **key** is a separate act that ends what the
 key signs afterwards (`revoked_after`). A reader's own un-trust of the root ends the grant for that
 reader; for verify the root is its baked anchor.
 
@@ -397,9 +397,8 @@ Waiting(missing), Refused(token)}`. The statements of each candidate row are rea
    sub-scope of another family never satisfies this check (CC 4.5.5);
 5. `projects` is a well-formed set and holds `build.project`; otherwise
    `build_manifest_project_not_granted` (an absent or empty set grants no project);
-6. the pipeline's owner-binding and its owner's `trust:accepts:v1` edge to the granting root are
-   held and standing (a statement by the pipeline's own key is not an acceptance); otherwise
-   Waiting;
+6. the owner's `membership:acceptance:v1` naming this grant is held and not withdrawn (a
+   statement by the pipeline's own key is not an acceptance); otherwise Waiting;
 7. a stated term (`delegation_valid_from` / `delegation_valid_until` on a `confers` row) covers
    `now`; an undecidable comparison under FSD-007 §4.5 is not covered;
 8. the grant has not ended (§4.2): no counted `withdraws` of it by a strict majority of the holders
