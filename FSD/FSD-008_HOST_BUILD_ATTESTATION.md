@@ -183,10 +183,20 @@ A pipeline's standing is `infra:attest` conferred by **one** kind of act (ruling
 - carrying `projects`, a set under CC 2.6.1.2 (sorted, no duplicates, non-empty when present) beside
   `scope` in the grant's payload; a narrowed onward grant lists a subset; a grant with no `projects`
   grants no project (accepted by CC, 2026-11-22);
-- **plus the grantee's acceptance**, which is the pipeline's **owner's**: a pipeline key is a
-  machine identity, so its owner (a person) accepts, as a `membership:acceptance:v1` row at
-  federation scope, and the pipeline's own key never does (CC's rule for a node or agent grantee;
-  persist's reader the same, 2026-11-22).
+- **plus the owner's acceptance** (CC 3.2 T3, CC 3.1.1; ruled by CC 2026-11-22): a pipeline key is
+  a machine identity bound to its owner (a person) by an owner-binding, and the acceptance is that
+  owner's `trust:accepts:v1` edge to the root whose holders granted, "a person's row that every node
+  and agent they own reads". It is **one edge per root, not one per grant**, and the pipeline's own
+  key never accepts. A pipeline with no owner has no acceptance, and its grant confers nothing.
+
+**Scope matching (CC 4.5.5, normative).** The check asks "may this key attest family F". A held
+`infra:attest` satisfies it; a held `infra:attest:F` satisfies it; nothing else does. A child never
+satisfies a check for its parent, an unrecognised sub-scope is never widened to its parent, and the
+match is on whole tokens across a `:` boundary, never a prefix test (`infra:attest_assurance` is a
+different capability). A build pipeline's grant carries `infra:attest:provenance:build_manifest`, and
+the ceremony issues that narrowest form with `projects`. A bare `infra:attest` on a pipeline is
+valid and confers every attest family, but `projects` is required of a build manifest whatever the
+scope string: a grant with no `projects` confers a build manifest for no project.
 
 There is no other plane, no key-root delegation and no baked key. The genesis bundle's charter
 `scope` holding `infra:attest` (`edition2::genesis::REQUIRED_SCOPE`) is the root's scope and confers
@@ -197,7 +207,9 @@ it is Eric's (§13).
 
 **How a grant ends (CC 2.4.1.1, Q10).** A grant is two consents, and either ends it: (a) a counted
 `withdraws` of the grant row by a strict majority of the holders of the bundle in force, naming the
-head it acts from; or (b) the withdrawal of the acceptance by the pipeline's owner, who gave it. Revoking the pipeline's **key** is a separate act that ends what the
+head it acts from; or (b) the owner's withdrawal of the `trust:accepts` edge, which gives up
+everything that root confers on everything the owner owns. An owner who gives up one grant and keeps
+the root ends the pipeline's key or its owner-binding instead. Revoking the pipeline's **key** is a separate act that ends what the
 key signs afterwards (`revoked_after`). A reader's own un-trust of the root ends the grant for that
 reader; for verify the root is its baked anchor.
 
@@ -385,8 +397,9 @@ Waiting(missing), Refused(token)}`. The statements of each candidate row are rea
    sub-scope of another family never satisfies this check (CC 4.5.5);
 5. `projects` is a well-formed set and holds `build.project`; otherwise
    `build_manifest_project_not_granted` (an absent or empty set grants no project);
-6. the acceptance by the pipeline's owner is held (a statement by the pipeline's own key is not
-   one); otherwise Waiting;
+6. the pipeline's owner-binding and its owner's `trust:accepts:v1` edge to the granting root are
+   held and standing (a statement by the pipeline's own key is not an acceptance); otherwise
+   Waiting;
 7. a stated term (`delegation_valid_from` / `delegation_valid_until` on a `confers` row) covers
    `now`; an undecidable comparison under FSD-007 §4.5 is not covered;
 8. the grant has not ended (§4.2): no counted `withdraws` of it by a strict majority of the holders
