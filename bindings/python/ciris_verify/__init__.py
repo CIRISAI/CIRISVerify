@@ -89,6 +89,8 @@ from .types import (
     FileIntegrityResult,
     FileCheckStatus,
     BinaryIntegrityStatus,
+    SelfVerificationResult,
+    EMBEDDED_NO_MANIFEST,
     HardwareType,
     ValidationStatus,
     PythonModuleHashes,
@@ -167,7 +169,7 @@ def get_library_version() -> str:
     return __version__
 
 
-__version__ = "23.4.1"
+__version__ = "23.4.2"
 __all__ = [
     "CIRISVerify",
     "MockCIRISVerify",
@@ -214,6 +216,8 @@ __all__ = [
     "FileIntegrityResult",
     "FileCheckStatus",
     "BinaryIntegrityStatus",
+    "SelfVerificationResult",
+    "EMBEDDED_NO_MANIFEST",
     "HardwareType",
     "ValidationStatus",
     "PythonModuleHashes",
