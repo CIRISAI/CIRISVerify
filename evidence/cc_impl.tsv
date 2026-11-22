@@ -82,12 +82,12 @@ decimal_id	claim_id	repo	path#symbol	crate@version	span_sha256
 5.3.4	CLM-multi-steward	CIRISVerify	src/ciris-verify-core/src/genesis_bundle.rs#authorization_digest	ciris-verify-core@v21.0.0	0ab994f37f75b911fec74260bba56e6d6384e224ab919ed7ddc87d7e73b12f4a
 5.3.4	CLM-multi-steward	CIRISVerify	src/ciris-verify-core/src/validation.rs#select_trust_root	ciris-verify-core@v21.0.0	0e8394564c1adbe2ee033641794b402f157b067f5df8f7c6a264c14a334e3711
 5.1	CLM-stream-dek-per-stream	CIRISVerify	src/ciris-crypto/src/stream_dek.rs#stream_dek	ciris-crypto@v23.0.0	0af021e7c4283c433b6a4f88b982d3977134528b3d542e735049a490af771767
-4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/accord_halt_latch.rs#HaltLatch::step	ciris-verify-core@v23.3.0	a3e8cf7f5c75b4ef93ba3aa916014c584656bf5ebdd5943cfc50f58f1142f2f1
+4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/accord_halt_latch.rs#HaltLatch::step	ciris-verify-core@v23.3.0	d2483ecfde87963869e516b465ffb29566d75eb1f0fdcedeafc1230eac61353a
 4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/edition2/accord_halt.rs#verify_invocation_row	ciris-verify-core@v23.3.0	47a5cea65213e54261b32c584cddad93c35d7539d70e6ff4dd34abfe2a55a153
 4.2.1.3	CLM-lifecycle	CIRISVerify	src/ciris-verify-core/src/edition2/accord_halt.rs#verify_lifecycle_row	ciris-verify-core@v23.3.0	3e15f059048f441b51a813c62d490c2b21c8e43e2d84ae29eb692a9da0a42af2
-4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/accord_halt_latch.rs#HaltLatch::apply_forward	ciris-verify-core@v23.3.0	6f1dbd8d025b217f6369f9af74072c9decee9884c3173180a2ebcac6c5b83db0
+4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/accord_halt_latch.rs#HaltLatch::apply_forward	ciris-verify-core@v23.3.0	3afe06652f79c4d51a87d8b402f5dfe50b9afb7a431864681630f0ffd566a275
 # 2.6.1 verification order (CC 2.6.1.8, steps 6-8): read_row_statement checks, after the
 # signature, that the signing key is a key of the CWT iss (kid_not_of_iss); KeyRecordDirectory::chain
 # proves a rotated key the issuer's (CC 2.6.1.7, CC 2.4.1.1, CC 3.1.3).
-2.6.1	CLM-signed-object-cose-planned	CIRISVerify	src/ciris-verify-core/src/edition2/mod.rs#read_row_statement	ciris-verify-core@v23.3.0	9a27bbd5e3aa64f663ee865f0052c870984c0569270f7251aff514ea7305ceb8
+2.6.1	CLM-signed-object-cose-planned	CIRISVerify	src/ciris-verify-core/src/edition2/mod.rs#read_row_statement	ciris-verify-core@v23.3.0	78d555939b6c58d4d3f8eea151d8365316ae20c2e0000a82fba7f692a1c24f7c
 2.6.1	CLM-signed-object-cose-planned	CIRISVerify	src/ciris-verify-core/src/edition2/keys.rs#KeyRecordDirectory::chain	ciris-verify-core@v23.3.0	6e6a493a8c701734bde8f948b1a2d40a2312ba7ff99f6334e3180cf33f3f8da9

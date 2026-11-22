@@ -1009,7 +1009,7 @@ fn target_of(row: &VerifiedRow) -> Option<Digest32> {
 }
 
 /// [`target_of`] over a payload.
-fn target_in(payload: &Value) -> Option<Digest32> {
+pub(crate) fn target_in(payload: &Value) -> Option<Digest32> {
     let t = payload.get_text("refs")?.get_text("target")?;
     match t.as_array()? {
         [ed, id] if ed.as_u64() == Some(super::EDITION) => match id.as_array()? {

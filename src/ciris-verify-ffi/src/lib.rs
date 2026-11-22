@@ -1446,7 +1446,7 @@ fn get_or_init_named_storage(
 fn build_timeout_response(_request: &LicenseStatusRequest) -> LicenseStatusResponse {
     use ciris_keyring::{PlatformAttestation, SoftwareAttestation};
 
-    let now = chrono::Utc::now().timestamp();
+    let now = ciris_verify_core::utc::UtcDateTime::now().timestamp();
 
     LicenseStatusResponse {
         status: LicenseStatus::ErrorVerificationFailed,
@@ -1903,7 +1903,7 @@ pub unsafe extern "C" fn ciris_verify_create_federation_identity(
             .get("valid_from")
             .and_then(|v| v.as_str())
             .map(str::to_string)
-            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+            .unwrap_or_else(|| ciris_verify_core::utc::UtcDateTime::now().to_rfc3339());
         // #267: optional expiry. ABSENT means no self-asserted expiry, which
         // reproduces the pre-14.0 envelope bytes exactly.
         //
@@ -2796,7 +2796,7 @@ unsafe fn export_attestation_inner(
         "pqc_signature": "",
         "merkle_root": hex::encode(merkle_root),
         "log_entry_count": log_entry_count,
-        "generated_at": chrono::Utc::now().timestamp(),
+        "generated_at": ciris_verify_core::utc::UtcDateTime::now().timestamp(),
         "binary_version": env!("CARGO_PKG_VERSION"),
         "hardware_type": hardware_type_str,
         "hardware_backed": hardware_backed,
@@ -3713,7 +3713,7 @@ fn write_json_out(json: &str, result_out: *mut *mut u8, result_len_out: *mut usi
 /// The halt latch's view at `now`, as JSON.
 fn latch_view(
     latch: &ciris_verify_core::accord_halt_latch::HaltLatch,
-    now: chrono::DateTime<chrono::Utc>,
+    now: ciris_verify_core::utc::UtcDateTime,
     fuse: u64,
 ) -> serde_json::Value {
     let active = latch.active_halt(now, fuse);
@@ -3766,12 +3766,12 @@ pub unsafe extern "C" fn ciris_verify_accord_latch_status(
         let Ok(req) = serde_json::from_slice::<Req>(bytes) else {
             return CirisVerifyError::SerializationError as i32;
         };
-        let Ok(now) = chrono::DateTime::parse_from_rfc3339(&req.now) else {
+        let Ok(now) = ciris_verify_core::utc::UtcDateTime::parse_from_rfc3339(&req.now) else {
             return CirisVerifyError::SerializationError as i32;
         };
         let latch = req.latch.unwrap_or_default();
         let fuse = req.halt_fuse_secs.unwrap_or(DEFAULT_HALT_FUSE_SECS);
-        let out = latch_view(&latch, now.with_timezone(&chrono::Utc), fuse);
+        let out = latch_view(&latch, now, fuse);
         write_json_out(&out.to_string(), result_out, result_len_out)
     })
 }
@@ -4164,7 +4164,7 @@ unsafe fn run_attestation_inner(
                     ATTESTATION_TIMEOUT.as_secs()
                 ),
                 errors: vec!["Attestation timeout: network unreachable".to_string()],
-                timestamp: chrono::Utc::now().timestamp(),
+                timestamp: ciris_verify_core::utc::UtcDateTime::now().timestamp(),
             }
         },
     };

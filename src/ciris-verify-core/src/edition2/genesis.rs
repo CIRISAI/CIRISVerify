@@ -5,7 +5,7 @@
 //! `COSE_Sign1` per holder over one payload, with no `author`, so every voice
 //! has the same object id (`["CEG-object/2", typ, null, payload]`). Its
 //! payload names rows and never copies them: each holder's, seat's and
-//! witness's `key:record` and each seat's `identity:occurrence` binding stand
+//! transparency service's `key:record` and each seat's `identity:occurrence` binding stand
 //! in `refs.also.cites` by row id. The bundle's own count is the canonical
 //! conferral of every seat in `serve_nodes` (CC 4.2.1).
 //!
@@ -24,7 +24,7 @@
 //! [`GenesisVerdict`] has four forms:
 //!
 //! - **Valid**, with the [`GenesisPlacement`]: the holders, the seats with
-//!   their bindings' two X-Wing keys, the witnesses, the charter and the
+//!   their bindings' two X-Wing keys, the transparency_services, the charter and the
 //!   lineage's commitments (named and spent), so a consumer does not place
 //!   rows again;
 //! - **Invalid** (`genesis_bundle_malformed`, with a reason) for a fault in
@@ -50,10 +50,10 @@
 //!    `⌊asserted_at / 1000⌋`; its role, `kid` and signature once the keys are
 //!    placed (below);
 //! 2. the payload: the closed CDDL map, the sets, then the prose checks
-//!    (`version` 1 iff no `prev`; `holders` / `serve_nodes` / `witnesses`
+//!    (`version` 1 iff no `prev`; `holders` / `serve_nodes` / `transparency_services`
 //!    disjoint; the commitments keyed by exactly `holders`; `scope` holding
-//!    `infra:attest` and `infra:serve`; the witness members together, with
-//!    `witness_quorum = ⌊|witnesses| / 2⌋ + 1`);
+//!    `infra:attest` and `infra:serve`; the transparency-service members together, with
+//!    `receipt_quorum = ⌊|transparency_services| / 2⌋ + 1`);
 //! 3. a first bundle: the anchor; a later bundle: the predecessor,
 //!    `version` = prev's + 1, the same `family_key_id`;
 //! 4. the named rows: Waiting on any not held; then each placed by family and
@@ -192,12 +192,12 @@ pub struct GenesisCharter {
     pub halt_fuse_secs: Option<u32>,
     /// The attach window, where stated.
     pub attach_window_secs: Option<u32>,
-    /// The witness cadence, in witnessed mode.
-    pub witness_cadence_secs: Option<u32>,
-    /// The witness quorum, in witnessed mode.
-    pub witness_quorum: Option<u32>,
-    /// The witness directory (empty: witnessed mode off).
-    pub witnesses: Vec<String>,
+    /// The receipt cadence, in witnessed mode.
+    pub receipt_cadence_secs: Option<u32>,
+    /// The receipt quorum, in witnessed mode.
+    pub receipt_quorum: Option<u32>,
+    /// The transparency-service directory (empty: witnessed mode off).
+    pub transparency_services: Vec<String>,
 }
 
 impl GenesisCharter {
@@ -252,10 +252,10 @@ pub struct PlacedSeat {
     pub dial_hints: Vec<super::fedcode::Hint>,
 }
 
-/// A witness in the charter's directory.
+/// A transparency service in the charter's directory.
 #[derive(Debug, Clone)]
-pub struct PlacedWitness {
-    /// The witness's identity reference.
+pub struct PlacedTransparencyService {
+    /// The service's identity reference.
     pub identity_ref: String,
     /// The thumbprint of the key its named record holds.
     pub kid: Digest32,
@@ -282,8 +282,8 @@ pub struct GenesisPlacement {
     pub holders: Vec<PlacedHolder>,
     /// The seats, in `serve_nodes` order; each canonical by this count.
     pub seats: Vec<PlacedSeat>,
-    /// The witnesses, in directory order.
-    pub witnesses: Vec<PlacedWitness>,
+    /// The transparency_services, in directory order.
+    pub transparency_services: Vec<PlacedTransparencyService>,
     /// The charter.
     pub charter: GenesisCharter,
     /// The identity references whose statements counted, sorted.
@@ -334,16 +334,16 @@ pub enum Malformed {
     },
     /// `version` is 1 with a `prev`, not 1 without one, or not prev's + 1.
     VersionPrevMismatch,
-    /// `holders`, `serve_nodes` and `witnesses` are not pairwise disjoint.
+    /// `holders`, `serve_nodes` and `transparency_services` are not pairwise disjoint.
     HoldersSeatsOverlap,
     /// The keys of `recovery_commitments` are not exactly `holders`.
     RecoveryCommitmentsNotHolders,
     /// `scope` lacks `infra:attest` or `infra:serve`.
     ScopeMissingInfra,
-    /// Some but not all of the three witness members.
-    WitnessMembersPartial,
-    /// `witness_quorum` is not `⌊|witnesses| / 2⌋ + 1`.
-    WitnessQuorumMismatch,
+    /// Some but not all of the three transparency-service members.
+    TransparencyMembersPartial,
+    /// `receipt_quorum` is not `⌊|transparency_services| / 2⌋ + 1`.
+    ReceiptQuorumMismatch,
     /// A later bundle changes `family_key_id` (CC 5.3.4).
     FamilyKeyIdChanged,
     /// A recovery's new signing key is the recovery key, or a key a
@@ -384,8 +384,8 @@ impl Malformed {
             Self::HoldersSeatsOverlap => "holders_seats_overlap",
             Self::RecoveryCommitmentsNotHolders => "recovery_commitments_not_holders",
             Self::ScopeMissingInfra => "scope_missing_infra",
-            Self::WitnessMembersPartial => "witness_members_partial",
-            Self::WitnessQuorumMismatch => "witness_quorum_mismatch",
+            Self::TransparencyMembersPartial => "transparency_members_partial",
+            Self::ReceiptQuorumMismatch => "receipt_quorum_mismatch",
             Self::FamilyKeyIdChanged => "family_key_id_changed",
             Self::RecoveryKeyIsSigningKey => "recovery_key_is_signing_key",
             Self::RecoveryReusesSigningKey => "recovery_reuses_signing_key",
@@ -1167,9 +1167,9 @@ fn parse_payload(p: &Value) -> Result<Bundle, Malformed> {
         &[
             "halt_fuse_secs",
             "attach_window_secs",
-            "witness_cadence_secs",
-            "witness_quorum",
-            "witnesses",
+            "receipt_cadence_secs",
+            "receipt_quorum",
+            "transparency_services",
         ],
         "genesis-charter",
     )?;
@@ -1198,15 +1198,15 @@ fn parse_payload(p: &Value) -> Result<Bundle, Malformed> {
     check_set_order(scope_v, "scope")?;
     let halt_fuse_secs = u32_in(ch.get_text("halt_fuse_secs"), 1, "halt_fuse_secs")?;
     let attach_window_secs = u32_in(ch.get_text("attach_window_secs"), 1, "attach_window_secs")?;
-    let witness_cadence_secs = u32_in(
-        ch.get_text("witness_cadence_secs"),
+    let receipt_cadence_secs = u32_in(
+        ch.get_text("receipt_cadence_secs"),
         1,
-        "witness_cadence_secs",
+        "receipt_cadence_secs",
     )?;
-    let witness_quorum = u32_in(ch.get_text("witness_quorum"), 2, "witness_quorum")?;
-    let witnesses = ch
-        .get_text("witnesses")
-        .map(|w| identity_ref_set(w, "witnesses"))
+    let receipt_quorum = u32_in(ch.get_text("receipt_quorum"), 2, "receipt_quorum")?;
+    let transparency_services = ch
+        .get_text("transparency_services")
+        .map(|w| identity_ref_set(w, "transparency_services"))
         .transpose()?;
 
     // The prose checks.
@@ -1215,7 +1215,7 @@ fn parse_payload(p: &Value) -> Result<Bundle, Malformed> {
     }
     let (h, s): (BTreeSet<&String>, BTreeSet<&String>) =
         (holders.iter().collect(), serve_nodes.iter().collect());
-    let w: BTreeSet<&String> = witnesses.iter().flatten().collect();
+    let w: BTreeSet<&String> = transparency_services.iter().flatten().collect();
     if !h.is_disjoint(&s) || !h.is_disjoint(&w) || !s.is_disjoint(&w) {
         return Err(Malformed::HoldersSeatsOverlap);
     }
@@ -1225,15 +1225,16 @@ fn parse_payload(p: &Value) -> Result<Bundle, Malformed> {
     if !REQUIRED_SCOPE.iter().all(|r| scope.iter().any(|s| s == r)) {
         return Err(Malformed::ScopeMissingInfra);
     }
-    match (&witnesses, witness_quorum, witness_cadence_secs) {
+    match (&transparency_services, receipt_quorum, receipt_cadence_secs) {
         (None, None, None) => {},
         (Some(ws), Some(q), Some(_)) => {
-            let want = u32::try_from(ws.len() / 2 + 1).map_err(|_| schema("witnesses"))?;
+            let want =
+                u32::try_from(ws.len() / 2 + 1).map_err(|_| schema("transparency_services"))?;
             if q != want {
-                return Err(Malformed::WitnessQuorumMismatch);
+                return Err(Malformed::ReceiptQuorumMismatch);
             }
         },
-        _ => return Err(Malformed::WitnessMembersPartial),
+        _ => return Err(Malformed::TransparencyMembersPartial),
     }
     Ok(Bundle {
         prev,
@@ -1248,9 +1249,9 @@ fn parse_payload(p: &Value) -> Result<Bundle, Malformed> {
             scope,
             halt_fuse_secs,
             attach_window_secs,
-            witness_cadence_secs,
-            witness_quorum,
-            witnesses: witnesses.unwrap_or_default(),
+            receipt_cadence_secs,
+            receipt_quorum,
+            transparency_services: transparency_services.unwrap_or_default(),
         },
     })
 }
@@ -1655,12 +1656,12 @@ fn read_one(
                 }
             })
             .collect(),
-        witnesses: charter
-            .witnesses
+        transparency_services: charter
+            .transparency_services
             .iter()
             .map(|w| {
                 let r = &rows.records[w];
-                PlacedWitness {
+                PlacedTransparencyService {
                     identity_ref: w.clone(),
                     kid: r.rec.kid,
                     key: r.rec.key.clone(),
@@ -1804,9 +1805,9 @@ fn recovery_rules(
                 .iter()
                 .map(|s| s.identity_ref.as_str())
                 .collect::<Vec<_>>()
-        && ids(&b.charter.witnesses)
+        && ids(&b.charter.transparency_services)
             == pp
-                .witnesses
+                .transparency_services
                 .iter()
                 .map(|w| w.identity_ref.as_str())
                 .collect::<Vec<_>>();
@@ -1814,9 +1815,9 @@ fn recovery_rules(
     let same_charter = c.scope == pc.scope
         && c.halt_fuse_secs == pc.halt_fuse_secs
         && c.attach_window_secs == pc.attach_window_secs
-        && c.witness_cadence_secs == pc.witness_cadence_secs
-        && c.witness_quorum == pc.witness_quorum
-        && c.witnesses == pc.witnesses;
+        && c.receipt_cadence_secs == pc.receipt_cadence_secs
+        && c.receipt_quorum == pc.receipt_quorum
+        && c.transparency_services == pc.transparency_services;
     let same_rows = same_roster
         && pp
             .holders
@@ -1831,7 +1832,7 @@ fn recovery_rules(
                 && rows.bindings[&s.identity_ref].id == s.binding
         })
         && pp
-            .witnesses
+            .transparency_services
             .iter()
             .all(|w| rows.records[&w.identity_ref].id == w.record);
     if !same_roster || !same_charter || !same_rows {
@@ -1918,7 +1919,7 @@ struct Rows {
 enum Place {
     Holder,
     Seat,
-    Witness,
+    TransparencyService,
 }
 
 fn unplaced(row: Option<Digest32>, party: Option<&str>) -> Inconclusive {
@@ -1962,8 +1963,8 @@ fn place_rows(
             Some(Place::Holder)
         } else if b.serve_nodes.iter().any(|s| s == p) {
             Some(Place::Seat)
-        } else if b.charter.witnesses.iter().any(|w| w == p) {
-            Some(Place::Witness)
+        } else if b.charter.transparency_services.iter().any(|w| w == p) {
+            Some(Place::TransparencyService)
         } else {
             None
         }
@@ -2005,7 +2006,7 @@ fn place_rows(
         .holders
         .iter()
         .chain(&b.serve_nodes)
-        .chain(&b.charter.witnesses);
+        .chain(&b.charter.transparency_services);
     for p in parties {
         if !record_slots.contains_key(p.as_str()) {
             return Err(unplaced(None, Some(p)));
@@ -2053,7 +2054,7 @@ fn place_rows(
                     return Err(row_invalid(*id, RowFault::SeatRecordEnded));
                 }
             },
-            Place::Witness => {},
+            Place::TransparencyService => {},
         }
         records.insert((*party).to_owned(), PlacedRecord { id: *id, rec });
     }
@@ -2382,15 +2383,15 @@ mod tests {
             family_key_id: String::new(),
             holders: vec![],
             seats: vec![],
-            witnesses: vec![],
+            transparency_services: vec![],
             charter: GenesisCharter {
                 recovery_commitments: BTreeMap::new(),
                 scope: vec![],
                 halt_fuse_secs: None,
                 attach_window_secs: None,
-                witness_cadence_secs: None,
-                witness_quorum: None,
-                witnesses: vec![],
+                receipt_cadence_secs: None,
+                receipt_quorum: None,
+                transparency_services: vec![],
             },
             counted: vec![],
             recovered: None,

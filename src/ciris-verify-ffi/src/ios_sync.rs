@@ -91,7 +91,7 @@ pub fn get_license_status_blocking(
 
     info!("iOS sync: Using TLS mode: {}", tls_mode);
 
-    let now = chrono::Utc::now().timestamp();
+    let now = ciris_verify_core::utc::UtcDateTime::now().timestamp();
 
     // Trust root (CC 5.3.4): every configured host's GenesisBundle, verified
     // against the baked accord holders, selected by the core's rule.

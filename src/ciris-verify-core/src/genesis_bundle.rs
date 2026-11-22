@@ -31,7 +31,7 @@
 //!
 //! **Records are projected through typed serde, never from raw wire JSON**,
 //! because that is what persist does and the two are not the same bytes: a
-//! record's instants re-render through `chrono` (`+00:00` becomes `Z`, trailing
+//! record's instants re-render through chrono's serde, which `UtcDateTime` reproduces (`+00:00` becomes `Z`, trailing
 //! zero fractions drop), an `Option` written as `null` is omitted, an empty
 //! `roles` is materialized as `[]`, an unknown member is dropped. Each mirror
 //! type below carries persist's serde attributes member for member, and the
@@ -54,7 +54,7 @@ use crate::prelude::*;
 
 use alloc::collections::BTreeSet;
 
-use chrono::{DateTime, Utc};
+use crate::utc::UtcDateTime;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -163,18 +163,18 @@ struct KeyRecord {
     algorithm: String,
     identity_type: String,
     identity_ref: String,
-    valid_from: DateTime<Utc>,
+    valid_from: UtcDateTime,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    valid_until: Option<DateTime<Utc>>,
+    valid_until: Option<UtcDateTime>,
     registration_envelope: Value,
     original_content_hash: String,
     scrub_signature_classical: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     scrub_signature_pqc: Option<String>,
     scrub_key_id: String,
-    scrub_timestamp: DateTime<Utc>,
+    scrub_timestamp: UtcDateTime,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pqc_completed_at: Option<DateTime<Utc>>,
+    pqc_completed_at: Option<UtcDateTime>,
     persist_row_hash: String,
     #[serde(default, rename = "roles")]
     capability_roles: Vec<String>,
@@ -208,7 +208,7 @@ struct SignedKeyRecord {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct RosterMember {
     key_id: String,
-    joined_at: DateTime<Utc>,
+    joined_at: UtcDateTime,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     role: Option<String>,
 }
@@ -218,12 +218,12 @@ struct Family {
     family_key_id: String,
     family_name: String,
     members: Vec<RosterMember>,
-    founded_at: DateTime<Utc>,
+    founded_at: UtcDateTime,
     consensus_protocol: String,
     #[serde(default)]
     consensus_protocol_entrenched: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    dissolved_at: Option<DateTime<Utc>>,
+    dissolved_at: Option<UtcDateTime>,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     prev_head_digest: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -236,7 +236,7 @@ struct Community {
     community_key_id: String,
     community_name: String,
     members: Vec<RosterMember>,
-    founded_at: DateTime<Utc>,
+    founded_at: UtcDateTime,
     consensus_protocol: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     policy_blob: Option<Value>,

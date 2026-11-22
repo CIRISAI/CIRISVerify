@@ -75,7 +75,7 @@ pub fn sign_build_manifest(
     mldsa_secret: &[u8],
     key_id: &str,
 ) -> Result<Vec<u8>> {
-    let now = chrono::Utc::now().to_rfc3339();
+    let now = ciris_verify_core::utc::UtcDateTime::now().to_rfc3339();
 
     // Compute manifest_hash from extras (if present) — falls back to
     // hashing the binary_hash if the primitive has no extras (so it's

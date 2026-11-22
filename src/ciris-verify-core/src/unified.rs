@@ -741,7 +741,7 @@ impl UnifiedAttestationEngine {
                     checks_total: 0,
                     diagnostics: format!("Attestation timed out after {:?}", ATTESTATION_TIMEOUT),
                     errors: vec![format!("Timeout after {:?}", ATTESTATION_TIMEOUT)],
-                    timestamp: chrono::Utc::now().timestamp(),
+                    timestamp: crate::utc::UtcDateTime::now().timestamp(),
                 })
             },
         }
@@ -842,7 +842,7 @@ impl UnifiedAttestationEngine {
                 NETWORK_PROBE_TIMEOUT
             ),
             errors: vec![format!("Network unreachable (probe elapsed {:?})", elapsed)],
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: crate::utc::UtcDateTime::now().timestamp(),
         }
     }
 
@@ -2146,7 +2146,7 @@ impl UnifiedAttestationEngine {
             checks_total,
             diagnostics,
             errors,
-            timestamp: chrono::Utc::now().timestamp(),
+            timestamp: crate::utc::UtcDateTime::now().timestamp(),
         })
     }
 

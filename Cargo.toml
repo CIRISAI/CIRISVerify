@@ -13,7 +13,7 @@ members = [
 ]
 
 [workspace.package]
-version = "23.4.0"
+version = "23.4.1"
 edition = "2021"
 rust-version = "1.89"
 license = "AGPL-3.0-or-later"
@@ -78,9 +78,6 @@ rusqlite = { version = "0.41" }
 # Logging (Veilid-compatible)
 tracing = { version = "0.1", default-features = false, features = ["attributes"] }
 tracing-subscriber = "0.3"
-
-# Time
-chrono = { version = "0.4", features = ["serde"] }
 
 # DNS (with DNS-over-HTTPS for mobile compatibility). 0.25 restructured the
 

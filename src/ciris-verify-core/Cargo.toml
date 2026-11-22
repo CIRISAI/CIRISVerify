@@ -27,8 +27,6 @@ std = [
     "serde/std",
     "serde_json/std",
     "thiserror/std",
-    "chrono/std",
-    "chrono/clock",
     "sha2/std",
     "hex/std",
     "base64/std",
@@ -158,9 +156,6 @@ thiserror.workspace = true
 # Logging
 tracing.workspace = true
 tracing-subscriber = { workspace = true, optional = true }
-
-# Time
-chrono = { version = "0.4", default-features = false, features = ["alloc", "serde"] }
 
 # TLS for `mobile_http` (ureq on Android/iOS) with bundled Mozilla CA certs.
 # ring backend to match the repo's force-ring policy.

@@ -62,7 +62,7 @@ use std::path::PathBuf;
 #[cfg(feature = "std")]
 use std::sync::{Arc, RwLock};
 
-use chrono::{DateTime, Utc};
+use crate::utc::UtcDateTime;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -305,7 +305,7 @@ pub struct SignedTreeHead {
     /// Merkle root at `tree_size`.
     pub root_hash: [u8; 32],
     /// Wall-clock time the STH was signed.
-    pub timestamp: DateTime<Utc>,
+    pub timestamp: UtcDateTime,
     /// Composite ML-DSA-65-Ed25519 signature (CC 2.6.1.7, 3373 bytes) over
     /// the canonical signing bytes of (log_id, tree_size, root_hash,
     /// timestamp). Standard padded base64 in serde.
@@ -325,7 +325,7 @@ impl SignedTreeHead {
         log_id: &str,
         tree_size: u64,
         root_hash: &[u8; 32],
-        timestamp: DateTime<Utc>,
+        timestamp: UtcDateTime,
     ) -> Vec<u8> {
         // length-prefixed log_id || tree_size LE || root_hash || ts secs LE || ts nanos LE
         let lid = log_id.as_bytes();
@@ -354,9 +354,10 @@ impl SignedTreeHead {
     /// defenses **must** call this — `verify_inclusion` against an STH
     /// root proves membership, not recency.
     #[must_use]
-    pub fn is_fresh(&self, now: DateTime<Utc>, max_age: chrono::Duration) -> bool {
-        let delta = now.signed_duration_since(self.timestamp);
-        delta >= -max_age && delta <= max_age
+    pub fn is_fresh(&self, now: UtcDateTime, max_age: core::time::Duration) -> bool {
+        let delta = now.signed_nanos_since(&self.timestamp);
+        let max = i128::try_from(max_age.as_nanos()).unwrap_or(i128::MAX);
+        -max <= delta && delta <= max
     }
 
     /// The signing bytes for this STH's own fields — what both the log
@@ -1023,7 +1024,7 @@ impl<L: TransparencyLeaf> TransparencyLog<L> {
     ) -> Result<SignedTreeHead, TransparencyError> {
         let tree_size = self.store.tree_size()?;
         let root_hash = self.store.root()?;
-        let timestamp = Utc::now();
+        let timestamp = UtcDateTime::now();
         let signing_bytes =
             SignedTreeHead::signing_bytes(&self.log_id, tree_size, &root_hash, timestamp);
         let signature = signer.sign(&signing_bytes)?;
@@ -1911,8 +1912,18 @@ mod tests {
         fill_log(&b, 3);
         // Roots happen to match (same leaves), but log_ids are distinct so
         // signed heads will carry different log_id fields.
-        let sa = SignedTreeHead::signing_bytes("log-a", 3, &a.merkle_root().unwrap(), Utc::now());
-        let sb = SignedTreeHead::signing_bytes("log-b", 3, &b.merkle_root().unwrap(), Utc::now());
+        let sa = SignedTreeHead::signing_bytes(
+            "log-a",
+            3,
+            &a.merkle_root().unwrap(),
+            UtcDateTime::now(),
+        );
+        let sb = SignedTreeHead::signing_bytes(
+            "log-b",
+            3,
+            &b.merkle_root().unwrap(),
+            UtcDateTime::now(),
+        );
         assert_ne!(
             sa, sb,
             "STH signing bytes must include log_id so identical-tree logs sign distinctly"
@@ -1923,17 +1934,39 @@ mod tests {
     /// inputs (deterministic canonicalization).
     #[test]
     fn sth_signing_bytes_deterministic() {
-        let ts = chrono::DateTime::from_timestamp(1700000000, 12345).unwrap();
+        let ts = UtcDateTime::from_timestamp(1700000000, 12345).unwrap();
         let root = [0x42u8; 32];
         let a = SignedTreeHead::signing_bytes("log-x", 100, &root, ts);
         let b = SignedTreeHead::signing_bytes("log-x", 100, &root, ts);
         assert_eq!(a, b);
     }
 
+    /// Lock: the timestamp enters the signing bytes as chrono's `timestamp()`
+    /// (i64 LE) then `timestamp_subsec_nanos()` (u32 LE), as before the
+    /// chrono replacement, and a serde round trip keeps them.
+    #[test]
+    fn sth_signing_bytes_timestamp_layout() {
+        let ts = UtcDateTime::from_timestamp(1_700_000_000, 12_345).unwrap();
+        let b = SignedTreeHead::signing_bytes("l", 7, &[9u8; 32], ts);
+        let mut want = vec![1, 0, 0, 0, b'l'];
+        want.extend_from_slice(&7u64.to_le_bytes());
+        want.extend_from_slice(&[9u8; 32]);
+        want.extend_from_slice(&1_700_000_000i64.to_le_bytes());
+        want.extend_from_slice(&12_345u32.to_le_bytes());
+        assert_eq!(b, want);
+        let json = serde_json::to_string(&ts).unwrap();
+        assert_eq!(json, "\"2023-11-14T22:13:20.000012345Z\"");
+        let back: UtcDateTime = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            SignedTreeHead::signing_bytes("l", 7, &[9u8; 32], back),
+            want
+        );
+    }
+
     /// Lock: changing any field changes the signing bytes.
     #[test]
     fn sth_signing_bytes_sensitive_to_every_field() {
-        let ts = chrono::DateTime::from_timestamp(1700000000, 0).unwrap();
+        let ts = UtcDateTime::from_timestamp(1700000000, 0).unwrap();
         let root1 = [0x42u8; 32];
         let root2 = [0x43u8; 32];
         let base = SignedTreeHead::signing_bytes("log-x", 100, &root1, ts);
@@ -1949,7 +1982,7 @@ mod tests {
             base,
             SignedTreeHead::signing_bytes("log-x", 100, &root2, ts)
         );
-        let ts2 = chrono::DateTime::from_timestamp(1700000001, 0).unwrap();
+        let ts2 = UtcDateTime::from_timestamp(1700000001, 0).unwrap();
         assert_ne!(
             base,
             SignedTreeHead::signing_bytes("log-x", 100, &root1, ts2)
@@ -2080,7 +2113,7 @@ mod tests {
 
     #[test]
     fn sth_serde_rejects_non_base64_signature() {
-        let sth = sth_with_ts(chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap());
+        let sth = sth_with_ts(UtcDateTime::from_timestamp(1_700_000_000, 0).unwrap());
         let mut json = serde_json::to_value(&sth).unwrap();
         json["signature"] = serde_json::Value::String("not base64!".into());
         assert!(serde_json::from_value::<SignedTreeHead>(json).is_err());
@@ -2412,22 +2445,22 @@ mod tests {
 
     #[test]
     fn sth_is_fresh_policy() {
-        let now = chrono::DateTime::from_timestamp(1_700_000_000, 0).unwrap();
-        let max_age = chrono::Duration::hours(24);
+        let now = UtcDateTime::from_timestamp(1_700_000_000, 0).unwrap();
+        let max_age = core::time::Duration::from_secs(24 * 3600);
 
         // Within window.
-        assert!(sth_with_ts(now - chrono::Duration::hours(1)).is_fresh(now, max_age));
+        assert!(sth_with_ts(now.checked_add_secs(-3600).unwrap()).is_fresh(now, max_age));
         // Stale.
-        assert!(!sth_with_ts(now - chrono::Duration::hours(48)).is_fresh(now, max_age));
+        assert!(!sth_with_ts(now.checked_add_secs(-48 * 3600).unwrap()).is_fresh(now, max_age));
         // Wildly future (clock-skew abuse) — also rejected.
-        assert!(!sth_with_ts(now + chrono::Duration::hours(48)).is_fresh(now, max_age));
+        assert!(!sth_with_ts(now.checked_add_secs(48 * 3600).unwrap()).is_fresh(now, max_age));
         // Small future skew within tolerance — accepted.
-        assert!(sth_with_ts(now + chrono::Duration::minutes(5)).is_fresh(now, max_age));
+        assert!(sth_with_ts(now.checked_add_secs(300).unwrap()).is_fresh(now, max_age));
     }
 
     /// Build a throwaway STH carrying `ts` — only `timestamp` is read by
     /// `is_fresh`, so the signature is a zero-filled stub.
-    fn sth_with_ts(ts: DateTime<Utc>) -> SignedTreeHead {
+    fn sth_with_ts(ts: UtcDateTime) -> SignedTreeHead {
         SignedTreeHead {
             log_id: "test-log".into(),
             tree_size: 1,

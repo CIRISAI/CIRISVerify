@@ -72,11 +72,11 @@ pub fn persist_row_hash<T: Serialize + ?Sized>(row: &T) -> Result<String, serde_
 ///
 /// A string is rewritten only when its fraction (the digits after its first
 /// `.`) is longer than six digits and the whole string parses as RFC 3339. The
-/// kept fraction is printed the way chrono prints a microsecond value: none
+/// kept fraction is printed the way chrono (and `UtcDateTime`) prints a microsecond value: none
 /// when it is zero, three digits when it is whole milliseconds, else six
 /// (`.535897932` → `.535897`, `.123000789` → `.123`, `.000000789` → none). A
 /// fraction of six digits or fewer is left exactly as written, and the offset
-/// is kept as written (a typed `DateTime<Utc>` already serializes with `Z`).
+/// is kept as written (a typed `UtcDateTime` already serializes with `Z`).
 pub fn truncate_instants_to_microseconds(value: &mut Value) {
     match value {
         Value::String(s) => {
@@ -101,7 +101,7 @@ fn truncate_rfc3339_to_microseconds(s: &str) -> Option<String> {
         return None;
     }
     // Only an actual instant is rewritten; a digest or a key id never parses.
-    chrono::DateTime::parse_from_rfc3339(s).ok()?;
+    crate::utc::UtcDateTime::parse_from_rfc3339(s).ok()?;
     let micros = &s[frac_start..frac_start + 6];
     let keep = if micros == "000000" {
         0

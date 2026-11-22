@@ -68,9 +68,9 @@ use std::path::PathBuf;
 
 use anyhow::{anyhow, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
-use chrono::Utc;
 use ciris_crypto::{ClassicalSigner, Ed25519Signer, MlDsa65Signer, PqcSigner};
 use ciris_verify_core::security::build_manifest::BuildManifest;
+use ciris_verify_core::utc::UtcDateTime as Utc;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 

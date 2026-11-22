@@ -5,7 +5,7 @@
 use std::collections::BTreeMap;
 use std::path::Path;
 
-use chrono::Utc;
+use ciris_verify_core::utc::UtcDateTime as Utc;
 use sha2::{Digest, Sha256};
 
 use crate::parser::{parse_binary, ParseError};

@@ -20,7 +20,6 @@
 
 use std::collections::BTreeMap;
 
-use chrono::{DateTime, TimeZone, Utc};
 use ciris_crypto::composite::CompositeSigningKey;
 use ciris_verify_core::accord_halt_latch::{ForwardRow, HaltLatch, LatchOutcome};
 use ciris_verify_core::cde;
@@ -29,6 +28,7 @@ use ciris_verify_core::edition2::accord_halt::{
     HaltRefusal, HaltRoster, InvocationRow, InvokeKind, LifecycleKind, LifecycleRow, RosterHolder,
 };
 use ciris_verify_core::edition2::{sign_row_statement, thumbprint};
+use ciris_verify_core::utc::UtcDateTime;
 use serde_json::Value as J;
 
 const FILE: &str = include_str!("vectors/accord_halt/accord_halt_v2.json");
@@ -360,9 +360,8 @@ fn waiting_turns_valid_under_the_roster_it_waits_on() {
     ));
 }
 
-fn at(ms: u64) -> DateTime<Utc> {
-    Utc.timestamp_millis_opt(i64::try_from(ms).unwrap())
-        .unwrap()
+fn at(ms: u64) -> UtcDateTime {
+    UtcDateTime::from_timestamp_millis(i64::try_from(ms).unwrap()).unwrap()
 }
 
 #[test]

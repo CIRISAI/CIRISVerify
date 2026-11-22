@@ -176,6 +176,48 @@ pub fn call_stream_id(
     Ok(h.finalize().into())
 }
 
+/// The domain label of a file delivery stream's id (CC 5.3.3.8, rc22 0774639).
+pub const FILE_STREAM_ID_LABEL: &[u8] = b"ciris:file-stream:v1";
+/// The text prefix of a file stream id.
+pub const FILE_STREAM_ID_PREFIX: &str = "file-";
+
+/// The id of a file delivery stream (CC 5.3.3.8), which commits to its
+/// producer:
+///
+/// ```text
+/// "file-" ‖ lower-hex(SHA-256("ciris:file-stream:v1" ‖ u16_be(len producer) ‖ producer ‖ nonce[32]))
+/// ```
+///
+/// `producer` is the UTF-8 text of the opening member's identity reference.
+/// The `(producer, nonce)` pair travels beside a stream head as submission
+/// material, so a service holding no part of the stream can recompute the
+/// id and check the head's author.
+///
+/// # Errors
+///
+/// [`StreamIdError::FieldLength`] when `producer` is empty or over
+/// [`CALL_STREAM_FIELD_MAX`] bytes.
+pub fn file_stream_id(producer: &str, nonce: &[u8; 32]) -> Result<String, StreamIdError> {
+    use sha2::Digest;
+    let n = match u16::try_from(producer.len()) {
+        Ok(n) if (1..=CALL_STREAM_FIELD_MAX).contains(&producer.len()) => n,
+        _ => return Err(StreamIdError::FieldLength("producer")),
+    };
+    let mut h = Sha256::new();
+    h.update(FILE_STREAM_ID_LABEL);
+    h.update(n.to_be_bytes());
+    h.update(producer.as_bytes());
+    h.update(nonce);
+    let d: [u8; 32] = h.finalize().into();
+    let mut out = String::with_capacity(FILE_STREAM_ID_PREFIX.len() + 64);
+    out.push_str(FILE_STREAM_ID_PREFIX);
+    for b in d {
+        out.push(char::from(b"0123456789abcdef"[usize::from(b >> 4)]));
+        out.push(char::from(b"0123456789abcdef"[usize::from(b & 15)]));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
