@@ -717,10 +717,20 @@ Settled with Server (2026-11-22):
     the boot statement to the manifest row to the blob, one step each. It is a row-ref
     (`[2, [-16, digest]]`), the form every other payload uses to cite a row.
 
-Open for CC:
+Settled with CC (2026-11-22):
 
-19. **CC 5.3.5's route.** CC 5.3.5 still names `GET /v1/verify/build-manifest/{project}/{version}/{target}`
-    ("the verbatim signed BuildManifest"); the server proposes `/v1/provenance/build/…`. Which stays?
+19. **The route.** CC 5.3.5's `GET /v1/verify/build-manifest/{project}/{version}/{target}` returns the
+    earlier-form pair-signed BuildManifest and retires with the earlier form (described only in
+    CC 8.11). CC's text states what an answer contains and leaves the path to the door: for one
+    (project, version, target), the build-manifest row with every statement of it, its manifest
+    blob, the pipeline's key record, the counted grant with every voice, the grantee's acceptance,
+    the bundle the grant names, and the `withdraws` or `supersedes` rows that name the manifest
+    row, each a signed statement a reader verifies offline. Server's
+    `GET /v1/provenance/build/{project}/{version}/{target}` is the shipped route (§9); one call
+    answers the withdrawal view of §7.3.
+
+No question is open with CC. CC's text for the descriptor, the blob, the grant's `projects` and
+the one standing act rides its next pre tag, with the rewrite of CC 3.1.2.1.
 
 ## 15. Findings in the current code and docs
 
