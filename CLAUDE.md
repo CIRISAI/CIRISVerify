@@ -68,7 +68,7 @@ See [`docs/DEV_HYGIENE.md`](docs/DEV_HYGIENE.md) for the layered self-cleaning p
 
 ## Current Implementation Status
 
-*(Current release: **22.2.2** — see [Release history](#release-history) for this and every prior entry.)*
+*(Current release: **22.2.3** — see [Release history](#release-history) for this and every prior entry.)*
 
 | Crate | Status | Notes |
 |-------|--------|-------|
@@ -239,6 +239,7 @@ and concrete review-time examples.
 
 Newest first, **one release per line**, so adding a release is a one-line diff.
 
+- **22.2.3** (LTS) — Self-verification finds verify's own module by address, not by the file name `libciris_verify_ffi.so`, so an install that folds verify into a host extension (ciris_server's `_native*.so`, CIRISServer#232) locates it: the self hash (the #210 lookup, carried back from 23.0.0) and the function-integrity code base (`dl_iterate_phdr` / `/proc/self/maps` / `dladdr` / `GetModuleHandleExW` on the module containing a verify function). `SelfVerificationResult` gains `module_path` and `embedded_in_host` (serde-defaulted, so older payloads parse; Python types too); an embedded install with no manifest for its host binary reports `embedded_in_host: no manifest for host binary`, logged once at info, instead of FAILED every five minutes. Not a pass: `binary_valid` / `functions_valid` stay false and Level 1 is not met.
 - **22.2.2** (LTS) — `Validity::checked` signs `valid_until` in CC 2.6.2's millisecond form (`SecondsFormat::Millis`, always `.sssZ`): `AutoSi` wrote `…:15Z` for an instant on a whole second, which persist's subject binding refuses (CIRISPersist#659, about one boot in a thousand). An input finer than a millisecond is refused instead of truncated, so the signed instant never moves. Records already signed are unchanged.
 - **22.2.1** (SECURITY) — Drops `hickory-resolver` (no code used it since the DNS trust-root source was removed), clearing RUSTSEC-2026-0487/0489/0490/0491 (hickory-proto 0.25.2) for every consumer; `rustix` 1.1.6 (RUSTSEC-2026-0486), `quinn-udp` 0.5.16 (RUSTSEC-2026-0538). Advisory ignores 0097, 0098, 0099, 0104, 0118 and 0119 are removed as no longer encountered. PKCS#11 `C_Sign (EdDSA)` over-size inputs are recognised by `RvError::DataLenRange`, so the #113 message fires (#334).
 - **22.2.0** (SECURITY) — FedCode decoders enforce CC 2.6.8 (#331): `sha256(key_id)` is checked against the display id in constant time, the 1,024-byte payload bound applies on decode, a non-user v3 carrying only the PQC commitment decodes (refused only with `node_count > 0`), and a v2/v3 payload missing its group hint byte is refused; **`tests/vectors/fedcode/fedcode_vectors.json` is regenerated** (`known_disagreements` empty, four cases into `refusals`, four into `valid`), so the client, agent and server re-pin it. `safety_evidence` + `ciris-build-sign evidence` / `ciris-build-verify --evidence` sign and verify `evidence:safety_battery:{kind}:{cell}:{prefix}:v1` rows (CC 3.1.5.5; capture 1, interpret `2·pass_ratio − 1` with `evidence.pass_ratio`) (#322). rusqlite 0.41 / bundled SQLite 3.54.1 (RUSTSEC-2026-0459, #332), `time` 0.3.55 (RUSTSEC-2026-0009 ignore dropped); **MSRV 1.86 → 1.89**. CI pins CC rc16.
