@@ -21,14 +21,13 @@
 use std::collections::BTreeMap;
 
 use ciris_crypto::composite::CompositeSigningKey;
-use ciris_verify_core::accord_halt_latch::{ForwardRow, HaltLatch, LatchOutcome};
+use ciris_verify_core::accord_halt_latch::{ForwardRow, HaltLatch, LatchOutcome, MonotonicReading};
 use ciris_verify_core::cde;
 use ciris_verify_core::edition2::accord_halt::{
     named_accord_root, named_head, verify_invocation_row, verify_lifecycle_row, HaltReading,
     HaltRefusal, HaltRoster, InvocationRow, InvokeKind, LifecycleKind, LifecycleRow, RosterHolder,
 };
 use ciris_verify_core::edition2::{sign_row_statement, thumbprint};
-use ciris_verify_core::utc::UtcDateTime;
 use serde_json::Value as J;
 
 const FILE: &str = include_str!("vectors/accord_halt/accord_halt_v2.json");
@@ -360,8 +359,14 @@ fn waiting_turns_valid_under_the_roster_it_waits_on() {
     ));
 }
 
-fn at(ms: u64) -> UtcDateTime {
-    UtcDateTime::from_timestamp_millis(i64::try_from(ms).unwrap()).unwrap()
+/// The vectors state wall instants; every sequence runs forward, so each
+/// instant replays as one boot's monotonic reading (the fuse counts the
+/// difference) and as the wall instant of receipt.
+fn at(ms: u64) -> MonotonicReading {
+    MonotonicReading {
+        monotonic_ms: ms,
+        boot: [7; 16],
+    }
 }
 
 #[test]
@@ -383,8 +388,8 @@ fn latch_sequences() {
                     .unwrap_or_else(|| {
                         ForwardRow::Lifecycle(lifes.get(case).unwrap_or_else(|| panic!("{case}")))
                     });
-                let now = at(step["at_ms"].as_u64().unwrap());
-                let got = match latch.apply_forward(row, now, fuse) {
+                let ms = step["at_ms"].as_u64().unwrap();
+                let got = match latch.apply_forward(row, at(ms), Some(ms), fuse) {
                     LatchOutcome::Paused => "paused",
                     LatchOutcome::Confirmed => "confirmed",
                     LatchOutcome::Resumed => "resumed",
@@ -393,11 +398,16 @@ fn latch_sequences() {
                 };
                 assert_eq!(got, step["outcome"].as_str().unwrap(), "{sid}: {case}");
             } else {
-                let now = at(step["check"].as_u64().unwrap());
+                let ms = step["check"].as_u64().unwrap();
                 assert_eq!(
-                    latch.is_paused(now, fuse),
+                    latch.advance(at(ms)),
+                    None,
+                    "{sid}: the replayed clock runs forward"
+                );
+                assert_eq!(
+                    latch.is_paused(fuse),
                     step["paused"].as_bool().unwrap(),
-                    "{sid} at {now}"
+                    "{sid} at {ms}"
                 );
             }
         }

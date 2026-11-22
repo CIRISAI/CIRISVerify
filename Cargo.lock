@@ -654,7 +654,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-build-tool"
-version = "23.4.2"
+version = "23.5.0"
 dependencies = [
  "anyhow",
  "base64 0.21.7",
@@ -675,7 +675,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-crypto"
-version = "23.4.2"
+version = "23.5.0"
 dependencies = [
  "aes-gcm",
  "chacha20poly1305",
@@ -710,7 +710,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-host-abi"
-version = "23.4.2"
+version = "23.5.0"
 dependencies = [
  "ciris-crypto",
  "getrandom 0.2.17",
@@ -728,7 +728,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-keyring"
-version = "23.4.2"
+version = "23.5.0"
 dependencies = [
  "aes-gcm",
  "async-trait",
@@ -768,7 +768,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-manifest-tool"
-version = "23.4.2"
+version = "23.5.0"
 dependencies = [
  "anyhow",
  "ciris-verify-core",
@@ -784,7 +784,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-rt"
-version = "23.4.2"
+version = "23.5.0"
 dependencies = [
  "ciris-host-abi",
  "futures-channel",
@@ -799,7 +799,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-tpm-plugin"
-version = "23.4.2"
+version = "23.5.0"
 dependencies = [
  "sha2 0.10.9",
  "tracing",
@@ -808,7 +808,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-core"
-version = "23.4.2"
+version = "23.5.0"
 dependencies = [
  "android_system_properties",
  "async-trait",
@@ -858,7 +858,7 @@ dependencies = [
 
 [[package]]
 name = "ciris-verify-ffi"
-version = "23.4.2"
+version = "23.5.0"
 dependencies = [
  "aes-gcm",
  "android_logger",
@@ -1647,9 +1647,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -4635,9 +4635,9 @@ dependencies = [
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",
