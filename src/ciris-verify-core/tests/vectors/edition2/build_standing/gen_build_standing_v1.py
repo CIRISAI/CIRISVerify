@@ -392,6 +392,9 @@ case("acceptance_declined", "The owner's membership:decline:v1 answering the gra
 _dec, _dec_id = answer(dim="membership:decline:v1")
 case("acceptance_contested", "An acceptance and a decline of the grant by the owner both stand: contested, neither "
      "counts (CC 3.1.3.2, CC 2.7.7 rule 6).", "refused:grant_contested", answers=[BASE_ACC, _dec])
+case("decline_not_by_owner", "O2 (not the owner the held binding names) declines beside the owner's acceptance: "
+     "not this grant's decline, the acceptance stands.", "stands",
+     answers=[BASE_ACC, answer(signer=O2, dim="membership:decline:v1")[0]], wstate="none_held")
 case("contested_decline_withdrawn", "Both, and the owner withdraws the decline: the acceptance decides, in force.",
      "stands", answers=[BASE_ACC, _dec], aw=[acceptance_withdrawal(target=_dec_id)], wstate="none_held")
 case("contested_acceptance_withdrawn", "Both, and the owner withdraws the acceptance: the decline decides.",
@@ -538,6 +541,9 @@ out = {
         "bundles": "bundle id -> view: holders (a roster of the listed seeds: in force or a predecessor), not_held, "
                    "void_fork. The ids are v6 genesis-bundle object ids; the reader takes the roster as data.",
         "statements": "every statement is named by its SHA-256 (hex) in the pool files",
+        "receipts": "the walk reads no receipts: a build row whose grant has ended (or whose acceptance is "
+                    "withdrawn) is refused, Kernel's 'counted but not in force' (CC 2.4.1.1, What stays in force); "
+                    "see kernel_not_covered.",
         "lineage": "each bundle's prev; descends(head, from) follows prev from head over the bundles listed (a "
                    "not_held bundle is not held; a walk that ends without reaching from is not a descendant).",
         "verdicts": "stands | refused:{token} | waiting:{token+token} (key, voice, record, row, bundle, grant, "

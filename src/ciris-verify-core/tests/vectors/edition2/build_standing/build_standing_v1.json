@@ -8,6 +8,7 @@
    "build_standing_pool_v1_0.json",
    "build_standing_pool_v1_1.json"
   ],
+  "receipts": "the walk reads no receipts: a build row whose grant has ended (or whose acceptance is withdrawn) is refused, Kernel's 'counted but not in force' (CC 2.4.1.1, What stays in force); see kernel_not_covered.",
   "spec": "FSD-008 Phase 1b; the build row, grant, acceptance, ends and row state as settled with CIRISConstitution 2026-11-22; CC 4.5.5 scope match; CC 2.7.7 rule 2; CC 2.6.1.9 counted rows.",
   "statements": "every statement is named by its SHA-256 (hex) in the pool files",
   "verdicts": "stands | refused:{token} | waiting:{token+token} (key, voice, record, row, bundle, grant, acceptance, owner_binding). withdrawal_state: unknown | none_held | withdrawn | superseded. composers null = no view."
@@ -1712,6 +1713,33 @@
    ],
    "grant_withdrawals": [],
    "id": "acceptance_contested",
+   "owner_binding": {
+    "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
+    "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
+    "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
+   }
+  },
+  {
+   "answer_withdrawals": [],
+   "answers": [
+    "2a79bc2f572cf9f21020650943dc8dfbaf04641fd568d093725de4ad47098dc5",
+    "dff5b1c0dd2a083188573bcd390a05097c14a7d72061fbb9bdd0e8e6292d43b9"
+   ],
+   "blob_hex": "a864746f6f6c781a63697269732d6d616e69666573742d746f6f6c2f32332e362e3066666f726d61747763697269732d62696e6172792d6d616e69666573742f316674617267657478187838365f36342d756e6b6e6f776e2d6c696e75782d676e756770726f6a6563746c63697269732d7365727665726776657273696f6e65302e362e306966756e6374696f6e73a37163697269735f7665726966795f696e6974a364686173685820b15dd82d5902282f3a1f543cb1abc812df10b217b11f7b64b8bef6dc7a9a28606473697a651841666f66667365741910407163697269735f7665726966795f7369676ea3646861736858201cfee71f7e40032bc2f2c63ade8520e42a8110d3b5d366cb04f94fa6f63eb2f26473697a651842666f66667365741910807363697269735f7665726966795f617474657374a364686173685820372a98b8899ab11dd5764d54fefe98a176cba01f7f25970138f24c70f0176f8c6473697a651840666f66667365741910006b62696e6172795f6861736858201ce58c2c2803b7264e332ce0126815668b8434b99e4d6d022e09a9aa2808734c6e66756e6374696f6e735f726f6f7458203daa4aa936f951fb85f1e8d9fe8555a830b9efd28fcb94105280cb48357cf433",
+   "build_row": "d5978a6fdad672d5b0598dd2af31c8154d62bcd73f4f3ee91ae61c78e0508e56",
+   "composers": [],
+   "description": "O2 (not the owner the held binding names) declines beside the owner's acceptance: not this grant's decline, the acceptance stands.",
+   "expect": {
+    "verdict": "stands",
+    "withdrawal_state": "none_held"
+   },
+   "grant": [
+    "341cc8b257a9e3edf051827dbb6af35cf635d60495e63aeeefb9b0a21a0d7d26",
+    "259e35ca43a059c1d460031159198180e976a475f0e6358d4950d79fee02f7e3"
+   ],
+   "grant_withdrawals": [],
+   "id": "decline_not_by_owner",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
     "other_bindings": [],

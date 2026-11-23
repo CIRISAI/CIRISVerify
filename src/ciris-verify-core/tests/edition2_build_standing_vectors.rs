@@ -22,7 +22,7 @@ const POOL_1: &str = include_str!("vectors/edition2/build_standing/build_standin
 const PINS: [(&str, &str); 3] = [
     (
         CASES,
-        "e7069d56d5399a137823a111b6e8aac4cf432ebb788a721a180f477f5bf763d0",
+        "f30d4eda0dfc72bb3ddaecee2df79b680d1918d34531d5d7755d3e10c6aafd0e",
     ),
     (
         POOL_0,
@@ -30,7 +30,7 @@ const PINS: [(&str, &str); 3] = [
     ),
     (
         POOL_1,
-        "748c882ff378576be77f43a17f8fb88491f03c6d7a02240b3d831cfce9547d0c",
+        "636e6e25529d156f8e632836bdab218859e5faa96850cbcae68a478e99d0205f",
     ),
 ];
 
@@ -156,7 +156,7 @@ fn build_standing_cases() {
     let bundles = views;
 
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 105);
+    assert_eq!(cases.len(), 106);
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let list = |k: &str| -> Vec<&[u8]> { c[k].as_array().unwrap().iter().map(st).collect() };
