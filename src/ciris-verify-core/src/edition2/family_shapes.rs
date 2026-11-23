@@ -231,6 +231,34 @@ pub fn check_membership_keeps(payload: &Value) -> Result<(), Invalid> {
     Ok(())
 }
 
+/// A delegation's term, on any `delegates_to` row (CC 2.6.2): where present,
+/// `delegation_valid_from` and `delegation_valid_until` are unsigned integers
+/// of POSIX milliseconds, and the end is later than the start, the start
+/// being `asserted_at` where `delegation_valid_from` is absent. The statement
+/// reader applies it to every `delegates_to` row, whatever its family.
+///
+/// # Errors
+///
+/// [`Invalid::Malformed`] naming `asserted_at` or `delegation_valid_from`
+/// (not an integer), or `delegation_valid_until` (not an integer, or not
+/// later than the start).
+pub fn check_delegation_term(payload: &Value) -> Result<(), Invalid> {
+    let asserted_at = payload
+        .get_text("asserted_at")
+        .and_then(Value::as_u64)
+        .ok_or(bad("asserted_at"))?;
+    let start = match payload.get_text("delegation_valid_from") {
+        None => asserted_at,
+        Some(v) => v.as_u64().ok_or(bad("delegation_valid_from"))?,
+    };
+    if let Some(v) = payload.get_text("delegation_valid_until") {
+        if !v.as_u64().is_some_and(|end| end > start) {
+            return Err(bad("delegation_valid_until"));
+        }
+    }
+    Ok(())
+}
+
 /// An owner-binding: the payload of an
 /// `ownership:{relation}:{target_kind}:{version}` row.
 ///
@@ -266,19 +294,7 @@ pub fn check_owner_binding(payload: &Value) -> Result<(), Invalid> {
             .ok_or(bad("scope"))?;
         super::check_set(a, "scope")?;
     }
-    let asserted_at = payload
-        .get_text("asserted_at")
-        .and_then(Value::as_u64)
-        .ok_or(bad("asserted_at"))?;
-    let start = match payload.get_text("delegation_valid_from") {
-        None => asserted_at,
-        Some(v) => v.as_u64().ok_or(bad("delegation_valid_from"))?,
-    };
-    if let Some(v) = payload.get_text("delegation_valid_until") {
-        if !v.as_u64().is_some_and(|end| end > start) {
-            return Err(bad("delegation_valid_until"));
-        }
-    }
+    check_delegation_term(payload)?;
     let Some(cohort) = text("cohort_scope").filter(|c| COHORT_SCOPES.contains(c)) else {
         return Err(bad("cohort_scope"));
     };
@@ -412,6 +428,38 @@ mod tests {
             check(with(node(), "delegation_valid_from", Value::Uint(2_000))),
             Ok(())
         );
+    }
+
+    #[test]
+    fn delegation_term_is_ms_time_on_any_delegation() {
+        let p = |m: Vec<(&str, Value)>| Value::Map(m.into_iter().map(|(k, v)| (t(k), v)).collect());
+        let at = ("asserted_at", Value::Uint(1_000));
+        assert_eq!(check_delegation_term(&p(vec![at.clone()])), Ok(()));
+        assert_eq!(
+            check_delegation_term(&p(vec![
+                at.clone(),
+                ("delegation_valid_from", Value::Uint(500)),
+                ("delegation_valid_until", Value::Uint(501)),
+            ])),
+            Ok(())
+        );
+        assert_eq!(
+            check_delegation_term(&p(vec![
+                at.clone(),
+                ("delegation_valid_from", t("2026-11-23T00:00:00.000Z")),
+            ])),
+            Err(Invalid::Malformed {
+                member: "delegation_valid_from"
+            })
+        );
+        for end in [t("2027-01-01T00:00:00.000Z"), Value::Uint(1_000)] {
+            assert_eq!(
+                check_delegation_term(&p(vec![at.clone(), ("delegation_valid_until", end)])),
+                Err(Invalid::Malformed {
+                    member: "delegation_valid_until"
+                })
+            );
+        }
     }
 
     #[test]

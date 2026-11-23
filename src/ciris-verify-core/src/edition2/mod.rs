@@ -973,6 +973,12 @@ fn read_row_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Verdict, 
     // one, and public for producers.
     family_shapes::check_family_shape(&family, &payload)?;
 
+    // A delegation's term is ms-time on every `delegates_to` row, whatever
+    // its family (CC 2.6.2).
+    if row_type == "delegates_to" {
+        family_shapes::check_delegation_term(&payload)?;
+    }
+
     // A roster version's founding rule (the group's id is derived from its
     // first version; `group`). A composer of the family is not a version.
     if family == group::GROUP_ROSTER_FAMILY && !is_composer(&row_type) {
