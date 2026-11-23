@@ -24,6 +24,9 @@
 
 // The accord halt rows of edition 2 (CC 4.2.1.1, 4.2.1.3).
 pub mod accord_halt;
+// The `ciris-binary-manifest/1` blob a build row cites (FSD-008 §6); not a
+// signed object.
+pub mod build_manifest;
 pub mod disclosure;
 pub mod family;
 pub mod fedcode;
