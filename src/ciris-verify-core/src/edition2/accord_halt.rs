@@ -434,7 +434,7 @@ impl HaltRefusal {
     }
 }
 
-fn invalid_token(i: &Invalid) -> String {
+pub(crate) fn invalid_token(i: &Invalid) -> String {
     match i {
         Invalid::NotDeterministic { part, .. } => format!("not_deterministic:{part}"),
         Invalid::NotCoseSign1 => "not_cose_sign1".into(),

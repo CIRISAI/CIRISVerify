@@ -27,6 +27,8 @@ pub mod accord_halt;
 // The `ciris-binary-manifest/1` blob a build row cites (FSD-008 §6); not a
 // signed object.
 pub mod build_manifest;
+// Whether a build pipeline's manifest row stands (FSD-008 Phase 1b).
+pub mod build_standing;
 pub mod disclosure;
 pub mod family;
 pub mod family_shapes;
