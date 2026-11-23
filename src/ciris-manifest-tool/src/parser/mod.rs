@@ -98,11 +98,16 @@ impl ParsedBinary {
 /// Parsed binary with function information.
 pub fn parse_binary(path: &Path, filter_prefix: Option<&str>) -> Result<ParsedBinary, ParseError> {
     let data = std::fs::read(path)?;
+    parse_bytes(&data, filter_prefix)
+}
 
-    match goblin::Object::parse(&data)? {
-        goblin::Object::Elf(elf) => elf::parse_elf(&data, &elf, filter_prefix),
-        goblin::Object::Mach(mach) => macho::parse_macho(&data, &mach, filter_prefix),
-        goblin::Object::PE(pe) => pe::parse_pe(&data, &pe, filter_prefix),
+/// [`parse_binary`] over bytes already read, so a caller that also hashes the
+/// file hashes the same bytes it parsed.
+pub fn parse_bytes(data: &[u8], filter_prefix: Option<&str>) -> Result<ParsedBinary, ParseError> {
+    match goblin::Object::parse(data)? {
+        goblin::Object::Elf(elf) => elf::parse_elf(data, &elf, filter_prefix),
+        goblin::Object::Mach(mach) => macho::parse_macho(data, &mach, filter_prefix),
+        goblin::Object::PE(pe) => pe::parse_pe(data, &pe, filter_prefix),
         _ => Err(ParseError::UnsupportedFormat),
     }
 }
