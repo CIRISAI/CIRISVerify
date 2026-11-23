@@ -31,6 +31,7 @@ pub mod fedcode;
 // gate parses X.509 attestation chains.
 #[cfg(feature = "std")]
 pub mod genesis;
+pub mod group;
 pub mod keys;
 pub mod receipt;
 pub mod recovery;
@@ -182,6 +183,10 @@ pub enum Invalid {
     /// `dial_hint_malformed`: a `dial_hints` entry of a known type whose body
     /// breaks that type's rule (CC 3.3.6.1, the CC 2.6.8 hint bodies).
     DialHintMalformed,
+    /// `group_id_not_of_founding`: a first `group:roster` version whose
+    /// `group` is not the id derived from its own founding (its kind, its
+    /// members' keys, its `founded_at` and its nonce; [`group`]).
+    GroupIdNotOfFounding,
 }
 
 impl Invalid {
@@ -193,6 +198,7 @@ impl Invalid {
             Self::ValidUntilNotAfterAssertedAt => Some("valid_until_not_after_asserted_at"),
             Self::BodyNumberUnrepresentable => Some("body_number_unrepresentable"),
             Self::DialHintMalformed => Some("dial_hint_malformed"),
+            Self::GroupIdNotOfFounding => Some("group_id_not_of_founding"),
             _ => None,
         }
     }
@@ -697,6 +703,21 @@ fn check_envelope(p: &Value) -> Result<(Option<String>, u64), Invalid> {
             check_hash_digest(d, "hash-digest")?;
         }
     }
+    // `lifts` is present only as `true` (CC 2.4.1.1, CC 2.6.1): never false,
+    // never null. Which rows may carry it is the family's rule.
+    if let Some(l) = p.get_text("lifts") {
+        if *l != Value::Bool(true) {
+            return Err(malformed("lifts"));
+        }
+    }
+    // `receipter` names a person's or an agent's key record by identity
+    // reference; whether the record is one, and that the row is an offer,
+    // are the door's.
+    if let Some(r) = p.get_text("receipter") {
+        if !r.as_text().is_some_and(is_identity_ref) {
+            return Err(malformed("receipter"));
+        }
+    }
     int_in(p.get_text("score"), -1_000_000, 1_000_000, "score")?;
     int_in(p.get_text("confidence"), 0, 1_000_000, "confidence")?;
     if let Some(w) = p.get_text("weight") {
@@ -884,6 +905,12 @@ fn read_row_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Verdict, 
             Ok(_) => return Err(Invalid::DimensionUnregistered),
             Err(r) => return Err(Invalid::DimensionRefused { token: r.token }),
         }
+    }
+
+    // A roster version's founding rule (the group's id is derived from its
+    // first version; `group`). A composer of the family is not a version.
+    if family == group::GROUP_ROSTER_FAMILY && !is_composer(&row_type) {
+        group::check_group_roster_founding(&payload)?;
     }
 
     // Every disclosure presented must open a digest the payload carries.

@@ -455,6 +455,7 @@ fn invalid_token(i: &Invalid) -> String {
         Invalid::ValidUntilNotAfterAssertedAt => "valid_until_not_after_asserted_at".into(),
         Invalid::BodyNumberUnrepresentable => "body_number_unrepresentable".into(),
         Invalid::DialHintMalformed => "dial_hint_malformed".into(),
+        Invalid::GroupIdNotOfFounding => "group_id_not_of_founding".into(),
     }
 }
 

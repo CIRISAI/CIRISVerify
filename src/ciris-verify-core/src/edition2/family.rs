@@ -334,6 +334,10 @@ pub enum FamilyFault {
     /// A composer's [`SelectContext::target`] is not the row its
     /// `refs.target` names (or the composer names no target).
     TargetMismatch,
+    /// The row carries `lifts` and is one signer's own act (CC 2.4.1.1):
+    /// `lifts` belongs only to a counted end, and a self end (a resignation,
+    /// one's own acceptance withdrawn) with it is refused.
+    LiftsOnOwnEnd,
 }
 
 impl FamilyFault {
@@ -348,6 +352,7 @@ impl FamilyFault {
             Self::AuthorshipUndetermined => "authorship_undetermined",
             Self::NoArmHolds => "no_arm_holds",
             Self::TargetMismatch => "target_mismatch",
+            Self::LiftsOnOwnEnd => "lifts_on_own_end",
         }
     }
 }
@@ -545,6 +550,11 @@ fn read_in_family(
                 },
                 (Some(_), None) => None,
             };
+            // `lifts` on one signer's own act, from the row alone: the act
+            // derived (or supplied) is `own` and the member is present.
+            if ctx.act == Some(Act::Own) && row.payload.get_text("lifts").is_some() {
+                return FamilyVerdict::FamilyInvalid(FamilyFault::LiftsOnOwnEnd);
+            }
             let waits_on = match composer_target {
                 Some(Some(id)) if ctx.target.is_none() => Some(super::MissingKey::Row(id)),
                 _ => None,
