@@ -157,12 +157,26 @@ def grant(voices=(A, B), sub=None, **kw):
 
 BASE_GRANT, BASE_GRANT_ID = grant()
 
-# Owner-bindings: delegates_to rows from the owner to P with P as sub. Their payload shape is CC's, still to come,
-# and the walk takes a binding as verified data {owner, key, row_id}; these row ids are stand-ins.
-B0 = sha(b"owner-binding B0: O binds P")
-B1 = sha(b"owner-binding B1: O2 re-binds P")
-B2 = sha(b"owner-binding B2: O binds P again")
-B9 = sha(b"owner-binding B9: some other binding")
+# Owner-bindings (CC 3.2; CIRISConstitution rc22 462260c, rule owner-binding): a delegates_to row of family
+# ownership:{relation}:{target_kind}:{version}, authored by the owner, CWT sub the key owned, dimension
+# ownership:responsible_party:node:v1, delegation_purpose owner_binding, scope a set, cohort_scope self. Each is the
+# owner's statement; the key's own first-binding cosign over the same payload is signed too (the same row id).
+OFAM = "ownership:.relation:.target_kind:.version"
+BSTMT, BCOSIGN = {}, {}
+def owner_binding(owner, key, at, scope=("infra:attest",)):
+    p = {"author": owner.iss, "dimension": "ownership:responsible_party:node:v1", "delegation_purpose": "owner_binding",
+         "scope": cset(list(scope)), "delegation_valid_until": at + YEAR, "cohort_scope": "self", "asserted_at": at}
+    st, bid = sign(owner, key.iss, "delegates_to", OFAM, p)
+    cos, cid = sign(key, key.iss, "delegates_to", OFAM, p)
+    assert cid == bid
+    BSTMT[bid], BCOSIGN[bid] = st, cos
+    return bid
+B0 = owner_binding(O, P, TR + 1000)                          # O binds P
+B1 = owner_binding(O2, P, TR + 2000)                         # O2 re-binds P
+B2 = owner_binding(O, P, TR + 3000)                          # O binds P again
+B9 = owner_binding(O2, P, TR + 4000, ("infra:attest", "infra:serve"))   # some other binding of P
+BQ = owner_binding(O, Q, TR + 1000)                          # O binds Q
+BO3 = owner_binding(O3, P, TR + 1000)                        # O3 binds P
 def answer_payload(grant_id=BASE_GRANT_ID, author=O, dim="membership:acceptance:v1", refs=None, edit=None,
                    cites=B0):
     # An acceptance of a grant to a machine key cites the owner-binding it is made under (refs.also.cites).
@@ -177,9 +191,11 @@ def answer(signer=O, sub=None, **kw):
     return sign(signer, sub or P.iss, "scores", MFAM, answer_payload(**kw))
 
 BASE_ACC, BASE_ACC_ID = answer()
-def binding(owner=O, key=P, row=B0, others=()):
-    # The live binding the caller read, and every other binding of the key it holds.
-    return {"owner": owner.iss, "key": key.iss, "row_id": row.hex(), "other_bindings": [o.hex() for o in others]}
+def binding(row=B0, others=()):
+    # The live binding the caller read (its owner's statement and the key's cosign), and every other binding of the
+    # key it holds; the replay reads each statement to get owner, key and row id.
+    return {"statement": put(BSTMT[row]), "cosign": put(BCOSIGN[row]),
+            "other_bindings": [put(BSTMT[o]) for o in others]}
 BINDING = binding()
 BASE_ROW, BASE_ROW_ID = build_row()
 
@@ -402,7 +418,7 @@ case("contested_acceptance_withdrawn", "Both, and the owner withdraws the accept
 case("acceptance_by_grantee", "The acceptance is signed by the pipeline's own key.", "refused:acceptance_by_grantee",
      answers=[answer(signer=P)[0]])
 case("acceptance_owner_of_other_key", "The binding supplied makes O the owner of Q, not of the grantee.",
-     "refused:owner_binding_other_key", binding=binding(key=Q))
+     "refused:owner_binding_other_key", binding=binding(row=BQ))
 case("acceptance_not_by_owner", "O2 accepts; the binding names O.", "refused:acceptance_not_by_owner",
      answers=[answer(signer=O2)[0]])
 case("acceptance_other_grant", "The acceptance answers another grant.", "refused:acceptance_other_grant",
@@ -419,7 +435,7 @@ case("acceptance_refs_neither", "No refs at all.", "refused:acceptance_malformed
 case("acceptance_other_grantee", "The acceptance's CWT sub is Q.", "refused:acceptance_other_grantee",
      answers=[answer(sub=Q.iss)[0]])
 case("acceptance_key_not_held", "The owner O3's key record is not held: the acceptance waits on its key.",
-     "waiting:key", answers=[answer(signer=O3)[0]], binding=binding(owner=O3))
+     "waiting:key", answers=[answer(signer=O3)[0]], binding=binding(row=BO3))
 
 # ======================================================================== ends
 case("end_counted_withdrawal", "A and B withdraw the grant from G2: counted, the grant ends.",
@@ -484,16 +500,16 @@ case("acceptance_cites_binding_and_other_row", "The acceptance cites B0 and an u
      "contains the binding supplied, so it stands.", "stands", wstate="none_held",
      answers=[answer(edit=lambda p: p["refs"]["also"].__setitem__("cites", cset([rref(B0), rref(sha(b"x"))])))[0]])
 case("binding_sub_not_signer", "The binding supplied binds Q, not the build row's signer P.",
-     "refused:owner_binding_other_key", binding=binding(key=Q, row=B0))
+     "refused:owner_binding_other_key", binding=binding(row=BQ))
 _a1, _a1_id = answer(signer=O2, cites=B1)
 case("rebinding_old_acceptance", kernel="old_owners_act_after_the_rebinding", desc="P is re-bound to O2 (B1); the "
      "row stands on O's old acceptance: not by the owner the binding names.", expect="refused:acceptance_not_by_owner",
-     binding=binding(owner=O2, row=B1, others=[B0]))
+     binding=binding(row=B1, others=[B0]))
 case("rebinding_before_new_acceptance", kernel="before_the_new_owners_acceptance", desc="Re-bound to O2; the row "
      "names the re-binding B1 rather than an acceptance.", expect="refused:build_row_stands_on_nothing",
-     binding=binding(owner=O2, row=B1, others=[B0]), answers=[_a1], row=build_row(stands_on=B1)[0])
+     binding=binding(row=B1, others=[B0]), answers=[_a1], row=build_row(stands_on=B1)[0])
 case("rebinding_new_owner_accepts", kernel="under_the_new_owner", desc="Re-bound to O2, who accepts citing B1; the "
-     "row stands on that acceptance.", expect="stands", binding=binding(owner=O2, row=B1, others=[B0]), answers=[_a1],
+     "row stands on that acceptance.", expect="stands", binding=binding(row=B1, others=[B0]), answers=[_a1],
      wstate="none_held")
 _a2, _a2_id = answer(cites=B2)
 case("second_stint_old_acceptance", kernel="second_stint_of_one_owner", desc="O is bound to P again (B2); only O's "
@@ -535,6 +551,10 @@ out = {
                 "CIRISConstitution 2026-11-22; CC 4.5.5 scope match; CC 2.7.7 rule 2; CC 2.6.1.9 counted rows.",
         "generator": "gen_build_standing_v1.py over gen_row_statements_v5.py, gen_binary_manifest_v1.py and "
                      "gen_genesis_bundles_v6.py (independent of verify)",
+        "owner_bindings": "each case's owner_binding names the binding's owner statement and the key's cosign (one row "
+                          "id) and the other held bindings of the key, by statement; a reader derives owner (author), "
+                          "key (sub) and row id from the statement. binding_signer_seeds are the owners' keys for "
+                          "reading them (O3's key record is not in key_records).",
         "keys": "Key(n): ML-DSA-65 seed [n]*32, Ed25519 seed [(n+100)%256]*32. Holders A,B,C,D = 1,2,3,4; pipeline "
                 "P = 5 (node); owner O = 6 (user); O2 = 7 (user); Q = 8 (node); stranger X = 9 (no record); O3 = 10 "
                 "(no record). key_records are inserted into a KeyRecordDirectory for every case.",
@@ -559,6 +579,7 @@ out = {
                                                    "rebinding_old_acceptance",
     },
     "key_records": KEY_RECORDS,
+    "binding_signer_seeds": [5, 6, 7, 8, 10],
     "bundles": BUNDLES,
     "pipeline": P.iss, "owner": O.iss,
     "scope_match": SCOPE_MATCH,

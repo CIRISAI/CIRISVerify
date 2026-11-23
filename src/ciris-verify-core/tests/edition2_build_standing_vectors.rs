@@ -8,8 +8,8 @@ use std::collections::BTreeMap;
 use ciris_crypto::composite::CompositeSigningKey;
 use ciris_verify_core::edition2::accord_halt::RosterHolder;
 use ciris_verify_core::edition2::build_standing::{
-    evaluate_build_standing, scope_satisfies, BundleLookup, BundleRoster, BundleView, Descent,
-    OwnerBinding, StandingInput,
+    evaluate_build_standing, read_owner_binding, scope_satisfies, BundleLookup, BundleRoster,
+    BundleView, Descent, Reading, StandingInput,
 };
 use ciris_verify_core::edition2::keys::KeyRecordDirectory;
 use ciris_verify_core::edition2::{identity_ref, thumbprint, Digest32};
@@ -22,15 +22,15 @@ const POOL_1: &str = include_str!("vectors/edition2/build_standing/build_standin
 const PINS: [(&str, &str); 3] = [
     (
         CASES,
-        "f30d4eda0dfc72bb3ddaecee2df79b680d1918d34531d5d7755d3e10c6aafd0e",
+        "582dfeb1d32162725760ff3389142b66196a1d6982083223a81810ef77a79817",
     ),
     (
         POOL_0,
-        "2fc3d1bc4f36a888d56532fb9502995cf2e87d5dea69b81e7270d742311be77e",
+        "adff6c1cce2eb479b83f212bc3e9bf9593e1763c9d3ee664c77efe05d2430f37",
     ),
     (
         POOL_1,
-        "636e6e25529d156f8e632836bdab218859e5faa96850cbcae68a478e99d0205f",
+        "c5abfc8ca9376cd8ceabccdd5aa3ec22defa0a702d2f65695611343c1c01f42c",
     ),
 ];
 
@@ -155,6 +155,16 @@ fn build_standing_cases() {
     }
     let bundles = views;
 
+    let signers: BTreeMap<Digest32, ciris_crypto::composite::CompositePublicKey> = f
+        ["binding_signer_seeds"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|n| {
+            let k = key(u8::try_from(n.as_u64().unwrap()).unwrap());
+            (thumbprint(k.public_key()), k.public_key().clone())
+        })
+        .collect();
     let cases = f["cases"].as_array().unwrap();
     assert_eq!(cases.len(), 106);
     for c in cases {
@@ -167,16 +177,27 @@ fn build_standing_cases() {
         let composers: Option<Vec<&[u8]>> = c["composers"]
             .as_array()
             .map(|a| a.iter().map(st).collect());
-        let binding = c["owner_binding"].as_object().map(|b| OwnerBinding {
-            owner: b["owner"].as_str().unwrap().to_owned(),
-            key: b["key"].as_str().unwrap().to_owned(),
-            row_id: digest(b["row_id"].as_str().unwrap()),
-            other_bindings: b["other_bindings"]
+        // Each binding is a real owner-binding row, read through the
+        // statement reader; the walk takes what it reads.
+        let read = |id: &J| match read_owner_binding(st(id), &signers) {
+            Reading::Valid(b) => b,
+            other => panic!("{id}: binding {}", other.token()),
+        };
+        let binding = c["owner_binding"].as_object().map(|b| {
+            let mut ob = read(&b["statement"]);
+            let cosign = read(&b["cosign"]);
+            assert_eq!(
+                (cosign.row_id, &cosign.owner, &cosign.key),
+                (ob.row_id, &ob.owner, &ob.key),
+                "{id}: the cosign is the same row"
+            );
+            ob.other_bindings = b["other_bindings"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .map(|x| digest(x.as_str().unwrap()))
-                .collect(),
+                .map(|x| read(x).row_id)
+                .collect();
+            ob
         });
         let blob = hex::decode(c["blob_hex"].as_str().unwrap()).unwrap();
         let input = StandingInput {

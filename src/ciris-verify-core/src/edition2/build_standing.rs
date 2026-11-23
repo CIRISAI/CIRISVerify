@@ -150,6 +150,8 @@ pub enum Part {
     Answer,
     /// The owner's withdrawal of the acceptance.
     AnswerWithdrawal,
+    /// An owner-binding row ([`read_owner_binding`]).
+    OwnerBinding,
 }
 
 impl Part {
@@ -162,6 +164,7 @@ impl Part {
             Self::GrantWithdrawal => "grant_withdrawal",
             Self::Answer => "acceptance",
             Self::AnswerWithdrawal => "acceptance_withdrawal",
+            Self::OwnerBinding => "owner_binding",
         }
     }
 }
@@ -1222,6 +1225,46 @@ pub struct OwnerBinding {
     /// these is made under another binding; one citing two bindings of the
     /// key is refused. A binding cited but not held is waited on.
     pub other_bindings: Vec<Digest32>,
+}
+
+/// Read one statement of an owner-binding row (CC 3.2) into the
+/// [`OwnerBinding`] the walk takes: the owner (`author`), the key owned (the
+/// CWT `sub`) and the row id. The statement is the owner's, or the key's own
+/// first-binding cosign over the same payload (the same row id); either reads
+/// the same binding.
+///
+/// It reads the row and its shape only (the statement reader applies
+/// `family_shapes::check_owner_binding`) and checks the signer's key. It does
+/// not decide which binding of a key is live, whether the first-binding cosign
+/// is held, or whether the binding's window covers an instant: those are the
+/// caller's fold. `other_bindings` is left empty for the caller to fill.
+pub fn read_owner_binding(statement: &[u8], keys: &dyn KeyDirectory) -> Reading<OwnerBinding> {
+    let part = Part::OwnerBinding;
+    let row = valid_or_return!(from_family(
+        part,
+        verify_row_in_family(statement, keys, &VendoredFamilyModel)
+    ));
+    if row.row_type != "delegates_to" || row.family != super::family_shapes::OWNERSHIP_FAMILY {
+        return Reading::Refused(StandingRefusal::WrongRow { part });
+    }
+    if !is_identity_ref(&row.sub) {
+        return Reading::Refused(StandingRefusal::Malformed {
+            part,
+            member: "sub",
+        });
+    }
+    let Some(owner) = row.author.clone() else {
+        return Reading::Refused(StandingRefusal::Malformed {
+            part,
+            member: "author",
+        });
+    };
+    Reading::Valid(OwnerBinding {
+        owner,
+        key: row.sub,
+        row_id: row.row_id,
+        other_bindings: Vec::new(),
+    })
 }
 
 /// Accept or decline.
