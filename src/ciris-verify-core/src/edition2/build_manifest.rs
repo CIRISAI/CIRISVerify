@@ -1,6 +1,7 @@
 //! The build-manifest blob, `ciris-binary-manifest/1` (FSD-008 §6; accepted by
 //! CIRISConstitution 2026-11-22 for CC 3.1.2.1, its CDDL
-//! `tests/vectors/edition2/build_manifest/ciris_binary_manifest_v1.cddl`).
+//! `tests/vectors/edition2/build_manifest/binary_manifest_v1.cddl`, vendored by CC
+//! as `manifests/binary_manifest_v1.cddl`).
 //!
 //! One blob per (project, version, target) carries the binary hash and the
 //! function table of one final shipped file, so the one build row that cites
@@ -32,9 +33,13 @@
 //! # The function table and its root
 //!
 //! [`functions_root`] is a Merkle tree of one leaf per function, the locale
-//! tree's construction (CC 3.1.2, `constitution/part_3_the_namespace.md` at
-//! v1.0-rc22-pre3, line 57 (the `provenance:build_manifest:{target}:locale`
-//! row) and lines 106 and 108 ("Per-locale Merkle composition (v2)"):
+//! tree's construction: CC 3.1.2.1, the paragraphs beginning "A locale
+//! manifest is a Merkle tree of one leaf per locale" and "Locale ordering:
+//! … Padding: repeat the last leaf to the next power of two". The tree alone,
+//! over leaf byte strings in a caller's order, is [`merkle_leaf_hash`] and
+//! [`merkle_root`]; CC has no known answers for it, so the generic
+//! `merkle_tree` section of `binary_manifest_v1_vectors.json` is the shared
+//! set for locale manifests and function tables. For a function table:
 //!
 //! - one leaf per function, the leaves in the **byte order of the function
 //!   names** (not the CDE key order of the inline map, which is length first:
@@ -147,7 +152,10 @@ pub struct FunctionLeaf {
     pub hash: [u8; 32],
 }
 
-/// A decoded `ciris-binary-manifest/1` blob.
+/// A decoded `ciris-binary-manifest/1` blob. `project`, `version` and
+/// `target` are text exactly as encoded (no normalisation), so they compare
+/// byte for byte with the build row's `build.project` / `build.version` and
+/// its dimension's `{target}`.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BinaryManifest {
     /// The project, `[a-z0-9-]`, 1..=64 bytes.
@@ -291,10 +299,37 @@ pub fn leaf_bytes(leaf: &FunctionLeaf) -> Vec<u8> {
 /// `SHA-256(0x00 ‖ leaf_bytes(leaf))`.
 #[must_use]
 pub fn leaf_hash(leaf: &FunctionLeaf) -> [u8; 32] {
+    merkle_leaf_hash(&leaf_bytes(leaf))
+}
+
+/// The tree's leaf hash over any leaf byte string, `SHA-256(0x00 ‖ leaf)`.
+#[must_use]
+pub fn merkle_leaf_hash(leaf: &[u8]) -> [u8; 32] {
     let mut h = Sha256::new();
     h.update([LEAF_PREFIX]);
-    h.update(leaf_bytes(leaf));
+    h.update(leaf);
     h.finalize().into()
+}
+
+/// The CC 3.1.2.1 tree's root over leaf hashes in the order given (each use
+/// orders its own leaves): padded by repeating the last leaf hash to the next
+/// power of two, parents `SHA-256(0x01 ‖ left ‖ right)`. One leaf is its own
+/// root; zero leaves give `SHA-256("")` (RFC 6962's empty tree), which no
+/// use of this module accepts.
+#[must_use]
+pub fn merkle_root(leaf_hashes: &[[u8; 32]]) -> [u8; 32] {
+    let Some(&last) = leaf_hashes.last() else {
+        return Sha256::digest([]).into();
+    };
+    let mut layer = leaf_hashes.to_vec();
+    layer.resize(layer.len().next_power_of_two(), last);
+    while layer.len() > 1 {
+        layer = layer
+            .chunks_exact(2)
+            .map(|p| node_hash(&p[0], &p[1]))
+            .collect();
+    }
+    layer[0]
 }
 
 fn node_hash(l: &[u8; 32], r: &[u8; 32]) -> [u8; 32] {
@@ -315,22 +350,10 @@ fn node_hash(l: &[u8; 32], r: &[u8; 32]) -> [u8; 32] {
 /// repeats here; [`check_functions_root`] refuses them.
 #[must_use]
 pub fn functions_root(leaves: &[FunctionLeaf]) -> [u8; 32] {
-    if leaves.is_empty() {
-        return Sha256::digest([]).into();
-    }
     let mut sorted: Vec<&FunctionLeaf> = leaves.iter().collect();
     sorted.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
-    let mut layer: Vec<[u8; 32]> = sorted.into_iter().map(leaf_hash).collect();
-    let padded = layer.len().next_power_of_two();
-    let last = layer[layer.len() - 1];
-    layer.resize(padded, last);
-    while layer.len() > 1 {
-        layer = layer
-            .chunks_exact(2)
-            .map(|p| node_hash(&p[0], &p[1]))
-            .collect();
-    }
-    layer[0]
+    let hashes: Vec<[u8; 32]> = sorted.into_iter().map(leaf_hash).collect();
+    merkle_root(&hashes)
 }
 
 /// Check a function table against a `functions_root`: at least one function,

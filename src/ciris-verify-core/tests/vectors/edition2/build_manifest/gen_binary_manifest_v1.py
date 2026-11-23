@@ -1,16 +1,23 @@
 # Independent known answers for the build-manifest blob, ciris-binary-manifest/1 (FSD-008 §6; accepted by
-# CIRISConstitution 2026-11-22 for CC 3.1.2.1; schema ciris_binary_manifest_v1.cddl beside this file).
+# CIRISConstitution 2026-11-22 for CC 3.1.2.1; schema binary_manifest_v1.cddl beside this file). CC vendors
+# this file, binary_manifest_v1.cddl and binary_manifest_v1_vectors.json as manifests/binary_manifest_v1*.
 #
-# The blob is CC 2.6.1.2's deterministic encoding, no floats, no typ (not a signed object). functions_root is
-# the locale tree's Merkle construction (CC 3.1.2, part_3_the_namespace.md at v1.0-rc22-pre3, lines 57, 106,
-# 108): one leaf per function in the byte order of the names; a leaf is CDE({name, offset, size, hash}) hashed
-# SHA-256(0x00 || leaf); a parent SHA-256(0x01 || left || right); a non-power-of-two count padded by repeating
-# the last leaf to the next power of two. Hashes are bare lowercase hex text; functions_root is 32 bytes.
+# The blob is CC 2.6.1.2's deterministic encoding, no floats, no typ (not a signed object).
+#
+# The tree rule is CC 3.1.2.1's, the paragraphs beginning "A locale manifest is a Merkle tree of one leaf per
+# locale" (a leaf hashed under the RFC 6962 leaf prefix 0x00, a parent SHA-256 over 0x01, left, right) and
+# "Locale ordering: ... Padding: repeat the last leaf to the next power of two" (not RFC 6962's split, not CC
+# 6.1.1's per-level duplication). CC carries no known answers for it, so section "merkle_tree" is generic over
+# leaf byte strings, in the order given, for counts 1, 2, 3, 4, 5, 8, 96: the shared set for locale manifests
+# and function tables alike. Ordering is each use's own: a function table's leaves are in the byte order of the
+# names, each leaf CDE({name, offset, size, hash}) (section "function_tables"). Hashes are bare lowercase hex
+# text; functions_root is 32 bytes. project / version / target are text exactly as given, compared byte for
+# byte with the build row's members.
 #
 # Reuses gen_row_statements_v4.py's own CBOR deterministic encoder (RFC 8949 4.2.1 bytewise key order; loaded
 # with its output discarded); the Merkle tree and every expectation are computed here with hashlib. Shares no
 # code with verify.
-#   python3 -I gen_build_manifest_blob_v1.py > build_manifest_blob_v1.json
+#   python3 -I gen_binary_manifest_v1.py > binary_manifest_v1_vectors.json
 import contextlib, hashlib, io, json, os, runpy, struct
 
 here = os.path.dirname(os.path.abspath(__file__))
@@ -35,6 +42,20 @@ def names(n):
 
 def leaf_bytes(f):
     return enc({"name": f["name"], "offset": f["offset"], "size": f["size"], "hash": f["hash"]})
+
+
+def tree_levels(leaf_strings):
+    """Every level of the tree over leaf byte strings in the given order, leaf hashes (padded) first."""
+    layer = [sha(b"\x00" + x) for x in leaf_strings]
+    size = 1
+    while size < len(layer):
+        size *= 2
+    layer += [layer[-1]] * (size - len(layer))
+    levels = [layer]
+    while len(layer) > 1:
+        layer = [sha(b"\x01" + layer[i] + layer[i + 1]) for i in range(0, len(layer), 2)]
+        levels.append(layer)
+    return levels
 
 
 def root_of(fs):
@@ -83,10 +104,28 @@ def tables():
 
 T = tables()
 
+# The generic tree: leaf i is the bytes of "leaf " + i, given in order (so leaf 10 follows leaf 9: no sort).
+tree = []
+for n in (1, 2, 3, 4, 5, 8, 96):
+    leaves = [f"leaf {i}".encode() for i in range(n)]
+    lv = tree_levels(leaves)
+    c = {"id": f"tree_{n}", "leaf_count": n, "padded_to": len(lv[0]), "leaves_hex": [x.hex() for x in leaves],
+         "leaf_hashes_hex": [h.hex() for h in lv[0][:n]], "root_hex": lv[-1][0].hex()}
+    if n <= 8:
+        c["levels_hex"] = [[h.hex() for h in l] for l in lv]
+    tree.append(c)
+# The padding pins: 3 leaves is node(node(h0, h1), node(h2, h2)), 5 repeats h4 three times.
+h = lambda x: sha(b"\x00" + x)
+nd = lambda a, b: sha(b"\x01" + a + b)
+L3 = [h(f"leaf {i}".encode()) for i in range(3)]
+assert tree[2]["root_hex"] == nd(nd(L3[0], L3[1]), nd(L3[2], L3[2])).hex()
+assert tree[0]["root_hex"] == h(b"leaf 0").hex()
+
 merkle = []
 for n, fs in T.items():
     leaves = sorted(fs, key=lambda f: f["name"].encode())
-    merkle.append({"id": f"leaves_{n}", "leaf_count": n, "padded_to": 1 << (n - 1).bit_length(),
+    assert tree_levels([leaf_bytes(f) for f in leaves])[-1][0] == root_of(fs)
+    merkle.append({"id": f"functions_{n}", "leaf_count": n, "padded_to": 1 << (n - 1).bit_length(),
                    "functions": leaves,
                    "leaf_bytes_hex": [leaf_bytes(f).hex() for f in leaves],
                    "leaf_hashes_hex": [sha(b"\x00" + leaf_bytes(f)).hex() for f in leaves],
@@ -255,18 +294,21 @@ run_case("oversize", f"A blob of {MAX_BLOB_LEN + 1} bytes: refused before decodi
 run_case("at_cap_not_oversize", f"A blob of exactly {MAX_BLOB_LEN} bytes is decoded (and refused for its long tool).",
          MAX_BLOB_LEN, "build_manifest_malformed", "tool")
 
-ids = [c["id"] for c in valid + refusals + merkle]
+ids = [c["id"] for c in valid + refusals + merkle + tree]
 assert len(ids) == len(set(ids))
 print(json.dumps({
     "description": "ciris-binary-manifest/1 known answers (FSD-008 §6, CC 3.1.2.1 as accepted 2026-11-22): valid "
                    "blobs with and without the inline table, functions_root per leaf count, and refusals by token.",
     "format": FORMAT,
     "max_blob_len": MAX_BLOB_LEN,
-    "merkle_rule": "CC 3.1.2 (part_3_the_namespace.md v1.0-rc22-pre3 lines 57, 106, 108): leaves in name byte order; "
-                   "leaf SHA-256(0x00 || CDE({name, offset, size, hash})); node SHA-256(0x01 || l || r); pad by "
-                   "repeating the last leaf to the next power of two.",
-    "generator": "gen_build_manifest_blob_v1.py",
-    "merkle": merkle,
+    "merkle_rule": "CC 3.1.2.1 (\"A locale manifest is a Merkle tree of one leaf per locale\"; \"Locale ordering: ... "
+                   "Padding: repeat the last leaf to the next power of two\"): leaf SHA-256(0x00 || leaf); node "
+                   "SHA-256(0x01 || left || right); a non-power-of-two count padded by repeating the last leaf to the "
+                   "next power of two. merkle_tree: generic over leaf byte strings in the order given. "
+                   "function_tables: leaves in name byte order, each CDE({name, offset, size, hash}).",
+    "generator": "gen_binary_manifest_v1.py",
+    "merkle_tree": tree,
+    "function_tables": merkle,
     "valid": valid,
     "refusals": refusals,
 }, indent=1))

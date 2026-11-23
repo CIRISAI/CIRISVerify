@@ -1,18 +1,19 @@
-//! Replays `tests/vectors/edition2/build_manifest/build_manifest_blob_v1.json`
-//! (`gen_build_manifest_blob_v1.py`, independent of verify): the
-//! `ciris-binary-manifest/1` blob of FSD-008 §6, its function-table Merkle
-//! root per leaf count, and its refusals by token.
+//! Replays `tests/vectors/edition2/build_manifest/binary_manifest_v1_vectors.json`
+//! (`gen_binary_manifest_v1.py`, independent of verify; CC vendors both as
+//! `manifests/binary_manifest_v1*`): the CC 3.1.2.1 tree over generic leaf
+//! byte strings, the `ciris-binary-manifest/1` blob of FSD-008 §6, its
+//! function-table roots per leaf count, and its refusals by token.
 #![cfg(feature = "pqc")]
 
 use ciris_verify_core::edition2::build_manifest::{
     self, check_functions_root, decode, encode, functions_root, leaf_bytes, leaf_hash,
-    BinaryManifest, FunctionLeaf, FORMAT, MAX_BLOB_LEN,
+    merkle_leaf_hash, merkle_root, BinaryManifest, FunctionLeaf, FORMAT, MAX_BLOB_LEN,
 };
 use serde_json::Value as J;
 
-const FILE: &str = include_str!("vectors/edition2/build_manifest/build_manifest_blob_v1.json");
+const FILE: &str = include_str!("vectors/edition2/build_manifest/binary_manifest_v1_vectors.json");
 /// SHA-256 of the file, pinned so a regeneration is a visible change.
-const FILE_SHA256: &str = "792c168b21a5f970ae79327344e9cbbdecc249049d6db5bb59923f8a1ed64e65";
+const FILE_SHA256: &str = "b7de6b058c168659c65f0129f5950f9b0f41dd192ca87874c4427affa151a536";
 
 fn file() -> J {
     serde_json::from_str(FILE).unwrap()
@@ -63,9 +64,52 @@ fn file_is_pinned() {
 }
 
 #[test]
-fn merkle_known_answers() {
+fn generic_tree_known_answers() {
     let f = file();
-    let cases = f["merkle"].as_array().unwrap();
+    let cases = f["merkle_tree"].as_array().unwrap();
+    let counts: Vec<u64> = cases
+        .iter()
+        .map(|c| c["leaf_count"].as_u64().unwrap())
+        .collect();
+    assert_eq!(counts, [1, 2, 3, 4, 5, 8, 96]);
+    for c in cases {
+        let id = c["id"].as_str().unwrap();
+        let hashes: Vec<[u8; 32]> = c["leaves_hex"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| merkle_leaf_hash(&hx(l)))
+            .collect();
+        let want: Vec<[u8; 32]> = c["leaf_hashes_hex"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(h32)
+            .collect();
+        assert_eq!(hashes, want, "{id}");
+        assert_eq!(
+            c["padded_to"].as_u64().unwrap(),
+            hashes.len().next_power_of_two() as u64,
+            "{id}"
+        );
+        if let Some(levels) = c.get("levels_hex") {
+            let padded: Vec<[u8; 32]> = levels[0].as_array().unwrap().iter().map(h32).collect();
+            assert_eq!(padded[..hashes.len()], hashes[..], "{id}");
+            assert!(
+                padded[hashes.len()..]
+                    .iter()
+                    .all(|p| p == hashes.last().unwrap()),
+                "{id}"
+            );
+        }
+        assert_eq!(merkle_root(&hashes), h32(&c["root_hex"]), "{id}");
+    }
+}
+
+#[test]
+fn function_table_known_answers() {
+    let f = file();
+    let cases = f["function_tables"].as_array().unwrap();
     let counts: Vec<u64> = cases
         .iter()
         .map(|c| c["leaf_count"].as_u64().unwrap())
