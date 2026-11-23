@@ -177,7 +177,9 @@ def answer(signer=O, sub=None, **kw):
     return sign(signer, sub or P.iss, "scores", MFAM, answer_payload(**kw))
 
 BASE_ACC, BASE_ACC_ID = answer()
-def binding(owner=O, key=P, row=B0): return {"owner": owner.iss, "key": key.iss, "row_id": row.hex()}
+def binding(owner=O, key=P, row=B0, others=()):
+    # The live binding the caller read, and every other binding of the key it holds.
+    return {"owner": owner.iss, "key": key.iss, "row_id": row.hex(), "other_bindings": [o.hex() for o in others]}
 BINDING = binding()
 BASE_ROW, BASE_ROW_ID = build_row()
 
@@ -466,29 +468,41 @@ case("row_stands_on_other_grants_acceptance", "stands_on names the owner's accep
      answers=[BASE_ACC, _acc_other], row=build_row(stands_on=_acc_other_id)[0])
 case("acceptance_cites_no_binding", "The acceptance carries refs.answers only, no owner-binding cited.",
      "refused:acceptance_other_binding", answers=[answer(cites=None)[0]])
-case("acceptance_cites_other_binding", "The acceptance cites another binding than the one supplied.",
-     "refused:acceptance_other_binding", answers=[answer(cites=B9)[0]])
+case("acceptance_cites_binding_not_held", "The acceptance cites B9, a row the reader does not hold (it may be a "
+     "binding): waits on it.", "waiting:row", answers=[answer(cites=B9)[0]])
+case("acceptance_cites_other_held_binding", "The acceptance cites B9, another owner-binding of P the reader holds: "
+     "made under another binding.", "refused:acceptance_other_binding", answers=[answer(cites=B9)[0]],
+     binding=binding(others=[B9]))
+case("acceptance_cites_two_bindings", "The acceptance cites B0 (the binding supplied) and B9, another held binding "
+     "of P: an acceptance is made under one binding.", "refused:acceptance_other_binding",
+     answers=[answer(edit=lambda p: p["refs"]["also"].__setitem__("cites", cset([rref(B0), rref(B9)])))[0]],
+     binding=binding(others=[B9]))
+case("acceptance_cites_binding_and_other_row", "The acceptance cites B0 and an unrelated row: cites is a set; it "
+     "contains the binding supplied, so it stands.", "stands", wstate="none_held",
+     answers=[answer(edit=lambda p: p["refs"]["also"].__setitem__("cites", cset([rref(B0), rref(sha(b"x"))])))[0]])
 case("binding_sub_not_signer", "The binding supplied binds Q, not the build row's signer P.",
      "refused:owner_binding_other_key", binding=binding(key=Q, row=B0))
 _a1, _a1_id = answer(signer=O2, cites=B1)
 case("rebinding_old_acceptance", kernel="old_owners_act_after_the_rebinding", desc="P is re-bound to O2 (B1); the "
      "row stands on O's old acceptance: not by the owner the binding names.", expect="refused:acceptance_not_by_owner",
-     binding=binding(owner=O2, row=B1))
+     binding=binding(owner=O2, row=B1, others=[B0]))
 case("rebinding_before_new_acceptance", kernel="before_the_new_owners_acceptance", desc="Re-bound to O2; the row "
      "names the re-binding B1 rather than an acceptance.", expect="refused:build_row_stands_on_nothing",
-     binding=binding(owner=O2, row=B1), answers=[_a1], row=build_row(stands_on=B1)[0])
+     binding=binding(owner=O2, row=B1, others=[B0]), answers=[_a1], row=build_row(stands_on=B1)[0])
 case("rebinding_new_owner_accepts", kernel="under_the_new_owner", desc="Re-bound to O2, who accepts citing B1; the "
-     "row stands on that acceptance.", expect="stands", binding=binding(owner=O2, row=B1), answers=[_a1],
+     "row stands on that acceptance.", expect="stands", binding=binding(owner=O2, row=B1, others=[B0]), answers=[_a1],
      wstate="none_held")
 _a2, _a2_id = answer(cites=B2)
 case("second_stint_old_acceptance", kernel="second_stint_of_one_owner", desc="O is bound to P again (B2); only O's "
      "first acceptance (citing B0) is presented: a re-binding needs a new acceptance.",
-     expect="refused:acceptance_other_binding", binding=binding(row=B2))
+     expect="refused:acceptance_other_binding", binding=binding(row=B2, others=[B0]))
+case("second_stint_old_binding_not_held", "Bound again (B2), the reader not holding B0: O's first acceptance cites a "
+     "row not held, so it waits on it.", "waiting:row", binding=binding(row=B2))
 case("second_stint_row_names_old", kernel="second_stint_of_one_owner", desc="Bound again (B2), both acceptances "
      "held; the row stands on the first (citing B0).", expect="refused:build_row_stands_on_nothing",
-     binding=binding(row=B2), answers=[BASE_ACC, _a2], row=build_row(stands_on=BASE_ACC_ID)[0])
+     binding=binding(row=B2, others=[B0]), answers=[BASE_ACC, _a2], row=build_row(stands_on=BASE_ACC_ID)[0])
 case("second_stint_row_names_new", kernel="second_stint_of_one_owner", desc="Bound again (B2); the row stands on the "
-     "new acceptance citing B2.", expect="stands", binding=binding(row=B2), answers=[BASE_ACC, _a2],
+     "new acceptance citing B2.", expect="stands", binding=binding(row=B2, others=[B0]), answers=[BASE_ACC, _a2],
      row=build_row(stands_on=_a2_id)[0], wstate="none_held")
 
 # ======================================================================== the scope matcher

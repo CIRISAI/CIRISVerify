@@ -269,9 +269,9 @@ pub enum StandingRefusal {
     /// The owner-binding supplied names another key than the grantee:
     /// `owner_binding_other_key`.
     OwnerBindingOtherKey,
-    /// The acceptance cites no owner-binding, or another than the one
-    /// supplied (a re-binding needs a new acceptance):
-    /// `acceptance_other_binding`.
+    /// The acceptance cites no owner-binding, another held binding of the
+    /// key than the one supplied, or two of them (a re-binding needs a new
+    /// acceptance): `acceptance_other_binding`.
     AcceptanceOtherBinding,
     /// The build row names no acceptance in `refs.also.stands_on`, or names
     /// a row that is not the owner's acceptance of this grant: it counts for
@@ -1217,6 +1217,11 @@ pub struct OwnerBinding {
     /// as `sub`; its payload shape is CC's, still to come, so it is not read
     /// here.
     pub row_id: Digest32,
+    /// The row ids of every other owner-binding of the same key the reader
+    /// holds (an earlier owner's, a rival's). An acceptance citing one of
+    /// these is made under another binding; one citing two bindings of the
+    /// key is refused. A binding cited but not held is waited on.
+    pub other_bindings: Vec<Digest32>,
 }
 
 /// Accept or decline.
@@ -1264,7 +1269,46 @@ pub fn read_answer(
         part,
         verify_row_in_family(statement, keys, &VendoredFamilyModel)
     ));
-    answer_shape(row, grant, binding).into()
+    match answer_shape(row, grant, binding) {
+        Ok(a) => match a.kind {
+            AnswerKind::Acceptance => acceptance_binding(a, binding),
+            AnswerKind::Decline => Reading::Valid(a),
+        },
+        Err(r) => Reading::Refused(r),
+    }
+}
+
+/// An acceptance of a grant to a machine key names the owner-binding it is
+/// made under in `refs.also.cites` (a set; it may cite other rows too). It
+/// stands under `binding` when the bindings of the key it cites, among those
+/// held, are exactly `binding`. Citing another held binding, or two of them,
+/// is `acceptance_other_binding` (an acceptance is made under one binding; a
+/// re-binding needs a new acceptance); citing nothing is the same. Citing
+/// only rows the reader does not hold waits on them: one may be the binding.
+fn acceptance_binding(a: Answer, binding: &OwnerBinding) -> Reading<Answer> {
+    let cites: Vec<Digest32> = a
+        .row
+        .payload
+        .get_text("refs")
+        .and_then(|r| r.get_text("also"))
+        .and_then(|x| x.get_text("cites"))
+        .and_then(Value::as_array)
+        .unwrap_or_default()
+        .iter()
+        .filter_map(row_ref_of)
+        .collect();
+    let held = |c: &Digest32| *c == binding.row_id || binding.other_bindings.contains(c);
+    let cited: Vec<Digest32> = cites.iter().copied().filter(|c| held(c)).collect();
+    match cited.as_slice() {
+        [one] if bool::from(one.ct_eq(&binding.row_id)) => Reading::Valid(a),
+        [] if !cites.is_empty() => waiting(
+            cites
+                .into_iter()
+                .map(|c| StandingWait::Key(MissingKey::Row(c)))
+                .collect(),
+        ),
+        _ => Reading::Refused(StandingRefusal::AcceptanceOtherBinding),
+    }
 }
 
 fn answer_shape(
@@ -1301,23 +1345,6 @@ fn answer_shape(
     }
     if !bool::from(answers.ct_eq(grant.row_id())) {
         return Err(StandingRefusal::AcceptanceOtherGrant);
-    }
-    // An acceptance of a grant to a machine key names the owner-binding it is
-    // made under in `refs.also.cites`; a re-binding needs a new acceptance.
-    if kind == AnswerKind::Acceptance {
-        let cites = p
-            .get_text("refs")
-            .and_then(|r| r.get_text("also"))
-            .and_then(|a| a.get_text("cites"))
-            .and_then(Value::as_array)
-            .unwrap_or_default();
-        if !cites
-            .iter()
-            .filter_map(row_ref_of)
-            .any(|c| bool::from(c.ct_eq(&binding.row_id)))
-        {
-            return Err(StandingRefusal::AcceptanceOtherBinding);
-        }
     }
     Ok(Answer { row, kind })
 }
@@ -1813,7 +1840,10 @@ pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
         // is not the acceptance read is final; naming a row not held waits on
         // it (a row waits for what it names).
         let mut held: Vec<Digest32> = vec![*g.row_id()];
-        held.extend(input.owner_binding.map(|b| b.row_id));
+        if let Some(b) = input.owner_binding {
+            held.push(b.row_id);
+            held.extend(b.other_bindings.iter().copied());
+        }
         held.extend(
             input
                 .answers

@@ -107,6 +107,7 @@
    "id": "stands_none_held",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -132,6 +133,7 @@
    "id": "stands_unknown",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -159,6 +161,7 @@
    "id": "stands_grant_under_predecessor",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -185,6 +188,7 @@
    "id": "stands_bare_attest",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -211,6 +215,7 @@
    "id": "stands_sub_scope_one_project",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -237,6 +242,7 @@
    "id": "stands_both_pipeline_scopes",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -264,6 +270,7 @@
    "id": "count_three_of_three",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -291,6 +298,7 @@
    "id": "count_stranger_voice_ignored",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -318,6 +326,7 @@
    "id": "count_same_holder_twice_plus_one",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -344,6 +353,7 @@
    "id": "count_two_of_three",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -372,6 +382,7 @@
    "id": "stands_superseding_row",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -400,6 +411,7 @@
    "id": "stands_peer_same_build",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -428,6 +440,7 @@
    "id": "stands_peer_other_version",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -452,6 +465,7 @@
    "id": "row_no_head",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -476,6 +490,7 @@
    "id": "row_dimension_v2",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -500,6 +515,7 @@
    "id": "row_dimension_off_family",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -524,6 +540,7 @@
    "id": "row_hash_not_in_evidence",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -548,6 +565,7 @@
    "id": "row_build_fifth_member",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -572,6 +590,7 @@
    "id": "row_build_missing_member",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -596,6 +615,7 @@
    "id": "row_size_zero",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -621,6 +641,7 @@
    "id": "row_payload_open",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -646,6 +667,7 @@
    "id": "grant_payload_open",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -671,6 +693,7 @@
    "id": "acceptance_payload_open",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -695,6 +718,7 @@
    "id": "row_sub_not_author",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -719,6 +743,7 @@
    "id": "row_project_bad_charset",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -744,6 +769,7 @@
    "id": "blob_size_mismatch",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -769,6 +795,7 @@
    "id": "blob_hash_mismatch",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -794,6 +821,7 @@
    "id": "blob_project_mismatch",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -819,6 +847,7 @@
    "id": "blob_version_mismatch",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -844,6 +873,7 @@
    "id": "blob_target_mismatch",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -868,6 +898,7 @@
    "id": "grant_author",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -892,6 +923,7 @@
    "id": "grant_no_head",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -916,6 +948,7 @@
    "id": "grant_scope_unsorted",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -940,6 +973,7 @@
    "id": "grant_scope_repeated",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -964,6 +998,7 @@
    "id": "grant_projects_unsorted",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -988,6 +1023,7 @@
    "id": "grant_projects_repeated",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1012,6 +1048,7 @@
    "id": "grant_dimension_other",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1036,6 +1073,7 @@
    "id": "grant_other_grantee",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1060,6 +1098,7 @@
    "id": "build_row_other_head",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1086,6 +1125,7 @@
    "id": "row_head_later_bundle",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1110,6 +1150,7 @@
    "id": "row_head_other_lineage",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1134,6 +1175,7 @@
    "id": "row_head_fork",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1158,6 +1200,7 @@
    "id": "row_head_not_held",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1181,6 +1224,7 @@
    "id": "count_one_of_three",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1205,6 +1249,7 @@
    "id": "count_non_holder_not_counted",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1229,6 +1274,7 @@
    "id": "count_same_holder_twice",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1252,6 +1298,7 @@
    "id": "count_stranger_only",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1276,6 +1323,7 @@
    "id": "count_bundle_not_held",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1300,6 +1348,7 @@
    "id": "count_void_fork",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1321,6 +1370,7 @@
    "id": "grant_missing",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1345,6 +1395,7 @@
    "id": "scope_attest_assurance",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1369,6 +1420,7 @@
    "id": "scope_other_family",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1393,6 +1445,7 @@
    "id": "scope_wider_second",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1417,6 +1470,7 @@
    "id": "scope_prefix_confusion",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1441,6 +1495,7 @@
    "id": "scope_child_sub_scope",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1465,6 +1520,7 @@
    "id": "scope_no_projects_assurance",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1489,6 +1545,7 @@
    "id": "scope_no_projects_prefix",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1513,6 +1570,7 @@
    "id": "scope_no_projects_child",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1537,6 +1595,7 @@
    "id": "projects_not_listed",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1561,6 +1620,7 @@
    "id": "projects_absent",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1583,6 +1643,7 @@
    "id": "acceptance_missing",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1627,6 +1688,7 @@
    "id": "acceptance_declined",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1652,6 +1714,7 @@
    "id": "acceptance_contested",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1680,6 +1743,7 @@
    "id": "contested_decline_withdrawn",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1707,6 +1771,7 @@
    "id": "contested_acceptance_withdrawn",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1731,6 +1796,7 @@
    "id": "acceptance_by_grantee",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1755,6 +1821,7 @@
    "id": "acceptance_owner_of_other_key",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:v0dCSnOc2JwdepYIS46oVww_uUZhjyHrP8wI_UFwySI",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1779,6 +1846,7 @@
    "id": "acceptance_not_by_owner",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1803,6 +1871,7 @@
    "id": "acceptance_other_grant",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1827,6 +1896,7 @@
    "id": "acceptance_proposal_hash",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1851,6 +1921,7 @@
    "id": "acceptance_refs_target",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1875,6 +1946,7 @@
    "id": "acceptance_refs_head",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1899,6 +1971,7 @@
    "id": "acceptance_refs_neither",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1923,6 +1996,7 @@
    "id": "acceptance_other_grantee",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1947,6 +2021,7 @@
    "id": "acceptance_key_not_held",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:xHKznPHEXkrU0LCXfNOAueX3uJelAQjqORkNrQWFjhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -1974,6 +2049,7 @@
    "id": "end_counted_withdrawal",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2001,6 +2077,7 @@
    "id": "end_counted_withdrawal_lifts",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2028,6 +2105,7 @@
    "id": "end_one_voice_only",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2054,6 +2132,7 @@
    "id": "end_owner_withdraws_acceptance",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2081,6 +2160,7 @@
    "id": "end_stranger_withdraws_acceptance",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2108,6 +2188,7 @@
    "id": "end_owner_withdrawal_names_head",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2135,6 +2216,7 @@
    "id": "state_withdrawn",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2162,6 +2244,7 @@
    "id": "state_superseded",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2190,6 +2273,7 @@
    "id": "state_equivocation",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2219,6 +2303,7 @@
    "id": "state_withdrawn_peer",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2246,6 +2331,7 @@
    "id": "state_stranger_withdrawal",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2270,6 +2356,7 @@
    "id": "row_no_stands_on",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2294,6 +2381,7 @@
    "id": "row_stands_on_binding",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2318,6 +2406,7 @@
    "id": "row_stands_on_grant",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2342,6 +2431,7 @@
    "id": "row_stands_on_row_not_held",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2367,6 +2457,7 @@
    "id": "row_stands_on_other_grants_acceptance",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2391,6 +2482,7 @@
    "id": "acceptance_cites_no_binding",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2403,7 +2495,32 @@
    "blob_hex": "a864746f6f6c781a63697269732d6d616e69666573742d746f6f6c2f32332e362e3066666f726d61747763697269732d62696e6172792d6d616e69666573742f316674617267657478187838365f36342d756e6b6e6f776e2d6c696e75782d676e756770726f6a6563746c63697269732d7365727665726776657273696f6e65302e362e306966756e6374696f6e73a37163697269735f7665726966795f696e6974a364686173685820b15dd82d5902282f3a1f543cb1abc812df10b217b11f7b64b8bef6dc7a9a28606473697a651841666f66667365741910407163697269735f7665726966795f7369676ea3646861736858201cfee71f7e40032bc2f2c63ade8520e42a8110d3b5d366cb04f94fa6f63eb2f26473697a651842666f66667365741910807363697269735f7665726966795f617474657374a364686173685820372a98b8899ab11dd5764d54fefe98a176cba01f7f25970138f24c70f0176f8c6473697a651840666f66667365741910006b62696e6172795f6861736858201ce58c2c2803b7264e332ce0126815668b8434b99e4d6d022e09a9aa2808734c6e66756e6374696f6e735f726f6f7458203daa4aa936f951fb85f1e8d9fe8555a830b9efd28fcb94105280cb48357cf433",
    "build_row": "634090e278459f15740987b889a6abac0fbc6f3637172d60459eb1a1fa36a974",
    "composers": [],
-   "description": "The acceptance cites another binding than the one supplied.",
+   "description": "The acceptance cites B9, a row the reader does not hold (it may be a binding): waits on it.",
+   "expect": {
+    "verdict": "waiting:row"
+   },
+   "grant": [
+    "341cc8b257a9e3edf051827dbb6af35cf635d60495e63aeeefb9b0a21a0d7d26",
+    "259e35ca43a059c1d460031159198180e976a475f0e6358d4950d79fee02f7e3"
+   ],
+   "grant_withdrawals": [],
+   "id": "acceptance_cites_binding_not_held",
+   "owner_binding": {
+    "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
+    "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
+    "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
+   }
+  },
+  {
+   "answer_withdrawals": [],
+   "answers": [
+    "572129e702b0f54b809f288112ccbac91f708d931309de115a4fa07a9f18901b"
+   ],
+   "blob_hex": "a864746f6f6c781a63697269732d6d616e69666573742d746f6f6c2f32332e362e3066666f726d61747763697269732d62696e6172792d6d616e69666573742f316674617267657478187838365f36342d756e6b6e6f776e2d6c696e75782d676e756770726f6a6563746c63697269732d7365727665726776657273696f6e65302e362e306966756e6374696f6e73a37163697269735f7665726966795f696e6974a364686173685820b15dd82d5902282f3a1f543cb1abc812df10b217b11f7b64b8bef6dc7a9a28606473697a651841666f66667365741910407163697269735f7665726966795f7369676ea3646861736858201cfee71f7e40032bc2f2c63ade8520e42a8110d3b5d366cb04f94fa6f63eb2f26473697a651842666f66667365741910807363697269735f7665726966795f617474657374a364686173685820372a98b8899ab11dd5764d54fefe98a176cba01f7f25970138f24c70f0176f8c6473697a651840666f66667365741910006b62696e6172795f6861736858201ce58c2c2803b7264e332ce0126815668b8434b99e4d6d022e09a9aa2808734c6e66756e6374696f6e735f726f6f7458203daa4aa936f951fb85f1e8d9fe8555a830b9efd28fcb94105280cb48357cf433",
+   "build_row": "634090e278459f15740987b889a6abac0fbc6f3637172d60459eb1a1fa36a974",
+   "composers": [],
+   "description": "The acceptance cites B9, another owner-binding of P the reader holds: made under another binding.",
    "expect": {
     "verdict": "refused:acceptance_other_binding"
    },
@@ -2412,9 +2529,65 @@
     "259e35ca43a059c1d460031159198180e976a475f0e6358d4950d79fee02f7e3"
    ],
    "grant_withdrawals": [],
-   "id": "acceptance_cites_other_binding",
+   "id": "acceptance_cites_other_held_binding",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [
+     "1cfeec9f9e2d597dfc185f2b8077528e1ab016a6948e189d1a0332f9fef4ddea"
+    ],
+    "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
+    "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
+   }
+  },
+  {
+   "answer_withdrawals": [],
+   "answers": [
+    "3cba50b19b229d299b47ade519727a4c14a4d6b71058c8c99a820803bbf24c94"
+   ],
+   "blob_hex": "a864746f6f6c781a63697269732d6d616e69666573742d746f6f6c2f32332e362e3066666f726d61747763697269732d62696e6172792d6d616e69666573742f316674617267657478187838365f36342d756e6b6e6f776e2d6c696e75782d676e756770726f6a6563746c63697269732d7365727665726776657273696f6e65302e362e306966756e6374696f6e73a37163697269735f7665726966795f696e6974a364686173685820b15dd82d5902282f3a1f543cb1abc812df10b217b11f7b64b8bef6dc7a9a28606473697a651841666f66667365741910407163697269735f7665726966795f7369676ea3646861736858201cfee71f7e40032bc2f2c63ade8520e42a8110d3b5d366cb04f94fa6f63eb2f26473697a651842666f66667365741910807363697269735f7665726966795f617474657374a364686173685820372a98b8899ab11dd5764d54fefe98a176cba01f7f25970138f24c70f0176f8c6473697a651840666f66667365741910006b62696e6172795f6861736858201ce58c2c2803b7264e332ce0126815668b8434b99e4d6d022e09a9aa2808734c6e66756e6374696f6e735f726f6f7458203daa4aa936f951fb85f1e8d9fe8555a830b9efd28fcb94105280cb48357cf433",
+   "build_row": "f41002d20b10a12dbd612290ec28da9cc6443878d29771a5136c18fecaf1f70a",
+   "composers": [],
+   "description": "The acceptance cites B0 (the binding supplied) and B9, another held binding of P: an acceptance is made under one binding.",
+   "expect": {
+    "verdict": "refused:acceptance_other_binding"
+   },
+   "grant": [
+    "341cc8b257a9e3edf051827dbb6af35cf635d60495e63aeeefb9b0a21a0d7d26",
+    "259e35ca43a059c1d460031159198180e976a475f0e6358d4950d79fee02f7e3"
+   ],
+   "grant_withdrawals": [],
+   "id": "acceptance_cites_two_bindings",
+   "owner_binding": {
+    "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [
+     "1cfeec9f9e2d597dfc185f2b8077528e1ab016a6948e189d1a0332f9fef4ddea"
+    ],
+    "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
+    "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
+   }
+  },
+  {
+   "answer_withdrawals": [],
+   "answers": [
+    "35e73de2ef209a5b2bfd79cec41b8f51bfc7990dd9f4e9f7a6030b2a41832c08"
+   ],
+   "blob_hex": "a864746f6f6c781a63697269732d6d616e69666573742d746f6f6c2f32332e362e3066666f726d61747763697269732d62696e6172792d6d616e69666573742f316674617267657478187838365f36342d756e6b6e6f776e2d6c696e75782d676e756770726f6a6563746c63697269732d7365727665726776657273696f6e65302e362e306966756e6374696f6e73a37163697269735f7665726966795f696e6974a364686173685820b15dd82d5902282f3a1f543cb1abc812df10b217b11f7b64b8bef6dc7a9a28606473697a651841666f66667365741910407163697269735f7665726966795f7369676ea3646861736858201cfee71f7e40032bc2f2c63ade8520e42a8110d3b5d366cb04f94fa6f63eb2f26473697a651842666f66667365741910807363697269735f7665726966795f617474657374a364686173685820372a98b8899ab11dd5764d54fefe98a176cba01f7f25970138f24c70f0176f8c6473697a651840666f66667365741910006b62696e6172795f6861736858201ce58c2c2803b7264e332ce0126815668b8434b99e4d6d022e09a9aa2808734c6e66756e6374696f6e735f726f6f7458203daa4aa936f951fb85f1e8d9fe8555a830b9efd28fcb94105280cb48357cf433",
+   "build_row": "a17a5ebe13b95dcc7b6f5bd4ec169b064c75ec563de52afbe63b7d1e5640baa2",
+   "composers": [],
+   "description": "The acceptance cites B0 and an unrelated row: cites is a set; it contains the binding supplied, so it stands.",
+   "expect": {
+    "verdict": "stands",
+    "withdrawal_state": "none_held"
+   },
+   "grant": [
+    "341cc8b257a9e3edf051827dbb6af35cf635d60495e63aeeefb9b0a21a0d7d26",
+    "259e35ca43a059c1d460031159198180e976a475f0e6358d4950d79fee02f7e3"
+   ],
+   "grant_withdrawals": [],
+   "id": "acceptance_cites_binding_and_other_row",
+   "owner_binding": {
+    "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2439,6 +2612,7 @@
    "id": "binding_sub_not_signer",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:v0dCSnOc2JwdepYIS46oVww_uUZhjyHrP8wI_UFwySI",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
    }
@@ -2463,6 +2637,9 @@
    "id": "rebinding_old_acceptance",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [
+     "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
+    ],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:Mazrk0R1CcPRpuBLe4wYWVN4m-0HUcVwualy0TcslhI",
     "row_id": "3bb61682d77c2ef43047dd006626cc677c2443e2a6a528af03bd0224f0e63b02"
    }
@@ -2487,6 +2664,9 @@
    "id": "rebinding_before_new_acceptance",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [
+     "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
+    ],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:Mazrk0R1CcPRpuBLe4wYWVN4m-0HUcVwualy0TcslhI",
     "row_id": "3bb61682d77c2ef43047dd006626cc677c2443e2a6a528af03bd0224f0e63b02"
    }
@@ -2512,6 +2692,9 @@
    "id": "rebinding_new_owner_accepts",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [
+     "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
+    ],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:Mazrk0R1CcPRpuBLe4wYWVN4m-0HUcVwualy0TcslhI",
     "row_id": "3bb61682d77c2ef43047dd006626cc677c2443e2a6a528af03bd0224f0e63b02"
    }
@@ -2536,6 +2719,34 @@
    "id": "second_stint_old_acceptance",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [
+     "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
+    ],
+    "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
+    "row_id": "d03a640ff8c554e8a199d982b70a26e5adddd04c583e77e0caa426e3d91c77d5"
+   }
+  },
+  {
+   "answer_withdrawals": [],
+   "answers": [
+    "2a79bc2f572cf9f21020650943dc8dfbaf04641fd568d093725de4ad47098dc5"
+   ],
+   "blob_hex": "a864746f6f6c781a63697269732d6d616e69666573742d746f6f6c2f32332e362e3066666f726d61747763697269732d62696e6172792d6d616e69666573742f316674617267657478187838365f36342d756e6b6e6f776e2d6c696e75782d676e756770726f6a6563746c63697269732d7365727665726776657273696f6e65302e362e306966756e6374696f6e73a37163697269735f7665726966795f696e6974a364686173685820b15dd82d5902282f3a1f543cb1abc812df10b217b11f7b64b8bef6dc7a9a28606473697a651841666f66667365741910407163697269735f7665726966795f7369676ea3646861736858201cfee71f7e40032bc2f2c63ade8520e42a8110d3b5d366cb04f94fa6f63eb2f26473697a651842666f66667365741910807363697269735f7665726966795f617474657374a364686173685820372a98b8899ab11dd5764d54fefe98a176cba01f7f25970138f24c70f0176f8c6473697a651840666f66667365741910006b62696e6172795f6861736858201ce58c2c2803b7264e332ce0126815668b8434b99e4d6d022e09a9aa2808734c6e66756e6374696f6e735f726f6f7458203daa4aa936f951fb85f1e8d9fe8555a830b9efd28fcb94105280cb48357cf433",
+   "build_row": "d5978a6fdad672d5b0598dd2af31c8154d62bcd73f4f3ee91ae61c78e0508e56",
+   "composers": [],
+   "description": "Bound again (B2), the reader not holding B0: O's first acceptance cites a row not held, so it waits on it.",
+   "expect": {
+    "verdict": "waiting:row"
+   },
+   "grant": [
+    "341cc8b257a9e3edf051827dbb6af35cf635d60495e63aeeefb9b0a21a0d7d26",
+    "259e35ca43a059c1d460031159198180e976a475f0e6358d4950d79fee02f7e3"
+   ],
+   "grant_withdrawals": [],
+   "id": "second_stint_old_binding_not_held",
+   "owner_binding": {
+    "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "d03a640ff8c554e8a199d982b70a26e5adddd04c583e77e0caa426e3d91c77d5"
    }
@@ -2561,6 +2772,9 @@
    "id": "second_stint_row_names_old",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [
+     "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
+    ],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "d03a640ff8c554e8a199d982b70a26e5adddd04c583e77e0caa426e3d91c77d5"
    }
@@ -2587,6 +2801,9 @@
    "id": "second_stint_row_names_new",
    "owner_binding": {
     "key": "urn:ietf:params:oauth:ckt:sha-256:IrQctPr9YO8ylVdUipZjp-4jXngBMC7oL7S2F_5oLXM",
+    "other_bindings": [
+     "6c26de539fd103da8025883f6cde937ced626274ea4f54a57057c7d089890399"
+    ],
     "owner": "urn:ietf:params:oauth:ckt:sha-256:K-APcQoHfjPgIzaT2k1Fac4i7QCaNh9XCp5872Jnwhc",
     "row_id": "d03a640ff8c554e8a199d982b70a26e5adddd04c583e77e0caa426e3d91c77d5"
    }
