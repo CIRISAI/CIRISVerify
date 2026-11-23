@@ -1567,18 +1567,17 @@ fn read_one(
         let met = match prev {
             None => b.holders.iter().all(|h| counted.contains(h)),
             Some(pp) => {
-                let n = pp.holders.len();
-                let valid = pp
-                    .holders
-                    .iter()
-                    .filter(|h| counted.contains(&h.identity_ref))
-                    .count();
                 let changed = b.holders.iter().filter(|h| {
                     pp.holder(h).is_some_and(|ph| {
                         b.charter.recovery_commitments.get(*h) != Some(&ph.recovery_commitment)
                     })
                 });
-                super::is_strict_majority(valid, n)
+                super::count::strict_majority(
+                    counted.iter().map(String::as_str),
+                    pp.holders.iter().map(|h| h.identity_ref.as_str()),
+                    0,
+                )
+                .is_counted()
                     && added.iter().all(|h| counted.contains(*h))
                     && changed.into_iter().all(|h| counted.contains(h))
             },

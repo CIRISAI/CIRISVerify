@@ -18,7 +18,7 @@
 //!    `manifest_size` (checked before hashing), its SHA-256 is
 //!    `manifest_hash`, it decodes ([`super::build_manifest::decode`]), and its
 //!    project, version and target are the row's.
-//! 3. **The grant** ([`read_grant`]): a `delegates_to` row, dimension
+//! 3. **The grant** ([`grant_counted`]): a `delegates_to` row, dimension
 //!    `trust:confers:v1`, COUNTED (no `author`), the grantee its CWT `sub`. Its
 //!    voices are statements over one row id, counted at a strict majority
 //!    (`2·yes > N`) of the holders of the bundle its `refs.head` names, each
@@ -49,6 +49,12 @@
 //!    chain (`build_manifest_equivocation`, CC 2.7.7 rule 2). When the caller
 //!    holds no view of the composers the verdict still stands on a verified
 //!    manifest, and says `withdrawal_state: unknown` beside it.
+//!
+//! The two answers other callers want separately are public on their own:
+//! [`grant_counted`] (is the grant counted?) and [`grant_in_force`] (is the
+//! counted grant in force: links 5 and 6). Each reads the statements and
+//! then asks one plain-id function for the decision,
+//! [`super::count::strict_majority`] and [`super::count::conferral_in_force`].
 //!
 //! [`evaluate_build_standing`] runs them all and answers flat, measurement
 //! named fields ([`BuildStanding`]) beside one `stands` and, when it does not
@@ -820,6 +826,9 @@ pub struct CountedRow {
     pub not_voices: usize,
 }
 
+/// A bundle's holders as (identity reference, seated key's thumbprint).
+type HolderIds = Vec<(String, Digest32)>;
+
 /// Count the statements of one counted row over the bundles their `refs.head`
 /// names. `shape` checks a valid voice's row beyond the family rules.
 fn count_row(
@@ -836,7 +845,7 @@ fn count_row(
     let mut refused: Vec<(usize, StandingRefusal)> = Vec::new();
     let mut waits: Vec<StandingWait> = Vec::new();
     let mut not_voices = 0usize;
-    let mut voices: Vec<(usize, VerifiedRow, Digest32, usize, Vec<Digest32>)> = Vec::new();
+    let mut voices: Vec<(usize, VerifiedRow, Digest32, HolderIds)> = Vec::new();
     for (i, s) in statements.iter().enumerate() {
         let Some(head) = named_head(s) else {
             refused.push((
@@ -866,8 +875,12 @@ fn count_row(
                 } else if let Err(r) = shape(&row) {
                     refused.push((i, r));
                 } else {
-                    let kids = roster.holders.iter().map(|(_, k, _)| *k).collect();
-                    voices.push((i, *row, head, roster.len(), kids));
+                    let holders = roster
+                        .holders
+                        .iter()
+                        .map(|(r, k, _)| (r.clone(), *k))
+                        .collect();
+                    voices.push((i, *row, head, holders));
                 }
             },
             // Under a held roster the only key not held is one the bundle
@@ -894,16 +907,16 @@ fn count_row(
         .max_by(|a, b| a.1.len().cmp(&b.1.len()).then(b.0.cmp(a.0)))
         .map(|(id, _)| *id);
     let mut counted = Vec::new();
-    for (i, row, head, n, kids) in voices {
+    for (i, row, head, holders) in voices {
         if Some(row.row_id) == chosen {
-            counted.push((row, head, n, kids));
+            counted.push((row, head, holders));
         } else {
             refused.push((i, StandingRefusal::OtherRow { part }));
         }
     }
     refused.sort_by_key(|(i, _)| *i);
     let names: BTreeSet<String> = counted.iter().map(|(r, ..)| r.iss.clone()).collect();
-    let Some((first, head, n, kids)) = counted.into_iter().next() else {
+    let Some((first, head, holders)) = counted.into_iter().next() else {
         if !waits.is_empty() {
             return waiting(waits);
         }
@@ -914,29 +927,42 @@ fn count_row(
                 .map_or(StandingRefusal::NoVoice { part }, |(_, r)| r),
         );
     };
-    if super::is_strict_majority(names.len(), n) {
-        return Reading::Valid(CountedRow {
+    // The one count (`super::count::strict_majority`): the voices' signers
+    // over the named bundle's holders, waiting on every holder not heard.
+    let unheard: Vec<Digest32> = holders
+        .iter()
+        .filter(|(r, _)| !names.contains(r))
+        .map(|(_, k)| *k)
+        .collect();
+    match super::count::strict_majority(
+        names.iter().map(String::as_str),
+        holders.iter().map(|(r, _)| r.as_str()),
+        unheard.len(),
+    ) {
+        super::count::Count::Counted { n, .. } => Reading::Valid(CountedRow {
             row: first,
             head,
             voices: names.into_iter().collect(),
             roster_size: n,
             refused,
             not_voices,
-        });
+        }),
+        // Short of the count: the row gains voices without changing its row
+        // id (CC 2.6.1.9), so it waits on the voice of each holder not heard.
+        super::count::Count::Unmet {
+            could_be_made_up: true,
+            ..
+        } => {
+            let row_id = first.row_id;
+            waits.extend(
+                unheard
+                    .into_iter()
+                    .map(|kid| StandingWait::Key(MissingKey::Voice { kid, row: row_id })),
+            );
+            waiting(waits)
+        },
+        super::count::Count::Unmet { .. } => Reading::Refused(StandingRefusal::NoVoice { part }),
     }
-    // Short of the count: the row gains voices without changing its row id
-    // (CC 2.6.1.9), so it waits on the voice of each holder not yet heard.
-    let heard: BTreeSet<Digest32> = names
-        .iter()
-        .filter_map(|r| identity_ref_thumbprint(r))
-        .collect();
-    let row_id = first.row_id;
-    waits.extend(
-        kids.into_iter()
-            .filter(|k| !heard.contains(k))
-            .map(|kid| StandingWait::Key(MissingKey::Voice { kid, row: row_id })),
-    );
-    waiting(waits)
 }
 
 // ---------------------------------------------------------------- the grant
@@ -1021,7 +1047,7 @@ fn grant_shape(row: &VerifiedRow) -> Result<(), StandingRefusal> {
 /// when the held voices meet the count; Waiting on a bundle not held, or,
 /// short of the count, on the voices of the holders not heard; else Refused
 /// (the first statement's refusal, or `grant_no_voice`).
-pub fn read_grant(statements: &[&[u8]], bundles: &dyn BundleLookup) -> Reading<Grant> {
+pub fn grant_counted(statements: &[&[u8]], bundles: &dyn BundleLookup) -> Reading<Grant> {
     if statements.is_empty() {
         return Reading::Waiting(vec![StandingWait::Grant]);
     }
@@ -1071,7 +1097,7 @@ pub fn grant_confers_build<'g>(
 /// Count a withdrawal of `grant` (CC 2.4.1.1): a `withdraws` carrying the
 /// grant's family id and `sub`, no `dimension` and no `author`,
 /// `refs.target` the grant and `refs.head` the bundle it acts from, counted
-/// at a strict majority of that bundle's holders as [`read_grant`] counts.
+/// at a strict majority of that bundle's holders as [`grant_counted`] counts.
 /// Statements naming another target are refused
 /// (`grant_withdrawal_malformed:refs.target`).
 pub fn read_grant_withdrawal(
@@ -1637,7 +1663,7 @@ pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
     }
 
     // 3–4. The grant, its grantee and head, its scope and projects.
-    let grant_reading = read_grant(input.grant, input.bundles);
+    let grant_reading = grant_counted(input.grant, input.bundles);
     out.grant_verdict = Some(grant_reading.token());
     let grant = match grant_reading {
         Reading::Valid(g) => Some(g),
@@ -1675,33 +1701,33 @@ pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
                 return out.finish();
             },
         }
-        // The holders' end of the grant.
-        let ended = !input.grant_withdrawals.is_empty()
-            && match read_grant_withdrawal(input.grant_withdrawals, g, input.bundles) {
-                Reading::Valid(_) => true,
-                // A withdrawal over a bundle not held may be counted there.
-                Reading::Waiting(w) => {
-                    let bundles: Vec<StandingWait> = w
-                        .into_iter()
-                        .filter(|x| matches!(x, StandingWait::Bundle(_)))
-                        .collect();
-                    out.waiting.extend(bundles);
-                    false
-                },
-                Reading::Refused(_) => false,
-            };
-        out.grant_withdrawn = Some(ended);
-        if ended {
-            out.refuse(StandingRefusal::GrantWithdrawn);
-            return out.finish();
-        }
     }
 
-    // 5. The owner's answer.
+    // 5. Whether the counted grant is in force: its ends and the owner's answer.
     if let Some(g) = &grant {
-        answer_link(&mut out, input, g);
-        if out.refusal.is_some() {
-            return out.finish();
+        let f = grant_in_force(
+            g,
+            &GrantEndsInput {
+                grant_withdrawals: input.grant_withdrawals,
+                answers: input.answers,
+                answer_withdrawals: input.answer_withdrawals,
+                owner_binding: input.owner_binding,
+                keys: input.keys,
+                bundles: input.bundles,
+            },
+        );
+        out.grant_withdrawn = Some(f.grant_withdrawn);
+        out.owner = input.owner_binding.map(|b| b.owner.clone());
+        out.acceptance_verdict = f.acceptance_verdict;
+        out.acceptance_row_id = f.acceptance_row_id;
+        out.acceptance_withdrawn = f.acceptance_withdrawn;
+        match f.reading {
+            Reading::Valid(_) => {},
+            Reading::Waiting(w) => out.waiting.extend(w),
+            Reading::Refused(r) => {
+                out.refuse(r);
+                return out.finish();
+            },
         }
     }
 
@@ -1720,26 +1746,104 @@ pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
     out.finish()
 }
 
-fn answer_link(out: &mut BuildStanding, input: &StandingInput<'_>, g: &Grant) {
+/// The statements [`grant_in_force`] reads beside a counted grant.
+pub struct GrantEndsInput<'a> {
+    /// Statements of any counted withdrawal of the grant.
+    pub grant_withdrawals: &'a [&'a [u8]],
+    /// The owner's acceptance or decline statements.
+    pub answers: &'a [&'a [u8]],
+    /// The owner's withdrawals of the acceptance.
+    pub answer_withdrawals: &'a [&'a [u8]],
+    /// The owner-binding of the grantee, as the caller verified it.
+    pub owner_binding: Option<&'a OwnerBinding>,
+    /// The keys for the owner's statements.
+    pub keys: &'a dyn KeyDirectory,
+    /// The bundles a withdrawal names in `refs.head`.
+    pub bundles: &'a dyn BundleLookup,
+}
+
+/// What [`grant_in_force`] answers, with what it measured.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GrantInForce {
+    /// Valid (the acceptance's row id) when the grant is in force; Waiting on
+    /// the owner-binding, the acceptance, its key, or a bundle a withdrawal
+    /// names; Refused `grant_withdrawn`, `grant_declined`,
+    /// `acceptance_withdrawn` or the acceptance's own fault.
+    pub reading: Reading<Digest32>,
+    /// The decision of [`super::count::conferral_in_force`], when reached.
+    pub in_force: Option<super::count::InForce>,
+    /// A counted withdrawal of the grant is held.
+    pub grant_withdrawn: bool,
+    /// `accepted`, `declined`, `waiting:{…}` or `refused:{token}`; `None` when
+    /// the answers were not read (the grant ended by count).
+    pub acceptance_verdict: Option<String>,
+    /// The acceptance's row id.
+    pub acceptance_row_id: Option<Digest32>,
+    /// The owner's withdrawal of the acceptance is held.
+    pub acceptance_withdrawn: Option<bool>,
+}
+
+/// Whether a counted grant is in force (CC 3.2 T3, CC 2.4.1.1): it has not
+/// been withdrawn by a count of the holders ([`read_grant_withdrawal`]), the
+/// owner `binding` names accepted it ([`read_answer`]) and has not declined
+/// it, and the owner has not withdrawn that acceptance
+/// ([`read_acceptance_withdrawal`]). The statements are read here; the
+/// decision is the one [`super::count::conferral_in_force`] makes over their
+/// row ids.
+#[must_use]
+pub fn grant_in_force(grant: &Grant, input: &GrantEndsInput<'_>) -> GrantInForce {
+    let mut out = GrantInForce {
+        reading: Reading::Waiting(Vec::new()),
+        in_force: None,
+        grant_withdrawn: false,
+        acceptance_verdict: None,
+        acceptance_row_id: None,
+        acceptance_withdrawn: None,
+    };
+    let gid = *grant.row_id();
+    // The holders' ends: the row ids the counted withdrawals name.
+    let mut waits: Vec<StandingWait> = Vec::new();
+    let mut counted_ends: Vec<Digest32> = Vec::new();
+    if !input.grant_withdrawals.is_empty() {
+        match read_grant_withdrawal(input.grant_withdrawals, grant, input.bundles) {
+            Reading::Valid(c) => counted_ends.extend(refs_member(&c.row.payload, "target")),
+            // A withdrawal over a bundle not held may be counted there; one
+            // short of its count has not ended the grant.
+            Reading::Waiting(w) => {
+                waits.extend(
+                    w.into_iter()
+                        .filter(|x| matches!(x, StandingWait::Bundle(_))),
+                );
+            },
+            Reading::Refused(_) => {},
+        }
+    }
+    out.grant_withdrawn = counted_ends.contains(&gid);
+    if out.grant_withdrawn {
+        out.in_force = Some(super::count::InForce::EndedByCount);
+        out.reading = Reading::Refused(StandingRefusal::GrantWithdrawn);
+        return out;
+    }
     let Some(binding) = input.owner_binding else {
         out.acceptance_verdict = Some("waiting:owner_binding".into());
-        out.waiting.push(StandingWait::OwnerBinding);
-        return;
+        waits.push(StandingWait::OwnerBinding);
+        out.reading = waiting(waits);
+        return out;
     };
-    out.owner = Some(binding.owner.clone());
+    // The owner's answers.
     let mut accepted: Option<Answer> = None;
     let mut first_refusal: Option<StandingRefusal> = None;
-    let mut waits: Vec<StandingWait> = Vec::new();
+    let mut answer_waits: Vec<StandingWait> = Vec::new();
     let mut declined = false;
     for s in input.answers {
-        match read_answer(s, input.keys, g, binding) {
+        match read_answer(s, input.keys, grant, binding) {
             Reading::Valid(a) if a.kind == AnswerKind::Decline => declined = true,
             Reading::Valid(a) => {
                 if accepted.is_none() {
                     accepted = Some(a);
                 }
             },
-            Reading::Waiting(w) => waits.extend(w),
+            Reading::Waiting(w) => answer_waits.extend(w),
             Reading::Refused(r) => {
                 if first_refusal.is_none() {
                     first_refusal = Some(r);
@@ -1747,36 +1851,64 @@ fn answer_link(out: &mut BuildStanding, input: &StandingInput<'_>, g: &Grant) {
             },
         }
     }
-    if declined {
-        out.acceptance_verdict = Some("declined".into());
-        out.refuse(StandingRefusal::GrantDeclined);
-        return;
-    }
-    let Some(acc) = accepted else {
-        if let Some(r) = first_refusal {
-            out.acceptance_verdict = Some(format!("refused:{}", r.token()));
-            out.refuse(r);
-        } else {
-            if waits.is_empty() {
-                waits.push(StandingWait::Acceptance);
+    // The owner's own ends: the row ids its valid withdrawals name.
+    let acceptance_ends: Vec<Digest32> = accepted
+        .as_ref()
+        .map(|acc| {
+            input
+                .answer_withdrawals
+                .iter()
+                .filter_map(|s| match read_acceptance_withdrawal(s, input.keys, acc) {
+                    Reading::Valid(w) => refs_member(&w.payload, "target"),
+                    _ => None,
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let acc_id = accepted.as_ref().map(|a| a.row.row_id);
+    let decision = super::count::conferral_in_force(
+        &gid,
+        &counted_ends,
+        declined,
+        acc_id.as_ref(),
+        &acceptance_ends,
+    );
+    out.in_force = Some(decision);
+    use super::count::InForce;
+    out.reading = match decision {
+        InForce::EndedByCount => Reading::Refused(StandingRefusal::GrantWithdrawn),
+        InForce::Declined => {
+            out.acceptance_verdict = Some("declined".into());
+            Reading::Refused(StandingRefusal::GrantDeclined)
+        },
+        InForce::NotAccepted => {
+            if let Some(r) = first_refusal {
+                out.acceptance_verdict = Some(format!("refused:{}", r.token()));
+                Reading::Refused(r)
+            } else {
+                if answer_waits.is_empty() {
+                    answer_waits.push(StandingWait::Acceptance);
+                }
+                out.acceptance_verdict = Some(format!("waiting:{}", wait_tokens(&answer_waits)));
+                waits.extend(answer_waits);
+                waiting(waits)
             }
-            out.acceptance_verdict = Some(format!("waiting:{}", wait_tokens(&waits)));
-            out.waiting.extend(waits);
-        }
-        return;
+        },
+        InForce::AcceptanceWithdrawn | InForce::InForce => {
+            out.acceptance_verdict = Some("accepted".into());
+            out.acceptance_row_id = acc_id;
+            let withdrawn = decision == InForce::AcceptanceWithdrawn;
+            out.acceptance_withdrawn = Some(withdrawn);
+            if withdrawn {
+                Reading::Refused(StandingRefusal::AcceptanceWithdrawn)
+            } else if waits.is_empty() {
+                Reading::Valid(acc_id.unwrap_or_default())
+            } else {
+                waiting(waits)
+            }
+        },
     };
-    out.acceptance_verdict = Some("accepted".into());
-    out.acceptance_row_id = Some(acc.row.row_id);
-    let withdrawn = input.answer_withdrawals.iter().any(|s| {
-        matches!(
-            read_acceptance_withdrawal(s, input.keys, &acc),
-            Reading::Valid(_)
-        )
-    });
-    out.acceptance_withdrawn = Some(withdrawn);
-    if withdrawn {
-        out.refuse(StandingRefusal::AcceptanceWithdrawn);
-    }
+    out
 }
 
 #[cfg(test)]

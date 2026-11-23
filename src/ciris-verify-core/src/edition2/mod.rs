@@ -29,6 +29,9 @@ pub mod accord_halt;
 pub mod build_manifest;
 // Whether a build pipeline's manifest row stands (FSD-008 Phase 1b).
 pub mod build_standing;
+// The one strict-majority count and the one in-force decision of a counted
+// conferral, over plain ids.
+pub mod count;
 pub mod disclosure;
 pub mod family;
 pub mod family_shapes;

@@ -978,10 +978,26 @@ pub fn verify_lifecycle_row(
     }
     refused.sort_by_key(|r| r.index);
     let names: BTreeSet<String> = counted.iter().map(|(_, v)| v.row.iss.clone()).collect();
-    let (have, need) = (names.len(), roster.majority());
-    // Strict majority of the standing roster: 2·have > N.
-    let Some(chosen) = chosen.filter(|_| have >= need) else {
-        if !waiting.bundles.is_empty() || have + waiting.kids.len() >= need {
+    // Strict majority of the standing roster: 2·have > N (the one count,
+    // `super::count::strict_majority`).
+    let count = super::count::strict_majority(
+        names.iter().map(String::as_str),
+        roster.holders(),
+        waiting.kids.len(),
+    );
+    let (have, need) = match count {
+        super::count::Count::Counted { yes, .. } => (yes, roster.majority()),
+        super::count::Count::Unmet { yes, need, .. } => (yes, need),
+    };
+    let Some(chosen) = chosen.filter(|_| count.is_counted()) else {
+        let could_be_made_up = matches!(
+            count,
+            super::count::Count::Unmet {
+                could_be_made_up: true,
+                ..
+            }
+        );
+        if !waiting.bundles.is_empty() || could_be_made_up {
             return HaltReading::Waiting(waiting);
         }
         return HaltReading::Refused(if statements.is_empty() {
