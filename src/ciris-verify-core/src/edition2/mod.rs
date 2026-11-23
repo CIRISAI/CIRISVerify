@@ -581,7 +581,25 @@ fn check_set(a: &[Value], member: &'static str) -> Result<(), Invalid> {
     }
 }
 
-fn check_refs(v: &Value) -> Result<(), Invalid> {
+/// The shape check of a payload's `refs` member (CC 2.6.1.3), the one the
+/// statement reader applies: a non-empty map whose members are `head`, `prev`,
+/// `answers` and `target` (each one row-ref, `[2, [-16, digest]]`),
+/// `further_heads` and `trusted_through` (each a non-empty sorted set of
+/// row-refs), and `also` (a non-empty map of the roles `ack` and `cites`,
+/// each a non-empty sorted set of row-refs, and `under`, a set of exactly
+/// one). Any other member or role is refused. It ties no member to a family,
+/// a row type or an act: which rows must carry which, and what a named row
+/// must be, are the family's reader's and the door's.
+///
+/// A producer calls this on the `refs` it is about to sign, so the producer
+/// and the reader cannot drift (CIRISPersist's request, 23.5.1).
+///
+/// # Errors
+///
+/// [`Invalid::Malformed`] naming the member off its shape,
+/// [`Invalid::SetOrder`] for an unsorted or repeated set, or
+/// [`Invalid::UnexpectedMember`] within `refs` or `also`.
+pub fn check_refs(v: &Value) -> Result<(), Invalid> {
     let m = v
         .as_map()
         .filter(|m| !m.is_empty())
