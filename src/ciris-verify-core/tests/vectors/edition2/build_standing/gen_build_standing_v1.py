@@ -104,9 +104,11 @@ def put(b):
 def rid(rtype, family, sub, author, plb):
     return sha(enc(["CEG-row/2", rtype, family, sub, author, plb]))
 
+ROWID = {}                      # statement bytes -> row id
 def sign(k, sub, rtype, family, p):
     st, _, plb = statement(k, sub, rtype, family, p)
-    return st, rid(rtype, family, sub, p.get("author"), plb)
+    ROWID[st] = rid(rtype, family, sub, p.get("author"), plb)
+    return st, ROWID[st]
 
 # ---- key records (CC 3.1.3, each signed by its own key) ----
 KEY_RECORDS = [put(statement(P, P.iss, "scores", "key:record", krec(P, ["node"], TR + YEAR, t0=TR))[0]),
@@ -124,16 +126,21 @@ BLOB = blob()
 
 # ---- the rows ----
 BFAM, GFAM, MFAM = "provenance:build_manifest:.target", "trust:.job:.version", "membership:.stage"
-def build_payload(b=BLOB, head=G2, at=TB, project="ciris-server", version="0.6.0", target=TARGET, edit=None):
+NO_STAND = object()
+def build_payload(b=BLOB, head=G2, at=TB, project="ciris-server", version="0.6.0", target=TARGET, edit=None,
+                  stands_on=None):
+    # refs.head: the bundle in force; refs.also.stands_on: the owner's acceptance the row stands on.
+    refs = {"head": rref(head)}
+    so = BASE_ACC_ID if stands_on is None else stands_on
+    if so is not NO_STAND: refs["also"] = {"stands_on": [rref(so)]}
     p = {"author": P.iss, "dimension": "provenance:build_manifest:%s:v1" % target,
          "build": {"project": project, "version": version, "manifest_hash": hd(sha(b)), "manifest_size": len(b)},
-         "evidence_refs": [hd(sha(b))], "refs": {"head": rref(head)}, "asserted_at": at}
+         "evidence_refs": [hd(sha(b))], "refs": refs, "asserted_at": at}
     if edit: edit(p)
     return p
 def build_row(signer=P, sub=None, rtype="scores", **kw):
     return sign(signer, sub or P.iss, rtype, BFAM, build_payload(**kw))
 
-BASE_ROW, BASE_ROW_ID = build_row()
 
 SCOPE_BUILD = "infra:attest:provenance:build_manifest"
 PROJECTS = cset(["ciris-server", "ciris-verify"])
@@ -150,9 +157,19 @@ def grant(voices=(A, B), sub=None, **kw):
 
 BASE_GRANT, BASE_GRANT_ID = grant()
 
-def answer_payload(grant_id=BASE_GRANT_ID, author=O, dim="membership:acceptance:v1", refs=None, edit=None):
-    p = {"author": author.iss, "dimension": dim,
-         "refs": refs if refs is not None else {"answers": rref(grant_id)}, "asserted_at": TA}
+# Owner-bindings: delegates_to rows from the owner to P with P as sub. Their payload shape is CC's, still to come,
+# and the walk takes a binding as verified data {owner, key, row_id}; these row ids are stand-ins.
+B0 = sha(b"owner-binding B0: O binds P")
+B1 = sha(b"owner-binding B1: O2 re-binds P")
+B2 = sha(b"owner-binding B2: O binds P again")
+B9 = sha(b"owner-binding B9: some other binding")
+def answer_payload(grant_id=BASE_GRANT_ID, author=O, dim="membership:acceptance:v1", refs=None, edit=None,
+                   cites=B0):
+    # An acceptance of a grant to a machine key cites the owner-binding it is made under (refs.also.cites).
+    if refs is None:
+        refs = {"answers": rref(grant_id)}
+        if cites is not None: refs["also"] = {"cites": [rref(cites)]}
+    p = {"author": author.iss, "dimension": dim, "refs": refs, "asserted_at": TA}
     if edit: edit(p)
     return p
 def answer(signer=O, sub=None, **kw):
@@ -160,7 +177,9 @@ def answer(signer=O, sub=None, **kw):
     return sign(signer, sub or P.iss, "scores", MFAM, answer_payload(**kw))
 
 BASE_ACC, BASE_ACC_ID = answer()
-BINDING = {"owner": O.iss, "key": P.iss}
+def binding(owner=O, key=P, row=B0): return {"owner": owner.iss, "key": key.iss, "row_id": row.hex()}
+BINDING = binding()
+BASE_ROW, BASE_ROW_ID = build_row()
 
 def grant_withdrawal(voices=(A, B), head=G2, target=BASE_GRANT_ID, lifts=False):
     p = {"refs": {"head": rref(head), "target": rref(target)}, "asserted_at": TW}
@@ -177,14 +196,17 @@ def build_withdrawal(signer=P, target=BASE_ROW_ID):
     return sign(signer, P.iss, "withdraws", BFAM, p)[0]
 
 cases = []
+KERNEL = {}   # case id -> its graph-level counterpart in CIRISKernel's conferral_two.json (fa1dc1d)
 def case(cid, desc, expect, row=None, b=None, grant_sts=None, gw=(), answers=None, aw=(), binding=BINDING,
-         composers=(), wstate=None, **measure):
+         composers=(), wstate=None, kernel=None, **measure):
     e = {"verdict": expect}
     if wstate is not None: e["withdrawal_state"] = wstate
     e.update(measure)
+    if kernel: KERNEL[cid] = kernel
     cases.append({
         "id": cid, "description": desc,
-        "build_row": put(row if row is not None else BASE_ROW),
+        "build_row": put(row if row is not None else (
+            BASE_ROW if not answers else build_row(stands_on=ROWID[answers[0]])[0])),
         "blob_hex": (b if b is not None else BLOB).hex(),
         "grant": [put(s) for s in (grant_sts if grant_sts is not None else BASE_GRANT)],
         "grant_withdrawals": [put(s) for s in gw],
@@ -205,7 +227,8 @@ case("stands_unknown", "As stands_none_held with no composers view: still stands
 _gp, _gpid = grant(voices=(A, C), head=G1)
 case("stands_grant_under_predecessor", "The grant names G1, a predecessor of the bundle in force, and is counted "
      "there by A and C (C is no holder of G2): counted where made, stands. The build row names G1 too.", "stands",
-     row=build_row(head=G1)[0], grant_sts=_gp, answers=[answer(grant_id=_gpid)[0]], wstate="none_held",
+     row=build_row(head=G1, stands_on=answer(grant_id=_gpid)[1])[0], grant_sts=_gp,
+     answers=[answer(grant_id=_gpid)[0]], wstate="none_held",
      grant_voices=2, grant_root=G1.hex())
 _gb, _gbid = grant(scope=("infra:attest",))
 case("stands_bare_attest", "Scope infra:attest, bare: satisfies every attest family.", "stands", grant_sts=_gb,
@@ -297,7 +320,9 @@ gcase("grant_projects_unsorted", "projects not in set order.", "grant_set_order:
       projects=["ciris-verify", "ciris-server"])
 gcase("grant_projects_repeated", "projects repeats an element.", "grant_set_order:projects",
       projects=["ciris-server", "ciris-server"])
-gcase("grant_dimension_other", "dimension trust:accepts:v1, not trust:confers:v1.", "grant_malformed:dimension",
+gcase("grant_dimension_other", "dimension trust:accepts:v1, not trust:confers:v1. The statement reader refuses it "
+      "first: a trust:accepts row names the trust root's head (23.5.1, trust_root_head_unnamed).",
+      "grant_statement_invalid:trust_root_head_unnamed",
       edit=lambda p: p.__setitem__("dimension", "trust:accepts:v1"))
 gcase("grant_other_grantee", "The grant's CWT sub is Q, not the build row's signer.", "grant_other_grantee",
       sub=Q.iss)
@@ -372,7 +397,7 @@ case("contested_acceptance_withdrawn", "Both, and the owner withdraws the accept
 case("acceptance_by_grantee", "The acceptance is signed by the pipeline's own key.", "refused:acceptance_by_grantee",
      answers=[answer(signer=P)[0]])
 case("acceptance_owner_of_other_key", "The binding supplied makes O the owner of Q, not of the grantee.",
-     "refused:owner_binding_other_key", binding={"owner": O.iss, "key": Q.iss})
+     "refused:owner_binding_other_key", binding=binding(key=Q))
 case("acceptance_not_by_owner", "O2 accepts; the binding names O.", "refused:acceptance_not_by_owner",
      answers=[answer(signer=O2)[0]])
 case("acceptance_other_grant", "The acceptance answers another grant.", "refused:acceptance_other_grant",
@@ -389,7 +414,7 @@ case("acceptance_refs_neither", "No refs at all.", "refused:acceptance_malformed
 case("acceptance_other_grantee", "The acceptance's CWT sub is Q.", "refused:acceptance_other_grantee",
      answers=[answer(sub=Q.iss)[0]])
 case("acceptance_key_not_held", "The owner O3's key record is not held: the acceptance waits on its key.",
-     "waiting:key", answers=[answer(signer=O3)[0]], binding={"owner": O3.iss, "key": P.iss})
+     "waiting:key", answers=[answer(signer=O3)[0]], binding=binding(owner=O3))
 
 # ======================================================================== ends
 case("end_counted_withdrawal", "A and B withdraw the grant from G2: counted, the grant ends.",
@@ -421,6 +446,50 @@ case("state_withdrawn_peer", "The equivocating peer is withdrawn by the pipeline
      "stands", composers=[_eq, build_withdrawal(target=_eq_id)], wstate="none_held", equivocation=False)
 case("state_stranger_withdrawal", "O2 signs a withdraws naming the build row: not the pipeline's, ignored.",
      "stands", composers=[build_withdrawal(signer=O2)], wstate="none_held")
+
+KERNEL["stands_none_held"] = "names_bundle_and_acceptance"
+KERNEL["end_counted_withdrawal"] = "grant_ended"
+
+# ======================================================================== two standings
+case("row_no_stands_on", kernel="names_bundle_alone", desc="The build row names the bundle alone: it stands on no "
+     "acceptance and counts for nobody.", expect="refused:build_row_stands_on_nothing",
+     row=build_row(stands_on=NO_STAND)[0])
+case("row_stands_on_binding", kernel="names_the_binding", desc="stands_on names the owner-binding row itself.",
+     expect="refused:build_row_stands_on_nothing", row=build_row(stands_on=B0)[0])
+case("row_stands_on_grant", "stands_on names the grant (a row the reader holds, not an acceptance).",
+     "refused:build_row_stands_on_nothing", row=build_row(stands_on=BASE_GRANT_ID)[0])
+case("row_stands_on_row_not_held", "stands_on names a row the reader does not hold: the row waits on it.",
+     "waiting:row", row=build_row(stands_on=sha(b"a row not held"))[0])
+_acc_other, _acc_other_id = answer(grant_id=sha(b"another grant"))
+case("row_stands_on_other_grants_acceptance", "stands_on names the owner's acceptance of a different grant (held); "
+     "the acceptance of this grant is held too.", "refused:build_row_stands_on_nothing",
+     answers=[BASE_ACC, _acc_other], row=build_row(stands_on=_acc_other_id)[0])
+case("acceptance_cites_no_binding", "The acceptance carries refs.answers only, no owner-binding cited.",
+     "refused:acceptance_other_binding", answers=[answer(cites=None)[0]])
+case("acceptance_cites_other_binding", "The acceptance cites another binding than the one supplied.",
+     "refused:acceptance_other_binding", answers=[answer(cites=B9)[0]])
+case("binding_sub_not_signer", "The binding supplied binds Q, not the build row's signer P.",
+     "refused:owner_binding_other_key", binding=binding(key=Q, row=B0))
+_a1, _a1_id = answer(signer=O2, cites=B1)
+case("rebinding_old_acceptance", kernel="old_owners_act_after_the_rebinding", desc="P is re-bound to O2 (B1); the "
+     "row stands on O's old acceptance: not by the owner the binding names.", expect="refused:acceptance_not_by_owner",
+     binding=binding(owner=O2, row=B1))
+case("rebinding_before_new_acceptance", kernel="before_the_new_owners_acceptance", desc="Re-bound to O2; the row "
+     "names the re-binding B1 rather than an acceptance.", expect="refused:build_row_stands_on_nothing",
+     binding=binding(owner=O2, row=B1), answers=[_a1], row=build_row(stands_on=B1)[0])
+case("rebinding_new_owner_accepts", kernel="under_the_new_owner", desc="Re-bound to O2, who accepts citing B1; the "
+     "row stands on that acceptance.", expect="stands", binding=binding(owner=O2, row=B1), answers=[_a1],
+     wstate="none_held")
+_a2, _a2_id = answer(cites=B2)
+case("second_stint_old_acceptance", kernel="second_stint_of_one_owner", desc="O is bound to P again (B2); only O's "
+     "first acceptance (citing B0) is presented: a re-binding needs a new acceptance.",
+     expect="refused:acceptance_other_binding", binding=binding(row=B2))
+case("second_stint_row_names_old", kernel="second_stint_of_one_owner", desc="Bound again (B2), both acceptances "
+     "held; the row stands on the first (citing B0).", expect="refused:build_row_stands_on_nothing",
+     binding=binding(row=B2), answers=[BASE_ACC, _a2], row=build_row(stands_on=BASE_ACC_ID)[0])
+case("second_stint_row_names_new", kernel="second_stint_of_one_owner", desc="Bound again (B2); the row stands on the "
+     "new acceptance citing B2.", expect="stands", binding=binding(row=B2), answers=[BASE_ACC, _a2],
+     row=build_row(stands_on=_a2_id)[0], wstate="none_held")
 
 # ======================================================================== the scope matcher
 SCOPE_MATCH = [{"held": h, "family": "provenance:build_manifest", "satisfies": s} for h, s in (
@@ -461,6 +530,13 @@ out = {
                     "acceptance, owner_binding). withdrawal_state: unknown | none_held | withdrawn | superseded. "
                     "composers null = no view.",
         "pool_files": ["build_standing_pool_v1_%d.json" % i for i in range(len(pools))],
+    },
+    "kernel_counterparts": KERNEL,
+    "kernel_not_covered": {
+        "old_owners_act_receipted": "receipts are not read by this walk",
+        "grant_ended_receipted": "receipts are not read by this walk",
+        "grant_receipt_does_not_keep_the_binding": "receipts are not read by this walk; its unreceipted part is "
+                                                   "rebinding_old_acceptance",
     },
     "key_records": KEY_RECORDS,
     "bundles": BUNDLES,

@@ -269,6 +269,14 @@ pub enum StandingRefusal {
     /// The owner-binding supplied names another key than the grantee:
     /// `owner_binding_other_key`.
     OwnerBindingOtherKey,
+    /// The acceptance cites no owner-binding, or another than the one
+    /// supplied (a re-binding needs a new acceptance):
+    /// `acceptance_other_binding`.
+    AcceptanceOtherBinding,
+    /// The build row names no acceptance in `refs.also.stands_on`, or names
+    /// a row that is not the owner's acceptance of this grant: it counts for
+    /// nobody. `build_row_stands_on_nothing`.
+    BuildRowStandsOnNothing,
     /// The answer's `refs.answers` names another row than the grant:
     /// `acceptance_other_grant`.
     AcceptanceOtherGrant,
@@ -318,6 +326,8 @@ impl StandingRefusal {
             Self::AcceptanceByGrantee => "acceptance_by_grantee".into(),
             Self::AcceptanceNotByOwner => "acceptance_not_by_owner".into(),
             Self::OwnerBindingOtherKey => "owner_binding_other_key".into(),
+            Self::AcceptanceOtherBinding => "acceptance_other_binding".into(),
+            Self::BuildRowStandsOnNothing => "build_row_stands_on_nothing".into(),
             Self::AcceptanceOtherGrant => "acceptance_other_grant".into(),
             Self::AcceptanceOtherGrantee => "acceptance_other_grantee".into(),
             Self::BuildWithdrawn => "build_manifest_withdrawn".into(),
@@ -525,6 +535,9 @@ pub struct BuildRow {
     pub manifest_size: u64,
     /// `refs.head`.
     pub head: Digest32,
+    /// `refs.also.stands_on`: the owner's acceptance of the grant the row
+    /// stands on (CC 3.1.2.1, two standings). `None`: it stands on none.
+    pub stands_on: Option<Digest32>,
 }
 
 impl BuildRow {
@@ -648,9 +661,18 @@ fn build_row_shape(row: VerifiedRow) -> Result<BuildRow, StandingRefusal> {
         "supersedes" => Some(refs_member(p, "target").ok_or(m("refs.target"))?),
         _ => None,
     };
+    // A set of exactly one row-ref; the statement reader checks the shape.
+    let stands_on = p
+        .get_text("refs")
+        .and_then(|r| r.get_text("also"))
+        .and_then(|a| a.get_text("stands_on"))
+        .and_then(Value::as_array)
+        .and_then(|a| a.first())
+        .and_then(row_ref_of);
     Ok(BuildRow {
         row,
         superseding,
+        stands_on,
         project,
         version,
         target,
@@ -1186,10 +1208,15 @@ pub fn read_grant_withdrawal(
 /// is the caller's statement of that reading.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerBinding {
-    /// The owner's identity reference.
+    /// The owner's identity reference (the binding's signer).
     pub owner: String,
-    /// The owned key's identity reference.
+    /// The owned key's identity reference (the binding's `sub`).
     pub key: String,
+    /// The binding row's id: the acceptance cites it in `refs.also.cites`.
+    /// The binding is a `delegates_to` from the owner to the key with the key
+    /// as `sub`; its payload shape is CC's, still to come, so it is not read
+    /// here.
+    pub row_id: Digest32,
 }
 
 /// Accept or decline.
@@ -1274,6 +1301,23 @@ fn answer_shape(
     }
     if !bool::from(answers.ct_eq(grant.row_id())) {
         return Err(StandingRefusal::AcceptanceOtherGrant);
+    }
+    // An acceptance of a grant to a machine key names the owner-binding it is
+    // made under in `refs.also.cites`; a re-binding needs a new acceptance.
+    if kind == AnswerKind::Acceptance {
+        let cites = p
+            .get_text("refs")
+            .and_then(|r| r.get_text("also"))
+            .and_then(|a| a.get_text("cites"))
+            .and_then(Value::as_array)
+            .unwrap_or_default();
+        if !cites
+            .iter()
+            .filter_map(row_ref_of)
+            .any(|c| bool::from(c.ct_eq(&binding.row_id)))
+        {
+            return Err(StandingRefusal::AcceptanceOtherBinding);
+        }
     }
     Ok(Answer { row, kind })
 }
@@ -1742,6 +1786,12 @@ pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
 
     // 5. Whether the counted grant is in force: its ends and the owner's answer.
     if let Some(g) = &grant {
+        // The row stands on the owner's acceptance it names; naming none, it
+        // counts for nobody, and nothing that could arrive changes that.
+        let Some(stands_on) = row.stands_on else {
+            out.refuse(StandingRefusal::BuildRowStandsOnNothing);
+            return out.finish();
+        };
         let f = grant_in_force(
             g,
             &GrantEndsInput {
@@ -1751,6 +1801,7 @@ pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
                 owner_binding: input.owner_binding,
                 keys: input.keys,
                 bundles: input.bundles,
+                stands_on: Some(stands_on),
             },
         );
         out.grant_withdrawn = Some(f.grant_withdrawn);
@@ -1758,9 +1809,42 @@ pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
         out.acceptance_verdict = f.acceptance_verdict;
         out.acceptance_row_id = f.acceptance_row_id;
         out.acceptance_withdrawn = f.acceptance_withdrawn;
+        // Rows the reader holds by id: a `stands_on` naming one of them that
+        // is not the acceptance read is final; naming a row not held waits on
+        // it (a row waits for what it names).
+        let mut held: Vec<Digest32> = vec![*g.row_id()];
+        held.extend(input.owner_binding.map(|b| b.row_id));
+        held.extend(
+            input
+                .answers
+                .iter()
+                .chain(input.answer_withdrawals)
+                .chain(input.grant_withdrawals)
+                .filter_map(|s| unverified_row_id(s)),
+        );
+        let answer_ids: Vec<Digest32> = input
+            .answers
+            .iter()
+            .filter_map(|s| unverified_row_id(s))
+            .collect();
         match f.reading {
-            Reading::Valid(_) => {},
-            Reading::Waiting(w) => out.waiting.extend(w),
+            Reading::Valid(acc) if bool::from(acc.ct_eq(&stands_on)) => {},
+            Reading::Valid(_) if held.contains(&stands_on) => {
+                out.refuse(StandingRefusal::BuildRowStandsOnNothing);
+                return out.finish();
+            },
+            Reading::Valid(_) => out
+                .waiting
+                .push(StandingWait::Key(MissingKey::Row(stands_on))),
+            Reading::Waiting(w) => {
+                // An acceptance still to be read may be the one named; any
+                // other held row never is.
+                if held.contains(&stands_on) && !answer_ids.contains(&stands_on) {
+                    out.refuse(StandingRefusal::BuildRowStandsOnNothing);
+                    return out.finish();
+                }
+                out.waiting.extend(w);
+            },
             Reading::Refused(r) => {
                 out.refuse(r);
                 return out.finish();
@@ -1797,6 +1881,9 @@ pub struct GrantEndsInput<'a> {
     pub keys: &'a dyn KeyDirectory,
     /// The bundles a withdrawal names in `refs.head`.
     pub bundles: &'a dyn BundleLookup,
+    /// The acceptance the act stands on, when the caller knows it: among
+    /// several valid acceptances, this one is read.
+    pub stands_on: Option<Digest32>,
 }
 
 /// What [`grant_in_force`] answers, with what it measured.
@@ -1879,7 +1966,9 @@ pub fn grant_in_force(grant: &Grant, input: &GrantEndsInput<'_>) -> GrantInForce
                     AnswerKind::Acceptance => &mut accepted,
                     AnswerKind::Decline => &mut decline,
                 };
-                if slot.is_none() {
+                let preferred =
+                    a.kind == AnswerKind::Acceptance && input.stands_on == Some(a.row.row_id);
+                if slot.is_none() || preferred {
                     *slot = Some(a);
                 }
             },

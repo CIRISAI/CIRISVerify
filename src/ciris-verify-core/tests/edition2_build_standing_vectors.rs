@@ -22,15 +22,15 @@ const POOL_1: &str = include_str!("vectors/edition2/build_standing/build_standin
 const PINS: [(&str, &str); 3] = [
     (
         CASES,
-        "3e6a24f121648eb6fb3cf24987818ceedc5abb0098b404b8909d54473ccccffb",
+        "441cacd7ede9303dd39b0c765eb9b991ed64e3e35fa7f38fabb50c583f08a57d",
     ),
     (
         POOL_0,
-        "adf2af37873dcf10b18afecfa23a8df7e654b6f2940224732e4c2da15cf46267",
+        "ad03d506682155fbafe4d8ba8ccd081962a5bb9ae5c4cd575a0414e04aaff1b7",
     ),
     (
         POOL_1,
-        "5eed463221c891582bd89477ebe6fb8bca3af69eb2b4c9254c8d1272784f1a2c",
+        "63e4d11d250e534ead2952550d71ce5fe011a01ededbffe51444c943046cb9d7",
     ),
 ];
 
@@ -156,7 +156,7 @@ fn build_standing_cases() {
     let bundles = views;
 
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 87);
+    assert_eq!(cases.len(), 101);
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let list = |k: &str| -> Vec<&[u8]> { c[k].as_array().unwrap().iter().map(st).collect() };
@@ -170,6 +170,7 @@ fn build_standing_cases() {
         let binding = c["owner_binding"].as_object().map(|b| OwnerBinding {
             owner: b["owner"].as_str().unwrap().to_owned(),
             key: b["key"].as_str().unwrap().to_owned(),
+            row_id: digest(b["row_id"].as_str().unwrap()),
         });
         let blob = hex::decode(c["blob_hex"].as_str().unwrap()).unwrap();
         let input = StandingInput {
@@ -217,7 +218,7 @@ fn build_standing_cases() {
                 "{id}"
             );
             assert!(got.manifest.is_some(), "{id}");
-            assert_eq!(got.owner.as_deref(), f["owner"].as_str(), "{id}");
+            assert_eq!(got.owner, binding.as_ref().map(|b| b.owner.clone()), "{id}");
         }
     }
 }
