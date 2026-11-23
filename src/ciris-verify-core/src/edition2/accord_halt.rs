@@ -456,6 +456,9 @@ fn invalid_token(i: &Invalid) -> String {
         Invalid::BodyNumberUnrepresentable => "body_number_unrepresentable".into(),
         Invalid::DialHintMalformed => "dial_hint_malformed".into(),
         Invalid::GroupIdNotOfFounding => "group_id_not_of_founding".into(),
+        Invalid::TrustedThroughTooMany => "trusted_through_too_many".into(),
+        Invalid::KeepsCitesNoEnd => "keeps_cites_no_end".into(),
+        Invalid::AckNamesTooMany => "ack_names_too_many".into(),
     }
 }
 
