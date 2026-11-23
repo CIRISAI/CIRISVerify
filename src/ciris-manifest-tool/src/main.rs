@@ -133,11 +133,6 @@ struct GenerateBlobArgs {
     #[arg(long)]
     inline_functions: bool,
 
-    /// The `generated_at` member (RFC 3339). Default: `SOURCE_DATE_EPOCH`
-    /// when set, else now. Fix it for byte-identical output.
-    #[arg(long)]
-    generated_at: Option<String>,
-
     /// Output path for the blob bytes (required: the blob is binary)
     #[arg(short, long)]
     output: PathBuf,
@@ -243,14 +238,8 @@ fn generate_blob_cmd(args: GenerateBlobArgs) -> anyhow::Result<()> {
         target,
         filter,
         inline_functions,
-        generated_at,
         output,
     } = args;
-    let generated_at = match generated_at {
-        Some(g) => g,
-        None => default_generated_at()?,
-    };
-    let tool = format!("ciris-manifest-tool/{VERSION}");
     let out = blob::generate_blob(
         &binary,
         &blob::BlobRequest {
@@ -259,8 +248,6 @@ fn generate_blob_cmd(args: GenerateBlobArgs) -> anyhow::Result<()> {
             target: &target,
             filter: Some(&filter),
             inline_functions,
-            generated_at: &generated_at,
-            tool: &tool,
         },
     )?;
     std::fs::write(&output, &out.bytes)?;
@@ -276,6 +263,7 @@ fn generate_blob_cmd(args: GenerateBlobArgs) -> anyhow::Result<()> {
         "  Functions root: {}",
         hex::encode(out.manifest.functions_root)
     );
+    eprintln!("  Tool: {}", out.manifest.tool);
     eprintln!("  Inline table: {inline_functions}");
     eprintln!("  Blob: {} bytes", out.bytes.len());
     {
@@ -287,20 +275,4 @@ fn generate_blob_cmd(args: GenerateBlobArgs) -> anyhow::Result<()> {
     }
     eprintln!("  Output: {}", output.display());
     Ok(())
-}
-
-/// `SOURCE_DATE_EPOCH` (seconds) when set, so a reproducible build emits the
-/// same blob; else now.
-fn default_generated_at() -> anyhow::Result<String> {
-    use ciris_verify_core::utc::{SecondsFormat, UtcDateTime};
-    let t = match std::env::var("SOURCE_DATE_EPOCH") {
-        Ok(s) => {
-            let secs: i64 = s.trim().parse()?;
-            secs.checked_mul(1000)
-                .and_then(UtcDateTime::from_timestamp_millis)
-                .ok_or_else(|| anyhow::anyhow!("SOURCE_DATE_EPOCH out of range"))?
-        },
-        Err(_) => UtcDateTime::now(),
-    };
-    Ok(t.to_rfc3339_opts(SecondsFormat::Secs, true))
 }

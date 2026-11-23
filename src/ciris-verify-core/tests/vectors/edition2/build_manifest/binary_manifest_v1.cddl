@@ -5,27 +5,32 @@
 ; cites it by content hash in evidence_refs; the row is its signature. No floats; no tag-4 decimals.
 ; The known-answer vectors are CIRISVerify's (binary_manifest_v1_vectors.json, from gen_binary_manifest_v1.py, beside this file); this file mints none.
 ;
-; The members are listed in the FSD's order. On the wire CDE orders map keys by the bytewise order of
-; their encodings (so "tool" precedes "format"); a reader checks "format" before any other member.
+; "format" is a member, checked before any other member: it cannot be the first bytes, since CDE orders map
+; keys by the bytewise order of their encodings (so "tool" precedes "format" on the wire).
+; The blob is a pure function of (file, project, version, target, tool): it carries nothing about the run, so
+; two producers given the same final file emit the same bytes. A generated_at (or any other member) is refused.
+; Every hash is a plain bstr .size 32, with no [-16, digest] wrapper: the format string pins SHA-256 for v1.
+; A row whose build.project / build.version (or its dimension's {target}) differs from the blob's is refused
+; build_manifest_descriptor_mismatch, the same token a size or hash mismatch between row and blob takes.
 
 ceg-anything = build-manifest-blob / function-leaf
 
 build-manifest-blob = {
-  "format": "ciris-binary-manifest/1",     ; the one value; a reader refuses any other before reading on
+  "format": "ciris-binary-manifest/1",     ; a member, checked before any other member; any other value is refused
   "project": descriptor-project,           ; = the row's build.project, byte for byte (project, version, target: text as given)
   "version": descriptor-version,           ; = the row's build.version, compared byte for byte
   "target": target-triple,                 ; = the row's dimension {target} = the reader's current target
-  "binary_hash": hex-sha256,               ; canonical_binary_hash of the final file (whole file; Mach-O: the __TEXT region)
-  "functions_root": bstr .size 32,         ; always: the Merkle root over the function table (below)
+  "binary_hash": sha256,                   ; canonical_binary_hash of the final file (whole file; Mach-O: the __TEXT region)
+  "functions_root": sha256,                ; always: the Merkle root over the function table (below)
   ? "functions": function-table,           ; optional inline table; when present its root equals functions_root
-  "generated_at": tstr .size (1..64),      ; the generator's instant (RFC 3339); informative, the row's asserted_at is signed
-  "tool": tstr .size (1..128),             ; the generator and its version, e.g. "ciris-manifest-tool/23.6.0"
+  "tool": tstr .size (1..128),             ; the generator and its version, e.g. "ciris-manifest-tool/23.6.0", and
+                                           ; NOTHING about the run (no host, path, time or build id): constant for a release
 }
 
 descriptor-project = tstr .regexp "[a-z0-9-]{1,64}"
 descriptor-version = tstr .size (1..64)
 target-triple = tstr .regexp "[!-~]{1,64}"          ; printable ASCII, no space
-hex-sha256 = tstr .regexp "[0-9a-f]{64}"            ; bare lowercase hex, never "sha256:"-prefixed
+sha256 = bstr .size 32                              ; a SHA-256 digest: plain bytes, never hex text, never [-16, digest]
 
 ; One entry per function, keyed by its symbol name. Zero functions is refused.
 ; offset is relative to the base the runtime resolves for the image that holds the code:
@@ -38,7 +43,7 @@ function-name = tstr .size (1..1024)
 function-entry = {
   "offset": uint,
   "size": uint,
-  "hash": hex-sha256,
+  "hash": sha256,
 }
 
 ; functions_root, the locale tree's construction (CC 3.1.2.1, the paragraphs beginning "A locale manifest is a
@@ -53,5 +58,5 @@ function-leaf = {
   "name": function-name,
   "offset": uint,
   "size": uint,
-  "hash": hex-sha256,
+  "hash": sha256,
 }

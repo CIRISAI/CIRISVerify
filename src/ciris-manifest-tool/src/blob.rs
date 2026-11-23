@@ -52,8 +52,14 @@ pub struct BlobRequest<'a> {
     pub target: &'a str,
     pub filter: Option<&'a str>,
     pub inline_functions: bool,
-    pub generated_at: &'a str,
-    pub tool: &'a str,
+}
+
+/// The blob's `tool`: the generator and its version, and nothing about the
+/// run (no host, path, time or build id), so it is constant for a release
+/// and the blob is a pure function of (file, project, version, target, tool).
+#[must_use]
+pub fn tool_name() -> String {
+    format!("ciris-manifest-tool/{}", env!("CARGO_PKG_VERSION"))
 }
 
 /// A generated blob and the summary the CLI prints.
@@ -114,8 +120,7 @@ pub fn generate_blob(
         binary_hash,
         table.into_values().collect(),
         req.inline_functions,
-        req.generated_at,
-        req.tool,
+        &tool_name(),
     )
     .map_err(BlobGenError::Blob)?;
     let bytes = build_manifest::encode(&manifest).map_err(BlobGenError::Blob)?;
@@ -132,26 +137,55 @@ pub fn generate_blob(
 mod tests {
     use super::*;
 
+    fn req(inline: bool) -> BlobRequest<'static> {
+        BlobRequest {
+            project: "ciris-manifest-tool",
+            version: "0.0.0",
+            target: "test-target",
+            filter: Some("main"),
+            inline_functions: inline,
+        }
+    }
+
     #[test]
     fn blob_of_this_test_binary_round_trips() {
         let exe = std::env::current_exe().unwrap();
         for inline in [true, false] {
-            let out = generate_blob(
-                &exe,
-                &BlobRequest {
-                    project: "ciris-manifest-tool",
-                    version: "0.0.0",
-                    target: "test-target",
-                    filter: Some("main"),
-                    inline_functions: inline,
-                    generated_at: "2026-11-22T00:00:00Z",
-                    tool: "ciris-manifest-tool/test",
-                },
-            )
-            .unwrap();
+            let out = generate_blob(&exe, &req(inline)).unwrap();
             assert!(out.function_count >= 1);
             assert_eq!(build_manifest::decode(&out.bytes).unwrap(), out.manifest);
             assert_eq!(out.manifest.functions.is_some(), inline);
         }
+    }
+
+    #[test]
+    fn two_runs_give_identical_bytes() {
+        let exe = std::env::current_exe().unwrap();
+        for inline in [true, false] {
+            let a = generate_blob(&exe, &req(inline)).unwrap().bytes;
+            let b = generate_blob(&exe, &req(inline)).unwrap().bytes;
+            assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn tool_names_the_generator_and_version_only() {
+        let exe = std::env::current_exe().unwrap();
+        let out = generate_blob(&exe, &req(true)).unwrap();
+        let tool = &out.manifest.tool;
+        assert_eq!(*tool, tool_name());
+        assert_eq!(
+            *tool,
+            concat!("ciris-manifest-tool/", env!("CARGO_PKG_VERSION"))
+        );
+        // No path, host, time or build id: one '/', then the crate version.
+        let exe = exe.to_string_lossy();
+        assert!(!exe.is_empty() && !tool.contains(exe.as_ref()));
+        assert_eq!(tool.matches('/').count(), 1);
+        assert!(!tool.contains(':') && !tool.contains('T') && !tool.contains(' '));
+        let version = tool.strip_prefix("ciris-manifest-tool/").unwrap();
+        assert!(version
+            .split('.')
+            .all(|p| !p.is_empty() && p.bytes().all(|c| c.is_ascii_digit())));
     }
 }
