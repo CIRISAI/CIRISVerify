@@ -37,6 +37,16 @@
 //!   who signed it, need held bundles, Receipts and owner-bindings, and are
 //!   the door's.
 //!
+//! - **the owner-binding** ([`check_owner_binding`]): an
+//!   `ownership:{relation}:{target_kind}:{version}` row, the owner's
+//!   `delegates_to` to a key it answers for (CC 3.2). Its one purpose is
+//!   `owner_binding`; `scope` is a set; its end is later than its start; it
+//!   carries the group member its `cohort_scope` asks and no other; and a key
+//!   held for an organisation names that affiliation in `on_behalf_of` and
+//!   the affiliation's roster version in `refs.head`, the only `refs` role.
+//!   Whether `on_behalf_of` names an affiliation, and which binding of a key
+//!   is the live one, need rows held and are the fold's.
+//!
 //! Each needs nothing beyond the row.
 
 #[allow(unused_imports)]
@@ -55,6 +65,20 @@ pub const TRUST_FAMILY: &str = "trust:.job:.version";
 pub const TRUST_ROOT_HEAD_UNNAMED: &str = "trust_root_head_unnamed";
 /// The family id of `act:ack` (registered by CC's next pre tag).
 pub const ACT_ACK_FAMILY: &str = "act:ack";
+/// The family id of `ownership:{relation}:{target_kind}:{version}`.
+pub const OWNERSHIP_FAMILY: &str = "ownership:.relation:.target_kind:.version";
+/// The one `delegation_purpose` of an owner-binding.
+pub const OWNER_BINDING_PURPOSE: &str = "owner_binding";
+/// The seven values of `cohort_scope` (CC 2.1).
+pub const COHORT_SCOPES: [&str; 7] = [
+    "self",
+    "family",
+    "community",
+    "affiliations",
+    "species",
+    "biosphere",
+    "federation",
+];
 /// The token of a `membership:keeps` row that cites no row, or several.
 pub const KEEPS_CITES_NO_END: &str = "keeps_cites_no_end";
 
@@ -207,6 +231,81 @@ pub fn check_membership_keeps(payload: &Value) -> Result<(), Invalid> {
     Ok(())
 }
 
+/// An owner-binding: the payload of an
+/// `ownership:{relation}:{target_kind}:{version}` row.
+///
+/// # Errors
+///
+/// [`Invalid::SetOrder`] naming `scope` where it is unsorted or repeats a
+/// token; otherwise [`Invalid::Malformed`] naming the member off its rule:
+/// `author` (absent or not an identity-ref), `delegation_purpose` (not
+/// `owner_binding`), `scope` (not a non-empty array of text),
+/// `delegation_valid_from` / `asserted_at` (not an integer),
+/// `delegation_valid_until` (not an integer, or not later than the start),
+/// `cohort_scope` (outside the seven), `community_id` / `family_id` (present
+/// or absent against `cohort_scope`, or not a group-ref), `on_behalf_of`
+/// (not a group-ref, or carried without `refs`), or `refs` (carried without
+/// `on_behalf_of`, without `head`, or with any other role).
+pub fn check_owner_binding(payload: &Value) -> Result<(), Invalid> {
+    let text = |name: &str| payload.get_text(name).and_then(Value::as_text);
+    let group = |name: &'static str, wanted: bool| match payload.get_text(name) {
+        None if !wanted => Ok(()),
+        Some(v) if wanted && v.as_text().is_some_and(is_group_ref) => Ok(()),
+        _ => Err(bad(name)),
+    };
+    if !text("author").is_some_and(is_identity_ref) {
+        return Err(bad("author"));
+    }
+    if text("delegation_purpose") != Some(OWNER_BINDING_PURPOSE) {
+        return Err(bad("delegation_purpose"));
+    }
+    if let Some(scope) = payload.get_text("scope") {
+        let a = scope
+            .as_array()
+            .filter(|a| !a.is_empty() && a.iter().all(|t| t.as_text().is_some()))
+            .ok_or(bad("scope"))?;
+        super::check_set(a, "scope")?;
+    }
+    let asserted_at = payload
+        .get_text("asserted_at")
+        .and_then(Value::as_u64)
+        .ok_or(bad("asserted_at"))?;
+    let start = match payload.get_text("delegation_valid_from") {
+        None => asserted_at,
+        Some(v) => v.as_u64().ok_or(bad("delegation_valid_from"))?,
+    };
+    if let Some(v) = payload.get_text("delegation_valid_until") {
+        if !v.as_u64().is_some_and(|end| end > start) {
+            return Err(bad("delegation_valid_until"));
+        }
+    }
+    let Some(cohort) = text("cohort_scope").filter(|c| COHORT_SCOPES.contains(c)) else {
+        return Err(bad("cohort_scope"));
+    };
+    group(
+        "community_id",
+        matches!(cohort, "community" | "affiliations"),
+    )?;
+    group("family_id", cohort == "family")?;
+    let refs = payload.get_text("refs");
+    match payload.get_text("on_behalf_of") {
+        None if refs.is_some() => return Err(bad("refs")),
+        None => {},
+        Some(v) => {
+            if !v.as_text().is_some_and(is_group_ref) || refs.is_none() {
+                return Err(bad("on_behalf_of"));
+            }
+            let only_head = refs
+                .and_then(Value::as_map)
+                .is_some_and(|m| matches!(m, [(k, _)] if k.as_text() == Some("head")));
+            if !only_head {
+                return Err(bad("refs"));
+            }
+        },
+    }
+    Ok(())
+}
+
 /// The reader's call: apply the rule of `family` to `payload`, by the leaf
 /// its `dimension` binds. Other families have no rule here.
 pub(super) fn check_family_shape(family_id: &str, payload: &Value) -> Result<(), Invalid> {
@@ -221,10 +320,184 @@ pub(super) fn check_family_shape(family_id: &str, payload: &Value) -> Result<(),
             Some("accepts") => check_trust_accepts(payload),
             _ => Ok(()),
         },
+        OWNERSHIP_FAMILY => check_owner_binding(payload),
         OBJECTION_FAMILY => check_objection(
             family::dimension_leaf(family_id, payload).as_deref(),
             payload,
         ),
         _ => Ok(()),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn t(s: &str) -> Value {
+        Value::Text(s.into())
+    }
+
+    fn iref() -> Value {
+        t(&super::super::identity_ref(&[7; 32]))
+    }
+
+    fn gref(n: u8) -> Value {
+        use base64::Engine as _;
+        t(&format!(
+            "group-{}",
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode([n; 32])
+        ))
+    }
+
+    fn row_ref() -> Value {
+        Value::Array(vec![
+            Value::Uint(2),
+            Value::Array(vec![Value::Nint(15), Value::Bytes(vec![9; 32])]),
+        ])
+    }
+
+    /// CC's node sample (rc22 462260c `owner-binding`).
+    fn node() -> Vec<(&'static str, Value)> {
+        vec![
+            ("author", iref()),
+            ("dimension", t("ownership:responsible_party:node:v1")),
+            ("delegation_purpose", t("owner_binding")),
+            (
+                "scope",
+                Value::Array(vec![t("infra:serve"), t("infra:attest")]),
+            ),
+            ("delegation_valid_until", Value::Uint(1_000 + 86_400_000)),
+            ("cohort_scope", t("self")),
+            ("asserted_at", Value::Uint(1_000)),
+        ]
+    }
+
+    /// CC's organisation sample: an agent's binding, placed in a community.
+    fn org() -> Vec<(&'static str, Value)> {
+        let mut p = without(node(), "scope");
+        p = with(p, "dimension", t("ownership:responsible_party:agent:v1"));
+        p = with(p, "cohort_scope", t("community"));
+        p = with(p, "community_id", gref(5));
+        p = with(p, "on_behalf_of", gref(6));
+        with(p, "refs", Value::Map(vec![(t("head"), row_ref())]))
+    }
+
+    fn with(
+        mut p: Vec<(&'static str, Value)>,
+        k: &'static str,
+        v: Value,
+    ) -> Vec<(&'static str, Value)> {
+        p.retain(|(n, _)| *n != k);
+        p.push((k, v));
+        p
+    }
+
+    fn without(mut p: Vec<(&'static str, Value)>, k: &str) -> Vec<(&'static str, Value)> {
+        p.retain(|(n, _)| *n != k);
+        p
+    }
+
+    fn check(p: Vec<(&'static str, Value)>) -> Result<(), Invalid> {
+        check_owner_binding(&Value::Map(p.into_iter().map(|(k, v)| (t(k), v)).collect()))
+    }
+
+    #[test]
+    fn owner_binding_samples_pass() {
+        // "infra:attest" sorts after "infra:serve" by encoding (longer text).
+        assert_eq!(check(node()), Ok(()));
+        assert_eq!(check(org()), Ok(()));
+        // A member the form does not name is admitted (open payload).
+        assert_eq!(check(with(node(), "kind", t("node"))), Ok(()));
+        assert_eq!(
+            check(with(node(), "delegation_valid_from", Value::Uint(2_000))),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn owner_binding_breaks_are_refused() {
+        let bad = |m: &'static str| Err(Invalid::Malformed { member: m });
+        assert_eq!(check(without(node(), "author")), bad("author"));
+        assert_eq!(
+            check(without(node(), "delegation_purpose")),
+            bad("delegation_purpose")
+        );
+        assert_eq!(
+            check(with(node(), "delegation_purpose", t("act_on_behalf"))),
+            bad("delegation_purpose")
+        );
+        assert_eq!(
+            check(with(node(), "scope", t("infra:attest"))),
+            bad("scope")
+        );
+        assert_eq!(
+            check(with(node(), "scope", Value::Array(vec![]))),
+            bad("scope")
+        );
+        for unsorted in [
+            vec![t("infra:attest"), t("infra:serve")],
+            vec![t("infra:serve"), t("infra:serve")],
+        ] {
+            assert_eq!(
+                check(with(node(), "scope", Value::Array(unsorted))),
+                Err(Invalid::SetOrder { member: "scope" })
+            );
+        }
+        assert_eq!(check(without(node(), "cohort_scope")), bad("cohort_scope"));
+        assert_eq!(
+            check(with(node(), "cohort_scope", t("room"))),
+            bad("cohort_scope")
+        );
+        assert_eq!(
+            check(with(node(), "delegation_valid_until", t("2027-01-01"))),
+            bad("delegation_valid_until")
+        );
+        // The end is later than the start: asserted_at, or the stated start.
+        assert_eq!(
+            check(with(node(), "delegation_valid_until", Value::Uint(1_000))),
+            bad("delegation_valid_until")
+        );
+        assert_eq!(
+            check(with(
+                node(),
+                "delegation_valid_from",
+                Value::Uint(1_000 + 2 * 86_400_000)
+            )),
+            bad("delegation_valid_until")
+        );
+        // The group member the placement asks, and no other.
+        assert_eq!(
+            check(with(node(), "community_id", gref(5))),
+            bad("community_id")
+        );
+        assert_eq!(
+            check(with(node(), "cohort_scope", t("family"))),
+            bad("family_id")
+        );
+        assert_eq!(check(without(org(), "community_id")), bad("community_id"));
+        // on_behalf_of iff refs, and refs only head.
+        assert_eq!(
+            check(with(
+                node(),
+                "refs",
+                Value::Map(vec![(t("head"), row_ref())])
+            )),
+            bad("refs")
+        );
+        assert_eq!(check(without(org(), "refs")), bad("on_behalf_of"));
+        assert_eq!(
+            check(with(
+                org(),
+                "refs",
+                Value::Map(vec![
+                    (t("head"), row_ref()),
+                    (
+                        t("also"),
+                        Value::Map(vec![(t("cites"), Value::Array(vec![row_ref()]))])
+                    ),
+                ])
+            )),
+            bad("refs")
+        );
     }
 }
