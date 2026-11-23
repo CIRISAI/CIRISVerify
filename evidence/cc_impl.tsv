@@ -58,7 +58,7 @@ decimal_id	claim_id	repo	path#symbol	crate@version	span_sha256
 4.2.2.1	CLM-trust-anchor-store	CIRISVerify	src/ciris-verify-core/src/trust_anchor_store.rs#ConciseTaStore	ciris-verify-core@v13.0.0	16e8b6f1e2b87f8a35e14d7d86e81e9343bb6aad1ed61459df4b3b7e6b0aaeaa
 4.2.2.1	CLM-trust-anchor-baked	CIRISVerify	src/ciris-verify-core/src/trust_anchor_store.rs#yubico_attestation_root	ciris-verify-core@v13.0.0	c3f00f865ad1f079560e92cdc5f1a66247143cd7cddfd1be95290a28c11af8d7
 3.1.2	CLM-dimension-registry	CIRISVerify	src/ciris-verify-core/src/federation_provenance.rs#DimensionSpec	ciris-verify-core@v13.0.0	e1162cd389ce5240d5b1f1497fabf21eb03ad9c367a385bdee5133340d17d8ee
-3.4.5	CLM-dimension-consent-disposition	CIRISVerify	src/ciris-verify-core/src/federation_provenance.rs#ConsentDisposition	ciris-verify-core@v13.0.0	8c33be071c4f74466538a315767ef6951e73d6472c478030e917fb99388cda8a
+3.4.5	CLM-dimension-consent-disposition	CIRISVerify	src/ciris-verify-core/src/federation_provenance.rs#ConsentDisposition	ciris-verify-core@v13.0.0	7891fd02055a76ccd712fe93f56ee8499bdd70ce4d56aba5aaf248bb2eabb182
 3.4.5	CLM-classification-gating	CIRISVerify	src/ciris-verify-core/src/classification.rs#Gating	ciris-verify-core@v13.0.0	7c10f85d6876603dd0e94f24509989c716e0aafd4d6cc8651ecbd97e2f1b9464
 4.2.2.1	CLM-hardware-class-tpm	CIRISVerify	src/ciris-verify-core/src/device_attestation.rs#verify_tpm_ek_certificate	ciris-verify-core@v13.0.0	2f3dc74d8d04d9eea24c731c22082455e3dcdf508ac80aa15fae3906be0adc35
 4.2.2.1	CLM-anchor-provenance-tier	CIRISVerify	src/ciris-verify-core/src/trust_anchor_store.rs#AnchorProvenance	ciris-verify-core@v13.0.0	59f7f44ec4b22cd3aa6ad73ff63e7210f1938abd1ea19a842599cfa60ae43aa3

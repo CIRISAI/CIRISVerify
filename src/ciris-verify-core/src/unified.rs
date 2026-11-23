@@ -2767,8 +2767,10 @@ impl FullAttestationResult {
     /// follow FSD-002 §3.2: `attestation:self_verify` /
     /// `attestation:hardware_rooted` / `attestation:registry_consensus` /
     /// `attestation:license_validity` / `attestation:agent_integrity`,
-    /// plus `hardware_custody:{platform}` and
-    /// `transparency_log:inclusion`. v3.7.0+ dropped the L1/L2/L3/L4/L5
+    /// plus `hardware_custody:{platform}`. The audit-trail inclusion
+    /// result is carried as the plain fact
+    /// [`FederationProvenance::transparency_log`](crate::federation_provenance::FederationProvenance::transparency_log),
+    /// never as a dimension (CC 3.4.10). v3.7.0+ dropped the L1/L2/L3/L4/L5
     /// numbering prefixes — that ladder is consumer policy, not
     /// verify-side framing.
     ///
@@ -2780,7 +2782,9 @@ impl FullAttestationResult {
         &self,
         attester: &str,
     ) -> crate::federation_provenance::FederationProvenance {
-        use crate::federation_provenance::{dim, AttestationEntry, FederationProvenance, Score};
+        use crate::federation_provenance::{
+            dim, AttestationEntry, AttestationFact, FederationProvenance, Score,
+        };
 
         let mut b = FederationProvenance::builder();
 
@@ -2873,17 +2877,11 @@ impl FullAttestationResult {
             ));
         }
 
-        // Transparency-log inclusion — the audit-trail proof verifies.
+        // Transparency-log inclusion — the audit-trail proof verifies. A plain
+        // fact, not a dimension entry: CC 3.4.10 retired the transparency-log
+        // families (a Transparency Service's signed act is its Receipt).
         if let Some(audit) = &self.audit_trail {
-            b = b.attestation(AttestationEntry::new(
-                dim::TRANSPARENCY_LOG_INCLUSION,
-                if audit.valid {
-                    Score::PASS
-                } else {
-                    Score::FAIL
-                },
-                attester,
-            ));
+            b = b.transparency_log_inclusion(AttestationFact::new(audit.valid, attester));
         }
 
         b.build()

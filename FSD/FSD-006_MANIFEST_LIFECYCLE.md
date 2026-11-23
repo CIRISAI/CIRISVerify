@@ -118,9 +118,10 @@ media Source struct, CC 3.3.13), and `cohort_scope`.
 CC 3.1.7 R3's version grammar is **global**: every non-exempt family ends in exactly one `:vN`,
 whatever that family's own `segments` array says; only the four bare `attestation:*` constants are
 exempt. Every family Verify emits carries `dim::DIMENSION_VERSION`: `provenance:build_manifest`
-(+ `:locale:`), `provenance:slsa`, `provenance:skill_import`, `transparency_log:inclusion`,
-`transparency_log:consistency`, `transparency_log:cosigned`, `rollback_detected`, `cert_validity`,
-`hardware_custody`. CI checks out CIRISConstitution at a pinned commit, replays every emitted
+(+ `:locale:`), `provenance:slsa`, `provenance:skill_import`, `rollback_detected`, `cert_validity`,
+`hardware_custody`. The three transparency-log families are retired (CC 3.4.10: a Transparency
+Service's own signed act is its Receipt, which carries no dimension); Verify neither emits nor
+recognises them, and carries the inclusion / consistency facts as plain fields. CI checks out CIRISConstitution at a pinned commit, replays every emitted
 family through CC's matcher (`tools/cc_namespace_match.py`) with negative controls, fails if the
 matcher is absent (`CIRIS_CC_REQUIRED`), and runs CC's `tools/audit_emitted_dimensions.py` over
 `src/` and `bindings/`. Any repo that emits dimensions should run the same replay rather than
