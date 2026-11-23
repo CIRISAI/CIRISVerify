@@ -28,6 +28,15 @@
 //!   malformed, since two readers would otherwise differ on whether it is
 //!   read. Who may sign one is by role and is the fold's.
 //!
+//! - **the acceptance edge** ([`check_trust_accepts`]): a `trust:accepts`
+//!   row, an owner's edge to a root, names the bundle it attaches on in
+//!   `attached_head_digest`. In this form every edge is new (nothing of the
+//!   earlier mesh comes across, CC 2.6.1.12), so the member is always
+//!   required (CC 3.2 T4a). It carries no `refs.head` and no `scope`.
+//!   Whether the head it names is the anchored or a receipted fresh one, and
+//!   who signed it, need held bundles, Receipts and owner-bindings, and are
+//!   the door's.
+//!
 //! Each needs nothing beyond the row.
 
 #[allow(unused_imports)]
@@ -40,6 +49,10 @@ use super::{family, is_identity_ref, Invalid, Value};
 pub const MEMBERSHIP_FAMILY: &str = "membership:.stage";
 /// The family id of `objection:{state}`.
 pub const OBJECTION_FAMILY: &str = "objection:.state";
+/// The family id of `trust:{job}:{version}`.
+pub const TRUST_FAMILY: &str = "trust:.job:.version";
+/// The token of a `trust:accepts` edge that names no head.
+pub const TRUST_ROOT_HEAD_UNNAMED: &str = "trust_root_head_unnamed";
 /// The family id of `act:ack` (registered by CC's next pre tag).
 pub const ACT_ACK_FAMILY: &str = "act:ack";
 /// The token of a `membership:keeps` row that cites no row, or several.
@@ -116,6 +129,36 @@ pub fn check_act_ack(payload: &Value) -> Result<(), Invalid> {
     Ok(())
 }
 
+/// A `trust:accepts` payload: an owner's acceptance edge to a root.
+///
+/// # Errors
+///
+/// [`Invalid::TrustRootHeadUnnamed`] (token `trust_root_head_unnamed`) where
+/// `attached_head_digest` is absent; [`Invalid::Malformed`] naming
+/// `attached_head_digest` where it is not a hash-digest
+/// (`[-16, bstr .size 32]`), `refs` where `refs.head` is present, or `scope`
+/// where that member is present.
+pub fn check_trust_accepts(payload: &Value) -> Result<(), Invalid> {
+    let Some(d) = payload.get_text("attached_head_digest") else {
+        return Err(Invalid::TrustRootHeadUnnamed);
+    };
+    let is_digest = matches!(
+        d.as_array(),
+        Some([alg, bytes]) if alg.as_i64() == Some(-16)
+            && bytes.as_bytes().is_some_and(|b| b.len() == 32)
+    );
+    if !is_digest {
+        return Err(bad("attached_head_digest"));
+    }
+    if refs_member(payload, "head").is_some() {
+        return Err(bad("refs"));
+    }
+    if payload.get_text("scope").is_some() {
+        return Err(bad("scope"));
+    }
+    Ok(())
+}
+
 /// A `membership:keeps` payload.
 ///
 /// # Errors
@@ -174,6 +217,10 @@ pub(super) fn check_family_shape(family_id: &str, payload: &Value) -> Result<(),
             _ => Ok(()),
         },
         ACT_ACK_FAMILY => check_act_ack(payload),
+        TRUST_FAMILY => match family::dimension_leaf(family_id, payload).as_deref() {
+            Some("accepts") => check_trust_accepts(payload),
+            _ => Ok(()),
+        },
         OBJECTION_FAMILY => check_objection(
             family::dimension_leaf(family_id, payload).as_deref(),
             payload,

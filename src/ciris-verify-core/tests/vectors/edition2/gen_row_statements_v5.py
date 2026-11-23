@@ -7,6 +7,8 @@
 #  - counted_with_refs and second_voice (a later version: refs.head) carry the roster family's required members
 #    (group_kind, group, name, version, members, founded_at, consensus_protocol), and the row's sub is the
 #    group's id, so every valid statement's payload conforms to manifests/family_payloads_v2.cddl.
+#  - v_when_role_not_holding (a trust:accepts row) carries `attached_head_digest`, which an acceptance edge
+#    of this form always carries (CC 3.2 T4a), so the case still tests the second-signer cell.
 # Every other case is v4's, byte for byte in its inputs. The refusals are written to a second file,
 # row_statements_v5_refusals.json, for the repository's 1000 KB limit.
 # Independent generator of CC 2.6.1 edition-2 row statement known answers, v4: v3 (CIRISConstitution
@@ -573,7 +575,8 @@ family_vendored = [
     vfam("v_when_role_admitted", "trust:{job}:{version}, leaf confers, act=own: the delegate (CWT sub) role's when holds.", B, B.iss,
          "trust:.job:.version", edit(_ap, "dimension", "trust:confers:v1"), "valid:role:delegate", {"act": "own"}),
     vfam("v_when_role_not_holding", "trust:{job}:{version}, leaf accepts: the delegate role's when is false.", B, B.iss,
-         "trust:.job:.version", edit(_ap, "dimension", "trust:accepts:v1"), "family_invalid:iss_not_in_role", {"act": "own"}),
+         "trust:.job:.version", edit(edit(_ap, "dimension", "trust:accepts:v1"), "attached_head_digest",
+                                     hd(bytes([0x33]) * 32)), "family_invalid:iss_not_in_role", {"act": "own"}),
     vfam("v_when_role_unknown", "trust:{job}:{version} with no dimension and act=own: authored, but the roles' when is unknown, "
          "so no second signer is admitted.", B, B.iss,
          "trust:.job:.version", _ap, "family_invalid:iss_not_in_role", {"act": "own"}),

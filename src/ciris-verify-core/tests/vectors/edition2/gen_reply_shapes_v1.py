@@ -11,7 +11,9 @@
 #    the vocabulary, a row under one is refused by the matcher, so no case is cut for them here.)
 #  - a membership:keeps payload (payload level: the stage is registered by CC's next pre tag): counted, with
 #    refs.head, refs.trusted_through and exactly one row in refs.also.cites (keeps_cites_no_end otherwise);
-#  - an act:ack payload (payload level, for the same reason): refs.also.ack present, and no refs.head.
+#  - an act:ack payload (payload level, for the same reason): refs.also.ack present, and no refs.head;
+#  - a trust:accepts row, an owner's acceptance edge to a root: `attached_head_digest` (a hash-digest) is
+#    always required in this form (trust_root_head_unnamed), and it carries no refs.head and no scope.
 # None of prev / further_prev / trusted_through makes a statement wait: they are named for the fold.
 #
 # Reuses gen_row_statements_v4.py's own CBOR encoder and composite signer (loaded with its output discarded);
@@ -144,6 +146,26 @@ pcase("keeps_member_not_a_ref", "member is not an identity reference.", dict(kee
       "invalid:malformed:member")
 pcase("keeps_group_kind_other", "group_kind is neither family nor community.", dict(keeps, group_kind="room"),
       "invalid:malformed:group_kind")
+
+# ---- trust:accepts: the acceptance edge names the head it attaches on (CC 3.2 T4a) ----
+TRU = "trust:.job:.version"
+HEAD = [-16, bytes([0x44]) * 32]
+edge = dict(base, dimension="trust:accepts:v1", attached_head_digest=HEAD)
+case("edge_names_its_head", "An acceptance edge with attached_head_digest.", TRU, edge, "valid")
+case("edge_no_head_digest", "An edge without attached_head_digest: in this form every edge is new.", TRU,
+     dict(base, dimension="trust:accepts:v1"), "invalid:trust_root_head_unnamed")
+case("edge_head_digest_bare_bytes", "attached_head_digest as bare bytes, not a hash-digest.", TRU,
+     dict(edge, attached_head_digest=bytes([0x44]) * 32), "invalid:malformed:attached_head_digest")
+case("edge_head_digest_31_bytes", "A 31-byte digest.", TRU,
+     dict(edge, attached_head_digest=[-16, bytes(31)]), "invalid:malformed:attached_head_digest")
+case("edge_head_digest_other_alg", "A digest under another algorithm label.", TRU,
+     dict(edge, attached_head_digest=[-43, bytes(32)]), "invalid:malformed:attached_head_digest")
+case("edge_with_refs_head", "An edge carrying refs.head.", TRU, dict(edge, refs={"head": rref(1)}),
+     "invalid:malformed:refs")
+case("edge_with_scope", "An edge carrying scope.", TRU, dict(edge, scope=["infra:attest"]),
+     "invalid:malformed:scope")
+case("confers_is_not_an_edge", "A trust:confers row is not an acceptance edge: no edge rule applies.", TRU,
+     dict(base, dimension="trust:confers:v1", scope=["infra:attest"], refs={"head": rref(1)}), "valid")
 
 # ---- act:ack, at payload level (check_act_ack over the payload's bytes) ----
 ack = {"asserted_at": T0, "author": A.iss, "refs": {"also": {"ack": rset(2)}}}
