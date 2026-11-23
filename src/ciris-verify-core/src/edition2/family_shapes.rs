@@ -64,6 +64,8 @@ pub const TRUST_FAMILY: &str = "trust:.job:.version";
 /// The token of a new root edge that names no head (CC 3.2 T4a). The fold's:
 /// it needs a held lineage of the name in `sub`, so no check here gives it.
 pub const TRUST_ROOT_HEAD_UNNAMED: &str = "trust_root_head_unnamed";
+/// The largest `trust_depth` of an acceptance edge (CC 4.4.3.34).
+pub const TRUST_DEPTH_MAX: u64 = 5;
 /// The family id of `act:ack` (registered by CC's next pre tag).
 pub const ACT_ACK_FAMILY: &str = "act:ack";
 /// The family id of `ownership:{relation}:{target_kind}:{version}`.
@@ -171,8 +173,16 @@ pub fn check_act_ack(payload: &Value) -> Result<(), Invalid> {
 /// the digest is refused ([`TRUST_ROOT_HEAD_UNNAMED`]) needs a held lineage
 /// of the name in `sub`, so it is the fold's and not checked here.
 ///
+/// `trust_classes`, where present, is a non-empty sorted set of class ids
+/// with no repeat, and `trust_depth`, where present, is `0..=5`
+/// ([`TRUST_DEPTH_MAX`]; CC 4.4.3.34).
+///
 /// # Errors
 ///
+/// [`Invalid::TrustAcceptsClassesMalformed`] (token
+/// `trust_accepts_classes_malformed`) and
+/// [`Invalid::TrustAcceptsDepthOutOfRange`] (token
+/// `trust_accepts_depth_out_of_range`); otherwise
 /// [`Invalid::Malformed`] naming `refs` (`refs.head` present), `scope`
 /// (present), `attached_head_digest` (not a hash-digest, or beside a
 /// `service_key`), `service_key` (present or absent against `trust_classes`,
@@ -196,10 +206,24 @@ pub fn check_trust_accepts(sub: &str, payload: &Value) -> Result<(), Invalid> {
             return Err(bad("attached_head_digest"));
         }
     }
-    let transparency = payload
-        .get_text("trust_classes")
-        .and_then(Value::as_array)
-        .is_some_and(|a| a.iter().any(|c| c.as_text() == Some("transparency")));
+    let classes = match payload.get_text("trust_classes") {
+        None => &[][..],
+        Some(v) => v
+            .as_array()
+            .filter(|a| {
+                !a.is_empty()
+                    && a.iter().all(|c| c.as_text().is_some())
+                    && super::check_set(a, "trust_classes").is_ok()
+            })
+            .ok_or(Invalid::TrustAcceptsClassesMalformed)?,
+    };
+    if payload
+        .get_text("trust_depth")
+        .is_some_and(|d| !d.as_u64().is_some_and(|n| n <= TRUST_DEPTH_MAX))
+    {
+        return Err(Invalid::TrustAcceptsDepthOutOfRange);
+    }
+    let transparency = classes.iter().any(|c| c.as_text() == Some("transparency"));
     let service_key = payload.get_text("service_key");
     if service_key.is_some() != transparency {
         return Err(bad("service_key"));

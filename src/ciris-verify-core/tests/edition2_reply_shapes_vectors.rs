@@ -16,7 +16,7 @@ use serde_json::Value as J;
 
 const FILE: &str = include_str!("vectors/edition2/reply_shapes_v1.json");
 /// SHA-256 of the file, pinned so a regeneration is a visible change.
-const FILE_SHA256: &str = "18149502507e3268a0e03385bc22dd777ae98d7ee964fa30409749080b922fa9";
+const FILE_SHA256: &str = "54d04340a56f7140edf985bf9047b208cbb06c1d2b1977b0e8763a5aff0cab53";
 
 fn held(c: &J) -> BTreeMap<Digest32, CompositePublicKey> {
     c["held_key_seeds"]
@@ -44,7 +44,7 @@ fn file_is_pinned() {
 fn reply_and_refs_shapes() {
     let f: J = serde_json::from_str(FILE).unwrap();
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 48);
+    assert_eq!(cases.len(), 58);
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let bytes = hex::decode(c["statement_hex"].as_str().unwrap()).unwrap();

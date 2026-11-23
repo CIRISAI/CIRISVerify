@@ -202,6 +202,27 @@ case("service_key_and_digest", "service_key beside attached_head_digest.", TRU,
      dict(svc, attached_head_digest=HEAD), "invalid:malformed:attached_head_digest", sub=SK_SEG)
 case("root_edge_sub_identity_form", "A digest on an edge whose sub has identity-ref form: a lineage's name is "
      "free text, so the reader refuses nothing.", TRU, edge, "valid", sub=A.iss)
+# trust_classes is a non-empty sorted set with no repeat; trust_depth is 0..5 (CC 4.4.3.34).
+adm = dict(base, dimension="trust:accepts:v1")
+cset = lambda xs: [x for _, x in sorted((enc(x), x) for x in xs)]
+case("edge_classes_and_depth", "An admission edge narrowing its classes, at depth 5.", TRU,
+     dict(adm, trust_classes=cset(["audit", "detector"]), trust_depth=5), "valid")
+case("edge_depth_0", "trust_depth 0.", TRU, dict(adm, trust_depth=0), "valid")
+case("edge_classes_empty", "An empty trust_classes.", TRU, dict(adm, trust_classes=[]),
+     "invalid:trust_accepts_classes_malformed")
+case("edge_classes_unsorted", "trust_classes out of set order.", TRU,
+     dict(adm, trust_classes=cset(["audit", "detector"])[::-1]), "invalid:trust_accepts_classes_malformed")
+case("edge_classes_repeated", "A class twice.", TRU, dict(adm, trust_classes=["audit", "audit"]),
+     "invalid:trust_accepts_classes_malformed")
+case("edge_classes_bare_text", "trust_classes as one class id, not a set.", TRU, dict(adm, trust_classes="audit"),
+     "invalid:trust_accepts_classes_malformed")
+case("edge_classes_not_text", "A class id that is not text.", TRU, dict(adm, trust_classes=[7]),
+     "invalid:trust_accepts_classes_malformed")
+case("edge_depth_6", "trust_depth 6.", TRU, dict(adm, trust_depth=6), "invalid:trust_accepts_depth_out_of_range")
+case("edge_depth_negative", "trust_depth -1.", TRU, dict(adm, trust_depth=-1),
+     "invalid:trust_accepts_depth_out_of_range")
+case("edge_depth_text", "trust_depth as text.", TRU, dict(adm, trust_depth="1"),
+     "invalid:trust_accepts_depth_out_of_range")
 case("confers_is_not_an_edge", "A trust:confers row is not an acceptance edge: no edge rule applies.", TRU,
      dict(base, dimension="trust:confers:v1", scope=["infra:attest"], refs={"head": rref(1)}), "valid")
 

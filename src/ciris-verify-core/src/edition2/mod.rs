@@ -209,6 +209,14 @@ pub enum Invalid {
     /// `ack_names_too_many`: `refs.also.ack` holds more than 256 row-refs
     /// ([`ACK_MAX`]; on any row that carries it).
     AckNamesTooMany,
+    /// `trust_accepts_classes_malformed`: a `trust:accepts` edge whose
+    /// `trust_classes` is not a non-empty sorted set of text with no repeat
+    /// ([`family_shapes`]; CC 4.4.3.34).
+    TrustAcceptsClassesMalformed,
+    /// `trust_accepts_depth_out_of_range`: a `trust:accepts` edge whose
+    /// `trust_depth` is not an integer in `0..=5` ([`family_shapes`];
+    /// CC 4.4.3.34).
+    TrustAcceptsDepthOutOfRange,
 }
 
 impl Invalid {
@@ -224,6 +232,8 @@ impl Invalid {
             Self::TrustedThroughTooMany => Some("trusted_through_too_many"),
             Self::KeepsCitesNoEnd => Some(family_shapes::KEEPS_CITES_NO_END),
             Self::AckNamesTooMany => Some("ack_names_too_many"),
+            Self::TrustAcceptsClassesMalformed => Some("trust_accepts_classes_malformed"),
+            Self::TrustAcceptsDepthOutOfRange => Some("trust_accepts_depth_out_of_range"),
             _ => None,
         }
     }
