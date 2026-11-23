@@ -616,8 +616,8 @@ fn check_set(a: &[Value], member: &'static str) -> Result<(), Invalid> {
 /// `answers` and `target` (each one row-ref, `[2, [-16, digest]]`),
 /// `further_heads`, `further_prev` and `trusted_through` (each a non-empty
 /// sorted set of row-refs; `further_prev` only beside `prev`), and `also` (a non-empty map of the roles `ack` and `cites`,
-/// each a non-empty sorted set of row-refs, and `under`, a set of exactly
-/// one). `trusted_through` holds at most [`TRUSTED_THROUGH_MAX`] row-refs
+/// each a non-empty sorted set of row-refs, and `under` and `stands_on`, each
+/// a set of exactly one). `trusted_through` holds at most [`TRUSTED_THROUGH_MAX`] row-refs
 /// and `also.ack` at most [`ACK_MAX`].
 /// Any other member or role is refused. It ties no member to a family,
 /// a row type or an act: which rows must carry which, and what a named row
@@ -665,6 +665,16 @@ pub fn check_refs(v: &Value) -> Result<(), Invalid> {
                             check_row_ref_set(set, "also")?;
                             if set.as_array().map(<[Value]>::len) != Some(1) {
                                 return Err(malformed("under"));
+                            }
+                        },
+                        // A row signed under a root grant names the owner's
+                        // acceptance of that grant it stands on (CC 4.5.5): a
+                        // set of exactly one row-ref. What the named row must
+                        // be is the family's reader's.
+                        Some("stands_on") => {
+                            check_row_ref_set(set, "also")?;
+                            if set.as_array().map(<[Value]>::len) != Some(1) {
+                                return Err(malformed("stands_on"));
                             }
                         },
                         _ => return Err(Invalid::UnexpectedMember { within: "also" }),
@@ -1822,6 +1832,26 @@ mod tests {
                 Value::Map(vec![(t("under"), Value::Array(vec![a.clone(), b.clone()]))])
             )])),
             Verdict::Invalid(Invalid::Malformed { member: "under" })
+        );
+        // `stands_on` (CC 4.5.5): exactly one row-ref.
+        assert!(matches!(
+            mk(Value::Map(vec![(
+                t("also"),
+                Value::Map(vec![(t("stands_on"), Value::Array(vec![a.clone()]))])
+            )])),
+            Verdict::Valid(_)
+        ));
+        assert_eq!(
+            mk(Value::Map(vec![(
+                t("also"),
+                Value::Map(vec![(
+                    t("stands_on"),
+                    Value::Array(vec![a.clone(), b.clone()])
+                )])
+            )])),
+            Verdict::Invalid(Invalid::Malformed {
+                member: "stands_on"
+            })
         );
         // No row of this form names an object of the earlier form (CC 2.6.1.3,
         // 2.6.1.12): an edition-1 row-ref is refused wherever it stands.
