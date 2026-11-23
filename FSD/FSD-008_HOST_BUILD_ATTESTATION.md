@@ -73,11 +73,10 @@ manifest can be generated the same way from the host's final file. Measured by t
 | android armeabi-v7a | ELF32 | 85.1 MB | 95 in `.dynsym` |
 | android x86_64 | ELF64 | 139.6 MB | 95 in `.dynsym` |
 | win_amd64 | PE32+ DLL | 187.8 MB | 96 in the PE export table |
-| macosx x86_64 / arm64 | Mach-O | 132.5 / 115.3 MB | 96 names present; not yet confirmed as exports |
+| macosx x86_64 / arm64 | Mach-O | 132.5 / 115.3 MB | 96, each with an offset and a size (`ciris-manifest-tool list-functions`, run by verify on the shipped files; the same 96 names on both) |
 
 Android carries 95 because one function is not built there. No function is internalized on any ELF
-or PE target, so generating the manifest from the final shipped file holds there. For Mach-O it
-holds once the 96 names are confirmed as exports (being checked with `ciris-manifest-tool`).
+PE or Mach-O target, so generating the manifest from the final shipped file holds on all seven.
 
 **Where it can land.** No server route serves a build manifest today (the server serves no
 build-manifest or `/v1/verify/*` route), and nobody holds a pipeline grant. The 22.2.x LTS line is
@@ -686,7 +685,7 @@ come first; the release follows.
 | Repo | Work |
 |---|---|
 | CIRISVerify | §10 pure verifiers and vectors; the blob's CDDL and known answers for CC's `manifests/`; blob decoder; manifest tool blob output with base-relative offsets; route client; config, FFI, Python; result fields; cache; its own pipeline and rows; raise the boot-manifest link with Server (Q12) |
-| CIRISServer | the pipeline's composite key and custody; its `key:record`; the grant ceremony; CI that generates the blob from each final `_native*` file per target and publishes one row per (project, version, target), with `supersedes` / `withdraws` discipline; init with `host_project` / `host_version`; the route of §9 (a ticket: whether one route serves the whole set, and the composers view); whether `ceg-boot-manifest/2` carries the build row's id (Q12); confirm the macOS exports (§1) |
+| CIRISServer | the pipeline's composite key and custody; its `key:record`; the grant ceremony; CI that generates the blob from each final `_native*` file per target and publishes one row per (project, version, target), with `supersedes` / `withdraws` discipline; init with `host_project` / `host_version`; the route of §9 (a ticket: whether one route serves the whole set, and the composers view); whether `ceg-boot-manifest/2` carries the build row's id (Q12); name the one function Android omits (§1) |
 | CIRISEdge | the door with Server; serving the set from any node that holds it |
 | CIRISPersist | the grant path (v62.0); admission of build rows, grants and acceptances; the blob with its `custody:ack:v1` holder claim; replay of verify's vectors |
 | CIRISConstitution | the rewrite of CC 3.1.2.1 to the one act; the accepted descriptor, blob and `projects` text in the next pre tag; §14 |
