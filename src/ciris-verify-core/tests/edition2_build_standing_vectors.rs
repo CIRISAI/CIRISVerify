@@ -22,7 +22,7 @@ const POOL_1: &str = include_str!("vectors/edition2/build_standing/build_standin
 const PINS: [(&str, &str); 3] = [
     (
         CASES,
-        "582dfeb1d32162725760ff3389142b66196a1d6982083223a81810ef77a79817",
+        "a0adbf254a6f296e52383333963d0abdef11778fbc475832a3ebde1a495aa36b",
     ),
     (
         POOL_0,

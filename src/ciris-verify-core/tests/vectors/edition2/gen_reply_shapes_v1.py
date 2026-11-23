@@ -12,8 +12,12 @@
 #  - a membership:keeps payload (payload level: the stage is registered by CC's next pre tag): counted, with
 #    refs.head, refs.trusted_through and exactly one row in refs.also.cites (keeps_cites_no_end otherwise);
 #  - an act:ack payload (payload level, for the same reason): refs.also.ack present, and no refs.head;
-#  - a trust:accepts row, an owner's acceptance edge to a root: `attached_head_digest` (a hash-digest) is
-#    always required in this form (trust_root_head_unnamed), and it carries no refs.head and no scope.
+#  - a trust:accepts row is one of three kinds, said by its payload (CC 3.2 T3/T4a, CC 2.7.11, CC 4.4.3.34):
+#    with `attached_head_digest` (a hash-digest) it attaches a root; with `service_key` it is an edge to a
+#    Transparency Service, `service_key` standing exactly where trust_classes contains `transparency`, never
+#    beside the digest, and the CWT sub being the key's RFC 9679 thumbprint in the key-segment form (a COSE
+#    key) or the identity (an identity reference); with neither it is an admission-walk or licensor edge. None
+#    carries refs.head or scope. (trust_root_head_unnamed needs a held lineage, so it is the fold's.)
 # None of prev / further_prev / trusted_through makes a statement wait: they are named for the fold.
 #
 # Reuses gen_row_statements_v4.py's own CBOR encoder and composite signer (loaded with its output discarded);
@@ -33,9 +37,9 @@ def rref(n): return [2, [-16, bytes([n]) * 32]]
 cases = []
 
 
-def case(cid, desc, family, payload, expect, rtype="scores"):
+def case(cid, desc, family, payload, expect, rtype="scores", sub="s"):
     cases.append({"id": cid, "description": desc, "row_type": rtype, "family": family,
-                  "statement_hex": statement(A, "s", rtype, family, payload)[0].hex(),
+                  "statement_hex": statement(A, sub, rtype, family, payload)[0].hex(),
                   "held_key_seeds": [A.ml_seed[0]], "expect": expect})
 
 
@@ -152,8 +156,9 @@ TRU = "trust:.job:.version"
 HEAD = [-16, bytes([0x44]) * 32]
 edge = dict(base, dimension="trust:accepts:v1", attached_head_digest=HEAD)
 case("edge_names_its_head", "An acceptance edge with attached_head_digest.", TRU, edge, "valid")
-case("edge_no_head_digest", "An edge without attached_head_digest: in this form every edge is new.", TRU,
-     dict(base, dimension="trust:accepts:v1"), "invalid:trust_root_head_unnamed")
+case("edge_no_head_digest", "An edge with neither a digest nor a service key: an admission-walk or licensor "
+     "edge. (That a root edge owes a digest needs a held lineage: the fold's.)", TRU,
+     dict(base, dimension="trust:accepts:v1"), "valid")
 case("edge_head_digest_bare_bytes", "attached_head_digest as bare bytes, not a hash-digest.", TRU,
      dict(edge, attached_head_digest=bytes([0x44]) * 32), "invalid:malformed:attached_head_digest")
 case("edge_head_digest_31_bytes", "A 31-byte digest.", TRU,
@@ -164,6 +169,39 @@ case("edge_with_refs_head", "An edge carrying refs.head.", TRU, dict(edge, refs=
      "invalid:malformed:refs")
 case("edge_with_scope", "An edge carrying scope.", TRU, dict(edge, scope=["infra:attest"]),
      "invalid:malformed:scope")
+# An edge to a Transparency Service: service_key iff the class transparency; sub is the key's name.
+import base64, hashlib
+SK = {1: 2, 3: -7, -1: 1, -2: bytes([0x21]) * 32, -3: bytes([0x22]) * 32}                # EC2 P-256, with alg
+seg = lambda members: base64.urlsafe_b64encode(hashlib.sha256(enc(members)).digest()).rstrip(b"=").decode()
+SK_SEG = seg({1: 2, -1: 1, -2: SK[-2], -3: SK[-3]})                                      # RFC 9679: kty, crv, x, y
+OKP = {1: 1, 3: -8, -1: 6, -2: bytes([0x23]) * 32}
+svc = dict(base, dimension="trust:accepts:v1", trust_classes=["transparency"], service_key=SK)
+case("service_edge_cose_key", "A service edge whose sub is the EC2 key's thumbprint in the key-segment form.", TRU,
+     svc, "valid", sub=SK_SEG)
+case("service_edge_okp_key", "A service edge under an OKP key (thumbprint over kty, crv, x).", TRU,
+     dict(svc, service_key=OKP), "valid", sub=seg({1: 1, -1: 6, -2: OKP[-2]}))
+case("service_edge_identity", "service_key an identity reference; sub is that identity.", TRU,
+     dict(svc, service_key=B.iss), "valid", sub=B.iss)
+case("service_edge_sub_other", "A service edge whose sub is not its key's thumbprint.", TRU, svc,
+     "invalid:malformed:sub", sub="s")
+case("service_edge_sub_full_ref", "sub is the thumbprint as a full identity reference, not the key segment.", TRU,
+     svc, "invalid:malformed:sub", sub="urn:ietf:params:oauth:ckt:sha-256:" + SK_SEG)
+case("service_edge_identity_sub_other", "service_key an identity reference; sub names another identity.", TRU,
+     dict(svc, service_key=B.iss), "invalid:malformed:sub", sub=A.iss)
+case("service_edge_key_id", "service_key a key id, not an identity reference.", TRU,
+     dict(svc, service_key="A1"), "invalid:malformed:service_key", sub="A1")
+case("service_edge_key_type_unknown", "service_key a COSE key of a key type with no thumbprint rule here.", TRU,
+     dict(svc, service_key={1: 99, -1: bytes(32)}), "invalid:malformed:service_key", sub=SK_SEG)
+case("service_key_without_class", "service_key on an edge whose trust_classes lacks transparency.", TRU,
+     dict(svc, trust_classes=["audit"]), "invalid:malformed:service_key", sub=SK_SEG)
+case("service_key_no_classes", "service_key with no trust_classes.", TRU,
+     {k: v for k, v in svc.items() if k != "trust_classes"}, "invalid:malformed:service_key", sub=SK_SEG)
+case("transparency_without_service_key", "The class transparency with no service_key.", TRU,
+     dict(base, dimension="trust:accepts:v1", trust_classes=["transparency"]), "invalid:malformed:service_key")
+case("service_key_and_digest", "service_key beside attached_head_digest.", TRU,
+     dict(svc, attached_head_digest=HEAD), "invalid:malformed:attached_head_digest", sub=SK_SEG)
+case("root_edge_sub_identity_form", "A digest on an edge whose sub has identity-ref form: a lineage's name is "
+     "free text, so the reader refuses nothing.", TRU, edge, "valid", sub=A.iss)
 case("confers_is_not_an_edge", "A trust:confers row is not an acceptance edge: no edge rule applies.", TRU,
      dict(base, dimension="trust:confers:v1", scope=["infra:attest"], refs={"head": rref(1)}), "valid")
 

@@ -459,7 +459,6 @@ pub(crate) fn invalid_token(i: &Invalid) -> String {
         Invalid::TrustedThroughTooMany => "trusted_through_too_many".into(),
         Invalid::KeepsCitesNoEnd => "keeps_cites_no_end".into(),
         Invalid::AckNamesTooMany => "ack_names_too_many".into(),
-        Invalid::TrustRootHeadUnnamed => "trust_root_head_unnamed".into(),
     }
 }
 

@@ -29,13 +29,13 @@
 //!   read. Who may sign one is by role and is the fold's.
 //!
 //! - **the acceptance edge** ([`check_trust_accepts`]): a `trust:accepts`
-//!   row, an owner's edge to a root, names the bundle it attaches on in
-//!   `attached_head_digest`. In this form every edge is new (nothing of the
-//!   earlier mesh comes across, CC 2.6.1.12), so the member is always
-//!   required (CC 3.2 T4a). It carries no `refs.head` and no `scope`.
-//!   Whether the head it names is the anchored or a receipted fresh one, and
-//!   who signed it, need held bundles, Receipts and owner-bindings, and are
-//!   the door's.
+//!   row is one of three kinds, said by its payload: with
+//!   `attached_head_digest` it attaches a root (CC 3.2 T4a); with
+//!   `service_key` it is an edge to a Transparency Service, whose `sub` is
+//!   that key's name; with neither it is an admission-walk or licensor edge.
+//!   None carries `refs.head` or `scope`. Whether a root edge lacks a digest
+//!   it owes, the head it names, and who signed it need held bundles,
+//!   Receipts and owner-bindings, and are the fold's.
 //!
 //! - **the owner-binding** ([`check_owner_binding`]): an
 //!   `ownership:{relation}:{target_kind}:{version}` row, the owner's
@@ -61,7 +61,8 @@ pub const MEMBERSHIP_FAMILY: &str = "membership:.stage";
 pub const OBJECTION_FAMILY: &str = "objection:.state";
 /// The family id of `trust:{job}:{version}`.
 pub const TRUST_FAMILY: &str = "trust:.job:.version";
-/// The token of a `trust:accepts` edge that names no head.
+/// The token of a new root edge that names no head (CC 3.2 T4a). The fold's:
+/// it needs a held lineage of the name in `sub`, so no check here gives it.
 pub const TRUST_ROOT_HEAD_UNNAMED: &str = "trust_root_head_unnamed";
 /// The family id of `act:ack` (registered by CC's next pre tag).
 pub const ACT_ACK_FAMILY: &str = "act:ack";
@@ -153,34 +154,94 @@ pub fn check_act_ack(payload: &Value) -> Result<(), Invalid> {
     Ok(())
 }
 
-/// A `trust:accepts` payload: an owner's acceptance edge to a root.
+/// A `trust:accepts` edge, with the statement's CWT `sub`. Its payload says
+/// which of three kinds it is (CC 3.2 T3/T4a, CC 2.7.11, CC 4.4.3.34):
+///
+/// - it carries `attached_head_digest`: it attaches a root, and `sub` is read
+///   as that lineage's name (free text, so nothing of `sub` is checked);
+/// - it carries `service_key`: it is an edge to a Transparency Service, and
+///   `sub` is that key's RFC 9679 thumbprint in the key-segment form (the 43
+///   characters after the identity-reference prefix) where `service_key` is a
+///   COSE key, or the identity where it is an identity reference;
+/// - it carries neither: an admission-walk or licensor edge.
+///
+/// No edge carries `refs.head` or `scope`; `service_key` is present exactly
+/// where `trust_classes` contains `transparency`; and no edge carries both
+/// `service_key` and `attached_head_digest`. That a new root edge without
+/// the digest is refused ([`TRUST_ROOT_HEAD_UNNAMED`]) needs a held lineage
+/// of the name in `sub`, so it is the fold's and not checked here.
 ///
 /// # Errors
 ///
-/// [`Invalid::TrustRootHeadUnnamed`] (token `trust_root_head_unnamed`) where
-/// `attached_head_digest` is absent; [`Invalid::Malformed`] naming
-/// `attached_head_digest` where it is not a hash-digest
-/// (`[-16, bstr .size 32]`), `refs` where `refs.head` is present, or `scope`
-/// where that member is present.
-pub fn check_trust_accepts(payload: &Value) -> Result<(), Invalid> {
-    let Some(d) = payload.get_text("attached_head_digest") else {
-        return Err(Invalid::TrustRootHeadUnnamed);
-    };
-    let is_digest = matches!(
-        d.as_array(),
-        Some([alg, bytes]) if alg.as_i64() == Some(-16)
-            && bytes.as_bytes().is_some_and(|b| b.len() == 32)
-    );
-    if !is_digest {
-        return Err(bad("attached_head_digest"));
-    }
+/// [`Invalid::Malformed`] naming `refs` (`refs.head` present), `scope`
+/// (present), `attached_head_digest` (not a hash-digest, or beside a
+/// `service_key`), `service_key` (present or absent against `trust_classes`,
+/// not a COSE key of a known key type nor an identity reference), or `sub`
+/// (a service edge whose `sub` is not its key's name).
+pub fn check_trust_accepts(sub: &str, payload: &Value) -> Result<(), Invalid> {
     if refs_member(payload, "head").is_some() {
         return Err(bad("refs"));
     }
     if payload.get_text("scope").is_some() {
         return Err(bad("scope"));
     }
+    let digest = payload.get_text("attached_head_digest");
+    if let Some(d) = digest {
+        let is_digest = matches!(
+            d.as_array(),
+            Some([alg, bytes]) if alg.as_i64() == Some(-16)
+                && bytes.as_bytes().is_some_and(|b| b.len() == 32)
+        );
+        if !is_digest {
+            return Err(bad("attached_head_digest"));
+        }
+    }
+    let transparency = payload
+        .get_text("trust_classes")
+        .and_then(Value::as_array)
+        .is_some_and(|a| a.iter().any(|c| c.as_text() == Some("transparency")));
+    let service_key = payload.get_text("service_key");
+    if service_key.is_some() != transparency {
+        return Err(bad("service_key"));
+    }
+    let Some(key) = service_key else {
+        return Ok(());
+    };
+    if digest.is_some() {
+        return Err(bad("attached_head_digest"));
+    }
+    let name = match key.as_text() {
+        Some(id) if is_identity_ref(id) => id.to_owned(),
+        Some(_) => return Err(bad("service_key")),
+        None => service_key_segment(key).ok_or(bad("service_key"))?,
+    };
+    if sub != name {
+        return Err(bad("sub"));
+    }
     Ok(())
+}
+
+/// The key-segment form of a COSE key's RFC 9679 thumbprint: unpadded
+/// base64url of SHA-256 over the deterministic encoding of the key type's
+/// required members (OKP: kty, crv, x; EC2: kty, crv, x, y; the composite
+/// key type 7 of CC 2.6.1.7: kty, alg, pub). `None` for another key type or
+/// a key missing one of them.
+fn service_key_segment(key: &Value) -> Option<String> {
+    use base64::Engine as _;
+    use sha2::{Digest as _, Sha256};
+    key.as_map()?;
+    let labels: &[i64] = match key.get_int(1)?.as_u64()? {
+        1 => &[1, -1, -2],
+        2 => &[1, -1, -2, -3],
+        7 => &[1, 3, -1],
+        _ => return None,
+    };
+    let members = labels
+        .iter()
+        .map(|l| Some((Value::int(*l), key.get_int(*l)?.clone())))
+        .collect::<Option<Vec<_>>>()?;
+    let digest = Sha256::digest(super::cde::encode(&Value::Map(members)));
+    Some(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(digest))
 }
 
 /// A `membership:keeps` payload.
@@ -324,7 +385,11 @@ pub fn check_owner_binding(payload: &Value) -> Result<(), Invalid> {
 
 /// The reader's call: apply the rule of `family` to `payload`, by the leaf
 /// its `dimension` binds. Other families have no rule here.
-pub(super) fn check_family_shape(family_id: &str, payload: &Value) -> Result<(), Invalid> {
+pub(super) fn check_family_shape(
+    family_id: &str,
+    sub: &str,
+    payload: &Value,
+) -> Result<(), Invalid> {
     match family_id {
         MEMBERSHIP_FAMILY => match family::dimension_leaf(family_id, payload).as_deref() {
             Some("acceptance" | "decline") => check_reply(payload),
@@ -333,7 +398,7 @@ pub(super) fn check_family_shape(family_id: &str, payload: &Value) -> Result<(),
         },
         ACT_ACK_FAMILY => check_act_ack(payload),
         TRUST_FAMILY => match family::dimension_leaf(family_id, payload).as_deref() {
-            Some("accepts") => check_trust_accepts(payload),
+            Some("accepts") => check_trust_accepts(sub, payload),
             _ => Ok(()),
         },
         OWNERSHIP_FAMILY => check_owner_binding(payload),

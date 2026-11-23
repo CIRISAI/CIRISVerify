@@ -209,9 +209,6 @@ pub enum Invalid {
     /// `ack_names_too_many`: `refs.also.ack` holds more than 256 row-refs
     /// ([`ACK_MAX`]; on any row that carries it).
     AckNamesTooMany,
-    /// `trust_root_head_unnamed`: a `trust:accepts` edge without
-    /// `attached_head_digest` ([`family_shapes`]; CC 3.2 T4a).
-    TrustRootHeadUnnamed,
 }
 
 impl Invalid {
@@ -227,7 +224,6 @@ impl Invalid {
             Self::TrustedThroughTooMany => Some("trusted_through_too_many"),
             Self::KeepsCitesNoEnd => Some(family_shapes::KEEPS_CITES_NO_END),
             Self::AckNamesTooMany => Some("ack_names_too_many"),
-            Self::TrustRootHeadUnnamed => Some(family_shapes::TRUST_ROOT_HEAD_UNNAMED),
             _ => None,
         }
     }
@@ -971,7 +967,7 @@ fn read_row_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Verdict, 
     // The shape rules of the reply, objection and keeps families
     // (`family_shapes`): one function each, called here so no adopter skips
     // one, and public for producers.
-    family_shapes::check_family_shape(&family, &payload)?;
+    family_shapes::check_family_shape(&family, &sub, &payload)?;
 
     // A delegation's term is ms-time on every `delegates_to` row, whatever
     // its family (CC 2.6.2).

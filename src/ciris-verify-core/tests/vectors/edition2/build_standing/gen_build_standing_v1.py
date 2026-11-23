@@ -339,8 +339,8 @@ gcase("grant_projects_unsorted", "projects not in set order.", "grant_set_order:
 gcase("grant_projects_repeated", "projects repeats an element.", "grant_set_order:projects",
       projects=["ciris-server", "ciris-server"])
 gcase("grant_dimension_other", "dimension trust:accepts:v1, not trust:confers:v1. The statement reader refuses it "
-      "first: a trust:accepts row names the trust root's head (23.5.1, trust_root_head_unnamed).",
-      "grant_statement_invalid:trust_root_head_unnamed",
+      "first: a trust:accepts edge carries no refs.head.",
+      "grant_statement_invalid:malformed:refs",
       edit=lambda p: p.__setitem__("dimension", "trust:accepts:v1"))
 gcase("grant_other_grantee", "The grant's CWT sub is Q, not the build row's signer.", "grant_other_grantee",
       sub=Q.iss)
