@@ -86,11 +86,19 @@ pub enum InForce {
     InForce,
     /// A counted end names the conferral.
     EndedByCount,
-    /// The grantee side declined it.
+    /// An acceptance and a decline by the grantee side both stand (CC
+    /// 3.1.3.2, CC 2.7.7 rule 6): neither counts while both stand, so the
+    /// conferral confers nothing. It lifts when one of the two is withdrawn.
+    Contested,
+    /// A decline stands alone. A decline is terminal for that conferral: an
+    /// acceptance of it held beside the decline is [`InForce::Contested`],
+    /// never a revival (rows carry no arrival order); the grantors confer
+    /// again instead.
     Declined,
-    /// No acceptance of it is held.
+    /// No acceptance of it stands, and no decline.
     NotAccepted,
-    /// The grantee side withdrew its acceptance.
+    /// The acceptance held was withdrawn by the grantee side, and no decline
+    /// stands.
     AcceptanceWithdrawn,
 }
 
@@ -98,34 +106,33 @@ pub enum InForce {
 ///
 /// - `counted_ends`: the row ids named by the counted ends held (each a
 ///   `withdraws` already counted, e.g. by [`strict_majority`]);
-/// - `declined`: a valid decline of the conferral is held;
-/// - `acceptance`: the row id of a valid acceptance of it, if held;
-/// - `acceptance_ends`: the row ids named by the grantee side's own valid
-///   withdrawals.
+/// - `acceptance` / `decline`: the row ids of a valid acceptance and a valid
+///   decline of it by the grantee side, if held;
+/// - `reply_ends`: the row ids named by the grantee side's own valid
+///   withdrawals of its replies.
 ///
-/// Checked in that order: a counted end, a decline, no acceptance, the
-/// acceptance withdrawn.
+/// A reply stands when held and not named in `reply_ends`. Checked in this
+/// order: a counted end; both replies standing (contested); a decline
+/// standing; an acceptance standing (in force); an acceptance withdrawn; none.
 #[must_use]
 pub fn conferral_in_force<T: Eq>(
     conferral: &T,
     counted_ends: &[T],
-    declined: bool,
     acceptance: Option<&T>,
-    acceptance_ends: &[T],
+    decline: Option<&T>,
+    reply_ends: &[T],
 ) -> InForce {
     if counted_ends.contains(conferral) {
         return InForce::EndedByCount;
     }
-    if declined {
-        return InForce::Declined;
+    let stands = |r: Option<&T>| r.is_some_and(|r| !reply_ends.contains(r));
+    match (stands(acceptance), stands(decline)) {
+        (true, true) => InForce::Contested,
+        (_, true) => InForce::Declined,
+        (true, false) => InForce::InForce,
+        (false, false) if acceptance.is_some() => InForce::AcceptanceWithdrawn,
+        (false, false) => InForce::NotAccepted,
     }
-    let Some(a) = acceptance else {
-        return InForce::NotAccepted;
-    };
-    if acceptance_ends.contains(a) {
-        return InForce::AcceptanceWithdrawn;
-    }
-    InForce::InForce
 }
 
 #[cfg(test)]
@@ -159,30 +166,20 @@ mod tests {
 
     #[test]
     fn in_force() {
-        let (g, a) = (1u8, 2u8);
+        let (g, a, d) = (1u8, 2u8, 3u8);
+        let f = conferral_in_force;
+        assert_eq!(f(&g, &[], Some(&a), None, &[]), InForce::InForce);
+        assert_eq!(f(&g, &[g], Some(&a), None, &[]), InForce::EndedByCount);
+        assert_eq!(f(&g, &[], Some(&a), Some(&d), &[]), InForce::Contested);
+        assert_eq!(f(&g, &[], Some(&a), Some(&d), &[d]), InForce::InForce);
+        assert_eq!(f(&g, &[], Some(&a), Some(&d), &[a]), InForce::Declined);
+        assert_eq!(f(&g, &[], None, Some(&d), &[]), InForce::Declined);
+        assert_eq!(f(&g, &[], None, Some(&d), &[d]), InForce::NotAccepted);
+        assert_eq!(f(&g, &[], None, None, &[]), InForce::NotAccepted);
         assert_eq!(
-            conferral_in_force(&g, &[], false, Some(&a), &[]),
-            InForce::InForce
-        );
-        assert_eq!(
-            conferral_in_force(&g, &[g], false, Some(&a), &[]),
-            InForce::EndedByCount
-        );
-        assert_eq!(
-            conferral_in_force(&g, &[], true, Some(&a), &[]),
-            InForce::Declined
-        );
-        assert_eq!(
-            conferral_in_force(&g, &[], false, None, &[]),
-            InForce::NotAccepted
-        );
-        assert_eq!(
-            conferral_in_force(&g, &[], false, Some(&a), &[a]),
+            f(&g, &[], Some(&a), None, &[a]),
             InForce::AcceptanceWithdrawn
         );
-        assert_eq!(
-            conferral_in_force(&g, &[9], false, Some(&a), &[9]),
-            InForce::InForce
-        );
+        assert_eq!(f(&g, &[9], Some(&a), None, &[9]), InForce::InForce);
     }
 }

@@ -10,8 +10,9 @@
 //!    (`author` = `iss` = CWT `sub`), dimension
 //!    `provenance:build_manifest:{target}:v1`, a closed `build` of exactly
 //!    `project`, `version`, `manifest_hash` and `manifest_size` (at least 1),
-//!    `evidence_refs` holding `manifest_hash`, and `refs.head` the bundle the
-//!    grant names. A later row by the same signer at the same
+//!    `evidence_refs` holding `manifest_hash`, and `refs.head` the bundle in
+//!    force when it was signed: the grant's, or a later bundle of the grant's
+//!    lineage ([`BundleLookup::descends`]). A later row by the same signer at the same
 //!    (project, version, target) is a `supersedes` naming the earlier in
 //!    `refs.target`, read by the same rules.
 //! 2. **Row against blob** ([`check_blob`]): the blob's length is
@@ -35,13 +36,18 @@
 //!    `projects`.
 //! 5. **The owner's answer** ([`read_answer`]): the grantee's owner, read
 //!    from the owner-binding the caller supplies ([`OwnerBinding`]), accepts
-//!    the grant by a `membership:acceptance:v1` row whose `refs` is exactly
-//!    `{answers: the grant}`; a `membership:decline:v1` in the same shape
-//!    means the grant confers nothing.
+//!    the grant by a `membership:acceptance:v1` row whose `refs.answers` names
+//!    it (the reply's shape is the statement reader's,
+//!    `family_shapes::check_reply`). A `membership:decline:v1` alone is
+//!    terminal for that grant (`grant_declined`; the holders grant again). An
+//!    acceptance and a decline both standing are contested (`grant_contested`,
+//!    CC 3.1.3.2, CC 2.7.7 rule 6): neither counts until the owner withdraws
+//!    one, and then the other decides. Rows carry no arrival order, so an
+//!    acceptance appearing after a decline is that same contested case.
 //! 6. **How a grant ends**: a counted `withdraws` of the grant row by a strict
 //!    majority of the holders of the bundle it names in `refs.head`
 //!    ([`read_grant_withdrawal`]), or the owner's own `withdraws` of the
-//!    acceptance ([`read_acceptance_withdrawal`]). Either ends that one grant.
+//!    acceptance ([`read_reply_withdrawal`]). Either ends that one grant.
 //! 7. **Row state** ([`build_row_state`]): the pipeline's `withdraws` of the
 //!    build row (withdrawn), a `supersedes` of it at the same
 //!    (project, version, target) (superseded), or another standing row of the
@@ -71,6 +77,7 @@
 
 use super::accord_halt::{invalid_token, named_head, RosterHolder};
 use super::build_manifest::{self, BinaryManifest, BlobError};
+use super::count::InForce;
 use super::family::select::Act;
 use super::family::{
     row_leaf, verify_row_in_family, verify_row_in_family_with, FamilyFault, FamilyVerdict,
@@ -108,20 +115,7 @@ pub const SCOPE_ATTEST_BUILD: &str = "infra:attest:provenance:build_manifest";
 /// The only scopes a pipeline's grant (one carrying `projects`) may carry.
 pub const PIPELINE_SCOPES: [&str; 2] = [SCOPE_ATTEST, SCOPE_ATTEST_BUILD];
 
-const BUILD_MEMBERS: [&str; 6] = [
-    "author",
-    "dimension",
-    "build",
-    "evidence_refs",
-    "refs",
-    "asserted_at",
-];
 const DESCRIPTOR_MEMBERS: [&str; 4] = ["project", "version", "manifest_hash", "manifest_size"];
-const GRANT_MEMBERS: [&str; 5] = ["dimension", "scope", "projects", "refs", "asserted_at"];
-const ANSWER_MEMBERS: [&str; 4] = ["author", "dimension", "refs", "asserted_at"];
-/// Members of an answer refused by name: `proposal_hash` is the earlier
-/// form's, and an answer to a grant carries no group members.
-const ANSWER_REFUSED_MEMBERS: [&str; 4] = ["proposal_hash", "group", "members", "group_kind"];
 
 // ---------------------------------------------------------------- the scope
 
@@ -225,12 +219,6 @@ pub enum StandingRefusal {
         /// Which row.
         part: Part,
     },
-    /// No statement is a voice of a holder of the bundle named:
-    /// `{part}_no_voice`.
-    NoVoice {
-        /// Which row.
-        part: Part,
-    },
     /// The bundle `refs.head` names is on a fork the reader holds void:
     /// `{part}_head_void_fork`.
     HeadVoidFork {
@@ -248,8 +236,8 @@ pub enum StandingRefusal {
     /// The grant's grantee (CWT `sub`) is not the build row's signer:
     /// `grant_other_grantee`.
     GrantOtherGrantee,
-    /// The build row's `refs.head` is not the bundle the grant names:
-    /// `build_row_other_head`.
+    /// The build row's `refs.head` is neither the bundle the grant names nor
+    /// a later bundle of its lineage: `build_row_other_head`.
     BuildRowOtherHead,
     /// A pipeline's grant carries a scope other than [`PIPELINE_SCOPES`]:
     /// `pipeline_grant_out_of_role`.
@@ -263,8 +251,13 @@ pub enum StandingRefusal {
     /// A counted withdrawal of the grant by a strict majority of the holders
     /// of the bundle it names: `grant_withdrawn`.
     GrantWithdrawn,
-    /// The owner declined the grant: `grant_declined`.
+    /// The owner declined the grant: `grant_declined`. A decline is terminal
+    /// for that grant; the holders grant again.
     GrantDeclined,
+    /// An acceptance and a decline of the grant by the owner both stand
+    /// (CC 3.1.3.2, CC 2.7.7 rule 6): neither counts, so the grant confers
+    /// nothing until the owner withdraws one: `grant_contested`.
+    GrantContested,
     /// The owner withdrew the acceptance: `acceptance_withdrawn`.
     AcceptanceWithdrawn,
     /// The answer is signed by the grantee's own key, never its owner's:
@@ -310,7 +303,6 @@ impl StandingRefusal {
             Self::WrongRow { part } => format!("{}_wrong_row", part.as_str()),
             Self::VoiceNotHolder { part } => format!("{}_voice_not_holder", part.as_str()),
             Self::OtherRow { part } => format!("{}_other_row", part.as_str()),
-            Self::NoVoice { part } => format!("{}_no_voice", part.as_str()),
             Self::HeadVoidFork { part } => format!("{}_head_void_fork", part.as_str()),
             Self::DescriptorMismatch { .. } => "build_manifest_descriptor_mismatch".into(),
             Self::Blob(e) => e.token().into(),
@@ -321,6 +313,7 @@ impl StandingRefusal {
             Self::ProjectNotGranted => "build_manifest_project_not_granted".into(),
             Self::GrantWithdrawn => "grant_withdrawn".into(),
             Self::GrantDeclined => "grant_declined".into(),
+            Self::GrantContested => "grant_contested".into(),
             Self::AcceptanceWithdrawn => "acceptance_withdrawn".into(),
             Self::AcceptanceByGrantee => "acceptance_by_grantee".into(),
             Self::AcceptanceNotByOwner => "acceptance_not_by_owner".into(),
@@ -433,6 +426,12 @@ macro_rules! valid_or_return {
 fn from_family(part: Part, v: FamilyVerdict) -> Reading<VerifiedRow> {
     match v {
         FamilyVerdict::Valid { row, .. } => Reading::Valid(*row),
+        // A reply's shape is checked by the statement reader
+        // (`family_shapes::check_reply`); its member is reported as the
+        // reply's.
+        FamilyVerdict::Invalid(Invalid::Malformed { member }) if part == Part::Answer => {
+            Reading::Refused(StandingRefusal::Malformed { part, member })
+        },
         FamilyVerdict::Invalid(invalid) => {
             Reading::Refused(StandingRefusal::Statement { part, invalid })
         },
@@ -596,7 +595,6 @@ fn build_row_shape(row: VerifiedRow) -> Result<BuildRow, StandingRefusal> {
         return Err(StandingRefusal::WrongRow { part });
     }
     let p = &row.payload;
-    closed(part, p, &BUILD_MEMBERS)?;
     // The family model already holds `author` = `iss`; the subject is the
     // signer too.
     if row.author.as_deref() != Some(row.sub.as_str()) {
@@ -795,16 +793,31 @@ pub enum BundleView {
     VoidFork,
 }
 
-/// The caller's view of bundles by object id.
+/// Whether one bundle is the same as, or descends from, another in a
+/// lineage the reader holds ([`BundleLookup::descends`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Descent {
+    /// `head` is `from`, or a later bundle of `from`'s lineage (following
+    /// `prev` from `head` reaches `from`).
+    SameOrLater,
+    /// `head` is held and is neither: an older bundle than `from`, or one on
+    /// another lineage or another fork.
+    Not,
+    /// The reader does not hold `head` (or a bundle between it and `from`).
+    NotHeld,
+}
+
+/// The caller's view of bundles by object id. Pure and caller-supplied: the
+/// caller holds the lineages (from `edition2::genesis` under `std`).
 pub trait BundleLookup {
     /// What the reader holds of the bundle `head`.
     fn view(&self, head: &Digest32) -> BundleView;
-}
 
-impl<F: Fn(&Digest32) -> BundleView> BundleLookup for F {
-    fn view(&self, head: &Digest32) -> BundleView {
-        self(head)
-    }
+    /// Is `head` the same bundle as `from`, or a later bundle of the same
+    /// lineage? A build row names the bundle in force when it was signed, so
+    /// its `refs.head` is the grant's or descends from it (a grant counted
+    /// under bundle 3 stands under bundle 5).
+    fn descends(&self, head: &Digest32, from: &Digest32) -> Descent;
 }
 
 // ---------------------------------------------------------------- counting
@@ -829,6 +842,31 @@ pub struct CountedRow {
 /// A bundle's holders as (identity reference, seated key's thumbprint).
 type HolderIds = Vec<(String, Digest32)>;
 
+fn holder_ids(roster: &BundleRoster) -> HolderIds {
+    roster
+        .holders
+        .iter()
+        .map(|(r, k, _)| (r.clone(), *k))
+        .collect()
+}
+
+/// The row id of a statement read without verifying it: only to name the
+/// row a waited-on voice would be over.
+fn unverified_row_id(statement: &[u8]) -> Option<Digest32> {
+    let Value::Tag(18, inner) = cde::decode(statement).ok()? else {
+        return None;
+    };
+    let a = inner.as_array()?;
+    let prot = cde::decode(a.first()?.as_bytes()?).ok()?;
+    let payload_b = a.get(2)?.as_bytes()?;
+    let payload = cde::decode(payload_b).ok()?;
+    let rtype = prot.get_int(-70001)?.as_text()?;
+    let family = prot.get_int(-70002)?.as_text()?;
+    let sub = prot.get_int(15)?.get_int(2)?.as_text()?;
+    let author = payload.get_text("author").and_then(Value::as_text);
+    Some(super::row_id(rtype, family, sub, author, payload_b))
+}
+
 /// Count the statements of one counted row over the bundles their `refs.head`
 /// names. `shape` checks a valid voice's row beyond the family rules.
 fn count_row(
@@ -845,6 +883,9 @@ fn count_row(
     let mut refused: Vec<(usize, StandingRefusal)> = Vec::new();
     let mut waits: Vec<StandingWait> = Vec::new();
     let mut not_voices = 0usize;
+    // Rows heard only from keys the named bundle does not seat: no voice
+    // yet, but a holder's may still arrive (CC 2.6.1.9).
+    let mut unheard_rows: Vec<(Digest32, HolderIds)> = Vec::new();
     let mut voices: Vec<(usize, VerifiedRow, Digest32, HolderIds)> = Vec::new();
     for (i, s) in statements.iter().enumerate() {
         let Some(head) = named_head(s) else {
@@ -875,17 +916,18 @@ fn count_row(
                 } else if let Err(r) = shape(&row) {
                     refused.push((i, r));
                 } else {
-                    let holders = roster
-                        .holders
-                        .iter()
-                        .map(|(r, k, _)| (r.clone(), *k))
-                        .collect();
+                    let holders = holder_ids(&roster);
                     voices.push((i, *row, head, holders));
                 }
             },
             // Under a held roster the only key not held is one the bundle
             // does not seat: that statement is not a voice.
-            FamilyVerdict::Waiting(_) => not_voices += 1,
+            FamilyVerdict::Waiting(_) => {
+                not_voices += 1;
+                if let Some(id) = unverified_row_id(s) {
+                    unheard_rows.push((id, holder_ids(&roster)));
+                }
+            },
             FamilyVerdict::Invalid(invalid) => {
                 refused.push((i, StandingRefusal::Statement { part, invalid }));
             },
@@ -917,15 +959,22 @@ fn count_row(
     refused.sort_by_key(|(i, _)| *i);
     let names: BTreeSet<String> = counted.iter().map(|(r, ..)| r.iss.clone()).collect();
     let Some((first, head, holders)) = counted.into_iter().next() else {
+        // No holder's voice yet: the same short count, waiting on every
+        // holder of the bundle named. A statement's own fault refuses that
+        // statement only; only where nothing else is held does it answer.
+        for (row, hs) in unheard_rows {
+            waits.extend(
+                hs.into_iter()
+                    .map(|(_, kid)| StandingWait::Key(MissingKey::Voice { kid, row })),
+            );
+        }
         if !waits.is_empty() {
             return waiting(waits);
         }
-        return Reading::Refused(
-            refused
-                .into_iter()
-                .next()
-                .map_or(StandingRefusal::NoVoice { part }, |(_, r)| r),
-        );
+        return match refused.into_iter().next() {
+            Some((_, r)) => Reading::Refused(r),
+            None => Reading::Waiting(vec![StandingWait::Grant]),
+        };
     };
     // The one count (`super::count::strict_majority`): the voices' signers
     // over the named bundle's holders, waiting on every holder not heard.
@@ -961,7 +1010,9 @@ fn count_row(
             );
             waiting(waits)
         },
-        super::count::Count::Unmet { .. } => Reading::Refused(StandingRefusal::NoVoice { part }),
+        // No unheard holder could make it up (an empty roster): nothing to
+        // wait on but the grant itself.
+        super::count::Count::Unmet { .. } => Reading::Waiting(vec![StandingWait::Grant]),
     }
 }
 
@@ -1014,7 +1065,6 @@ fn grant_shape(row: &VerifiedRow) -> Result<(), StandingRefusal> {
     if row.author.is_some() {
         return Err(m("author"));
     }
-    closed(part, p, &GRANT_MEMBERS)?;
     if p.get_text("dimension").and_then(Value::as_text) != Some(GRANT_DIMENSION) {
         return Err(m("dimension"));
     }
@@ -1027,9 +1077,6 @@ fn grant_shape(row: &VerifiedRow) -> Result<(), StandingRefusal> {
         .map(|v| text_set(part, v, "projects"))
         .transpose()?;
     refs_member(p, "head").ok_or(m("refs.head"))?;
-    if p.get_text("refs").and_then(Value::as_map).map(<[_]>::len) != Some(1) {
-        return Err(m("refs"));
-    }
     // A pipeline's grant (one carrying `projects`) carries no scope but the
     // two attest scopes (CC 4.5.5, CC Q18).
     if projects.is_some() && scope.iter().any(|s| !PIPELINE_SCOPES.contains(&s.as_str())) {
@@ -1204,28 +1251,14 @@ fn answer_shape(
         return Err(StandingRefusal::WrongRow { part });
     }
     let p = &row.payload;
-    for member in ANSWER_REFUSED_MEMBERS {
-        if p.get_text(member).is_some() {
-            return Err(m(member));
-        }
-    }
-    closed(part, p, &ANSWER_MEMBERS)?;
     let kind = match p.get_text("dimension").and_then(Value::as_text) {
         Some(ACCEPTANCE_DIMENSION) => AnswerKind::Acceptance,
         Some(DECLINE_DIMENSION) => AnswerKind::Decline,
         _ => return Err(m("dimension")),
     };
-    let refs = p.get_text("refs").ok_or(m("refs.answers"))?;
-    if refs.get_text("target").is_some() {
-        return Err(m("refs.target"));
-    }
-    if refs.get_text("head").is_some() {
-        return Err(m("refs.head"));
-    }
-    let answers = refs_member(p, "answers").ok_or(m("refs.answers"))?;
-    if refs.as_map().map(<[_]>::len) != Some(1) {
-        return Err(m("refs"));
-    }
+    // The reply's own shape (refs.answers, no refs.target or refs.head, no
+    // proposal_hash) is the statement reader's (`family_shapes::check_reply`).
+    let answers = refs_member(p, "answers").ok_or(m("refs"))?;
     if row.sub != grant.grantee {
         return Err(StandingRefusal::AcceptanceOtherGrantee);
     }
@@ -1249,7 +1282,7 @@ fn answer_shape(
 /// `withdraws` carrying the acceptance's family id and `sub`, its author the
 /// acceptance's, `refs` exactly `{target: the acceptance}` (no head). Valid
 /// ends the grant from the grantee's side.
-pub fn read_acceptance_withdrawal(
+pub fn read_reply_withdrawal(
     statement: &[u8],
     keys: &dyn KeyDirectory,
     acceptance: &Answer,
@@ -1685,9 +1718,13 @@ pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
             out.refuse(StandingRefusal::GrantOtherGrantee);
             return out.finish();
         }
-        if g.head() != &row.head {
-            out.refuse(StandingRefusal::BuildRowOtherHead);
-            return out.finish();
+        match input.bundles.descends(&row.head, g.head()) {
+            Descent::SameOrLater => {},
+            Descent::Not => {
+                out.refuse(StandingRefusal::BuildRowOtherHead);
+                return out.finish();
+            },
+            Descent::NotHeld => out.waiting.push(StandingWait::Bundle(row.head)),
         }
         out.grant_project_granted = Some(
             g.projects
@@ -1787,7 +1824,7 @@ pub struct GrantInForce {
 /// been withdrawn by a count of the holders ([`read_grant_withdrawal`]), the
 /// owner `binding` names accepted it ([`read_answer`]) and has not declined
 /// it, and the owner has not withdrawn that acceptance
-/// ([`read_acceptance_withdrawal`]). The statements are read here; the
+/// ([`read_reply_withdrawal`]). The statements are read here; the
 /// decision is the one [`super::count::conferral_in_force`] makes over their
 /// row ids.
 #[must_use]
@@ -1830,17 +1867,20 @@ pub fn grant_in_force(grant: &Grant, input: &GrantEndsInput<'_>) -> GrantInForce
         out.reading = waiting(waits);
         return out;
     };
-    // The owner's answers.
+    // The owner's replies, and the row ids its own valid withdrawals name.
     let mut accepted: Option<Answer> = None;
+    let mut decline: Option<Answer> = None;
     let mut first_refusal: Option<StandingRefusal> = None;
     let mut answer_waits: Vec<StandingWait> = Vec::new();
-    let mut declined = false;
     for s in input.answers {
         match read_answer(s, input.keys, grant, binding) {
-            Reading::Valid(a) if a.kind == AnswerKind::Decline => declined = true,
             Reading::Valid(a) => {
-                if accepted.is_none() {
-                    accepted = Some(a);
+                let slot = match a.kind {
+                    AnswerKind::Acceptance => &mut accepted,
+                    AnswerKind::Decline => &mut decline,
+                };
+                if slot.is_none() {
+                    *slot = Some(a);
                 }
             },
             Reading::Waiting(w) => answer_waits.extend(w),
@@ -1851,35 +1891,39 @@ pub fn grant_in_force(grant: &Grant, input: &GrantEndsInput<'_>) -> GrantInForce
             },
         }
     }
-    // The owner's own ends: the row ids its valid withdrawals name.
-    let acceptance_ends: Vec<Digest32> = accepted
-        .as_ref()
-        .map(|acc| {
-            input
-                .answer_withdrawals
-                .iter()
-                .filter_map(|s| match read_acceptance_withdrawal(s, input.keys, acc) {
-                    Reading::Valid(w) => refs_member(&w.payload, "target"),
-                    _ => None,
-                })
-                .collect()
-        })
-        .unwrap_or_default();
+    let mut reply_ends: Vec<Digest32> = Vec::new();
+    for reply in [&accepted, &decline].into_iter().flatten() {
+        for s in input.answer_withdrawals {
+            if let Reading::Valid(w) = read_reply_withdrawal(s, input.keys, reply) {
+                reply_ends.extend(refs_member(&w.payload, "target"));
+            }
+        }
+    }
     let acc_id = accepted.as_ref().map(|a| a.row.row_id);
+    let dec_id = decline.as_ref().map(|a| a.row.row_id);
     let decision = super::count::conferral_in_force(
         &gid,
         &counted_ends,
-        declined,
         acc_id.as_ref(),
-        &acceptance_ends,
+        dec_id.as_ref(),
+        &reply_ends,
     );
     out.in_force = Some(decision);
-    use super::count::InForce;
+    out.acceptance_row_id = acc_id;
+    out.acceptance_withdrawn = acc_id.map(|a| reply_ends.contains(&a));
     out.reading = match decision {
         InForce::EndedByCount => Reading::Refused(StandingRefusal::GrantWithdrawn),
+        InForce::Contested => {
+            out.acceptance_verdict = Some("contested".into());
+            Reading::Refused(StandingRefusal::GrantContested)
+        },
         InForce::Declined => {
             out.acceptance_verdict = Some("declined".into());
             Reading::Refused(StandingRefusal::GrantDeclined)
+        },
+        InForce::AcceptanceWithdrawn => {
+            out.acceptance_verdict = Some("accepted".into());
+            Reading::Refused(StandingRefusal::AcceptanceWithdrawn)
         },
         InForce::NotAccepted => {
             if let Some(r) = first_refusal {
@@ -1894,14 +1938,9 @@ pub fn grant_in_force(grant: &Grant, input: &GrantEndsInput<'_>) -> GrantInForce
                 waiting(waits)
             }
         },
-        InForce::AcceptanceWithdrawn | InForce::InForce => {
+        InForce::InForce => {
             out.acceptance_verdict = Some("accepted".into());
-            out.acceptance_row_id = acc_id;
-            let withdrawn = decision == InForce::AcceptanceWithdrawn;
-            out.acceptance_withdrawn = Some(withdrawn);
-            if withdrawn {
-                Reading::Refused(StandingRefusal::AcceptanceWithdrawn)
-            } else if waits.is_empty() {
+            if waits.is_empty() {
                 Reading::Valid(acc_id.unwrap_or_default())
             } else {
                 waiting(waits)

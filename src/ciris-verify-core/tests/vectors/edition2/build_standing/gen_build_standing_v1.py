@@ -65,18 +65,26 @@ _g2 = g6.payload(holders=(g6.A, g6.B, g6.D), rows=g6.ids(g6.LATER), version=2, p
 G2 = g6.object_id(g6.enc(_g2))                                        # in force: A, B, D
 _fork = g6.payload(version=2, prev=G1, at=g6.T2 + 1)
 FORK = g6.object_id(g6.enc(_fork))                                    # a rival of G2: void
-_g3 = g6.payload(holders=(g6.A, g6.B, g6.D), rows=g6.ids(g6.LATER), version=3, prev=G2, at=g6.T2 + 86_400_000)
+_g4 = g6.payload(holders=(g6.A, g6.B, g6.D), rows=g6.ids(g6.LATER), version=3, prev=G2, at=g6.T2 + 86_400_000)
+G4 = g6.object_id(g6.enc(_g4))                                        # a later bundle of the lineage, held
+_g3 = g6.payload(holders=(g6.A, g6.B, g6.D), rows=g6.ids(g6.LATER), version=4, prev=G4, at=g6.T2 + 2 * 86_400_000)
 G3 = g6.object_id(g6.enc(_g3))                                        # a successor not held
-assert len({G1, G2, FORK, G3}) == 4
+_other = g6.payload(fam="another-accord")
+OTHER = g6.object_id(g6.enc(_other))                                  # the genesis of another lineage
+assert len({G1, G2, FORK, G3, G4, OTHER}) == 6
 BUNDLES = [
-    {"id": G1.hex(), "name": "G1", "view": "holders", "holder_seeds": [1, 2, 3],
+    {"id": G1.hex(), "name": "G1", "view": "holders", "holder_seeds": [1, 2, 3], "prev": None,
      "description": "The genesis bundle (gen_genesis_bundles_v6 payload()), a predecessor of G2: A, B, C."},
-    {"id": G2.hex(), "name": "G2", "view": "holders", "holder_seeds": [1, 2, 4],
-     "description": "The bundle in force (v6 payload, version 2, prev G1): A, B, D."},
-    {"id": FORK.hex(), "name": "FORK", "view": "void_fork", "holder_seeds": [1, 2, 3],
+    {"id": G2.hex(), "name": "G2", "view": "holders", "holder_seeds": [1, 2, 4], "prev": G1.hex(),
+     "description": "Version 2 of the lineage (v6 payload, prev G1): A, B, D. The grants are counted here."},
+    {"id": G4.hex(), "name": "G4", "view": "holders", "holder_seeds": [1, 2, 4], "prev": G2.hex(),
+     "description": "Version 3 (prev G2), the bundle in force: A, B, D."},
+    {"id": OTHER.hex(), "name": "OTHER", "view": "holders", "holder_seeds": [1, 2, 3], "prev": None,
+     "description": "The genesis of another lineage (family_key_id another-accord): A, B, C."},
+    {"id": FORK.hex(), "name": "FORK", "view": "void_fork", "holder_seeds": [1, 2, 3], "prev": G1.hex(),
      "description": "A version-2 rival of G2 on G1: a fork the reader holds void."},
-    {"id": G3.hex(), "name": "G3", "view": "not_held", "holder_seeds": [],
-     "description": "A version-3 successor of G2 the reader does not hold."},
+    {"id": G3.hex(), "name": "G3", "view": "not_held", "holder_seeds": [], "prev": G4.hex(),
+     "description": "A version-4 successor of G4 the reader does not hold."},
 ]
 
 DAY = 86_400_000
@@ -247,8 +255,14 @@ rcase("row_build_missing_member", "build lacks manifest_size.", "build_row_malfo
       edit=lambda p: p["build"].pop("manifest_size"))
 rcase("row_size_zero", "manifest_size 0.", "build_row_malformed:manifest_size",
       edit=lambda p: p["build"].__setitem__("manifest_size", 0))
-rcase("row_payload_not_closed", "The payload carries a member outside the settled shape (cohort_scope).",
-      "build_row_malformed:closed_map", edit=lambda p: p.__setitem__("cohort_scope", "federation"))
+case("row_payload_open", "The build row's payload carries a further member (cohort_scope): payloads are open "
+     "(* tstr => ceg-value); only build is closed.", "stands", wstate="none_held",
+     row=build_row(edit=lambda p: p.__setitem__("cohort_scope", "federation"))[0])
+_gopen, _gopen_id = grant(edit=lambda p: p.__setitem__("purpose", "build pipeline"))
+case("grant_payload_open", "The grant's payload carries a further member: open.", "stands", wstate="none_held",
+     grant_sts=_gopen, answers=[answer(grant_id=_gopen_id)[0]])
+case("acceptance_payload_open", "The acceptance's payload carries a further member: open.", "stands",
+     wstate="none_held", answers=[answer(edit=lambda p: p.__setitem__("purpose", "my pipeline"))[0]])
 rcase("row_sub_not_author", "The CWT sub is the owner, not the pipeline (author = iss).", "build_row_malformed:sub",
       sub=O.iss)
 rcase("row_project_bad_charset", "build.project carries an upper-case letter.", "build_row_malformed:project",
@@ -287,8 +301,17 @@ gcase("grant_dimension_other", "dimension trust:accepts:v1, not trust:confers:v1
       edit=lambda p: p.__setitem__("dimension", "trust:accepts:v1"))
 gcase("grant_other_grantee", "The grant's CWT sub is Q, not the build row's signer.", "grant_other_grantee",
       sub=Q.iss)
-case("build_row_other_head", "The build row names G1; the grant is counted over G2.", "refused:build_row_other_head",
-     row=build_row(head=G1)[0])
+case("build_row_other_head", "The build row names G1, older than the grant's G2 (G2 descends from it).",
+     "refused:build_row_other_head", row=build_row(head=G1)[0])
+case("row_head_later_bundle", "The build row names G4, a later bundle of the lineage the grant was counted in (G2): "
+     "the grant counted under G2 stands under G4.", "stands", row=build_row(head=G4)[0], wstate="none_held",
+     grant_root=G2.hex())
+case("row_head_other_lineage", "The build row names the genesis of another lineage.", "refused:build_row_other_head",
+     row=build_row(head=OTHER)[0])
+case("row_head_fork", "The build row names FORK, a rival of G2 on G1: not G2 nor a descendant of it.",
+     "refused:build_row_other_head", row=build_row(head=FORK)[0])
+case("row_head_not_held", "The build row names G3, a successor the reader does not hold: waits on it.",
+     "waiting:bundle", row=build_row(head=G3)[0])
 
 # ======================================================================== count
 case("count_one_of_three", "Only A signs: 1 of 3; the row waits on the voices of B and D.", "waiting:voice",
@@ -296,7 +319,8 @@ case("count_one_of_three", "Only A signs: 1 of 3; the row waits on the voices of
 case("count_non_holder_not_counted", "A and C sign a grant naming G2: C holds no seat of G2, so 1 of 3.",
      "waiting:voice", grant_sts=grant(voices=(A, C))[0])
 case("count_same_holder_twice", "A's statement twice: one voice.", "waiting:voice", grant_sts=grant(voices=(A, A))[0])
-case("count_stranger_only", "Only the stranger X signs: no voice of any holder.", "refused:grant_no_voice",
+case("count_stranger_only", "Only the stranger X signs: no voice of any holder yet, the same short count; the row "
+     "waits on the voices of A, B and D.", "waiting:voice",
      grant_sts=grant(voices=(X,))[0])
 _g3g, _g3id = grant(head=G3)
 case("count_bundle_not_held", "The grant names G3, a bundle the reader does not hold: waits on it.",
@@ -338,8 +362,13 @@ case("acceptance_missing", "No answer from the owner.", "waiting:acceptance", an
 case("owner_binding_missing", "No owner-binding supplied.", "waiting:owner_binding", binding=None)
 case("acceptance_declined", "The owner's membership:decline:v1 answering the grant: the grant confers nothing.",
      "refused:grant_declined", answers=[answer(dim="membership:decline:v1")[0]])
-case("acceptance_declined_beside_accept", "An acceptance and a decline by the owner: the decline stands against "
-     "the grant.", "refused:grant_declined", answers=[BASE_ACC, answer(dim="membership:decline:v1")[0]])
+_dec, _dec_id = answer(dim="membership:decline:v1")
+case("acceptance_contested", "An acceptance and a decline of the grant by the owner both stand: contested, neither "
+     "counts (CC 3.1.3.2, CC 2.7.7 rule 6).", "refused:grant_contested", answers=[BASE_ACC, _dec])
+case("contested_decline_withdrawn", "Both, and the owner withdraws the decline: the acceptance decides, in force.",
+     "stands", answers=[BASE_ACC, _dec], aw=[acceptance_withdrawal(target=_dec_id)], wstate="none_held")
+case("contested_acceptance_withdrawn", "Both, and the owner withdraws the acceptance: the decline decides.",
+     "refused:grant_declined", answers=[BASE_ACC, _dec], aw=[acceptance_withdrawal()])
 case("acceptance_by_grantee", "The acceptance is signed by the pipeline's own key.", "refused:acceptance_by_grantee",
      answers=[answer(signer=P)[0]])
 case("acceptance_owner_of_other_key", "The binding supplied makes O the owner of Q, not of the grantee.",
@@ -351,11 +380,11 @@ case("acceptance_other_grant", "The acceptance answers another grant.", "refused
 case("acceptance_proposal_hash", "The acceptance carries proposal_hash (the earlier form).",
      "refused:acceptance_malformed:proposal_hash",
      answers=[answer(edit=lambda p: p.__setitem__("proposal_hash", hd(sha(b"proposal"))))[0]])
-case("acceptance_refs_target", "refs.target where refs.answers belongs.", "refused:acceptance_malformed:refs.target",
+case("acceptance_refs_target", "refs.target where refs.answers belongs.", "refused:acceptance_malformed:refs",
      answers=[answer(refs={"target": rref(BASE_GRANT_ID)})[0]])
-case("acceptance_refs_head", "refs.answers beside a refs.head.", "refused:acceptance_malformed:refs.head",
+case("acceptance_refs_head", "refs.answers beside a refs.head.", "refused:acceptance_malformed:refs",
      answers=[answer(refs={"answers": rref(BASE_GRANT_ID), "head": rref(G2)})[0]])
-case("acceptance_refs_neither", "No refs at all.", "refused:acceptance_malformed:refs.answers",
+case("acceptance_refs_neither", "No refs at all.", "refused:acceptance_malformed:refs",
      answers=[answer(edit=lambda p: p.pop("refs"))[0]])
 case("acceptance_other_grantee", "The acceptance's CWT sub is Q.", "refused:acceptance_other_grantee",
      answers=[answer(sub=Q.iss)[0]])
@@ -426,6 +455,8 @@ out = {
         "bundles": "bundle id -> view: holders (a roster of the listed seeds: in force or a predecessor), not_held, "
                    "void_fork. The ids are v6 genesis-bundle object ids; the reader takes the roster as data.",
         "statements": "every statement is named by its SHA-256 (hex) in the pool files",
+        "lineage": "each bundle's prev; descends(head, from) follows prev from head over the bundles listed (a "
+                   "not_held bundle is not held; a walk that ends without reaching from is not a descendant).",
         "verdicts": "stands | refused:{token} | waiting:{token+token} (key, voice, record, row, bundle, grant, "
                     "acceptance, owner_binding). withdrawal_state: unknown | none_held | withdrawn | superseded. "
                     "composers null = no view.",

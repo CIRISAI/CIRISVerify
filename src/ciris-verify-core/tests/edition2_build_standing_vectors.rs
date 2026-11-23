@@ -8,7 +8,8 @@ use std::collections::BTreeMap;
 use ciris_crypto::composite::CompositeSigningKey;
 use ciris_verify_core::edition2::accord_halt::RosterHolder;
 use ciris_verify_core::edition2::build_standing::{
-    evaluate_build_standing, scope_satisfies, BundleRoster, BundleView, OwnerBinding, StandingInput,
+    evaluate_build_standing, scope_satisfies, BundleLookup, BundleRoster, BundleView, Descent,
+    OwnerBinding, StandingInput,
 };
 use ciris_verify_core::edition2::keys::KeyRecordDirectory;
 use ciris_verify_core::edition2::{identity_ref, thumbprint, Digest32};
@@ -21,15 +22,15 @@ const POOL_1: &str = include_str!("vectors/edition2/build_standing/build_standin
 const PINS: [(&str, &str); 3] = [
     (
         CASES,
-        "d535c3ef54d35d51fd896e8990802b59a64ab068edd3c322a79292e91e7f2fb4",
+        "3e6a24f121648eb6fb3cf24987818ceedc5abb0098b404b8909d54473ccccffb",
     ),
     (
         POOL_0,
-        "274f870cd9f09b8662b185ee9d803774ce2ab01d4606e7e898ae8e23f3cdae62",
+        "adf2af37873dcf10b18afecfa23a8df7e654b6f2940224732e4c2da15cf46267",
     ),
     (
         POOL_1,
-        "1e60d090471c87563d0923946fcc79f61cf8a5dc30909870d628acda3a5b7600",
+        "5eed463221c891582bd89477ebe6fb8bca3af69eb2b4c9254c8d1272784f1a2c",
     ),
 ];
 
@@ -50,6 +51,52 @@ fn pool() -> BTreeMap<String, Vec<u8>> {
 
 fn digest(s: &str) -> Digest32 {
     hex::decode(s).unwrap().try_into().unwrap()
+}
+
+/// The vectors' bundles: view, holder seeds and `prev`, by id.
+#[derive(Default)]
+struct Lineage(BTreeMap<Digest32, (String, Vec<u8>, Option<Digest32>)>);
+
+impl Lineage {
+    fn held(&self, id: &Digest32) -> Option<&(String, Vec<u8>, Option<Digest32>)> {
+        self.0.get(id).filter(|(v, ..)| v != "not_held")
+    }
+}
+
+impl BundleLookup for Lineage {
+    fn view(&self, head: &Digest32) -> BundleView {
+        match self.held(head) {
+            Some((v, seeds, _)) if v == "holders" => BundleView::Holders(BundleRoster::new(
+                *head,
+                seeds
+                    .iter()
+                    .map(|n| {
+                        let k = key(*n);
+                        RosterHolder {
+                            identity_ref: identity_ref(&thumbprint(k.public_key())),
+                            key: k.public_key().clone(),
+                        }
+                    })
+                    .collect(),
+            )),
+            Some((v, ..)) if v == "void_fork" => BundleView::VoidFork,
+            _ => BundleView::NotHeld,
+        }
+    }
+
+    fn descends(&self, head: &Digest32, from: &Digest32) -> Descent {
+        let mut cur = *head;
+        loop {
+            if cur == *from {
+                return Descent::SameOrLater;
+            }
+            match self.held(&cur) {
+                None => return Descent::NotHeld,
+                Some((.., None)) => return Descent::Not,
+                Some((.., Some(prev))) => cur = *prev,
+            }
+        }
+    }
 }
 
 #[test]
@@ -89,7 +136,7 @@ fn build_standing_cases() {
     for r in f["key_records"].as_array().unwrap() {
         keys.insert(st(r).to_vec()).unwrap();
     }
-    let mut views: BTreeMap<Digest32, (String, Vec<u8>)> = BTreeMap::new();
+    let mut views = Lineage::default();
     for b in f["bundles"].as_array().unwrap() {
         let seeds = b["holder_seeds"]
             .as_array()
@@ -97,33 +144,19 @@ fn build_standing_cases() {
             .iter()
             .map(|n| u8::try_from(n.as_u64().unwrap()).unwrap())
             .collect();
-        views.insert(
+        views.0.insert(
             digest(b["id"].as_str().unwrap()),
-            (b["view"].as_str().unwrap().to_owned(), seeds),
+            (
+                b["view"].as_str().unwrap().to_owned(),
+                seeds,
+                b["prev"].as_str().map(digest),
+            ),
         );
     }
-    let bundles = |head: &Digest32| -> BundleView {
-        match views.get(head) {
-            Some((v, seeds)) if v == "holders" => BundleView::Holders(BundleRoster::new(
-                *head,
-                seeds
-                    .iter()
-                    .map(|n| {
-                        let k = key(*n);
-                        RosterHolder {
-                            identity_ref: identity_ref(&thumbprint(k.public_key())),
-                            key: k.public_key().clone(),
-                        }
-                    })
-                    .collect(),
-            )),
-            Some((v, _)) if v == "void_fork" => BundleView::VoidFork,
-            _ => BundleView::NotHeld,
-        }
-    };
+    let bundles = views;
 
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 79);
+    assert_eq!(cases.len(), 87);
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let list = |k: &str| -> Vec<&[u8]> { c[k].as_array().unwrap().iter().map(st).collect() };
