@@ -7,16 +7,28 @@
 //! function table of one final shipped file, so the one build row that cites
 //! it by digest covers both. The blob is **not** a signed object: it has no
 //! `typ`, no key and no signature. It is the deterministic encoding of CC
-//! 2.6.1.2 ([`crate::cde`]), no floats, so two producers given the same final
-//! file and the same `generated_at` / `tool` emit the same bytes, and anyone
-//! can recompute the row's `manifest_hash` from the binary.
+//! 2.6.1.2 ([`crate::cde`]), no floats, and it carries nothing about the run:
+//! it is a pure function of (file, project, version, target, tool), so two
+//! producers given the same final file emit the same bytes, and anyone can
+//! recompute the row's `manifest_hash` from the binary. `tool` names the
+//! generator and its version and nothing else (no host, path, time or build
+//! id), so it is constant for a release.
 //!
 //! ```text
 //! { "format": "ciris-binary-manifest/1", "project": tstr, "version": tstr, "target": tstr,
-//!   "binary_hash": tstr (64 lowercase hex), "functions_root": bstr .size 32,
-//!   ? "functions": { + name => { "offset": uint, "size": uint, "hash": tstr (64 lowercase hex) } },
-//!   "generated_at": tstr, "tool": tstr }
+//!   "binary_hash": bstr .size 32, "functions_root": bstr .size 32,
+//!   ? "functions": { + name => { "offset": uint, "size": uint, "hash": bstr .size 32 } },
+//!   "tool": tstr }
 //! ```
+//!
+//! Every hash in the blob is a plain 32-byte SHA-256 (`bstr .size 32`, no
+//! `[-16, digest]` wrapper): the format string pins SHA-256 for version 1.
+//!
+//! `project`, `version` and `target` are text exactly as given, compared byte
+//! for byte with the citing row's `build.project`, `build.version` and its
+//! dimension's `{target}`. A row whose descriptor differs from its blob's is
+//! `build_manifest_descriptor_mismatch`, the token a size or hash mismatch
+//! between row and blob also takes; that row-side check is not in this module.
 //!
 //! This module is the codec and the function-table Merkle root only. It reads
 //! no row, no grant and no standing; it does not compare anything against the
@@ -79,7 +91,7 @@
 //!   runtime base is the module handle (`GetModuleHandleExW(FROM_ADDRESS)`).
 //!
 //! A function's `hash` is SHA-256 of its `size` bytes at that offset in the
-//! file as mapped, written as bare lowercase hex, as `binary_hash` is.
+//! file as mapped, 32 bytes, as `binary_hash` is.
 //! `binary_hash` is [`crate::binary_format::canonical_binary_hash`] of the
 //! final file (the whole file; the page-aligned `__TEXT` region on Mach-O).
 //!
@@ -104,8 +116,6 @@ pub const MAX_DESCRIPTOR_LEN: usize = 64;
 pub const MAX_TARGET_LEN: usize = 64;
 /// The longest function name (verify's bound; the FSD gives none).
 pub const MAX_NAME_LEN: usize = 1024;
-/// The longest `generated_at` (verify's bound; the FSD gives none).
-pub const MAX_GENERATED_AT_LEN: usize = 64;
 /// The longest `tool` (verify's bound; the FSD gives none).
 pub const MAX_TOOL_LEN: usize = 128;
 /// The RFC 6962 leaf prefix.
@@ -114,7 +124,7 @@ pub const LEAF_PREFIX: u8 = 0x00;
 pub const NODE_PREFIX: u8 = 0x01;
 
 /// The blob's members, closed.
-pub const MEMBERS: [&str; 9] = [
+pub const MEMBERS: [&str; 8] = [
     "format",
     "project",
     "version",
@@ -122,18 +132,16 @@ pub const MEMBERS: [&str; 9] = [
     "binary_hash",
     "functions_root",
     "functions",
-    "generated_at",
     "tool",
 ];
 /// The members a blob must carry (every one but `functions`).
-pub const REQUIRED_MEMBERS: [&str; 8] = [
+pub const REQUIRED_MEMBERS: [&str; 7] = [
     "format",
     "project",
     "version",
     "target",
     "binary_hash",
     "functions_root",
-    "generated_at",
     "tool",
 ];
 /// The members of one function entry, closed and all required.
@@ -170,10 +178,8 @@ pub struct BinaryManifest {
     pub functions_root: [u8; 32],
     /// The inline table, in the byte order of the names, when carried.
     pub functions: Option<Vec<FunctionLeaf>>,
-    /// The generator's instant; informative (the row's `asserted_at` is the
-    /// signed one).
-    pub generated_at: String,
-    /// The generator and its version, e.g. `ciris-manifest-tool/23.6.0`.
+    /// The generator and its version, e.g. `ciris-manifest-tool/23.6.0`, and
+    /// nothing about the run.
     pub tool: String,
 }
 
@@ -254,31 +260,11 @@ impl core::fmt::Display for BlobError {
     }
 }
 
-fn hex_lower(d: &[u8; 32]) -> String {
-    const H: &[u8; 16] = b"0123456789abcdef";
-    let mut s = String::with_capacity(64);
-    for b in d {
-        s.push(char::from(H[usize::from(b >> 4)]));
-        s.push(char::from(H[usize::from(b & 0x0f)]));
-    }
-    s
-}
-
-fn parse_hex32(s: &str) -> Option<[u8; 32]> {
-    let b = s.as_bytes();
-    if b.len() != 64 {
-        return None;
-    }
-    let nib = |c: u8| match c {
-        b'0'..=b'9' => Some(c - b'0'),
-        b'a'..=b'f' => Some(c - b'a' + 10),
-        _ => None,
-    };
-    let mut out = [0u8; 32];
-    for (i, o) in out.iter_mut().enumerate() {
-        *o = (nib(b[2 * i])? << 4) | nib(b[2 * i + 1])?;
-    }
-    Some(out)
+fn bytes32(v: Option<&Value>, member: &'static str) -> Result<[u8; 32], BlobError> {
+    v.ok_or(BlobError::MissingMember { member })?
+        .as_bytes()
+        .and_then(|b| b.try_into().ok())
+        .ok_or(BlobError::Malformed { member })
 }
 
 fn text(s: &str) -> Value {
@@ -292,7 +278,7 @@ pub fn leaf_bytes(leaf: &FunctionLeaf) -> Vec<u8> {
         (text("name"), text(&leaf.name)),
         (text("offset"), Value::Uint(leaf.offset)),
         (text("size"), Value::Uint(leaf.size)),
-        (text("hash"), Value::Text(hex_lower(&leaf.hash))),
+        (text("hash"), Value::Bytes(leaf.hash.to_vec())),
     ]))
 }
 
@@ -311,13 +297,19 @@ pub fn merkle_leaf_hash(leaf: &[u8]) -> [u8; 32] {
     h.finalize().into()
 }
 
-/// The CC 3.1.2.1 tree's root over leaf hashes in the order given (each use
-/// orders its own leaves): padded by repeating the last leaf hash to the next
-/// power of two, parents `SHA-256(0x01 ‖ left ‖ right)`. One leaf is its own
-/// root; zero leaves give `SHA-256("")` (RFC 6962's empty tree), which no
-/// use of this module accepts.
+/// The CC 3.1.2.1 tree's root over leaf byte strings in the order given
+/// (each use orders its own leaves): each leaf hashed [`merkle_leaf_hash`],
+/// padded by repeating the last leaf to the next power of two, parents
+/// `SHA-256(0x01 ‖ left ‖ right)`. One leaf's hash is its own root; zero
+/// leaves give `SHA-256("")` (RFC 6962's empty tree), which no use of this
+/// module accepts.
 #[must_use]
-pub fn merkle_root(leaf_hashes: &[[u8; 32]]) -> [u8; 32] {
+pub fn merkle_root(leaves: &[&[u8]]) -> [u8; 32] {
+    let hashes: Vec<[u8; 32]> = leaves.iter().map(|l| merkle_leaf_hash(l)).collect();
+    root_of_hashes(&hashes)
+}
+
+fn root_of_hashes(leaf_hashes: &[[u8; 32]]) -> [u8; 32] {
     let Some(&last) = leaf_hashes.last() else {
         return Sha256::digest([]).into();
     };
@@ -352,8 +344,9 @@ fn node_hash(l: &[u8; 32], r: &[u8; 32]) -> [u8; 32] {
 pub fn functions_root(leaves: &[FunctionLeaf]) -> [u8; 32] {
     let mut sorted: Vec<&FunctionLeaf> = leaves.iter().collect();
     sorted.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
-    let hashes: Vec<[u8; 32]> = sorted.into_iter().map(leaf_hash).collect();
-    merkle_root(&hashes)
+    let leaves: Vec<Vec<u8>> = sorted.into_iter().map(leaf_bytes).collect();
+    let refs: Vec<&[u8]> = leaves.iter().map(Vec::as_slice).collect();
+    merkle_root(&refs)
 }
 
 /// Check a function table against a `functions_root`: at least one function,
@@ -402,7 +395,6 @@ impl BinaryManifest {
     /// # Errors
     ///
     /// The [`BlobError`] [`decode`] would refuse the result with.
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         project: &str,
         version: &str,
@@ -410,7 +402,6 @@ impl BinaryManifest {
         binary_hash: [u8; 32],
         mut functions: Vec<FunctionLeaf>,
         inline: bool,
-        generated_at: &str,
         tool: &str,
     ) -> Result<Self, BlobError> {
         functions.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
@@ -423,7 +414,6 @@ impl BinaryManifest {
             binary_hash,
             functions_root,
             functions: inline.then_some(functions),
-            generated_at: generated_at.to_owned(),
             tool: tool.to_owned(),
         };
         m.check_members()?;
@@ -440,9 +430,6 @@ impl BinaryManifest {
         }
         if !check_target(&self.target) {
             return bad("target");
-        }
-        if !check_len(&self.generated_at, MAX_GENERATED_AT_LEN) {
-            return bad("generated_at");
         }
         if !check_len(&self.tool, MAX_TOOL_LEN) {
             return bad("tool");
@@ -464,15 +451,11 @@ impl BinaryManifest {
             (text("project"), text(&self.project)),
             (text("version"), text(&self.version)),
             (text("target"), text(&self.target)),
-            (
-                text("binary_hash"),
-                Value::Text(hex_lower(&self.binary_hash)),
-            ),
+            (text("binary_hash"), Value::Bytes(self.binary_hash.to_vec())),
             (
                 text("functions_root"),
                 Value::Bytes(self.functions_root.to_vec()),
             ),
-            (text("generated_at"), text(&self.generated_at)),
             (text("tool"), text(&self.tool)),
         ];
         if let Some(fs) = &self.functions {
@@ -484,7 +467,7 @@ impl BinaryManifest {
                         Value::Map(vec![
                             (text("offset"), Value::Uint(f.offset)),
                             (text("size"), Value::Uint(f.size)),
-                            (text("hash"), Value::Text(hex_lower(&f.hash))),
+                            (text("hash"), Value::Bytes(f.hash.to_vec())),
                         ]),
                     )
                 })
@@ -545,8 +528,7 @@ fn read_entry(name: &Value, entry: &Value) -> Result<FunctionLeaf, BlobError> {
     };
     let offset = uint("offset")?;
     let size = uint("size")?;
-    let hash = req_text(e, "hash")?;
-    let hash = parse_hex32(hash).ok_or(BlobError::Malformed { member: "hash" })?;
+    let hash = bytes32(get(e, "hash"), "hash")?;
     Ok(FunctionLeaf {
         name: name.to_owned(),
         offset,
@@ -596,12 +578,8 @@ pub fn decode(bytes: &[u8]) -> Result<BinaryManifest, BlobError> {
     let project = req_text(map, "project")?;
     let version = req_text(map, "version")?;
     let target = req_text(map, "target")?;
-    let binary_hash = parse_hex32(req_text(map, "binary_hash")?).ok_or(bad("binary_hash"))?;
-    let functions_root: [u8; 32] = get(map, "functions_root")
-        .and_then(Value::as_bytes)
-        .and_then(|b| b.try_into().ok())
-        .ok_or(bad("functions_root"))?;
-    let generated_at = req_text(map, "generated_at")?;
+    let binary_hash = bytes32(get(map, "binary_hash"), "binary_hash")?;
+    let functions_root = bytes32(get(map, "functions_root"), "functions_root")?;
     let tool = req_text(map, "tool")?;
     let functions = match get(map, "functions") {
         None => None,
@@ -625,7 +603,6 @@ pub fn decode(bytes: &[u8]) -> Result<BinaryManifest, BlobError> {
         binary_hash,
         functions_root,
         functions,
-        generated_at: generated_at.to_owned(),
         tool: tool.to_owned(),
     };
     m.check_members()?;
@@ -653,7 +630,6 @@ mod tests {
             [7; 32],
             fs,
             inline,
-            "2026-11-22T00:00:00Z",
             "ciris-manifest-tool/23.6.0",
         )
         .unwrap()

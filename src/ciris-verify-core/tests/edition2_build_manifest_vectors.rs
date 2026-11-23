@@ -13,7 +13,7 @@ use serde_json::Value as J;
 
 const FILE: &str = include_str!("vectors/edition2/build_manifest/binary_manifest_v1_vectors.json");
 /// SHA-256 of the file, pinned so a regeneration is a visible change.
-const FILE_SHA256: &str = "b7de6b058c168659c65f0129f5950f9b0f41dd192ca87874c4427affa151a536";
+const FILE_SHA256: &str = "468cce628e4f35232bd3b367f68f6e92adf30b6937525f2240e5bf7314446f58";
 
 fn file() -> J {
     serde_json::from_str(FILE).unwrap()
@@ -32,7 +32,7 @@ fn leaf(f: &J) -> FunctionLeaf {
         name: f["name"].as_str().unwrap().to_owned(),
         offset: f["offset"].as_u64().unwrap(),
         size: f["size"].as_u64().unwrap(),
-        hash: h32(&f["hash"]),
+        hash: h32(&f["hash_hex"]),
     }
 }
 
@@ -102,7 +102,9 @@ fn generic_tree_known_answers() {
                 "{id}"
             );
         }
-        assert_eq!(merkle_root(&hashes), h32(&c["root_hex"]), "{id}");
+        let leaves: Vec<Vec<u8>> = c["leaves_hex"].as_array().unwrap().iter().map(hx).collect();
+        let refs: Vec<&[u8]> = leaves.iter().map(Vec::as_slice).collect();
+        assert_eq!(merkle_root(&refs), h32(&c["root_hex"]), "{id}");
     }
 }
 
@@ -138,6 +140,10 @@ fn function_table_known_answers() {
         }
         let root = h32(&c["root_hex"]);
         assert_eq!(functions_root(&leaves), root, "{}", c["id"]);
+        // The same rule as the generic tree, over the leaves' bytes.
+        let bytes: Vec<Vec<u8>> = leaves.iter().map(leaf_bytes).collect();
+        let refs: Vec<&[u8]> = bytes.iter().map(Vec::as_slice).collect();
+        assert_eq!(merkle_root(&refs), root, "{} generic", c["id"]);
         // The root does not depend on the order the leaves are given in.
         let mut rev = leaves.clone();
         rev.reverse();
@@ -159,9 +165,8 @@ fn valid_blobs_decode_and_re_encode() {
         assert_eq!(m.project, e["project"].as_str().unwrap(), "{id}");
         assert_eq!(m.version, e["version"].as_str().unwrap(), "{id}");
         assert_eq!(m.target, e["target"].as_str().unwrap(), "{id}");
-        assert_eq!(m.binary_hash, h32(&e["binary_hash"]), "{id}");
+        assert_eq!(m.binary_hash, h32(&e["binary_hash_hex"]), "{id}");
         assert_eq!(m.functions_root, h32(&e["functions_root_hex"]), "{id}");
-        assert_eq!(m.generated_at, e["generated_at"].as_str().unwrap(), "{id}");
         assert_eq!(m.tool, e["tool"].as_str().unwrap(), "{id}");
         let want: Option<Vec<FunctionLeaf>> = e["functions"]
             .as_array()
@@ -186,7 +191,6 @@ fn valid_blobs_decode_and_re_encode() {
             m.binary_hash,
             fs,
             want.is_some(),
-            &m.generated_at,
             &m.tool,
         )
         .unwrap();

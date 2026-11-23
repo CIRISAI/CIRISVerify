@@ -10,8 +10,12 @@
 # 6.1.1's per-level duplication). CC carries no known answers for it, so section "merkle_tree" is generic over
 # leaf byte strings, in the order given, for counts 1, 2, 3, 4, 5, 8, 96: the shared set for locale manifests
 # and function tables alike. Ordering is each use's own: a function table's leaves are in the byte order of the
-# names, each leaf CDE({name, offset, size, hash}) (section "function_tables"). Hashes are bare lowercase hex
-# text; functions_root is 32 bytes. project / version / target are text exactly as given, compared byte for
+# names, each leaf CDE({name, offset, size, hash}) (section "function_tables").
+#
+# Every hash in the blob and the leaf (binary_hash, functions_root, each function's hash) is a plain bstr .size
+# 32, no [-16, digest] wrapper: the format string pins SHA-256 for version 1. (In this JSON file they appear as
+# *_hex.) The blob carries nothing about the run: no generated_at (refused as an unknown member), and tool names
+# the generator and its version only. project / version / target are text exactly as given, compared byte for
 # byte with the build row's members.
 #
 # Reuses gen_row_statements_v4.py's own CBOR deterministic encoder (RFC 8949 4.2.1 bytewise key order; loaded
@@ -31,13 +35,17 @@ sha = lambda b: hashlib.sha256(b).digest()
 
 
 def fn(name, i):
-    return {"name": name, "offset": 0x1000 + 0x40 * i, "size": 0x40 + i, "hash": sha(b"fn:" + name.encode()).hex()}
+    return {"name": name, "offset": 0x1000 + 0x40 * i, "size": 0x40 + i, "hash": sha(b"fn:" + name.encode())}
 
 
 def names(n):
     if n == 2:
         return ["ciris_verify_b", "ciris_verify_aa"]   # CDE key order is "b" first, name byte order "aa" first
     return [f"ciris_verify_f{i}" for i in range(n)]    # "f10" < "f2" by bytes, "f2" first in CDE order
+
+
+def jleaf(f):   # a leaf in JSON: the hash as hex (it is a bstr .size 32 in CBOR)
+    return {"name": f["name"], "offset": f["offset"], "size": f["size"], "hash_hex": f["hash"].hex()}
 
 
 def leaf_bytes(f):
@@ -76,8 +84,7 @@ def table(fs):
 
 def blob(fs, inline=True, **edit):
     b = {"format": FORMAT, "project": "ciris-server", "version": "0.6.0", "target": "aarch64-apple-darwin",
-         "binary_hash": sha(b"final file").hex(), "functions_root": root_of(fs),
-         "generated_at": "2026-11-22T00:00:00Z", "tool": "ciris-manifest-tool/23.6.0"}
+         "binary_hash": sha(b"final file"), "functions_root": root_of(fs), "tool": "ciris-manifest-tool/23.6.0"}
     if inline:
         b["functions"] = table(fs)
     for k, v in edit.items():
@@ -126,7 +133,7 @@ for n, fs in T.items():
     leaves = sorted(fs, key=lambda f: f["name"].encode())
     assert tree_levels([leaf_bytes(f) for f in leaves])[-1][0] == root_of(fs)
     merkle.append({"id": f"functions_{n}", "leaf_count": n, "padded_to": 1 << (n - 1).bit_length(),
-                   "functions": leaves,
+                   "functions": [jleaf(f) for f in leaves],
                    "leaf_bytes_hex": [leaf_bytes(f).hex() for f in leaves],
                    "leaf_hashes_hex": [sha(b"\x00" + leaf_bytes(f)).hex() for f in leaves],
                    "root_hex": root_of(fs).hex()})
@@ -134,9 +141,9 @@ for n, fs in T.items():
 
 def expect_of(fs, inline):
     return {"project": "ciris-server", "version": "0.6.0", "target": "aarch64-apple-darwin",
-            "binary_hash": sha(b"final file").hex(), "functions_root_hex": root_of(fs).hex(),
-            "functions": sorted(fs, key=lambda f: f["name"].encode()) if inline else None,
-            "generated_at": "2026-11-22T00:00:00Z", "tool": "ciris-manifest-tool/23.6.0"}
+            "binary_hash_hex": sha(b"final file").hex(), "functions_root_hex": root_of(fs).hex(),
+            "functions": [jleaf(f) for f in sorted(fs, key=lambda f: f["name"].encode())] if inline else None,
+            "tool": "ciris-manifest-tool/23.6.0"}
 
 
 valid = []
@@ -175,7 +182,7 @@ t = table(F3)
 t["ciris_verify_f0"]["name"] = "ciris_verify_f0"
 refuse("entry_name_duplicate_member", "The entry repeats its name: the map key is the name.", ok(functions=t),
        "build_manifest_unknown_member", "function")
-for m in ("project", "version", "target", "binary_hash", "functions_root", "generated_at", "tool"):
+for m in ("project", "version", "target", "binary_hash", "functions_root", "tool"):
     refuse(f"missing_{m}", f"No {m}.", ok(**{m: DROP}), "build_manifest_missing_member", m)
 refuse("missing_format", "No format.", ok(format=DROP), "build_manifest_missing_member", "format")
 for m in ("offset", "size", "hash"):
@@ -196,17 +203,17 @@ refuse("top_level_array", "The top level is an array.", enc([FORMAT]), "build_ma
 
 # Not the deterministic encoding.
 good = ok()
-assert good[0] == 0xa9
+assert good[0] == 0xa8   # eight members
 refuse("non_deterministic_keys_out_of_order", "Map keys in insertion order, not the bytewise order of their "
        "encodings (format before tool).",
-       b"\xa9" + b"".join(enc(k) + enc(v) for k, v in blob(F3).items()), "build_manifest_not_deterministic")
-refuse("non_deterministic_long_head", "The top-level map head in a non-shortest form (0xb8 0x09).",
-       b"\xb8\x09" + good[1:], "build_manifest_not_deterministic")
+       b"\xa8" + b"".join(enc(k) + enc(v) for k, v in blob(F3).items()), "build_manifest_not_deterministic")
+refuse("non_deterministic_long_head", "The top-level map head in a non-shortest form (0xb8 0x08).",
+       b"\xb8\x08" + good[1:], "build_manifest_not_deterministic")
 refuse("non_deterministic_indefinite", "An indefinite-length map.", b"\xbf" + good[1:] + b"\xff",
        "build_manifest_not_deterministic")
 refuse("trailing_bytes", "A byte after the blob.", good + b"\x00", "build_manifest_not_deterministic")
 big = (1 << 32) + 0x1234
-w = ok(functions={**table(F3), "ciris_verify_f0": {"offset": big, "size": 1, "hash": "00" * 32}})
+w = ok(functions={**table(F3), "ciris_verify_f0": {"offset": big, "size": 1, "hash": bytes(32)}})
 eight = b"\x1b" + big.to_bytes(8, "big")
 assert w.count(eight) == 1
 refuse("non_deterministic_uint_head", "An offset of 0x1234 written with an eight-byte head.",
@@ -215,19 +222,22 @@ refuse("non_deterministic_uint_head", "An offset of 0x1234 written with an eight
 # Floats.
 refuse("float_offset", "An offset written as a double (1.5).", w.replace(eight, b"\xfb" + struct.pack(">d", 1.5)),
        "build_manifest_float")
-gen = enc("2026-11-22T00:00:00Z")
-assert ok().count(gen) == 1
-refuse("float_generated_at", "generated_at as a half float.", ok().replace(gen, b"\xf9\x3c\x00"),
-       "build_manifest_float")
+tl = enc("ciris-manifest-tool/23.6.0")
+assert ok().count(tl) == 1
+refuse("float_tool", "tool as a half float.", ok().replace(tl, b"\xf9\x3c\x00"), "build_manifest_float")
 
 # Member types and ranges.
-bh = sha(b"final file").hex()
-refuse("binary_hash_upper", "binary_hash in uppercase hex.", ok(binary_hash=bh.upper()), "build_manifest_malformed",
+bh = sha(b"final file")
+refuse("binary_hash_hex", "binary_hash as hex text: hashes are bstr .size 32.", ok(binary_hash=bh.hex()),
+       "build_manifest_malformed", "binary_hash")
+refuse("binary_hash_prefixed", "binary_hash as the sha256:-prefixed text of the JSON manifests.",
+       ok(binary_hash="sha256:" + bh.hex()), "build_manifest_malformed", "binary_hash")
+refuse("binary_hash_31", "binary_hash of 31 bytes.", ok(binary_hash=bh[:31]), "build_manifest_malformed",
        "binary_hash")
-refuse("binary_hash_prefixed", "binary_hash with the sha256: prefix of the JSON manifests.",
-       ok(binary_hash="sha256:" + bh), "build_manifest_malformed", "binary_hash")
-refuse("binary_hash_bytes", "binary_hash as bytes.", ok(binary_hash=bytes.fromhex(bh)), "build_manifest_malformed",
+refuse("binary_hash_33", "binary_hash of 33 bytes.", ok(binary_hash=bh + b"\x00"), "build_manifest_malformed",
        "binary_hash")
+refuse("binary_hash_digest_wrapper", "binary_hash as a [-16, digest] hash-digest: no wrapper, the format pins SHA-256.",
+       ok(binary_hash=[-16, bh]), "build_manifest_malformed", "binary_hash")
 refuse("functions_root_31", "functions_root of 31 bytes.", ok(functions_root=b"\x00" * 31), "build_manifest_malformed",
        "functions_root")
 refuse("functions_root_hex", "functions_root as hex text.", ok(functions_root=root_of(F3).hex()),
@@ -238,8 +248,8 @@ refuse("version_empty", "An empty version.", ok(version=""), "build_manifest_mal
 refuse("version_long", "version of 65 bytes.", ok(version="1" * 65), "build_manifest_malformed", "version")
 refuse("target_space", "A target with a space.", ok(target="aarch64 apple"), "build_manifest_malformed", "target")
 refuse("tool_empty", "An empty tool.", ok(tool=""), "build_manifest_malformed", "tool")
-refuse("generated_at_int", "generated_at as an integer.", ok(generated_at=1795305600000), "build_manifest_malformed",
-       "generated_at")
+refuse("generated_at_member", "A generated_at: the blob carries nothing about the run.",
+       ok(generated_at="2026-11-22T00:00:00Z"), "build_manifest_unknown_member", "blob")
 t = table(F3)
 t["ciris_verify_f1"]["offset"] = -1
 refuse("offset_negative", "A negative offset.", ok(functions=t), "build_manifest_malformed", "offset")
@@ -248,9 +258,15 @@ t["ciris_verify_f1"]["size"] = Tag(4, [-1, 15])
 refuse("size_decimal", "A size as a tag-4 decimal (1.5): normalised, so deterministic, but not a uint.",
        ok(functions=t), "build_manifest_malformed", "size")
 t = table(F3)
-t["ciris_verify_f1"]["hash"] = "sha256:" + t["ciris_verify_f1"]["hash"]
-refuse("entry_hash_prefixed", "A function hash with the sha256: prefix.", ok(functions=t), "build_manifest_malformed",
-       "hash")
+t["ciris_verify_f1"]["hash"] = t["ciris_verify_f1"]["hash"].hex()
+refuse("entry_hash_hex", "A function hash as hex text.", ok(functions=t), "build_manifest_malformed", "hash")
+t = table(F3)
+t["ciris_verify_f1"]["hash"] = t["ciris_verify_f1"]["hash"][:31]
+refuse("entry_hash_31", "A function hash of 31 bytes.", ok(functions=t), "build_manifest_malformed", "hash")
+t = table(F3)
+t["ciris_verify_f1"]["hash"] = [-16, t["ciris_verify_f1"]["hash"]]
+refuse("entry_hash_digest_wrapper", "A function hash as a [-16, digest] hash-digest.", ok(functions=t),
+       "build_manifest_malformed", "hash")
 refuse("functions_array", "functions as an array.", ok(functions=[1]), "build_manifest_malformed", "functions")
 refuse("function_name_int", "A function keyed by an integer.", ok(functions={1: table(F3)["ciris_verify_f0"]}),
        "build_manifest_malformed", "functions")
