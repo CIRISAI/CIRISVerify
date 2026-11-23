@@ -6,7 +6,7 @@
 //! one fact the cohort tiers exist to withhold: **that the group exists at
 //! all**. So CC 5.4.6 suppresses the announce itself, and members resolve each
 //! other from a cached directory plus the per-group derivation in
-//! [`ciris_crypto::scope_privacy`] instead — no announce, no per-resolution
+//! `ciris_crypto::scope_privacy` instead — no announce, no per-resolution
 //! query.
 //!
 //! ## The rule: the prohibition binds the packet
