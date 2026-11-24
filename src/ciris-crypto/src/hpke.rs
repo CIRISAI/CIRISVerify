@@ -17,6 +17,14 @@
 //! schedule is RFC 9180 §5.1 (`mode = 0x00`, empty `psk` / `psk_id`), and a
 //! single-shot seal uses `seq = 0`, so the AEAD nonce is `base_nonce`.
 //!
+//! **`mode_psk`** (RFC 9180 §5.1.2, `mode = 0x01`; [`seal_psk`] /
+//! [`open_psk`]) is the same suite with a pre-shared key of at least 32 bytes
+//! and a non-empty `psk_id` in the key schedule. It is the confirmation of a
+//! private room's binding (CC 2.6.1.11): the `psk` is the shared secret of a
+//! challenge only the person's binding key opens, so the seal shows its maker
+//! held that key, to a recipient who could have made the same bytes itself.
+//! Its key schedule is checked against RFC 9180 Appendix A.2.2.
+//!
 //! **The invitee's key** is an [`XWingSecretKey`] made from its 32-byte seed by
 //! X-Wing §5.2. HPKE `DeriveKeyPair` is not used: it applies a labelled
 //! SHAKE256 and would derive a different key from the same input (CC ruling on
@@ -141,13 +149,35 @@ fn key_schedule_base(
     shared_secret: &[u8],
     info: &[u8],
 ) -> Result<Context, CryptoError> {
-    let psk_id_hash = labeled_extract(suite, &[], b"psk_id_hash", &[]);
+    key_schedule(suite, MODE_BASE, shared_secret, info, &[], &[])
+}
+
+/// `mode_base` (RFC 9180 §5, Table 1).
+const MODE_BASE: u8 = 0x00;
+/// `mode_psk` (RFC 9180 §5, Table 1).
+const MODE_PSK: u8 = 0x01;
+
+/// The least `psk` length RFC 9180 §9.5 admits: 32 bytes of entropy.
+pub const HPKE_PSK_MIN_LEN: usize = 32;
+
+/// `KeySchedule(mode, shared_secret, info, psk, psk_id)` (RFC 9180 §5.1).
+/// `mode_base` takes an empty `psk` and `psk_id`; the callers of `mode_psk`
+/// have checked theirs (`VerifyPSKInputs`).
+fn key_schedule(
+    suite: &[u8],
+    mode: u8,
+    shared_secret: &[u8],
+    info: &[u8],
+    psk: &[u8],
+    psk_id: &[u8],
+) -> Result<Context, CryptoError> {
+    let psk_id_hash = labeled_extract(suite, &[], b"psk_id_hash", psk_id);
     let info_hash = labeled_extract(suite, &[], b"info_hash", info);
     let mut ctx = Vec::with_capacity(1 + 2 * NH);
-    ctx.push(0x00);
+    ctx.push(mode);
     ctx.extend_from_slice(psk_id_hash.as_ref());
     ctx.extend_from_slice(info_hash.as_ref());
-    let secret = labeled_extract(suite, shared_secret, b"secret", &[]);
+    let secret = labeled_extract(suite, shared_secret, b"secret", psk);
     let mut key = Zeroizing::new([0u8; NK]);
     labeled_expand(suite, &secret, b"key", &ctx, key.as_mut())?;
     let mut base_nonce = [0u8; NN];
@@ -250,6 +280,119 @@ pub fn open_base(
     Ok(in_out)
 }
 
+/// `VerifyPSKInputs` for `mode_psk` (RFC 9180 §5.1, §9.5): a `psk` of at
+/// least 32 bytes and a non-empty `psk_id`.
+fn check_psk(operation: &'static str, psk: &[u8], psk_id: &[u8]) -> Result<(), CryptoError> {
+    if psk.len() < HPKE_PSK_MIN_LEN {
+        return Err(err(operation, "psk shorter than 32 bytes"));
+    }
+    if psk_id.is_empty() {
+        return Err(err(operation, "empty psk_id"));
+    }
+    Ok(())
+}
+
+fn seal_psk_with_shared_secret(
+    shared_secret: &[u8],
+    encapsulation: Vec<u8>,
+    info: &[u8],
+    aad: &[u8],
+    plaintext: &[u8],
+    psk: &[u8],
+    psk_id: &[u8],
+) -> Result<HpkeSealed, CryptoError> {
+    let ctx = key_schedule(&HPKE_SUITE_ID, MODE_PSK, shared_secret, info, psk, psk_id)?;
+    let mut in_out = plaintext.to_vec();
+    aead_key(&ctx.key, "seal_psk")?
+        .seal_in_place_append_tag(
+            Nonce::assume_unique_for_key(ctx.base_nonce),
+            Aad::from(aad),
+            &mut in_out,
+        )
+        .map_err(|_| err("seal_psk", "AES-256-GCM seal failed"))?;
+    Ok(HpkeSealed {
+        encapsulation,
+        ciphertext: in_out,
+    })
+}
+
+/// `SealPSK(pkR, info, aad, pt, psk, psk_id)` (RFC 9180 §6.1, `mode_psk`
+/// 0x01) with the encapsulation's randomness from `rng`. The suite is the
+/// module's ([`HPKE_SUITE_ID`]); one seal per context, `seq = 0`.
+///
+/// Both ends must hold `psk`. Opening proves the sealer held it, to a
+/// recipient who holds it too: the recipient could have made the same bytes,
+/// so the seal proves nothing to a third party.
+///
+/// # Errors
+/// [`CryptoError::Hpke`] `{ operation: "seal_psk" }` for a `psk` under 32
+/// bytes, an empty `psk_id`, or an AEAD fault.
+pub fn seal_psk_with_rng(
+    recipient: &XWingPublicKey,
+    info: &[u8],
+    aad: &[u8],
+    plaintext: &[u8],
+    psk: &[u8],
+    psk_id: &[u8],
+    rng: &mut impl CryptoRngCore,
+) -> Result<HpkeSealed, CryptoError> {
+    check_psk("seal_psk", psk, psk_id)?;
+    let (enc, ss) = recipient.encapsulate_with_rng(rng);
+    seal_psk_with_shared_secret(ss.as_ref(), enc.to_vec(), info, aad, plaintext, psk, psk_id)
+}
+
+/// [`seal_psk_with_rng`] with randomness from the health-latched RNG.
+///
+/// # Errors
+/// [`CryptoError::RngHealthCheckFailed`] if the RNG latch has failed;
+/// otherwise as [`seal_psk_with_rng`].
+pub fn seal_psk(
+    recipient: &XWingPublicKey,
+    info: &[u8],
+    aad: &[u8],
+    plaintext: &[u8],
+    psk: &[u8],
+    psk_id: &[u8],
+) -> Result<HpkeSealed, CryptoError> {
+    check_psk("seal_psk", psk, psk_id)?;
+    let (enc, ss) = recipient.encapsulate()?;
+    seal_psk_with_shared_secret(ss.as_ref(), enc.to_vec(), info, aad, plaintext, psk, psk_id)
+}
+
+/// `OpenPSK(enc, skR, info, aad, ct, psk, psk_id)` (RFC 9180 §6.1).
+///
+/// # Errors
+/// [`CryptoError::Hpke`] `{ operation: "open_psk" }`, opaque: a wrong key, a
+/// wrong `psk` or `psk_id`, a tampered `enc` or ciphertext, a different
+/// `info` or `aad`, a seal made in `mode_base`, and a malformed input are not
+/// distinguished.
+pub fn open_psk(
+    recipient: &XWingSecretKey,
+    sealed: &HpkeSealed,
+    info: &[u8],
+    aad: &[u8],
+    psk: &[u8],
+    psk_id: &[u8],
+) -> Result<Vec<u8>, CryptoError> {
+    let opaque = || err("open_psk", "AEAD open failed");
+    check_psk("open_psk", psk, psk_id).map_err(|_| opaque())?;
+    let ss = recipient
+        .decapsulate(&sealed.encapsulation)
+        .map_err(|_| opaque())?;
+    let ctx = key_schedule(&HPKE_SUITE_ID, MODE_PSK, ss.as_ref(), info, psk, psk_id)?;
+    let mut in_out = sealed.ciphertext.clone();
+    let len = aead_key(&ctx.key, "open_psk")?
+        .open_in_place(
+            Nonce::assume_unique_for_key(ctx.base_nonce),
+            Aad::from(aad),
+            &mut in_out,
+        )
+        .map_err(|_| opaque())?
+        .len();
+    in_out.truncate(len);
+    Ok(in_out)
+}
+
 /// The bytes the inviter's hybrid signature covers (CC 5.4.4): the
 /// encapsulation `enc = ct_M ‖ ct_X`, all 1120 bytes, as sent.
 ///
@@ -279,6 +422,65 @@ mod tests {
 
     fn h(s: &str) -> Vec<u8> {
         hex::decode(s).unwrap()
+    }
+
+    /// RFC 9180 Appendix A.2.2: `mode_psk` under DHKEM(X25519, HKDF-SHA256),
+    /// HKDF-SHA256, ChaCha20Poly1305. The KEM differs from this module's, so
+    /// the vector's `shared_secret` is fed to the key schedule under the
+    /// vector's own `suite_id`; `key`, `base_nonce` and `exporter_secret` are
+    /// the RFC's (Nk = 32 and Nn = 12 as for AES-256-GCM).
+    #[test]
+    fn rfc_9180_a22_psk_key_schedule() {
+        let v: serde_json::Value = serde_json::from_str(include_str!(
+            "../tests/vectors/xwing/rfc9180_a22_psk_dhkem_x25519_chacha20poly1305.json"
+        ))
+        .unwrap();
+        let s = |k: &str| h(v[k].as_str().unwrap());
+        assert_eq!(v["mode"], 1);
+        let suite = suite_id(0x0020, 0x0001, 0x0003);
+        let ctx = key_schedule(
+            &suite,
+            MODE_PSK,
+            &s("shared_secret"),
+            &s("info"),
+            &s("psk"),
+            &s("psk_id"),
+        )
+        .unwrap();
+        assert_eq!(ctx.key.as_ref(), s("key").as_slice());
+        assert_eq!(ctx.base_nonce.as_slice(), s("base_nonce").as_slice());
+        assert_eq!(
+            ctx.exporter_secret.as_ref(),
+            s("exporter_secret").as_slice()
+        );
+        // The same inputs in mode_base give another key: the mode byte and
+        // the psk are in the schedule.
+        let base = key_schedule_base(&suite, &s("shared_secret"), &s("info")).unwrap();
+        assert_ne!(base.key.as_ref(), ctx.key.as_ref());
+    }
+
+    #[test]
+    fn psk_seal_opens_only_with_its_psk_id_info_and_mode() {
+        let mut rng = rand_chacha::ChaCha20Rng::from_seed([7; 32]);
+        let sk = XWingSecretKey::from_seed([9; 32]);
+        let pk = sk.public_key();
+        let (psk, id) = ([0x11u8; 32], b"psk id".as_slice());
+        let sealed = seal_psk_with_rng(&pk, b"info", b"", b"opening", &psk, id, &mut rng).unwrap();
+        assert_eq!(
+            open_psk(&sk, &sealed, b"info", b"", &psk, id).unwrap(),
+            b"opening"
+        );
+        assert!(open_psk(&sk, &sealed, b"info", b"", &[0x12; 32], id).is_err());
+        assert!(open_psk(&sk, &sealed, b"info", b"", &psk, b"other id").is_err());
+        assert!(open_psk(&sk, &sealed, b"other", b"", &psk, id).is_err());
+        assert!(open_psk(&sk, &sealed, b"info", b"aad", &psk, id).is_err());
+        // Neither mode opens the other's seal.
+        assert!(open_base(&sk, &sealed, b"info", b"").is_err());
+        let base = seal_base_with_rng(&pk, b"info", b"", b"opening", &mut rng).unwrap();
+        assert!(open_psk(&sk, &base, b"info", b"", &psk, id).is_err());
+        // VerifyPSKInputs.
+        assert!(seal_psk_with_rng(&pk, b"", b"", b"", &[0; 31], id, &mut rng).is_err());
+        assert!(seal_psk_with_rng(&pk, b"", b"", b"", &psk, b"", &mut rng).is_err());
     }
 
     #[test]
