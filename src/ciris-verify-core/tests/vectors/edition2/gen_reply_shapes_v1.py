@@ -9,9 +9,10 @@
 #    `refs.answers`; the earlier form's `objects_to_attestation_id` and `dismisses_objection_id` are malformed.
 #    (`proposal`, `dismissed`, `upheld` and `overruled` are not states of this form: once CC's registry closes
 #    the vocabulary, a row under one is refused by the matcher, so no case is cut for them here.)
-#  - a membership:keeps payload (payload level: the stage is registered by CC's next pre tag): counted, with
+#  - a membership:keeps payload (at payload level and as a statement): counted, with
 #    refs.head, refs.trusted_through and exactly one row in refs.also.cites (keeps_cites_no_end otherwise);
-#  - an act:ack payload (payload level, for the same reason): refs.also.ack present, and no refs.head;
+#  - an act:ack payload (at payload level and as a statement): refs.also.ack present, and no refs.head;
+#  - refs.also.stands_on, a set of exactly one row-ref, on any row;
 #  - a trust:accepts row is one of three kinds, said by its payload (CC 3.2 T3/T4a, CC 2.7.11, CC 4.4.3.34):
 #    with `attached_head_digest` (a hash-digest) it attaches a root; with `service_key` it is an edge to a
 #    Transparency Service, `service_key` standing exactly where trust_classes contains `transparency`, never
@@ -242,6 +243,49 @@ acase("ack_cites_not_ack", "A receipt that cites rows but acknowledges none.",
       dict(ack, refs={"also": {"cites": rset(1)}}), "invalid:malformed:refs")
 acase("ack_with_head", "A receipt carrying refs.head.", dict(ack, refs={"head": rref(1), "also": {"ack": rset(2)}}),
       "invalid:malformed:refs")
+
+# ---- the same keeps and act:ack payloads as statements (both families are registered at rc22-pre4) ----
+KEEPS_ST = [("keeps_valid", keeps, "valid"),
+            ("keeps_with_author", dict(keeps, author=A.iss), "invalid:malformed:author"),
+            ("keeps_no_head", with_refs(head=None), "invalid:malformed:refs"),
+            ("keeps_no_trusted_through", with_refs(trusted_through=None), "invalid:malformed:refs"),
+            ("keeps_cites_none", with_refs(also=None), "invalid:keeps_cites_no_end"),
+            ("keeps_cites_two", with_refs(also={"cites": [rref(5), rref(6)]}), "invalid:keeps_cites_no_end"),
+            ("keeps_group_kind_other", dict(keeps, group_kind="room"), "invalid:malformed:group_kind")]
+for cid, payload, expect in KEEPS_ST:
+    case("st_" + cid, "The keeps payload of that name as a statement; sub is the member.", MEM, payload, expect,
+         sub=B.iss)
+ack_st = dict(ack, dimension="act:ack:v1")
+ACK = "act:ack"
+case("st_ack_two_acts", "A receipt naming two acts, as a statement.", ACK, ack_st, "valid")
+case("st_ack_no_refs", "A receipt statement with no refs.", ACK,
+     {"asserted_at": T0, "author": A.iss, "dimension": "act:ack:v1"}, "invalid:malformed:refs")
+case("st_ack_cites_not_ack", "A receipt statement that cites rows but acknowledges none.", ACK,
+     dict(ack_st, refs={"also": {"cites": rset(1)}}), "invalid:malformed:refs")
+case("st_ack_with_head", "A receipt statement carrying refs.head.", ACK,
+     dict(ack_st, refs={"head": rref(1), "also": {"ack": rset(2)}}), "invalid:malformed:refs")
+case("st_ack_257", "A receipt statement naming 257 acts.", ACK, dict(ack_st, refs={"also": {"ack": rset(257)}}),
+     "invalid:ack_names_too_many")
+
+# ---- refs.also.stands_on: exactly one row-ref, on any row (CC 2.6.1.3; CC 2.4.1.1 "An act names its head") ----
+case("stands_on_one", "A row naming the acceptance it stands on.", FAM,
+     dict(base, refs={"head": rref(1), "also": {"stands_on": [rref(2)]}}), "valid")
+case("stands_on_beside_cites", "stands_on beside cites.", FAM,
+     dict(base, refs={"also": {"cites": [rref(3)], "stands_on": [rref(2)]}}), "valid")
+case("stands_on_two", "Two rows under stands_on.", FAM,
+     dict(base, refs={"also": {"stands_on": rset(2)}}), "invalid:malformed:stands_on")
+case("stands_on_empty", "An empty stands_on.", FAM, dict(base, refs={"also": {"stands_on": []}}),
+     "invalid:malformed:also")
+case("stands_on_bare_ref", "stands_on as one row-ref, not a set.", FAM,
+     dict(base, refs={"also": {"stands_on": rref(2)}}), "invalid:malformed:also")
+case("also_role_unknown", "A role of also outside ack, cites, under and stands_on.", FAM,
+     dict(base, refs={"also": {"stands_under": [rref(2)]}}), "invalid:unexpected_member:also")
+
+# ---- names retired or never registered at rc22-pre4 are refused by the matcher ----
+case("objection_proposal_retired_state", "objection:proposal is not a state of this form.", OBJ,
+     dict(base, dimension="objection:proposal:v1", refs={"answers": rref(9)}), "invalid:dimension_refused:namespace_vocab_value_unregistered")
+case("trust_blessing_is_a_job", "trust:blessing is no family of its own: the name binds under trust:{job}.", TRU,
+     dict(base, dimension="trust:blessing:v1"), "valid")
 
 json.dump({"_meta": {"spec": "CC rc22 (pre4): refs.further_prev; proposal_hash and objects_to_attestation_id "
                              "refused as the earlier form's (CC 3.1.3.2)",

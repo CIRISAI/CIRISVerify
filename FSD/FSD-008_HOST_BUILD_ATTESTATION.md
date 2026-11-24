@@ -3,7 +3,7 @@
 **Status:** Draft — not ratified. Specifies how a binary that statically folds CIRISVerify in (an
 **embedded host**) reaches Level 1 self-verification on its own build manifest, trusted through a
 grant counted by the accord holders and through no key baked into verify for the purpose, and moves
-verify's own artifacts to the same path in the same release. Tracks CIRIS Constitution 1.0-rc22-pre3
+verify's own artifacts to the same path in the same release. Tracks CIRIS Constitution 1.0-rc22-pre4
 and CC's answers of 2026-11-22 (§14). The build descriptor, the one manifest blob and the grant's
 `projects` set are accepted by CC (2026-11-22); their text rides CC's next pre tag, with CC 3.1.2.1
 rewritten to the one standing act of §4.2. **Phase 1a (the blob codec) and Phase 1b (the standing

@@ -16,7 +16,7 @@ use serde_json::Value as J;
 
 const FILE: &str = include_str!("vectors/edition2/reply_shapes_v1.json");
 /// SHA-256 of the file, pinned so a regeneration is a visible change.
-const FILE_SHA256: &str = "54d04340a56f7140edf985bf9047b208cbb06c1d2b1977b0e8763a5aff0cab53";
+const FILE_SHA256: &str = "731a8bf380d1f454652978223442f9225f430db1d989de8d47e61d26467f1367";
 
 fn held(c: &J) -> BTreeMap<Digest32, CompositePublicKey> {
     c["held_key_seeds"]
@@ -44,7 +44,7 @@ fn file_is_pinned() {
 fn reply_and_refs_shapes() {
     let f: J = serde_json::from_str(FILE).unwrap();
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 58);
+    assert_eq!(cases.len(), 78);
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let bytes = hex::decode(c["statement_hex"].as_str().unwrap()).unwrap();
@@ -54,6 +54,12 @@ fn reply_and_refs_shapes() {
                 format!("invalid:malformed:{member}")
             },
             Verdict::Invalid(Invalid::SetOrder { member }) => format!("invalid:set_order:{member}"),
+            Verdict::Invalid(Invalid::UnexpectedMember { within }) => {
+                format!("invalid:unexpected_member:{within}")
+            },
+            Verdict::Invalid(Invalid::DimensionRefused { token }) => {
+                format!("invalid:dimension_refused:{token}")
+            },
             Verdict::Invalid(i) => match i.token() {
                 Some(t) => format!("invalid:{t}"),
                 None => format!("invalid:{i:?}"),
