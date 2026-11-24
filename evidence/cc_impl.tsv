@@ -58,7 +58,7 @@ decimal_id	claim_id	repo	path#symbol	crate@version	span_sha256
 4.2.2.1	CLM-trust-anchor-store	CIRISVerify	src/ciris-verify-core/src/trust_anchor_store.rs#ConciseTaStore	ciris-verify-core@v13.0.0	16e8b6f1e2b87f8a35e14d7d86e81e9343bb6aad1ed61459df4b3b7e6b0aaeaa
 4.2.2.1	CLM-trust-anchor-baked	CIRISVerify	src/ciris-verify-core/src/trust_anchor_store.rs#yubico_attestation_root	ciris-verify-core@v13.0.0	c3f00f865ad1f079560e92cdc5f1a66247143cd7cddfd1be95290a28c11af8d7
 3.1.2	CLM-dimension-registry	CIRISVerify	src/ciris-verify-core/src/federation_provenance.rs#DimensionSpec	ciris-verify-core@v13.0.0	e1162cd389ce5240d5b1f1497fabf21eb03ad9c367a385bdee5133340d17d8ee
-3.4.5	CLM-dimension-consent-disposition	CIRISVerify	src/ciris-verify-core/src/federation_provenance.rs#ConsentDisposition	ciris-verify-core@v13.0.0	8c33be071c4f74466538a315767ef6951e73d6472c478030e917fb99388cda8a
+3.4.5	CLM-dimension-consent-disposition	CIRISVerify	src/ciris-verify-core/src/federation_provenance.rs#ConsentDisposition	ciris-verify-core@v13.0.0	7891fd02055a76ccd712fe93f56ee8499bdd70ce4d56aba5aaf248bb2eabb182
 3.4.5	CLM-classification-gating	CIRISVerify	src/ciris-verify-core/src/classification.rs#Gating	ciris-verify-core@v13.0.0	7c10f85d6876603dd0e94f24509989c716e0aafd4d6cc8651ecbd97e2f1b9464
 4.2.2.1	CLM-hardware-class-tpm	CIRISVerify	src/ciris-verify-core/src/device_attestation.rs#verify_tpm_ek_certificate	ciris-verify-core@v13.0.0	2f3dc74d8d04d9eea24c731c22082455e3dcdf508ac80aa15fae3906be0adc35
 4.2.2.1	CLM-anchor-provenance-tier	CIRISVerify	src/ciris-verify-core/src/trust_anchor_store.rs#AnchorProvenance	ciris-verify-core@v13.0.0	59f7f44ec4b22cd3aa6ad73ff63e7210f1938abd1ea19a842599cfa60ae43aa3
@@ -84,10 +84,10 @@ decimal_id	claim_id	repo	path#symbol	crate@version	span_sha256
 5.1	CLM-stream-dek-per-stream	CIRISVerify	src/ciris-crypto/src/stream_dek.rs#stream_dek	ciris-crypto@v23.0.0	0af021e7c4283c433b6a4f88b982d3977134528b3d542e735049a490af771767
 4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/accord_halt_latch.rs#HaltLatch::step	ciris-verify-core@v23.3.0	c7a111febe93da8ac1e9dfe51d3cea4ed37c8e463ba0ed6597a4314aeffa5aa2
 4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/edition2/accord_halt.rs#verify_invocation_row	ciris-verify-core@v23.3.0	47a5cea65213e54261b32c584cddad93c35d7539d70e6ff4dd34abfe2a55a153
-4.2.1.3	CLM-lifecycle	CIRISVerify	src/ciris-verify-core/src/edition2/accord_halt.rs#verify_lifecycle_row	ciris-verify-core@v23.3.0	3e15f059048f441b51a813c62d490c2b21c8e43e2d84ae29eb692a9da0a42af2
+4.2.1.3	CLM-lifecycle	CIRISVerify	src/ciris-verify-core/src/edition2/accord_halt.rs#verify_lifecycle_row	ciris-verify-core@v23.3.0	65366278686122639645ffbb1eb00adf7018510d89a31ce9850175205a543fcb
 4.2.1.1	CLM-halt-one-row	CIRISVerify	src/ciris-verify-core/src/accord_halt_latch.rs#HaltLatch::apply_forward	ciris-verify-core@v23.3.0	222a9b866c513eb4064b7e0d9308d7a8e9ab91a3337be02e893e4598e9e71b95
 # 2.6.1 verification order (CC 2.6.1.8, steps 6-8): read_row_statement checks, after the
 # signature, that the signing key is a key of the CWT iss (kid_not_of_iss); KeyRecordDirectory::chain
 # proves a rotated key the issuer's (CC 2.6.1.7, CC 2.4.1.1, CC 3.1.3).
-2.6.1	CLM-signed-object-cose-planned	CIRISVerify	src/ciris-verify-core/src/edition2/mod.rs#read_row_statement	ciris-verify-core@v23.3.0	78d555939b6c58d4d3f8eea151d8365316ae20c2e0000a82fba7f692a1c24f7c
+2.6.1	CLM-signed-object-cose-planned	CIRISVerify	src/ciris-verify-core/src/edition2/mod.rs#read_row_statement	ciris-verify-core@v23.3.0	14bcd98d6bdcfa2d4a2cab14a28ef011b298b55f96fea771dfe24593562edcf6
 2.6.1	CLM-signed-object-cose-planned	CIRISVerify	src/ciris-verify-core/src/edition2/keys.rs#KeyRecordDirectory::chain	ciris-verify-core@v23.3.0	6e6a493a8c701734bde8f948b1a2d40a2312ba7ff99f6334e3180cf33f3f8da9

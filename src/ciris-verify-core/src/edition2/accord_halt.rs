@@ -434,7 +434,7 @@ impl HaltRefusal {
     }
 }
 
-fn invalid_token(i: &Invalid) -> String {
+pub(crate) fn invalid_token(i: &Invalid) -> String {
     match i {
         Invalid::NotDeterministic { part, .. } => format!("not_deterministic:{part}"),
         Invalid::NotCoseSign1 => "not_cose_sign1".into(),
@@ -455,6 +455,12 @@ fn invalid_token(i: &Invalid) -> String {
         Invalid::ValidUntilNotAfterAssertedAt => "valid_until_not_after_asserted_at".into(),
         Invalid::BodyNumberUnrepresentable => "body_number_unrepresentable".into(),
         Invalid::DialHintMalformed => "dial_hint_malformed".into(),
+        Invalid::GroupIdNotOfFounding => "group_id_not_of_founding".into(),
+        Invalid::TrustedThroughTooMany => "trusted_through_too_many".into(),
+        Invalid::KeepsCitesNoEnd => "keeps_cites_no_end".into(),
+        Invalid::AckNamesTooMany => "ack_names_too_many".into(),
+        Invalid::TrustAcceptsClassesMalformed => "trust_accepts_classes_malformed".into(),
+        Invalid::TrustAcceptsDepthOutOfRange => "trust_accepts_depth_out_of_range".into(),
     }
 }
 
@@ -973,10 +979,26 @@ pub fn verify_lifecycle_row(
     }
     refused.sort_by_key(|r| r.index);
     let names: BTreeSet<String> = counted.iter().map(|(_, v)| v.row.iss.clone()).collect();
-    let (have, need) = (names.len(), roster.majority());
-    // Strict majority of the standing roster: 2·have > N.
-    let Some(chosen) = chosen.filter(|_| have >= need) else {
-        if !waiting.bundles.is_empty() || have + waiting.kids.len() >= need {
+    // Strict majority of the standing roster: 2·have > N (the one count,
+    // `super::count::strict_majority`).
+    let count = super::count::strict_majority(
+        names.iter().map(String::as_str),
+        roster.holders(),
+        waiting.kids.len(),
+    );
+    let (have, need) = match count {
+        super::count::Count::Counted { yes, .. } => (yes, roster.majority()),
+        super::count::Count::Unmet { yes, need, .. } => (yes, need),
+    };
+    let Some(chosen) = chosen.filter(|_| count.is_counted()) else {
+        let could_be_made_up = matches!(
+            count,
+            super::count::Count::Unmet {
+                could_be_made_up: true,
+                ..
+            }
+        );
+        if !waiting.bundles.is_empty() || could_be_made_up {
             return HaltReading::Waiting(waiting);
         }
         return HaltReading::Refused(if statements.is_empty() {

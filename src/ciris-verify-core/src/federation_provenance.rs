@@ -22,24 +22,26 @@
 //!
 //! ### How many dimensions? (the count, stated precisely)
 //!
-//! The number depends on what is counted, so all three are given:
+//! The number depends on what is counted, so both are given:
 //!
 //! | Count | What it counts |
 //! |---|---|
-//! | **15** | rows in CC part_3's table (it lists the `:locale:` sub-form as its own row) |
-//! | **14** | distinct prefix **families** — [`dim::ALL`], the registry below |
-//! | **13** | families verify actually **emits** (`transparency_log:cosigned:` is witness-emitted) |
+//! | **12** | rows in the table below (it lists the `:locale:` sub-form as its own row) |
+//! | **11** | distinct prefix **families** — [`dim::ALL`], the registry below; verify emits every one |
 //!
 //! **Authority note.** Where CC part_3 and CIRISRegistry FSD-002
 //! §3.2 disagree, **CC wins**. FSD-002 §3.2 still specifies the retired
 //! ladder-named prefixes (`attestation:l1:self_verify`, …); CC and this crate
 //! agree on the mechanism-named set. Tracked as CIRISRegistry#132.
 //!
-//! CC part_3 lists **15** dimensions in the verify namespace. The 15th,
-//! `transparency_log:cosigned:{tree_size}`, is **witness-emitted, not
-//! verify-emitted** (CC binds its emitter to a `federation_keys` row with
-//! `identity_type="witness"`), so it is exposed here as a *recognition*
-//! constant with no emitter — see [`dim::TRANSPARENCY_LOG_COSIGNED_PREFIX`].
+//! **Retired: the transparency-log families.** CC 3.4.10 retires the three
+//! transparency-log families (inclusion, consistency, cosigned) with no
+//! replacement: a Transparency Service's own signed act is its Receipt, which is
+//! no attestation row and carries no dimension. Verify neither emits nor
+//! recognises them; an entry under one of those names is an unregistered
+//! dimension ([`dim::lookup`] answers `None`). The measured facts survive as
+//! plain fields, [`FederationProvenance::transparency_log`]
+//! ([`TransparencyLogBlock`]).
 //!
 //! Addressable via the [`dim`] module. Every parameterized family carries
 //! the CC 3.1.7 R3 tail `:{version}` = [`dim::DIMENSION_VERSION`]; the bare `attestation:*` constants are R3-exempt.
@@ -55,9 +57,6 @@
 //! | `provenance:build_manifest:{target}:{version}` | boolean-via-score |
 //! | `provenance:build_manifest:{target}:locale:{lang_code}:{version}` | boolean-via-score |
 //! | `provenance:skill_import:{source}:{version}` | **signed** (per CC part_3) |
-//! | `transparency_log:inclusion:{version}`     | boolean-via-score |
-//! | `transparency_log:consistency:{version}`   | boolean-via-score |
-//! | `transparency_log:cosigned:{tree_size}:{version}` | **signed** — *recognized, never emitted by verify* (witness-emitted per CC part_3) |
 //! | `rollback_detected:{revision_field}:{version}` | **-1 only** (no positive direction) |
 //! | `cert_validity:{authority}:{version}`      | boolean-via-score |
 //! | `hardware_custody:{platform}:{version}`    | boolean-via-score |
@@ -114,33 +113,6 @@ pub mod dim {
     /// Agent integrity — agent source-tree byte-equal against
     /// registered manifest (`verify_tree` Algorithm A).
     pub const AGENT_INTEGRITY: &str = "attestation:agent_integrity";
-
-    /// RFC 6962 inclusion proof for an audit leaf.
-    pub const TRANSPARENCY_LOG_INCLUSION: &str = "transparency_log:inclusion:v1";
-
-    /// RFC 6962 consistency proof between two STHs.
-    pub const TRANSPARENCY_LOG_CONSISTENCY: &str = "transparency_log:consistency:v1";
-
-    /// Prefix of CC part_3's 15th verify-namespace dimension,
-    /// `transparency_log:cosigned:{tree_size}`.
-    ///
-    /// **Recognition only — verify never emits this.** CC binds the emitter to
-    /// an `attesting_key_id` whose `federation_keys` row has
-    /// `identity_type="witness"`, so a witness produces it and verify (which
-    /// holds the machinery in [`crate::transparency`]: `WitnessSignature`,
-    /// `count_valid_witnesses`, `witness_quorum_met`) consumes it. Exposed so a
-    /// consumer can match the family without hand-writing the string.
-    pub const TRANSPARENCY_LOG_COSIGNED_PREFIX: &str = "transparency_log:cosigned:";
-
-    /// Build the `transparency_log:cosigned:{tree_size}` dimension.
-    ///
-    /// Provided for **consumers matching or reconstructing** the dimension —
-    /// verify itself is not an emitter (see
-    /// [`TRANSPARENCY_LOG_COSIGNED_PREFIX`]).
-    #[must_use]
-    pub fn transparency_log_cosigned(tree_size: u64) -> String {
-        format!("{TRANSPARENCY_LOG_COSIGNED_PREFIX}{tree_size}:{DIMENSION_VERSION}")
-    }
 
     /// SLSA build provenance at `level` (1-3). FSD-002 §3.2.
     #[must_use]
@@ -237,7 +209,7 @@ pub mod dim {
     ///
     /// # This tracks CC; it is not verify's opinion
     ///
-    /// **CC 3.4.5 disposes of all fourteen families individually and places
+    /// **CC 3.4.5 disposes of every verify-owned family individually and places
     /// every one OUTSIDE the consent gate.** This enum records CC's
     /// disposition and nothing else. Consumers (CIRISPersist's admission gate)
     /// derive from this registry rather than transcribing a list, so the
@@ -265,9 +237,6 @@ pub mod dim {
         /// manifests, licenses and certificates, not a subject's conduct or
         /// capacity. *"A forger never consents to verification."*
         ArtifactVerification,
-        /// CC 3.4.5 **log infrastructure** — proves properties of a public log.
-        /// The cosigned form is separately role-gated to witnesses (CC 3.4.9).
-        LogInfrastructure,
         /// CC 3.4.5 **abuse response** — an adversarial detector, on the
         /// abuse-response side of the line by construction.
         AbuseResponse,
@@ -291,7 +260,7 @@ pub mod dim {
         /// misreports a world still available to re-read. The discriminator is
         /// therefore *re-derivability*, which `repairability_not_intrinsic`
         /// proves is **not a property of the artifact** — it turns on what else
-        /// survives. So three of these four categories cannot be assigned
+        /// survives. So two of these three categories cannot be assigned
         /// without a declared frame:
         ///
         /// - [`ArtifactVerification`](Self::ArtifactVerification) is
@@ -305,10 +274,6 @@ pub mod dim {
         ///   false self-report is repairable depends entirely on whether an
         ///   independent record (a hardware chain, a peer attestation) was
         ///   retained. With one, epistemic; without, testimonial.
-        /// - [`LogInfrastructure`](Self::LogInfrastructure) is
-        ///   **frame-relative**: a log claim is re-derivable exactly when some
-        ///   witness retained the entries. That is a fact about the mesh, not
-        ///   about the claim.
         /// - [`AbuseResponse`](Self::AbuseResponse) is **frame-relative**: a
         ///   rollback is provable only where prior revisions survive.
         ///
@@ -325,7 +290,6 @@ pub mod dim {
             match self {
                 Self::ArtifactVerification => Ok(Arity::ArtifactOnly),
                 Self::SelfReport => Arity::testimonial("attestation:self_report", frame),
-                Self::LogInfrastructure => Arity::testimonial("transparency_log:*", frame),
                 Self::AbuseResponse => Arity::testimonial("rollback_detected:*", frame),
             }
         }
@@ -363,7 +327,7 @@ pub mod dim {
     }
 
     /// **The authoritative, exhaustive registry** of the verify-owned dimension
-    /// namespace — CC part_3's 15 families.
+    /// namespace — 11 families, every one verify-emitted.
     ///
     /// CIRISPersist#569 ask 3 asked for the set to be *"exhaustive-match or
     /// manifest-pinned, so a 15th dimension added upstream is a compile failure
@@ -371,8 +335,8 @@ pub mod dim {
     /// pin: a consumer iterates `ALL` instead of hand-listing strings, so a
     /// family added here shows up downstream rather than slipping past a gate.
     ///
-    /// 14 are verify-emitted; `transparency_log:cosigned:` is
-    /// recognition-only (witness-emitted per CC part_3).
+    /// The transparency-log families are retired (CC 3.4.10) and absent: an
+    /// entry under one of them resolves to `None` like any other foreign name.
     pub const ALL: &[DimensionSpec] = &[
         DimensionSpec {
             prefix: SELF_VERIFY,
@@ -403,24 +367,6 @@ pub mod dim {
             parameterized: false,
             verify_emits: true,
             consent_disposition: ConsentDisposition::ArtifactVerification,
-        },
-        DimensionSpec {
-            prefix: TRANSPARENCY_LOG_INCLUSION,
-            parameterized: false,
-            verify_emits: true,
-            consent_disposition: ConsentDisposition::LogInfrastructure,
-        },
-        DimensionSpec {
-            prefix: TRANSPARENCY_LOG_CONSISTENCY,
-            parameterized: false,
-            verify_emits: true,
-            consent_disposition: ConsentDisposition::LogInfrastructure,
-        },
-        DimensionSpec {
-            prefix: TRANSPARENCY_LOG_COSIGNED_PREFIX,
-            parameterized: true,
-            verify_emits: false,
-            consent_disposition: ConsentDisposition::LogInfrastructure,
         },
         DimensionSpec {
             prefix: "provenance:slsa:",
@@ -593,6 +539,75 @@ impl AttestationEntry {
     }
 }
 
+/// One measurement fact — the boolean-via-score result of a single
+/// measurement, plus its attester and (optional) source reference. Unlike a
+/// "verdict," a fact only states what was observed; the consumer decides what
+/// (if anything) the fact implies for their trust policy.
+///
+/// Re-exported as [`crate::attest_bundle::AttestationFact`], where the
+/// measurement bundle uses it for every named field.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AttestationFact {
+    /// Did the measurement pass?
+    pub passed: bool,
+    /// Who produced the attestation (e.g., `"ciris-verify"`, a
+    /// registry steward `key_id`).
+    pub attester: String,
+    /// Optional source reference — a persist row hash, registry URL,
+    /// STH hash. Lets the consumer link back to the underlying record.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_ref: Option<String>,
+}
+
+impl AttestationFact {
+    /// A fact with no source reference.
+    #[must_use]
+    pub fn new(passed: bool, attester: impl Into<String>) -> Self {
+        Self {
+            passed,
+            attester: attester.into(),
+            source_ref: None,
+        }
+    }
+}
+
+impl From<&AttestationEntry> for AttestationFact {
+    fn from(e: &AttestationEntry) -> Self {
+        Self {
+            passed: e.is_pass(),
+            attester: e.attester.clone(),
+            source_ref: e.source_ref.clone(),
+        }
+    }
+}
+
+/// Transparency-log proof facts — plain fields, **not** dimensions.
+///
+/// CC 3.4.10 retires the transparency-log dimension families with no
+/// replacement (a Transparency Service's own signed act is its Receipt, which is
+/// no attestation row), so these facts are never carried as
+/// [`AttestationEntry`] items. They ride on
+/// [`FederationProvenance::transparency_log`] and are copied verbatim into the
+/// measurement bundle's `transparency_log` block.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct TransparencyLogBlock {
+    /// RFC 6962 inclusion proof verdict (set from the audit-trail check).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub inclusion: Option<AttestationFact>,
+    /// RFC 6962 consistency proof verdict. Verify has no producer for this
+    /// today; it is absent unless a caller sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub consistency: Option<AttestationFact>,
+}
+
+impl TransparencyLogBlock {
+    /// Neither fact is present.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.inclusion.is_none() && self.consistency.is_none()
+    }
+}
+
 /// The `federation_provenance` block that travels in verify's response
 /// surface — the composed attestation list + optional metadata.
 ///
@@ -623,6 +638,12 @@ pub struct FederationProvenance {
     /// back to the underlying storage row.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub persist_row_hash: Option<String>,
+
+    /// Transparency-log proof facts, carried as plain fields rather than
+    /// dimension entries (CC 3.4.10 retired those families). Omitted from the
+    /// JSON when neither fact is present.
+    #[serde(default, skip_serializing_if = "TransparencyLogBlock::is_empty")]
+    pub transparency_log: TransparencyLogBlock,
 }
 
 impl FederationProvenance {
@@ -722,6 +743,20 @@ impl FederationProvenanceBuilder {
         self
     }
 
+    /// Set the transparency-log inclusion fact.
+    #[must_use]
+    pub fn transparency_log_inclusion(mut self, fact: AttestationFact) -> Self {
+        self.inner.transparency_log.inclusion = Some(fact);
+        self
+    }
+
+    /// Set the transparency-log consistency fact.
+    #[must_use]
+    pub fn transparency_log_consistency(mut self, fact: AttestationFact) -> Self {
+        self.inner.transparency_log.consistency = Some(fact);
+        self
+    }
+
     /// Finalize.
     #[must_use]
     pub fn build(self) -> FederationProvenance {
@@ -748,9 +783,6 @@ mod tests {
             dim::rollback_detected("license_revocation_revision"),
             dim::cert_validity("steward"),
             dim::hardware_custody("software_only"),
-            dim::transparency_log_cosigned(42),
-            dim::TRANSPARENCY_LOG_INCLUSION.to_string(),
-            dim::TRANSPARENCY_LOG_CONSISTENCY.to_string(),
         ];
         for d in &emitted {
             assert!(d.ends_with(&tail), "{d} lacks the R3 version tail");
@@ -929,14 +961,6 @@ mod tests {
         assert_eq!(dim::REGISTRY_CONSENSUS, "attestation:registry_consensus");
         assert_eq!(dim::LICENSE_VALIDITY, "attestation:license_validity");
         assert_eq!(dim::AGENT_INTEGRITY, "attestation:agent_integrity");
-        assert_eq!(
-            dim::TRANSPARENCY_LOG_INCLUSION,
-            "transparency_log:inclusion:v1"
-        );
-        assert_eq!(
-            dim::TRANSPARENCY_LOG_CONSISTENCY,
-            "transparency_log:consistency:v1"
-        );
     }
 
     /// JSON serialization matches the FSD-002 §11.2 example shape.
@@ -988,32 +1012,34 @@ mod tests {
 mod registry_tests {
     use super::dim::{self, ConsentDisposition};
 
-    /// **The count question, answered precisely** (CIRISServer#340 asked which
-    /// of "twelve" vs 14 is authoritative; the honest answer is that it depends
-    /// on what you count):
-    ///
-    /// - **15** — rows in CC part_3's table. It lists
-    ///   `provenance:build_manifest:{target}:locale:{lang_code}` as its own row
-    ///   even though it is a *sub-form* of the build-manifest family.
-    /// - **14** — distinct prefix families (this registry). The locale sub-form
-    ///   resolves into `provenance:build_manifest:` by longest-prefix match.
-    /// - **13** — families verify actually **emits**;
-    ///   `transparency_log:cosigned:` is witness-emitted, recognized only.
-    ///
-    /// The old module prose said "twelve", which matched none of these.
+    /// **The count, stated precisely.** CC 3.4.10 retired the three
+    /// transparency-log families, leaving 11 distinct prefix families (the
+    /// `:locale:` build-manifest sub-form resolves into
+    /// `provenance:build_manifest:` by longest-prefix match), every one of them
+    /// verify-emitted — there is no recognition-only family any more.
     #[test]
     fn registry_cardinality_is_stated_precisely() {
-        assert_eq!(dim::ALL.len(), 14, "distinct prefix families");
-        assert_eq!(
-            dim::ALL.iter().filter(|d| d.verify_emits).count(),
-            13,
-            "verify-emitted families; cosigned is witness-emitted"
+        assert_eq!(dim::ALL.len(), 11, "distinct prefix families");
+        assert!(
+            dim::ALL.iter().all(|d| d.verify_emits),
+            "every remaining family is verify-emitted"
         );
-        assert_eq!(
-            dim::ALL.iter().filter(|d| !d.verify_emits).count(),
-            1,
-            "exactly one recognition-only family"
-        );
+    }
+
+    /// CC 3.4.10: the retired transparency-log names are unregistered here,
+    /// handled as any other foreign dimension (`lookup` answers `None`). Built at
+    /// run time so no literal of a retired name is left in the source.
+    #[test]
+    fn retired_transparency_log_dimensions_do_not_resolve() {
+        let stem = "transparency_log";
+        for d in [
+            format!("{stem}:inclusion:v1"),
+            format!("{stem}:consistency:v1"),
+            format!("{stem}:cosigned:42:v1"),
+        ] {
+            assert!(dim::lookup(&d).is_none(), "retired, must not resolve: {d}");
+        }
+        assert!(dim::ALL.iter().all(|s| !s.prefix.starts_with(stem)));
     }
 
     /// Every emitted dimension the code can actually produce must resolve.
@@ -1025,8 +1051,6 @@ mod registry_tests {
             dim::REGISTRY_CONSENSUS.to_string(),
             dim::LICENSE_VALIDITY.to_string(),
             dim::AGENT_INTEGRITY.to_string(),
-            dim::TRANSPARENCY_LOG_INCLUSION.to_string(),
-            dim::TRANSPARENCY_LOG_CONSISTENCY.to_string(),
             dim::provenance_slsa(3),
             dim::provenance_build_manifest("x86_64-unknown-linux-gnu"),
             dim::provenance_build_manifest_locale("ios-mobile-bundle", "my"),
@@ -1034,7 +1058,6 @@ mod registry_tests {
             dim::rollback_detected("revocation_revision"),
             dim::cert_validity("registry-us"),
             dim::hardware_custody("android"),
-            dim::transparency_log_cosigned(32),
         ] {
             assert!(dim::lookup(&d).is_some(), "unregistered dimension: {d}");
         }
@@ -1067,13 +1090,13 @@ mod registry_tests {
 
     /// **CC 3.4.5 — no verify-owned family is consent-gated.**
     ///
-    /// The Constitution disposes of all fourteen families individually and puts
+    /// The Constitution disposes of every verify-owned family individually and puts
     /// every one outside the gate. This asserts the rule directly, so a future
     /// edit that reintroduces a consent-gated family fails here rather than in a
     /// downstream admission path (CIRISVerify#238 / CIRISPersist#569).
     #[test]
     fn cc_3_4_5_no_verify_family_is_consent_gated() {
-        assert_eq!(dim::ALL.len(), 14, "CC 3.4.5 disposes of fourteen families");
+        assert_eq!(dim::ALL.len(), 11, "every verify-owned family");
         for d in dim::ALL {
             assert!(
                 !d.consent_disposition.is_consent_gated(),
@@ -1128,7 +1151,7 @@ mod registry_tests {
     /// self-report while `attestation:hardware_rooted` is artifact-integrity —
     /// an easy pair to conflate, so it is pinned.
     #[test]
-    fn self_reports_and_log_infrastructure_track_cc_3_4_5() {
+    fn self_reports_track_cc_3_4_5() {
         assert_eq!(
             dim::lookup(dim::SELF_VERIFY).unwrap().consent_disposition,
             ConsentDisposition::SelfReport
@@ -1144,14 +1167,5 @@ mod registry_tests {
             ConsentDisposition::SelfReport,
             "attestation:hardware_rooted is artifact-integrity, NOT a self-report"
         );
-        for d in [
-            dim::TRANSPARENCY_LOG_INCLUSION,
-            dim::TRANSPARENCY_LOG_CONSISTENCY,
-        ] {
-            assert_eq!(
-                dim::lookup(d).unwrap().consent_disposition,
-                ConsentDisposition::LogInfrastructure
-            );
-        }
     }
 }

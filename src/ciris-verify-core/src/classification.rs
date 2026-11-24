@@ -719,10 +719,12 @@ mod frames {
         assert_eq!(Arity::ArtifactOnly.frame(), None);
     }
 
-    /// **Ask 3 — the dimension re-audit.** Exactly one of CC 3.4.5's four
-    /// categories is assignable from the artifact alone, and it is the one
-    /// whose carve-out rationale *is* re-readability ("a forger never consents
-    /// to verification"). The other three refuse without a frame.
+    /// **Ask 3 — the dimension re-audit.** Exactly one of the three CC 3.4.5
+    /// categories verify's families fall in is assignable from the artifact
+    /// alone, and it is the one whose carve-out rationale *is* re-readability
+    /// ("a forger never consents to verification"). The other two refuse
+    /// without a frame. (Log infrastructure left with the retired
+    /// transparency-log families, CC 3.4.10.)
     #[test]
     fn dimension_dispositions_re_audited_under_the_frame_rule() {
         assert!(ConsentDisposition::ArtifactVerification.arity(None).is_ok());
@@ -730,7 +732,6 @@ mod frames {
 
         for d in [
             ConsentDisposition::SelfReport,
-            ConsentDisposition::LogInfrastructure,
             ConsentDisposition::AbuseResponse,
         ] {
             assert!(d.is_frame_relative());

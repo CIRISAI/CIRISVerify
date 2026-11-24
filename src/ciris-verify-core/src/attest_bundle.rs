@@ -11,12 +11,15 @@
 //! ## Composition discipline
 //!
 //! Bundle construction is *only* a regrouping of
-//! [`AttestationEntry`] items into named measurement fields
+//! [`AttestationEntry`](crate::federation_provenance::AttestationEntry) items into named measurement fields
 //! (`self_verification`, `hardware_attestation`, `registry_consensus`,
 //! `license_validity`, `agent_integrity`) plus the supporting
 //! sections (`provenance`, `hardware_custody`, `transparency_log`,
 //! `cert_validity`, `rollback_detected`). No new attestations are
 //! emitted here, no verdicts are composed, no levels are assigned.
+//! `transparency_log` is not read from any entry: CC 3.4.10 retired the
+//! transparency-log dimension families, so its two facts are copied from
+//! [`FederationProvenance::transparency_log`], a plain field.
 //! The full entry list remains addressable via
 //! [`AttestBundle::federation_provenance`] so consumers that need the
 //! raw shape never lose information.
@@ -34,36 +37,9 @@ use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
-use crate::federation_provenance::{dim, AttestationEntry, FederationProvenance};
+use crate::federation_provenance::{dim, FederationProvenance};
 
-/// One measurement fact — the boolean-via-score result of a single
-/// attestation dimension, plus its attester and (optional) source
-/// reference. Unlike a "verdict," a fact only states what was
-/// observed; the consumer decides what (if anything) the fact
-/// implies for their trust policy.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct AttestationFact {
-    /// Did the underlying [`AttestationEntry`] pass under the
-    /// dimension's polarity?
-    pub passed: bool,
-    /// Who produced the attestation (e.g., `"ciris-verify"`, a
-    /// registry steward `key_id`).
-    pub attester: String,
-    /// Optional source reference — a persist row hash, registry URL,
-    /// STH hash. Lets the consumer link back to the underlying record.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub source_ref: Option<String>,
-}
-
-impl From<&AttestationEntry> for AttestationFact {
-    fn from(e: &AttestationEntry) -> Self {
-        Self {
-            passed: e.is_pass(),
-            attester: e.attester.clone(),
-            source_ref: e.source_ref.clone(),
-        }
-    }
-}
+pub use crate::federation_provenance::{AttestationFact, TransparencyLogBlock};
 
 /// SLSA + per-target build-manifest provenance + skill-import
 /// provenance + per-locale build-manifest leaves.
@@ -76,7 +52,7 @@ pub struct ProvenanceBlock {
     /// Map from target triple → source reference for the manifest
     /// (typically the manifest hash). Empty when no build-manifest
     /// dimensions were checked. Values come from
-    /// [`AttestationEntry::source_ref`]; the dimension confirms the
+    /// [`AttestationEntry::source_ref`](crate::federation_provenance::AttestationEntry::source_ref); the dimension confirms the
     /// hash equality, the `source_ref` carries the hash itself.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub build_manifest: BTreeMap<String, String>,
@@ -114,17 +90,6 @@ pub struct HardwareCustody {
     pub platform: String,
     /// Did the custody dimension pass?
     pub verified: bool,
-}
-
-/// Transparency-log proof block.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct TransparencyLogBlock {
-    /// RFC 6962 inclusion proof verdict.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub inclusion: Option<AttestationFact>,
-    /// RFC 6962 consistency proof verdict.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub consistency: Option<AttestationFact>,
 }
 
 /// Measurement-shaped attestation bundle (CIRISVerify#36, v3.6.0+).
@@ -170,7 +135,9 @@ pub struct AttestBundle {
     pub provenance: ProvenanceBlock,
     /// Where the seed lives (hardware custody).
     pub hardware_custody: HardwareCustody,
-    /// Transparency-log inclusion / consistency proofs.
+    /// Transparency-log inclusion / consistency proofs, copied from
+    /// [`FederationProvenance::transparency_log`] (plain facts, not
+    /// dimensions; CC 3.4.10).
     pub transparency_log: TransparencyLogBlock,
     /// Cert validity keyed by authority id.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -209,7 +176,8 @@ impl AttestBundle {
         let mut license_validity: Option<AttestationFact> = None;
         let mut agent_integrity: Option<AttestationFact> = None;
         let mut hardware_custody = HardwareCustody::default();
-        let mut transparency_log = TransparencyLogBlock::default();
+        // Plain facts, not dimension entries (CC 3.4.10): copied as carried.
+        let transparency_log = provenance.transparency_log.clone();
         let mut build_manifest: BTreeMap<String, String> = BTreeMap::new();
         let mut build_manifest_per_locale: BTreeMap<String, BTreeMap<String, AttestationFact>> =
             BTreeMap::new();
@@ -247,18 +215,6 @@ impl AttestBundle {
                 },
                 dim::AGENT_INTEGRITY => {
                     agent_integrity.get_or_insert_with(|| AttestationFact::from(entry));
-                    true
-                },
-                dim::TRANSPARENCY_LOG_INCLUSION => {
-                    transparency_log
-                        .inclusion
-                        .get_or_insert_with(|| AttestationFact::from(entry));
-                    true
-                },
-                dim::TRANSPARENCY_LOG_CONSISTENCY => {
-                    transparency_log
-                        .consistency
-                        .get_or_insert_with(|| AttestationFact::from(entry));
                     true
                 },
                 _ => false,
@@ -319,7 +275,8 @@ impl AttestBundle {
                     .entry(authority.to_string())
                     .or_insert_with(|| AttestationFact::from(entry));
             }
-            // Unknown / future dimensions are preserved in
+            // Unknown / future dimensions — the retired transparency-log names
+            // among them (CC 3.4.10) — are preserved in
             // federation_provenance.attestations_consumed below; no
             // projection here.
         }
@@ -545,12 +502,14 @@ mod tests {
     }
 
     #[test]
-    fn transparency_log_inclusion_and_consistency() {
-        let prov = fp(vec![
-            AttestationEntry::pass(dim::TRANSPARENCY_LOG_INCLUSION, "ciris-verify")
-                .with_source_ref("sth:abc123"),
-            AttestationEntry::fail(dim::TRANSPARENCY_LOG_CONSISTENCY, "witness-eu"),
-        ]);
+    fn transparency_log_facts_are_copied_from_the_provenance_fields() {
+        let prov = FederationProvenance::builder()
+            .transparency_log_inclusion(AttestationFact {
+                source_ref: Some("sth:abc123".into()),
+                ..AttestationFact::new(true, "ciris-verify")
+            })
+            .transparency_log_consistency(AttestationFact::new(false, "witness-eu"))
+            .build();
         let bundle = AttestBundle::from_federation_provenance("k", prov);
         let inc = bundle.transparency_log.inclusion.as_ref().unwrap();
         assert!(inc.passed);
@@ -558,6 +517,60 @@ mod tests {
         let cons = bundle.transparency_log.consistency.as_ref().unwrap();
         assert!(!cons.passed);
         assert_eq!(cons.attester, "witness-eu");
+        assert!(bundle
+            .federation_provenance
+            .attestations_consumed
+            .is_empty());
+    }
+
+    /// CC 3.4.10: an incoming entry under a retired transparency-log name is an
+    /// unknown dimension. It fills no field and is preserved as carried. Built at
+    /// run time so no literal of a retired name is left in the source.
+    #[test]
+    fn retired_transparency_log_entries_project_nowhere() {
+        let stem = "transparency_log";
+        let prov = fp(vec![
+            AttestationEntry::pass(format!("{stem}:inclusion:v1"), "ciris-verify"),
+            AttestationEntry::fail(format!("{stem}:consistency:v1"), "witness-eu"),
+        ]);
+        let bundle = AttestBundle::from_federation_provenance("k", prov);
+        assert!(bundle.transparency_log.inclusion.is_none());
+        assert!(bundle.transparency_log.consistency.is_none());
+        assert_eq!(bundle.federation_provenance.attestations_consumed.len(), 2);
+    }
+
+    /// The bundle's `transparency_log` JSON keeps its pre-23.5.1 shape:
+    /// `{"inclusion": {"passed", "attester", "source_ref"?}, "consistency"?}`,
+    /// and `{}` when neither fact is present.
+    #[test]
+    fn transparency_log_json_shape_is_unchanged() {
+        let empty = AttestBundle::from_federation_provenance("k", FederationProvenance::default());
+        let j = serde_json::to_value(&empty).unwrap();
+        assert_eq!(j["transparency_log"], serde_json::json!({}));
+        assert!(j["federation_provenance"].get("transparency_log").is_none());
+
+        let prov = FederationProvenance::builder()
+            .transparency_log_inclusion(AttestationFact {
+                source_ref: Some("sth:abc123".into()),
+                ..AttestationFact::new(true, "ciris-verify")
+            })
+            .transparency_log_consistency(AttestationFact::new(false, "witness-eu"))
+            .build();
+        let bundle = AttestBundle::from_federation_provenance("k", prov);
+        let j = serde_json::to_value(&bundle).unwrap();
+        assert_eq!(
+            j["transparency_log"],
+            serde_json::json!({
+                "inclusion": {"passed": true, "attester": "ciris-verify", "source_ref": "sth:abc123"},
+                "consistency": {"passed": false, "attester": "witness-eu"}
+            })
+        );
+        assert_eq!(
+            serde_json::to_string(&bundle.transparency_log).unwrap(),
+            r#"{"inclusion":{"passed":true,"attester":"ciris-verify","source_ref":"sth:abc123"},"consistency":{"passed":false,"attester":"witness-eu"}}"#
+        );
+        let back: AttestBundle = serde_json::from_value(j).unwrap();
+        assert_eq!(back, bundle);
     }
 
     #[test]
@@ -752,15 +765,14 @@ mod tests {
         assert_eq!(bundle, back);
     }
 
-    /// End-to-end: take a `FullAttestationResult`, compose the
-    /// bundle via the convenience method.
-    #[test]
-    fn full_attestation_result_to_bundle_via_convenience_method() {
+    fn sample_full(
+        audit_trail: Option<crate::audit::AuditVerificationResult>,
+    ) -> crate::unified::FullAttestationResult {
         use crate::unified::{
             FullAttestationResult, KeyAttestationResult, SelfVerificationResult, SourceCheckResult,
         };
 
-        let r = FullAttestationResult {
+        FullAttestationResult {
             valid: true,
             level: 3,
             level_pending: false,
@@ -824,13 +836,75 @@ mod tests {
                 }),
                 validation_status: "AllSourcesAgree".into(),
             },
-            audit_trail: None,
+            audit_trail,
             checks_passed: 5,
             checks_total: 5,
             diagnostics: String::new(),
             errors: vec![],
             timestamp: 0,
-        };
+        }
+    }
+
+    fn audit(valid: bool) -> crate::audit::AuditVerificationResult {
+        crate::audit::AuditVerificationResult {
+            valid,
+            total_entries: 3,
+            entries_verified: 3,
+            hash_chain_valid: valid,
+            signatures_valid: valid,
+            genesis_valid: true,
+            portal_key_used: true,
+            first_tampered_sequence: if valid { None } else { Some(2) },
+            errors: vec![],
+            verification_time_ms: 0,
+            chain_summary: None,
+        }
+    }
+
+    /// CC 3.4.10: the conversion emits no entry under any transparency-log
+    /// name, whatever the audit trail says.
+    #[test]
+    fn conversion_emits_no_transparency_log_dimension() {
+        for audit_trail in [None, Some(audit(true)), Some(audit(false))] {
+            let fp = sample_full(audit_trail).to_federation_provenance("ciris-verify");
+            assert!(!fp.attestations_consumed.is_empty());
+            for e in &fp.attestations_consumed {
+                assert!(
+                    !e.dimension.starts_with("transparency_log:"),
+                    "retired dimension emitted: {}",
+                    e.dimension
+                );
+            }
+        }
+    }
+
+    /// The audit-trail result still fills the bundle's
+    /// `transparency_log.inclusion`, valid and invalid alike; with no audit
+    /// trail it is absent, and `consistency` (no producer) stays absent.
+    #[test]
+    fn audit_trail_fills_transparency_log_inclusion() {
+        for valid in [true, false] {
+            let bundle = sample_full(Some(audit(valid))).to_attest_bundle("k", "ciris-verify");
+            let inc = bundle.transparency_log.inclusion.as_ref().unwrap();
+            assert_eq!(inc.passed, valid);
+            assert_eq!(inc.attester, "ciris-verify");
+            assert!(inc.source_ref.is_none());
+            assert!(bundle.transparency_log.consistency.is_none());
+            let j = serde_json::to_value(&bundle).unwrap();
+            assert_eq!(
+                j["transparency_log"],
+                serde_json::json!({"inclusion": {"passed": valid, "attester": "ciris-verify"}})
+            );
+        }
+        let bundle = sample_full(None).to_attest_bundle("k", "ciris-verify");
+        assert!(bundle.transparency_log.is_empty());
+    }
+
+    /// End-to-end: take a `FullAttestationResult`, compose the
+    /// bundle via the convenience method.
+    #[test]
+    fn full_attestation_result_to_bundle_via_convenience_method() {
+        let r = sample_full(None);
 
         let bundle = r.to_attest_bundle("agent-key-1", "ciris-verify");
         assert_eq!(bundle.key_id, "agent-key-1");

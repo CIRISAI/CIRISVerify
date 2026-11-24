@@ -2,7 +2,7 @@
  "_meta": {
   "cells": "count",
   "source": "manifests/family_model.json",
-  "source_sha256": "961ff5839be379556dbabd38c90f263fa26b5343e52f961554086dd35eaeb0b0"
+  "source_sha256": "241eb46feee7c6b4ffc1c8c321680f7759596ac067e8af495a2e867cb4ea75c4"
  },
  "families": {
   "accord:invoke:constitutional:{halt_id}": {
@@ -28,6 +28,20 @@
    ],
    "source": "cc-table",
    "value": "leaf=confirmed => accord_halt@accord ; leaf=active => accord_majority@accord"
+  },
+  "act:ack": {
+   "arms": [
+    {
+     "doors": "cosigned_act@signer_group",
+     "when": "act=group"
+    },
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "act=group => cosigned_act@signer_group ; none"
   },
   "admission:unit": {
    "arms": [
@@ -83,7 +97,7 @@
    "source": "cc-table",
    "value": "none"
   },
-  "cosign:{state}": {
+  "holon:claim": {
    "arms": [
     {
      "doors": "none",
@@ -148,16 +162,6 @@
    ],
    "source": "cc-table",
    "value": "act=group => cosigned_act@dimension_authority ; none"
-  },
-  "lineage_witness:{stage}": {
-   "arms": [
-    {
-     "doors": "none",
-     "when": "*"
-    }
-   ],
-   "source": "cc-table",
-   "value": "none"
   },
   "location_proof:{version}": {
    "arms": [
@@ -308,16 +312,6 @@
    ],
    "source": "cc-table",
    "value": "accord_majority@accord"
-  },
-  "trust:blessing": {
-   "arms": [
-    {
-     "doors": "cosigned_act@conferrer",
-     "when": "*"
-    }
-   ],
-   "source": "cc-table",
-   "value": "cosigned_act@conferrer"
   }
  }
 }

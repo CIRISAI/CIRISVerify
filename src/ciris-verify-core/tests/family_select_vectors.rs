@@ -27,9 +27,9 @@ const VECTORS: &str = include_str!("vectors/cc/family_select_vectors.json");
 const COUNT_CELLS: &str = include_str!("vectors/cc/family_count_cells.json");
 
 /// SHA-256 of `tests/vectors/cc/family_select_vectors.json` (CC v1.0-rc20 d4bd2a6).
-const VECTORS_SHA256: &str = "352df71c1fbd8a06b05d8518beb380334fdb5b4569f9ccae19217e3071cc37fd";
-/// CC ships 246 vectors at v1.0-rc22-pre3 (6c879e3).
-const VECTOR_COUNT: usize = 246;
+const VECTORS_SHA256: &str = "73e54e0d2de051684f2a0d05bd20a30c66007860ebe14ff88b16f2373d46645d";
+/// CC ships 254 vectors at v1.0-rc22-pre4.
+const VECTOR_COUNT: usize = 254;
 
 fn lf(s: &str) -> String {
     s.replace("\r\n", "\n")
@@ -114,11 +114,11 @@ fn decided_json(d: Option<Decision>) -> Value {
 
 #[test]
 fn vendored_files_are_the_pinned_ones() {
-    assert_eq!(FAMILY_MODEL_CC_COMMIT, "6c879e3");
+    assert_eq!(FAMILY_MODEL_CC_COMMIT, "e84a2cf");
     assert_eq!(sha(FAMILY_AUTHORSHIP_JSON), FAMILY_AUTHORSHIP_SHA256);
     assert_eq!(
         FAMILY_AUTHORSHIP_SHA256,
-        "c3924b52d563834dd51a9c8a1631159d824e41c10f72ec021bd1981b0af4ea57"
+        "742aad442abc7f391a78826c2b7625de379639caf4e68b6be159f95ca46a331b"
     );
     assert_eq!(sha(VECTORS), VECTORS_SHA256);
     // One family model under all three files.
@@ -135,8 +135,8 @@ fn vendored_files_are_the_pinned_ones() {
 fn extract_shape() {
     let extract: Value = serde_json::from_str(FAMILY_AUTHORSHIP_JSON).unwrap();
     let fams = extract["families"].as_object().unwrap();
-    assert_eq!(fams.len(), 189);
-    assert_eq!(vendored_family_ids().count(), 189);
+    assert_eq!(fams.len(), 185);
+    assert_eq!(vendored_family_ids().count(), 185);
     let (mut plain, mut arms, mut gap) = (0, 0, 0);
     for (prefix, f) in fams {
         let v = vendored_family(&family_id(prefix)).unwrap();
@@ -152,8 +152,8 @@ fn extract_shape() {
             assert_eq!(parse_cell(text).unwrap(), v.authorship.arms, "{prefix}");
         }
     }
-    // CC's split at v1.0-rc22-pre3 (6c879e3): 164 generic cells, 25 cc-table cells as arms, no gap.
-    assert_eq!((plain, arms, gap), (164, 25, 0));
+    // CC's split at v1.0-rc22-pre4: 160 generic cells, 25 cc-table cells as arms, no gap.
+    assert_eq!((plain, arms, gap), (160, 25, 0));
     for (prefix, c) in count_cells() {
         assert_eq!(
             parse_cell(c.value.as_deref().unwrap()).unwrap(),

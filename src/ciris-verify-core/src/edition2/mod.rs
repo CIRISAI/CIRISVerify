@@ -24,13 +24,23 @@
 
 // The accord halt rows of edition 2 (CC 4.2.1.1, 4.2.1.3).
 pub mod accord_halt;
+// The `ciris-binary-manifest/1` blob a build row cites (FSD-008 §6); not a
+// signed object.
+pub mod build_manifest;
+// Whether a build pipeline's manifest row stands (FSD-008 Phase 1b).
+pub mod build_standing;
+// The one strict-majority count and the one in-force decision of a counted
+// conferral, over plain ids.
+pub mod count;
 pub mod disclosure;
 pub mod family;
+pub mod family_shapes;
 pub mod fedcode;
 // The `ceg-genesis-bundle/2` reader (CC 2.6.1.11). `std` tier: its custody
 // gate parses X.509 attestation chains.
 #[cfg(feature = "std")]
 pub mod genesis;
+pub mod group;
 pub mod keys;
 pub mod receipt;
 pub mod recovery;
@@ -50,6 +60,10 @@ pub const ROW_TYP: &str = "ceg-row/2";
 pub const EDITION: u64 = 2;
 /// The prefix of every identity reference (RFC 9679 §5.7, sha-256).
 pub const IDENTITY_REF_PREFIX: &str = "urn:ietf:params:oauth:ckt:sha-256:";
+/// The most row-refs `refs.trusted_through` holds, on any row (CC rc22).
+pub const TRUSTED_THROUGH_MAX: usize = 64;
+/// The most row-refs `refs.also.ack` holds, on any row (CC rc22).
+pub const ACK_MAX: usize = 256;
 /// The row types.
 pub const ROW_TYPES: [&str; 5] = [
     "scores",
@@ -182,6 +196,27 @@ pub enum Invalid {
     /// `dial_hint_malformed`: a `dial_hints` entry of a known type whose body
     /// breaks that type's rule (CC 3.3.6.1, the CC 2.6.8 hint bodies).
     DialHintMalformed,
+    /// `group_id_not_of_founding`: a first `group:roster` version whose
+    /// `group` is not the id derived from its own founding (its kind, its
+    /// members' keys, its `founded_at` and its nonce; [`group`]).
+    GroupIdNotOfFounding,
+    /// `trusted_through_too_many`: `refs.trusted_through` holds more than 64
+    /// row-refs ([`TRUSTED_THROUGH_MAX`]; on any row that carries it).
+    TrustedThroughTooMany,
+    /// `keeps_cites_no_end`: a `membership:keeps` row whose `refs.also.cites`
+    /// is absent or names more than one row ([`family_shapes`]).
+    KeepsCitesNoEnd,
+    /// `ack_names_too_many`: `refs.also.ack` holds more than 256 row-refs
+    /// ([`ACK_MAX`]; on any row that carries it).
+    AckNamesTooMany,
+    /// `trust_accepts_classes_malformed`: a `trust:accepts` edge whose
+    /// `trust_classes` is not a non-empty sorted set of text with no repeat
+    /// ([`family_shapes`]; CC 4.4.3.34).
+    TrustAcceptsClassesMalformed,
+    /// `trust_accepts_depth_out_of_range`: a `trust:accepts` edge whose
+    /// `trust_depth` is not an integer in `0..=5` ([`family_shapes`];
+    /// CC 4.4.3.34).
+    TrustAcceptsDepthOutOfRange,
 }
 
 impl Invalid {
@@ -193,6 +228,12 @@ impl Invalid {
             Self::ValidUntilNotAfterAssertedAt => Some("valid_until_not_after_asserted_at"),
             Self::BodyNumberUnrepresentable => Some("body_number_unrepresentable"),
             Self::DialHintMalformed => Some("dial_hint_malformed"),
+            Self::GroupIdNotOfFounding => Some("group_id_not_of_founding"),
+            Self::TrustedThroughTooMany => Some("trusted_through_too_many"),
+            Self::KeepsCitesNoEnd => Some(family_shapes::KEEPS_CITES_NO_END),
+            Self::AckNamesTooMany => Some("ack_names_too_many"),
+            Self::TrustAcceptsClassesMalformed => Some("trust_accepts_classes_malformed"),
+            Self::TrustAcceptsDepthOutOfRange => Some("trust_accepts_depth_out_of_range"),
             _ => None,
         }
     }
@@ -581,7 +622,29 @@ fn check_set(a: &[Value], member: &'static str) -> Result<(), Invalid> {
     }
 }
 
-fn check_refs(v: &Value) -> Result<(), Invalid> {
+/// The shape check of a payload's `refs` member (CC 2.6.1.3), the one the
+/// statement reader applies: a non-empty map whose members are `head`, `prev`,
+/// `answers` and `target` (each one row-ref, `[2, [-16, digest]]`),
+/// `further_heads`, `further_prev` and `trusted_through` (each a non-empty
+/// sorted set of row-refs; `further_prev` only beside `prev`), and `also` (a non-empty map of the roles `ack` and `cites`,
+/// each a non-empty sorted set of row-refs, and `under` and `stands_on`, each
+/// a set of exactly one). `trusted_through` holds at most [`TRUSTED_THROUGH_MAX`] row-refs
+/// and `also.ack` at most [`ACK_MAX`].
+/// Any other member or role is refused. It ties no member to a family,
+/// a row type or an act: which rows must carry which, and what a named row
+/// must be, are the family's reader's and the door's.
+///
+/// A producer calls this on the `refs` it is about to sign, so the producer
+/// and the reader cannot drift (CIRISPersist's request, 23.5.1).
+///
+/// # Errors
+///
+/// [`Invalid::Malformed`] naming the member off its shape,
+/// [`Invalid::SetOrder`] for an unsorted or repeated set,
+/// [`Invalid::TrustedThroughTooMany`], [`Invalid::AckNamesTooMany`], or
+/// [`Invalid::UnexpectedMember`] within
+/// `refs` or `also`.
+pub fn check_refs(v: &Value) -> Result<(), Invalid> {
     let m = v
         .as_map()
         .filter(|m| !m.is_empty())
@@ -589,7 +652,7 @@ fn check_refs(v: &Value) -> Result<(), Invalid> {
     for (k, x) in m {
         match k.as_text() {
             Some(n @ ("head" | "prev" | "answers" | "target")) => check_row_ref(x, static_name(n))?,
-            Some(n @ ("further_heads" | "trusted_through")) => {
+            Some(n @ ("further_heads" | "further_prev" | "trusted_through")) => {
                 check_row_ref_set(x, static_name(n))?
             },
             Some("also") => {
@@ -599,7 +662,13 @@ fn check_refs(v: &Value) -> Result<(), Invalid> {
                     .ok_or(malformed("also"))?;
                 for (role, set) in roles {
                     match role.as_text() {
-                        Some("ack" | "cites") => check_row_ref_set(set, "also")?,
+                        Some("cites") => check_row_ref_set(set, "also")?,
+                        Some("ack") => {
+                            check_row_ref_set(set, "also")?;
+                            if set.as_array().is_some_and(|a| a.len() > ACK_MAX) {
+                                return Err(Invalid::AckNamesTooMany);
+                            }
+                        },
                         // A deputization names the edge it hangs from (CC rc22):
                         // a set of exactly one row-ref. Which families may carry
                         // it, and what the named row must be, are the door's.
@@ -609,12 +678,33 @@ fn check_refs(v: &Value) -> Result<(), Invalid> {
                                 return Err(malformed("under"));
                             }
                         },
+                        // A row signed under a root grant names the owner's
+                        // acceptance of that grant it stands on (CC 4.5.5): a
+                        // set of exactly one row-ref. What the named row must
+                        // be is the family's reader's.
+                        Some("stands_on") => {
+                            check_row_ref_set(set, "also")?;
+                            if set.as_array().map(<[Value]>::len) != Some(1) {
+                                return Err(malformed("stands_on"));
+                            }
+                        },
                         _ => return Err(Invalid::UnexpectedMember { within: "also" }),
                     }
                 }
             },
             _ => return Err(Invalid::UnexpectedMember { within: "refs" }),
         }
+    }
+    if v.get_text("trusted_through")
+        .and_then(Value::as_array)
+        .is_some_and(|a| a.len() > TRUSTED_THROUGH_MAX)
+    {
+        return Err(Invalid::TrustedThroughTooMany);
+    }
+    // `further_prev` names a row's further predecessors, so it stands only
+    // beside `prev` (CC rc22: an author's branches rejoin).
+    if v.get_text("further_prev").is_some() && v.get_text("prev").is_none() {
+        return Err(malformed("further_prev"));
     }
     Ok(())
 }
@@ -626,6 +716,7 @@ fn static_name(n: &str) -> &'static str {
         "answers" => "answers",
         "target" => "target",
         "further_heads" => "further_heads",
+        "further_prev" => "further_prev",
         _ => "trusted_through",
     }
 }
@@ -677,6 +768,21 @@ fn check_envelope(p: &Value) -> Result<(Option<String>, u64), Invalid> {
     for k in ["carried", "seat_commitment"] {
         if let Some(d) = p.get_text(k) {
             check_hash_digest(d, "hash-digest")?;
+        }
+    }
+    // `lifts` is present only as `true` (CC 2.4.1.1, CC 2.6.1): never false,
+    // never null. Which rows may carry it is the family's rule.
+    if let Some(l) = p.get_text("lifts") {
+        if *l != Value::Bool(true) {
+            return Err(malformed("lifts"));
+        }
+    }
+    // `receipter` names a person's or an agent's key record by identity
+    // reference; whether the record is one, and that the row is an offer,
+    // are the door's.
+    if let Some(r) = p.get_text("receipter") {
+        if !r.as_text().is_some_and(is_identity_ref) {
+            return Err(malformed("receipter"));
         }
     }
     int_in(p.get_text("score"), -1_000_000, 1_000_000, "score")?;
@@ -866,6 +972,23 @@ fn read_row_statement(bytes: &[u8], keys: &dyn KeyDirectory) -> Result<Verdict, 
             Ok(_) => return Err(Invalid::DimensionUnregistered),
             Err(r) => return Err(Invalid::DimensionRefused { token: r.token }),
         }
+    }
+
+    // The shape rules of the reply, objection and keeps families
+    // (`family_shapes`): one function each, called here so no adopter skips
+    // one, and public for producers.
+    family_shapes::check_family_shape(&family, &sub, &payload)?;
+
+    // A delegation's term is ms-time on every `delegates_to` row, whatever
+    // its family (CC 2.6.2).
+    if row_type == "delegates_to" {
+        family_shapes::check_delegation_term(&payload)?;
+    }
+
+    // A roster version's founding rule (the group's id is derived from its
+    // first version; `group`). A composer of the family is not a version.
+    if family == group::GROUP_ROSTER_FAMILY && !is_composer(&row_type) {
+        group::check_group_roster_founding(&payload)?;
     }
 
     // Every disclosure presented must open a digest the payload carries.
@@ -1726,6 +1849,26 @@ mod tests {
                 Value::Map(vec![(t("under"), Value::Array(vec![a.clone(), b.clone()]))])
             )])),
             Verdict::Invalid(Invalid::Malformed { member: "under" })
+        );
+        // `stands_on` (CC 4.5.5): exactly one row-ref.
+        assert!(matches!(
+            mk(Value::Map(vec![(
+                t("also"),
+                Value::Map(vec![(t("stands_on"), Value::Array(vec![a.clone()]))])
+            )])),
+            Verdict::Valid(_)
+        ));
+        assert_eq!(
+            mk(Value::Map(vec![(
+                t("also"),
+                Value::Map(vec![(
+                    t("stands_on"),
+                    Value::Array(vec![a.clone(), b.clone()])
+                )])
+            )])),
+            Verdict::Invalid(Invalid::Malformed {
+                member: "stands_on"
+            })
         );
         // No row of this form names an object of the earlier form (CC 2.6.1.3,
         // 2.6.1.12): an edition-1 row-ref is refused wherever it stands.

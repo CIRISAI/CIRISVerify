@@ -99,18 +99,18 @@ impl FamilyModel for BTreeMap<String, FamilyRule> {
 
 /// CC's canonical extract of the family model's `authorship` and
 /// `second_signers` cells (`manifests/family_authorship.json`,
-/// CIRISConstitution v1.0-rc22-pre3 6c879e3), vendored at
+/// CIRISConstitution v1.0-rc22-pre4 e84a2cf), vendored at
 /// `data/cc/family_authorship.json`.
 pub const FAMILY_AUTHORSHIP_JSON: &str = include_str!("../../data/cc/family_authorship.json");
 /// The CC commit the extract comes from.
-pub const FAMILY_MODEL_CC_COMMIT: &str = "6c879e3";
+pub const FAMILY_MODEL_CC_COMMIT: &str = "e84a2cf";
 /// SHA-256 (lowercase hex) of the vendored extract, LF line endings.
 pub const FAMILY_AUTHORSHIP_SHA256: &str =
-    "c3924b52d563834dd51a9c8a1631159d824e41c10f72ec021bd1981b0af4ea57";
+    "742aad442abc7f391a78826c2b7625de379639caf4e68b6be159f95ca46a331b";
 /// SHA-256 of the family model the extract is cut from (its
 /// `_meta.source_sha256`).
 pub const FAMILY_MODEL_SHA256: &str =
-    "961ff5839be379556dbabd38c90f263fa26b5343e52f961554086dd35eaeb0b0";
+    "241eb46feee7c6b4ffc1c8c321680f7759596ac067e8af495a2e867cb4ea75c4";
 
 /// Second-signer members the vendored model cannot resolve from the row: a
 /// `gap` (the text names no member), `owner_of_sub` (the owner the
@@ -334,6 +334,10 @@ pub enum FamilyFault {
     /// A composer's [`SelectContext::target`] is not the row its
     /// `refs.target` names (or the composer names no target).
     TargetMismatch,
+    /// The row carries `lifts` and is one signer's own act (CC 2.4.1.1):
+    /// `lifts` belongs only to a counted end, and a self end (a resignation,
+    /// one's own acceptance withdrawn) with it is refused.
+    LiftsOnOwnEnd,
 }
 
 impl FamilyFault {
@@ -348,6 +352,7 @@ impl FamilyFault {
             Self::AuthorshipUndetermined => "authorship_undetermined",
             Self::NoArmHolds => "no_arm_holds",
             Self::TargetMismatch => "target_mismatch",
+            Self::LiftsOnOwnEnd => "lifts_on_own_end",
         }
     }
 }
@@ -545,6 +550,11 @@ fn read_in_family(
                 },
                 (Some(_), None) => None,
             };
+            // `lifts` on one signer's own act, from the row alone: the act
+            // derived (or supplied) is `own` and the member is present.
+            if ctx.act == Some(Act::Own) && row.payload.get_text("lifts").is_some() {
+                return FamilyVerdict::FamilyInvalid(FamilyFault::LiftsOnOwnEnd);
+            }
             let waits_on = match composer_target {
                 Some(Some(id)) if ctx.target.is_none() => Some(super::MissingKey::Row(id)),
                 _ => None,
@@ -767,8 +777,8 @@ mod tests {
                 RoleParty::Member("members".into())
             )]
         );
-        // rc21 adds the two families rc20's registry listed: location_proof is
-        // authored by its subject alone, trust:blessing counted.
+        // location_proof is authored by its subject alone. trust:blessing is
+        // retired (rc22 pre4): it is no family of the model.
         let Some(VendoredRule::Known(lp)) = vendored_rule("location_proof:.version") else {
             panic!()
         };
@@ -777,13 +787,7 @@ mod tests {
             lp.roles,
             vec![(AUTHOR_IS_SUBJECT.to_owned(), RoleParty::Sub)]
         );
-        assert!(matches!(
-            vendored_rule("trust:blessing"),
-            Some(VendoredRule::Known(FamilyRule {
-                authored: false,
-                ..
-            }))
-        ));
+        assert!(vendored_rule("trust:blessing").is_none());
         assert!(vendored_rule("nobody:fam").is_none());
     }
 
@@ -1055,9 +1059,10 @@ mod tests {
         );
     }
 
-    /// rc20's registry lists `location_proof:{version}` and `trust:blessing`;
-    /// rc21's family model reads `location_proof` as authored by its
+    /// The family model reads `location_proof:{version}` as authored by its
     /// subject (CC 2.6.1.3): `author` is the CWT `sub` and the only signer.
+    /// `trust:blessing` is retired (rc22 pre4): the name binds under
+    /// `trust:{job}:{version}` like any other job and has no family of its own.
     #[test]
     fn location_proof_is_authored_by_its_subject() {
         use crate::namespace_match::{resolve, Resolved};
@@ -1067,9 +1072,9 @@ mod tests {
         };
         let fam = id("location_proof:v1");
         assert_eq!(fam, "location_proof:.version");
-        assert_eq!(id("trust:blessing:v1"), "trust:blessing");
+        assert_eq!(id("trust:blessing:v1"), "trust:.job:.version");
         assert!(vendored_family(&fam).is_some());
-        assert!(vendored_family("trust:blessing").is_some());
+        assert!(vendored_family("trust:blessing").is_none());
 
         let a = key(1);
         let p = Value::Map(vec![
