@@ -133,7 +133,14 @@ pub fn generate_blob(
     })
 }
 
+// These tests generate a blob from the running test binary, found by a
+// symbol named `main`. On Windows the parser reads a PE's export table only
+// (`parser::pe`), and a test executable exports nothing, so there is no
+// function to find; the tool's Windows input is the FFI DLL, which exports
+// its functions. The codec itself is covered on every platform by
+// `ciris-verify-core`'s `binary_manifest_v1` vectors.
 #[cfg(test)]
+#[cfg(not(windows))]
 mod tests {
     use super::*;
 
