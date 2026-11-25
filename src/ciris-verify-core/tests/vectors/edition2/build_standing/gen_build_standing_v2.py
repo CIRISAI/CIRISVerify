@@ -27,7 +27,8 @@
 # acceptance cites exactly one held owner-binding of the grantee's key; that row is live; its owner is the
 # acceptance's signer and the one owner the live bindings name. No live binding held, or live bindings naming two
 # owners: grantee_has_no_owner (waiting:owner_binding only where an acceptance cites a row the reader does not hold).
-# Every v1 case is carried with its verdict; owner_binding_missing keeps waiting:owner_binding for that reason. The
+# Every v1 case is carried with its verdict but owner_binding_missing, which now also names the row it waits on
+# (waiting:owner_binding+row: an undecided act waits on the id of the row to fetch). The
 # case's owner_binding is now {live: [{statement, cosign}], other_bindings: [statement]}; the statements v1 already
 # published stay in v1's pool files and only the new ones are written to build_standing_pool_v2_N.json.
 #
@@ -172,9 +173,9 @@ BASE_GRANT, BASE_GRANT_ID = grant()
 # owner's statement; the key's own first-binding cosign over the same payload is signed too (the same row id).
 OFAM = "ownership:.relation:.target_kind:.version"
 BSTMT, BCOSIGN = {}, {}
-def owner_binding(owner, key, at, scope=("infra:attest",)):
+def owner_binding(owner, key, at, scope=("infra:attest",), cohort="self"):
     p = {"author": owner.iss, "dimension": "ownership:responsible_party:node:v1", "delegation_purpose": "owner_binding",
-         "scope": cset(list(scope)), "delegation_valid_until": at + YEAR, "cohort_scope": "self", "asserted_at": at}
+         "scope": cset(list(scope)), "delegation_valid_until": at + YEAR, "cohort_scope": cohort, "asserted_at": at}
     st, bid = sign(owner, key.iss, "delegates_to", OFAM, p)
     cos, cid = sign(key, key.iss, "delegates_to", OFAM, p)
     assert cid == bid
@@ -423,7 +424,8 @@ gcase("projects_absent", "infra:attest with no projects: no project is granted."
 # ======================================================================== the answer
 case("acceptance_missing", "No answer from the owner.", "waiting:acceptance", answers=[])
 case("owner_binding_missing", "No owner-binding held; the acceptance cites B0, a row the reader does not hold: it "
-     "may be the binding.", "waiting:owner_binding", binding=NO_BINDING)
+     "may be the binding. The walk waits on the owner-binding and names the cited row to fetch.",
+     "waiting:owner_binding+row", binding=NO_BINDING)
 case("acceptance_declined", "The owner's membership:decline:v1 answering the grant: the grant confers nothing.",
      "refused:grant_declined", answers=[answer(dim="membership:decline:v1")[0]])
 _dec, _dec_id = answer(dim="membership:decline:v1")
@@ -547,6 +549,16 @@ case("second_stint_row_names_new", kernel=("second_stint_of_one_owner", "x2"), d
 
 
 # ---- one owner, several live bindings; no owner (v2) ----
+# The normal case (CC 3.1.2.1): the binding the acceptance cites is placed at federation, as the acceptance is. The
+# other cases' bindings are placed at self; placement is the producer's duty and no reader's refusal, so a reader
+# that holds the cited binding relies on it wherever it is placed.
+BF = owner_binding(O, P, TR + 1600, cohort="federation")
+_af, _af_id = answer(cites=BF)
+case("binding_at_federation", "The owner-binding is placed at federation and the acceptance cites it: the normal "
+     "case.", "stands", wstate="none_held", binding=binding(live=[BF]), answers=[_af])
+case("binding_at_self_and_federation", "O's first binding at self (B0) and its re-signing at federation (BF), both "
+     "live; the acceptance cites the federation-placed row: one ownership.", "stands", wstate="none_held",
+     binding=binding(live=[B0, BF]), answers=[_af])
 _as, _as_id = answer(cites=BS)
 _two = binding(live=[B0, BS])
 case("two_live_one_owner_cites_first", "O holds two live bindings of P (B0 and its re-signing BS); the acceptance "
@@ -569,6 +581,9 @@ case("two_live_owners", "B0 (by O) and BO3 (by O3) are both live bindings of P: 
 case("two_live_owners_each_accepts", "As before, O and O3 each accepting under its own binding: still no owner.",
      "refused:grantee_has_no_owner", binding=binding(live=[B0, BO3]),
      answers=[BASE_ACC, answer(signer=O3, cites=BO3)[0]])
+case("two_live_owners_acceptance_cites_unheld", "Two live owners held, and an acceptance citing a row the reader "
+     "does not hold: refused whatever is missing.", "refused:grantee_has_no_owner", binding=binding(live=[B0, BO3]),
+     answers=[answer(cites=B9)[0]])
 case("no_live_binding_cited_one_ended", "The reader holds B0 only as an ended binding and no live one; the "
      "acceptance cites B0: no owner.", "refused:grantee_has_no_owner", binding=binding(live=[], others=[B0]))
 case("no_binding_acceptance_cites_none", "No owner-binding held and the acceptance cites none: nothing names a row "

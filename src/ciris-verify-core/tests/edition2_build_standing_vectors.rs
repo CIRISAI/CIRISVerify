@@ -26,7 +26,7 @@ const POOL_2: &str = include_str!("vectors/edition2/build_standing/build_standin
 const PINS: [(&str, &str); 4] = [
     (
         CASES,
-        "55e3f2837113990df1731feb22397bf7353253484f3c2d4d2ab4ceef5995288f",
+        "3d8010a78d147b46f95084912d9738f755e02f2bf0ee317e64a0e1303f35b632",
     ),
     (
         POOL_0,
@@ -38,7 +38,7 @@ const PINS: [(&str, &str); 4] = [
     ),
     (
         POOL_2,
-        "8380af6fe712b4ddba01be8a3ce6e1ae712da51787922d06a3463a7c18726aa4",
+        "3c20d98433361ba6063cd1ea887db53b06e079e5b52afd974693a0e0db402ff5",
     ),
 ];
 
@@ -174,7 +174,7 @@ fn build_standing_cases() {
         })
         .collect();
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 117);
+    assert_eq!(cases.len(), 120);
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let list = |k: &str| -> Vec<&[u8]> { c[k].as_array().unwrap().iter().map(st).collect() };

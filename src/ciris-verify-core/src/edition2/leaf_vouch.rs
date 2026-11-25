@@ -30,14 +30,16 @@ use subtle::ConstantTimeEq;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum LeafVouchRefusal {
-    /// No vouching row is presented, or the row presented is not an
-    /// `mls:leaf_vouch` row: `leaf_vouch_absent`.
+    /// No vouching row is presented, the row presented is not an
+    /// `mls:leaf_vouch` row, or its term has not begun (`now` is before
+    /// `valid_from`: no vouch is in force for the leaf at that instant, and
+    /// "ended" would be false of it): `leaf_vouch_absent`.
     Absent,
     /// The presentation discloses no entry, more than one, or one that is
     /// not `[leaf_key, room, suite]`: `leaf_vouch_presentation_invalid`.
     PresentationInvalid,
-    /// `now` is outside `[valid_from, valid_until)`, or the signer withdrew
-    /// the vouch: `leaf_vouch_ended`.
+    /// `now` is at or after `valid_until`, or the signer withdrew the vouch:
+    /// `leaf_vouch_ended`.
     Ended,
     /// The entry names another room: `leaf_vouch_other_room`.
     OtherRoom,
@@ -128,9 +130,10 @@ pub struct LeafDoor<'a> {
 ///
 /// # Errors
 ///
-/// The first of the refusals, in CC's order: `leaf_vouch_absent`,
+/// The first of the refusals, in CC's order: `leaf_vouch_absent` (no row),
 /// `leaf_vouch_presentation_invalid` (the presentation does not disclose
-/// exactly one entry), `leaf_vouch_ended`, `leaf_vouch_other_room`,
+/// exactly one entry), `leaf_vouch_absent` (the term has not begun),
+/// `leaf_vouch_ended`, `leaf_vouch_other_room`,
 /// `leaf_vouch_other_leaf`, `leaf_vouch_not_by_member`.
 pub fn check_leaf_at_door(
     row: Option<&VerifiedRow>,
@@ -150,11 +153,15 @@ pub fn check_leaf_at_door(
         _ => return Err(LeafVouchRefusal::PresentationInvalid),
     };
     let time = |m: &str| row.payload.get_text(m).and_then(Value::as_u64);
-    let live = matches!(
-        (time("valid_from"), time("valid_until")),
-        (Some(from), Some(until)) if from <= door.now_ms && door.now_ms < until
-    );
-    if !live || door.withdrawn {
+    // The term is [valid_from, valid_until). Before it, no vouch is in
+    // force (absent); at or after its end, or withdrawn, it has ended.
+    let (Some(from), Some(until)) = (time("valid_from"), time("valid_until")) else {
+        return Err(LeafVouchRefusal::Absent);
+    };
+    if door.now_ms < from {
+        return Err(LeafVouchRefusal::Absent);
+    }
+    if door.now_ms >= until || door.withdrawn {
         return Err(LeafVouchRefusal::Ended);
     }
     if entry.room != door.room {

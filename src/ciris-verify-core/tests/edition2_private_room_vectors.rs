@@ -32,11 +32,11 @@ const ROWS: &str = include_str!("vectors/edition2/room/private_room_rows_v1.json
 const PINS: [(&str, &str); 2] = [
     (
         VALUES,
-        "256fa1f18add229b7b3911ed5392149d62d7f3fd729ecb67469622c481e2e888",
+        "553fb40a62136f1e5627351d5ecdbd1982af5f65e290809922aaa7c38cb0e4ba",
     ),
     (
         ROWS,
-        "08c9c15ea7b66f23b1f7912c97a4a550b8a4496fe9a3d8e97f5f64b29c77f8a6",
+        "3fff0eef52a86a75a2e950e59e1297318fca5431a5643e4eeff7824459fc7cdc",
     ),
 ];
 

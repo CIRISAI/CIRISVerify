@@ -1245,6 +1245,9 @@ pub enum GranteeOwner {
     NoOwner {
         /// Row ids of the held owner-bindings of the key.
         held: Vec<Digest32>,
+        /// The live bindings held name more than one owner: nothing that
+        /// could arrive changes that, so nothing is waited on.
+        two_owners: bool,
     },
 }
 
@@ -1275,7 +1278,10 @@ impl GranteeOwner {
             }),
             None => {
                 row_ids.extend(other_bindings.iter().copied());
-                Self::NoOwner { held: row_ids }
+                Self::NoOwner {
+                    held: row_ids,
+                    two_owners: !live.is_empty(),
+                }
             },
         }
     }
@@ -1293,7 +1299,7 @@ impl GranteeOwner {
     fn held(&self) -> Vec<Digest32> {
         match self {
             Self::Owned(b) => b.row_ids.iter().chain(&b.other_bindings).copied().collect(),
-            Self::NoOwner { held } => held.clone(),
+            Self::NoOwner { held, .. } => held.clone(),
         }
     }
 }
@@ -2121,25 +2127,35 @@ pub fn grant_in_force(grant: &Grant, input: &GrantEndsInput<'_>) -> GrantInForce
     }
     let binding = match input.owner {
         GranteeOwner::Owned(b) => b,
-        GranteeOwner::NoOwner { held } => {
-            // A key with no owner has no acceptance (CC 3.1.2.1). The one
-            // thing that could arrive and change that is a binding an
-            // acceptance of this grant cites and the reader does not hold.
-            let cites_unheld = input.answers.iter().any(|s| {
+        GranteeOwner::NoOwner { held, two_owners } => {
+            // A key with no owner has no acceptance (CC 3.1.2.1). Where no
+            // live binding is held, the one thing that could arrive and
+            // change that is a binding an acceptance of this grant cites and
+            // the reader does not hold: the walk waits on those rows by id
+            // (an undecided act is never a refusal and never a pass). Two
+            // live owners held is refused whatever is missing.
+            let mut unheld: Vec<Digest32> = Vec::new();
+            for s in input.answers {
                 let read = verify_row_in_family(s, input.keys, &VendoredFamilyModel);
                 let Reading::Valid(row) = from_family(Part::Answer, read) else {
-                    return false;
+                    continue;
                 };
-                answer_shape(row, grant, None).is_ok_and(|a| {
-                    let cites = answer_cites(&a);
-                    a.kind == AnswerKind::Acceptance
-                        && !cites.is_empty()
-                        && !cites.iter().any(|c| held.contains(c))
-                })
-            });
-            if cites_unheld {
-                out.acceptance_verdict = Some("waiting:owner_binding".into());
+                let Ok(a) = answer_shape(row, grant, None) else {
+                    continue;
+                };
+                let cites = answer_cites(&a);
+                if a.kind == AnswerKind::Acceptance && !cites.iter().any(|c| held.contains(c)) {
+                    unheld.extend(cites);
+                }
+            }
+            if !*two_owners && !unheld.is_empty() {
                 waits.push(StandingWait::OwnerBinding);
+                waits.extend(
+                    unheld
+                        .into_iter()
+                        .map(|c| StandingWait::Key(MissingKey::Row(c))),
+                );
+                out.acceptance_verdict = Some(format!("waiting:{}", wait_tokens(&waits)));
                 out.reading = waiting(waits);
             } else {
                 let r = StandingRefusal::GranteeHasNoOwner;

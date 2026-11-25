@@ -229,8 +229,8 @@ held binding, two held bindings (two live rows of the one owner included), or no
 withdraws the row its acceptance cites ends that acceptance's footing even where another of its rows
 keeps the ownership, until it accepts again citing a live row. Citing only rows not held waits on
 them (`waiting:row`). A key with no owner has no acceptance: `grantee_has_no_owner`, except that an
-acceptance citing only rows the reader does not hold, with no live binding held, is
-`waiting:owner_binding`. The
+acceptance citing only rows the reader does not hold, with no live binding held, waits on those
+rows by id (`waiting:owner_binding+row`); two live owners held is refused whatever is missing. The
 owner's `trust:accepts:v1` edge is a separate thing: it roots the owner's nodes in the root and is
 not consent to any grant.
 
@@ -455,7 +455,7 @@ Waits (`waiting:{token+token}`, sorted, once each):
 
 ### 7.3 Vectors
 
-`src/ciris-verify-core/tests/vectors/edition2/build_standing/build_standing_v2.json` (117 cases,
+`src/ciris-verify-core/tests/vectors/edition2/build_standing/build_standing_v2.json` (120 cases,
 statement pools `build_standing_pool_v1_{0,1}.json` and `build_standing_pool_v2_0.json`) from
 `gen_build_standing_v2.py` (v1's case file is kept byte-identical and no longer replayed), independent of
 verify, over the v5 row-statement, binary-manifest and v6 genesis-bundle generators. Holders A, B,

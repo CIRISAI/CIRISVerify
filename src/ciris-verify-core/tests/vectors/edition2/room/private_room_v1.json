@@ -8,7 +8,8 @@
   "keys": "composite Key(n): ML-DSA-65 seed [n]*32, Ed25519 seed [(n+100)%256]*32. Room keys R=21 (bound), A=22, B=23; persons 24, 25; a voice 26; a device 28. X-Wing keys are from 32-byte seeds (the secret key), and each encapsulation from its 64-byte eseed (ML-KEM m then the X25519 ephemeral).",
   "leaf_door": "the vouching row as presented (its disclosures in sd_claims) and the door's inputs; expect ok or CC's refusal token. statement_hex null: no row presented.",
   "occurrences": "identity:occurrence payloads: valid or the refusal.",
-  "room_sealed": "the fields and the deterministic encoding of the map; room_sealed_refused are plaintexts a reader refuses. room_wrap and invitation are mode_base seals (enc then ct) under the info named.",
+  "room_key_vouch": "the cases vouch_room_key, vouch_room_key_8 and door_room_key are a room key's vouch (iss the voice, one entry, also.voice). How 'signed under the member's device key' reads for a room key is open with CIRISConstitution (#224); these cases are their own group and may move.",
+  "room_sealed": "the fields and the deterministic encoding of the map (closed: an unknown member is refused); room_sealed_refused are plaintexts a reader refuses. room_wrap and invitation are mode_base seals (enc then ct) under the info named. An invitation's plaintext here is opaque bytes: what it holds beyond a binding's flows, and the key a first invitation is sealed to, are the transport's open encoding (CC 2.6.1.12), not fixed by this file.",
   "row_statements": "expect is valid, invalid:{token}, invalid:malformed:{member} or invalid:unexpected_member:{within}, read with the held keys.",
   "spec": "CIRISConstitution v1.0-rc22 (f4671933f2b22b33d2db868d4654036162104123): CC 2.6.1.11 (room keys, the binding of a voice to its person, a wrap to a room key, a room's MLS group ids), CC 2.4.1.1 (a key's own end), CC 3.3.6.1 (key separation), CC 3.3.6.4 (the window rows), CC 5.1 (the leaf vouch and its door)."
  },

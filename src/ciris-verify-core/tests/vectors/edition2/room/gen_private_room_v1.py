@@ -404,7 +404,8 @@ dcase("door_entry_suite_76", "The disclosed entry's suite is not 0x004D.", "leaf
 dcase("door_entry_two_members", "The disclosed entry is not [leaf_key, room, suite].",
       "leaf_vouch_presentation_invalid", vst([D_TWO_MEMBERS], leaves=[Tag(60, H_TWO)]))
 dcase("door_at_valid_from", "now is valid_from: covered.", "ok", ONE, now_ms=T0)
-dcase("door_before_valid_from", "now is before valid_from.", "leaf_vouch_ended",
+dcase("door_before_valid_from", "now is before valid_from: no vouch is in force for the leaf at that instant, and "
+      "it has not ended (CIRISConstitution's reading of a text with five names, 2026-11-25).", "leaf_vouch_absent",
       vst([D_ROOM], valid_from=T0 + DAY, valid_until=T0 + 2 * DAY), now_ms=T0 + DAY - 1)
 dcase("door_last_instant", "now is one millisecond before valid_until.", "ok", ONE, now_ms=T0 + 30 * DAY - 1)
 dcase("door_at_valid_until", "now is valid_until: the term is [valid_from, valid_until).", "leaf_vouch_ended", ONE,
@@ -529,8 +530,14 @@ out = dict({"_meta": {
     "binding": "each exchange gives every value of the three flows. A replay makes the challenge and the "
                "confirmation with an RNG that returns the eseed, and compares bytes.",
     "binding_open": "the addressee's inputs and its answer: ok, or the refusal. binding_open_failed is opaque.",
-    "room_sealed": "the fields and the deterministic encoding of the map; room_sealed_refused are plaintexts a reader "
-                   "refuses. room_wrap and invitation are mode_base seals (enc then ct) under the info named.",
+    "room_sealed": "the fields and the deterministic encoding of the map (closed: an unknown member is refused); "
+                   "room_sealed_refused are plaintexts a reader refuses. room_wrap and invitation are mode_base seals "
+                   "(enc then ct) under the info named. An invitation's plaintext here is opaque bytes: what it holds "
+                   "beyond a binding's flows, and the key a first invitation is sealed to, are the transport's open "
+                   "encoding (CC 2.6.1.12), not fixed by this file.",
+    "room_key_vouch": "the cases vouch_room_key, vouch_room_key_8 and door_room_key are a room key's vouch (iss the "
+                      "voice, one entry, also.voice). How 'signed under the member's device key' reads for a room "
+                      "key is open with CIRISConstitution (#224); these cases are their own group and may move.",
     "row_statements": "expect is valid, invalid:{token}, invalid:malformed:{member} or "
                       "invalid:unexpected_member:{within}, read with the held keys.",
     "leaf_door": "the vouching row as presented (its disclosures in sd_claims) and the door's inputs; expect ok or "
