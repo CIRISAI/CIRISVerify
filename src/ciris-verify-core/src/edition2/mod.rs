@@ -42,8 +42,10 @@ pub mod fedcode;
 pub mod genesis;
 pub mod group;
 pub mod keys;
+pub mod leaf_vouch;
 pub mod receipt;
 pub mod recovery;
+pub mod room;
 pub mod stream_head;
 
 use crate::cde::{self, Value};
@@ -217,6 +219,19 @@ pub enum Invalid {
     /// `trust_depth` is not an integer in `0..=5` ([`family_shapes`];
     /// CC 4.4.3.34).
     TrustAcceptsDepthOutOfRange,
+    /// `leaf_vouch_presentation_invalid`: an `mls:leaf_vouch` row whose
+    /// `leaves` array is not of length exactly 1, 8 or 32, or one presented
+    /// at a room's door with no entry or more than one disclosed
+    /// ([`family_shapes`], [`leaf_vouch`]; CC 5.1).
+    LeafVouchPresentationInvalid,
+    /// `room_binding_ml_kem_768_reuse`: the ML-KEM-768 half of an
+    /// occurrence's `room_binding_xwing_pubkey` equals that half of another
+    /// KEM key on the row (CC 3.3.6.1).
+    RoomBindingMlKem768Reuse,
+    /// `room_binding_x25519_reuse`: the X25519 half of an occurrence's
+    /// `room_binding_xwing_pubkey` equals that half of another KEM key on
+    /// the row, or the transport X25519 key (CC 3.3.6.1).
+    RoomBindingX25519Reuse,
 }
 
 impl Invalid {
@@ -234,6 +249,9 @@ impl Invalid {
             Self::AckNamesTooMany => Some("ack_names_too_many"),
             Self::TrustAcceptsClassesMalformed => Some("trust_accepts_classes_malformed"),
             Self::TrustAcceptsDepthOutOfRange => Some("trust_accepts_depth_out_of_range"),
+            Self::LeafVouchPresentationInvalid => Some("leaf_vouch_presentation_invalid"),
+            Self::RoomBindingMlKem768Reuse => Some("room_binding_ml_kem_768_reuse"),
+            Self::RoomBindingX25519Reuse => Some("room_binding_x25519_reuse"),
             _ => None,
         }
     }
@@ -627,8 +645,8 @@ fn check_set(a: &[Value], member: &'static str) -> Result<(), Invalid> {
 /// `answers` and `target` (each one row-ref, `[2, [-16, digest]]`),
 /// `further_heads`, `further_prev` and `trusted_through` (each a non-empty
 /// sorted set of row-refs; `further_prev` only beside `prev`), and `also` (a non-empty map of the roles `ack` and `cites`,
-/// each a non-empty sorted set of row-refs, and `under` and `stands_on`, each
-/// a set of exactly one). `trusted_through` holds at most [`TRUSTED_THROUGH_MAX`] row-refs
+/// each a non-empty sorted set of row-refs, and `under`, `stands_on` and
+/// `voice`, each a set of exactly one). `trusted_through` holds at most [`TRUSTED_THROUGH_MAX`] row-refs
 /// and `also.ack` at most [`ACK_MAX`].
 /// Any other member or role is refused. It ties no member to a family,
 /// a row type or an act: which rows must carry which, and what a named row
@@ -686,6 +704,17 @@ pub fn check_refs(v: &Value) -> Result<(), Invalid> {
                             check_row_ref_set(set, "also")?;
                             if set.as_array().map(<[Value]>::len) != Some(1) {
                                 return Err(malformed("stands_on"));
+                            }
+                        },
+                        // A row a room key signs names the head of the key
+                        // roster of the voice it signs for (CC 2.6.1.11): a
+                        // set of exactly one row-ref. Whether the signing key
+                        // is a live key of the voice at that head is the
+                        // room's reader's.
+                        Some("voice") => {
+                            check_row_ref_set(set, "also")?;
+                            if set.as_array().map(<[Value]>::len) != Some(1) {
+                                return Err(malformed("voice"));
                             }
                         },
                         _ => return Err(Invalid::UnexpectedMember { within: "also" }),
@@ -1499,6 +1528,7 @@ pub fn check_identity_occurrence(p: &Value) -> Result<(), Invalid> {
     if let Some(d) = p.get_text("build_manifest_hash") {
         check_hash_digest(d, "build_manifest_hash")?;
     }
+    check_room_binding_key(p)?;
     // `refs` is the self-roster's (CC 3.3.6.4): required, a closed map, the
     // head the signer stood on required.
     let r = p.get_text("refs").ok_or(bad("refs"))?;
@@ -1513,6 +1543,69 @@ pub fn check_identity_occurrence(p: &Value) -> Result<(), Invalid> {
     });
     if !closed || r.get_text("head").is_none() {
         return Err(bad("refs"));
+    }
+    Ok(())
+}
+
+/// The length of an X-Wing public key: the ML-KEM-768 key (1184 bytes) then
+/// the X25519 key (32 bytes).
+pub const XWING_PUBLIC_KEY_LEN: usize = 1216;
+/// The length of the ML-KEM-768 half of an X-Wing public key.
+pub const XWING_ML_KEM_768_LEN: usize = 1184;
+
+/// An occurrence's `room_binding_xwing_pubkey` (CC 3.3.6.1): where carried,
+/// an X-Wing public key of exactly 1216 bytes whose halves repeat no half of
+/// another KEM key on the row. The ML-KEM-768 half (bytes 0..1184) is
+/// compared with `encryption_pubkeys.ml_kem_768` and that half of
+/// `transit_xwing_pubkey` and `onion_hop_xwing_pubkey`; the X25519 half
+/// (bytes 1184..1216) with `encryption_pubkeys.x25519`, that half of the two
+/// X-Wing keys, and `transport_destination.reticulum_x25519_pubkey`. A member
+/// compared that is not of its own length is skipped here: its own rule
+/// refuses it.
+///
+/// # Errors
+///
+/// [`Invalid::Malformed`] (`room_binding_xwing_pubkey`) off its type;
+/// [`Invalid::RoomBindingMlKem768Reuse`] or
+/// [`Invalid::RoomBindingX25519Reuse`] for a repeated half, the first half
+/// read first.
+pub fn check_room_binding_key(p: &Value) -> Result<(), Invalid> {
+    let Some(v) = p.get_text("room_binding_xwing_pubkey") else {
+        return Ok(());
+    };
+    let key = v
+        .as_bytes()
+        .filter(|b| b.len() == XWING_PUBLIC_KEY_LEN)
+        .ok_or(malformed("room_binding_xwing_pubkey"))?;
+    let (mlkem, x) = key.split_at(XWING_ML_KEM_768_LEN);
+    fn bytes(v: Option<&Value>, len: usize) -> Option<&[u8]> {
+        v.and_then(Value::as_bytes).filter(|b| b.len() == len)
+    }
+    let mut mlkems: Vec<&[u8]> = Vec::new();
+    let mut xs: Vec<&[u8]> = Vec::new();
+    let enc = p.get_text("encryption_pubkeys");
+    mlkems.extend(bytes(
+        enc.and_then(|e| e.get_text("ml_kem_768")),
+        XWING_ML_KEM_768_LEN,
+    ));
+    xs.extend(bytes(enc.and_then(|e| e.get_text("x25519")), 32));
+    for m in ["transit_xwing_pubkey", "onion_hop_xwing_pubkey"] {
+        if let Some(k) = bytes(p.get_text(m), XWING_PUBLIC_KEY_LEN) {
+            let (a, b) = k.split_at(XWING_ML_KEM_768_LEN);
+            mlkems.push(a);
+            xs.push(b);
+        }
+    }
+    xs.extend(bytes(
+        p.get_text("transport_destination")
+            .and_then(|t| t.get_text("reticulum_x25519_pubkey")),
+        32,
+    ));
+    if mlkems.contains(&mlkem) {
+        return Err(Invalid::RoomBindingMlKem768Reuse);
+    }
+    if xs.contains(&x) {
+        return Err(Invalid::RoomBindingX25519Reuse);
     }
     Ok(())
 }

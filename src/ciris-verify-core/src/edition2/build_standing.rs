@@ -1841,6 +1841,17 @@ impl BuildStanding {
 /// not stop the later ones, so `waiting` lists everything missing; a refusal
 /// anywhere clears it. Without a composers view the verdict can stand, with
 /// `withdrawal_state` [`WithdrawalState::Unknown`] beside it.
+///
+/// **What the verdict says.** It answers whether the row is in force now,
+/// over the statements the caller holds: the walk reads no receipts and takes
+/// no `now`. A refusal for an end (`grant_withdrawn`, `acceptance_withdrawn`,
+/// `acceptance_other_binding` after a re-binding, `build_manifest_withdrawn`,
+/// `build_manifest_superseded`) says the row confers nothing from here on. It
+/// does not say the row never counted: an act made while the grant, the
+/// acceptance and the binding stood was valid when made, and whether a
+/// receipt keeps it in force after the end (CC 2.4.1.1, what stays in force)
+/// is a reading this walk does not make. A caller deciding about a past act
+/// must not read `refused` here as "was never valid".
 #[must_use]
 pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
     let mut out = BuildStanding::new();

@@ -3487,16 +3487,46 @@
   }
  ],
  "kernel_counterparts": {
-  "end_counted_withdrawal": "grant_ended",
-  "rebinding_before_new_acceptance": "before_the_new_owners_acceptance",
-  "rebinding_new_owner_accepts": "under_the_new_owner",
-  "rebinding_old_acceptance": "old_owners_act_after_the_rebinding",
-  "row_no_stands_on": "names_bundle_alone",
-  "row_stands_on_binding": "names_the_binding",
-  "second_stint_old_acceptance": "second_stint_of_one_owner",
-  "second_stint_row_names_new": "second_stint_of_one_owner",
-  "second_stint_row_names_old": "second_stint_of_one_owner",
-  "stands_none_held": "names_bundle_and_acceptance"
+  "end_counted_withdrawal": {
+   "act": "x1",
+   "case": "grant_ended"
+  },
+  "rebinding_before_new_acceptance": {
+   "act": "x1",
+   "case": "before_the_new_owners_acceptance"
+  },
+  "rebinding_new_owner_accepts": {
+   "act": "x1",
+   "case": "under_the_new_owner"
+  },
+  "rebinding_old_acceptance": {
+   "act": "x1",
+   "case": "old_owners_act_after_the_rebinding"
+  },
+  "row_no_stands_on": {
+   "act": "x1",
+   "case": "names_bundle_alone"
+  },
+  "row_stands_on_binding": {
+   "act": "x1",
+   "case": "names_the_binding"
+  },
+  "second_stint_old_acceptance": {
+   "act": "x1",
+   "case": "second_stint_of_one_owner"
+  },
+  "second_stint_row_names_new": {
+   "act": "x2",
+   "case": "second_stint_of_one_owner"
+  },
+  "second_stint_row_names_old": {
+   "act": "x1",
+   "case": "second_stint_of_one_owner"
+  },
+  "stands_none_held": {
+   "act": "x1",
+   "case": "names_bundle_and_acceptance"
+  }
  },
  "kernel_not_covered": {
   "grant_ended_receipted": "receipts are not read by this walk",

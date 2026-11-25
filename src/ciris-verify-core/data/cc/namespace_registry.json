@@ -134,7 +134,7 @@
         {
           "cc_ref": "CC 3.4.8",
           "kind": "reserved",
-          "rule": "detector-only (identity_type contains lenscore_detector)",
+          "rule": "detector-only (the signer holds infra:detect)",
           "stem": "detection:"
         },
         {
@@ -257,7 +257,7 @@
     "generator": "tools/build_cc_namespace.py",
     "n_components": 10,
     "n_components_normative": 8,
-    "n_families": 185,
+    "n_families": 187,
     "per_component": {
       "accord-agent": 36,
       "anti-sybil": 6,
@@ -266,9 +266,9 @@
       "holon": 1,
       "lens": 9,
       "node": 51,
-      "persist": 36,
+      "persist": 37,
       "registry": 20,
-      "transport-delivery": 7
+      "transport-delivery": 8
     },
     "polarity_classes": {
       "+1.0 only": {
@@ -328,7 +328,7 @@
       }
     },
     "private_use_prefix": "x_private:",
-    "registry_sha256": "60ba665dd9a888589bf9a7c2a31268c842e176659c4dabe20615a03938c6bd34",
+    "registry_sha256": "5f8ff71fd1415c88179b73a8b7d9a047613b22cb81f609909ca9ab9ccc2a8d69",
     "row_types": {
       "carriers": [],
       "cc_ref": "CC 2.4",
@@ -343,7 +343,7 @@
       ]
     },
     "source": "constitution/part_3_the_namespace.md",
-    "source_sha256": "5e94686ca41a57ea9aafa1e22cba90484cac149137d5b0f3e8d4145b2c82997c"
+    "source_sha256": "b7d87df89be792d6dce014aa22c64b724cafb9657a0eb6b07683782988cc67d7"
   },
   "families": [
     {
@@ -2248,7 +2248,7 @@
       "reserved": true,
       "reserved_rule": {
         "cc_ref": "CC 3.4.8",
-        "rule": "detector-only (identity_type contains lenscore_detector)"
+        "rule": "detector-only (the signer holds infra:detect)"
       },
       "segments": [
         {
@@ -2276,7 +2276,7 @@
       "reserved": true,
       "reserved_rule": {
         "cc_ref": "CC 3.4.8",
-        "rule": "detector-only (identity_type contains lenscore_detector)"
+        "rule": "detector-only (the signer holds infra:detect)"
       },
       "segments": [
         {
@@ -2311,7 +2311,7 @@
       "reserved": true,
       "reserved_rule": {
         "cc_ref": "CC 3.4.8",
-        "rule": "detector-only (identity_type contains lenscore_detector)"
+        "rule": "detector-only (the signer holds infra:detect)"
       },
       "segments": [
         {
@@ -2334,7 +2334,7 @@
       "reserved": true,
       "reserved_rule": {
         "cc_ref": "CC 3.4.8",
-        "rule": "detector-only (identity_type contains lenscore_detector)"
+        "rule": "detector-only (the signer holds infra:detect)"
       },
       "segments": [
         {
@@ -2357,7 +2357,7 @@
       "reserved": true,
       "reserved_rule": {
         "cc_ref": "CC 3.4.8",
-        "rule": "detector-only (identity_type contains lenscore_detector)"
+        "rule": "detector-only (the signer holds infra:detect)"
       },
       "segments": [
         {
@@ -2845,7 +2845,7 @@
       "reserved": true,
       "reserved_rule": {
         "cc_ref": "CC 3.4.4",
-        "rule": "substrate-emitted (identity_type substrate_persist); the kinds are open, the emitter is reserved; a non-substrate emission is a category error"
+        "rule": "substrate-emitted (the node that admitted or refused the row, under infra:attest); the kinds are open, the emitter is reserved; a non-substrate emission is a category error"
       },
       "segments": [
         {
@@ -3506,6 +3506,29 @@
         {
           "class": "vocab",
           "segment": "{substrate_rung}"
+        }
+      ]
+    },
+    {
+      "cc_section": "3.1.4",
+      "description": "A member's vouch for the MLS leaf key of one of its devices (CC 5.1).",
+      "owning_component": "transport-delivery",
+      "owning_repo": "CIRISEdge",
+      "polarity": "positive-only",
+      "prefix": "mls:leaf_vouch",
+      "reserved": true,
+      "reserved_rule": {
+        "cc_ref": "CC 3.4.3",
+        "rule": "substrate-self-report"
+      },
+      "segments": [
+        {
+          "class": "literal",
+          "segment": "mls"
+        },
+        {
+          "class": "literal",
+          "segment": "leaf_vouch"
         }
       ]
     },
@@ -4811,6 +4834,35 @@
         {
           "class": "value",
           "segment": "{contribution_id}"
+        }
+      ]
+    },
+    {
+      "cc_section": "3.1.3",
+      "description": "The two rows by which a window that binds others is closed (registered under CC 3.1.7 R2(a); CC 2.7, the window).",
+      "owning_component": "persist",
+      "owning_repo": "CIRISPersist",
+      "polarity": "positive-only",
+      "prefix": "window:{state}",
+      "reserved": true,
+      "reserved_rule": {
+        "cc_ref": "CC 3.3.6.4",
+        "rule": "a key seated in the counted set at the head the opener names; for the self roster, a key of the roster; a landing by any other key concludes nothing"
+      },
+      "segments": [
+        {
+          "class": "literal",
+          "segment": "window"
+        },
+        {
+          "class": "vocab",
+          "open": false,
+          "segment": "{state}",
+          "values": [
+            "held",
+            "landed",
+            "refused"
+          ]
         }
       ]
     },

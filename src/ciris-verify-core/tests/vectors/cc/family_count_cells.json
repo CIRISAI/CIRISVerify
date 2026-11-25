@@ -2,7 +2,7 @@
  "_meta": {
   "cells": "count",
   "source": "manifests/family_model.json",
-  "source_sha256": "241eb46feee7c6b4ffc1c8c321680f7759596ac067e8af495a2e867cb4ea75c4"
+  "source_sha256": "82327420ab6dccc046698d5c7cad2227ee085469293cfc970cfc361f4ed6449b"
  },
  "families": {
   "accord:invoke:constitutional:{halt_id}": {
@@ -195,6 +195,30 @@
    "source": "cc-table",
    "value": "leaf=proposal|acceptance|decline => none ; leaf=resignation => none ; leaf=removal & group=affiliations & seats=one => affiliation_member_action@subject_group ; cosigned_act@subject_group"
   },
+  "mesh_config:{key}": {
+   "arms": [
+    {
+     "doors": "accord_majority@trust_root",
+     "when": "act=group"
+    },
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "act=group => accord_majority@trust_root ; none"
+  },
+  "mls:leaf_vouch": {
+   "arms": [
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "none"
+  },
   "objection:{state}": {
    "arms": [
     {
@@ -312,6 +336,16 @@
    ],
    "source": "cc-table",
    "value": "accord_majority@accord"
+  },
+  "window:{state}": {
+   "arms": [
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "none"
   }
  }
 }

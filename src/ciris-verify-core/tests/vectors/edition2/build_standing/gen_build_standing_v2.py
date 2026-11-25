@@ -227,13 +227,20 @@ def build_withdrawal(signer=P, target=BASE_ROW_ID):
     return sign(signer, P.iss, "withdraws", BFAM, p)[0]
 
 cases = []
-KERNEL = {}   # case id -> its graph-level counterpart in CIRISKernel's conferral_two.json (fa1dc1d)
+# case id -> its graph-level counterpart in CIRISKernel's conferral_two.json (kernel-v0.3.0, as CIRISConstitution
+# v1.0-rc22 vendors it at formal/vendor/kernel/): the case and the act of it this walk's build row is (x1, x2).
+# Kernel answers `counted` and `in_force` for each act and owner; this walk answers "in force now" for one build
+# row, so a case here stands iff Kernel's act is in_force for the owner.
+KERNEL = {}
+def kernel_ref(k):
+    case_, act = k if isinstance(k, tuple) else (k, "x1")
+    return {"case": case_, "act": act}
 def case(cid, desc, expect, row=None, b=None, grant_sts=None, gw=(), answers=None, aw=(), binding=BINDING,
          composers=(), wstate=None, kernel=None, **measure):
     e = {"verdict": expect}
     if wstate is not None: e["withdrawal_state"] = wstate
     e.update(measure)
-    if kernel: KERNEL[cid] = kernel
+    if kernel: KERNEL[cid] = kernel_ref(kernel)
     cases.append({
         "id": cid, "description": desc,
         "build_row": put(row if row is not None else (
@@ -482,8 +489,8 @@ case("state_withdrawn_peer", "The equivocating peer is withdrawn by the pipeline
 case("state_stranger_withdrawal", "O2 signs a withdraws naming the build row: not the pipeline's, ignored.",
      "stands", composers=[build_withdrawal(signer=O2)], wstate="none_held")
 
-KERNEL["stands_none_held"] = "names_bundle_and_acceptance"
-KERNEL["end_counted_withdrawal"] = "grant_ended"
+KERNEL["stands_none_held"] = kernel_ref("names_bundle_and_acceptance")
+KERNEL["end_counted_withdrawal"] = kernel_ref("grant_ended")
 
 # ======================================================================== two standings
 case("row_no_stands_on", kernel="names_bundle_alone", desc="The build row names the bundle alone: it stands on no "
@@ -534,7 +541,7 @@ case("second_stint_old_binding_not_held", "Bound again (B2), the reader not hold
 case("second_stint_row_names_old", kernel="second_stint_of_one_owner", desc="Bound again (B2), both acceptances "
      "held; the row stands on the first (citing B0).", expect="refused:build_row_stands_on_nothing",
      binding=binding(row=B2, others=[B0]), answers=[BASE_ACC, _a2], row=build_row(stands_on=BASE_ACC_ID)[0])
-case("second_stint_row_names_new", kernel="second_stint_of_one_owner", desc="Bound again (B2); the row stands on the "
+case("second_stint_row_names_new", kernel=("second_stint_of_one_owner", "x2"), desc="Bound again (B2); the row stands on the "
      "new acceptance citing B2.", expect="stands", binding=binding(row=B2, others=[B0]), answers=[BASE_ACC, _a2],
      row=build_row(stands_on=_a2_id)[0], wstate="none_held")
 

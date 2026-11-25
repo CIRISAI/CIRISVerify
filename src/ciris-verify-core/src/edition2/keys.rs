@@ -6,8 +6,11 @@
 //!
 //! - a set mixing `user` or `accord_holder` with `node` or `agent` is refused;
 //! - a set containing `user` or `accord_holder` carries no `valid_until`;
-//! - a set containing `node` or `agent` carries one (the private-room key
-//!   exception is not pinned yet, so it fails closed);
+//! - a set containing `node` or `agent` carries one, unless the record is a
+//!   room key's (it carries `room`; CC 3.1.3.2): a room key states no
+//!   required end;
+//! - `room`, `kem_xwing_pubkey` and `seat_commitment` stand together or not
+//!   at all (CC 2.6.1.11; `edition2_payload_invalid`);
 //! - a role outside both groups (steward, witness, pipeline, pseudonym) takes
 //!   no end rule of its own;
 //! - where `valid_until` is present,
@@ -56,6 +59,12 @@ pub enum KeyRecordError {
     OutOfWindow,
     /// `asserted_at` is missing or not an ms-time.
     BadTime,
+    /// `edition2_payload_invalid`: the room-key members are off their rule
+    /// (CC 2.6.1.11): `room` is not a group reference, `kem_xwing_pubkey` is
+    /// not 1216 bytes, `seat_commitment` is not a SHA-256 `hash-digest`, or
+    /// the record carries either of the last two without `room`, or `room`
+    /// without both.
+    RoomKeyMembers,
     /// `attestation_evidence` is not a map, or its `pq_custody` is not one
     /// of the three values (CC 4.2.2).
     BadPqCustody,
@@ -101,6 +110,7 @@ impl KeyRecordError {
             Self::BadKey => "key_record_bad_key",
             Self::BadIdentityType => "key_record_bad_identity_type",
             Self::BadTime => "key_record_bad_time",
+            Self::RoomKeyMembers => "edition2_payload_invalid",
             Self::BadPqCustody => "key_record_bad_pq_custody",
             Self::BadAttestationEvidence => "key_record_bad_attestation_evidence",
         }
@@ -128,6 +138,59 @@ pub struct KeyRecord {
     /// `attestation_evidence.chain`: X.509 DER, leaf first (CC 4.2.2.1);
     /// empty where the record carries none.
     pub chain: Vec<Vec<u8>>,
+    /// The room-key members, where the record is a room key's (it carries
+    /// `room`; CC 2.6.1.11, CC 3.1.3.2). The record is then the key's seat
+    /// row.
+    pub room_key: Option<RoomKeyMembers>,
+}
+
+/// What makes a key record a room key's (CC 2.6.1.11): the one room the key
+/// is made for, the X-Wing key every wrap to it is made to, and the seat
+/// commitment a binding opens ([`super::room::seat_commitment`]).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RoomKeyMembers {
+    /// `room`: the room's derived id, a group reference.
+    pub room: String,
+    /// `kem_xwing_pubkey`: 1216 bytes, the ML-KEM-768 key then the X25519
+    /// key.
+    pub kem_xwing_pubkey: Vec<u8>,
+    /// `seat_commitment`: the digest of `[-16, digest]`.
+    pub seat_commitment: Digest32,
+}
+
+fn room_key_members(payload: &Value) -> Result<Option<RoomKeyMembers>, KeyRecordError> {
+    let (room, kem, seat) = (
+        payload.get_text("room"),
+        payload.get_text("kem_xwing_pubkey"),
+        payload.get_text("seat_commitment"),
+    );
+    let (Some(room), Some(kem), Some(seat)) = (room, kem, seat) else {
+        return if room.is_none() && kem.is_none() && seat.is_none() {
+            Ok(None)
+        } else {
+            Err(KeyRecordError::RoomKeyMembers)
+        };
+    };
+    let room = room
+        .as_text()
+        .filter(|r| super::group::is_group_ref(r))
+        .ok_or(KeyRecordError::RoomKeyMembers)?;
+    let kem = kem
+        .as_bytes()
+        .filter(|k| k.len() == super::XWING_PUBLIC_KEY_LEN)
+        .ok_or(KeyRecordError::RoomKeyMembers)?;
+    let seat = match seat.as_array() {
+        Some([alg, d]) if alg.as_i64() == Some(super::HASH_ALG_SHA256) => d
+            .as_bytes()
+            .and_then(|b| Digest32::try_from(b).ok())
+            .ok_or(KeyRecordError::RoomKeyMembers)?,
+        _ => return Err(KeyRecordError::RoomKeyMembers),
+    };
+    Ok(Some(RoomKeyMembers {
+        room: room.to_owned(),
+        kem_xwing_pubkey: kem.to_vec(),
+        seat_commitment: seat,
+    }))
 }
 
 /// Check a key record's payload against the end rule.
@@ -181,8 +244,13 @@ pub fn check_key_record(payload: &Value) -> Result<KeyRecord, KeyRecordError> {
     if no_end && must_end {
         return Err(KeyRecordError::MixedRoles);
     }
+    // A room key states no required end (CC 2.4.1.1, CC 3.1.3.2): a node's
+    // or an agent's room key may omit `valid_until`. A person's still carries
+    // none.
+    let room_key = room_key_members(payload)?;
     match (no_end, must_end, valid_until) {
-        (true, _, Some(_)) | (_, true, None) => return Err(KeyRecordError::OutOfWindow),
+        (true, _, Some(_)) => return Err(KeyRecordError::OutOfWindow),
+        (_, true, None) if room_key.is_none() => return Err(KeyRecordError::OutOfWindow),
         _ => {},
     }
     if let Some(u) = valid_until {
@@ -234,6 +302,7 @@ pub fn check_key_record(payload: &Value) -> Result<KeyRecord, KeyRecordError> {
         identity_type,
         asserted_at,
         valid_until,
+        room_key,
     })
 }
 
