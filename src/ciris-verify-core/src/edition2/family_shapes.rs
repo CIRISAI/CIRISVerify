@@ -47,6 +47,21 @@
 //!   Whether `on_behalf_of` names an affiliation, and which binding of a key
 //!   is the live one, need rows held and are the fold's.
 //!
+//! - **the leaf vouch** ([`check_leaf_vouch`]): an `mls:leaf_vouch` row is a
+//!   member's vouch for the MLS leaf key of one of its devices (CC 5.1). Its
+//!   author is its subject, `suite` is 0x004D, `leaves` is 1, 8 or 32 blinded
+//!   elements, and its term is at most 30 days. It names no row, but under a
+//!   room key the head of its voice roster. What an entry discloses is the
+//!   door's ([`super::leaf_vouch`]).
+//!
+//! - **the window rows** ([`check_window_step`]): a `window:held` row names
+//!   the opener it holds in `refs.target`, no head and no `prev`; a landing
+//!   (`window:landed`, `window:refused`) names its signer's held row in
+//!   `refs.prev` and what it counted under `also.cites`, and nothing else
+//!   (CC 3.3.6.4). Neither carries a score. Whether the row under `prev` is
+//!   that signer's held row of the same opener, and whether the window has
+//!   elapsed, need rows held and are the fold's.
+//!
 //! Each needs nothing beyond the row.
 
 #[allow(unused_imports)]
@@ -84,6 +99,16 @@ pub const COHORT_SCOPES: [&str; 7] = [
 ];
 /// The token of a `membership:keeps` row that cites no row, or several.
 pub const KEEPS_CITES_NO_END: &str = "keeps_cites_no_end";
+/// The leaf vouch's family id (registry prefix `mls:leaf_vouch`).
+pub const LEAF_VOUCH_FAMILY: &str = "mls:leaf_vouch";
+/// The MLS ciphersuite a vouched leaf signs under: 0x004D (CC 5.1).
+pub const LEAF_VOUCH_SUITE: u64 = 0x004D;
+/// `leaf_vouch_max_secs`: the longest term of a leaf vouch, 30 days (CC 5.1).
+pub const LEAF_VOUCH_MAX_SECS: u64 = 30 * 86_400;
+/// The lengths a leaf vouch's `leaves` array may have (CC 5.1).
+pub const LEAF_VOUCH_LENGTHS: [usize; 3] = [1, 8, 32];
+/// The window rows' family id (registry prefix `window:{state}`).
+pub const WINDOW_FAMILY: &str = "window:.state";
 
 fn bad(member: &'static str) -> Invalid {
     Invalid::Malformed { member }
@@ -407,6 +432,117 @@ pub fn check_owner_binding(payload: &Value) -> Result<(), Invalid> {
     Ok(())
 }
 
+/// An `mls:leaf_vouch` payload (CC 5.1; `leaf-vouch` in CC's
+/// `family_payloads_v2.cddl`), with the row's CWT `sub`.
+///
+/// # Errors
+///
+/// [`Invalid::LeafVouchPresentationInvalid`] where `leaves` is not an array
+/// of length exactly 1, 8 or 32; [`Invalid::Malformed`] naming `author` (not
+/// an identity reference, or not the `sub`), `suite` (not 77), `leaves` (an
+/// element that is not a blinded element, or more than one under a room
+/// key), `valid_from`, `valid_until` (absent, not later than `valid_from`,
+/// or more than [`LEAF_VOUCH_MAX_SECS`] after it) or `refs` (anything but
+/// the one role `also.voice`).
+pub fn check_leaf_vouch(sub: &str, payload: &Value) -> Result<(), Invalid> {
+    let author = payload.get_text("author").and_then(Value::as_text);
+    if !author.is_some_and(|a| is_identity_ref(a) && a == sub) {
+        return Err(bad("author"));
+    }
+    if payload.get_text("suite").and_then(Value::as_u64) != Some(LEAF_VOUCH_SUITE) {
+        return Err(bad("suite"));
+    }
+    let leaves = payload
+        .get_text("leaves")
+        .and_then(Value::as_array)
+        .filter(|l| LEAF_VOUCH_LENGTHS.contains(&l.len()))
+        .ok_or(Invalid::LeafVouchPresentationInvalid)?;
+    let blinded = |e: &Value| {
+        matches!(e, Value::Tag(super::TAG_REDACTED_ELEMENT, d)
+            if d.as_bytes().is_some_and(|b| b.len() == 32))
+    };
+    if !leaves.iter().all(blinded) {
+        return Err(bad("leaves"));
+    }
+    let from = payload
+        .get_text("valid_from")
+        .and_then(Value::as_u64)
+        .ok_or(bad("valid_from"))?;
+    let until = payload
+        .get_text("valid_until")
+        .and_then(Value::as_u64)
+        .ok_or(bad("valid_until"))?;
+    if until <= from || until > from.saturating_add(LEAF_VOUCH_MAX_SECS * 1000) {
+        return Err(bad("valid_until"));
+    }
+    // It names no row, but for a room key the head of its voice roster; a
+    // room key signs a row of one entry.
+    if let Some(refs) = payload.get_text("refs") {
+        let only_voice = refs.as_map().is_some_and(|m| {
+            matches!(m, [(k, also)] if k.as_text() == Some("also")
+                && also.as_map().is_some_and(
+                    |r| matches!(r, [(role, _)] if role.as_text() == Some("voice"))))
+        });
+        if !only_voice {
+            return Err(bad("refs"));
+        }
+        if leaves.len() != 1 {
+            return Err(bad("leaves"));
+        }
+    }
+    Ok(())
+}
+
+/// A `window:{state}` payload, by its leaf (CC 3.3.6.4; `window-step` in
+/// CC's `family_payloads_v2.cddl`): `held`, `landed` or `refused`.
+///
+/// # Errors
+///
+/// [`Invalid::Malformed`] naming `dimension` (a leaf outside the three),
+/// `author`, `score` (carried), or `refs`: no `refs.target`, a `refs.head`,
+/// a held row with `refs.prev`, a landing without it, or a landing with any
+/// role beside `target`, `prev` and `also.cites`.
+pub fn check_window_step(leaf: Option<&str>, payload: &Value) -> Result<(), Invalid> {
+    let landing = match leaf {
+        Some("held") => false,
+        Some("landed" | "refused") => true,
+        _ => return Err(bad("dimension")),
+    };
+    if !payload
+        .get_text("author")
+        .and_then(Value::as_text)
+        .is_some_and(is_identity_ref)
+    {
+        return Err(bad("author"));
+    }
+    if payload.get_text("score").is_some() {
+        return Err(bad("score"));
+    }
+    let refs = payload.get_text("refs").ok_or(bad("refs"))?;
+    if refs.get_text("target").is_none() || refs.get_text("head").is_some() {
+        return Err(bad("refs"));
+    }
+    let prev = refs.get_text("prev").is_some();
+    if prev != landing {
+        return Err(bad("refs"));
+    }
+    if landing {
+        let closed = refs.as_map().is_some_and(|m| {
+            m.iter().all(|(k, v)| match k.as_text() {
+                Some("target" | "prev") => true,
+                Some("also") => v
+                    .as_map()
+                    .is_some_and(|r| matches!(r, [(role, _)] if role.as_text() == Some("cites"))),
+                _ => false,
+            })
+        });
+        if !closed {
+            return Err(bad("refs"));
+        }
+    }
+    Ok(())
+}
+
 /// The reader's call: apply the rule of `family` to `payload`, by the leaf
 /// its `dimension` binds. Other families have no rule here.
 pub(super) fn check_family_shape(
@@ -426,6 +562,11 @@ pub(super) fn check_family_shape(
             _ => Ok(()),
         },
         OWNERSHIP_FAMILY => check_owner_binding(payload),
+        LEAF_VOUCH_FAMILY => check_leaf_vouch(sub, payload),
+        WINDOW_FAMILY => check_window_step(
+            family::dimension_leaf(family_id, payload).as_deref(),
+            payload,
+        ),
         OBJECTION_FAMILY => check_objection(
             family::dimension_leaf(family_id, payload).as_deref(),
             payload,

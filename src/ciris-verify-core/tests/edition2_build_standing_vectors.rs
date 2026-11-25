@@ -1,6 +1,9 @@
-//! Replays `tests/vectors/edition2/build_standing/build_standing_v1.json` and its
-//! pool files (`gen_build_standing_v1.py`, independent of verify): whether a
-//! build pipeline's manifest row stands (FSD-008 Phase 1b).
+//! Replays `tests/vectors/edition2/build_standing/build_standing_v2.json` and its
+//! pool files (`gen_build_standing_v2.py`, independent of verify): whether a
+//! build pipeline's manifest row stands (FSD-008 Phase 1b). v2 carries every
+//! v1 case and adds one owner's several live bindings and a key with no
+//! owner; v1's case file stays byte-identical and is no longer replayed, and
+//! its two pool files are read here beside v2's.
 #![cfg(feature = "pqc")]
 
 use std::collections::BTreeMap;
@@ -9,20 +12,21 @@ use ciris_crypto::composite::CompositeSigningKey;
 use ciris_verify_core::edition2::accord_halt::RosterHolder;
 use ciris_verify_core::edition2::build_standing::{
     evaluate_build_standing, read_owner_binding, scope_satisfies, BundleLookup, BundleRoster,
-    BundleView, Descent, Reading, StandingInput,
+    BundleView, Descent, GranteeOwner, Reading, StandingInput,
 };
 use ciris_verify_core::edition2::keys::KeyRecordDirectory;
 use ciris_verify_core::edition2::{identity_ref, thumbprint, Digest32};
 use serde_json::Value as J;
 
-const CASES: &str = include_str!("vectors/edition2/build_standing/build_standing_v1.json");
+const CASES: &str = include_str!("vectors/edition2/build_standing/build_standing_v2.json");
 const POOL_0: &str = include_str!("vectors/edition2/build_standing/build_standing_pool_v1_0.json");
 const POOL_1: &str = include_str!("vectors/edition2/build_standing/build_standing_pool_v1_1.json");
+const POOL_2: &str = include_str!("vectors/edition2/build_standing/build_standing_pool_v2_0.json");
 /// SHA-256 of each file, pinned so a regeneration is a visible change.
-const PINS: [(&str, &str); 3] = [
+const PINS: [(&str, &str); 4] = [
     (
         CASES,
-        "a0adbf254a6f296e52383333963d0abdef11778fbc475832a3ebde1a495aa36b",
+        "3d8010a78d147b46f95084912d9738f755e02f2bf0ee317e64a0e1303f35b632",
     ),
     (
         POOL_0,
@@ -32,6 +36,10 @@ const PINS: [(&str, &str); 3] = [
         POOL_1,
         "c5abfc8ca9376cd8ceabccdd5aa3ec22defa0a702d2f65695611343c1c01f42c",
     ),
+    (
+        POOL_2,
+        "3c20d98433361ba6063cd1ea887db53b06e079e5b52afd974693a0e0db402ff5",
+    ),
 ];
 
 fn key(n: u8) -> CompositeSigningKey {
@@ -40,7 +48,7 @@ fn key(n: u8) -> CompositeSigningKey {
 
 fn pool() -> BTreeMap<String, Vec<u8>> {
     let mut out = BTreeMap::new();
-    for p in [POOL_0, POOL_1] {
+    for p in [POOL_0, POOL_1, POOL_2] {
         let j: J = serde_json::from_str(p).unwrap();
         for (k, v) in j["statements"].as_object().unwrap() {
             out.insert(k.clone(), hex::decode(v.as_str().unwrap()).unwrap());
@@ -166,7 +174,7 @@ fn build_standing_cases() {
         })
         .collect();
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 106);
+    assert_eq!(cases.len(), 120);
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let list = |k: &str| -> Vec<&[u8]> { c[k].as_array().unwrap().iter().map(st).collect() };
@@ -183,22 +191,26 @@ fn build_standing_cases() {
             Reading::Valid(b) => b,
             other => panic!("{id}: binding {}", other.token()),
         };
-        let binding = c["owner_binding"].as_object().map(|b| {
-            let mut ob = read(&b["statement"]);
-            let cosign = read(&b["cosign"]);
-            assert_eq!(
-                (cosign.row_id, &cosign.owner, &cosign.key),
-                (ob.row_id, &ob.owner, &ob.key),
-                "{id}: the cosign is the same row"
-            );
-            ob.other_bindings = b["other_bindings"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(|x| read(x).row_id)
-                .collect();
-            ob
-        });
+        // The caller's fold: the live rows name one owner, or the key has
+        // none.
+        let b = &c["owner_binding"];
+        let live: Vec<_> = b["live"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|l| {
+                let ob = read(&l["statement"]);
+                assert_eq!(read(&l["cosign"]), ob, "{id}: the cosign is the same row");
+                ob
+            })
+            .collect();
+        let others: Vec<Digest32> = b["other_bindings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|x| read(x).row_ids[0])
+            .collect();
+        let owner = GranteeOwner::of_live(&live, &others);
         let blob = hex::decode(c["blob_hex"].as_str().unwrap()).unwrap();
         let input = StandingInput {
             build_row: st(&c["build_row"]),
@@ -208,7 +220,7 @@ fn build_standing_cases() {
             grant_withdrawals: &gw,
             answers: &answers,
             answer_withdrawals: &aw,
-            owner_binding: binding.as_ref(),
+            owner: &owner,
             composers: composers.as_deref(),
             bundles: &bundles,
         };
@@ -245,7 +257,7 @@ fn build_standing_cases() {
                 "{id}"
             );
             assert!(got.manifest.is_some(), "{id}");
-            assert_eq!(got.owner, binding.as_ref().map(|b| b.owner.clone()), "{id}");
+            assert_eq!(got.owner, owner.binding().map(|b| b.owner.clone()), "{id}");
         }
     }
 }

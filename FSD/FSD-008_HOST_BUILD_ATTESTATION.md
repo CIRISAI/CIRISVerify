@@ -211,16 +211,26 @@ and `family_id` for `family` and no other group member; and `on_behalf_of`, a gr
 key held for an organisation, carried only with `refs` whose one role is `head` (the affiliation's
 roster version), and `refs` carried only with it. `read_owner_binding` reads one statement of the
 row, the owner's or the key's own first-binding cosign over the same payload (one row id), into an
-`OwnerBinding { owner, key, row_id, other_bindings }`; the caller fills `other_bindings` with every
-other binding of the key it holds.
+`OwnerBinding { owner, key, row_ids, other_bindings }` holding that one row. One owner may hold
+several live bindings of a key (the row where it first placed the binding and each re-signing at
+another scope); they are one ownership (CC 3.2). The caller decides which held bindings are live
+and folds them with `GranteeOwner::of_live(live, other_bindings)`: one owner across the live rows is
+`Owned` with every live row id; none live, or live rows naming two owners, is `NoOwner`.
+`other_bindings` is every other binding of the key the reader holds, ended or another owner's.
 
 **The acceptance.** A `scores` row of `membership:{stage}`, dimension `membership:acceptance:v1`
 (or `membership:decline:v1`), authored by the owner the binding names, CWT `sub` the grantee, and
 `refs.answers` the grant (`family_shapes::check_reply`: no `refs.target`, no `refs.head`, no
-`proposal_hash`). It cites the owner-binding it is made under in `refs.also.cites`, and stands under
-the supplied binding when the bindings of the key it cites, among those held, are exactly that one.
-Citing another held binding of the key, two of them, or none is `acceptance_other_binding` (a
-re-binding needs a new acceptance); citing only rows not held waits on them (`waiting:row`). The
+`proposal_hash`). It cites the owner-binding it is made under in `refs.also.cites`, and stands when
+it cites exactly one held owner-binding of the grantee's key, that row is live, and its owner is the
+acceptance's signer and the one owner the live bindings name. Citing an ended or another owner's
+held binding, two held bindings (two live rows of the one owner included), or none is
+`acceptance_other_binding`: each ownership needs its own acceptance (CC 3.1.2.1), and an owner that
+withdraws the row its acceptance cites ends that acceptance's footing even where another of its rows
+keeps the ownership, until it accepts again citing a live row. Citing only rows not held waits on
+them (`waiting:row`). A key with no owner has no acceptance: `grantee_has_no_owner`, except that an
+acceptance citing only rows the reader does not hold, with no live binding held, waits on those
+rows by id (`waiting:owner_binding+row`); two live owners held is refused whatever is missing. The
 owner's `trust:accepts:v1` edge is a separate thing: it roots the owner's nodes in the root and is
 not consent to any grant.
 
@@ -359,7 +369,7 @@ function outside the file, a function of size 0, one name at two places, or no f
 
 `evaluate_build_standing(&StandingInput)` reads, as bytes it re-verifies: the build row's statement,
 the blob, the grant's statements (every voice), any counted withdrawal of the grant, the owner's
-answers, the owner's withdrawals of them, the owner-binding (`Option<&OwnerBinding>`), the composers
+answers, the owner's withdrawals of them, the grantee's owner (`&GranteeOwner`), the composers
 view (`Option<&[&[u8]]>`, `None` for no view), a `KeyDirectory` for the pipeline's and owner's keys,
 and a `BundleLookup`. It answers one `BuildStanding`: `stands`, the first refusal in link order, or
 everything it waits on.
@@ -421,7 +431,8 @@ Refusals (`refused:{token}`). `{part}` is `build_row`, `grant`, `grant_withdrawa
 | `acceptance_by_grantee` | the answer is signed by the grantee's own key |
 | `acceptance_not_by_owner` | the answer's author is not the owner the binding names |
 | `owner_binding_other_key` | the binding supplied names another key than the grantee |
-| `acceptance_other_binding` | the acceptance cites another held binding of the key, two of them, or none |
+| `acceptance_other_binding` | the acceptance does not cite exactly one held owner-binding of the grantee's key, or the one it cites is not a live binding by the owner |
+| `grantee_has_no_owner` | the reader holds no live owner-binding of the grantee's key, or the live bindings name more than one owner |
 | `build_row_stands_on_nothing` | the row names no acceptance in `refs.also.stands_on`, or a held row that is not the owner's acceptance of this grant |
 | `acceptance_other_grant` | the answer's `refs.answers` names another row than the grant |
 | `acceptance_other_grantee` | the answer's CWT `sub` is not the grantee |
@@ -440,12 +451,13 @@ Waits (`waiting:{token+token}`, sorted, once each):
 | `bundle` | a bundle `refs.head` names that the reader does not hold |
 | `grant` | no grant statement supplied |
 | `acceptance` | no acceptance answering the grant |
-| `owner_binding` | no owner-binding of the grantee supplied |
+| `owner_binding` | no live owner-binding of the grantee held, and an acceptance cites a row the reader does not hold |
 
 ### 7.3 Vectors
 
-`src/ciris-verify-core/tests/vectors/edition2/build_standing/build_standing_v1.json` (106 cases,
-statement pools `build_standing_pool_v1_{0,1}.json`) from `gen_build_standing_v1.py`, independent of
+`src/ciris-verify-core/tests/vectors/edition2/build_standing/build_standing_v2.json` (120 cases,
+statement pools `build_standing_pool_v1_{0,1}.json` and `build_standing_pool_v2_0.json`) from
+`gen_build_standing_v2.py` (v1's case file is kept byte-identical and no longer replayed), independent of
 verify, over the v5 row-statement, binary-manifest and v6 genesis-bundle generators. Holders A, B,
 C, D; pipeline P (`node`); owners O, O2 (`user`); a second machine key Q; a stranger X and an owner
 O3 with no key record. Its `kernel_counterparts` map ten cases to CIRISKernel's two-standings cases

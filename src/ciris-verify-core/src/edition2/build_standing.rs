@@ -272,10 +272,16 @@ pub enum StandingRefusal {
     /// The owner-binding supplied names another key than the grantee:
     /// `owner_binding_other_key`.
     OwnerBindingOtherKey,
-    /// The acceptance cites no owner-binding, another held binding of the
-    /// key than the one supplied, or two of them (a re-binding needs a new
-    /// acceptance): `acceptance_other_binding`.
+    /// The acceptance does not cite exactly one held owner-binding of the
+    /// grantee's key, or the one it cites is not a live binding by the owner
+    /// (an ended one, another owner's; a re-binding needs a new acceptance):
+    /// `acceptance_other_binding`.
     AcceptanceOtherBinding,
+    /// The grantee's key has no live owner-binding the reader holds, or its
+    /// live bindings name more than one owner (CC 3.2): a key with no owner
+    /// has no acceptance and its grant confers nothing (CC 3.1.2.1).
+    /// `grantee_has_no_owner`.
+    GranteeHasNoOwner,
     /// The build row names no acceptance in `refs.also.stands_on`, or names
     /// a row that is not the owner's acceptance of this grant: it counts for
     /// nobody. `build_row_stands_on_nothing`.
@@ -330,6 +336,7 @@ impl StandingRefusal {
             Self::AcceptanceNotByOwner => "acceptance_not_by_owner".into(),
             Self::OwnerBindingOtherKey => "owner_binding_other_key".into(),
             Self::AcceptanceOtherBinding => "acceptance_other_binding".into(),
+            Self::GranteeHasNoOwner => "grantee_has_no_owner".into(),
             Self::BuildRowStandsOnNothing => "build_row_stands_on_nothing".into(),
             Self::AcceptanceOtherGrant => "acceptance_other_grant".into(),
             Self::AcceptanceOtherGrantee => "acceptance_other_grantee".into(),
@@ -1205,26 +1212,96 @@ pub fn read_grant_withdrawal(
 
 // ---------------------------------------------------------------- the answer
 
-/// The owner-binding of the grantee, as the caller has read and verified it
-/// (CC 3.2 `owner_of(K)`): `owner` is the one live owner the bindings of
-/// `key` name. Verify has no edition-2 owner-binding reader yet; this input
-/// is the caller's statement of that reading.
+/// The ownership of the grantee's key, as the caller has read and verified it
+/// (CC 3.2 `owner_of(K)`): `owner` is the one owner the live bindings of
+/// `key` name. One owner may hold several live bindings of a key (the row
+/// where it first placed the binding and each re-signing at another scope);
+/// together they are one ownership.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OwnerBinding {
-    /// The owner's identity reference (the binding's signer).
+    /// The owner's identity reference (the bindings' signer).
     pub owner: String,
-    /// The owned key's identity reference (the binding's `sub`).
+    /// The owned key's identity reference (the bindings' `sub`).
     pub key: String,
-    /// The binding row's id: the acceptance cites it in `refs.also.cites`.
-    /// The binding is a `delegates_to` from the owner to the key with the key
-    /// as `sub`; its payload shape is CC's, still to come, so it is not read
-    /// here.
-    pub row_id: Digest32,
+    /// The row ids of the owner's LIVE bindings of the key, at least one. An
+    /// acceptance cites exactly one of them in `refs.also.cites`.
+    pub row_ids: Vec<Digest32>,
     /// The row ids of every other owner-binding of the same key the reader
-    /// holds (an earlier owner's, a rival's). An acceptance citing one of
-    /// these is made under another binding; one citing two bindings of the
-    /// key is refused. A binding cited but not held is waited on.
+    /// holds: ended ones (this owner's earlier ownership, a row it withdrew)
+    /// and other owners'. An acceptance citing one of these is made under
+    /// another binding. A binding cited but not held is waited on.
     pub other_bindings: Vec<Digest32>,
+}
+
+/// Who owns the grantee's key, by the caller's fold of the owner-bindings it
+/// holds (CC 3.2).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GranteeOwner {
+    /// The live bindings name one owner.
+    Owned(OwnerBinding),
+    /// The reader holds no live binding of the key, or the live bindings
+    /// name more than one owner: the key has no owner. `held` is every
+    /// owner-binding of the key the reader holds, live or not.
+    NoOwner {
+        /// Row ids of the held owner-bindings of the key.
+        held: Vec<Digest32>,
+        /// The live bindings held name more than one owner: nothing that
+        /// could arrive changes that, so nothing is waited on.
+        two_owners: bool,
+    },
+}
+
+impl GranteeOwner {
+    /// Fold the live bindings the caller read ([`read_owner_binding`], each
+    /// decided live by the caller) and the row ids of the other held
+    /// bindings of the key. One owner and one key across `live`: `Owned`
+    /// with every live row. None live, two owners, or two keys: `NoOwner`.
+    #[must_use]
+    pub fn of_live(live: &[OwnerBinding], other_bindings: &[Digest32]) -> Self {
+        let mut row_ids: Vec<Digest32> = Vec::new();
+        for b in live {
+            for r in &b.row_ids {
+                if !row_ids.contains(r) {
+                    row_ids.push(*r);
+                }
+            }
+        }
+        let one = live
+            .first()
+            .filter(|f| live.iter().all(|b| b.owner == f.owner && b.key == f.key));
+        match one {
+            Some(f) => Self::Owned(OwnerBinding {
+                owner: f.owner.clone(),
+                key: f.key.clone(),
+                row_ids,
+                other_bindings: other_bindings.to_vec(),
+            }),
+            None => {
+                row_ids.extend(other_bindings.iter().copied());
+                Self::NoOwner {
+                    held: row_ids,
+                    two_owners: !live.is_empty(),
+                }
+            },
+        }
+    }
+
+    /// The ownership, where the key has one owner.
+    #[must_use]
+    pub const fn binding(&self) -> Option<&OwnerBinding> {
+        match self {
+            Self::Owned(b) => Some(b),
+            Self::NoOwner { .. } => None,
+        }
+    }
+
+    /// Every owner-binding row id the reader holds for the key.
+    fn held(&self) -> Vec<Digest32> {
+        match self {
+            Self::Owned(b) => b.row_ids.iter().chain(&b.other_bindings).copied().collect(),
+            Self::NoOwner { held, .. } => held.clone(),
+        }
+    }
 }
 
 /// Read one statement of an owner-binding row (CC 3.2) into the
@@ -1237,7 +1314,8 @@ pub struct OwnerBinding {
 /// `family_shapes::check_owner_binding`) and checks the signer's key. It does
 /// not decide which binding of a key is live, whether the first-binding cosign
 /// is held, or whether the binding's window covers an instant: those are the
-/// caller's fold. `other_bindings` is left empty for the caller to fill.
+/// caller's fold ([`GranteeOwner::of_live`] over the rows it decides are
+/// live). `row_ids` holds this one row and `other_bindings` is empty.
 pub fn read_owner_binding(statement: &[u8], keys: &dyn KeyDirectory) -> Reading<OwnerBinding> {
     let part = Part::OwnerBinding;
     let row = valid_or_return!(from_family(
@@ -1262,7 +1340,7 @@ pub fn read_owner_binding(statement: &[u8], keys: &dyn KeyDirectory) -> Reading<
     Reading::Valid(OwnerBinding {
         owner,
         key: row.sub,
-        row_id: row.row_id,
+        row_ids: vec![row.row_id],
         other_bindings: Vec::new(),
     })
 }
@@ -1312,7 +1390,7 @@ pub fn read_answer(
         part,
         verify_row_in_family(statement, keys, &VendoredFamilyModel)
     ));
-    match answer_shape(row, grant, binding) {
+    match answer_shape(row, grant, Some(binding)) {
         Ok(a) => match a.kind {
             AnswerKind::Acceptance => acceptance_binding(a, binding),
             AnswerKind::Decline => Reading::Valid(a),
@@ -1321,16 +1399,9 @@ pub fn read_answer(
     }
 }
 
-/// An acceptance of a grant to a machine key names the owner-binding it is
-/// made under in `refs.also.cites` (a set; it may cite other rows too). It
-/// stands under `binding` when the bindings of the key it cites, among those
-/// held, are exactly `binding`. Citing another held binding, or two of them,
-/// is `acceptance_other_binding` (an acceptance is made under one binding; a
-/// re-binding needs a new acceptance); citing nothing is the same. Citing
-/// only rows the reader does not hold waits on them: one may be the binding.
-fn acceptance_binding(a: Answer, binding: &OwnerBinding) -> Reading<Answer> {
-    let cites: Vec<Digest32> = a
-        .row
+/// The row ids an answer names in `refs.also.cites`.
+fn answer_cites(a: &Answer) -> Vec<Digest32> {
+    a.row
         .payload
         .get_text("refs")
         .and_then(|r| r.get_text("also"))
@@ -1339,11 +1410,24 @@ fn acceptance_binding(a: Answer, binding: &OwnerBinding) -> Reading<Answer> {
         .unwrap_or_default()
         .iter()
         .filter_map(row_ref_of)
-        .collect();
-    let held = |c: &Digest32| *c == binding.row_id || binding.other_bindings.contains(c);
+        .collect()
+}
+
+/// An acceptance of a grant to a machine key names the owner-binding it is
+/// made under in `refs.also.cites` (a set; it may cite other rows too). It
+/// stands when, among the held owner-bindings of the key, it cites exactly
+/// one and that one is a live binding by the owner (`binding.row_ids`).
+/// Citing an ended or another owner's held binding, or two held bindings
+/// (two live rows of the one owner included: an acceptance is made under one
+/// row), is `acceptance_other_binding`; citing nothing is the same. Citing
+/// only rows the reader does not hold waits on them: one may be the binding.
+fn acceptance_binding(a: Answer, binding: &OwnerBinding) -> Reading<Answer> {
+    let cites = answer_cites(&a);
+    let live = |c: &Digest32| binding.row_ids.contains(c);
+    let held = |c: &Digest32| live(c) || binding.other_bindings.contains(c);
     let cited: Vec<Digest32> = cites.iter().copied().filter(|c| held(c)).collect();
     match cited.as_slice() {
-        [one] if bool::from(one.ct_eq(&binding.row_id)) => Reading::Valid(a),
+        [one] if live(one) => Reading::Valid(a),
         [] if !cites.is_empty() => waiting(
             cites
                 .into_iter()
@@ -1357,7 +1441,7 @@ fn acceptance_binding(a: Answer, binding: &OwnerBinding) -> Reading<Answer> {
 fn answer_shape(
     row: VerifiedRow,
     grant: &Grant,
-    binding: &OwnerBinding,
+    binding: Option<&OwnerBinding>,
 ) -> Result<Answer, StandingRefusal> {
     let part = Part::Answer;
     let m = |member| StandingRefusal::Malformed { part, member };
@@ -1380,11 +1464,13 @@ fn answer_shape(
     if author == grant.grantee {
         return Err(StandingRefusal::AcceptanceByGrantee);
     }
-    if binding.key != grant.grantee {
-        return Err(StandingRefusal::OwnerBindingOtherKey);
-    }
-    if author != binding.owner {
-        return Err(StandingRefusal::AcceptanceNotByOwner);
+    if let Some(binding) = binding {
+        if binding.key != grant.grantee {
+            return Err(StandingRefusal::OwnerBindingOtherKey);
+        }
+        if author != binding.owner {
+            return Err(StandingRefusal::AcceptanceNotByOwner);
+        }
     }
     if !bool::from(answers.ct_eq(grant.row_id())) {
         return Err(StandingRefusal::AcceptanceOtherGrant);
@@ -1600,8 +1686,9 @@ pub struct StandingInput<'a> {
     pub answers: &'a [&'a [u8]],
     /// The owner's withdrawals of the acceptance.
     pub answer_withdrawals: &'a [&'a [u8]],
-    /// The owner-binding of the grantee, as the caller verified it.
-    pub owner_binding: Option<&'a OwnerBinding>,
+    /// Who owns the grantee's key, as the caller folded the owner-bindings
+    /// it holds ([`GranteeOwner::of_live`]).
+    pub owner: &'a GranteeOwner,
     /// The composers and peer rows the caller holds for the build row's
     /// signer; `None` when the caller has no view.
     pub composers: Option<&'a [&'a [u8]]>,
@@ -1760,6 +1847,17 @@ impl BuildStanding {
 /// not stop the later ones, so `waiting` lists everything missing; a refusal
 /// anywhere clears it. Without a composers view the verdict can stand, with
 /// `withdrawal_state` [`WithdrawalState::Unknown`] beside it.
+///
+/// **What the verdict says.** It answers whether the row is in force now,
+/// over the statements the caller holds: the walk reads no receipts and takes
+/// no `now`. A refusal for an end (`grant_withdrawn`, `acceptance_withdrawn`,
+/// `acceptance_other_binding` after a re-binding, `build_manifest_withdrawn`,
+/// `build_manifest_superseded`) says the row confers nothing from here on. It
+/// does not say the row never counted: an act made while the grant, the
+/// acceptance and the binding stood was valid when made, and whether a
+/// receipt keeps it in force after the end (CC 2.4.1.1, what stays in force)
+/// is a reading this walk does not make. A caller deciding about a past act
+/// must not read `refused` here as "was never valid".
 #[must_use]
 pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
     let mut out = BuildStanding::new();
@@ -1868,14 +1966,14 @@ pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
                 grant_withdrawals: input.grant_withdrawals,
                 answers: input.answers,
                 answer_withdrawals: input.answer_withdrawals,
-                owner_binding: input.owner_binding,
+                owner: input.owner,
                 keys: input.keys,
                 bundles: input.bundles,
                 stands_on: Some(stands_on),
             },
         );
         out.grant_withdrawn = Some(f.grant_withdrawn);
-        out.owner = input.owner_binding.map(|b| b.owner.clone());
+        out.owner = input.owner.binding().map(|b| b.owner.clone());
         out.acceptance_verdict = f.acceptance_verdict;
         out.acceptance_row_id = f.acceptance_row_id;
         out.acceptance_withdrawn = f.acceptance_withdrawn;
@@ -1883,10 +1981,7 @@ pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
         // is not the acceptance read is final; naming a row not held waits on
         // it (a row waits for what it names).
         let mut held: Vec<Digest32> = vec![*g.row_id()];
-        if let Some(b) = input.owner_binding {
-            held.push(b.row_id);
-            held.extend(b.other_bindings.iter().copied());
-        }
+        held.extend(input.owner.held());
         held.extend(
             input
                 .answers
@@ -1918,6 +2013,14 @@ pub fn evaluate_build_standing(input: &StandingInput<'_>) -> BuildStanding {
                 }
                 out.waiting.extend(w);
             },
+            // No binding of the key is held and neither is the row named: a
+            // row waits for what it names, and that row may cite the binding.
+            Reading::Refused(StandingRefusal::GranteeHasNoOwner)
+                if input.owner.held().is_empty() && !held.contains(&stands_on) =>
+            {
+                out.waiting
+                    .push(StandingWait::Key(MissingKey::Row(stands_on)));
+            },
             Reading::Refused(r) => {
                 out.refuse(r);
                 return out.finish();
@@ -1948,8 +2051,9 @@ pub struct GrantEndsInput<'a> {
     pub answers: &'a [&'a [u8]],
     /// The owner's withdrawals of the acceptance.
     pub answer_withdrawals: &'a [&'a [u8]],
-    /// The owner-binding of the grantee, as the caller verified it.
-    pub owner_binding: Option<&'a OwnerBinding>,
+    /// Who owns the grantee's key, as the caller folded the owner-bindings
+    /// it holds ([`GranteeOwner::of_live`]).
+    pub owner: &'a GranteeOwner,
     /// The keys for the owner's statements.
     pub keys: &'a dyn KeyDirectory,
     /// The bundles a withdrawal names in `refs.head`.
@@ -2021,11 +2125,45 @@ pub fn grant_in_force(grant: &Grant, input: &GrantEndsInput<'_>) -> GrantInForce
         out.reading = Reading::Refused(StandingRefusal::GrantWithdrawn);
         return out;
     }
-    let Some(binding) = input.owner_binding else {
-        out.acceptance_verdict = Some("waiting:owner_binding".into());
-        waits.push(StandingWait::OwnerBinding);
-        out.reading = waiting(waits);
-        return out;
+    let binding = match input.owner {
+        GranteeOwner::Owned(b) => b,
+        GranteeOwner::NoOwner { held, two_owners } => {
+            // A key with no owner has no acceptance (CC 3.1.2.1). Where no
+            // live binding is held, the one thing that could arrive and
+            // change that is a binding an acceptance of this grant cites and
+            // the reader does not hold: the walk waits on those rows by id
+            // (an undecided act is never a refusal and never a pass). Two
+            // live owners held is refused whatever is missing.
+            let mut unheld: Vec<Digest32> = Vec::new();
+            for s in input.answers {
+                let read = verify_row_in_family(s, input.keys, &VendoredFamilyModel);
+                let Reading::Valid(row) = from_family(Part::Answer, read) else {
+                    continue;
+                };
+                let Ok(a) = answer_shape(row, grant, None) else {
+                    continue;
+                };
+                let cites = answer_cites(&a);
+                if a.kind == AnswerKind::Acceptance && !cites.iter().any(|c| held.contains(c)) {
+                    unheld.extend(cites);
+                }
+            }
+            if !*two_owners && !unheld.is_empty() {
+                waits.push(StandingWait::OwnerBinding);
+                waits.extend(
+                    unheld
+                        .into_iter()
+                        .map(|c| StandingWait::Key(MissingKey::Row(c))),
+                );
+                out.acceptance_verdict = Some(format!("waiting:{}", wait_tokens(&waits)));
+                out.reading = waiting(waits);
+            } else {
+                let r = StandingRefusal::GranteeHasNoOwner;
+                out.acceptance_verdict = Some(format!("refused:{}", r.token()));
+                out.reading = Reading::Refused(r);
+            }
+            return out;
+        },
     };
     // The owner's replies, and the row ids its own valid withdrawals name.
     let mut accepted: Option<Answer> = None;

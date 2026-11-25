@@ -461,6 +461,9 @@ pub(crate) fn invalid_token(i: &Invalid) -> String {
         Invalid::AckNamesTooMany => "ack_names_too_many".into(),
         Invalid::TrustAcceptsClassesMalformed => "trust_accepts_classes_malformed".into(),
         Invalid::TrustAcceptsDepthOutOfRange => "trust_accepts_depth_out_of_range".into(),
+        Invalid::LeafVouchPresentationInvalid => "leaf_vouch_presentation_invalid".into(),
+        Invalid::RoomBindingMlKem768Reuse => "room_binding_ml_kem_768_reuse".into(),
+        Invalid::RoomBindingX25519Reuse => "room_binding_x25519_reuse".into(),
     }
 }
 
