@@ -1,31 +1,31 @@
 //! Replays CIRISKernel's room-key cases
 //! (`tests/vectors/edition2/room/kernel_room_keys.json`, vendored from
-//! CIRISKernel branch `room-key-vectors` a1460cf,
+//! CIRISKernel branch `room-key-vectors` af1cc43,
 //! `crates/ciris-kernel/tests/fixtures/room_keys.json`; CIRISConstitution#224,
 //! CC 3.1.3.2) through the room's door, `edition2::room::check_room_row`.
 //!
 //! The fixture is symbolic (a room `g`, keys `rk:a0`, heads `vA+2`): each
 //! name is mapped to a value of its wire type by SHA-256, the same name to
 //! the same value. The roster fold is the kernel's; each case carries the
-//! view it gives. Two differences from the fixture as vendored, both ruled by
-//! CIRISConstitution on 2026-11-27 after it was cut: a row whose
-//! `refs.also.voice` is missing or names two rows is REFUSED
-//! `room_row_voice_head_malformed` (the fixture says concludes nothing, and
-//! is to be re-cut), and a public room's row is not put to the door at all.
+//! view it gives: for a voice's row the roster at the head named, for a
+//! node's row the folded facts of the binding and its owner. Vendored at
+//! af1cc43 (30 cases: 16 voice rows, 14 node rows). A public room's row is
+//! not put to the door.
 #![cfg(feature = "pqc")]
 
 use ciris_crypto::composite::CompositeSigningKey;
 use ciris_verify_core::cde::Value;
 use ciris_verify_core::edition2::keys::{KeyRecord, RoomKeyMembers};
 use ciris_verify_core::edition2::room::{
-    check_room_row, RoomRowReading, RoomRowRefusal, VoiceRoster,
+    check_node_room_row, check_room_row, is_node_room_key, NodeOwnerView, RoomRowReading,
+    VoiceRoster,
 };
-use ciris_verify_core::edition2::{hash_digest_value, thumbprint, Digest32};
+use ciris_verify_core::edition2::{hash_digest_value, identity_ref, thumbprint, Digest32};
 use serde_json::Value as J;
 use sha2::{Digest as _, Sha256};
 
 const FILE: &str = include_str!("vectors/edition2/room/kernel_room_keys.json");
-const FILE_SHA256: &str = "48134460929b411632bf264fef6cd9e6ebeae9019e4fa45f1f4ed99be9ac850f";
+const FILE_SHA256: &str = "8df6c7c7af30ca6c4de52c672887e70d0f692f2db926fd32e9cbcb832ec2c74f";
 
 fn d(name: &str) -> Digest32 {
     Sha256::digest(name.as_bytes()).into()
@@ -63,13 +63,41 @@ fn record(kid: Digest32, room: Option<&str>) -> KeyRecord {
     }
 }
 
+fn refs_set(names: &[&str]) -> Value {
+    Value::Array(
+        names
+            .iter()
+            .map(|h| Value::Array(vec![Value::Uint(2), hash_digest_value(&d(h))]))
+            .collect(),
+    )
+}
+
+fn names(v: &J) -> Vec<&str> {
+    v.as_array()
+        .map(|a| a.iter().map(|h| h.as_str().unwrap()).collect())
+        .unwrap_or_default()
+}
+
+fn record_of(c: &J, key: &J) -> KeyRecord {
+    let r = c["records"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|r| r["key"] == *key);
+    let mut rec = record(d(key.as_str().unwrap()), r.and_then(|r| r["room"].as_str()));
+    if r.is_some_and(|r| r["identity_type"] == "node") {
+        rec.identity_type = vec!["node".into()];
+    }
+    rec
+}
+
 #[test]
 fn kernel_room_key_cases() {
     assert_eq!(hex::encode(Sha256::digest(FILE.as_bytes())), FILE_SHA256);
     let f: J = serde_json::from_str(FILE).unwrap();
     let cases = f["cases"].as_array().unwrap();
-    assert_eq!(cases.len(), 16);
-    let mut engaged = 0;
+    assert_eq!(cases.len(), 30);
+    let (mut voice, mut node) = (0, 0);
     for c in cases {
         let name = c["name"].as_str().unwrap();
         let row = &c["row"];
@@ -78,76 +106,74 @@ fn kernel_room_key_cases() {
             assert_eq!(c["verdict"], "admitted", "{name}");
             continue;
         }
-        engaged += 1;
         let kid = d(row["kid"].as_str().unwrap());
-        let heads: Vec<&str> = row["refs"]["also"]["voice"]
-            .as_array()
-            .map(|a| a.iter().map(|h| h.as_str().unwrap()).collect())
-            .unwrap_or_default();
+        let also = &row["refs"]["also"];
+        let mut roles = Vec::new();
+        for role in ["under", "voice"] {
+            let set = names(&also[role]);
+            if !set.is_empty() {
+                roles.push((t(role), refs_set(&set)));
+            }
+        }
         let mut payload = vec![
             (t("asserted_at"), Value::Uint(1)),
             (t("cohort_scope"), t("community")),
             (t("community_id"), t(&group(row["room"].as_str().unwrap()))),
         ];
-        if !heads.is_empty() {
-            let set = heads
-                .iter()
-                .map(|h| Value::Array(vec![Value::Uint(2), hash_digest_value(&d(h))]))
-                .collect();
-            payload.push((
-                t("refs"),
-                Value::Map(vec![(
-                    t("also"),
-                    Value::Map(vec![(t("voice"), Value::Array(set))]),
-                )]),
-            ));
+        if !roles.is_empty() {
+            payload.push((t("refs"), Value::Map(vec![(t("also"), Value::Map(roles))])));
         }
         let payload = Value::Map(payload);
-        // The signer's record, as the case gives it (none: no room named).
-        let rec_room = c["records"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .find(|r| r["key"] == row["kid"])
-            .and_then(|r| r["room"].as_str());
-        let rec = record(kid, rec_room);
+        let rec = record_of(c, &row["kid"]);
         let view = &c["view"];
-        let live: Vec<Digest32> = view["live_keys"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|k| d(k.as_str().unwrap()))
-            .collect();
-        let view_heads = view["heads"].as_array().unwrap();
-        let roster = (view_heads.len() == 1).then(|| VoiceRoster {
-            head: d(view_heads[0].as_str().unwrap()),
-            voice: view["voice"].as_str().unwrap(),
-            live_keys: &live,
-        });
-        let got = check_room_row(
-            row["iss"].as_str().unwrap(),
-            &kid,
-            &payload,
-            &rec,
-            roster.as_ref(),
-        );
-        let malformed_head = heads.len() != 1;
-        let want_refusal = c["refusal"].as_str();
-        match (c["verdict"].as_str().unwrap(), want_refusal, got) {
+        let got = if c["arm"] == "node" {
+            node += 1;
+            assert!(is_node_room_key(&rec), "{name}");
+            // iss = kid: the node's own room key, as an identity reference.
+            assert_eq!(row["iss"], row["kid"], "{name}");
+            let iss = identity_ref(&kid);
+            let (under, heads) = (names(&view["under"]), names(&view["voice_heads"]));
+            let owner_rec = view["owner"].as_str().map(|_| record_of(c, &view["owner"]));
+            let v = match (&owner_rec, under.as_slice(), heads.as_slice()) {
+                (Some(o), [b], [h]) => Some(NodeOwnerView {
+                    binding: d(b),
+                    voice_head: d(h),
+                    binding_in_force: view["binding_held"] == true
+                        && view["binding_ended"] == false,
+                    live_bindings: usize::try_from(view["live_bindings"].as_u64().unwrap())
+                        .unwrap(),
+                    owner_record: o,
+                    owner_live: view["owner_live"] == true,
+                    voice_seated: view["voice_seated"] == true,
+                }),
+                _ => None,
+            };
+            check_node_room_row(&iss, &kid, &payload, &rec, v.as_ref())
+        } else {
+            voice += 1;
+            let live: Vec<Digest32> = names(&view["live_keys"]).iter().map(|k| d(k)).collect();
+            let view_heads = names(&view["heads"]);
+            let roster = (view_heads.len() == 1).then(|| VoiceRoster {
+                head: d(view_heads[0]),
+                voice: view["voice"].as_str().unwrap(),
+                live_keys: &live,
+            });
+            check_room_row(
+                row["iss"].as_str().unwrap(),
+                &kid,
+                &payload,
+                &rec,
+                roster.as_ref(),
+            )
+        };
+        match (c["verdict"].as_str().unwrap(), c["refusal"].as_str(), got) {
             ("admitted", None, RoomRowReading::Valid) => {},
             ("refused", Some(tok), RoomRowReading::Refused(r)) => {
-                assert_eq!(r.token(), tok, "{name}")
+                assert_eq!(r.token(), tok, "{name}");
             },
-            // Ruled after the fixture was cut: refused, by name.
-            (
-                "concludes_nothing",
-                None,
-                RoomRowReading::Refused(RoomRowRefusal::VoiceHeadMalformed),
-            ) if malformed_head => {},
-            ("concludes_nothing", None, RoomRowReading::ConcludesNothing(_)) if !malformed_head => {
-            },
+            ("concludes_nothing", None, RoomRowReading::ConcludesNothing(_)) => {},
             (v, r, g) => panic!("{name}: fixture {v} {r:?}, door {g:?}"),
         }
     }
-    assert_eq!(engaged, 15);
+    assert_eq!((voice, node), (15, 14));
 }
