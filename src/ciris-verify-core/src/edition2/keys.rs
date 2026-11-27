@@ -55,8 +55,12 @@ pub enum KeyRecordError {
     /// The set mixes `user` / `accord_holder` with `node` / `agent`.
     MixedRoles,
     /// `key_record_out_of_window`: `valid_until` where none may stand, absent
-    /// where one must, or outside `[asserted_at, asserted_at + max]`.
+    /// where one must, or more than `key_record_max_secs` after `asserted_at`.
     OutOfWindow,
+    /// `valid_until_not_after_asserted_at`: the record's `valid_until` is not
+    /// later than its `asserted_at` (step 4 of CC 2.6.1.8; a record covers
+    /// `[asserted_at, valid_until)`, so it would cover no instant).
+    ValidUntilNotAfterAssertedAt,
     /// `asserted_at` is missing or not an ms-time.
     BadTime,
     /// `edition2_payload_invalid`: the room-key members are off their rule
@@ -106,6 +110,7 @@ impl KeyRecordError {
     pub fn token(&self) -> &'static str {
         match self {
             Self::OutOfWindow => "key_record_out_of_window",
+            Self::ValidUntilNotAfterAssertedAt => "valid_until_not_after_asserted_at",
             Self::MixedRoles => "key_record_mixed_roles",
             Self::BadKey => "key_record_bad_key",
             Self::BadIdentityType => "key_record_bad_identity_type",
@@ -255,7 +260,13 @@ pub fn check_key_record(payload: &Value) -> Result<KeyRecord, KeyRecordError> {
     }
     if let Some(u) = valid_until {
         let max = asserted_at.saturating_add(KEY_RECORD_MAX_SECS * 1000);
-        if u <= asserted_at || u > max {
+        // An end not later than the start is step 4's fault (CC 2.6.1.7,
+        // CC 2.6.1.8), the one the statement reader names first;
+        // `key_record_out_of_window` is for the rest of the rule.
+        if u <= asserted_at {
+            return Err(KeyRecordError::ValidUntilNotAfterAssertedAt);
+        }
+        if u > max {
             return Err(KeyRecordError::OutOfWindow);
         }
     }
@@ -1189,12 +1200,16 @@ mod tests {
             ok(&["node"], Some(T0 + MAX_MS + 1)),
             Err(KeyRecordError::OutOfWindow)
         );
+        // An end not later than the start is step 4's fault, not the window's
+        // (CC 2.6.1.7): it covers nothing.
         assert_eq!(
             ok(&["node"], Some(T0 - 1)),
-            Err(KeyRecordError::OutOfWindow)
+            Err(KeyRecordError::ValidUntilNotAfterAssertedAt)
         );
-        // An end at the record's own instant covers nothing: refused.
-        assert_eq!(ok(&["node"], Some(T0)), Err(KeyRecordError::OutOfWindow));
+        assert_eq!(
+            ok(&["node"], Some(T0)),
+            Err(KeyRecordError::ValidUntilNotAfterAssertedAt)
+        );
         assert_eq!(ok(&["node"], Some(T0 + 1)), Ok(()));
         assert_eq!(ok(&["agent"], None), Err(KeyRecordError::OutOfWindow));
         assert_eq!(ok(&["user"], None), Ok(()));
