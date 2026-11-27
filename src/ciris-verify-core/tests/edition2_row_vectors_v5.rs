@@ -125,6 +125,43 @@ fn hx(v: &J) -> Vec<u8> {
     hex::decode(v.as_str().unwrap()).unwrap()
 }
 
+/// The two cases `gen_row_statements_v6.py` adds to v5: one statement with
+/// two unprotected headers.
+const V6: &str = include_str!("vectors/edition2/row_statements_v6.json");
+const V6_SHA256: &str = "5a8ff22c54e1c594dcbdd14e8a2e8d1c1eef70cf394b1aad1361c0fe2a17a70a";
+
+/// The unprotected header is outside the signature, the row id and the
+/// statement id (CC 2.6.1.1, CC 2.6.1.3): an entry added to it changes the
+/// statement's bytes and nothing a reader concludes.
+#[test]
+fn unprotected_header_changes_no_id_and_no_answer() {
+    use sha2::Digest as _;
+    assert_eq!(hex::encode(sha2::Sha256::digest(V6.as_bytes())), V6_SHA256);
+    let f: J = serde_json::from_str(V6).unwrap();
+    let cases = f["valid"].as_array().unwrap();
+    assert_eq!(cases.len(), 2);
+    let keys = dir([1]);
+    let mut ids = Vec::new();
+    for c in cases {
+        let st = hx(&c["statement_hex"]);
+        let Verdict::Valid(row) = verify_row_statement(&st, &keys) else {
+            panic!("{}: not valid", c["id"]);
+        };
+        assert_eq!(hex::encode(row.row_id), c["row_id_hex"].as_str().unwrap());
+        assert_eq!(
+            hex::encode(row.statement_id),
+            c["statement_id_hex"].as_str().unwrap()
+        );
+        assert!(matches!(
+            verify_row_in_family(&st, &keys, &VendoredFamilyModel),
+            FamilyVerdict::Valid { .. }
+        ));
+        ids.push((row.row_id, row.statement_id, st));
+    }
+    assert_eq!((ids[0].0, ids[0].1), (ids[1].0, ids[1].1));
+    assert_ne!(ids[0].2, ids[1].2);
+}
+
 #[test]
 fn valid_statements_verify_and_match_our_producer() {
     let f: J = file();
@@ -298,6 +335,7 @@ fn second_voice_is_a_voice_of_the_counted_row() {
 #[test]
 fn key_record_end_rule() {
     let f: J = file();
+    let mut superseded = 0;
     for c in f["key_records"].as_array().unwrap() {
         let id = c["id"].as_str().unwrap();
         let p = cde::decode(&hx(&c["payload_hex"])).unwrap();
@@ -305,8 +343,24 @@ fn key_record_end_rule() {
             Ok(_) => "ok",
             Err(e) => e.token(),
         };
-        assert_eq!(got, c["expect"].as_str().unwrap(), "{id}");
+        // Superseded in the pinned file (CIRISConstitution, 2026-11-25; CC
+        // 2.6.1.7): a record whose `valid_until` is not later than its
+        // `asserted_at` is step 4's fault, and `key_record_out_of_window` is
+        // the rest of the rule. v5's bytes are unchanged; for exactly those
+        // payloads the payload-level check now names step 4's token.
+        let time = |m: &str| p.get_text(m).and_then(cde::Value::as_u64);
+        let end_not_after_start =
+            matches!((time("asserted_at"), time("valid_until")), (Some(a), Some(u)) if u <= a);
+        let want = match c["expect"].as_str().unwrap() {
+            "key_record_out_of_window" if end_not_after_start => {
+                superseded += 1;
+                "valid_until_not_after_asserted_at"
+            },
+            w => w,
+        };
+        assert_eq!(got, want, "{id}");
     }
+    assert!(superseded > 0);
 }
 
 #[test]
