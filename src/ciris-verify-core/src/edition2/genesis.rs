@@ -172,7 +172,10 @@ pub struct GenesisInput<'a> {
     pub rows: &'a BTreeMap<Digest32, Vec<u8>>,
     /// The reader's anchor, for a first bundle. `None`: nothing is rooted.
     pub anchor: Option<&'a Anchor>,
-    /// The predecessor bundles held, for a later bundle.
+    /// The bundles of the lineage the reader holds and has read, for a later
+    /// bundle: every predecessor it names is looked up here, and a recovery
+    /// is read against every Valid one (`recovery_behind_head`), so a caller
+    /// passes all it holds, not only the one `prev` names.
     pub predecessors: &'a [Predecessor<'a>],
     /// The attestation roots of the custody gate: production passes
     /// [`crate::trust_anchor_store::baked::default_store`].
@@ -274,6 +277,11 @@ pub struct GenesisPlacement {
     pub version: u32,
     /// `refs.prev`, on a later bundle.
     pub prev: Option<Digest32>,
+    /// `refs.further_prev`, on a join: the further predecessors, as signed.
+    pub further_prev: Vec<Digest32>,
+    /// Every bundle in this bundle's lineage past: each predecessor it names
+    /// and that predecessor's own past.
+    pub past: BTreeSet<Digest32>,
     /// `asserted_at`, POSIX ms.
     pub asserted_at: u64,
     /// The accord's name.
@@ -303,9 +311,23 @@ pub struct GenesisPlacement {
     /// every recovery key a counted recovery of the holder spent. No later
     /// bundle seats one of them for that holder (`holder_key_retired`).
     pub retired_holder_keys: BTreeMap<String, BTreeSet<Digest32>>,
+    /// The signing keys a counted recovery of this lineage replaced, by
+    /// holder: a subset of [`Self::retired_holder_keys`]. A holder a named
+    /// predecessor still seats at one of them is no live holder of that
+    /// predecessor in a join's count, and a statement under one is no voice
+    /// (a key a holder left by routine rotation stays a voice on the branch
+    /// that still seats it).
+    pub recovery_retired_keys: BTreeMap<String, BTreeSet<Digest32>>,
 }
 
 impl GenesisPlacement {
+    /// The predecessors this bundle names: `prev`, then `further_prev`.
+    pub fn predecessors(&self) -> impl Iterator<Item = Digest32> + '_ {
+        self.prev
+            .into_iter()
+            .chain(self.further_prev.iter().copied())
+    }
+
     /// Is `identity_ref` a seat of this bundle (its canonical conferral)?
     #[must_use]
     pub fn is_canonical(&self, identity_ref: &str) -> bool {
@@ -332,8 +354,13 @@ pub enum Malformed {
         /// The member.
         member: &'static str,
     },
-    /// `version` is 1 with a `prev`, not 1 without one, or not prev's + 1.
+    /// `version` is 1 with a `prev`, not 1 without one, or not one greater
+    /// than the greatest `version` among the predecessors named; or, on a
+    /// join, `prev` is not the predecessor of greatest `version` (among
+    /// equals, of least object id).
     VersionPrevMismatch,
+    /// A join names a predecessor in the lineage past of another it names.
+    FurtherPrevNotNewest,
     /// `holders`, `serve_nodes` and `transparency_services` are not pairwise disjoint.
     HoldersSeatsOverlap,
     /// The keys of `recovery_commitments` are not exactly `holders`.
@@ -352,7 +379,8 @@ pub enum Malformed {
     /// A recovery's new signing key is the holder's current key.
     RecoveryReusesSigningKey,
     /// A recovery changes more than its holder's key-record citation and
-    /// recovery commitment (beside `version`, `asserted_at` and `refs.prev`).
+    /// recovery commitment (beside `version`, `asserted_at` and `refs.prev`),
+    /// or carries `further_prev`.
     RecoveryChangesOtherSeat,
     /// A later bundle seats for a holder a key its lineage has retired (a
     /// key the holder was seated at and left, or a spent recovery key), or
@@ -381,6 +409,7 @@ impl Malformed {
             Self::Schema { .. } => "genesis_bundle_schema",
             Self::SetOrder { .. } => "federation_set_semantics_unsorted",
             Self::VersionPrevMismatch => "version_prev_mismatch",
+            Self::FurtherPrevNotNewest => "further_prev_not_newest",
             Self::HoldersSeatsOverlap => "holders_seats_overlap",
             Self::RecoveryCommitmentsNotHolders => "recovery_commitments_not_holders",
             Self::ScopeMissingInfra => "scope_missing_infra",
@@ -405,6 +434,8 @@ pub struct GenesisWaiting {
     pub rows: Vec<Digest32>,
     /// The predecessor, by object id, where not held.
     pub prev: Option<Digest32>,
+    /// The further predecessors of a join not held, by object id, sorted.
+    pub further_prev: Vec<Digest32>,
     /// Voices' keys not held, by kid, sorted. Under CC 2.6.1.11 (rc20
     /// 64c5918) every voice's key is named by the bundle or seated by its
     /// predecessor, so this reader leaves it empty.
@@ -537,7 +568,7 @@ impl CustodyFault {
 pub enum Inconclusive {
     /// A first bundle the reader's anchor does not select (or no anchor).
     NotAnchored,
-    /// The predecessor is held and not Valid.
+    /// A predecessor the bundle names is held and not Valid.
     PrevNotValid,
     /// A named row with no place, two rows for one place, or a party with no row.
     RowUnplaced {
@@ -566,6 +597,10 @@ pub enum Inconclusive {
     /// or the bundle names a spent commitment (token
     /// `genesis_bundle_count_unmet`, with the fault's detail).
     Commitment(CommitmentFault),
+    /// A recovery whose `prev` is in the lineage past of a bundle the reader
+    /// holds Valid in which the same holder's statement counted (token
+    /// `genesis_bundle_count_unmet`, detail `recovery_behind_head`).
+    RecoveryBehindHead,
 }
 
 impl Inconclusive {
@@ -578,7 +613,9 @@ impl Inconclusive {
             Self::RowUnplaced { .. } => "genesis_bundle_row_unplaced",
             Self::RowInvalid { .. } => "genesis_bundle_row_invalid",
             Self::HolderCustody { .. } => "genesis_holder_custody",
-            Self::CountUnmet | Self::Commitment(_) => "genesis_bundle_count_unmet",
+            Self::CountUnmet | Self::Commitment(_) | Self::RecoveryBehindHead => {
+                "genesis_bundle_count_unmet"
+            },
         }
     }
 
@@ -590,6 +627,7 @@ impl Inconclusive {
             Self::RowInvalid { fault, .. } => Some(fault.token()),
             Self::HolderCustody { fault, .. } => Some(fault.token()),
             Self::Commitment(f) => Some(f.token()),
+            Self::RecoveryBehindHead => Some("recovery_behind_head"),
             _ => None,
         }
     }
@@ -656,9 +694,10 @@ pub enum StatementFault {
     /// Its `iat` is not `⌊asserted_at / 1000⌋`.
     IatMismatch,
     /// Its `kid` is not the key it must sign under: in a first bundle the
-    /// key the holder's named record holds; in a later bundle the key the
-    /// predecessor seats for the holder (or, for an added holder, its named
-    /// record's).
+    /// key the holder's named record holds; in a later bundle the key a
+    /// predecessor it names seats for the holder (or, for an added holder,
+    /// its named record's). On a join, a key a recovery on any branch
+    /// replaced is no such key.
     KidNotIss,
     /// Its `iss` is neither in the counting roster nor an added holder.
     NoRole,
@@ -858,7 +897,7 @@ pub fn tips_in_common(valid: &[&GenesisPlacement]) -> Option<TipsInCommon> {
     loop {
         let before = reach.len();
         for p in valid {
-            if p.prev.is_some_and(|x| reach.contains(&x)) {
+            if p.predecessors().any(|x| reach.contains(&x)) {
                 reach.insert(p.object_id);
             }
         }
@@ -870,7 +909,11 @@ pub fn tips_in_common(valid: &[&GenesisPlacement]) -> Option<TipsInCommon> {
         .iter()
         .copied()
         .filter(|p| reach.contains(&p.object_id))
-        .filter(|p| !valid.iter().any(|q| q.prev == Some(p.object_id)))
+        .filter(|p| {
+            !valid
+                .iter()
+                .any(|q| q.predecessors().any(|x| x == p.object_id))
+        })
         .collect();
     tips.sort_by_key(|p| p.object_id);
     tips.dedup_by_key(|p| p.object_id);
@@ -1020,6 +1063,7 @@ fn peek_voice(index: usize, bytes: &[u8]) -> Result<Voice, StatementFault> {
 
 struct Bundle {
     prev: Option<Digest32>,
+    further_prev: Vec<Digest32>,
     cites: Vec<Digest32>,
     version: u32,
     asserted_at: u64,
@@ -1128,11 +1172,31 @@ fn parse_payload(p: &Value) -> Result<Bundle, Malformed> {
         "ceg-genesis-bundle",
     )?;
     let refs = p.get_text("refs").expect("required");
-    closed_map(refs, &["also"], &["prev"], "genesis-refs")?;
+    closed_map(refs, &["also"], &["prev", "further_prev"], "genesis-refs")?;
     let prev = refs
         .get_text("prev")
         .map(|v| row_ref_of(v, "prev"))
         .transpose()?;
+    // A join: a set of at least one object reference, beside `prev` and
+    // never without it, and never naming `prev` again.
+    let further_prev = match refs.get_text("further_prev") {
+        None => Vec::new(),
+        Some(v) => {
+            let a = v
+                .as_array()
+                .filter(|a| !a.is_empty())
+                .ok_or(schema("further_prev"))?;
+            let ids = a
+                .iter()
+                .map(|r| row_ref_of(r, "further_prev"))
+                .collect::<Result<Vec<_>, _>>()?;
+            check_set_order(a, "further_prev")?;
+            match prev {
+                Some(p) if !ids.contains(&p) => ids,
+                _ => return Err(schema("further_prev")),
+            }
+        },
+    };
     let also = refs.get_text("also").expect("required");
     closed_map(also, &["cites"], &[], "also")?;
     let cites_v = also
@@ -1238,6 +1302,7 @@ fn parse_payload(p: &Value) -> Result<Bundle, Malformed> {
     }
     Ok(Bundle {
         prev,
+        further_prev,
         cites,
         version,
         asserted_at,
@@ -1295,9 +1360,11 @@ fn read_one(
         })
         .collect();
 
-    // 3. The anchor (a first bundle), the predecessor (a later one).
+    // 3. The anchor (a first bundle), the predecessors (a later one: `prev`,
+    //    and on a join each member of `further_prev`).
     let mut waiting = GenesisWaiting::default();
-    let prev = match b.prev {
+    let mut preds: Vec<&GenesisPlacement> = Vec::new();
+    match b.prev {
         None => {
             let anchored = match input.anchor {
                 None => false,
@@ -1314,27 +1381,26 @@ fn read_one(
             if !anchored {
                 return GenesisVerdict::Nothing(Inconclusive::NotAnchored);
             }
-            None
         },
-        Some(p) => match input.predecessors.iter().find(|x| x.object_id() == p) {
-            None => {
-                waiting.prev = Some(p);
-                None
-            },
-            Some(Predecessor::NotValid(_)) => {
-                return GenesisVerdict::Nothing(Inconclusive::PrevNotValid)
-            },
-            Some(Predecessor::Valid(pp)) => {
-                if b.version != pp.version.saturating_add(1) {
-                    return GenesisVerdict::Invalid(Malformed::VersionPrevMismatch);
+        Some(first) => {
+            for p in core::iter::once(&first).chain(&b.further_prev) {
+                match input.predecessors.iter().find(|x| x.object_id() == *p) {
+                    None if *p == first => waiting.prev = Some(*p),
+                    None => waiting.further_prev.push(*p),
+                    Some(Predecessor::NotValid(_)) => {
+                        return GenesisVerdict::Nothing(Inconclusive::PrevNotValid)
+                    },
+                    Some(Predecessor::Valid(pp)) => preds.push(pp),
                 }
-                if b.family_key_id != pp.family_key_id {
-                    return GenesisVerdict::Invalid(Malformed::FamilyKeyIdChanged);
+            }
+            // Read against the predecessors only once every one is held.
+            if waiting.prev.is_none() && waiting.further_prev.is_empty() {
+                if let Err(m) = check_predecessors(&b, &preds) {
+                    return GenesisVerdict::Invalid(m);
                 }
-                Some(*pp)
-            },
+            }
         },
-    };
+    }
 
     // 4. The named rows: Waiting on any not held.
     let mut held: Vec<(Digest32, &[u8], RowPeek)> = Vec::new();
@@ -1355,25 +1421,32 @@ fn read_one(
             },
         }
     }
-    if !waiting.rows.is_empty() || waiting.prev.is_some() {
+    if !waiting.rows.is_empty() || waiting.prev.is_some() || !waiting.further_prev.is_empty() {
         waiting.rows.sort_unstable();
+        waiting.further_prev.sort_unstable();
         return GenesisVerdict::Waiting(waiting);
     }
+    // One predecessor, or on a join several; none on a first bundle.
+    let join = preds.len() > 1;
 
     // The roles: a first bundle's holders; a later bundle's predecessor
     // holders and the holders it adds.
-    let added: BTreeSet<&str> = match prev {
-        None => BTreeSet::new(),
-        Some(pp) => b
-            .holders
+    let added: BTreeSet<&str> = if preds.is_empty() {
+        BTreeSet::new()
+    } else {
+        b.holders
             .iter()
-            .filter(|h| pp.holder(h).is_none())
+            .filter(|h| preds.iter().all(|pp| pp.holder(h).is_none()))
             .map(String::as_str)
-            .collect(),
+            .collect()
     };
-    let roster: BTreeSet<&str> = match prev {
-        None => b.holders.iter().map(String::as_str).collect(),
-        Some(pp) => pp.holders.iter().map(|h| h.identity_ref.as_str()).collect(),
+    let roster: BTreeSet<&str> = if preds.is_empty() {
+        b.holders.iter().map(String::as_str).collect()
+    } else {
+        preds
+            .iter()
+            .flat_map(|pp| pp.holders.iter().map(|h| h.identity_ref.as_str()))
+            .collect()
     };
     let mut voices_with_role: Vec<&Voice> = Vec::new();
     for v in &voices {
@@ -1386,16 +1459,30 @@ fn read_one(
             });
         }
     }
-    let attempt = prev.and_then(|pp| recovery_attempt(pp, &voices_with_role, &held));
+    let attempt = recovery_attempt(&preds, &voices_with_role, &held);
 
-    let rows = match place_rows(&b, prev, &held, attempt.as_ref()) {
+    let rows = match place_rows(&b, &preds, &held, attempt.as_ref()) {
         Ok(r) => r,
         Err(i) => return GenesisVerdict::Nothing(i),
     };
 
     // 1 (continued). Each voice's `kid` and signature, under the key it must
     // sign under.
+    // A join inherits the union of its branches: a signing key a recovery
+    // on any branch replaced is no voice, and the holder a predecessor still
+    // seats at it is no live holder of that predecessor.
+    let mut gone: BTreeMap<&str, BTreeSet<Digest32>> = BTreeMap::new();
+    if join {
+        for pp in &preds {
+            for (h, ks) in &pp.recovery_retired_keys {
+                gone.entry(h.as_str()).or_default().extend(ks);
+            }
+        }
+    }
     let mut counted: BTreeSet<String> = BTreeSet::new();
+    // Each verified voice by the key it signed under: on a join a holder
+    // one branch rotated signs under each of its keys.
+    let mut verified: BTreeSet<(String, Digest32)> = BTreeSet::new();
     let mut recovery = RecoveryVoice::None;
     for v in voices_with_role {
         let is_attempt = attempt.as_ref().is_some_and(|a| a.index == v.index);
@@ -1410,7 +1497,7 @@ fn read_one(
                 },
             }
         } else {
-            match voice_key(v, &rows, prev) {
+            match voice_key(v, &rows, &preds, &gone) {
                 Some(k) => k,
                 None => {
                     refused.push(RefusedStatement {
@@ -1427,6 +1514,7 @@ fn read_one(
             },
             ObjectVerdict::Valid(_) => {
                 counted.insert(v.iss.clone());
+                verified.insert((v.iss.clone(), v.kid));
             },
             ObjectVerdict::Invalid(i) => {
                 if is_attempt {
@@ -1450,28 +1538,32 @@ fn read_one(
     }
 
     // The lineage's commitments, this bundle's included.
-    let mut lineage: BTreeSet<Digest32> = prev
-        .map(|pp| pp.lineage_commitments.clone())
-        .unwrap_or_default();
+    let mut lineage: BTreeSet<Digest32> = preds
+        .iter()
+        .flat_map(|pp| pp.lineage_commitments.iter().copied())
+        .collect();
     lineage.extend(b.charter.recovery_commitments.values().copied());
 
     // 4 (end). A recovery's own rules, once its records are placed and its
     // statement verified: Invalid. They come before `holder_key_retired`,
     // which they overlap, so the more specific reason answers.
-    if let (Some(a), Some(pp), RecoveryVoice::Verified(rk)) = (&attempt, prev, &recovery) {
-        if let Err(m) = recovery_rules(&b, pp, &rows, &a.holder, rk, &lineage) {
+    if let (Some(a), RecoveryVoice::Verified(rk)) = (&attempt, &recovery) {
+        let ruled = match preds.as_slice() {
+            [pp] => recovery_rules(&b, pp, &rows, &a.holder, rk, &lineage),
+            // A recovery carries no `further_prev`.
+            _ => Err(Malformed::RecoveryChangesOtherSeat),
+        };
+        if let Err(m) = ruled {
             return GenesisVerdict::Invalid(m);
         }
     }
 
     // A later bundle seats no holder at a key its lineage retired, nor at
     // the key its recovery commitment in force commits to: Invalid. This
-    // reads the payload's named records against the predecessor alone (the
-    // object id covers both), so no statement bears on it.
-    if let Some(pp) = prev {
-        if let Err(m) = check_retired(&b, pp, &rows) {
-            return GenesisVerdict::Invalid(m);
-        }
+    // reads the payload's named records against the predecessors it names
+    // alone (the object id covers both), so no statement bears on it.
+    if let Err(m) = check_retired(&b, &preds, &rows) {
+        return GenesisVerdict::Invalid(m);
     }
 
     // Every bundle, the first included: no two holders share a recovery
@@ -1515,9 +1607,10 @@ fn read_one(
     }
 
     // 6. The count.
-    let mut spent: BTreeSet<Digest32> = prev
-        .map(|pp| pp.spent_commitments.clone())
-        .unwrap_or_default();
+    let mut spent: BTreeSet<Digest32> = preds
+        .iter()
+        .flat_map(|pp| pp.spent_commitments.iter().copied())
+        .collect();
     if b.charter
         .recovery_commitments
         .values()
@@ -1527,7 +1620,7 @@ fn read_one(
         return GenesisVerdict::Nothing(Inconclusive::Commitment(CommitmentFault::Spent));
     }
     let mut recovered = None;
-    if let (Some(a), Some(pp)) = (&attempt, prev) {
+    if let (Some(a), [pp]) = (&attempt, preds.as_slice()) {
         let in_force = pp
             .holder(&a.holder)
             .map(|h| h.recovery_commitment)
@@ -1546,6 +1639,23 @@ fn read_one(
                         CommitmentFault::Mismatch,
                     ));
                 }
+                // Behind its holder's head: the reader holds a Valid bundle
+                // of the lineage, not built on this recovery, in which the
+                // same holder's statement counted, and this recovery's
+                // `prev` is strictly behind what that bundle extends. A
+                // bundle that names the same `prev` is a sibling: the two
+                // are a fork, and neither is behind the other.
+                let behind = input.predecessors.iter().any(|x| {
+                    matches!(x, Predecessor::Valid(q)
+                        if q.object_id != oid
+                            && !q.past.contains(&oid)
+                            && q.past.contains(&pp.object_id)
+                            && q.predecessors().all(|n| n != pp.object_id)
+                            && q.counted.contains(&a.holder))
+                });
+                if behind {
+                    return GenesisVerdict::Nothing(Inconclusive::RecoveryBehindHead);
+                }
                 // It counts on that one statement alone.
                 counted.insert(a.holder.clone());
                 spent.insert(in_force);
@@ -1563,24 +1673,41 @@ fn read_one(
                 return GenesisVerdict::Nothing(Inconclusive::CountUnmet);
             },
         }
+    } else if attempt.is_some() {
+        // A join read as a recovery whose statement did not verify.
+        return GenesisVerdict::Nothing(Inconclusive::CountUnmet);
     } else {
-        let met = match prev {
-            None => b.holders.iter().all(|h| counted.contains(h)),
-            Some(pp) => {
-                let changed = b.holders.iter().filter(|h| {
-                    pp.holder(h).is_some_and(|ph| {
-                        b.charter.recovery_commitments.get(*h) != Some(&ph.recovery_commitment)
+        let met = if preds.is_empty() {
+            b.holders.iter().all(|h| counted.contains(h))
+        } else {
+            // A holder whose commitment differs from the one a predecessor
+            // that seats it carries signs too.
+            let changed = b.holders.iter().filter(|h| {
+                preds.iter().filter_map(|pp| pp.holder(h)).any(|ph| {
+                    b.charter.recovery_commitments.get(*h) != Some(&ph.recovery_commitment)
+                })
+            });
+            // A strict majority of EACH named predecessor's live holders,
+            // each voice under the key that predecessor seats it at. A
+            // predecessor with no live holder counts nothing.
+            preds.iter().all(|pp| {
+                let live = || {
+                    pp.holders.iter().filter(|h| {
+                        !gone
+                            .get(h.identity_ref.as_str())
+                            .is_some_and(|g| g.contains(&h.kid))
                     })
-                });
+                };
                 super::count::strict_majority(
-                    counted.iter().map(String::as_str),
-                    pp.holders.iter().map(|h| h.identity_ref.as_str()),
+                    live()
+                        .filter(|h| verified.contains(&(h.identity_ref.clone(), h.kid)))
+                        .map(|h| h.identity_ref.as_str()),
+                    live().map(|h| h.identity_ref.as_str()),
                     0,
                 )
                 .is_counted()
-                    && added.iter().all(|h| counted.contains(*h))
-                    && changed.into_iter().all(|h| counted.contains(h))
-            },
+            }) && added.iter().all(|h| counted.contains(*h))
+                && changed.into_iter().all(|h| counted.contains(h))
         };
         if !met {
             return GenesisVerdict::Nothing(Inconclusive::CountUnmet);
@@ -1589,10 +1716,20 @@ fn read_one(
 
     // The keys this bundle retires: each holder's seated key it leaves, and
     // the recovery key a recovery spends.
-    let mut retired = prev
-        .map(|pp| pp.retired_holder_keys.clone())
-        .unwrap_or_default();
-    if let Some(pp) = prev {
+    let mut retired: BTreeMap<String, BTreeSet<Digest32>> = BTreeMap::new();
+    let mut recovery_retired: BTreeMap<String, BTreeSet<Digest32>> = BTreeMap::new();
+    let mut past: BTreeSet<Digest32> = BTreeSet::new();
+    for pp in &preds {
+        for (h, ks) in &pp.retired_holder_keys {
+            retired.entry(h.clone()).or_default().extend(ks);
+        }
+        for (h, ks) in &pp.recovery_retired_keys {
+            recovery_retired.entry(h.clone()).or_default().extend(ks);
+        }
+        past.extend(pp.past.iter().copied());
+        past.insert(pp.object_id);
+    }
+    for pp in &preds {
         for h in &pp.holders {
             if rows
                 .records
@@ -1601,16 +1738,20 @@ fn read_one(
             {
                 retired
                     .entry(h.identity_ref.clone())
-                    .or_insert_with(BTreeSet::new)
+                    .or_default()
                     .insert(h.kid);
             }
         }
     }
     if let (Some(h), RecoveryVoice::Verified(rk)) = (&recovered, &recovery) {
-        retired
-            .entry(h.clone())
-            .or_insert_with(BTreeSet::new)
-            .insert(thumbprint(rk));
+        retired.entry(h.clone()).or_default().insert(thumbprint(rk));
+        // The signing key the recovery replaced.
+        if let Some(old) = preds.first().and_then(|pp| pp.holder(h)) {
+            recovery_retired
+                .entry(h.clone())
+                .or_default()
+                .insert(old.kid);
+        }
     }
 
     let charter = b.charter.clone();
@@ -1618,6 +1759,8 @@ fn read_one(
         object_id: oid,
         version: b.version,
         prev: b.prev,
+        further_prev: b.further_prev.clone(),
+        past,
         asserted_at: b.asserted_at,
         family_key_id: b.family_key_id.clone(),
         holders: b
@@ -1674,7 +1817,36 @@ fn read_one(
         spent_commitments: spent,
         lineage_commitments: lineage,
         retired_holder_keys: retired,
+        recovery_retired_keys: recovery_retired,
     }))
+}
+
+/// A later bundle against the predecessors it names, every one held and
+/// Valid (CC 2.6.1.11): its `version` is one greater than their greatest,
+/// they carry its `family_key_id`, `prev` is the one of greatest `version`
+/// (among equals, of least object id), and none is in another's past.
+fn check_predecessors(b: &Bundle, preds: &[&GenesisPlacement]) -> Result<(), Malformed> {
+    let greatest = preds.iter().map(|p| p.version).max().unwrap_or(0);
+    if b.version != greatest.saturating_add(1) {
+        return Err(Malformed::VersionPrevMismatch);
+    }
+    if preds.iter().any(|p| p.family_key_id != b.family_key_id) {
+        return Err(Malformed::FamilyKeyIdChanged);
+    }
+    let first = preds
+        .iter()
+        .min_by_key(|p| (core::cmp::Reverse(p.version), p.object_id))
+        .map(|p| p.object_id);
+    if first != b.prev {
+        return Err(Malformed::VersionPrevMismatch);
+    }
+    if preds
+        .iter()
+        .any(|a| preds.iter().any(|c| c.past.contains(&a.object_id)))
+    {
+        return Err(Malformed::FurtherPrevNotNewest);
+    }
+    Ok(())
 }
 
 // ------------------------------------------------------------------ recovery
@@ -1707,19 +1879,22 @@ enum RecoveryVoice {
 /// another key than the one the predecessor seats for it or comes with a
 /// second key record of that holder named (the recovery key's own).
 fn recovery_attempt(
-    pp: &GenesisPlacement,
+    preds: &[&GenesisPlacement],
     voices: &[&Voice],
     held: &[(Digest32, &[u8], RowPeek)],
 ) -> Option<Attempt> {
     let [v] = voices else { return None };
-    let seated = pp.holder(&v.iss)?;
+    let seated: Vec<&PlacedHolder> = preds.iter().filter_map(|pp| pp.holder(&v.iss)).collect();
+    if seated.is_empty() {
+        return None;
+    }
     let records = held
         .iter()
         .filter(|(_, _, pk)| {
             pk.family == KEY_RECORD_FAMILY && pk.author.as_deref() == Some(v.iss.as_str())
         })
         .count();
-    (v.kid != seated.kid || records > 1).then(|| Attempt {
+    (seated.iter().all(|h| h.kid != v.kid) || records > 1).then(|| Attempt {
         index: v.index,
         holder: v.iss.clone(),
         kid: v.kid,
@@ -1730,22 +1905,26 @@ fn recovery_attempt(
 /// later bundle seats at another key than the predecessor seats (or adds) is
 /// seated at neither a key the lineage retired for it nor the key its
 /// recovery commitment in force commits to (compared in constant time).
-fn check_retired(b: &Bundle, pp: &GenesisPlacement, rows: &Rows) -> Result<(), Malformed> {
+///
+/// On a join the retired set is the union over the predecessors named, so a
+/// key one branch retired is refused though another branch still seats it: a
+/// join revives nothing.
+fn check_retired(b: &Bundle, preds: &[&GenesisPlacement], rows: &Rows) -> Result<(), Malformed> {
     for h in &b.holders {
         let rec = &rows.records[h].rec;
-        let seated = pp.holder(h);
-        if seated.is_some_and(|x| x.kid == rec.kid) {
-            continue;
-        }
-        if pp
-            .retired_holder_keys
-            .get(h)
-            .is_some_and(|ks| ks.contains(&rec.kid))
-        {
+        if preds.iter().any(|pp| {
+            pp.retired_holder_keys
+                .get(h)
+                .is_some_and(|ks| ks.contains(&rec.kid))
+        }) {
             return Err(Malformed::HolderKeyRetired);
         }
-        if let Some(x) = seated {
-            let c = recovery_commitment(core::slice::from_ref(&rec.key));
+        let seated: Vec<&PlacedHolder> = preds.iter().filter_map(|pp| pp.holder(h)).collect();
+        if seated.iter().any(|x| x.kid == rec.kid) {
+            continue;
+        }
+        let c = recovery_commitment(core::slice::from_ref(&rec.key));
+        for x in seated {
             if bool::from(c.ct_eq(&x.recovery_commitment)) {
                 return Err(Malformed::HolderKeyRetired);
             }
@@ -1953,7 +2132,7 @@ fn verify_under(
 
 fn place_rows(
     b: &Bundle,
-    prev: Option<&GenesisPlacement>,
+    preds: &[&GenesisPlacement],
     held: &[(Digest32, &[u8], RowPeek)],
     attempt: Option<&Attempt>,
 ) -> Result<Rows, Inconclusive> {
@@ -2033,16 +2212,15 @@ fn place_rows(
                 // re-seat only with the holder's own counted statement under
                 // it (judged once the statements are verified).
                 let recovered = attempt.is_some_and(|a| a.holder == *party);
-                match prev.and_then(|pp| pp.holder(party)) {
-                    Some(h) if !recovered && h.kid != rec.kid => {
-                        rotated.push(((*party).to_owned(), *id));
-                    },
-                    Some(_) => {},
-                    None => {
-                        if identity_ref_thumbprint(party) != Some(rec.kid) {
-                            return Err(row_invalid(*id, RowFault::HolderNotGenesisKey));
-                        }
-                    },
+                // On a join, a key any predecessor it names seats for the
+                // holder is no new key: the holder consented on that branch.
+                let mut seated = preds.iter().filter_map(|pp| pp.holder(party)).peekable();
+                if seated.peek().is_none() {
+                    if identity_ref_thumbprint(party) != Some(rec.kid) {
+                        return Err(row_invalid(*id, RowFault::HolderNotGenesisKey));
+                    }
+                } else if !recovered && seated.all(|h| h.kid != rec.kid) {
+                    rotated.push(((*party).to_owned(), *id));
                 }
             },
             Place::Seat => {
@@ -2345,19 +2523,25 @@ fn custody_gate(rec: &KeyRecord, roots: &TrustAnchorStore) -> Result<Option<u32>
 /// its holder's named record holds; in a later bundle the key the
 /// predecessor seats for its holder, or, for a holder the bundle adds, the
 /// key its named record holds. `None`: its `kid` is not that key.
+///
+/// On a join a holder has one such key for each predecessor that seats it,
+/// less every key in `gone` (the signing keys a recovery on any branch
+/// replaced).
 fn voice_key(
     v: &Voice,
     rows: &Rows,
-    prev: Option<&GenesisPlacement>,
+    preds: &[&GenesisPlacement],
+    gone: &BTreeMap<&str, BTreeSet<Digest32>>,
 ) -> Option<CompositePublicKey> {
-    let (kid, key) = match prev.and_then(|pp| pp.holder(&v.iss)) {
-        Some(h) => (h.kid, &h.key),
-        None => {
-            let r = rows.records.get(&v.iss)?;
-            (r.rec.kid, &r.rec.key)
-        },
-    };
-    (kid == v.kid).then(|| key.clone())
+    let mut seated = preds.iter().filter_map(|pp| pp.holder(&v.iss)).peekable();
+    if seated.peek().is_none() {
+        let r = rows.records.get(&v.iss)?;
+        return (r.rec.kid == v.kid).then(|| r.rec.key.clone());
+    }
+    if gone.get(v.iss.as_str()).is_some_and(|g| g.contains(&v.kid)) {
+        return None;
+    }
+    seated.find(|h| h.kid == v.kid).map(|h| h.key.clone())
 }
 
 #[cfg(test)]
@@ -2378,6 +2562,8 @@ mod tests {
             object_id: [oid; 32],
             version: 1,
             prev: prev.map(|x| [x; 32]),
+            further_prev: vec![],
+            past: BTreeSet::new(),
             asserted_at: 0,
             family_key_id: String::new(),
             holders: vec![],
@@ -2397,6 +2583,7 @@ mod tests {
             spent_commitments: BTreeSet::new(),
             lineage_commitments: BTreeSet::new(),
             retired_holder_keys: BTreeMap::new(),
+            recovery_retired_keys: BTreeMap::new(),
         };
         let (a, b, c, d) = (p(1, None), p(2, Some(1)), p(3, Some(2)), p(4, Some(2)));
         assert!(matches!(follow_to_head(&[&a, &b]), Head::Head(h) if h.object_id == [2; 32]));
