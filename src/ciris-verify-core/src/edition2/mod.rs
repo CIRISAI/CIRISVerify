@@ -46,6 +46,7 @@ pub mod leaf_vouch;
 pub mod receipt;
 pub mod recovery;
 pub mod room;
+pub mod root_fold;
 pub mod stream_head;
 
 use crate::cde::{self, Value};

@@ -26,6 +26,10 @@ use ciris_verify_core::edition2::{
 use serde_json::Value as J;
 
 const FILE: &str = include_str!("vectors/edition2/key_of_iss_v3.json");
+/// The cases v4 adds to v3 (`gen_key_of_iss_v4.py`): the half-open end of a
+/// record at a rotation, and a record whose end is its start.
+const FILE_V4: &str = include_str!("vectors/edition2/key_of_iss_v4.json");
+const FILE_V4_SHA256: &str = "e6e49c9c2d90aeea24c136643935bdd2ed878e2b977d505c39975568e578d5cc";
 
 fn key(n: u8) -> CompositeSigningKey {
     CompositeSigningKey::from_seeds(&[n; 32], &[n.wrapping_add(100); 32])
@@ -118,6 +122,25 @@ fn label_family(v: &FamilyVerdict) -> String {
                 .map_or_else(|| snake(&format!("{i:?}")), str::to_owned)
         ),
         FamilyVerdict::FamilyInvalid(f) => format!("family:{}", snake(&format!("{f:?}"))),
+    }
+}
+
+#[test]
+fn v4_boundary_cases() {
+    use sha2::Digest as _;
+    assert_eq!(
+        hex::encode(sha2::Sha256::digest(FILE_V4.as_bytes())),
+        FILE_V4_SHA256
+    );
+    let f: J = serde_json::from_str(FILE_V4).unwrap();
+    let cases = f["cases"].as_array().unwrap();
+    assert_eq!(cases.len(), 3);
+    for c in cases {
+        let got = label_statement(&verify_row_statement(
+            &hx(&c["statement_hex"]),
+            &directory(c),
+        ));
+        assert_eq!(got, c["expect"].as_str().unwrap(), "{}", c["id"]);
     }
 }
 

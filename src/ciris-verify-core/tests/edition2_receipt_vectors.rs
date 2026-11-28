@@ -74,12 +74,34 @@ fn rfc9162_inclusion() {
     }
 }
 
+/// The cases `gen_receipts_v2.py` adds: a receipt with no `iat` is refused,
+/// whatever it is a receipt of (CC 2.6.1.11).
+const FILE_V2: &str = include_str!("vectors/edition2/receipts/receipts_v2.json");
+const FILE_V2_SHA256: &str = "d4e6f6af28b7a72ff80322e2fbea9fdfde3cbcb5d6d01f57eec6031e06cb9c26";
+
+#[test]
+fn a_receipt_names_its_instant() {
+    use sha2::Digest as _;
+    assert_eq!(
+        hex::encode(sha2::Sha256::digest(FILE_V2.as_bytes())),
+        FILE_V2_SHA256
+    );
+    let v2: J = serde_json::from_str(FILE_V2).unwrap();
+    let cases = v2["verify"].as_array().unwrap();
+    assert_eq!(cases.len(), 5);
+    replay_verify(&keys(&file()), cases);
+}
+
 #[test]
 fn receipts_verify_or_refuse() {
     let f = file();
     let keys = keys(&f);
     let cases = f["verify"].as_array().unwrap();
     assert_eq!(cases.len(), 22);
+    replay_verify(&keys, cases);
+}
+
+fn replay_verify(keys: &BTreeMap<String, (ReceiptKey, Option<CompositePublicKey>)>, cases: &[J]) {
     for c in cases {
         let id = c["id"].as_str().unwrap();
         let key = &keys[c["key"].as_str().unwrap()].0;

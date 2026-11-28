@@ -479,6 +479,503 @@ impl RoomSealed {
     }
 }
 
+// ------------------------------------------------------------ the room's door
+
+/// The room a row is of, by its placement (CC 3.1.3.2): `cohort_scope` is
+/// `community` and `community_id` is that room's id. `None` for a row placed
+/// anywhere else. Whether that room is private is the room's own record, which
+/// the caller holds.
+#[must_use]
+pub fn row_room(payload: &Value) -> Option<&str> {
+    if payload.get_text("cohort_scope").and_then(Value::as_text) != Some("community") {
+        return None;
+    }
+    payload
+        .get_text("community_id")
+        .and_then(Value::as_text)
+        .filter(|r| is_group_ref(r))
+}
+
+/// The head of the signer's voice roster a row names: the one row under
+/// `refs.also.voice` (CC 2.6.1.11). `None` where the row names none.
+#[must_use]
+pub fn row_voice_head(payload: &Value) -> Option<Digest32> {
+    let set = payload
+        .get_text("refs")?
+        .get_text("also")?
+        .get_text("voice")?
+        .as_array()?;
+    match set {
+        [one] => match one.as_array()? {
+            [_, d] => match d.as_array()? {
+                [_, bytes] => bytes.as_bytes()?.try_into().ok(),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The caller's view of one voice's key roster at one head: the fold is the
+/// caller's (the self-roster fold with the voice in place of the identity,
+/// CC 3.1.3.2), not made here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VoiceRoster<'a> {
+    /// The head this view is of: the row id a room row names under
+    /// `refs.also.voice`. For a voice of one key, that key's own record.
+    pub head: Digest32,
+    /// The voice's name: the identity reference of its first room key.
+    pub voice: &'a str,
+    /// The thumbprints of the room keys live in the voice at that head.
+    pub live_keys: &'a [Digest32],
+}
+
+/// Why a row of a private room is refused at the room's door: a fault of
+/// the row and its signer's record alone (CC 3.1.3.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum RoomRowRefusal {
+    /// The row is placed in no room (`cohort_scope` is not `community` with a
+    /// `community_id`): the caller asked about a row that is not a room's.
+    /// Not CC's token; a caller's error.
+    NotARoomRow,
+    /// `room_row_signer_not_room_key`: the key that signed is no room key
+    /// (its record carries no `room`): an identity key or a node key.
+    SignerNotRoomKey,
+    /// `room_key_other_room`: the signing key's record names another room
+    /// than the one the row is placed in.
+    KeyOtherRoom,
+    /// `room_row_voice_head_malformed`: `refs.also.voice` is missing or
+    /// names more than one row.
+    VoiceHeadMalformed,
+    /// `room_row_owner_binding_malformed`: on a node's row,
+    /// `refs.also.under` is missing or names more than one row.
+    OwnerBindingMalformed,
+}
+
+impl RoomRowRefusal {
+    /// The refusal token.
+    #[must_use]
+    pub const fn token(self) -> &'static str {
+        match self {
+            Self::NotARoomRow => "not_a_room_row",
+            Self::SignerNotRoomKey => "room_row_signer_not_room_key",
+            Self::KeyOtherRoom => "room_key_other_room",
+            Self::VoiceHeadMalformed => "room_row_voice_head_malformed",
+            Self::OwnerBindingMalformed => "room_row_owner_binding_malformed",
+        }
+    }
+}
+
+/// Why a well-formed row of a private room concludes nothing: it reads other
+/// rows (the voice's roster), so it is no fault of the row alone and has no
+/// refusal name (CC 3.1.3.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomRowInconclusive {
+    /// The row's `iss` is not the voice whose roster head it names.
+    IssNotTheVoice,
+    /// The room key that signed is not a live key of the voice at that head.
+    KeyNotLive,
+    /// A node's row whose `iss` is not the node's own room key.
+    IssNotTheKey,
+    /// A node's row: the owner-binding it names is not in force for it (not
+    /// standing in the row's past, ended, or not naming this key as owned).
+    BindingNotInForce,
+    /// A node's row: the node key has no one owner (two live bindings is
+    /// none).
+    NoOneOwner,
+    /// A node's row: the owner is not a room key of a voice of this room (a
+    /// node's key, or a key of another room; no chains).
+    OwnerNotAVoiceKey,
+    /// A node's row: the owning key is not live in its voice at the head the
+    /// row names.
+    OwnerNotLive,
+    /// A node's row: the owning voice does not hold its seat in the room.
+    VoiceNotSeated,
+}
+
+/// What the door answers for one row of a private room.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[must_use]
+pub enum RoomRowReading {
+    /// The row is its voice's: signed by a room key of this room that is live
+    /// in the voice at the head the row names.
+    Valid,
+    /// The caller holds no view of the voice roster at the head the row
+    /// names: the row waits on that row (never refused, never passed).
+    Waiting {
+        /// The head named under `refs.also.voice`.
+        head: Digest32,
+        /// On a node's row, the owner-binding named under `refs.also.under`.
+        binding: Option<Digest32>,
+    },
+    /// The row concludes nothing.
+    ConcludesNothing(RoomRowInconclusive),
+    /// Refused.
+    Refused(RoomRowRefusal),
+}
+
+/// The door of a private room for one row (CC 3.1.3.2, CC 2.6.1.11), over a
+/// statement the reader already verified. The caller has established that
+/// the room the row is placed in is private.
+///
+/// - `iss`, `kid`, `payload`: the verified row's issuer, signing key and
+///   payload.
+/// - `signer_record`: the key record of `kid`, as [`super::keys::check_key_record`]
+///   read it.
+/// - `roster`: the caller's view of the voice roster at the head the row
+///   names ([`row_voice_head`]); `None` where it holds none.
+///
+/// In order: the row is placed in a room; the signing key is a room key
+/// (`room_row_signer_not_room_key`); it is this room's
+/// (`room_key_other_room`); the row names exactly one head of its voice's
+/// roster (`room_row_voice_head_malformed`); with no view at that head the
+/// row waits; then, concluding nothing otherwise, `iss` is the voice and the
+/// key is live in the voice at that head. A node's room key is no voice (it is owned in the
+/// room by a member's room key): rows under one are not read here.
+pub fn check_room_row(
+    iss: &str,
+    kid: &Digest32,
+    payload: &Value,
+    signer_record: &super::keys::KeyRecord,
+    roster: Option<&VoiceRoster<'_>>,
+) -> RoomRowReading {
+    use RoomRowReading::Refused;
+    let Some(room) = row_room(payload) else {
+        return Refused(RoomRowRefusal::NotARoomRow);
+    };
+    let Some(members) = &signer_record.room_key else {
+        return Refused(RoomRowRefusal::SignerNotRoomKey);
+    };
+    if members.room != room {
+        return Refused(RoomRowRefusal::KeyOtherRoom);
+    }
+    let Some(head) = row_voice_head(payload) else {
+        return Refused(RoomRowRefusal::VoiceHeadMalformed);
+    };
+    let Some(roster) = roster.filter(|r| bool::from(r.head.ct_eq(&head))) else {
+        return RoomRowReading::Waiting {
+            head,
+            binding: None,
+        };
+    };
+    if iss != roster.voice {
+        return RoomRowReading::ConcludesNothing(RoomRowInconclusive::IssNotTheVoice);
+    }
+    if !roster.live_keys.iter().any(|k| bool::from(k.ct_eq(kid))) {
+        return RoomRowReading::ConcludesNothing(RoomRowInconclusive::KeyNotLive);
+    }
+    RoomRowReading::Valid
+}
+
+/// Whether a room key's record is a node's: its `identity_type` holds `node`
+/// (CC 3.1.3.2). A node's room key is no voice and no member; its rows are
+/// read by [`check_node_room_row`], a voice's by [`check_room_row`].
+#[must_use]
+pub fn is_node_room_key(record: &super::keys::KeyRecord) -> bool {
+    record.room_key.is_some() && record.identity_type.iter().any(|t| t == "node")
+}
+
+/// The owner-binding a node's row names: the one row under `refs.also.under`.
+#[must_use]
+pub fn row_owner_binding(payload: &Value) -> Option<Digest32> {
+    let set = payload
+        .get_text("refs")?
+        .get_text("also")?
+        .get_text("under")?
+        .as_array()?;
+    match set {
+        [one] => match one.as_array()? {
+            [_, d] => match d.as_array()? {
+                [_, bytes] => bytes.as_bytes()?.try_into().ok(),
+                _ => None,
+            },
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
+/// The caller's fold for one node's row (the fold is Kernel's and the
+/// caller's): what the rows in that row's past say of the binding it names
+/// and of the binding's owner at the head it names.
+#[derive(Debug, Clone)]
+pub struct NodeOwnerView<'a> {
+    /// The owner-binding this view is of (the row under `refs.also.under`).
+    pub binding: Digest32,
+    /// The voice roster head this view is of (the row under
+    /// `refs.also.voice`).
+    pub voice_head: Digest32,
+    /// The binding is held, stands in the row's past with no end reaching
+    /// the row, and names the signing key as the key owned.
+    pub binding_in_force: bool,
+    /// How many owner-bindings of the node key are live in the row's past.
+    pub live_bindings: usize,
+    /// The key record of the binding's owner.
+    pub owner_record: &'a super::keys::KeyRecord,
+    /// The owning key is live in its voice at the head named, no eviction
+    /// reaching the row.
+    pub owner_live: bool,
+    /// The owning voice holds its seat in the room, no removal reaching the
+    /// row.
+    pub voice_seated: bool,
+}
+
+/// The door of a private room for a node's row (CC 3.1.3.2, ruled on
+/// CIRISConstitution#224): signed by a room key whose record says `node`,
+/// `iss` = `kid` the node's own room key, `refs.also.under` exactly one row
+/// (the in-room owner-binding that owns it) and `refs.also.voice` exactly one
+/// row (the head of the owning voice's key roster).
+///
+/// From the row and its signer's record alone, refused: not a room key, a
+/// key of another room, the voice head missing or doubled, the binding
+/// missing or doubled. With no view the row waits on both rows it names.
+/// Reading other rows, it concludes nothing unless: `iss` is the key; the
+/// binding is in force; it is the node key's one live binding; its owner is
+/// a room key of this room that is not itself a node's (no chains); that key
+/// is live in its voice at the head named; and the voice is seated.
+pub fn check_node_room_row(
+    iss: &str,
+    kid: &Digest32,
+    payload: &Value,
+    signer_record: &super::keys::KeyRecord,
+    view: Option<&NodeOwnerView<'_>>,
+) -> RoomRowReading {
+    use RoomRowInconclusive as N;
+    use RoomRowReading::{ConcludesNothing, Refused};
+    let Some(room) = row_room(payload) else {
+        return Refused(RoomRowRefusal::NotARoomRow);
+    };
+    let Some(members) = &signer_record.room_key else {
+        return Refused(RoomRowRefusal::SignerNotRoomKey);
+    };
+    if members.room != room {
+        return Refused(RoomRowRefusal::KeyOtherRoom);
+    }
+    let Some(head) = row_voice_head(payload) else {
+        return Refused(RoomRowRefusal::VoiceHeadMalformed);
+    };
+    let Some(binding) = row_owner_binding(payload) else {
+        return Refused(RoomRowRefusal::OwnerBindingMalformed);
+    };
+    let view = view
+        .filter(|v| bool::from(v.binding.ct_eq(&binding)) && bool::from(v.voice_head.ct_eq(&head)));
+    let Some(v) = view else {
+        return RoomRowReading::Waiting {
+            head,
+            binding: Some(binding),
+        };
+    };
+    if super::identity_ref_thumbprint(iss).is_none_or(|t| !bool::from(t.ct_eq(kid))) {
+        return ConcludesNothing(N::IssNotTheKey);
+    }
+    if !v.binding_in_force {
+        return ConcludesNothing(N::BindingNotInForce);
+    }
+    if v.live_bindings != 1 {
+        return ConcludesNothing(N::NoOneOwner);
+    }
+    let owner_room = v.owner_record.room_key.as_ref().map(|m| m.room.as_str());
+    if owner_room != Some(room) || is_node_room_key(v.owner_record) {
+        return ConcludesNothing(N::OwnerNotAVoiceKey);
+    }
+    if !v.owner_live {
+        return ConcludesNothing(N::OwnerNotLive);
+    }
+    if !v.voice_seated {
+        return ConcludesNothing(N::VoiceNotSeated);
+    }
+    RoomRowReading::Valid
+}
+
+/// The two rows that would tie a room key to an identity in public
+/// (CC 3.1.3.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RoomKeyRow {
+    /// An `identity:occurrence` naming the room key.
+    Occurrence,
+    /// An owner-binding naming the room key, as the owned or the owning key.
+    OwnerBinding,
+}
+
+impl RoomKeyRow {
+    /// CC's refusal token for such a row placed outside the key's room.
+    #[must_use]
+    pub const fn outside_room_token(self) -> &'static str {
+        match self {
+            Self::Occurrence => "room_key_occurrence_outside_room",
+            Self::OwnerBinding => "room_key_binding_outside_room",
+        }
+    }
+}
+
+/// An `identity:occurrence` or an owner-binding that names a room key is
+/// placed in that key's own room and nowhere else (CC 3.1.3.2): `payload` is
+/// the row's, `key_room` the `room` of the room key's record.
+///
+/// # Errors
+/// The row's kind, whose [`RoomKeyRow::outside_room_token`] is the refusal,
+/// where the row is placed anywhere but at community scope with that room's
+/// `community_id`.
+pub fn check_room_key_row_placement(
+    kind: RoomKeyRow,
+    payload: &Value,
+    key_room: &str,
+) -> Result<(), RoomKeyRow> {
+    if row_room(payload) == Some(key_room) {
+        Ok(())
+    } else {
+        Err(kind)
+    }
+}
+
+#[cfg(test)]
+mod door_tests {
+    use super::*;
+    use crate::edition2::keys::{KeyRecord, RoomKeyMembers};
+    use ciris_crypto::composite::CompositeSigningKey;
+
+    const ROOM: &str = "group-ypeBEsobvcr6wjGzmiPcTaeG7_gUfE5yuYB3ha_uSLs";
+    const ROOM2: &str = "group-PiPoFgA5WUoziU9lZOGxNIu9egCI1CxKy3PurtWcAJ0";
+    const VOICE: &str =
+        "urn:ietf:params:oauth:ckt:sha-256:1vCVtzih4Y-2L6kkeANhicuJQgOUbUxxpS2bJ7QRdGM";
+
+    fn record(room: Option<&str>) -> KeyRecord {
+        let k = CompositeSigningKey::from_seeds(&[1; 32], &[101; 32]);
+        KeyRecord {
+            kid: crate::edition2::thumbprint(k.public_key()),
+            key: k.public_key().clone(),
+            identity_type: vec!["user".into()],
+            asserted_at: 1,
+            valid_until: None,
+            pq_custody: None,
+            hardware_class: None,
+            chain: Vec::new(),
+            room_key: room.map(|r| RoomKeyMembers {
+                room: r.into(),
+                kem_xwing_pubkey: vec![0; 1216],
+                seat_commitment: [0; 32],
+            }),
+        }
+    }
+
+    fn row(room: Option<&str>, voice_heads: &[u8]) -> Value {
+        let mut m = vec![(t("asserted_at"), Value::Uint(5))];
+        if let Some(r) = room {
+            m.push((t("cohort_scope"), t("community")));
+            m.push((t("community_id"), t(r)));
+        }
+        if !voice_heads.is_empty() {
+            let refs = voice_heads
+                .iter()
+                .map(|n| Value::Array(vec![Value::Uint(2), hash_digest_value(&[*n; 32])]))
+                .collect();
+            m.push((
+                t("refs"),
+                Value::Map(vec![(
+                    t("also"),
+                    Value::Map(vec![(t("voice"), Value::Array(refs))]),
+                )]),
+            ));
+        }
+        Value::Map(m)
+    }
+
+    #[test]
+    fn the_door_in_order() {
+        use RoomRowReading::{ConcludesNothing, Refused, Valid, Waiting};
+        let rec = record(Some(ROOM));
+        let kid = rec.kid;
+        let live = [kid];
+        let roster = VoiceRoster {
+            head: [7; 32],
+            voice: VOICE,
+            live_keys: &live,
+        };
+        let check = |p: &Value, r: &KeyRecord, v: Option<&VoiceRoster<'_>>| {
+            check_room_row(VOICE, &kid, p, r, v)
+        };
+        let good = row(Some(ROOM), &[7]);
+        assert_eq!(check(&good, &rec, Some(&roster)), Valid);
+        // Not placed in a room.
+        assert_eq!(
+            check(&row(None, &[7]), &rec, Some(&roster)),
+            Refused(RoomRowRefusal::NotARoomRow)
+        );
+        // An identity or node key: its record carries no room.
+        assert_eq!(
+            check(&good, &record(None), Some(&roster)),
+            Refused(RoomRowRefusal::SignerNotRoomKey)
+        );
+        // A room key of another room, named before any roster is read.
+        assert_eq!(
+            check(&good, &record(Some(ROOM2)), None),
+            Refused(RoomRowRefusal::KeyOtherRoom)
+        );
+        // No head named, or two.
+        for heads in [&[][..], &[7, 8][..]] {
+            assert_eq!(
+                check(&row(Some(ROOM), heads), &rec, Some(&roster)),
+                Refused(RoomRowRefusal::VoiceHeadMalformed)
+            );
+        }
+        // No view, or a view of another head: the row waits on the head it names.
+        assert_eq!(
+            check(&good, &rec, None),
+            Waiting {
+                head: [7; 32],
+                binding: None
+            }
+        );
+        assert_eq!(
+            check(&row(Some(ROOM), &[9]), &rec, Some(&roster)),
+            Waiting {
+                head: [9; 32],
+                binding: None
+            }
+        );
+        // iss is not the voice.
+        assert_eq!(
+            check_room_row("urn:other", &kid, &good, &rec, Some(&roster)),
+            ConcludesNothing(RoomRowInconclusive::IssNotTheVoice)
+        );
+        // The key is not live in the voice at that head.
+        let none_live = VoiceRoster {
+            live_keys: &[[1; 32]],
+            ..roster.clone()
+        };
+        assert_eq!(
+            check(&good, &rec, Some(&none_live)),
+            ConcludesNothing(RoomRowInconclusive::KeyNotLive)
+        );
+    }
+
+    #[test]
+    fn a_room_key_row_is_placed_in_its_room() {
+        let inside = row(Some(ROOM), &[]);
+        for kind in [RoomKeyRow::Occurrence, RoomKeyRow::OwnerBinding] {
+            assert_eq!(check_room_key_row_placement(kind, &inside, ROOM), Ok(()));
+            assert_eq!(
+                check_room_key_row_placement(kind, &inside, ROOM2),
+                Err(kind)
+            );
+            assert_eq!(
+                check_room_key_row_placement(kind, &row(None, &[]), ROOM),
+                Err(kind)
+            );
+        }
+        assert_eq!(
+            RoomKeyRow::Occurrence.outside_room_token(),
+            "room_key_occurrence_outside_room"
+        );
+        assert_eq!(
+            RoomKeyRow::OwnerBinding.outside_room_token(),
+            "room_key_binding_outside_room"
+        );
+    }
+}
+
 #[cfg(feature = "std")]
 pub use sealed::*;
 
