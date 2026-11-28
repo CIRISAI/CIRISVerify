@@ -2,7 +2,7 @@
  "_meta": {
   "cells": "count",
   "source": "manifests/family_model.json",
-  "source_sha256": "82327420ab6dccc046698d5c7cad2227ee085469293cfc970cfc361f4ed6449b"
+  "source_sha256": "9d49c2a7d197cb95310165ca8052732c6c274b27e09e61da3d43dae6dce66bcc"
  },
  "families": {
   "accord:invoke:constitutional:{halt_id}": {
@@ -56,6 +56,16 @@
    ],
    "source": "cc-table",
    "value": "act=group => cosigned_act@subject_group ; none"
+  },
+  "ballot:moderation_action": {
+   "arms": [
+    {
+     "doors": "moderation_action@subject_group",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "moderation_action@subject_group"
   },
   "ballot:moderator": {
    "arms": [
@@ -256,6 +266,16 @@
    ],
    "source": "cc-table",
    "value": "group=affiliations & seats=one => affiliation_member_action@subject_group ; none"
+  },
+  "regard:{subject_kind}": {
+   "arms": [
+    {
+     "doors": "none",
+     "when": "*"
+    }
+   ],
+   "source": "cc-table",
+   "value": "none"
   },
   "retirement:{state}": {
    "arms": [

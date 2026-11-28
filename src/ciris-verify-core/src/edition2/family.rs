@@ -99,18 +99,18 @@ impl FamilyModel for BTreeMap<String, FamilyRule> {
 
 /// CC's canonical extract of the family model's `authorship` and
 /// `second_signers` cells (`manifests/family_authorship.json`,
-/// CIRISConstitution v1.0-rc22 f467193), vendored at
+/// CIRISConstitution rc23 0e80f21), vendored at
 /// `data/cc/family_authorship.json`.
 pub const FAMILY_AUTHORSHIP_JSON: &str = include_str!("../../data/cc/family_authorship.json");
 /// The CC commit the extract comes from.
-pub const FAMILY_MODEL_CC_COMMIT: &str = "f467193";
+pub const FAMILY_MODEL_CC_COMMIT: &str = "0e80f21";
 /// SHA-256 (lowercase hex) of the vendored extract, LF line endings.
 pub const FAMILY_AUTHORSHIP_SHA256: &str =
-    "6b7e3f81a92ad4197097759088b3784ba2f6431b7252e4928fe9e622f1653c40";
+    "dc31863464ac27b8b5272dbc8f102e85f22bd93d780a046fb3b842f3e3e12dd4";
 /// SHA-256 of the family model the extract is cut from (its
 /// `_meta.source_sha256`).
 pub const FAMILY_MODEL_SHA256: &str =
-    "82327420ab6dccc046698d5c7cad2227ee085469293cfc970cfc361f4ed6449b";
+    "9d49c2a7d197cb95310165ca8052732c6c274b27e09e61da3d43dae6dce66bcc";
 
 /// Second-signer members the vendored model cannot resolve from the row: a
 /// `gap` (the text names no member), `owner_of_sub` (the owner the

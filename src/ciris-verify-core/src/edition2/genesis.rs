@@ -318,9 +318,40 @@ pub struct GenesisPlacement {
     /// (a key a holder left by routine rotation stays a voice on the branch
     /// that still seats it).
     pub recovery_retired_keys: BTreeMap<String, BTreeSet<Digest32>>,
+    /// Every statement over the bundle that verified, as (`iss`, `kid`),
+    /// sorted: on a join a holder may have one under each of its keys, and a
+    /// recovery's one statement is under the recovery key.
+    pub voices: Vec<(String, Digest32)>,
 }
 
 impl GenesisPlacement {
+    /// The bundle's regime (CC 3.2 T6): its charter without
+    /// `recovery_commitments`, in the deterministic encoding, compared as one
+    /// value. Tips of one regime fold; tips whose regimes differ do not.
+    #[must_use]
+    pub fn regime(&self) -> Vec<u8> {
+        let c = &self.charter;
+        let text = |s: &str| Value::Text(s.to_owned());
+        let set = |v: &[String]| Value::Array(v.iter().map(|s| text(s)).collect());
+        let mut m = vec![(text("scope"), set(&c.scope))];
+        for (k, v) in [
+            ("halt_fuse_secs", c.halt_fuse_secs),
+            ("attach_window_secs", c.attach_window_secs),
+            ("receipt_cadence_secs", c.receipt_cadence_secs),
+            ("receipt_quorum", c.receipt_quorum),
+        ] {
+            if let Some(n) = v {
+                m.push((text(k), Value::Uint(u64::from(n))));
+            }
+        }
+        if !c.transparency_services.is_empty() {
+            m.push((text("transparency_services"), set(&c.transparency_services)));
+        }
+        // The deterministic order of a map: by each key's encoding.
+        m.sort_by_key(|(k, _)| cde::encode(k));
+        cde::encode(&Value::Map(m))
+    }
+
     /// The predecessors this bundle names: `prev`, then `further_prev`.
     pub fn predecessors(&self) -> impl Iterator<Item = Digest32> + '_ {
         self.prev
@@ -599,7 +630,8 @@ pub enum Inconclusive {
     Commitment(CommitmentFault),
     /// A recovery whose `prev` is in the lineage past of a bundle the reader
     /// holds Valid in which the same holder's statement counted (token
-    /// `genesis_bundle_count_unmet`, detail `recovery_behind_head`).
+    /// `recovery_behind_head`). It reads another bundle, so it concludes
+    /// nothing and is no refusal (CC 2.7.3).
     RecoveryBehindHead,
 }
 
@@ -613,9 +645,8 @@ impl Inconclusive {
             Self::RowUnplaced { .. } => "genesis_bundle_row_unplaced",
             Self::RowInvalid { .. } => "genesis_bundle_row_invalid",
             Self::HolderCustody { .. } => "genesis_holder_custody",
-            Self::CountUnmet | Self::Commitment(_) | Self::RecoveryBehindHead => {
-                "genesis_bundle_count_unmet"
-            },
+            Self::CountUnmet | Self::Commitment(_) => "genesis_bundle_count_unmet",
+            Self::RecoveryBehindHead => "recovery_behind_head",
         }
     }
 
@@ -627,7 +658,6 @@ impl Inconclusive {
             Self::RowInvalid { fault, .. } => Some(fault.token()),
             Self::HolderCustody { fault, .. } => Some(fault.token()),
             Self::Commitment(f) => Some(f.token()),
-            Self::RecoveryBehindHead => Some("recovery_behind_head"),
             _ => None,
         }
     }
@@ -866,86 +896,141 @@ pub fn follow_to_head<'a>(valid: &[&'a GenesisPlacement]) -> Head<'a> {
     Head::Head(cur)
 }
 
-/// The tips of the lineage and what every tip names (CC 2.6.1.11).
+/// What a reader acts on (CC 3.2 T6, CC 2.6.1.11): the bundles in force for
+/// it, and the holders and seats they give.
 #[derive(Debug, Clone)]
-pub struct TipsInCommon {
-    /// The tips: each Valid bundle that descends from the root and has no
-    /// Valid successor, sorted by object id. One tip: no fork.
-    pub tips: Vec<Digest32>,
-    /// The holders every tip seats under the same key, in the first tip's
-    /// order.
+pub struct ActOn {
+    /// The bundles in force, sorted by object id: the newest the reader
+    /// acknowledged, none in another's past; with none acknowledged, the
+    /// first bundle its anchor names.
+    pub heads: Vec<Digest32>,
+    /// The holders to act on, each at the key in force, by identity
+    /// reference. One head: its own. Several of one regime: their fold.
+    /// Several whose regimes differ: those every head seats at one key.
     pub holders: Vec<PlacedHolder>,
-    /// The seats every tip lists with the same key and the same two X-Wing
-    /// keys, in the first tip's order.
+    /// The seats to act on, likewise (a seat is the same seat only with the
+    /// same key and the same two X-Wing keys).
     pub seats: Vec<PlacedSeat>,
+    /// With several heads: `true` where they folded (one regime), `false`
+    /// where `holders` and `seats` are only what the heads share.
+    pub folded: bool,
+    /// The contested bundles the reader acknowledged, sorted: joins of one
+    /// set of predecessors under different regimes
+    /// ([`super::root_fold::GENESIS_JOIN_CONTESTED`]), or two recoveries of
+    /// one seat. Neither stands; a state to report, never Invalid.
+    pub contested: Vec<Digest32>,
 }
 
-/// Two later bundles that count on one predecessor are a fork: a reader
-/// reports it, holds both as tips, and acts on what every tip names, the
-/// holders and seats common to them (CC 2.6.1.11). From the one Valid first
-/// bundle among `valid`, the tips of its lineage and what they share. `None`
-/// where there is no Valid first bundle, or two (a fork of the genesis, on
-/// which the reader roots on neither).
+fn seat_id(s: &PlacedSeat) -> Digest32 {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(s.identity_ref.as_bytes());
+    h.update([0]);
+    h.update(s.kid);
+    h.update(s.transit_xwing_pubkey);
+    h.update(s.onion_hop_xwing_pubkey);
+    h.finalize().into()
+}
+
+fn owner_id(identity_ref: &str) -> Digest32 {
+    use sha2::Digest as _;
+    let mut h = sha2::Sha256::new();
+    h.update(b"holder\0");
+    h.update(identity_ref.as_bytes());
+    h.finalize().into()
+}
+
+/// What `reader` acts on, given every Valid bundle of the lineage it holds
+/// (`valid`), its anchor, and the bundles it has acknowledged in the order it
+/// acknowledged them: the digests its owner's `trust:accepts` root edges
+/// carry in `attached_head_digest` (CC 3.2). `None`: the reader roots on
+/// nothing (no anchor names a Valid first bundle here, or, under a
+/// thumbprint anchor, two do).
+///
+/// Two later bundles counted on one bundle are both tips and no rule picks
+/// one. The reader acts on the fold of the bundles in force where their
+/// regimes are equal ([`GenesisPlacement::regime`]) and on what they share
+/// where the regimes differ, until a join names them. This replaces the
+/// earlier `tips_in_common`, which always took what the tips share.
+///
+/// Revocations of holder keys are not read here yet: every holder a head
+/// seats is taken as live.
 #[must_use]
-pub fn tips_in_common(valid: &[&GenesisPlacement]) -> Option<TipsInCommon> {
-    let mut roots = valid.iter().filter(|p| p.prev.is_none());
-    let root = roots.next()?;
-    if roots.next().is_some() {
-        return None;
+pub fn in_force(
+    valid: &[&GenesisPlacement],
+    anchor: &Anchor,
+    acknowledged: &[Digest32],
+) -> Option<ActOn> {
+    use super::root_fold::{Lineage, Reader, ReaderAnchor, RootBundle};
+    let by: BTreeMap<Digest32, &GenesisPlacement> =
+        valid.iter().map(|p| (p.object_id, *p)).collect();
+    let mut owners: BTreeMap<Digest32, Digest32> = BTreeMap::new();
+    let mut bundles = Vec::with_capacity(by.len());
+    for p in by.values() {
+        for h in &p.holders {
+            owners.insert(h.kid, owner_id(&h.identity_ref));
+        }
+        for (iss, kid) in &p.voices {
+            owners.insert(*kid, owner_id(iss));
+        }
+        // A recovery: the key the predecessor seated for the holder, and the
+        // key this bundle seats.
+        let recovers = p.recovered.as_ref().and_then(|h| {
+            let old = p
+                .prev
+                .and_then(|x| by.get(&x))
+                .and_then(|pp| pp.holder(h))?;
+            Some((old.kid, p.holder(h)?.kid))
+        });
+        bundles.push(RootBundle {
+            id: p.object_id,
+            prev: p.predecessors().collect(),
+            version: p.version,
+            holders: p.holders.iter().map(|h| h.kid).collect(),
+            seats: p.seats.iter().map(seat_id).collect(),
+            regime: p.regime(),
+            voices: p.voices.iter().map(|(_, kid)| *kid).collect(),
+            recovers,
+            concluded: true,
+        });
     }
-    let mut reach: BTreeSet<Digest32> = BTreeSet::from([root.object_id]);
-    loop {
-        let before = reach.len();
-        for p in valid {
-            if p.predecessors().any(|x| reach.contains(&x)) {
-                reach.insert(p.object_id);
+    let lineage = Lineage::new(&bundles, &[], &owners);
+    let reader = Reader {
+        anchor: Some(match anchor {
+            Anchor::ObjectId(a) => ReaderAnchor::Bundle(*a),
+            Anchor::Thumbprints(t) => ReaderAnchor::Holders(t.clone()),
+        }),
+        acks: acknowledged.to_vec(),
+    };
+    let got = lineage.in_force(&reader)?;
+    let heads: Vec<&GenesisPlacement> = got
+        .heads
+        .iter()
+        .filter_map(|i| by.get(i).copied())
+        .collect();
+    let mut holders: Vec<PlacedHolder> = Vec::new();
+    let mut seats: Vec<PlacedSeat> = Vec::new();
+    for p in &heads {
+        for h in &p.holders {
+            if got.holders.contains(&h.kid) && !holders.iter().any(|x| x.kid == h.kid) {
+                holders.push(h.clone());
             }
         }
-        if reach.len() == before {
-            break;
+        for s in &p.seats {
+            let id = seat_id(s);
+            if got.seats.contains(&id) && !seats.iter().any(|x| seat_id(x) == id) {
+                seats.push(s.clone());
+            }
         }
     }
-    let mut tips: Vec<&GenesisPlacement> = valid
-        .iter()
-        .copied()
-        .filter(|p| reach.contains(&p.object_id))
-        .filter(|p| {
-            !valid
-                .iter()
-                .any(|q| q.predecessors().any(|x| x == p.object_id))
-        })
-        .collect();
-    tips.sort_by_key(|p| p.object_id);
-    tips.dedup_by_key(|p| p.object_id);
-    let (first, rest) = tips.split_first()?;
-    let holders = first
-        .holders
-        .iter()
-        .filter(|h| {
-            rest.iter()
-                .all(|t| t.holder(&h.identity_ref).is_some_and(|x| x.kid == h.kid))
-        })
-        .cloned()
-        .collect();
-    let seats = first
-        .seats
-        .iter()
-        .filter(|s| {
-            rest.iter().all(|t| {
-                t.seats.iter().any(|x| {
-                    x.identity_ref == s.identity_ref
-                        && x.kid == s.kid
-                        && x.transit_xwing_pubkey == s.transit_xwing_pubkey
-                        && x.onion_hop_xwing_pubkey == s.onion_hop_xwing_pubkey
-                })
-            })
-        })
-        .cloned()
-        .collect();
-    Some(TipsInCommon {
-        tips: tips.iter().map(|p| p.object_id).collect(),
+    holders.sort_by(|a, b| (&a.identity_ref, a.kid).cmp(&(&b.identity_ref, b.kid)));
+    seats.sort_by(|a, b| (&a.identity_ref, a.kid).cmp(&(&b.identity_ref, b.kid)));
+    Some(ActOn {
+        heads: got.heads,
         holders,
         seats,
+        folded: got.folded,
+        contested: got.contested,
     })
 }
 
@@ -1484,6 +1569,7 @@ fn read_one(
     // one branch rotated signs under each of its keys.
     let mut verified: BTreeSet<(String, Digest32)> = BTreeSet::new();
     let mut recovery = RecoveryVoice::None;
+    let mut recovery_kid = None;
     for v in voices_with_role {
         let is_attempt = attempt.as_ref().is_some_and(|a| a.index == v.index);
         let key = if is_attempt {
@@ -1510,7 +1596,8 @@ fn read_one(
         };
         match verify_object_statement(&v.bytes, &OneKey(v.kid, &key)) {
             ObjectVerdict::Valid(_) if is_attempt => {
-                recovery = RecoveryVoice::Verified(Box::new(key))
+                recovery_kid = Some(v.kid);
+                recovery = RecoveryVoice::Verified(Box::new(key));
             },
             ObjectVerdict::Valid(_) => {
                 counted.insert(v.iss.clone());
@@ -1754,6 +1841,10 @@ fn read_one(
         }
     }
 
+    let voices = match (&recovered, recovery_kid) {
+        (Some(h), Some(kid)) => vec![(h.clone(), kid)],
+        _ => verified.into_iter().collect(),
+    };
     let charter = b.charter.clone();
     GenesisVerdict::Valid(Box::new(GenesisPlacement {
         object_id: oid,
@@ -1818,6 +1909,7 @@ fn read_one(
         lineage_commitments: lineage,
         retired_holder_keys: retired,
         recovery_retired_keys: recovery_retired,
+        voices,
     }))
 }
 
@@ -2584,6 +2676,7 @@ mod tests {
             lineage_commitments: BTreeSet::new(),
             retired_holder_keys: BTreeMap::new(),
             recovery_retired_keys: BTreeMap::new(),
+            voices: vec![],
         };
         let (a, b, c, d) = (p(1, None), p(2, Some(1)), p(3, Some(2)), p(4, Some(2)));
         assert!(matches!(follow_to_head(&[&a, &b]), Head::Head(h) if h.object_id == [2; 32]));
@@ -2602,9 +2695,22 @@ mod tests {
             }]
         );
         assert!(matches!(follow_to_head(&[]), Head::Nothing));
-        let t = tips_in_common(&[&a, &b, &c, &d]).unwrap();
-        assert_eq!(t.tips, vec![[3; 32], [4; 32]]);
-        assert_eq!(tips_in_common(&[&a, &b]).unwrap().tips, vec![[2; 32]]);
-        assert!(tips_in_common(&[&a, &e]).is_none());
+        // With nothing acknowledged a reader acts on its anchor's bundle;
+        // with both tips acknowledged, on both.
+        let anchor = Anchor::ObjectId([1; 32]);
+        let all = [&a, &b, &c, &d];
+        assert_eq!(in_force(&all, &anchor, &[]).unwrap().heads, vec![[1; 32]]);
+        assert_eq!(
+            in_force(&all, &anchor, &[[3; 32], [4; 32]]).unwrap().heads,
+            vec![[3; 32], [4; 32]]
+        );
+        assert_eq!(
+            in_force(&[&a, &b], &anchor, &[[2; 32]]).unwrap().heads,
+            vec![[2; 32]]
+        );
+        // Two first bundles under a thumbprint anchor both match: rooted on neither.
+        let thumbs = Anchor::Thumbprints(BTreeSet::new());
+        assert!(in_force(&[&a, &e], &thumbs, &[]).is_none());
+        assert!(in_force(&[&a], &thumbs, &[]).is_some());
     }
 }

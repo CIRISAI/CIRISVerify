@@ -285,7 +285,8 @@ pub enum ReceiptError {
     BadInclusionPath,
     /// The signature does not verify over any reconstructed root.
     BadSignature,
-    /// A head receipt names no `iat`: nothing dates it, so it does not count.
+    /// The receipt names no `iat`: nothing dates it (any receipt, since
+    /// 23.8.0; before that only a head receipt).
     NoInstant,
     /// The receipt's CWT `sub` is not the registered statement's own `sub`
     /// (RFC 9943: the receipt is about the statement's subject).
@@ -736,7 +737,7 @@ fn proof_of(b: &[u8]) -> Option<InclusionProof> {
 /// # Errors
 ///
 /// The first [`ReceiptError`], in the order: shape, `vds`, `alg`, `kid`,
-/// inclusion, signature.
+/// inclusion, signature, a missing `iat`, the subject.
 pub fn verify_receipt(
     statement: &[u8],
     receipt: &[u8],
@@ -834,6 +835,11 @@ pub fn verify_receipt_for_leaf_hash(
         .first()
         .cloned()
         .ok_or(ReceiptError::BadSignature)?;
+    // A receipt carries its service's instant of issue (CC 2.6.1.11): one
+    // with no `iat` proves a registration and no time, and is refused.
+    if header.iat.is_none() {
+        return Err(ReceiptError::NoInstant);
+    }
     Ok(VerifiedReceipt {
         tree_size: first.tree_size,
         leaf_index: first.leaf_index,

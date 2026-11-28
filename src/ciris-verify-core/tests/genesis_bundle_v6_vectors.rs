@@ -22,10 +22,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use ciris_crypto::composite::{CompositePublicKey, CompositeSigningKey, COSE_ALG};
 use ciris_verify_core::cde::{self, Value};
 use ciris_verify_core::edition2::genesis::{
-    check_identity_occurrence, check_seat_binding, find_forks, follow_to_head,
-    read_genesis_bundles, tips_in_common, Anchor, CustodyFault, Fork, GenesisInput,
-    GenesisPlacement, GenesisVerdict, Head, Inconclusive, Predecessor, GENESIS_BUNDLE_MALFORMED,
-    GENESIS_BUNDLE_TYP,
+    check_identity_occurrence, check_seat_binding, find_forks, follow_to_head, in_force,
+    read_genesis_bundles, Anchor, CustodyFault, Fork, GenesisInput, GenesisPlacement,
+    GenesisVerdict, Head, Inconclusive, Predecessor, GENESIS_BUNDLE_MALFORMED, GENESIS_BUNDLE_TYP,
 };
 use ciris_verify_core::edition2::keys::check_key_record;
 use ciris_verify_core::edition2::recovery::{
@@ -197,6 +196,45 @@ fn check_placement(id: &str, p: &GenesisPlacement, e: &J) {
         })
         .collect();
     assert_eq!(retired, want_retired, "{id}: retired holder keys");
+    // The join file states three more members of the placement.
+    let list = |k: &str| -> Option<Vec<String>> {
+        e.get(k).map(|v| {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|x| x.as_str().unwrap().to_owned())
+                .collect()
+        })
+    };
+    if let Some(want) = list("further_prev") {
+        assert_eq!(
+            p.further_prev.iter().map(h).collect::<Vec<_>>(),
+            want,
+            "{id}: further_prev"
+        );
+        let mut named: Vec<String> = p.prev.iter().map(h).collect();
+        named.extend(want);
+        assert_eq!(
+            p.predecessors().map(|d| h(&d)).collect::<Vec<_>>(),
+            named,
+            "{id}"
+        );
+    }
+    if let Some(want) = list("past") {
+        assert_eq!(p.past.iter().map(h).collect::<Vec<_>>(), want, "{id}: past");
+    }
+    if let Some(want) = e.get("recovery_retired_keys") {
+        let got: BTreeMap<String, Vec<String>> = p
+            .recovery_retired_keys
+            .iter()
+            .map(|(k, v)| (k.clone(), v.iter().map(h).collect()))
+            .collect();
+        assert_eq!(
+            serde_json::to_value(got).unwrap(),
+            *want,
+            "{id}: recovery-retired keys"
+        );
+    }
     let eh = e["holders"].as_array().unwrap();
     assert_eq!(p.holders.len(), eh.len(), "{id}");
     for (x, y) in p.holders.iter().zip(eh) {
@@ -300,6 +338,50 @@ fn recovery_commitment_cases() {
     ))
     .unwrap();
     replay(&f, 7);
+}
+
+/// A later bundle that joins tips (CC 2.6.1.11, rc23 lane d103e60):
+/// `genesis_join_v1.json` and its four pool files, written by
+/// `gen_genesis_join_v1.py` over v6's generator. The count for each
+/// predecessor, the union a join inherits, what it waits on, and a recovery
+/// behind its holder's head.
+#[test]
+fn join_cases() {
+    const FILES: [(&str, &str); 5] = [
+        (
+            include_str!("vectors/edition2/genesis/genesis_join_v1.json"),
+            "a39d354da9c4efb5585b031a31c56ee9d8d04f731b91775cdb2ffd64ae8da37c",
+        ),
+        (
+            include_str!("vectors/edition2/genesis/pool_join_v1_0.json"),
+            "97495b419f35e443d6c9b720ca1fc451300ef9c2c6c968cdd44bd4a4b59d6596",
+        ),
+        (
+            include_str!("vectors/edition2/genesis/pool_join_v1_1.json"),
+            "eb344367d1416cc4b4e878ef3df100e7bff87f988d308134ee8c915aa9671ab5",
+        ),
+        (
+            include_str!("vectors/edition2/genesis/pool_join_v1_2.json"),
+            "5413753c946b06c4b759f7837fcdeff88f310e4772013f343758737308ea1c11",
+        ),
+        (
+            include_str!("vectors/edition2/genesis/pool_join_v1_3.json"),
+            "cbb0436406b2c10acb26a2e7fc3e08a2be6fd9d25fd38b02412391f17fa49473",
+        ),
+    ];
+    for (text, sha) in FILES {
+        assert_eq!(sha_hex(text.as_bytes()), sha);
+    }
+    let mut f: J = serde_json::from_str(FILES[0].0).unwrap();
+    let mut pool = serde_json::Map::new();
+    for (part, _) in &FILES[1..] {
+        let J::Object(m) = serde_json::from_str::<J>(part).unwrap() else {
+            panic!("a pool file is a map")
+        };
+        pool.extend(m);
+    }
+    f["pool"] = J::Object(pool);
+    replay(&f, 46);
 }
 
 /// Replays every case of a case file of v3's shape (`pool` merged in).
@@ -432,6 +514,13 @@ fn replay(f: &J, min_cases: usize) {
                         ew["prev"].as_str().map(str::to_owned),
                         "{id}: prev"
                     );
+                    let further: Vec<String> = w.further_prev.iter().map(h).collect();
+                    let ef: Vec<String> = ew
+                        .get("further_prev")
+                        .and_then(J::as_array)
+                        .map(|a| a.iter().map(|x| x.as_str().unwrap().to_owned()).collect())
+                        .unwrap_or_default();
+                    assert_eq!(further, ef, "{id}: further_prev");
                 },
                 ("nothing", GenesisVerdict::Nothing(i)) => {
                     assert_eq!(i.token(), e["token"].as_str().unwrap(), "{id}: {i:?}");
@@ -479,9 +568,21 @@ fn replay(f: &J, min_cases: usize) {
                 (Head::Fork(_), None) => {},
                 (other, want) => panic!("{id}: head {other:?}, want {want:?}"),
             }
-            // What every tip names: a reader acts on it at a fork.
-            let common = tips_in_common(&all);
-            match (&common, fx["common"].as_object()) {
+            // What a reader that acknowledged every bundle acts on. The file
+            // states what every tip NAMES (`common`, the rule before CC rc23);
+            // rc23 folds tips of one regime, so the fold holds at least that,
+            // and where the regimes differ it is exactly that.
+            let roots: Vec<&&GenesisPlacement> = all.iter().filter(|p| p.prev.is_none()).collect();
+            let rooted = match (&anchor, roots.as_slice()) {
+                (Some(a), _) => Some(a.clone()),
+                (None, [r]) => Some(Anchor::ObjectId(r.object_id)),
+                _ => None,
+            };
+            let mut acks: Vec<&GenesisPlacement> = all.clone();
+            acks.sort_by_key(|p| (p.version, p.object_id));
+            let acks: Vec<Digest32> = acks.iter().map(|p| p.object_id).collect();
+            let acted = rooted.and_then(|a| in_force(&all, &a, &acks));
+            match (&acted, fx["common"].as_object()) {
                 (None, None) => {},
                 (Some(t), Some(w)) => {
                     let list = |k: &str| -> Vec<String> {
@@ -492,28 +593,41 @@ fn replay(f: &J, min_cases: usize) {
                             .collect()
                     };
                     assert_eq!(
-                        t.tips.iter().map(h).collect::<Vec<_>>(),
+                        t.heads.iter().map(h).collect::<Vec<_>>(),
                         list("tips"),
                         "{id}"
                     );
-                    assert_eq!(
-                        t.holders
-                            .iter()
-                            .map(|x| x.identity_ref.clone())
-                            .collect::<Vec<_>>(),
-                        list("holders"),
-                        "{id}: common holders"
+                    let holders: BTreeSet<String> =
+                        t.holders.iter().map(|x| x.identity_ref.clone()).collect();
+                    let seats: BTreeSet<String> =
+                        t.seats.iter().map(|x| x.identity_ref.clone()).collect();
+                    let (ch, cs): (BTreeSet<String>, BTreeSet<String>) = (
+                        list("holders").into_iter().collect(),
+                        list("seats").into_iter().collect(),
                     );
-                    assert_eq!(
-                        t.seats
+                    assert!(ch.is_subset(&holders), "{id}: holders {holders:?}");
+                    assert_eq!(seats, cs, "{id}: seats");
+                    if id == "fork_roster_and_recovery" {
+                        // One regime: the fold seats A at its recovered key
+                        // (its own recovery), B, and D (added by A, B and D,
+                        // counted over the holders the fold seats). C, which
+                        // the roster bundle removed, is out.
+                        assert!(t.folded, "{id}");
+                        let party = |n: &str| f["parties"][n]["iss"].as_str().unwrap().to_owned();
+                        let want: BTreeSet<String> =
+                            ["A", "B", "D"].iter().map(|n| party(n)).collect();
+                        assert_eq!(holders, want, "{id}");
+                        let a = t
+                            .holders
                             .iter()
-                            .map(|x| x.identity_ref.clone())
-                            .collect::<Vec<_>>(),
-                        list("seats"),
-                        "{id}: common seats"
-                    );
+                            .find(|x| x.identity_ref == party("A"))
+                            .unwrap();
+                        assert_eq!(h(&a.kid), f["parties"]["A_NEW"]["kid"], "{id}");
+                    } else {
+                        assert_eq!(holders, ch, "{id}: holders");
+                    }
                 },
-                (got, want) => panic!("{id}: common {got:?}, want {want:?}"),
+                (got, want) => panic!("{id}: acted on {got:?}, want {want:?}"),
             }
         }
         valid.insert(id.to_owned(), here);
